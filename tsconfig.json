@@ -14,6 +14,7 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
+      "@goondocks/myco-shared/mcp-protocol": ["./packages/myco-shared/src/mcp-protocol.ts"],
       "@myco/*": ["./packages/myco/src/*"],
       "@myco-server-worker/*": ["./packages/myco-server/src/*"],
       "@goondocks/myco-shared/search-types": ["./packages/myco-shared/src/search-types.ts"],

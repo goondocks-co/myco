@@ -6,8 +6,8 @@
  * Only the plain layouts git writes by default are read here: a `.git` directory, or a `.git` file naming a worktree's
  * or a submodule's git directory, refs as loose files or in `packed-refs`, all reached from a directory inside the work
  * tree on the same filesystem. Anything else answers `UNUSUAL`, and the caller asks git itself:
- * - where git would look elsewhere: the start reached through a symlink leading out of the work tree, a filesystem
- *   boundary crossed on the way up (git stops there), a `.git` that is not a git directory (no `HEAD`, `objects` or
+ * - where git would look elsewhere: the start reached through a symlink leading out of the work tree,
+ *   a `.git` that is not a git directory (no `HEAD`, `objects` or
  *   `refs`; git walks on past it), a directory inside a git directory, or the environment steering git's discovery
  *   (`GIT_DIR`, `GIT_WORK_TREE`, …);
  * - where the files say more than this reader reads: a config that includes another, a symbolic ref, or a `HEAD`
@@ -284,8 +284,13 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
   let device: number;
   try { device = deviceOf(start); } catch { return UNUSUAL; }
   for (let dir = start; ; dir = path.dirname(dir)) {
-    // Git stops looking at a filesystem boundary.
-    try { if (deviceOf(dir) !== device) return UNUSUAL; } catch { return UNUSUAL; }
+    // Git discovers from the physical cwd and stops at its filesystem boundary.
+    try {
+      if (deviceOf(dir) !== device) {
+        const real = fs.realpathSync(start);
+        return real === start ? null : locateRepo(real, env, deps);
+      }
+    } catch { return UNUSUAL; }
     const dotGit = path.join(dir, '.git');
     let stat: fs.Stats;
     try {

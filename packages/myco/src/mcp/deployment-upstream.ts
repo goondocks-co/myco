@@ -13,7 +13,9 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
  * re-reads the entry the next time it rebuilds its upstream.
  */
 import { StreamableHTTPClientTransport, type FetchLike } from '@modelcontextprotocol/client';
-import { memberHeaders, type CredentialSource } from '../member/constants.js';
+import { deploymentScopedHeaders, memberHeaders, type CredentialSource } from '../member/constants.js';
+import { deploymentUrl } from '../member/registry.js';
+import { soleDeploymentMembership } from '../member/token-pairing.js';
 import { parseCredentialFlag, resolveCredential, type CredentialOptions, type CredentialRecord } from '../member/credential.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES } from '../member/constants.js';
 
@@ -31,7 +33,8 @@ export interface DeploymentUpstream {
   headers: Record<string, string>;
   /** Where the credential came from, for the bridge's own log line. */
   source: CredentialSource;
-  projectId: string;
+  projectId?: string;
+  serverUrl: string;
 }
 
 /** The Deployment upstream for the declared source, or null (with the member's stderr diagnostic) when no credential resolves. */
@@ -45,13 +48,22 @@ export function resolveDeploymentUpstream(
 
 /** The Deployment upstream a resolved credential record names. */
 export function upstreamOf(record: CredentialRecord, source: CredentialSource): DeploymentUpstream {
-  const base = record.serverUrl.replace(/\/+$/, '');
+  return upstreamWithHeaders(record.serverUrl, deploymentHeaders(record), source, record.projectId);
+}
+
+/** A context-free client can reach only the sole readable Deployment, carrying no Project header. */
+export function soleDeploymentUpstream(mycoHome: string): DeploymentUpstream | null {
+  const membership = soleDeploymentMembership(mycoHome);
+  if (membership === null) return null;
+  return upstreamWithHeaders(membership.serverUrl, deploymentScopedHeaders(membership), 'registry');
+}
+
+function upstreamWithHeaders(serverUrl: string, headers: Record<string, string>, source: CredentialSource, projectId?: string): DeploymentUpstream {
+  const base = deploymentUrl(serverUrl);
   return {
+    serverUrl: base, projectId, source, headers,
     mcpUrl: new URL(memberServerDialUrl(`${base}${MCP_PATH}`)),
     healthUrl: new URL(memberServerDialUrl(`${base}${HEALTH_PATH}`)),
-    headers: deploymentHeaders(record),
-    source,
-    projectId: record.projectId,
   };
 }
 

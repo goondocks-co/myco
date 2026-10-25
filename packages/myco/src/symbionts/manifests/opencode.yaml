@@ -34,6 +34,8 @@ capture:
     transcriptCwdPath: "cwd"
     retention: member
 registration:
+  memberMcpRouting: client-roots
+  memberMcpClientRoots: true
   globalSettingsTarget: null
   hookResponse:
     # The plugin reads the hook's stdout directly, so the response is JSON and

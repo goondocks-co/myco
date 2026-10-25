@@ -19,6 +19,7 @@ describe('deployment upstream', () => {
       headers: { authorization: `Bearer ${token}`, [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL), [PROJECT_HEADER]: 'proj_1' },
       source: 'env',
       projectId: 'proj_1',
+      serverUrl: 'https://srv.example',
     });
   });
 

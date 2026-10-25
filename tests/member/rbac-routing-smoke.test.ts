@@ -13,6 +13,7 @@ import { serve } from '@myco-server-worker/entry/bun.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { extractStructuredResult } from '@myco/mcp/client-call.js';
 import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { pathToFileURL } from 'node:url';
 import { mcpProjectFolder } from '@myco/cli/flags.js';
 import { readRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
@@ -113,53 +114,6 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
     expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(deployment.url);
   }
 
-  const originalEnv = process.env;
-  try {
-    process.env = childEnv();
-    for (const manifest of loadManifests().filter(manifest => ['codex', 'claude-code'].includes(manifest.name)))
-      new SymbiontInstaller(manifest, roots[0], resolvePackageRoot(), false, mycoHome).installMemberMcp();
-  } finally { process.env = originalEnv; }
-  type StdioEntry = { command: string; args: string[]; cwd?: string; env_vars?: string[] };
-  const codex = parseToml(fs.readFileSync(path.join(userHome, '.codex/config.toml'), 'utf8')) as { mcp_servers: { myco: StdioEntry } };
-  const entry = codex.mcp_servers.myco;
-  expect(entry).toEqual({ command: managedBinary, args: ['mcp', '--credential', 'registry'], env_vars: ['MYCO_HOME'] });
-  const claude = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as { projects: Record<string, { mcpServers: { myco: StdioEntry } }> };
-  const clients: Array<{ client: Client; index: number }> = [];
-  try {
-    for (const [index, root] of roots.entries()) {
-      const local = claude.projects[root].mcpServers.myco;
-      expect(local.command).toBe(managedBinary);
-      expect(local.args).toEqual(['mcp', '--credential', 'registry', '--root', root]);
-      const folder = mcpProjectFolder(local.args, userHome);
-      expect(resolveDeploymentUpstream('registry', { cwd: folder, mycoHome, env: childEnv() })?.mcpUrl.href).toBe(`${deployments[index].url}/mcp`);
-      const env = Object.fromEntries(Object.entries(childEnv()).filter((pair): pair is [string, string] => pair[1] !== undefined));
-      for (const [agent, emitted, cwd] of [['codex', entry, root], ['claude', local, userHome]] as const) {
-        const client = new Client({ name: `${agent}-routing-smoke`, version: '1' });
-        clients.push({ client, index });
-        await client.connect(new StdioClientTransport({ command: emitted.command, args: emitted.args, cwd, env, stderr: 'pipe' }), { timeout: 10_000 });
-        if (agent === 'codex') {
-          const saved = await client.callTool({ name: 'myco_spores', arguments: {
-            op: 'save', project: PROJECT, type: 'gotcha', content: `routing marker ${index} for the same project`,
-          } });
-          expect(saved.isError).not.toBe(true);
-        }
-      }
-    }
-    for (const { index, client } of clients) {
-      const listed = await client.callTool({ name: 'myco_spores', arguments: { op: 'list', project: PROJECT } });
-      expect(listed.isError).not.toBe(true);
-      const text = JSON.stringify(extractStructuredResult(listed));
-      expect(text).toContain(`routing marker ${index}`);
-      expect(text).not.toContain(`routing marker ${1 - index}`);
-    }
-  } finally { await Promise.all(clients.map(({ client }) => client.close())); }
-  for (const [index, root] of roots.entries()) {
-    const search = await cli(root, ['search', `routing marker ${index}`, '--credential', 'registry']);
-    expect(search.code).toBe(0);
-    expect(search.out).toContain(`routing marker ${index}`);
-    expect(search.out).not.toContain(`routing marker ${1 - index}`);
-  }
-
   for (const [index, root] of roots.entries()) {
     const transcript = path.join(root, `${SESSION}.jsonl`);
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00Z',
@@ -175,6 +129,78 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
   while (Date.now() < deadline && deployments.some((deployment) => querySession(deployment.database) !== 1))
     await Bun.sleep(100);
   expect(deployments.map((deployment) => querySession(deployment.database))).toEqual([1, 1]);
+
+  const originalEnv = process.env;
+  try {
+    process.env = childEnv();
+    for (const manifest of loadManifests().filter(manifest => ['codex', 'claude-code', 'cursor', 'opencode', 'cline'].includes(manifest.name)))
+      new SymbiontInstaller(manifest, roots[0], resolvePackageRoot(), false, mycoHome).installMemberMcp();
+  } finally { process.env = originalEnv; }
+  type StdioEntry = { command: string; args: string[]; cwd?: string; env_vars?: string[] };
+  const codex = parseToml(fs.readFileSync(path.join(userHome, '.codex/config.toml'), 'utf8')) as { mcp_servers: { myco: StdioEntry } };
+  const entry = codex.mcp_servers.myco;
+  expect(entry).toEqual({ command: managedBinary, args: ['mcp', '--credential', 'registry'], env_vars: ['MYCO_HOME'] });
+  const claude = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as { projects: Record<string, { mcpServers: { myco: StdioEntry } }> };
+  const rootedEntries: Array<[string, StdioEntry]> = [
+    ['cursor', '.cursor/mcp.json'], ['opencode', '.config/opencode/opencode.json'], ['cline', '.cline/data/settings/cline_mcp_settings.json'],
+  ].map(([agent, relative]) => {
+    const data = JSON.parse(fs.readFileSync(path.join(userHome, relative), 'utf8'));
+    const block = (data.mcpServers ?? data.mcp).myco;
+    const emitted = Array.isArray(block.command) ? { command: block.command[0], args: block.command.slice(1) } : block;
+    expect(emitted).toMatchObject({ command: managedBinary, args: ['mcp', '--credential', 'registry', '--client-roots'] });
+    return [agent, emitted];
+  });
+  const clients: Array<{ client: Client; index: number }> = [];
+  try {
+    for (const [index, root] of roots.entries()) {
+      const local = claude.projects[root].mcpServers.myco;
+      expect(local.command).toBe(managedBinary);
+      expect(local.args).toEqual(['mcp', '--credential', 'registry', '--root', root]);
+      const folder = mcpProjectFolder(local.args, userHome);
+      expect(resolveDeploymentUpstream('registry', { cwd: folder, mycoHome, env: childEnv() })?.mcpUrl.href).toBe(`${deployments[index].url}/mcp`);
+      const env = Object.fromEntries(Object.entries(childEnv()).filter((pair): pair is [string, string] => pair[1] !== undefined));
+      for (const [agent, emitted, cwd] of [['codex', entry, root], ['claude', local, userHome], ...rootedEntries.map(([agent, emitted]) => [agent, emitted, userHome] as const)] as const) {
+        const client = new Client({ name: `${agent}-routing-smoke`, version: '1' }, { capabilities: { roots: { listChanged: true } } });
+        client.setRequestHandler('roots/list', async () => ({ roots: [{ uri: pathToFileURL(root).href }] }));
+        clients.push({ client, index });
+        await client.connect(new StdioClientTransport({ command: emitted.command, args: emitted.args, cwd, env, stderr: 'pipe' }), { timeout: 10_000 });
+        if (agent === 'codex') {
+          const saved = await client.callTool({ name: 'myco_spores', arguments: {
+            op: 'save', project: PROJECT, type: 'gotcha', content: `routing marker ${index} for the same project`,
+          } });
+          expect(saved.isError).not.toBe(true);
+          const plan = await client.callTool({ name: 'myco_plans', arguments: {
+            op: 'save', project: PROJECT, session_id: SESSION, plan_key: 'routing', title: `routing plan marker ${index}`, content: `routing plan marker ${index}`,
+          } });
+          expect(plan.isError).not.toBe(true);
+        }
+      }
+    }
+    for (const { index, client } of clients) {
+      const listed = await client.callTool({ name: 'myco_spores', arguments: { op: 'list', project: PROJECT } });
+      expect(listed.isError).not.toBe(true);
+      const text = JSON.stringify(extractStructuredResult(listed));
+      expect(text).toContain(`routing marker ${index}`);
+      expect(text).not.toContain(`routing marker ${1 - index}`);
+      const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list', project: PROJECT } });
+      expect(plans.isError).not.toBe(true);
+      const rows = extractStructuredResult(plans);
+      expect(Array.isArray(rows)).toBe(true);
+      if (!Array.isArray(rows)) throw new Error('Expected the Project plans');
+      const loaded = await client.callTool({ name: 'myco_plans', arguments: { op: 'get', project: PROJECT, id: rows[0].id } });
+      expect(loaded.isError).not.toBe(true);
+      const planText = JSON.stringify(extractStructuredResult(loaded));
+      expect(planText).toContain(`routing plan marker ${index}`);
+      expect(planText).not.toContain(`routing plan marker ${1 - index}`);
+    }
+  } finally { await Promise.all(clients.map(({ client }) => client.close())); }
+  for (const [index, root] of roots.entries()) {
+    const search = await cli(root, ['search', `routing marker ${index}`, '--credential', 'registry']);
+    expect(search.code).toBe(0);
+    expect(search.out).toContain(`routing marker ${index}`);
+    expect(search.out).not.toContain(`routing marker ${1 - index}`);
+  }
+
   const storedText = (dir: string): string => fs.readdirSync(dir, { withFileTypes: true }).map((entry) => {
     const file = path.join(dir, entry.name);
     return entry.isDirectory() ? storedText(file) : fs.readFileSync(file, 'utf8');
