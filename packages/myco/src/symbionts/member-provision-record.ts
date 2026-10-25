@@ -4,7 +4,7 @@
  */
 import { deploymentUrl, readDeploymentMembershipResult } from '../member/registry.js';
 import { normalizeMemberServerAddress } from '../member/server-url.js';
-import { updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
+import { readHookRepairGeneration, updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
 export { PROVISION_RECORD, UnreadableProvisionRecordError, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict, recordProvision, type ProvisionRecord } from '../member/provision-record.js';
 
 function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout'> {
@@ -17,7 +17,9 @@ function retainedProvisionMetadata(record: ProvisionRecord | null, agents: reado
 export function holdHookTrust(mycoHome: string, agent: string, action: string): void {
   updateProvisionRecord(mycoHome, record => {
     if (record === null) throw new Error('Hook repair has no provisioned record');
-    return { ...record, pendingTrust: { ...record.pendingTrust, [agent]: { action, at: Math.max(Date.now(), (record.pendingTrust?.[agent]?.at ?? 0) + 1) } } };
+    const at = Math.max(Date.now(), readHookRepairGeneration(mycoHome) + 1, (record.hookRepairGeneration ?? 0) + 1, ...Object.values(record.pendingTrust ?? {}).map(trust => trust.at + 1));
+    if (!Number.isSafeInteger(at)) throw new Error('Hook repair generation is exhausted');
+    return { ...record, hookRepairGeneration: at, pendingTrust: { ...record.pendingTrust, [agent]: { action, at } } };
   });
 }
 

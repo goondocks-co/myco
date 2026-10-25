@@ -117,7 +117,7 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
         try {
           if (adoptedVersion !== undefined) {
             if (!refreshedAdoption && readProvisionRecord(mycoHome)?.version !== adoptedVersion) await refreshAdopted(deadline);
-          } else repaired = (deps.keepCurrent ?? keepCurrent)(mycoHome);
+          } else repaired = (deps.keepCurrent ?? keepCurrent)(mycoHome, { serverUrl });
         } catch (error) {
           process.stderr.write(`[myco] keep-current failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }

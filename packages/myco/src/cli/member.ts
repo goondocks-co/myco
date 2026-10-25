@@ -497,7 +497,7 @@ function uncapturableMemberHarnesses(mycoHome: string, opts: { packageRoot?: str
 /** The recorded destination, or an explicitly selected or unambiguous joined Deployment. */
 export function memberProvisionTarget(mycoHome: string, serverUrl?: string): string | undefined {
   const record = readProvisionRecordStrict(mycoHome);
-  if (record !== null) return record.serverUrl;
+  if (record !== null && serverUrl === undefined) return record.serverUrl;
   const selected = selectedDeploymentMembership(mycoHome, serverUrl);
   if (selected !== null) return selected.serverUrl;
   const memberships = serverUrl === undefined ? listDeploymentMemberships(mycoHome) : [];
@@ -565,7 +565,7 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
     if (before === null && agents.length === 0) return null;
     const discovered = agents.filter(agent => !before?.agents.includes(agent));
     const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
-    return fn(record, record.agents, retiredSettingsProblems);
+    return fn({ ...record, serverUrl }, record.agents, retiredSettingsProblems);
   }, { wait: opts.wait });
 }
 
