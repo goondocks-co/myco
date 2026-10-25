@@ -146,7 +146,7 @@ function impossibleCase(family: string, value: LegacyVariant['case']): boolean {
     if (value.kind === 'attachment-companion' && value.stage === 'body') return true;
   }
   if (family === 'M30' && value.usage === 'runtime-M' && value.consumer === 'M29' && value.producer !== 'embeddingSourceSelect') return true;
-  return family === 'M37' && !value.includeActive && value.nullEnd === true;
+  return false;
 }
 
 /** The complete finite census domain in stable family, axis and value order. */
@@ -170,7 +170,7 @@ export function* legacyVariants(): Generator<LegacyVariant> {
         row.return_no_type_SQL = (value.status === true && ['prompt','response'].includes(type)) || (value.observationType === true && type !== 'spore');
         row.statement_branch_set = ['plan','prompt','response'].includes(type) ? ['own-FTS','blob-FTS'] : ['own-FTS'];
       }
-      yield row;
+      if (!legacy.domain.excludedVariants.includes(row.id)) yield row;
     }
     yield* product(0,{});
   }
@@ -579,6 +579,7 @@ export async function seedLegacyCIResults(db:RelationalStore){
  await seedLegacyCIEmbeddingStates(db,ctx);
  await capture('restored','session.start',{agent:'claude-code',startedAt:100},'import');
  const restored=[{prompt_identity_scheme:'claude-v1'},{prompt_identity_scheme:'claude-v2'},{}].map((pin,i)=>({t:'transcripts',r:{project_id:'project',transcript_id:'tx_'+String(i+1).padStart(32,'a'),session_id:'restored',machine_id:'machine',agent:'claude-code',size:100,segment_count:0,first_received_at:1,last_received_at:1,token_id:ctx.tokenId,parsed_offset:100,parser_version:5,parsed_at:1,role:'primary',...pin}}));
+ await db.prepare("UPDATE agent_runs SET status='completed',completed_at=1000 WHERE project_id='project' AND id='run'").run();
  await restoreArtifact(db,{authorization:{kind:'recovery'},now:1000,text:[{format:BACKUP_FORMAT,deploymentId:await deploymentId(db),schemaVersion:89,createdAt:1,producer:'CI result fixture',counts:{transcripts:restored.length}},...restored].map(row=>JSON.stringify(row)).join('\n')});
  return {ctx,served};
 }
@@ -935,7 +936,6 @@ export async function executeReadVariant(db:RelationalStore,variant:LegacyVarian
   }
   case 'M40':{
    if(v.operation==='hasAcknowledgedPrompts')return read('coverage','hasAcknowledgedPrompts',scope,sessionId);
-   if(v.operation==='unread-predicate')return read('prompts','hasUnreadPrompts',scope,{includeActive:true});
    const source=v.identity==='source'?'served':undefined,record=source??uuid(20),runId=v.ack==='wrong-run'?'other-run':'run';
    const held=checkedPrepared(read('factory',v.operation==='ack-source-resolution'?'prepareExtractionAckItem':'prepareRecordAcknowledgement',scope.projectId,runId,record,source,uuid(9999),1000));
    return v.operation==='ack-source-resolution'?held.first():held.run().then(result=>({changes:result.meta.changes}));
@@ -954,27 +954,6 @@ export async function executeReadVariant(db:RelationalStore,variant:LegacyVarian
    return checkedPrepared(read('factory','prepareRestoredSessionUnread',JSON.stringify(rows))).run().then(result=>({changes:result.meta.changes}));
   }
   case 'M36':return v.origin==='user'?read('prompts','extractionSourceSession',scope,uuid(20)):read('sessions','sessionsWithImportedPrompts',scope,[sessionId],String(v.origin));
-  case 'M37':{
-   const opts={includeActive:v.includeActive===true,...(v.history===true?{history:{receivedThrough:1000,sessionIds:[sessionId]}}:{})};
-   const after=v.after===true?{id:sessionId,endedAt:v.nullEnd===true?null:1000,liveCapture:Number(v.liveCapture)}:undefined;
-   if(v.statement==='candidatePositions')return read('prompts','candidatePositions',scope,opts,200,'primary',after);
-   if(v.statement==='readyPosition')return read('prompts','readyPosition',scope,opts,sessionId);
-   if(v.statement==='listUnprocessedPrompts-candidate')return read('prompts','listUnprocessedPrompts',scope,opts);
-   return read('prompts','newestUnprocessedSession',scope,opts);
-  }
-  case 'M38':{
-   const opts={includeActive:v.includeActive===true,...(v.history===true?{history:{receivedThrough:1000,sessionIds:[sessionId]}}:{})};
-   if(v.statement==='readPositions')return read('prompts','readPositions',scope,opts,[{position:{id:sessionId,endedAt:1000,liveCapture:1},...(v.hasCursor===true?{after:'101:'+uuid(20)}:{})}]);
-   return read('prompts',String(v.statement),scope,opts);
-  }
-  case 'M39':{
-   const opts={includeText:v.includeText===true,...(v.history===true?{history:{receivedThrough:1000,sessionIds:[sessionId]}}:{})};
-   if(v.statement==='withBodies')return read('prompts','withBodies',scope,[{promptId:uuid(20),sessionId,createdAt:102,text:null,response:null,origin:v.origin}]);
-   const after={position:{id:sessionId,endedAt:1000,liveCapture:1},prompt:'101:'+uuid(20)};
-   if(v.statement==='readHistory')return read('prompts','readHistory',scope,opts,'primary',v.cursor==='initial'?null:after,v.cursor==='keyset-floor'?'101:'+uuid(20):null);
-   const encoded=v.cursor==='initial'?undefined:v.cursor==='keyset-floor'?'101:'+uuid(20):v.cursor==='ex1'?'ex1:'+JSON.stringify([sessionId,null,null]):'ex2:'+JSON.stringify({project:scope.projectId,session:sessionId,fresh:null,history:null,floor:null});
-   return read('prompts','listUnprocessedPrompts',scope,{...opts,includeActive:true,cursor:encoded});
-  }
   case 'M42':case 'M43':return read('kpis','readKpis',{windowDays:v.window==='all'?null:Number(v.window),now:1000});
   case 'M45':return v.operation==='hook-plan-summary'?read('plans','getPlan',scope,uuid(50),{summary:true}):read('injection','injectionForPrompt',scope,sessionId,v.naming==='missing'?'missing':uuid(20));
   case 'M47':{

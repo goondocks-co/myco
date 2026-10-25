@@ -2,6 +2,7 @@ import {expect,it} from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
 import { completeBudgetMigration,budgetActivation,budgetCompletionMessage,BUDGET_INDEX_ROW_LIMIT } from '@myco-server-worker/db/budget-activation.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -74,7 +75,7 @@ for(const reply of ['missing','null','negative','fractional','error'])it(`keeps 
       expect(status.status).toBe(200);
       expect(await status.json()).toMatchObject({budget:{active:false,reason:expect.stringContaining('preflight')}});
     }
-    expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:'103'});
+    expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
     expect(f.sqlite.query("SELECT name FROM sqlite_master WHERE name IN ('idx_attempts_claimed','idx_agent_runs_queue_head')").all()).toEqual([]);
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toBeNull();
     expect(await f.claim(candidate)).not.toBeNull();

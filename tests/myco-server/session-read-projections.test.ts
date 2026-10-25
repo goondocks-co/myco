@@ -1,4 +1,3 @@
-import { observeStatement } from '../helpers/statement-recorder.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -6,8 +5,6 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
-import { newestUnprocessedSession } from '@myco-server-worker/read/prompts.js';
-import { hasUnprocessedPrompts } from '@myco-server-worker/core/schedule-rules.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
 
@@ -20,14 +17,6 @@ const prompt = (id: string, owner: string, origin = 'user') => `INSERT INTO prom
 const transcript = (id: string, owner: string, imported: number | null = null) => `INSERT INTO transcripts
   (project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id,imported_at)
   VALUES('proj_1','${id}','${owner}','m',10,10,1,1,'t',${imported ?? 'NULL'})`;
-
-const sourceSelection = `SELECT s.session_id AS id,s.ended_at AS endedAt,
-  EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=s.project_id AND t.session_id=s.session_id AND t.imported_at IS NULL) AS liveCapture
-  FROM sessions s WHERE s.project_id=? AND s.ended_at IS NOT NULL
-  AND EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=s.project_id AND p.session_id=s.session_id AND p.processed=0 AND p.origin IN ('user','unknown') AND NOT EXISTS(SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id AND a.kind='record'))
-  AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)
-  AND NOT EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=s.project_id AND t.session_id=s.session_id AND (t.parsed_offset<t.size OR t.parse_error IS NOT NULL))
-  ORDER BY liveCapture DESC,s.ended_at DESC,s.session_id DESC LIMIT 1`;
 
 async function assertProjection(db: RelationalStore) {
   const expected = await db.prepare(`WITH ids AS (
@@ -46,11 +35,6 @@ async function assertProjection(db: RelationalStore) {
   expect(actual.results.filter((r) => expected.results.some((e) => e.project_id === r.project_id && e.session_id === r.session_id))).toEqual(expected.results);
   for (const orphan of actual.results.filter((r) => !expected.results.some((e) => e.project_id === r.project_id && e.session_id === r.session_id))) {
     expect(orphan).toMatchObject({ has_session: 0, tombstoned: 0, ended_at: null, last_received_at: null, eligible_prompts: 0, pending_transcripts: 0, live_transcripts: 0 });
-  }
-  for (const projectId of ['proj_1', 'proj_2']) {
-    const expectedSession = await db.prepare(sourceSelection).bind(projectId).first<{ id: string; endedAt: number; liveCapture: number }>();
-    expect(await newestUnprocessedSession(db, { projectId })).toEqual(expectedSession);
-    expect(await hasUnprocessedPrompts(db, projectId)).toBe(expectedSession !== null);
   }
   const expectedProjects = (await db.prepare(`SELECT p.project_id AS projectId,COUNT(s.session_id) AS sessionCount,MAX(s.last_received_at) AS lastActivityAt
     FROM projects p LEFT JOIN sessions s ON s.project_id=p.project_id
@@ -88,7 +72,6 @@ async function verify(db: RelationalStore) {
   await assertProjection(db);
   expect(await db.prepare("SELECT session_id FROM session_read_facts WHERE project_id='proj_stale'").first()).toBeNull();
   expect(await db.prepare("SELECT project_id FROM project_session_counts WHERE project_id='proj_stale'").first()).toBeNull();
-  expect(await newestUnprocessedSession(db, { projectId: 'proj_1' })).toEqual({ id: 'old', endedAt: 10, liveCapture: 1 });
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'old')).toBe(true);
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'absent')).toBe(false);
   await assertProjection(db);
@@ -124,14 +107,9 @@ async function verify(db: RelationalStore) {
     "DELETE FROM prompt_batches", "DELETE FROM transcripts", "DELETE FROM sessions", "DELETE FROM session_tombstones",
   ];
   for (const sql of mutations) { await db.prepare(sql).run(); await assertProjection(db); }
-  expect(await newestUnprocessedSession(db, { projectId: 'proj_1' })).toBeNull();
   expect(await listProjects(db)).toHaveLength(1);
   await expect(db.batch([db.prepare(session('rollback', 1)), db.prepare('INSERT INTO absent_table VALUES(1)')])).rejects.toThrow();
   await assertProjection(db);
-  const select = await observeStatement(db, db => newestUnprocessedSession(db, { projectId: 'proj_1' }));
-  const extractionPlan = (await db.prepare(`EXPLAIN QUERY PLAN ${select.sql}`).bind(...select.binds).all<{ detail: string }>()).results.map((r) => r.detail).join('\n');
-  expect(extractionPlan).toContain('idx_session_read_extraction');
-  expect(extractionPlan).not.toContain('TEMP B-TREE');
   const projectsPlan = (await db.prepare(`EXPLAIN QUERY PLAN ${listProjectsSql()}`).all<{ detail: string }>()).results.map((r) => r.detail).join('\n');
   expect(projectsPlan).toContain('idx_session_read_activity');
   expect(projectsPlan).not.toMatch(/SCAN [fs]\b/);

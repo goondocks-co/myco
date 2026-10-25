@@ -343,55 +343,6 @@ export const VIEW_READ_OPERATIONS = [
     "expressionSha256": "b8e52971ef94727e32c15077f072bb08c8217342f703ec38e2afa1a8bbde041c"
   },
   {
-    "id": "M37:prompts_candidatePositions:0",
-    "family": "M37",
-    "operation": "prompts_candidatePositions",
-    "template": "0",
-    "expressionSha256": "160f687698297bcc5f62d677fb277fc73bcc3df303d8d28b9fb93b2f4afc0ddd"
-  },
-  {
-    "id": "M37:prompts_readyPosition:0",
-    "family": "M37",
-    "operation": "prompts_readyPosition",
-    "template": "0",
-    "expressionSha256": "81d64f72672ed720c8450fa58c2f84a1064ec374be15fd03035d70d6e8efd2e6"
-  },
-  {
-    "id": "M37:prompts_newestUnprocessedSession:0",
-    "family": "M37",
-    "operation": "prompts_newestUnprocessedSession",
-    "template": "0",
-    "expressionSha256": "81d64f72672ed720c8450fa58c2f84a1064ec374be15fd03035d70d6e8efd2e6"
-  },
-  {
-    "id": "M38:prompts_hasUnreadPrompts:0",
-    "family": "M38",
-    "operation": "prompts_hasUnreadPrompts",
-    "template": "0",
-    "expressionSha256": "5db46d48546968cb1719bbf7c53440fb572bcc5aa646ca78c751161ce518b48d"
-  },
-  {
-    "id": "M38:prompts_readPositions:0",
-    "family": "M38",
-    "operation": "prompts_readPositions",
-    "template": "0",
-    "expressionSha256": "dc41d814e999cfd0daf127f2293cbb2a52ddcb4e2bf521280b268c6ed58ea01f"
-  },
-  {
-    "id": "M39:prompts_withBodies:0",
-    "family": "M39",
-    "operation": "prompts_withBodies",
-    "template": "0",
-    "expressionSha256": "9815801692a0076c30916a4832e7566d40e5627446fe2c3295d77fe7daef290e"
-  },
-  {
-    "id": "M39:prompts_listUnprocessedPrompts:0",
-    "family": "M39",
-    "operation": "prompts_listUnprocessedPrompts",
-    "template": "0",
-    "expressionSha256": "81d64f72672ed720c8450fa58c2f84a1064ec374be15fd03035d70d6e8efd2e6"
-  },
-  {
     "id": "M25:search_searchType:0",
     "family": "M25",
     "operation": "search_searchType",

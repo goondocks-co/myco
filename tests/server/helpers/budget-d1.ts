@@ -1,3 +1,4 @@
+import { THIN_LEARNING_ADMISSION_SQL } from '@myco-server-worker/db/thin-learning-admission.js';
 import { Database } from 'bun:sqlite';
 import path from 'node:path';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -14,9 +15,9 @@ export function budgetD1Database(file=':memory:'):Database {
   return db;
 }
 
-/** Budget statements run against SQLite and use Wrangler's single-statement JSON envelope. */
+/** Admission and budget statements run against SQLite and use Wrangler's single-statement JSON envelope. */
 export function budgetD1Reply(db:Database,sql:string):CommandResult|undefined {
-  if(!/budget[._]|idx_attempts_claimed|idx_attempts_settled|idx_agent_runs_queue_head|SELECT COUNT\(\*\) AS n FROM agent_|origin IS NULL/.test(sql))return undefined;
+  if(sql!==THIN_LEARNING_ADMISSION_SQL&&!/budget[._]|idx_attempts_claimed|idx_attempts_settled|idx_agent_runs_queue_head|SELECT COUNT\(\*\) AS n FROM agent_|origin IS NULL/.test(sql))return undefined;
   const results=db.query(sql).all();
   return {code:0,stdout:JSON.stringify([{results,success:true,meta:{duration:0}}]),stderr:''};
 }

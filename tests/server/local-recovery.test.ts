@@ -104,7 +104,7 @@ const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false,
-    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null } = {}) {
+    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null, thinRun = false } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -143,6 +143,10 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     if(learningSource==='paused') await source.db.batch(V102_STATEMENTS.map(sql=>source.db.prepare(sql)));
   }
   if(budgetSource) seedRecoveryBudget(source.sqlite,true,Date.now());
+  if (thinRun) {
+    source.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('thin','Thin','built-in',1,1)");
+    source.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('proj_1','thin-held','thin','extract-curate','running',1)");
+  }
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -422,4 +426,16 @@ it('replacement requires source retirement; fork permits an independent live sou
   expect(() => assertRecoveryTenantChoice()).toThrow('--source-retired');
   expect(() => assertRecoveryTenantChoice('replacement', true)).not.toThrow();
   expect(() => assertRecoveryTenantChoice('fork')).not.toThrow();
+});
+
+it('refuses current-schema staged thin work before publishing either recovery tenant mode', async () => {
+  const f = await fixture('local', {thinRun:true});
+  try {
+    const before = fs.readFileSync(path.join(f.artifact,'myco.sqlite'));
+    for (const mode of ['replacement','fork'] as const) {
+      await expect(f.restore(undefined,mode)).rejects.toThrow('thin_learning_not_drained');
+      expect(fs.existsSync(f.paths.root)).toBe(false);
+      expect(fs.readFileSync(path.join(f.artifact,'myco.sqlite'))).toEqual(before);
+    }
+  } finally { f.cleanup(); }
 });

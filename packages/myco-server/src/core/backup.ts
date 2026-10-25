@@ -1,3 +1,4 @@
+import { assertThinLearningDrained, THIN_LEARNING_REMOVAL_VERSION } from '../db/thin-learning-admission.js';
 import { estimateInvalidationStatements } from './budget-estimates.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { VIEW_FACT_TABLES, VIEW_FTS_TABLES, VIEW_REGENERABLE_TABLES } from '../db/view-tables.js';
@@ -567,6 +568,13 @@ export async function restoreArtifact(
   if (foreign) revokeForeignAuthority(byTable, restoredAt);
 
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
+  if (stamped >= THIN_LEARNING_REMOVAL_VERSION) {
+    await assertThinLearningDrained(db);
+    const restoredRuns = byTable.get('agent_runs') ?? [];
+    for (let at = 0; at < restoredRuns.length; at += RESTORE_CHUNK_ROWS) {
+      await assertThinLearningDrained(db, restoredRuns.slice(at, at + RESTORE_CHUNK_ROWS));
+    }
+  }
   try { assertArchivedContentClosure(byTable); }
   catch (error) { throw new BackupApplyError('archive_bundles', error instanceof Error ? error.message : String(error)); }
   try { await admitRestoredArtifacts(db, byTable.get('session_artifacts') ?? [], byTable.get('sessions') ?? []); }

@@ -116,17 +116,8 @@ import { CAPTURE_RULE_BUNDLES as kpis_import_CAPTURE_RULE_BUNDLES } from "@goond
 import { recallQuality as kpis_import_recallQuality } from "../evals/recall-baseline.js";
 import { caseCount as kpis_import_caseCount } from "../evals/recall-baseline.js";
 import type { RelationalStore as prompts_import_RelationalStore } from "../core/adapters.js";
-import { MATERIAL_EXCERPT_CHARS as prompts_import_MATERIAL_EXCERPT_CHARS } from "../constants.js";
 import { READ_ORIGINS as prompts_import_READ_ORIGINS } from "./extraction-origins.js";
-import { ACTIVE_EXTRACTION_CANDIDATE_SQL as prompts_import_ACTIVE_EXTRACTION_CANDIDATE_SQL } from "../db/session-read-model.js";
-import { EXTRACTION_CANDIDATE_SQL as prompts_import_EXTRACTION_CANDIDATE_SQL } from "../db/session-read-model.js";
 import { notTombstonedSql as prompts_import_notTombstonedSql } from "../core/tombstones.js";
-import { binaryOrder as prompts_import_binaryOrder } from "./scope.js";
-import { clampLimit as prompts_import_clampLimit } from "./scope.js";
-import { decodeCursor as prompts_import_decodeCursor } from "./scope.js";
-import { encodeCursor as prompts_import_encodeCursor } from "./scope.js";
-import { page as prompts_import_page } from "./scope.js";
-import type { Page as prompts_import_Page } from "./scope.js";
 import type { ReadScope as prompts_import_ReadScope } from "./scope.js";
 import { displayPrompt as search_import_displayPrompt } from "@goondocks/myco-shared/prompt-text";
 import { processedResourceProofSql as search_import_processedResourceProofSql } from "../core/processed-resources.js";
@@ -241,13 +232,6 @@ const VIEW_READ_OPERATION_IDS = [
   "M43:kpis_promptIdentityCounts:3",
   "M43:kpis_promptIdentityCounts:4",
   "M36:prompts_extractionSourceSession:0",
-  "M37:prompts_candidatePositions:0",
-  "M37:prompts_readyPosition:0",
-  "M37:prompts_newestUnprocessedSession:0",
-  "M38:prompts_hasUnreadPrompts:0",
-  "M38:prompts_readPositions:0",
-  "M39:prompts_withBodies:0",
-  "M39:prompts_listUnprocessedPrompts:0",
   "M25:search_searchType:0",
   "M08:hook_placement_listUnplacedHookRecords:0",
   "M09:plans_getPlan:0",
@@ -347,13 +331,6 @@ export const LEGACY_ONLY_OPERATIONS = [
   "M43:kpis_promptIdentityCounts:3",
   "M43:kpis_promptIdentityCounts:4",
   "M36:prompts_extractionSourceSession:0",
-  "M37:prompts_candidatePositions:0",
-  "M37:prompts_readyPosition:0",
-  "M37:prompts_newestUnprocessedSession:0",
-  "M38:prompts_hasUnreadPrompts:0",
-  "M38:prompts_readPositions:0",
-  "M39:prompts_withBodies:0",
-  "M39:prompts_listUnprocessedPrompts:0",
   "M25:search_searchType:0",
   "M08:hook_placement_listUnplacedHookRecords:0",
   "M09:plans_getPlan:0",
@@ -2884,8 +2861,6 @@ async function kpis_readKpis(db: kpis_import_RelationalStore, opts: { windowDays
   };
 }
 
-/** Extraction pages and history snapshots share durable acknowledgement coverage. */
-
 /** The captured session supporting an extraction finding, within the run's Project. */
 async function prompts_extractionSourceSession(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, promptId: string): Promise<string | null> {
   const source = await prepareViewRead(db, "M36:prompts_extractionSourceSession:0", `SELECT p.session_id AS sessionId FROM prompt_batches p
@@ -2894,222 +2869,6 @@ async function prompts_extractionSourceSession(db: prompts_import_RelationalStor
     .bind(scope.projectId, promptId, ...prompts_import_READ_ORIGINS).first<{ sessionId: string }>();
   return source?.sessionId ?? null;
 }
-interface prompts_UnprocessedPrompt {
-  promptId: string; sessionId: string; createdAt: number; endedAt: number | null;
-  text?: string | null; response?: string | null;
-}
-interface prompts_UnprocessedOptions {
-  limit?: number; cursor?: string; includeActive?: boolean; includeText?: boolean;
-  history?: { receivedThrough: number; sessionIds: readonly string[] };
-}
-type prompts_Position = { id: string; endedAt: number | null; liveCapture: number };
-type prompts_Positioned = prompts_UnprocessedPrompt & { position: prompts_Position };
-type prompts_PromptCursor = string | null | false;
-type prompts_HistoryCursor = { position: prompts_Position; prompt: string | false } | null | false;
-type prompts_HistoryPage = { rows: readonly prompts_Positioned[]; cursor: prompts_HistoryCursor };
-type prompts_SessionRead = { position: prompts_Position; after?: string };
-type prompts_Cursor = { project: string; session: string; fresh: prompts_PromptCursor; history: prompts_HistoryCursor; floor: string | null };
-const prompts_HISTORY_PAGE_DIVISOR = 4;
-const prompts_HISTORY_EMPTY_SESSION_LOOKAHEAD = 1;
-const prompts_CURSOR_PREFIX = 'ex2:';
-const prompts_SESSION_ORDER = '(live_transcripts > 0) DESC, ended_at DESC, session_id DESC';
-const prompts_candidateIndex = (opts: prompts_UnprocessedOptions) => opts.includeActive === true ? 'idx_session_read_unread' : 'idx_session_read_extraction';
-
-function prompts_candidates(scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions) {
-  const conditions = ['project_id = ?', opts.includeActive === true ? prompts_import_ACTIVE_EXTRACTION_CANDIDATE_SQL : prompts_import_EXTRACTION_CANDIDATE_SQL];
-  const binds: unknown[] = [scope.projectId];
-  if (opts.history !== undefined) {
-    conditions.push('session_id IN (SELECT value FROM json_each(?))');
-    binds.push(JSON.stringify(opts.history.sessionIds));
-  }
-  return { conditions, binds };
-}
-function prompts_candidateQuery(scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions, only?: string) {
-  const { conditions, binds } = prompts_candidates(scope, opts);
-  if (only !== undefined) { conditions.push('session_id = ?'); binds.push(only); }
-  return {
-    sql: `SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
-    FROM session_read_facts ${only === undefined ? `INDEXED BY ${prompts_candidateIndex(opts)}` : ''}
-    WHERE ${conditions.join(' AND ')} ${only === undefined ? `ORDER BY ${prompts_SESSION_ORDER}` : ''} LIMIT 1`, binds
-  };
-}
-/** Candidate ranges seek within one live group and completion range. */
-async function prompts_candidatePositions(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions, limit: number, primary: string, after?: prompts_Position) {
-  const positions: prompts_Position[] = [];
-  for (const liveCapture of [1, 0]) for (const nullEnd of opts.includeActive === true ? [false, true] : [false]) {
-    if (after !== undefined && (liveCapture > after.liveCapture
-      || (liveCapture === after.liveCapture && after.endedAt === null && !nullEnd))) continue;
-    const { conditions, binds } = prompts_candidates(scope, opts);
-    conditions.push('(live_transcripts > 0) = ?', nullEnd ? 'ended_at IS NULL' : 'ended_at IS NOT NULL', 'session_id != ?');
-    binds.push(liveCapture, primary);
-    if (after !== undefined && liveCapture === after.liveCapture && nullEnd === (after.endedAt === null)) {
-      conditions.push(nullEnd ? 'session_id < ?' : '(ended_at, session_id) < (?, ?)');
-      binds.push(...(nullEnd ? [after.id] : [after.endedAt, after.id]));
-    }
-    const found = (await prepareViewRead(db, "M37:prompts_candidatePositions:0", `SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
-      FROM session_read_facts INDEXED BY ${prompts_candidateIndex(opts)}
-      WHERE ${conditions.join(' AND ')} ORDER BY ended_at DESC, session_id DESC LIMIT ?`)
-      .bind(...binds, limit - positions.length).all<prompts_Position>()).results;
-    positions.push(...found);
-    if (positions.length === limit) return { positions, exhausted: false };
-  }
-  return { positions, exhausted: true };
-}
-async function prompts_readyPosition(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions, id: string) {
-  const query = prompts_candidateQuery(scope, opts, id);
-  return prepareViewRead(db, "M37:prompts_readyPosition:0", query.sql).bind(...query.binds).first<prompts_Position>();
-}
-/** The indexed primary extraction selection, with its Project binding. */
-function prompts_newestUnprocessedSessionQuery(scope: prompts_import_ReadScope, opts: Pick<prompts_UnprocessedOptions, 'history'> = {}) { return prompts_candidateQuery(scope, opts); }
-/** The primary completed session, preferring live capture over imports. */
-async function prompts_newestUnprocessedSession(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: Pick<prompts_UnprocessedOptions, 'history'> = {}): Promise<(prompts_Position & { endedAt: number }) | null> {
-  const query = prompts_newestUnprocessedSessionQuery(scope, opts);
-  return prepareViewRead(db, "M37:prompts_newestUnprocessedSession:0", query.sql).bind(...query.binds).first<prompts_Position & { endedAt: number }>();
-}
-/** Snapshot cutoffs are checked only within sessions the unread counter admits. */
-function prompts_snapshotCondition(opts: prompts_UnprocessedOptions) {
-  if (opts.history === undefined) return { sql: '1', binds: [] as unknown[] };
-  const source = `SELECT 1 FROM prompt_batches p INDEXED BY idx_prompt_batches_turns
-    WHERE p.project_id = session_read_facts.project_id AND p.session_id = session_read_facts.session_id
-      AND ${extraction_coverage_unreadPromptSql('p')} AND p.received_at <= ? LIMIT 1`;
-  return {
-    sql: `EXISTS (${source})`,
-    binds: [opts.history.receivedThrough]
-  };
-}
-/** An existence seek over ready counters, with a bounded snapshot probe when requested. */
-async function prompts_hasUnreadPrompts(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions = {}): Promise<boolean> {
-  const { conditions, binds } = prompts_candidates(scope, opts), snapshot = prompts_snapshotCondition(opts);
-  return await prepareViewRead(db, "M38:prompts_hasUnreadPrompts:0", `SELECT 1 AS found FROM session_read_facts INDEXED BY ${prompts_candidateIndex(opts)} WHERE ${[...conditions, snapshot.sql].join(' AND ')} LIMIT 1`)
-    .bind(...binds, ...snapshot.binds).first() !== null;
-}
-/** Each origin and cursor class reads all selected sessions in one prepared statement. */
-async function prompts_readPositions(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions, sessions: prompts_SessionRead[]): Promise<prompts_Positioned[]> {
-  const limit = prompts_import_clampLimit(opts.limit);
-  const groups = [false, true].map(hasCursor => sessions.flatMap((session, slot) => {
-    if ((session.after !== undefined) !== hasCursor) return [];
-    const after = session.after === undefined ? undefined : prompts_import_decodeCursor(session.after);
-    if (after === null) throw new Error('Invalid extraction cursor');
-    return [{ slot, id: session.position.id, after }];
-  })).filter(group => group.length > 0);
-  const partitions = await Promise.all(groups.flatMap(group => prompts_import_READ_ORIGINS.map(async origin => {
-    const conditions = ['p.project_id = ?', "p.session_id = json_extract(j.value, '$.id')", 'p.origin = ?', extraction_coverage_unreadPromptSql('p')];
-    const binds: unknown[] = [scope.projectId, origin];
-    if (opts.history !== undefined) { conditions.push('p.received_at <= ?'); binds.push(opts.history.receivedThrough); }
-    if (group[0]!.after !== undefined) conditions.push("(p.created_at, p.prompt_id) > (json_extract(j.value, '$.after.createdAt'), json_extract(j.value, '$.after.id'))");
-    return (await prepareViewRead(db, "M38:prompts_readPositions:0", `SELECT json_extract(j.value, '$.slot') AS slot,
-      (SELECT json_group_array(json_object('promptId', promptId, 'sessionId', sessionId, 'createdAt', createdAt, 'endedAt', endedAt))
-        FROM (SELECT p.prompt_id AS promptId, p.session_id AS sessionId, p.created_at AS createdAt, p.ended_at AS endedAt
-          FROM prompt_batches p INDEXED BY idx_prompt_batches_turns
-          WHERE ${conditions.join(' AND ')} ORDER BY p.created_at, p.prompt_id LIMIT ?)) AS prompts
-      FROM json_each(?) j`).bind(...binds, limit + 1, JSON.stringify(group)).all<{ slot: number; prompts: string }>()).results;
-  })));
-  return partitions.flat().flatMap(({ slot, prompts }) =>
-    (JSON.parse(prompts) as prompts_UnprocessedPrompt[]).map(row => ({ ...row, position: sessions[slot]!.position, slot })))
-    .sort((a, b) => a.slot - b.slot || a.createdAt - b.createdAt || prompts_import_binaryOrder(a.promptId, b.promptId))
-    .map(({ slot: _slot, ...row }) => row);
-}
-/** Bodies are read only for the exact identities selected for the returned page. */
-async function prompts_withBodies(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, rows: prompts_UnprocessedPrompt[]): Promise<prompts_UnprocessedPrompt[]> {
-  if (rows.length === 0) return rows;
-  const bodies = (await prepareViewRead(db, "M39:prompts_withBodies:0", `SELECT p.prompt_id AS promptId, p.text AS text,
-    (SELECT substr(r.text, 1, ?) FROM responses r WHERE r.project_id = p.project_id AND r.session_id = p.session_id
-      AND r.prompt_id = p.prompt_id AND r.text IS NOT NULL ORDER BY r.created_at, r.response_id LIMIT 1) AS response
-    FROM json_each(?) j CROSS JOIN prompt_batches p ON p.project_id = ? AND p.prompt_id = j.value`)
-    .bind(prompts_import_MATERIAL_EXCERPT_CHARS, JSON.stringify(rows.map(row => row.promptId)), scope.projectId)
-    .all<{ promptId: string; text: string | null; response: string | null }>()).results;
-  const byId = new Map(bodies.map(row => [row.promptId, row]));
-  return rows.flatMap(row => {
-    const body = byId.get(row.promptId);
-    return body === undefined ? [] : [{ ...row, text: body.text, response: body.response }];
-  });
-}
-async function prompts_readHistory(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions, primary: string, after: prompts_HistoryCursor, floor: string | null): Promise<prompts_HistoryPage> {
-  if (after === false) return { rows: [], cursor: false };
-  const limit = prompts_import_clampLimit(opts.limit);
-  const visitLimit = limit + prompts_HISTORY_EMPTY_SESSION_LOOKAHEAD;
-  const sessions: prompts_SessionRead[] = [];
-  if (after !== null && after.prompt !== false && await prompts_readyPosition(db, scope, opts, after.position.id) !== null) {
-    sessions.push({ position: after.position, after: after.prompt });
-  }
-  const candidates = await prompts_candidatePositions(db, scope, opts, visitLimit - sessions.length, primary, after === null ? undefined : after.position);
-  sessions.push(...candidates.positions.map(position => ({ position, after: floor ?? undefined })));
-  const rows = await prompts_readPositions(db, scope, opts, sessions);
-  const result = prompts_import_page(rows, limit, row => ({ createdAt: row.createdAt, id: row.promptId }));
-  const last = result.rows.at(-1);
-  return {
-    rows: result.rows, cursor: result.cursor !== null ? { position: last!.position, prompt: result.cursor }
-      : candidates.exhausted || sessions.length === 0 ? false : { position: sessions.at(-1)!.position, prompt: false }
-  };
-}
-const prompts_validPrompt = (value: unknown): value is prompts_PromptCursor => value === null || value === false || (typeof value === 'string' && prompts_import_decodeCursor(value) !== null);
-function prompts_validPosition(value: unknown): value is prompts_Position {
-  if (typeof value !== 'object' || value === null) return false;
-  const p = value as Partial<prompts_Position>;
-  return typeof p.id === 'string' && p.id.length > 0 && (p.liveCapture === 0 || p.liveCapture === 1) && (p.endedAt === null || Number.isSafeInteger(p.endedAt));
-}
-function prompts_parseCursor(value: string, scope: prompts_import_ReadScope): prompts_Cursor {
-  let parsed: unknown;
-  try { parsed = JSON.parse(value.slice(prompts_CURSOR_PREFIX.length)); } catch { throw new Error('Invalid extraction cursor'); }
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid extraction cursor');
-  const c = parsed as Partial<prompts_Cursor>;
-  if (c.project !== scope.projectId || typeof c.session !== 'string' || c.session.length === 0 || !prompts_validPrompt(c.fresh)
-    || !(c.history === null || c.history === false || (typeof c.history === 'object' && prompts_validPosition(c.history.position)
-      && (c.history.prompt === false || (typeof c.history.prompt === 'string' && prompts_import_decodeCursor(c.history.prompt) !== null))))
-    || !(c.floor === null || (typeof c.floor === 'string' && prompts_import_decodeCursor(c.floor) !== null))) throw new Error('Invalid extraction cursor');
-  return c as prompts_Cursor;
-}
-/** The pinned primary gets three quarters; history follows candidate-session order, then prompt order. */
-async function prompts_listUnprocessedPrompts(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, opts: prompts_UnprocessedOptions = {}): Promise<prompts_import_Page<prompts_UnprocessedPrompt>> {
-  let cursor: prompts_Cursor;
-  let initialPosition: prompts_Position | undefined;
-  if (opts.cursor?.startsWith(prompts_CURSOR_PREFIX)) {
-    cursor = prompts_parseCursor(opts.cursor, scope);
-  } else if (opts.cursor?.startsWith('ex1:')) {
-    let old: unknown;
-    try { old = JSON.parse(opts.cursor.slice(4)); } catch { throw new Error('Invalid extraction cursor'); }
-    if (!Array.isArray(old) || old.length !== 3 || typeof old[0] !== 'string' || old[0].length === 0 || !prompts_validPrompt(old[1]) || !prompts_validPrompt(old[2])) throw new Error('Invalid extraction cursor');
-    cursor = { project: scope.projectId, session: old[0], fresh: old[1], history: old[2] === false ? false : null, floor: typeof old[2] === 'string' ? old[2] : null };
-  } else {
-    const floor = opts.cursor ?? null;
-    if (floor !== null && prompts_import_decodeCursor(floor) === null) throw new Error('Invalid extraction cursor');
-    let newest: prompts_Position | null = await prompts_newestUnprocessedSession(db, scope, { history: opts.history });
-    if (newest === null && opts.includeActive === true) {
-      const query = prompts_candidateQuery(scope, opts);
-      newest = await prepareViewRead(db, "M39:prompts_listUnprocessedPrompts:0", query.sql).bind(...query.binds).first<prompts_Position>();
-    }
-    if (newest === null) return { rows: [], cursor: null };
-    initialPosition = newest;
-    cursor = { project: scope.projectId, session: newest.id, fresh: floor, history: null, floor };
-  }
-  const limit = prompts_import_clampLimit(opts.limit);
-  const [fresh, history] = await Promise.all([
-    (async (): Promise<prompts_import_Page<prompts_Positioned>> => {
-      if (cursor.fresh === false) return { rows: [], cursor: null };
-      const position = initialPosition ?? await prompts_readyPosition(db, scope, opts, cursor.session);
-      if (position === null) return { rows: [], cursor: null };
-      const rows = await prompts_readPositions(db, scope, { ...opts, limit }, [{ position, after: cursor.fresh ?? undefined }]);
-      return prompts_import_page(rows, limit, row => ({ createdAt: row.createdAt, id: row.promptId }));
-    })(),
-    prompts_readHistory(db, scope, { ...opts, limit }, cursor.session, cursor.history, cursor.floor),
-  ]);
-  const reserved = limit === 1 ? 0 : Math.max(1, Math.floor(limit / prompts_HISTORY_PAGE_DIVISOR));
-  const historyCount = Math.min(history.rows.length, limit - Math.min(fresh.rows.length, limit - reserved));
-  const freshCount = Math.min(fresh.rows.length, limit - historyCount);
-  const lastFresh = fresh.rows[freshCount - 1], lastHistory = history.rows[historyCount - 1];
-  const next: prompts_Cursor = {
-    ...cursor,
-    fresh: freshCount === fresh.rows.length && fresh.cursor === null ? false : lastFresh === undefined ? cursor.fresh : prompts_import_encodeCursor(lastFresh.createdAt, lastFresh.promptId),
-    history: historyCount === history.rows.length ? history.cursor : lastHistory === undefined ? cursor.history
-      : { position: lastHistory.position, prompt: prompts_import_encodeCursor(lastHistory.createdAt, lastHistory.promptId) }
-  };
-  const rows = [...fresh.rows.slice(0, freshCount), ...history.rows.slice(0, historyCount)].map(({ position: _position, ...row }) => row);
-  return {
-    rows: opts.includeText === true ? await prompts_withBodies(db, scope, rows) : rows,
-    cursor: next.fresh === false && next.history === false ? null : prompts_CURSOR_PREFIX + JSON.stringify(next)
-  };
-}
-
 const search_SEARCH_MAX_TERMS = 16;
 /** Control characters a query may not carry: every C0 control but the tab and line breaks a pasted query splits on, and DEL. */
 const search_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -3437,11 +3196,6 @@ export {
   kpis_median,
   kpis_readKpis,
   prompts_extractionSourceSession,
-  type prompts_UnprocessedPrompt,
-  type prompts_UnprocessedOptions,
-  prompts_newestUnprocessedSession,
-  prompts_hasUnreadPrompts,
-  prompts_listUnprocessedPrompts,
   search_InvalidSearch,
   search_sanitizeFtsQuery,
   search_searchProject,
@@ -4375,7 +4129,7 @@ export function* prepareHubnessWork(db: sessions_import_RelationalStore, project
   for (const { sql, binds } of core_embedding_hubness_hubnessQueries(projectId, model, now)) yield prepareViewRead(db, "M34:core_embedding_hubness_recordedHubness:1", sql).bind(...binds);
 }
 
-export { turns_readTurnBodies, lineage_sessionsNamed, lineage_childIdsOf, prompts_withBodies, prompts_readPositions, prompts_candidatePositions, prompts_readyPosition, prompts_readHistory, sessions_instantStatements };
+export { turns_readTurnBodies, lineage_sessionsNamed, lineage_childIdsOf, sessions_instantStatements };
 
 export function childrenRowsByPrompt(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, collection: 'response' | 'attachment' | 'plan' | 'answer', promptIds: readonly string[], limit: number) {
   switch (collection) {

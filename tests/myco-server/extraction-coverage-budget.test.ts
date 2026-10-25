@@ -7,8 +7,6 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
-import { listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
-import { nothingUnread } from '@myco-server-worker/core/run-postconditions.js';
 import { assertExtractionPlans, extractionSqlStore } from './helpers/extraction-sql.js';
 import { fixtureBatchStore } from './helpers/extraction-budget.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -27,11 +25,6 @@ async function verify(db: RelationalStore, target: string) {
     expect(plan).not.toMatch(/SCAN (?:a\b|extraction_acks)|TEMP B-TREE/i);
     console.info('EXTRACTION_ACK_PLAN', { target, index: probe.index, plan });
   }
-  const tracked = extractionSqlStore(db);
-  const page = await listUnprocessedPrompts(tracked.db, scope, { limit: PAGE, includeText: true });
-  expect(await nothingUnread(tracked.db, scope)).toBe(false);
-  await assertExtractionPlans(db, tracked.queries, target);
-  expect(page.rows.map(row => row.promptId)).toEqual(Array.from({ length: PAGE }, (_, i) => uuid(ACKS + i)));
   expect(await db.prepare('SELECT COUNT(*) AS n FROM prompt_batches').first()).toEqual({ n: PROMPTS });
   expect(await db.prepare('SELECT COUNT(*) AS n FROM extraction_acks').first()).toEqual({ n: ACKS });
   expect(await db.prepare("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id=? AND session_id='session'").bind(scope.projectId).first()).toEqual({ n: PROMPTS - ACKS });

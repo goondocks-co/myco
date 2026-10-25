@@ -3,8 +3,8 @@
  *
  * A run reaches the catalogued tools where its work is a member's work — every
  * write of vault content, and search. These are the operations that are the
- * run's own: material reads bounded by its window, its state, its prompt
- * cursor, its session's titling material and title, and the repository map a
+ * run's own: material reads bounded by its window, its state, its material
+ * acknowledgements, its session's titling material and title, and the repository map a
  * map run keeps. They are not in
  * `SERVED_TOOLS`, are never listed to a member or a grant, and have no
  * counterpart in `packages/myco/src/tools/definitions.ts`.
@@ -82,18 +82,14 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   },
   {
     name: 'myco_run_prompts',
-    description: 'The prompts extraction has not read yet, oldest first, and the mark that removes one from that page.',
+    description: 'Acknowledge material served to this run using its ledger identity.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['unprocessed', 'mark_processed'], description: 'unprocessed: one page of prompts not yet read. mark_processed: acknowledge one item using its served_id.' },
-        served_id: { type: 'string', description: 'For mark_processed: acknowledge this item using the served_id from its body page.' },
+        op: { type: 'string', enum: ['mark_processed'], description: 'mark_processed: acknowledge one item using its served_id.' },
+        served_id: { type: 'string', description: 'For mark_processed: acknowledge this item using the served_id from its served material.' },
         prompt_id: { type: 'string', description: 'Compatibility for mark_processed: a prompt served to this run. Ambiguous instances require served_id.' },
-        cursor: { type: 'string', description: 'For unprocessed: the next_cursor from the previous page.' },
-        limit: { type: 'number', description: 'For unprocessed: page size, clamped to this run\'s window.' },
-        include_active: { type: 'boolean', description: 'For unprocessed: include prompts of sessions still in flight. Defaults to false.' },
-        include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body and an excerpt of the agent\'s first response. Each body item returns served_id and authorizes this run to cite its session. Defaults to false, which reads no bodies at all.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

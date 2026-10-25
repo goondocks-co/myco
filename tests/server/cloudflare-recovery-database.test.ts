@@ -98,3 +98,18 @@ it('refuses an unrelated or incomplete destination before any mutation', async (
     expect(f.mutations()).toBe(0);
   } finally { f.cleanup(); }
 });
+
+it('refuses a current-schema import with surviving thin work before returning a publishable destination', async () => {
+  const f = fixture(true);
+  try {
+    const source = new Database(f.options.databasePath);
+    try {
+      source.exec("INSERT INTO projects(project_id,name,created_at) VALUES('thin','Thin',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('thin','Thin','built-in',1,1)");
+      source.exec("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('thin','held','thin','extract-curate','running',1)");
+    } finally { source.close(); }
+    const before = fs.readFileSync(f.options.databasePath);
+    await expect(restoreCloudflareDatabase(f.options)).rejects.toThrow('thin_learning_not_drained');
+    expect(f.destination.query("SELECT status FROM agent_runs WHERE id='held'").get()).toEqual({ status: 'running' });
+    expect(fs.readFileSync(f.options.databasePath)).toEqual(before);
+  } finally { f.cleanup(); }
+});
