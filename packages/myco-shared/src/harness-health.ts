@@ -3,6 +3,9 @@ export const HARNESS_HEALTH_FEATURE = 'harness-health-v1';
 /** A Deployment accepts harness tools held by another member Deployment. */
 export const HARNESS_HELD_ELSEWHERE_FEATURE = 'harness-held-elsewhere-v1';
 
+/** A Deployment accepts native activity attributed through immutable member routes. */
+export const HARNESS_DEPLOYMENT_ACTIVITY_FEATURE = 'harness-deployment-activity-v1';
+
 /** A harness that captured within this window is not unusually quiet. */
 export const HARNESS_SILENT_MS = 24 * 60 * 60_000;
 /** Allow small clock differences between local harness use and Deployment receipt. */
@@ -21,6 +24,8 @@ export interface ProvisionedHarnessFact {
   state: HarnessHealthState;
   /** Last known local use of this installed harness, in epoch milliseconds. */
   ranAt?: number;
+  /** Whether native activity was scoped to this Deployment or could not be attributed. */
+  activityScope?: 'deployment' | 'unavailable';
   /** Identifies the local hook repair awaiting trust confirmation. */
   hookRepairAt?: number;
   /** One plain action the administrator can take when the state needs repair. */

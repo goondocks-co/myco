@@ -22,10 +22,12 @@ export function parseProvisionedHarnessReport(value: unknown): ProvisionedHarnes
   const harnesses: ProvisionedHarnessFact[] = [];
   const ids = new Set<string>();
   for (const item of value.harnesses) {
-    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action', 'ranAt', 'hookRepairAt', 'toolsDeployment'])
+    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action', 'ranAt', 'hookRepairAt', 'toolsDeployment', 'activityScope'])
       || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > MAX_HARNESS_ID_CHARS
       || !/^[A-Za-z0-9._-]+$/.test(item.id) || ids.has(item.id)
       || item.provisioned !== true || !HARNESS_HEALTH_STATES.includes(item.state as typeof HARNESS_HEALTH_STATES[number])
+      || (item.activityScope !== undefined && item.activityScope !== 'deployment' && item.activityScope !== 'unavailable')
+      || (item.activityScope === 'unavailable' && item.ranAt !== undefined)
       || (item.ranAt !== undefined && (!Number.isSafeInteger(item.ranAt) || (item.ranAt as number) < 0))
       || (item.hookRepairAt !== undefined && (item.state !== 'trust_required' || !Number.isSafeInteger(item.hookRepairAt) || (item.hookRepairAt as number) < 0))) return null;
     const action = item.action;
@@ -34,6 +36,7 @@ export function parseProvisionedHarnessReport(value: unknown): ProvisionedHarnes
     if (item.state === 'held_elsewhere' ? typeof toolsDeployment !== 'string' || toolsDeployment.length === 0 || toolsDeployment.length > MAX_HARNESS_DEPLOYMENT_CHARS || /[\x00-\x20\x7f]/.test(toolsDeployment) : toolsDeployment !== undefined) return null;
     ids.add(item.id);
     harnesses.push({ id: item.id, provisioned: true, state: item.state as ProvisionedHarnessFact['state'],
+      ...(item.activityScope === undefined ? {} : { activityScope: item.activityScope as ProvisionedHarnessFact['activityScope'] }),
       ...(typeof toolsDeployment === 'string' ? { toolsDeployment } : {}), ...(typeof item.ranAt === 'number' ? { ranAt: item.ranAt } : {}), ...(typeof item.hookRepairAt === 'number' ? { hookRepairAt: item.hookRepairAt } : {}), ...(typeof action === 'string' ? { action } : {}) });
   }
   return { harnesses };
@@ -70,9 +73,9 @@ export async function recordProvisionedHarnessReport(db: RelationalStore, machin
     const previous = prior.get(fact.id);
     if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now };
     if (previous?.state === 'trust_required' && captureConfigured(fact.state) && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
-      return { ...previous, ranAt: fact.ranAt };
+      return { ...previous, ranAt: fact.ranAt, activityScope: fact.activityScope };
     }
-    if (previous?.state === 'trust_required' && fact.state === 'trust_required' && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
+    if (previous?.state === 'trust_required' && fact.state === 'trust_required' && fact.hookRepairAt === undefined && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
     return { ...fact, sinceAt: previous?.state === fact.state ? previous.sinceAt : now };
   });
   await db.prepare(`INSERT INTO machine_harness_reports (machine_id, harnesses, reported_at) VALUES (?, ?, ?)
@@ -114,7 +117,7 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
   for (const row of contacts) machineActivity.set(row.machine_id, Math.max(machineActivity.get(row.machine_id) ?? 0, row.at));
   for (const report of reports) {
     for (const harness of report.harnesses) {
-      if (harness.ranAt !== undefined) machineActivity.set(report.machineId, Math.max(machineActivity.get(report.machineId) ?? 0, harness.ranAt));
+      if (harness.activityScope === 'deployment' && harness.ranAt !== undefined) machineActivity.set(report.machineId, Math.max(machineActivity.get(report.machineId) ?? 0, harness.ranAt));
     }
   }
   const facts: HarnessAttentionFact[] = [];
@@ -128,7 +131,7 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
         continue;
       }
       const lastMachineActivityAt = machineActivity.get(report.machineId) ?? null;
-      if (harness.ranAt !== undefined && lastCapturedAt !== null && lastMachineActivityAt !== null
+      if (harness.activityScope === 'deployment' && harness.ranAt !== undefined && lastCapturedAt !== null && lastMachineActivityAt !== null
         && now - lastCapturedAt > HARNESS_SILENT_MS && now - lastMachineActivityAt <= MACHINE_ACTIVE_MS
         && harness.ranAt > lastCapturedAt + HARNESS_RUN_CAPTURE_MARGIN_MS) {
         facts.push({ ...base, kind: 'harness_capture_silent', lastCapturedAt, lastMachineActivityAt });

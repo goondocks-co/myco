@@ -6,6 +6,7 @@ import { subagentIdFor } from '@myco/member/envelope.js';
 export const hookPlacement: ParityScenario = {
   name: 'hook placement: session and Project hints, delivery, and unplaced hook records',
   async run(target) {
+    const now = Date.now();
     const project = lit(target.projectId);
     const session = `hook-placement-${crypto.randomUUID()}`;
     const otherSession = session + '-other';
@@ -25,8 +26,8 @@ export const hookPlacement: ParityScenario = {
         VALUES (${project},${lit(session)},${lit(id!)},${lit(selection!)},${lit(id!)},'[]',1,2,${hint === null ? 'NULL' : lit(hint!)},${hint === null ? "'absent_key'" : 'NULL'})`);
     }
     await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,id,prompt_id,outcome,context_chars,parts,skipped,failures,selection,created_at)
-      VALUES (${project},${lit(session)},'answer',${lit(previous)},'served',1,'[]','[]','[]','{}',1),
-        (${project},${lit(session)},'empty',${lit(previous)},'empty',0,'[]','[]','[]','{}',1)`);
+      VALUES (${project},${lit(session)},'answer',${lit(previous)},'served',1,'[]','[]','[]','{}',${now}),
+        (${project},${lit(session)},'empty',${lit(previous)},'empty',0,'[]','[]','[]','{}',${now})`);
     await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at)
       VALUES (${project},${lit(session)},'cortex:agent',1),(${project},${lit(session)},'cortex:placed',1),(${project},${lit(session)},'cortex',1)`);
     await target.sql(`INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,created_at)

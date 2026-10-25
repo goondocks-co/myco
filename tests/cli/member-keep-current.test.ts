@@ -1,3 +1,7 @@
+import { updateProvisionRecord } from '@myco/member/provision-record.js';
+import crypto from 'node:crypto';
+import { logoutDeployment } from '@myco/symbionts/logout-runtime.js';
+import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,12 +13,13 @@ import { MemberProvisionConflictError, MemberMcpConflictError, MemberPluginConfl
 import { provisionGlobally, runProvision, provisionBackup } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { keepCurrent, reportHarnesses, harnessRanAt } from '@myco/cli/member-keep-current.js';
-import { readProvisionRecord, recordProvision, holdHookTrust } from '@myco/symbionts/member-provision-record.js';
-import { writeDeploymentMembership, writeRegistryEntry, deploymentPath, REGISTRY_VERSION } from '@myco/member/registry.js';
-import { updateProjectContext } from '@myco/member/context-cache.js';
+import { readProvisionRecord, recordProvision, holdHookTrust, settleHookTrust } from '@myco/symbionts/member-provision-record.js';
+import { writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentFeaturesPath, REGISTRY_VERSION } from '@myco/member/registry.js';
+import { readDeploymentFeatures, updateProjectContext } from '@myco/member/context-cache.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { PROTOCOL_HEADER, MEMBER_PROTOCOL } from '@goondocks/myco-shared/member-protocol';
-import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { run as update } from '@myco/cli/update.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { memberRig } from '../member/helpers/server.js';
@@ -139,7 +144,7 @@ it('update runs the same repair and leaves a healthy setup byte for byte unchang
   expect(fs.readFileSync(hooks(), 'utf8')).toBe(original);
   const record = fs.readFileSync(path.join(home, 'member', 'provisioned.json'), 'utf8');
   const modified = fs.statSync(hooks()).mtimeMs;
-  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses).toEqual([{ id: 'codex', provisioned: true, state: 'trust_required', hookRepairAt: expect.any(Number), action: "Restart Codex and trust Myco's hooks" }]);
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses).toEqual([{ id: 'codex', provisioned: true, activityScope: 'deployment', state: 'trust_required', hookRepairAt: expect.any(Number), action: "Restart Codex and trust Myco's hooks" }]);
   expect(fs.statSync(hooks()).mtimeMs).toBe(modified);
   expect(fs.readFileSync(path.join(home, 'member', 'provisioned.json'), 'utf8')).toBe(record);
 });
@@ -220,7 +225,7 @@ it('reports from the newest project advertisement and logs a missing feature onc
   updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = ['turn']; cache.featuresAt = 1; });
   const newest = new MemberSpool({ projectId: 'proj_new', serverUrl: SERVER }, { mycoHome: home }).dir;
   updateProjectContext(newest, home, (cache) => { cache.features = ['turn', HARNESS_HEALTH_FEATURE]; cache.featuresAt = 2; });
-  const report = { serverUrl: SERVER, ready: [], harnesses: [] };
+  const report = { serverUrl: OTHER_SERVER, ready: [], harnesses: [] };
   let sent = 0;
   const fetch = async () => { sent++; return Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } }); };
   const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -234,6 +239,7 @@ it('reports from the newest project advertisement and logs a missing feature onc
     expect(sent).toBe(1);
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(String(stderr.mock.calls[0]?.[0])).toContain('harness-health-v1 not advertised');
+    expect(String(stderr.mock.calls[0]?.[0])).toContain(`skipped for ${SERVER}`);
     updateProjectContext(newest, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; cache.featuresAt = 4; });
     await pass();
     updateProjectContext(newest, home, (cache) => { cache.features = []; cache.featuresAt = 5; });
@@ -380,7 +386,7 @@ it('reports only mtimes from harness activity files and never their contents', (
   const read = spyOn(fs, 'readFileSync');
   try {
     expect(harnessRanAt(loadManifests().find((m) => m.name === 'codex')!)).toBe(at);
-    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].ranAt).toBe(at);
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].ranAt).toBeUndefined();
     expect(read.mock.calls.some(([target]) => String(target) === file)).toBe(false);
   } finally { read.mockRestore(); }
 });
@@ -404,6 +410,14 @@ it('identical accepted reports are skipped while changed activity is delivered',
   await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
   expect(calls).toBe(1);
   result!.harnesses[0]!.ranAt = Date.now();
+  await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
+  expect(calls).toBe(1);
+  const id = '11111111-1111-1111-1111-111111111111';
+  const spool = new MemberSpool(entry, { mycoHome: home });
+  updateSessionState(spool.dir, id, state => { state.agent = 'codex'; });
+  const file = path.join(agentHome, '.codex/sessions/2026/10/04', `rollout-2026-10-04-${id}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'private content');
   await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
   expect(calls).toBe(2);
 });
@@ -450,12 +464,15 @@ it('keep-current failure never interrupts the helper capture delivery', async ()
 
 it('nonready state logs once across passes even when the Deployment cannot accept health reports', () => {
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  const legacy = path.join(home, 'member', 'harness-states.json');
+  fs.writeFileSync(legacy, '{}');
   fs.unlinkSync(hooks());
   const write = spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
     keepCurrent(home, { binaryFound: () => true });
     keepCurrent(home, { binaryFound: () => true });
     expect(write.mock.calls.filter(([line]) => String(line).includes("Restart Codex and trust"))).toHaveLength(1);
+    expect(fs.existsSync(legacy)).toBe(false);
   } finally { write.mockRestore(); }
 });
 
@@ -561,11 +578,11 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
   const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
     const first = keepCurrent(home, { binaryFound: () => true });
-    expect(first?.harnesses).toEqual([{ id: agent, provisioned: true, state: 'held_elsewhere', toolsDeployment: OTHER_SERVER }]);
+    expect(first?.harnesses).toEqual([{ id: agent, provisioned: true, activityScope: 'deployment', state: 'held_elsewhere', toolsDeployment: OTHER_SERVER }]);
     expect(first?.harnesses[0].action).toBeUndefined();
     expect(readProvisionRecord(home)?.version).toBe(getPluginVersion());
     expect(readProvisionRecord(home)?.agents).toEqual([agent]);
-    const stateFile = path.join(home, 'member', 'harness-states.json');
+    const stateFile = path.join(home, 'member', `harness-report-${crypto.createHash('sha256').update(SERVER).digest('hex')}.sha256.states`);
     const stateTime = fs.statSync(stateFile).mtimeMs;
     expect(keepCurrent(home, { binaryFound: () => true })).toEqual(first);
     expect(fs.statSync(stateFile).mtimeMs).toBe(stateTime);
@@ -636,7 +653,7 @@ it('omits held tools for the older feature set, clears prior repair attention, a
   expect((await readAttention(rig.env.serverEnv, Date.now())).items.some(item => item.kind === 'harness_needs_repair')).toBe(false);
   updateProjectContext(spool, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE]; });
   await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
-  expect(bodies[1]).toEqual({ harnesses: result.harnesses });
+  expect(bodies[1]).toEqual({ harnesses: result.harnesses.map(({ activityScope: _scope, ...fact }) => fact) });
   expect(accepted).toEqual([true, true]);
 });
 
@@ -852,4 +869,210 @@ it('logs stale-blocked tools once until the entry changes', () => {
     keepCurrent(home, { binaryFound: () => true });
     expect(write.mock.calls.filter(args => String(args[0]).includes('stale Myco entry'))).toHaveLength(2);
   } finally { write.mockRestore(); }
+});
+
+it('selects the helper Deployment while retaining provision ownership and requires every trust acknowledgement', async () => {
+  const a = { version: REGISTRY_VERSION, root: agentHome, projectId: 'proj_a', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 };
+  const b = { ...a, root: path.join(agentHome, 'second'), projectId: 'proj_b', serverUrl: OTHER_SERVER };
+  for (const entry of [a, b]) {
+    writeRegistryEntry(entry, { mycoHome: home });
+    updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  }
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  holdHookTrust(home, 'codex', 'Approve capture');
+  const original = readProvisionRecord(home)!;
+  const selected = keepCurrent(home, { serverUrl: OTHER_SERVER, binaryFound: () => true })!;
+  expect(selected.serverUrl).toBe(OTHER_SERVER);
+  expect(readProvisionRecord(home)!.serverUrl).toBe(original.serverUrl);
+  const result = keepCurrent(home, { serverUrl: SERVER, binaryFound: () => true })!;
+  const ack = async () => Response.json({ persisted: true });
+  await reportHarnesses(result, home, Date.now() + 10000, { serverUrl: OTHER_SERVER, fetch: ack });
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+  await reportHarnesses(result, home, Date.now() + 10000, { serverUrl: SERVER, fetch: async () => new Response('', { status: 503 }) });
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+  await reportHarnesses(result, home, Date.now() + 10000, { serverUrl: SERVER, fetch: ack });
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+});
+
+it('unavailable attribution preserves the trust marker carried in the accepted body', async () => {
+  const entry = { version: REGISTRY_VERSION, root: agentHome, projectId: 'proj_a', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 };
+  writeRegistryEntry(entry, { mycoHome: home });
+  const spool = new MemberSpool(entry, { mycoHome: home });
+  updateProjectContext(spool.dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE]; });
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  holdHookTrust(home, 'codex', 'Approve capture');
+  const result = keepCurrent(home, { binaryFound: () => true })!;
+  fs.writeFileSync(path.join(spool.dir, 'broken.state.json'), '{', { mode: 0o600 });
+  let accepted: unknown;
+  await reportHarnesses(result, home, Date.now() + 10000, { entry, fetch: async (_input, init) => {
+    accepted = JSON.parse(String(init?.body)); return Response.json({ persisted: true });
+  } });
+  expect(accepted).toMatchObject({ harnesses: [expect.objectContaining({ state: 'trust_required', activityScope: 'unavailable', hookRepairAt: result.pendingTrust!.codex.at })] });
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+});
+
+it('trust generations survive settlement, partial publication and clock rollback; incapable memberships do not block retirement', async () => {
+  const entries = [SERVER, OTHER_SERVER].map((serverUrl, i) => ({ version: REGISTRY_VERSION, root: path.join(agentHome, `project-${i}`), projectId: `proj_${i}`, serverUrl, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }));
+  for (const entry of entries) {
+    fs.mkdirSync(entry.root, { recursive: true });
+    writeRegistryEntry(entry, { mycoHome: home });
+    updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  }
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  const clock = spyOn(Date, 'now').mockReturnValue(1);
+  let calls = 0;
+  let previous = 0;
+  try {
+    for (let generation = 0; generation < 2; generation++) {
+      holdHookTrust(home, 'codex', 'Approve capture');
+      const held = readProvisionRecord(home)!.pendingTrust!.codex.at;
+      expect(held).toBeGreaterThan(previous); previous = held;
+      const result = keepCurrent(home, { binaryFound: () => true })!;
+      await reportHarnesses(result, home, 10000, { now: () => 1, fetch: async () => { calls++; return Response.json({ persisted: true }); } });
+      expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+    }
+    expect(calls).toBe(4);
+    const recordFile = path.join(home, 'member/provisioned.json');
+    const lagging = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+    lagging.hookRepairGeneration = previous - 1;
+    fs.writeFileSync(recordFile, JSON.stringify(lagging));
+    fs.rmSync(path.join(new MemberSpool(entries[1], { mycoHome: home }).dir, 'context'), { recursive: true });
+    holdHookTrust(home, 'codex', 'Approve capture');
+    expect(readProvisionRecord(home)!.pendingTrust!.codex.at).toBeGreaterThan(previous);
+    const pending = keepCurrent(home, { binaryFound: () => true });
+    await reportHarnesses(pending, home, 10000, { now: () => 1, fetch: async () => { calls++; return Response.json({ persisted: true }); } });
+    expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+    updateProjectContext(new MemberSpool(entries[1], { mycoHome: home }).dir, home, cache => { cache.features = []; cache.featuresAt = 1; });
+    await reportHarnesses(pending, home, 10000, { now: () => 1, fetch: async () => { calls++; return Response.json({ persisted: true }); } });
+    expect(calls).toBe(5);
+    expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+  } finally { clock.mockRestore(); }
+});
+
+it('last logout and same-URL rejoin after clock rollback cannot reuse acknowledged trust receipts', async () => {
+  const entry = { version: REGISTRY_VERSION, root: agentHome, projectId: 'proj_a', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 };
+  const join = () => {
+    writeRegistryEntry(entry, { mycoHome: home });
+    updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+    provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  };
+  const clock = spyOn(Date, 'now').mockReturnValue(1);
+  let calls = 0;
+  const ack = async () => { calls++; return Response.json({ persisted: true }); };
+  try {
+    join(); holdHookTrust(home, 'codex', 'Approve capture');
+    const old = readProvisionRecord(home)!.pendingTrust!.codex.at;
+    await reportHarnesses(keepCurrent(home, { binaryFound: () => true }), home, 10000, { now: () => 1, fetch: ack });
+    expect(calls).toBe(1);
+    await logoutDeployment(SERVER, { mode: 'local-only' }, { mycoHome: home, home: agentHome, worker: recordingPlatform(), fetch: async () => { throw new Error('local logout must not dial'); } });
+    expect(readProvisionRecord(home)).toBeNull();
+    join(); holdHookTrust(home, 'codex', 'Approve capture');
+    expect(readProvisionRecord(home)!.pendingTrust!.codex.at).toBeGreaterThan(old);
+    await reportHarnesses(keepCurrent(home, { binaryFound: () => true }), home, 10000, { now: () => 1, fetch: ack });
+    expect(calls).toBe(2);
+  } finally { clock.mockRestore(); }
+});
+
+it('a corrupt feature cache cannot turn another Project cache into proof of report incapability', async () => {
+  const entries = [SERVER, OTHER_SERVER, OTHER_SERVER, OTHER_SERVER].map((serverUrl, i) => ({ version: REGISTRY_VERSION, root: path.join(agentHome, `cache-project-${i}`), projectId: `proj_${i}`, serverUrl, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }));
+  for (const [i, entry] of entries.entries()) {
+    fs.mkdirSync(entry.root, { recursive: true }); writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    updateProjectContext(spool.dir, home, cache => { cache.features = i === 0 ? [HARNESS_HEALTH_FEATURE] : i === 3 ? ['turn'] : []; cache.featuresAt = i === 3 ? 0 : i + 1; });
+  }
+  provisionGlobally('codex', null, home, { serverUrl: SERVER }); holdHookTrust(home, 'codex', 'Approve capture');
+  const result = keepCurrent(home, { binaryFound: () => true })!;
+  const context = path.join(new MemberSpool(entries[2], { mycoHome: home }).dir, 'context');
+  fs.writeFileSync(path.join(context, 'project.json'), '{', { mode: 0o600 });
+  expect(readDeploymentFeatures(entries[3], home)).toEqual([]);
+  const ack = async () => Response.json({ persisted: true });
+  await expect(reportHarnesses(result, home, Date.now() + 10000, { fetch: ack })).rejects.toThrow('Project feature cache');
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+  fs.rmSync(context, { recursive: true });
+  const snapshot = deploymentFeaturesPath(OTHER_SERVER, home);
+  fs.writeFileSync(snapshot, JSON.stringify({ version: 1, features: [{}], receivedAt: 1 }), { mode: 0o600 });
+  await expect(reportHarnesses(result, home, Date.now() + 10000, { fetch: ack })).rejects.toThrow('feature snapshot');
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+  fs.unlinkSync(snapshot);
+  await reportHarnesses(result, home, Date.now() + 10000, { fetch: ack });
+  expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+});
+
+it('migrates existing pending repair generations before settlement or provision record deletion', () => {
+  const clock = spyOn(Date, 'now').mockReturnValue(1);
+  try {
+    for (const operation of ['settle', 'delete']) {
+      const targetHome = path.join(home, operation);
+      recordProvision(targetHome, { version: getPluginVersion(), serverUrl: SERVER, agents: ['codex'] });
+      const legacy = readProvisionRecord(targetHome)!;
+      legacy.pendingTrust = { codex: { action: 'Approve capture', at: 100 } };
+      fs.writeFileSync(path.join(targetHome, 'member/provisioned.json'), JSON.stringify(legacy));
+      if (operation === 'settle') settleHookTrust(targetHome, legacy.pendingTrust);
+      else {
+        updateProvisionRecord(targetHome, () => null);
+        recordProvision(targetHome, { version: getPluginVersion(), serverUrl: SERVER, agents: ['codex'] });
+      }
+      holdHookTrust(targetHome, 'codex', 'Approve capture');
+      expect(readProvisionRecord(targetHome)!.pendingTrust!.codex.at).toBeGreaterThan(100);
+    }
+  } finally { clock.mockRestore(); }
+});
+
+it('reconfirms a deduplicated trust report when its receipt is lost or malformed', async () => {
+  const entries = [SERVER, OTHER_SERVER].map((serverUrl, i) => ({ version: REGISTRY_VERSION, root: path.join(agentHome, `receipt-project-${i}`), projectId: `proj_${i}`, serverUrl, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }));
+  for (const entry of entries) {
+    fs.mkdirSync(entry.root, { recursive: true }); writeRegistryEntry(entry, { mycoHome: home });
+    updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  }
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  let calls = 0;
+  const ack = async () => { calls++; return Response.json({ persisted: true }); };
+  const receipt = path.join(home, 'member', `harness-report-${crypto.createHash('sha256').update(SERVER).digest('hex')}.sha256.trust`);
+  for (const failure of ['missing', 'malformed']) {
+    holdHookTrust(home, 'codex', 'Approve capture');
+    const result = keepCurrent(home, { binaryFound: () => true })!;
+    await reportHarnesses(result, home, Date.now() + 10000, { serverUrl: SERVER, fetch: ack });
+    if (failure === 'missing') fs.unlinkSync(receipt); else fs.writeFileSync(receipt, '{');
+    const other = reportHarnesses(result, home, Date.now() + 10000, { serverUrl: OTHER_SERVER, fetch: ack });
+    if (failure === 'missing') await other; else await expect(other).rejects.toThrow('receipt is invalid');
+    expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeDefined();
+    await reportHarnesses(result, home, Date.now() + 10000, { serverUrl: SERVER, fetch: ack });
+    expect(readProvisionRecord(home)!.pendingTrust?.codex).toBeUndefined();
+  }
+  expect(calls).toBe(6);
+});
+
+it('a B-only helper repairs B and reports both Deployments with their own native activity', async () => {
+  const ids = ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'];
+  const entries = [SERVER, OTHER_SERVER].map((serverUrl, i) => ({ version: REGISTRY_VERSION, root: path.join(agentHome, `helper-project-${i}`), projectId: `proj_${i}`, serverUrl, token: 'A'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }));
+  const at = Math.trunc(Date.now() / 1000) * 1000;
+  const files = ids.map(id => path.join(agentHome, '.codex/sessions/2026/10/04', `rollout-2026-10-04-${id}.jsonl`));
+  for (const [i, entry] of entries.entries()) {
+    fs.mkdirSync(entry.root, { recursive: true }); writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    updateSessionState(spool.dir, ids[i], state => { state.agent = 'codex'; });
+    updateProjectContext(spool.dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE]; });
+    fs.mkdirSync(path.dirname(files[i]), { recursive: true }); fs.writeFileSync(files[i], 'private content');
+    const stamp = i ? at : at - 2 * 86400000; fs.utimesSync(files[i], stamp / 1000, stamp / 1000);
+  }
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  const received: Array<{ url: string; body: { harnesses: Array<{ id: string; activityScope?: string; ranAt?: number }> } }> = [];
+  const run = () => runHelperVerb(['--project', entries[1].projectId, '--server', OTHER_SERVER, '--home', home, '--stderr'], {
+    deadlineMs: 10000, lingerMs: 0, pass: async () => {},
+    keepCurrent: (selectedHome, options) => {
+      expect(options?.serverUrl).toBe(OTHER_SERVER);
+      return keepCurrent(selectedHome, { ...options, binaryFound: () => true });
+    },
+    fetch: async (input, init) => { received.push({ url: String(input), body: JSON.parse(String(init?.body)) }); return Response.json({ persisted: true }); },
+    spawn: () => { throw new Error('an empty pass must not spawn another helper'); },
+  });
+  await run();
+  expect(received).toHaveLength(2);
+  const first = (url: string) => received.find(report => report.url.startsWith(url))!.body.harnesses.find(fact => fact.id === 'codex')!;
+  expect(first(SERVER)).toMatchObject({ activityScope: 'deployment' }); expect(first(SERVER).ranAt).toBeUndefined(); expect(first(OTHER_SERVER).ranAt).toBe(at);
+  received.length = 0;
+  fs.utimesSync(files[0], (at + 1000) / 1000, (at + 1000) / 1000);
+  fs.utimesSync(files[1], (at - 2 * 86400000) / 1000, (at - 2 * 86400000) / 1000);
+  await run(); expect(received).toHaveLength(2);
+  expect(first(SERVER).ranAt).toBe(at + 1000); expect(first(OTHER_SERVER).ranAt).toBeUndefined();
 });

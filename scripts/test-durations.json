@@ -1,5 +1,8 @@
 {
   "sources": [
+    "local: #1724 PR C correction1, pinned Bun1.4.0 darwin-arm64 and repository SQLite3.53.0. Expanded harness-attribution11 cases measured1468ms runner; file weight5000ms covers twice measured runner plus startup. New hook placement then wake native/local-D1 scenario passed2 cases in23189ms runner;60000ms weight covers twice target boots plus startup. Existing scenario weights and all assertions/deadlines retained; the ordered replay composes the actual hookPlacement and tick scenarios on fresh dedicated targets. All30 mutation controls caught, including old context-answer timestamps reproducing retention count contamination.",
+    "local: #1724 PR C rebase onto0e0a78563, pinned Bun1.4.0 darwin-arm64. Merged duration keys individually, preserving all PR4b.1a weights and measured sources. Boundary plus harness-health79 cases measured27608ms runner; scoped-silence native/local-D1 parity2 cases measured25244ms runner. Existing60000ms boundary and parity weights retained; no new test file or parity scenario, no deadline or assertion changes. Six merged native/local-D1 harness activity, view-read closure and view-store cases passed in64320ms runner using the repository SQLite3.53.0 library; shared-TMPDIR283 cases passed in22171ms runner. Scenario weights retained.",
+    "local: #1724 PR C pinned Bun1.4.0 darwin-arm64. New tests/symbionts/harness-attribution.test.ts measured5pass in588ms runner (native two-Deployment health case251.36ms);3000ms weight covers twice runner plus startup. New harness deployment activity parity ran2 native/local-D1 cases in22126ms runner;60000ms covers twice both target boots and startup. Existing owning weights retained; no deadline or assertion changes. Final expanded scoped-silence/replacement/trust-idempotence parity measured20452ms for both native/local-D1 targets;60000ms retained. Added fixed-clock settlement, partial-publication, legacy-pending migration and logout/rejoin cases in the existing keep-current file.",
     "local: #1924 PR4b.1a correction3, pinned Bun 1.4.0 darwin-arm64 and worktree SQLite 3.53. Focused boundary suite: 29 cases, 363 assertions, 45530ms Bun wall and 45601ms runner wall; earlier contended runs measured 53719ms and 44009ms. The 60000ms file weight covers observed wall time. Cached importer scan measured 10644.56ms in the final focused run (earlier 4264ms and contended 11356ms), versus 22149ms before caching and 32593ms in CI 40115386189. Its explicit 30000ms limit preserves the original deadline and leaves the measured maximum below the 80 percent headroom threshold. Existing legacy/parity weights retained; no new test file or parity scenario. Broad local validation is deferred to CI under the coordinator host-load rule.",
     "local: #1924 PR4b.1a corrections1-2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Canonical npm test legacy measured39086ms and39280ms standalone and85444ms under concurrent whole-shard/source-gate load; full Node file samples58536ms. Legacy weight90000ms retains every measurement. Boundary full-Node summed cases33429.62ms, weight38000ms. Whole-Node samples: claim-takeover10599.479ms, backup-credential20346.941ms, source-install19403.746ms, lineage44657.994ms, checker46442.323ms. Rebalanced allowances18000/30000/23000/130000/85000ms retain these samples, recorded CI floors8561/21016/11162/117542/42189ms, prior source-install14207ms and lineage123943.39ms observations, and prior combined shard-suite71419ms wall. Both viewReadClosure/viewStoreInert native/local-D1 parity measured56019ms combined including boots; existing parity weights retained. No new test file or parity scenario.",
     "local: #1924 PR4b.1a post-rebase onto9583bf198, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Separate canonical npm test commands measured view-read-legacy32482ms (11pass/5PR-time skips), view-read-boundary19097ms (24pass) and view-read-operators4243ms (4pass); weights35000/25000/10000ms. Boundary25000ms retains more than its measured standalone wall and removes the merged Node-plan headroom overrun. Schema ownership plus identity/read-layer/schema contracts measured11880ms paired; existing weights retained. Both viewReadClosure/viewStoreInert scenarios on native/local-D1 measured44739ms together including boots; parity weights retained. Frozen program/schema recaptured only from git archive9583bf198; domain, applicability, SQL text, calibration and CI trace payloads unchanged.",
@@ -937,7 +940,8 @@
     "tests/mcp/client-roots.test.ts": 500,
     "tests/meta/view-read-boundary.test.ts": 60000,
     "tests/myco-server/view-read-legacy.test.ts": 90000,
-    "tests/server/view-read-operators.test.ts": 10000
+    "tests/server/view-read-operators.test.ts": 10000,
+    "tests/symbionts/harness-attribution.test.ts": 5000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1037,7 +1041,9 @@
     "view read closure: actual HTTP MCP scheduled clock alarm and recovery constructors": 26000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "worker writes: required state and responses commit together under late authority loss": 232000,
-    "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000
+    "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000,
+    "harness deployment activity: scoped silence, legacy exclusion and replacement": 60000,
+    "hook placement then wake: retention excludes fresh context answers": 60000
   },
   "jobs": {
     "hook-startup": {

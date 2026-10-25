@@ -15,10 +15,11 @@ import { driverFor } from '@myco/runner/drivers/registry.js';
 import { listHarnessModels } from '@myco/runner/models.js';
 import { provisionGlobally } from '@myco/cli/member.js';
 import { attentionWords } from '../../packages/myco-server/ui/src/features/today/words.js';
-import { HARNESS_SILENT_MS, HARNESS_ACTIVITY_RETENTION_MS, HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_SILENT_MS, HARNESS_ACTIVITY_RETENTION_MS, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';
-import { spoolDirFor } from '@myco/member/spool.js';
+import { spoolDirFor, MemberSpool } from '@myco/member/spool.js';
 import { readAttention } from '@myco-server-worker/core/attention.js';
 import { memberRig } from '../member/helpers/server.js';
 
@@ -524,14 +525,16 @@ it.skipIf(process.platform === 'win32')('unreadable session evidence surfaces an
   expect(harnessRanAt(manifest, mycoHome)).toBeUndefined();
 });
 
-it('worker records and model-listing database writes stay quiet through the real report route; an uncaptured user session warns', async () => {
+it('worker records and model-listing database writes stay quiet through the real report route; a routed user session continuing without capture warns', async () => {
   const rig = await memberRig();
   rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)`, [NOW]);
   rig.env.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, last_live_received_at)
     VALUES ('proj_1', 'captured', 'machine_1', 'mt_test', ?, ?, 'opencode', ?)`, [OLD, OLD, OLD]);
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: home, serverUrl: 'https://myco.example', token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome });
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  const spool = new MemberSpool(entry, { mycoHome });
+  updateSessionState(spool.dir, USER, state => { state.agent = 'opencode'; });
+  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE]; });
   const manifest = loadManifests().find((m) => m.name === 'opencode')!;
   const db = sessionStore();
   session(db, WORKER, NOW);
@@ -556,10 +559,12 @@ it('unreadable OpenCode activity reaches Health as cannot tell, and recovery res
     VALUES ('proj_1', 'captured', 'machine_1', 'mt_test', ?, ?, 'opencode', ?)`, [OLD, OLD, OLD]);
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: home, serverUrl: 'https://myco.example', token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome });
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  const spool = new MemberSpool(entry, { mycoHome });
+  updateSessionState(spool.dir, USER, state => { state.agent = 'opencode'; });
+  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE]; });
   provisionGlobally('opencode', null, mycoHome, { serverUrl: entry.serverUrl });
   const result = keepCurrent(mycoHome, { binaryFound: () => true })!;
-  expect(result.harnesses).toContainEqual(expect.objectContaining({ id: 'opencode', state: 'repair_failed', action: "Can't tell whether OpenCode ran; open it and check access to its session store" }));
+  expect(result.harnesses).toContainEqual(expect.objectContaining({ id: 'opencode', state: 'repair_failed', action: "Can't tell whether OpenCode ran for this Deployment; run myco doctor to check session access and capture routing" }));
   await reportHarnesses(result, mycoHome, Date.now() + 10_000, { entry, fetch: rig.fetch });
   const health = await readAttention(rig.env.serverEnv, NOW);
   const item = health.items.find((item) => item.kind === 'harness_needs_repair' && item.harness === 'opencode')!;
