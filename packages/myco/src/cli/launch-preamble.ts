@@ -6,7 +6,7 @@ import { setBufferedStdin } from '../hooks/read-stdin.js';
 import { startingJobEnv } from '../runtime/spawn-detached.js';
 import { PROJECT_DIR_ENV_VARS, STDIN_WORKSPACE_FIELDS } from './launch-preamble.generated.js';
 import { readSymbiontFlag } from '../hooks/symbiont-flag.js';
-import { mcpProjectFolder } from './flags.js';
+import { mcpProjectFolder, mcpUsesClientRoots } from './flags.js';
 
 export type LaunchCommand = 'hook' | 'mcp' | 'tool';
 
@@ -135,7 +135,9 @@ export function runLaunchPreamble(
     }
   }
 
-  const pin = deps.resolveRuntimePin(command === 'mcp' ? mcpProjectFolder(argv, deps.cwd()) : deps.cwd());
+  // Client roots arrive after initialization; the launch directory cannot choose their runtime.
+  const pin = command === 'mcp' && mcpUsesClientRoots(argv) ? null
+    : deps.resolveRuntimePin(command === 'mcp' ? mcpProjectFolder(argv, deps.cwd()) : deps.cwd());
   if (pin && !process.env.MYCO_TRAMPOLINED && pinPointsElsewhere(pin, deps)) {
     reExec(command, argv, pin, bufferedStdin, deps);
     return;

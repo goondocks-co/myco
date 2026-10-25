@@ -98,7 +98,7 @@ describe('the member MCP server', () => {
     for (const name of ['cursor']) {
       const block = memberInstaller(name).installer.renderMemberMcp('registry') as Record<string, { command: string; args: string[] }>;
       expect({ name, servers: Object.keys(block) }).toEqual({ name, servers: ['myco'] });
-      expect({ name, args: block.myco.args }).toEqual({ name, args: ['mcp', CREDENTIAL_FLAG, 'registry'] });
+      expect({ name, args: block.myco.args }).toEqual({ name, args: ['mcp', CREDENTIAL_FLAG, 'registry', '--client-roots'] });
       expect(block.myco.command.includes('{{')).toBe(false);
     }
     expect(memberInstaller('pi').installer.renderMemberMcp('registry')).toBeNull();

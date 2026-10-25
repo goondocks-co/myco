@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'bun:test';
+import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -45,6 +45,26 @@ function snapshot(directory: string): unknown {
     return [name, stat.mode, stat.mtimeMs, stat.isDirectory() ? snapshot(file) : fs.readFileSync(file).toString('base64')];
   });
 }
+
+it('observes an unconnected folder on a separate filesystem without a fatal Git query', async () => {
+  const stat = fs.statSync;
+  const boundary = path.dirname(fs.realpathSync(scratch));
+  const original = snapshot(scratch);
+  const probe = spyOn(fs, 'statSync').mockImplementation(new Proxy(stat, {
+    apply(target, receiver, args) {
+      const result: fs.Stats | fs.BigIntStats | undefined = Reflect.apply(target, receiver, args);
+      if (args[0] === boundary && result !== undefined) Object.defineProperty(result, 'dev', { value: typeof result.dev === 'bigint' ? -1n : -1 });
+      return result;
+    },
+  }));
+  try {
+    expect(await run(['--status'], deps())).toBe(3);
+    expect(lines.join('\n')).toContain(`12 repositories send to ${STATUS_URL}`);
+    expect(snapshot(scratch)).toEqual(original);
+  } finally {
+    probe.mockRestore();
+  }
+});
 
 for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, true]) {
   it(`observes twelve repositories ${inside ? 'inside' : 'outside'} a repository with ${args.length ? '--join' : 'no journey flags'}`, async () => {

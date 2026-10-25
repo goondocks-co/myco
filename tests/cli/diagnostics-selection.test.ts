@@ -129,7 +129,10 @@ describe('member export --all across two projects', () => {
     expect(report.selection).toMatchObject({ root: null, scope: 'all', membershipPresent: true });
 
     const overrides = mcpChecks(report.checks).filter((c) => c.scope === 'project' && c.symbiont === 'cursor');
-    expect(overrides).toEqual([]);
+    expect(overrides).toHaveLength(2);
+    for (const root of [alpha, beta]) expect(overrides).toContainEqual(expect.objectContaining({
+      root, reason: 'mcp_project_override', status: 'warn', toolsDeployment: SERVER,
+    }));
     expect(JSON.parse(fs.readFileSync(path.join(alpha, '.cursor', 'mcp.json'), 'utf8'))).toEqual(cursorMember(alpha));
     expect(JSON.parse(fs.readFileSync(path.join(beta, '.cursor', 'mcp.json'), 'utf8'))).toEqual(cursorMember(beta));
 

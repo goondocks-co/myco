@@ -21,8 +21,8 @@ describe('checkMemberMcpResolution', () => {
     fs.rmSync(homeDir, { recursive: true, force: true });
   });
 
-  const member = (root: string, mycoHome: string, projectId: string) => writeRegistryEntry({
-    version: REGISTRY_VERSION, projectId, serverUrl: 'https://srv.example', token: 'A'.repeat(43), root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
+  const member = (root: string, mycoHome: string, projectId: string, serverUrl = 'https://srv.example') => writeRegistryEntry({
+    version: REGISTRY_VERSION, projectId, serverUrl, token: 'A'.repeat(43), root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
   }, { mycoHome });
 
   const reasons = (checks: Awaited<ReturnType<typeof checkMemberMcpResolution>>) =>
@@ -76,7 +76,7 @@ describe('checkMemberMcpResolution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2', 'https://other.example');
     fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
     fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher());
 
@@ -100,7 +100,7 @@ describe('checkMemberMcpResolution', () => {
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-other-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2', 'https://other.example');
     fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
 
     fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher(root));
@@ -116,7 +116,7 @@ describe('checkMemberMcpResolution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2', 'https://other.example');
     fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
     // A relative directory resolves against whoever reads it, not against the harness.
     fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher('.'));
@@ -129,7 +129,7 @@ describe('checkMemberMcpResolution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
+    member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2', 'https://other.example');
     fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(homeDir, '.codex', 'config.toml'),
       '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry --server https://srv.example"\n');

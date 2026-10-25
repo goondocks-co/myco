@@ -1,5 +1,8 @@
 {
   "sources": [
+    "local: #1724 PR B CI1, pinned Bun1.4.0 darwin-arm64 via npm test with a shared isolated TMPDIR. Setup, utilities, routing and the reported meta suites passed702 tests/4skips across29 files in247663ms runner. Added setup filesystem-boundary regression measured581.71ms; utility boundary and physical-symlink cases47.90/16.61ms. Existing file weights retain CI calibration; no new test file or parity scenario, timeout or assertion changes.",
+    "local: #1724 PR B correction1 pinned Bun1.4.0 darwin-arm64 via npm test. Expanded routing/Doctor/roots focused run59pass in4594ms runner; prior routing-only35case run5146ms runner. Ten added gates include measured legacy runtime188.92/123.30/263.86ms, unconnected roots318.71ms, bound-Project conflict137.17ms, unavailable root208.92ms, terminal26.25ms and settlement19.85ms, with selected-home case6.69ms and emitted no-roots two-home case204.07ms on followup. Existing7000ms routing-file weight gains twice the added bodies, rounded to10000ms. No new test file or parity scenario; deadlines unchanged.",
+    "local: #1724 PR B pinned Bun1.4.0 darwin-arm64 npm test focused roots/installer/Doctor/preamble run: 88 tests in3536ms runner; client-roots five protocol cases initially measured5.00ms summed body, new file500ms includes startup. Expanded member-mcp-routing file measured4580ms runner in the sequential audit;7000ms retains the prior3000ms allowance plus twice added protocol bodies rounded up. Compiled native RBAC smoke covers five emitted adapters, spores and plan bodies plus capture isolation:2183.96ms test body /3599ms runner;8000ms covers twice measured runner plus startup. Existing native scenario expanded; no new parity scenario.",
     "local: #1724 CI2, pinned Bun1.4.0 darwin-arm64. All89 affected files ran sequentially through npm test:2219pass/5skip/0fail,698930ms outer wall including npm startups. Owning file runners: journeys112691ms(216cases), SIGKILL47243ms(42 interruption/growth probes), cutover36403ms(146pass/1skip), agent-set4583ms(39cases), member-machine-verbs1420ms(22cases), worker-permissions8313ms(31cases). Existing CI-derived weights retained; no new test file, parity scenario, deadline or assertion ceiling.",
     "local: #1724 PR A correction1, pinned Bun1.4.0 darwin-arm64. Routing17 tests measured1053ms Bun/1068ms runner; existing3000ms weight retained. Auto-join normal/repair-busy/binding-before-state additions measured474.28/249.08/160.32ms bodies (883.68ms sum),1104ms runner; file24500ms retains prior21893ms calibration plus twice added bodies and startup. Compiled-binary RBAC smoke with four stdio clients against two native Deployments measured1694.89ms body; file4500ms covers twice that plus startup. No new test file or parity scenario.",
     "local: #1724 PR A, pinned Bun1.4.0 darwin-arm64 via npm test -- tests/symbionts/member-mcp-routing.test.ts. Fifteen fake-home/client cases measured835ms Bun wall /849ms runner; new3000ms file weight covers twice observed wall plus startup. Existing test-file allowances retained; no new native/D1 parity scenario because routing changes only the member and harness adapters.",
@@ -245,7 +248,7 @@
     "tests/member/protocol-pins.test.ts": 578,
     "tests/member/provision.test.ts": 1856,
     "tests/member/provisioning.test.ts": 1610,
-    "tests/member/rbac-routing-smoke.test.ts": 4500,
+    "tests/member/rbac-routing-smoke.test.ts": 8000,
     "tests/member/refresh.test.ts": 1927,
     "tests/member/refusal-permanence.test.ts": 147,
     "tests/member/registry-read-during-write.test.ts": 173,
@@ -920,7 +923,8 @@
     "tests/utils/order-stamp.test.ts": 100,
     "tests/utils/repository-name.test.ts": 482,
     "tests/utils/windows-atomic-replace.test.ts": 2,
-    "tests/symbionts/member-mcp-routing.test.ts": 3000
+    "tests/symbionts/member-mcp-routing.test.ts": 10000,
+    "tests/mcp/client-roots.test.ts": 500
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
