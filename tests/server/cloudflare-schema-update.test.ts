@@ -15,6 +15,10 @@ import { applyCloudflareSchema } from '@myco/server/cloudflare-schema.js';
 import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-database.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 
+import { fingerprintFile } from '@myco/server/recovery-bundle.js';
+import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
+import { THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY, THIN_LEARNING_UPGRADE_REMEDY } from '@myco-server-worker/db/thin-learning-admission.js';
+
 const BOOKMARK = '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683';
 const ACCOUNT = 'a'.repeat(32);
 const OLD_WORKER = '11111111-2222-4333-8444-555555555555';
@@ -80,9 +84,9 @@ else if (command === 'd1 time-travel info') {
     const db = new Database(state.destination || state.schemaDatabase);
     const exists=db.query("SELECT 1 FROM sqlite_master WHERE name='schema_meta'").get();
     const current=exists?Number(db.query("SELECT value FROM schema_meta WHERE key='version'").get()?.value ?? 0):0;
-    for(const file of fs.readdirSync(state.migrationsRoot).filter(name=>name.endsWith('.sql')).sort()) {
+    for(const file of fs.readdirSync(state.migrationsRoot).filter(name=>name.endsWith('.json')).sort()) {
       const version=Number(file.split('.')[0]);
-      if(version>current)db.exec(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8'));
+      if(version>current)db.transaction(()=>{for(const statement of JSON.parse(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8')))db.exec(statement);})();
     }
     if(!state.destination)fs.writeFileSync(process.env.FAKE_STATE,JSON.stringify({...state,schema:String(state.target)}));
     db.close();
@@ -119,7 +123,7 @@ async function fixture(
     const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
     if(!empty)database.exec('CREATE TABLE fixture_population(id INTEGER)');
     for(const step of SCHEMA_STEPS) {
-      fs.writeFileSync(path.join(migrationsRoot,`${String(step.version).padStart(4,'0')}.sql`),step.statements.join(';\n')+';');
+      fs.writeFileSync(path.join(migrationsRoot,`${String(step.version).padStart(4,'0')}.json`),JSON.stringify(step.statements));
       if(!empty&&step.version<=version)database.exec(step.statements.join(';\n'));
     }
   }finally{database.close();}
@@ -210,6 +214,39 @@ it('retains recovery history when migrations fail and when an update is retried'
     await expect(update()).rejects.toThrow();
     expect(readDeploymentRecord(home)!.schemaUpdates).toHaveLength(2);
     expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(false);
+  });
+});
+
+for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pending', 'queued', 'completed']) it(`admits or refuses hosted ${from} activation before any schema step with ${status} extraction`, async () => {
+  await fixture({schema:String(from)}, async ({ root, home, update, calls, reports }) => {
+    if (status === 'pending') writeDeploymentRecord({...readDeploymentRecord(home)!,schemaUpdates:[{
+      bookmark:BOOKMARK,schemaBefore:from-1,schemaAfter:from,recordedAt:new Date(0).toISOString(),workerVersionBefore:OLD_WORKER,
+    }]},home);
+    const recordBefore = readDeploymentRecord(home)!;
+    const db = new Database(path.join(root, 'schema.sqlite'));
+    try {
+      db.exec("INSERT INTO projects(project_id,name,created_at) VALUES('thin','Thin',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('thin','Thin','built-in',1,1)");
+      db.query("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('thin','held','thin','extract-curate',?,1,2)").run(status);
+    } finally { db.close(); }
+    if (from >= 102 && status === 'completed') {
+      await update();
+      expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(true);
+      return;
+    }
+    await expect(update()).rejects.toThrow(from < 102 ? THIN_LEARNING_STEPPING_STONE_REQUIRED : 'thin_learning_not_drained');
+    expect(readDeploymentRecord(home)!.versionId).toBe(OLD_WORKER);
+    expect(readDeploymentRecord(home)).toEqual(recordBefore);
+    expect(readDeploymentRecord(home)!.schemaUpdates).toEqual(recordBefore.schemaUpdates);
+    expect(calls().some(({ args }) => args.includes('time-travel'))).toBe(false);
+    expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(false);
+    expect(calls().some(({ args }) => args.includes('migrations'))).toBe(false);
+    expect(reports.filter(line => line === (from < 102 ? THIN_LEARNING_STEPPING_STONE_REMEDY : THIN_LEARNING_UPGRADE_REMEDY))).toHaveLength(1);
+    expect(reports.join('\n')).not.toMatch(/D1 Time Travel bookmark recorded|Database rollback:|Roll back the Worker|Schema 83 rollback|Confirm the restore prompt/);
+    const held = new Database(path.join(root, 'schema.sqlite'));
+    try {
+      expect(held.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: String(from) });
+      expect(held.query("SELECT status FROM agent_runs WHERE id='held'").get()).toEqual({ status });
+    } finally { held.close(); }
   });
 });
 
@@ -421,5 +458,39 @@ for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disab
     expect(reports.join(' / ')).toContain('Budget governor state not verified:');
     expect(reports.join(' / ')).not.toContain('Budget governor inactive:');
     expect(calls().filter(({args})=>args[0]==='deploy')).toHaveLength(1);
+  });
+});
+
+for (const from of [94,101]) it(`refuses hosted ${from} before a concurrent old-Worker dispatch can prepare`, async () => {
+  await fixture({schema:String(from)}, async ({root,home,calls,reports}) => {
+    const recordBefore = readDeploymentRecord(home)!;
+    let prepared = false;
+    const live = path.join(root,'schema.sqlite');
+    await withRecoveryDatabaseCopy(live,await fingerprintFile(live),async copy=>{
+      await expect(applyCloudflareSchema({...{recovery:copy},accountId:ACCOUNT,mycoHome:home,configDir:root,
+      record:readDeploymentRecord(home)!,persist:record=>writeDeploymentRecord(record,home),
+      report:line=>reports.push(line),prepare:async record=>{
+        prepared = true;
+        const db = new Database(path.join(root,'schema.sqlite'));
+        try {
+          db.exec("INSERT INTO projects(project_id,name,created_at) VALUES('race','Race',1)");
+          db.exec("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('race','Race','built-in',1,1)");
+          db.exec("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('race','late','race','extract-curate','running',1,2)");
+        } finally {db.close();}
+        return record;
+      },
+    })).rejects.toThrow(THIN_LEARNING_STEPPING_STONE_REQUIRED);
+    });
+    expect(prepared).toBe(false);
+    expect(reports).toEqual([THIN_LEARNING_STEPPING_STONE_REMEDY]);
+    expect(readDeploymentRecord(home)).toEqual(recordBefore);
+    expect(readDeploymentRecord(home)!.schemaUpdates).toEqual(recordBefore.schemaUpdates);
+    expect(calls().some(({args})=>args.includes('time-travel'))).toBe(false);
+    expect(calls().some(({args})=>args.includes('migrations')||args[0]==='deploy')).toBe(false);
+    const db = new Database(path.join(root,'schema.sqlite'));
+    try {
+      expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(from)});
+      expect(db.query('SELECT * FROM agent_runs').all()).toEqual([]);
+    } finally {db.close();}
   });
 });

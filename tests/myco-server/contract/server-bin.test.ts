@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { THIN_LEARNING_STEPPING_STONE_REQUIRED } from '@myco-server-worker/db/thin-learning-admission.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 const roots: string[] = [];
@@ -79,14 +80,63 @@ describe('migrateOnly', () => {
 
     expect(migrateOnly(path)).toBe(1);
   });
+
+  it('rolls back partial schema changes on an allowed upgrade and applies them after the fault is removed', () => {
+    const path = join(scratch(), 'myco.sqlite');
+    const source = migrateTo(path, 102);
+    seedCredentials(source);
+    source.exec(`CREATE TRIGGER fixture_budget_fault BEFORE INSERT ON schema_meta
+      WHEN NEW.key='budget.settlement_sequence' BEGIN SELECT RAISE(ABORT,'fixture budget migration fault'); END`);
+    const columns = source.query("PRAGMA table_xinfo('agent_run_attempts')").all();
+    const schema = source.query('SELECT type,name,sql FROM sqlite_master ORDER BY name').all();
+    const meta = source.query('SELECT * FROM schema_meta ORDER BY key').all();
+    const rows = credentialRows(source);
+    const refs = referencingRows(source);
+    source.close();
+
+    expect(() => migrateOnly(path)).toThrow('fixture budget migration fault');
+    const refused = new Database(path);
+    expect(refused.query("PRAGMA table_xinfo('agent_run_attempts')").all()).toEqual(columns);
+    expect(refused.query('SELECT type,name,sql FROM sqlite_master ORDER BY name').all()).toEqual(schema);
+    expect(refused.query('SELECT * FROM schema_meta ORDER BY key').all()).toEqual(meta);
+    expect(credentialRows(refused)).toEqual(rows);
+    expect(referencingRows(refused)).toEqual(refs);
+    refused.exec('DROP TRIGGER fixture_budget_fault');
+    refused.close();
+
+    expect(migrateOnly(path)).toBe(SERVER_SCHEMA_VERSION-102);
+    const healed = new Database(path);
+    expect(healed.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
+    expect(healed.query("SELECT value FROM schema_meta WHERE key='budget.settlement_sequence'").get()).toEqual({value:'0'});
+    expect(credentialRows(healed)).toEqual(rows);
+    expect(referencingRows(healed)).toEqual(refs);
+    expect(healed.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    healed.close();
+  });
 });
 
 /** Brings a volume to `version` as `migrateOnly` would, one transaction per step, so a test can seed rows a step then migrates. */
 function migrateTo(path: string, version: number): Database {
   const sqlite = new Database(path, { create: true });
   sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const step of SCHEMA_STEPS.filter((s) => s.version <= version)) sqlite.transaction(() => { for (const sql of step.statements) sqlite.exec(sql); })();
+  const hasMeta = sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_meta'").get();
+  const before = hasMeta ? Number((sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get() as {value:string}).value) : 0;
+  for (const step of SCHEMA_STEPS.filter((s) => s.version > before && s.version <= version)) sqlite.transaction(() => { for (const sql of step.statements) sqlite.exec(sql); })();
   return sqlite;
+}
+
+/** Existing pre-pause volumes reach the current applier through the schema-103 stepping stone. */
+function migrateViaSteppingStone(path: string): number {
+  const source = new Database(path);
+  const before = (source.query("SELECT value FROM schema_meta WHERE key='version'").get() as {value:string}).value;
+  source.close();
+  expect(() => migrateOnly(path)).toThrow(THIN_LEARNING_STEPPING_STONE_REQUIRED);
+  const refused = new Database(path);
+  expect(refused.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:before});
+  refused.close();
+  const stepping = migrateTo(path,103);
+  stepping.close();
+  return 103-Number(before)+migrateOnly(path);
 }
 
 /** Credentials at the retired 1 GiB ceiling, a successor lineage, and every table that references a credential holding a row that does. */
@@ -162,7 +212,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     const refs = referencingRows(v47);
     v47.close();
 
-    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
+    expect(migrateViaSteppingStone(path)).toBe(STEPS_AFTER_47);
 
     const sqlite = new Database(path);
     sqlite.exec('PRAGMA foreign_keys = ON');
@@ -189,7 +239,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     expect(before.foreignKeys).toEqual([expect.objectContaining({ table: 'members', from: 'member_id', to: 'id' })]);
     v47.close();
 
-    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
+    expect(migrateViaSteppingStone(path)).toBe(STEPS_AFTER_47);
     const after = new Database(path);
     const current = credentialShape(after, false);
     const machineIndex = current.indexes.find((index) => index.name === 'idx_member_credentials_machine');
@@ -211,7 +261,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
       for (const sql of step48.slice(0, torn)) v47.exec(sql);
       v47.close();
 
-      expect({ torn, applied: migrateOnly(path) }).toEqual({ torn, applied: STEPS_AFTER_47 });
+      expect({ torn, applied: migrateViaSteppingStone(path) }).toEqual({ torn, applied: STEPS_AFTER_47 });
       const healed = new Database(path);
       expect({ torn, rows: credentialRows(healed) }).toEqual({ torn, rows });
       expect({ torn, holding: healed.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all() }).toEqual({ torn, holding: [] });
@@ -247,7 +297,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     v47.exec(`CREATE VIEW _v48_guard_rows_kept AS SELECT 1 AS ok`);
     v47.close();
 
-    expect(() => migrateOnly(path)).toThrow();
+    expect(() => migrateViaSteppingStone(path)).toThrow();
     const after = new Database(path);
     expect(after.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '47' });
     expect(credentialRows(after)).toEqual(rows);
@@ -256,20 +306,20 @@ describe('migrateOnly across step 48 (#1416)', () => {
     after.exec(`DROP VIEW _v48_guard_rows_kept`);
     after.close();
 
-    expect(migrateOnly(path)).toBe(STEPS_AFTER_47);
+    expect(migrateViaSteppingStone(path)).toBe(STEPS_AFTER_47);
     const healed = new Database(path);
     expect(credentialRows(healed)).toEqual(rows);
     healed.close();
   });
 
-  it('walks the whole chain natively from a v1 volume holding a credential to the build\'s version', () => {
+  it('walks the chain from a v1 credential through the stepping stone to the build\'s version', () => {
     const path = join(scratch(), 'myco.sqlite');
     const v1 = migrateTo(path, 1);
     v1.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`);
     v1.exec(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_1', 'proj_1', 'machine_1', 'h', 9999999999999, NULL, 1073741824)`);
     v1.close();
 
-    expect(migrateOnly(path)).toBe(SCHEMA_STEPS.length - 1);
+    expect(migrateViaSteppingStone(path)).toBe(SCHEMA_STEPS.length - 1);
     const sqlite = new Database(path);
     expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
     expect(sqlite.query(`SELECT id, machine_id, bytes_written FROM member_credentials`).all()).toEqual([{ id: 'mt_1', machine_id: 'machine_1', bytes_written: 1073741824 }]);

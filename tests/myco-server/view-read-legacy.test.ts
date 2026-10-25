@@ -231,7 +231,7 @@ async function nativeVariantIdentity(fixture:'listing'|'arity'){
  });
 }
 test.skipIf(!fullReplay)('all 446297 listing variants preserve native preparation, binds, execution and response identity',()=>nativeVariantIdentity('listing'),1800000);
-test.skipIf(!fullReplay)('all 5878 applicable remaining variants preserve native preparation, binds, execution and response identity',()=>nativeVariantIdentity('arity'),1800000);
+test.skipIf(!fullReplay)('all applicable remaining variants preserve native preparation, binds, execution and response identity',()=>nativeVariantIdentity('arity'),1800000);
 
 async function distinctExecutionClasses(fixture:'listing'|'arity'){
  await withFrozenOracle(async oracle=>{
@@ -370,7 +370,7 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
  const rows=frozen.rows.map(row=>({...row,events:row.events.map(({text,...event})=>{const sql=frozen.texts[text];if(sql===undefined)throw new Error('Missing frozen CI text');return {...event,sql};})}));
  const variants=new Map(legacyCIVariants().map(variant=>[variant.id,variant]));
  expect(variants.size).toBe(legacy.ci.cases);expect(rows).toHaveLength(2*variants.size);
- expect(new Set([...variants.values()].map(row=>row.family)).size).toBe(47);
+ expect(new Set([...variants.values()].map(row=>row.family)).size).toBe(Object.keys(legacy.axes).length);
  const random=spyOn(crypto,'randomUUID').mockReturnValue('00000000-0000-7000-8000-000000009999');
  const templates=new Set<string>();
  const witnesses=new Map<string,Set<string>>();
@@ -459,6 +459,16 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
  });}finally{random.mockRestore()}
 },120000);
 
+function activeCatalogueRows(rows:readonly unknown[]|undefined,version:number){
+ return rows?.map(row=>typeof row==='object'&&row!==null&&'schema_version'in row&&row.schema_version===String(version)
+  ? {...row,schema_version:'active-catalogue'}:row);
+}
+test('catalogue identity admits only each program declared schema stamp and preserves other fields',()=>{
+ expect(activeCatalogueRows([{schema_version:'103',id:'member'}],103)).toEqual(activeCatalogueRows([{schema_version:'104',id:'member'}],104));
+ expect(activeCatalogueRows([{schema_version:'105',id:'member'}],104)).not.toEqual(activeCatalogueRows([{schema_version:'103',id:'member'}],103));
+ expect(activeCatalogueRows([{schema_version:'104',id:'other'}],104)).not.toEqual(activeCatalogueRows([{schema_version:'103',id:'member'}],103));
+});
+
 test('public HTTP and MCP compositions preserve exact base status content type bytes and statement counts',async()=>{
  const random=spyOn(crypto,'randomUUID').mockReturnValue('00000000-0000-7000-8000-000000009999');
  try{await withFrozenCIOracle(async oracle=>{
@@ -466,6 +476,7 @@ test('public HTTP and MCP compositions preserve exact base status content type b
    let identity:Awaited<ReturnType<typeof seedLegacyPublicFixture>>|undefined;
    await withViewStorePair(target,async db=>{identity=await seedLegacyPublicFixture(db)},async(baseline,candidate)=>{
     if(!identity)throw new Error('Public fixture has no identity');
+    await baseline.prepare("UPDATE schema_meta SET value=? WHERE key='version'").bind(String(legacy.schema.steps.at(-1)!.version)).run();
     const before=statementRecorder(baseline,{accounting:target==='native'?'native':'d1',captureRows:true}),after=statementRecorder(candidate,{accounting:target==='native'?'native':'d1',captureRows:true});
     const base=legacyPublicServer(oracle.replayStore(before.db),oracle),current=legacyPublicServer(after.db);
     const requests=legacyPublicRequests(identity);
@@ -478,7 +489,7 @@ test('public HTTP and MCP compositions preserve exact base status content type b
      const frozen=legacy.ci.publicCompositions.requests[index]!;
      expect({status:actual.status,contentType:actual.contentType,method:request.method,url:request.url}).toEqual(frozen);
      expect(eventIdentity(after.events,true),target+' '+request.url+' preparation and execution count').toEqual(eventIdentity(before.events,false));
-     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged&&readTag(sql)?significantRead(sql):sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed}));
+     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged&&readTag(sql)?significantRead(sql):sql,binds,method,rows:activeCatalogueRows(rows,tagged?SCHEMA_STEPS.at(-1)!.version:legacy.schema.steps.at(-1)!.version),rowCount,rowsRead,rowsWritten,failed}));
      expect(work(after.statements,true),target+' '+request.url+' statement results').toEqual(work(before.statements,false));
     }
    });

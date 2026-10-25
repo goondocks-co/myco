@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { THIN_LEARNING_ADMISSION_SQL, THIN_LEARNING_PAUSE_VERSION, admitThinLearningRemoval, thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learning-admission.js';
 import { budgetMigration,budgetCompletionMessage } from '@myco-server-worker/db/budget-activation.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, queryCloudflareDatabase, runCloudflareStatement, D1_STATEMENT_TIMEOUT_MS, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
@@ -26,6 +27,9 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   options.observe?.({ phase: 'observed', before, after: SERVER_SCHEMA_VERSION });
   if (before > SERVER_SCHEMA_VERSION) throw new Error(`schema update refused: D1 schema ${before} is newer than this binary's ${SERVER_SCHEMA_VERSION}`);
   if (options.freshDatabase && before !== 0) throw new Error('fresh D1 provisioning refused: the destination is not empty');
+  const admission = thinLearningUpgradeAdmission(before, SERVER_SCHEMA_VERSION, line => options.report?.(line));
+  let admitted = admission.next();
+  while (!admitted.done) admitted = admission.next(await queryCloudflareDatabase({ ...database, sql: admitted.value, timeoutMs: D1_STATEMENT_TIMEOUT_MS }) as Record<string, unknown>[]);
   if (before < SERVER_SCHEMA_VERSION) {
     if (!options.freshDatabase) {
       let bookmark: string;
@@ -72,6 +76,9 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
       }
       if (reached !== SERVER_SCHEMA_VERSION) {
         options.observe?.({ phase: reached === before ? 'failed' : 'unconfirmed', before, after: SERVER_SCHEMA_VERSION, reached });
+        if (reached >= THIN_LEARNING_PAUSE_VERSION) {
+          admitThinLearningRemoval(await queryCloudflareDatabase({ ...database, sql: THIN_LEARNING_ADMISSION_SQL, timeoutMs: D1_STATEMENT_TIMEOUT_MS }) as Record<string, unknown>[]);
+        }
         throw error;
       }
       const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();

@@ -82,6 +82,22 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: "Dispatches retain their automatic or manual origin." },
   { step: 103, sql: "UPDATE agent_runs SET origin=COALESCE(origin,CASE WHEN CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END IN ('clock','backfill','deployment') THEN 'automatic' ELSE 'manual' END) WHERE status IN ('pending', 'running', 'queued') AND origin IS NULL",
     reason: "Live dispatches receive the origin fixed by their persisted actor." },
+  { step: 104, sql: `INSERT INTO _v104_guard_thin_learning(pause_required,not_drained)
+    SELECT CASE WHEN refusal='thin_learning_pause_required' THEN 1 ELSE 0 END,
+      CASE WHEN refusal='thin_learning_not_drained' THEN 1 ELSE 0 END FROM (WITH thin_learning_runs AS (SELECT task,status,queued_at,started_at FROM agent_runs) SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM schema_meta WHERE key='learning_paused_at' AND typeof(value)='text' AND length(value)>0
+  AND value NOT GLOB '*[^0-9]*' AND CAST(value AS INTEGER)>0
+  AND CAST(value AS INTEGER)<=9007199254740991
+  AND CAST(CAST(value AS INTEGER) AS TEXT)=value) THEN 'thin_learning_pause_required'
+    WHEN EXISTS (SELECT 1 FROM thin_learning_runs WHERE task='extract-curate' AND status IN ('pending', 'running', 'queued')
+      AND (COALESCE(queued_at,started_at) IS NULL
+        OR typeof(COALESCE(queued_at,started_at))!='integer'
+        OR COALESCE(queued_at,started_at)<=(SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='learning_paused_at')))
+      THEN 'thin_learning_not_drained'
+    ELSE NULL END AS refusal)`,
+    reason: 'Activation requires a valid pause boundary and drained thin extraction dispatches.' },
+  { step: 104, sql: 'DROP TABLE _v104_guard_thin_learning',
+    reason: 'The temporary admission guard is released after validation.' },
 ];
 const IDENTIFIER = '(?:[a-zA-Z_][a-zA-Z_0-9]*|"[^"]+"|`[^`]+`|\\[[^\\]]+\\])';
 const QUALIFIED_IDENTIFIER = `(?:${IDENTIFIER}\\s*\\.\\s*)?${IDENTIFIER}`;

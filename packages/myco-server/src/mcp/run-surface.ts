@@ -10,7 +10,7 @@
  * of vault content, and search — it calls the catalogued tools, so one
  * operation has one implementation and one attribution path. Where the
  * operation is the run's own — material reads bounded by its window, its state,
- * its prompt cursor, its session's material and title, the map it keeps — it calls the run-only
+ * its material acknowledgements, its session's material and title, the map it keeps — it calls the run-only
  * tools (`run-definitions.ts`), which no member and no grant can see.
  *
  * `report` is the exception to the allowlist and is served to every run. A
@@ -20,7 +20,7 @@
  *
  * A view over the registries: nothing here resolves an op or dispatches a call.
  */
-import { RUN_TOOLS } from '../core/tool-catalogue.js';
+import { RUN_TOOLS, NO_OP } from '../core/tool-catalogue.js';
 import { ALWAYS_ALLOWED, isRunCall, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget } from './run-allowlist.js';
 import { narrowDefinitions } from './external.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
@@ -40,7 +40,7 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   myco_run: { defaultOp: 'report', ops: { report: runOperation(handleRun, 'execute'), state_get: runOperation(handleRun, 'read'), state_set: runOperation(handleRun, 'execute') } },
   myco_run_spores: { defaultOp: 'list', ops: { list: runOperation(handleRunSpores, 'read'), get: runOperation(handleRunSpores, 'read') } },
   myco_run_sessions: { defaultOp: 'list', ops: { list: runOperation(handleRunSessions, 'read'), material: runOperation(handleRunSessions, 'read'), title: runOperation(handleRunSessions, 'execute') } },
-  myco_run_prompts: { defaultOp: 'unprocessed', ops: { unprocessed: runOperation(handleRunPrompts, 'read'), mark_processed: runOperation(handleRunPrompts, 'execute') } },
+  myco_run_prompts: { defaultOp: NO_OP, ops: { mark_processed: runOperation(handleRunPrompts, 'execute') } },
   myco_run_map: { defaultOp: 'get', ops: { get: runOperation(handleRunMap, 'read'), write: runOperation(handleRunMap, 'execute') } },
 };
 

@@ -105,7 +105,6 @@ function TaskCard({ task, projectId, started, onRun }: { task: TaskDescription; 
             <dt>Session title characters</dt><dd>{task.budget.readWindow.sessionTitleChars}</dd>
             <dt>Session summary characters</dt><dd>{task.budget.readWindow.sessionSummaryChars}</dd>
             <dt>Session label characters</dt><dd>{task.budget.readWindow.sessionLabelChars}</dd>
-            <dt>New prompts per page</dt><dd>{task.budget.readWindow.promptPage}</dd>
           </dl>
         </Disclosure></>}
       </section>}

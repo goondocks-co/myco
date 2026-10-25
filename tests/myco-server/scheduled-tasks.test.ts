@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
-import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask as decide, effectiveIntervalSeconds, hasUnprocessedPrompts, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks as runClock, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask as decide, effectiveIntervalSeconds, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks as runClock, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { hasLiveTaskRun, INPUT_UNCHANGED, lastTaskEntryAt, skipContext, taskEntriesSince, taskFactsKey, taskRunFacts } from '@myco-server-worker/core/runs.js';
@@ -61,7 +61,7 @@ function scheduledFixture() {
   f.setting('cortex.canopy.refresh.background_enabled', true);
   f.capability('proj_1', 'canopy', true);
   f.capability('proj_2', 'canopy', true);
-  f.setting('agent.tasks', { 'canopy-map': { schedule: { ...SMOKE, enabled: true, preCondition: 'has-unprocessed-prompts', reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+  f.setting('agent.tasks', { 'canopy-map': { schedule: { ...SMOKE, enabled: true, preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
   for (const [project, at] of [['proj_1', NOW - 3_600_000], ['proj_2', NOW - 20 * DAY]] as const) {
     f.sqlite.run(`INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,ended_at) VALUES (?, 's_clock','m1','tok_1',?,?, 'claude-code',?)`, [project, at, at, at]);
     f.sqlite.run(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,processed) VALUES (?,'s_clock','p_clock','e_clock','scheduled extraction input','user','h_clock',?,?,'tok_1',?,0)`, [project, at, at, at]);
@@ -126,56 +126,13 @@ describe('a schedule naming something the Deployment never registered', () => {
   });
 });
 
-describe('a named precondition reads the Project it is a condition on', () => {
-  const seedSession = (f: ReturnType<typeof fixture>, project: string, session: string, endedAt: number | null) =>
-    f.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at) VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`,
-      [project, session, NOW - 10_000, NOW, NOW - 10_000, endedAt]);
-  const seedPrompt = (f: ReturnType<typeof fixture>, project: string, session: string, prompt: string, processed: number) =>
-    f.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES (?, ?, ?, ?, 'hello there', 'user', ?, ?, ?, 'tok_1', ?, ?)`,
-      [project, session, prompt, `e_${prompt}`, `h_${prompt}`, NOW - 5_000, NOW - 5_000, NOW - 5_000, processed]);
-
-  it('answers the backlog: nothing, a prompt already read, a live session, then one waiting', async () => {
-    const f = fixture();
-    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts' } } });
-    seedSession(f, 'proj_1', 's_done', NOW);
-    seedPrompt(f, 'proj_1', 's_done', 'p_read', 1);
-    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
-    // A prompt of a session still being written is no backlog yet.
-    seedSession(f, 'proj_1', 's_live', null);
-    seedPrompt(f, 'proj_1', 's_live', 'p_live', 0);
-    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(false);
-    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await hasUnprocessedPrompts(f.env.db, 'proj_1')).toBe(true);
-    // One Project's backlog is not another's.
-    expect(await hasUnprocessedPrompts(f.env.db, 'proj_2')).toBe(false);
-  });
-
-  it('is reached through the registry the clock consults, and holds a task back while the backlog is empty', async () => {
-    const f = fixture();
-    const check = PRE_CONDITIONS['has-unprocessed-prompts'];
-    expect(typeof check).toBe('function');
-    expect(await check!({ db: f.env.db, projectId: 'proj_1', now: NOW })).toBe(false);
-    const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'canopy-map', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBe('precondition');
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts' } } });
-    seedSession(f, 'proj_1', 's_done', NOW);
-    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'canopy-map', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBeNull();
-  });
-
-  it('queues map work from its declared schedule only after an ended session has unread prompts', async () => {
-    const f = fixture();
-    f.setting('cortex.canopy.refresh.background_enabled', true);
-  f.capability('proj_1', 'canopy', true);
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts' } } });
-    seedSession(f, 'proj_1', 's_done', NOW);
-    expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
-    seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1')).toMatchObject([{ task: 'canopy-map', status: 'queued' }]);
-    expect(f.launches).toEqual([]);
-    expect(await runScheduledTasks(f.env, 'idle', NOW + 1, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
+describe('retired schedule conditions', () => {
+  it('refuses both old conditions instead of scheduling work without its guard', async () => {
+    const f = scheduledFixture();
+    for (const preCondition of ['has-unprocessed-prompts', 'has-recent-live-prompts']) {
+      expect(Object.hasOwn(PRE_CONDITIONS, preCondition)).toBe(false);
+      expect(await decideTask(f.env, 'proj_1', NOW-DAY, 'canopy-map', {...SMOKE,preCondition}, 'sleep', {coldThresholdDays:14,activeWindowDays:14}, NOW)).toBe('precondition');
+    }
   });
 });
 
@@ -255,10 +212,11 @@ describe('one wake of the clock', () => {
   it('refuses at the ceiling rather than queueing, records one row per episode however many wakes ask, and dispatches again when the window has room', async () => {
     const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-unprocessed-prompts', reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 1 } } });
+    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' }, intervalSeconds: 1, maxRunsPerDay: 1 } } });
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
     // Extraction finishes; the interval is past; the day's one run is spent.
     f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE task = 'canopy-map'`, [NOW + 1_000]);
+    f.receipt('proj_1', NOW + 2_000);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 5_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     const rows = f.runs('proj_1');
     expect(rows.map((r) => r.status)).toEqual(['completed', 'skipped']);
@@ -288,6 +246,7 @@ describe('one wake of the clock', () => {
     // A SECOND episode leaves a second row: the record is once per episode, not
     // once per Project and task for all time.
     f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE status = 'queued'`, [NOW + DAY + 6_000]);
+    f.receipt('proj_1', NOW + DAY + 7_000);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 10_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'completed', 'skipped']);
 
@@ -306,10 +265,11 @@ describe('one wake of the clock', () => {
     for (const [id, at] of [['e_older', older], ['e_newer', newer]] as const) {
       f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at) VALUES ('proj_1', ?, ?, 'canopy-map', 'completed', ?, ?)`, [id, HARNESS_AGENT_ID, at, at]);
     }
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-unprocessed-prompts', reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 2 } } });
+    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' }, intervalSeconds: 1, maxRunsPerDay: 2 } } });
 
     // The first episode: both entries in the window, so the ceiling is met.
     const firstRefusal = newer + 60_000;
+    f.receipt('proj_1', newer + 1);
     expect(await runScheduledTasks(f.env, 'sleep', firstRefusal, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(1);
 
@@ -318,6 +278,7 @@ describe('one wake of the clock', () => {
     const freed = older + DAY + 60_000;
     expect(await runScheduledTasks(f.env, 'sleep', freed, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
     f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE status = 'queued'`, [freed + 1_000]);
+    f.receipt('proj_1', freed + 1_500);
     expect(await runScheduledTasks(f.env, 'sleep', freed + 2_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(Math.floor(newer / DAY)).toBe(Math.floor(freed / DAY));
     expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(2);
@@ -326,7 +287,7 @@ describe('one wake of the clock', () => {
   it('refuses a ceiling of zero with no entry to name, and records that once however many wakes ask', async () => {
     const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-unprocessed-prompts', reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 0 } } });
+    f.setting('agent.tasks', { 'canopy-map': { schedule: { preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' }, intervalSeconds: 1, maxRunsPerDay: 0 } } });
     for (const at of [NOW, NOW + 60_000, NOW + DAY + 60_000]) {
       expect({ at, report: await runScheduledTasks(f.env, 'sleep', at, ORIGIN) }).toEqual({ at, report: { dispatched: 0, skipped: 1 } });
     }
@@ -385,44 +346,29 @@ describe('the tick and the clock', () => {
   });
 });
 
-describe('a schedule reserves capacity for recent live sessions', () => {
-  it('holds history after nine automatic runs, admits ready live capture, and stops all automatic work at twelve', async () => {
-    const f = fixture();
-    f.setting('cortex.canopy.refresh.background_enabled', true);
-  f.capability('proj_1', 'canopy', true);
-    f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    const entry = (id: string, actor: string, at = NOW - 7_200_000) => f.sqlite.run(`INSERT INTO agent_runs
-      (project_id,id,agent_id,task,status,started_at,dispatch_spec) VALUES ('proj_1',?,?,'canopy-map','completed',?,?)`,
-      [id, HARNESS_AGENT_ID, at, JSON.stringify({ actor })]);
-    for (let i = 0; i < 9; i++) entry(`automatic_${i}`, CLOCK_ACTOR);
-    for (let i = 0; i < 10; i++) entry(`manual_${i}`, 'mem_owner', NOW - 1);
-    f.sqlite.run(`INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
-      VALUES ('proj_1','recent','m','t',1,?,?)`, [NOW, NOW - 1_000]);
-    f.sqlite.run(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES ('proj_1','recent','p','e','a durable finding','user','h',1,1,'t',1)`);
-    const schedule: TaskSchedule = { ...TASK_SCHEDULE['canopy-map']!, enabled: true, intervalSeconds: 3600, preCondition: 'has-unprocessed-prompts', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' } };
-    const leaves = await scheduleLeaves(f.env);
-    const decide = () => decideTask(f.env, 'proj_1', NOW, 'canopy-map', schedule, 'idle', leaves, NOW);
-    expect(await taskEntriesSince(f.db, { projectId: 'proj_1' }, 'canopy-map', NOW - DAY, CLOCK_ACTOR)).toBe(9);
-    expect(await lastTaskEntryAt(f.db, { projectId: 'proj_1' }, 'canopy-map', CLOCK_ACTOR)).toBe(NOW - 7_200_000);
-    expect(await decide()).toBe('reserved_runs_per_day');
-    f.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id,fidelity,imported_at)
-      VALUES ('proj_1','tx','recent','m',100,100,1,1,'t','full',1)`);
-    expect(await decide()).toBe('reserved_runs_per_day');
-    f.sqlite.run(`UPDATE transcripts SET imported_at = NULL, parsed_offset = 50 WHERE transcript_id = 'tx'`);
-    expect(await decide()).toBe('precondition');
-    f.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
-    expect(await decide()).toBeNull();
-    f.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'recent'`, [NOW - DAY - 1]);
-    expect(await decide()).toBe('reserved_runs_per_day');
-    f.sqlite.run(`UPDATE sessions SET ended_at = ? WHERE session_id = 'recent'`, [NOW - 1_000]);
-    for (let i = 9; i < 12; i++) entry(`automatic_${i}`, CLOCK_ACTOR);
-    expect(await decide()).toBe('max_runs_per_day');
-    expect(f.sqlite.query(`SELECT processed FROM prompt_batches WHERE prompt_id = 'p'`).get()).toEqual({ processed: 0 });
-    f.sqlite.run(`UPDATE agent_runs SET started_at = ? WHERE id = 'automatic_0'`, [NOW - DAY - 1]);
-    expect(await decide()).toBeNull();
-    expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(0);
-    expect(resolveSchedule(schedule, { reservedRunsPerDay: { count: -1, preCondition: 'has-recent-live-prompts' } }).reservedRunsPerDay?.count).toBe(3);
+describe('a schedule reserves capacity', () => {
+  it('reserves automatic slots by a registered condition and applies the full ceiling to ready work', async () => {
+    const f = scheduledFixture();
+    let ready = false;
+    const name = 'fixture-reserved-capacity';
+    Object.defineProperty(PRE_CONDITIONS,name,{value:Object.assign(async()=>ready,{description:'Fixture capacity'}),configurable:true});
+    try {
+      f.sqlite.run(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES(?,'a','built-in',1,?)`,[HARNESS_AGENT_ID,NOW]);
+      const entry=(id:string,actor:string)=>f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatch_spec)
+        VALUES('proj_1',?,?,'canopy-map','completed',?,?)`,[id,HARNESS_AGENT_ID,NOW-7_200_000,JSON.stringify({actor})]);
+      for(let i=0;i<9;i++)entry('auto-'+i,CLOCK_ACTOR);
+      for(let i=0;i<10;i++)entry('manual-'+i,'owner');
+      const schedule:TaskSchedule={...SMOKE,intervalSeconds:3600,maxRunsPerDay:12,reservedRunsPerDay:{count:3,preCondition:name}};
+      const leaves=await scheduleLeaves(f.env);
+      const decide=()=>decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'sleep',leaves,NOW);
+      expect(await decide()).toBe('reserved_runs_per_day');
+      ready=true;
+      expect(await decide()).toBeNull();
+      for(let i=9;i<12;i++)entry('auto-'+i,CLOCK_ACTOR);
+      expect(await decide()).toBe('max_runs_per_day');
+      expect(resolveSchedule(schedule,{reservedRunsPerDay:{count:0,preCondition:name}}).reservedRunsPerDay?.count).toBe(0);
+      expect(resolveSchedule(schedule,{reservedRunsPerDay:{count:-1,preCondition:name}}).reservedRunsPerDay?.count).toBe(3);
+    } finally { Reflect.deleteProperty(PRE_CONDITIONS,name);f.sqlite.close(); }
   });
 });
 

@@ -104,16 +104,10 @@ it('keeps the destination pause and preferences when portable artifacts restore 
     const artifact=(await backupArtifact(source.db,source.bucket,backup.id))!;
     expect(artifact.text).not.toContain('learning_resumed_at');
     const pause=target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get();
-    await restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true});
+    await expect(restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true})).rejects.toThrow('thin_learning_not_drained');
     expect(target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toEqual(pause);
     expect(target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_resumed_at'").get()).toBeNull();
     expect(await memberRunsPerDay(target.serverEnv,'extract-curate')).toBe(9);
-    expect(await expireLeases(target.serverEnv,100)).toBe(1);
-    expect(await claimNextRun(target.serverEnv,{principal:legacyWorker('worker-token','machine'),harnesses:[],now:101}))
-      .toMatchObject({claimed:false});
-    expect(target.sqlite.query("SELECT status,error_code FROM agent_runs WHERE id='held'").get())
-      .toEqual({status:'failed',error_code:'learning_paused'});
-    expect(target.sqlite.query("SELECT status,run_context FROM agent_runs WHERE id='queued'").get())
-      .toEqual({status:'skipped',run_context:'{"reason":"learning_paused"}'});
+    expect(target.sqlite.query("SELECT * FROM agent_runs WHERE task='extract-curate'").all()).toEqual([]);
   } finally {source.sqlite.close();target.sqlite.close();}
 });

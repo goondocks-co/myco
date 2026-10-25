@@ -1,3 +1,4 @@
+import { recordRunWrite } from '@myco-server-worker/core/runs.js';
 import { recordReport } from '@myco-server-worker/core/run-postconditions.js';
 import { expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -148,8 +149,9 @@ it('allows an extraction already under lease to report and complete during the p
     const claim=await claimNextRun(f.serverEnv,f.worker);
     if(!claim.claimed) throw new Error('the pre-pause extraction did not acquire its lease');
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
+    await recordRunWrite(f.db,{projectId:'proj_1'},{runId:'finishing',toolName:'myco_run_prompts',op:'mark_processed',recordedAt:NOW+1,detail:{served_id:'fixture-served'}});
     expect(await recordReport(f.db,{projectId:'proj_1'},{
-      runId:'finishing',agentId:'myco-agent',action:'skip',summary:'No eligible prompts remain',details:null,createdAt:NOW+2,
+      runId:'finishing',agentId:'myco-agent',action:'extract',summary:'Served material acknowledged',details:null,createdAt:NOW+2,
       audit:{steps:['Read eligible prompts'],examined:[],commands:[],failures:[],reasoning:'The Project has no unread extraction material'},
     })).toMatchObject({recorded:true,auditError:null});
     expect(await endLeasedRun(f.serverEnv,{principal:f.principal,now:NOW+3},{

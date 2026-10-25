@@ -1,3 +1,4 @@
+import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -61,7 +62,7 @@ for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
-      if (op === 'prompt') await f.call('myco_run_prompts', { op: 'unprocessed', include_text: true });
+      if (op === 'prompt') await recordServedPrompts(f.db, {projectId:'proj_1'}, 'target', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {
         const repository = { url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) };
@@ -92,7 +93,7 @@ for (const op of ['save', 'obsolete', 'consolidate'] as const) for (const revoke
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
-      await f.call('myco_run_prompts', { op: 'unprocessed', include_text: true });
+      await recordServedPrompts(f.db, {projectId:'proj_1'}, 'target', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
       for (const id of ['a', 'b']) f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES('proj_1',?,'myco-agent','gotcha','active','source',0)", [id]);
       if (revoke) f.sqlite.exec(`CREATE TRIGGER revoke_spore AFTER ${op === 'obsolete' ? 'UPDATE' : 'INSERT'} ON spores BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);

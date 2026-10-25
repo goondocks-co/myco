@@ -29,12 +29,12 @@ import { listProjects } from '../read/sessions.js';
 import { classify, emit } from '../telemetry.js';
 import { schedulerState } from './scheduler-state.js';
 import {
-  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, hasUnprocessedPrompts, MEMBER_RUNS_PER_DAY_DEFAULT,
+  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, MEMBER_RUNS_PER_DAY_DEFAULT,
   memberRunsPerDay, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleFor, scheduleLeaves, scheduleOverride, type ScheduleLeaves,
 } from './schedule-rules.js';
 
 export {
-  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, hasUnprocessedPrompts, MEMBER_RUNS_PER_DAY_DEFAULT,
+  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, MEMBER_RUNS_PER_DAY_DEFAULT,
   memberRunsPerDay, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleFor, scheduleLeaves, scheduleOverride, type ScheduleLeaves,
 };
 

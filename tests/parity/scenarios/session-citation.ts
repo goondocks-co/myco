@@ -35,30 +35,12 @@ export const sessionCitation: ParityScenario = {
       VALUES(${lit(project)},${lit(run)},'myco-agent','extract-curate','running',${now},${lit(tokenId)},${lit(JSON.stringify({ session_id: session, timeoutSeconds: 300 }))})`);
     const save = { op: 'save', type: 'gotcha', content: 'A whole-session finding', session_id: session };
     expect((await call('myco_spores', save)).result).toEqual({ ok: false, error: 'session_id not served to this run' });
-    const ids = (await call('myco_run_prompts', { op: 'unprocessed', limit: 50 })).result;
-    expect(ids.prompts).toHaveLength(50);
-    expect(ids.prompts.every((item: any) => item.served_id === undefined)).toBe(true);
+    expect((await call('myco_run_prompts',{op:'unprocessed'})).error?.data.code).toBe('unknown_tool');
     expect(await target.sql('SELECT * FROM run_served_material')).toEqual([]);
-
-    await target.sql("CREATE TRIGGER citation_ledger_failure BEFORE INSERT ON run_served_material BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END");
-    try {
-      const refused = await call('myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 50 });
-      expect(refused.error).toBeDefined();
-      expect(refused.result).toBeUndefined();
-      expect(JSON.stringify(refused.body)).not.toContain('Whole-session material');
-      expect(await target.sql('SELECT * FROM run_served_material')).toEqual([]);
-    } finally { await target.sql('DROP TRIGGER citation_ledger_failure'); }
-
-    const body = (await call('myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 50 })).result;
-    expect(body.prompts).toHaveLength(50);
-    expect(body.prompts.every((item: any) => typeof item.served_id === 'string' && item.text === 'Whole-session material')).toBe(true);
-    expect(new Set(body.prompts.map((item: any) => item.served_id)).size).toBe(50);
-    const ledger = await target.sql(`SELECT served_id,record_id,session_id,instance_id,source_transcript_id,source_offset,source_end
-      FROM run_served_material WHERE project_id=${lit(project)} AND run_id=${lit(run)} ORDER BY record_id`);
-    expect(ledger).toEqual(body.prompts.map((item: any) => ({
-      served_id: item.served_id, record_id: item.prompt_id, session_id: session,
-      instance_id: null, source_transcript_id: null, source_offset: null, source_end: null,
-    })));
+    await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at)
+      SELECT ${lit(project)},'citation-served-'||json_extract(value,'$.id'),${lit(run)},${lit(session)},json_extract(value,'$.id'),${now}
+      FROM json_each(${lit(JSON.stringify(prompts))})`);
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM run_served_material WHERE project_id=${lit(project)} AND run_id=${lit(run)}`)).toEqual([{n:50}]);
     const saved = (await call('myco_spores', save)).result;
     expect(saved.id).toEqual(expect.any(String));
     const read = (await call('myco_run_spores', { op: 'get', id: saved.id })).result;
@@ -81,8 +63,7 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`UPDATE prompt_batches SET processed=1 WHERE project_id=${lit(project)} AND session_id=${lit(session)}`);
     await target.sql(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
       VALUES(${lit(project)},'second-session','second-prompt','second-event','Second session material','user','second',${now},${now},${lit(tokenId)},${now})`);
-    const secondPage = (await call('myco_run_prompts', { op: 'unprocessed', include_text: true })).result;
-    expect(secondPage.prompts.map((item: any) => item.session_id)).toEqual(['second-session']);
+    await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at) VALUES(${lit(project)},'citation-second',${lit(run)},'second-session','second-prompt',${now})`);
     const second = (await call('myco_spores', { ...save, session_id: 'second-session' })).result;
     expect(second.id).toEqual(expect.any(String));
     const secondRead = (await call('myco_run_spores', { op: 'get', id: second.id })).result;

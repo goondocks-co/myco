@@ -78,10 +78,10 @@ describe('test shard selection', () => {
       expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, nodeWorkload)).not.toThrow();
       const shardOf = (file: string) => plans.findIndex(plan => plan.some(group => group.files.includes(file)));
       const coverageShard = shardOf('tests/myco-server/extraction-coverage-budget.test.ts');
-      const historyShard = shardOf('tests/myco-server/extraction-history-budget.test.ts');
+      const steadyShard = shardOf('tests/myco-server/extraction-coverage-steady-state-budget.test.ts');
       expect(coverageShard).toBeGreaterThanOrEqual(0);
-      expect(historyShard).toBeGreaterThanOrEqual(0);
-      expect(coverageShard).not.toBe(historyShard);
+      expect(steadyShard).toBeGreaterThanOrEqual(0);
+      expect(coverageShard).not.toBe(steadyShard);
       for (const trim of [1, -1]) {
         const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: trim === 1 ? run.shards.slice(1) : run.shards.slice(0, -1) })) };
         expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');

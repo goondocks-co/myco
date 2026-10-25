@@ -1,3 +1,4 @@
+import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { queuePrePauseExtraction, claimPrePauseExtraction } from './helpers/held-extraction.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -242,14 +243,10 @@ describe('what a worker reporting `completed` actually closes', () => {
     if (!claimed.claimed) return;
     const run = claimed.run;
     expect(run.task).toBe(EXTRACTION_TASK);
-    expect(run.instructions).toContain('Search before every write');
-    expect(run.instructions).toContain('session_id');
+    expect(run.instructions).toBeNull();
     expect(r.e.sqlite.query('SELECT queued_at AS queuedAt FROM agent_runs WHERE id = ?').get(run.id)).toEqual({ queuedAt: NOW });
 
-    // The page carries the prompt and the opening of its response, which is the
-    // material an observation is read from.
-    const page = await r.asRun(run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 20 });
-    expect((page.prompts as Array<Record<string, unknown>>)[0]).toMatchObject({ prompt_id: 'p3', text: 'why does the runner retry the claim twice', response: 'The lease renewal re-claims it; wrap only the claim call.' });
+    const [served] = await recordServedPrompts(r.e.db, {projectId:'proj_1'}, run.id, [{promptId:'p3',sessionId:'s3',createdAt:NOW-5000,endedAt:NOW}], NOW);
 
     // The report alone is the model's word; the run owed the mark.
     expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: EXTRACTION_REPORT_ACTION, summary: 'read one prompt', details: '{"prompts":1,"created":0}' })).toMatchObject({ recorded: true });
@@ -271,8 +268,8 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
 
     // The mark is the landed write the close rule reads, and the cursor moves.
-    expect(await r.asRun(run.runToken, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p3' })).toEqual({ prompt_id: 'p3', marked: true });
-    expect((await r.asRun(run.runToken, 'myco_run_prompts', { op: 'unprocessed' })).prompts).toEqual([]);
+    expect(await r.asRun(run.runToken, 'myco_run_prompts', { op: 'mark_processed', served_id: served!.servedId })).toEqual({ prompt_id: 'p3', served_id: served!.servedId, marked: true });
+    expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks WHERE run_id=?').get(run.id)).toEqual({n:1});
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
     expect(await r.verifyOutcome(run.id)).toMatchObject({ task: 'extract-curate', outcome: 'write', spores: [saved.id] });
@@ -340,27 +337,14 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'state_set', key: 'cursor_note', value: 'fine' })).toEqual({ key: 'cursor_note', applied: true });
   });
 
-  it('completes an extraction pass that found nothing to read on its skip, and fails a skip the server cannot agree with', async () => {
+  it('refuses extraction skip while retaining marked-write completion', async () => {
     const r = await rig();
-    r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
-    await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
-    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
-    expect(claimed.claimed).toBe(true);
-    if (!claimed.claimed) return;
-    expect((await r.asRun(claimed.run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).prompts).toEqual([]);
-    await r.asRun(claimed.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to read' });
-    expect(await r.workerEnds(claimed.run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
-    expect(await r.verifyOutcome(claimed.run.id)).toMatchObject({ task: 'extract-curate', outcome: 'skip', spores: [] });
-
-    // A skip over a Project that does hold an unread prompt is the model's word against the server's read.
-    r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's4', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
-    r.e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's4', 'p4', 'e4', 'an unread prompt', 'user', 'h4', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
-    await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW + 4);
-    const second = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 5 });
-    if (!second.claimed) throw new Error('the second pass was not claimed');
-    await r.asRun(second.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to read' });
-    expect(await r.workerEnds(second.run.id, 'completed', NOW + 6)).toEqual({ ended: true, status: 'failed' });
-    expect(r.outcome(second.run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+    await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', {serverUrl:ORIGIN,actor:'mem_worker'}, NOW);
+    const claimed = await claimNextRun(r.e.serverEnv, {principal:legacyWorker(r.workerToken,'m1'),harnesses:OFFERED,capabilities:WORKER_CAPABILITIES,now:NOW+1});
+    if (!claimed.claimed) throw new Error('held extraction fixture was not claimed');
+    expect(await r.asRun(claimed.run.runToken,'myco_run',{op:'report',audit:RUN_AUDIT,action:RUN_SKIP_ACTION,summary:'nothing to read'})).toMatchObject({ok:false,error:'a extract-curate run closes with action "extract"'});
+    expect(await r.workerEnds(claimed.run.id,'completed',NOW+3)).toEqual({ended:true,status:'failed'});
+    expect(r.outcome(claimed.run.id)).toEqual({status:'failed',error:RUN_CLOSE_ERROR});
   });
 
   it('keeps a worker\'s own failure as the coded failure it reported, and codes a worker\'s words again', async () => {

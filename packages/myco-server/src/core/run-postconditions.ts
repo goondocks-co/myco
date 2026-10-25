@@ -44,7 +44,6 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
 import { countSpores, sporeAuthoredBy } from './spores.js';
-import { hasUnreadPrompts } from '../read/prompts.js';
 import { PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
@@ -131,11 +130,6 @@ export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run
   return sporeAuthoredBy(db, scope, run.id);
 }
 
-/** An extraction skip holds when no settled prompt is left unread. */
-export async function nothingUnread(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  return !await hasUnreadPrompts(db, scope);
-}
-
 /** A seeding skip holds when the Project already holds enough active spores to count as seeded. */
 export async function alreadySeeded(db: RelationalStore, scope: ReadScope): Promise<boolean> {
   return (await countSpores(db, scope, { status: 'active' })) >= SEEDED_SPORE_FLOOR;
@@ -156,9 +150,7 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   // named, which is why it names an artifact and not the report alone.
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
   [TITLING_TASK]: { description: ['A report with its audit and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands, audited: true },
-  // An extraction pass owes the cursor move: a prompt it read, marked read under
-  // its own credential. The skip is a pass that found no unread prompt.
-  [EXTRACTION_TASK]: { description: ['A report with its audit and at least one prompt marked as read by this run, or a supported skip when no unread prompts remain.'], reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope), audited: true },
+  [EXTRACTION_TASK]: { description: ['A report with its audit and at least one prompt marked as read by this run.'], reports: [EXTRACTION_REPORT_ACTION], artifact: promptsMarkedBy, audited: true },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
   [SEEDING_TASK]: { description: ['A report with its audit and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope), audited: true },
 };

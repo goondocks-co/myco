@@ -102,7 +102,7 @@ describe('what each task owes before it closes', () => {
   });
 
   it('holds an extraction pass to the prompt it marked read, and a seeding run to a spore it authored', () => {
-    expect(RUN_CLOSE_RULES[EXTRACTION_TASK]!.reports).toEqual([EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION]);
+    expect(RUN_CLOSE_RULES[EXTRACTION_TASK]!.reports).toEqual([EXTRACTION_REPORT_ACTION]);
     expect(typeof RUN_CLOSE_RULES[EXTRACTION_TASK]!.artifact).toBe('function');
     expect(RUN_CLOSE_RULES[SEEDING_TASK]!.reports).toEqual([SEEDING_REPORT_ACTION, RUN_SKIP_ACTION]);
     expect(typeof RUN_CLOSE_RULES[SEEDING_TASK]!.artifact).toBe('function');
@@ -128,7 +128,7 @@ describe('the four run outcomes', () => {
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task)).sort());
     expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
   });
 
@@ -140,7 +140,7 @@ describe('the four run outcomes', () => {
     for (const task of OUTCOME_TASKS.filter((t) => t !== MAP_TASK)) {
       const rule = RUN_CLOSE_RULES[task];
       expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION), skipHolds: typeof rule?.skipHolds })
-        .toEqual({ task, artifact: 'function', skip: true, skipHolds: 'function' });
+        .toEqual({ task, artifact: 'function', skip: task !== EXTRACTION_TASK, skipHolds: task === EXTRACTION_TASK ? 'undefined' : 'function' });
     }
     // A rule that accepts the skip reads the server's own answer for it; no rule reads one for a skip it does not accept.
     for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {

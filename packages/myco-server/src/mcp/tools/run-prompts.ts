@@ -1,65 +1,21 @@
-/**
- * `myco_run_prompts`: the extraction cursor.
- *
- * A page shares space between the newest completed session and older work,
- * and `mark_processed` removes one from the next page. Which origins the
- * page carries is the read layer's decision (`read/prompts.ts`), not an
- * argument: a caller-settable read discipline is one waiting to be turned off.
- *
- * A prompt's body is opt-in. Server text may live in a blob, so a page without
- * it reads no bodies at all, and grouping a session's prompts costs nothing.
- * A page with bodies is recorded as the run's read of each session it carries.
- */
-import { listUnprocessedPrompts } from '../../read/prompts.js';
-import { recordServedPrompts } from '../../core/served-material.js';
+/** A run acknowledges only material its ledger admits. */
 import { acknowledgePrompt } from '../../core/extraction-acks.js';
-import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
+import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ID_CHARS = 192;
-const MAX_CURSOR_CHARS = 2048;
-
 const str = (v: unknown, max: number): string | undefined =>
   (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
-const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
 
 export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, 'myco_run_prompts');
+  if (input.op !== 'mark_processed') return failure('unknown prompt operation');
   const scope = { projectId: ctx.projectId };
   const { db } = ctx.env;
-
-  if (input.op === 'mark_processed') {
-    const servedId = str(input.served_id, MAX_ID_CHARS);
-    const promptId = str(input.prompt_id, MAX_ID_CHARS);
-    if (input.served_id !== undefined && servedId === undefined) return failure('served_id must be a nonempty item id');
-    if (servedId === undefined && promptId === undefined) return failure('served_id is required for op: mark_processed; prompt_id is accepted for compatibility');
-    if (servedId !== undefined && input.prompt_id !== undefined) return failure('provide served_id or prompt_id, not both');
-    return acknowledgePrompt(db, scope, run.runId, servedId === undefined ? { promptId: promptId! } : { servedId }, ctx.now);
-  }
-
-  const cursor = input.cursor === undefined ? undefined : str(input.cursor, MAX_CURSOR_CHARS);
-  if (input.cursor !== undefined && cursor === undefined) return failure('cursor is the next_cursor from a previous page');
-  const limit = Math.min(Math.max(int(input.limit) ?? run.window.promptPage, 1), run.window.promptPage);
-  const page = await listUnprocessedPrompts(db, scope, {
-    limit,
-    cursor,
-    includeActive: input.include_active === true,
-    includeText: input.include_text === true,
-  });
-  const rows = input.include_text === true
-    ? await recordServedPrompts(db, scope, run.runId, page.rows, ctx.now)
-    : page.rows;
-  // A page with bodies is the run reading those sessions; a page of ids alone reads none of them.
-  if (input.include_text === true) noteRunReads(ctx, page.rows.map((row) => row.sessionId));
-  return {
-    prompts: rows.map((row) => ({
-      ...('servedId' in row ? { served_id: row.servedId } : {}),
-      prompt_id: row.promptId,
-      session_id: row.sessionId,
-      created_at: row.createdAt,
-      ended_at: row.endedAt,
-      ...(row.text === undefined ? {} : { text: row.text, response: row.response ?? null }),
-    })),
-    next_cursor: page.cursor,
-  };
+  const servedId = str(input.served_id, MAX_ID_CHARS);
+  const promptId = str(input.prompt_id, MAX_ID_CHARS);
+  if (input.served_id !== undefined && servedId === undefined) return failure('served_id must be a nonempty item id');
+  if (servedId === undefined && promptId === undefined) return failure('served_id is required for op: mark_processed; prompt_id is accepted for compatibility');
+  if (servedId !== undefined && input.prompt_id !== undefined) return failure('provide served_id or prompt_id, not both');
+  return acknowledgePrompt(db, scope, run.runId, servedId === undefined ? { promptId: promptId! } : { servedId }, ctx.now);
 }

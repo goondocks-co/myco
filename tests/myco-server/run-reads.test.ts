@@ -82,21 +82,6 @@ describe('recording what a run read', () => {
     expect(reads()).toEqual([expect.objectContaining({ runId: 'run_t', sessionId: 'sess_1', receivedAt: first })]);
   });
 
-  it('records the sessions a page of prompt bodies carried, and nothing for a page of ids alone', async () => {
-    const { dispatch, call, reads, prompt } = await setup();
-    prompt('p1', 'sess_1');
-    prompt('p2', 'sess_1');
-    prompt('p3', 'sess_2');
-    const harness = await dispatch('run_x', SWEEP, { sessionId: null });
-    expect((await call(harness.token, 'myco_run_prompts', { op: 'unprocessed' })).result.prompts).toHaveLength(3);
-    expect(reads()).toEqual([]);
-    expect((await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).result.prompts).toHaveLength(3);
-    expect(reads()).toEqual([
-      expect.objectContaining({ runId: 'run_x', sessionId: 'sess_1' }),
-      expect.objectContaining({ runId: 'run_x', sessionId: 'sess_2' }),
-    ]);
-  });
-
   it('records nothing for a member reading sessions, and nothing for a call the run surface refuses', async () => {
     const { member, dispatch, call, reads, prompt } = await setup();
     prompt('p1', 'sess_1');
@@ -196,7 +181,7 @@ describe('recording what a run read', () => {
 
 describe('what a member reads off a session and a run', () => {
   it('serves a session the runs that read it and what came of it, and a run what it read and what it wrote, to a member who is not an administrator', async () => {
-    const { dispatch, call, prompt, spore, sqlite, get } = await setup();
+    const { dispatch, call, prompt, spore, sqlite, get, db } = await setup();
     seedMemberRoleAccount(sqlite);
     sqlite.run(`UPDATE sessions SET title = NULL WHERE session_id = 'sess_1'`);
     prompt('p1', 'sess_1');
@@ -205,7 +190,7 @@ describe('what a member reads off a session and a run', () => {
     await call(titling.token, 'myco_run_sessions', { op: 'material' });
     expect((await call(titling.token, 'myco_run_sessions', { op: 'title', title: 'A title', summary: 'A summary' })).result.written).toBe(true);
     const sweep = await dispatch('run_x', SWEEP, { sessionId: null, startedAt: NOW - 1_000 });
-    await call(sweep.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+    await recordRunReads(db, {projectId:'proj_1'}, {runId:'run_x',tokenId:sweep.tokenId,sessionIds:['sess_1','sess_2'],receivedAt:NOW});
     spore('sp_1', 'sess_1', 'run_x', 'proj_1', NOW + 1);
     spore('sp_2', 'sess_2', 'run_x', 'proj_1', NOW + 2);
     spore('sp_m', 'sess_1', 'mem_machine_1', 'proj_1', NOW + 3);
@@ -303,7 +288,7 @@ describe('what a session\'s outcome counts and lists', () => {
     const other = await dispatch('run_other', TITLING, { sessionId: 'sess_2', startedAt: NOW - 2_000 });
     await call(other.token, 'myco_run_sessions', { op: 'material' });
     expect((await call(other.token, 'myco_run_sessions', { op: 'title', title: 'T', summary: 'S' })).result.written).toBe(true);
-    await call(other.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+    await recordRunReads(db, {projectId:'proj_1'}, {runId:'run_other',tokenId:other.tokenId,sessionIds:['sess_1'],receivedAt:NOW});
     // A run dispatched on this session whose only landed write is another tool's.
     await dispatch('run_marked', TITLING, { startedAt: NOW - 1_000 });
     await recordRunWrite(db, { projectId: 'proj_1' }, { runId: 'run_marked', toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: NOW, detail: { prompt_id: 'p1' } });
@@ -373,6 +358,7 @@ describe('retention', () => {
     const source = await setup();
     const harness = await source.dispatch('run_x', SWEEP, { sessionId: null });
     await recordRunReads(source.db, { projectId: 'proj_1' }, { runId: 'run_x', tokenId: harness.tokenId, sessionIds: ['sess_1'], receivedAt: NOW });
+    source.sqlite.run("UPDATE agent_runs SET status='completed',completed_at=? WHERE id='run_x'", [NOW]);
     const backup = await createBackup(source.db, source.bucket, { producer: 'test', now: NOW });
 
     const target = sqliteEnv();

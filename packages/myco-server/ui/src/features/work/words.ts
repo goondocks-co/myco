@@ -437,17 +437,9 @@ export function failureDetail(failure: WorkRun['failure'] | undefined): string |
 
 /** What a task's own condition for running says about a run started now, met or not, by the condition's name. */
 const READINESS_WORDS: Readonly<Record<string, { met: string; unmet: string }>> = {
-  'has-unprocessed-prompts': {
-    met: 'There are new sessions to learn from.',
-    unmet: 'There are no new sessions to learn from, so it will likely find nothing new to keep.',
-  },
   'has-capture-since-map': {
     met: 'New sessions have arrived since the code map was last updated.',
     unmet: 'The code map is current: no new sessions have arrived since it was last updated, so it will likely change nothing.',
-  },
-  'has-recent-live-prompts': {
-    met: 'A recent session has prompts nobody has learned from yet.',
-    unmet: 'No recent session has prompts left to learn from.',
   },
 };
 

@@ -42,7 +42,6 @@ import { processedBody } from '@myco-server-worker/read/processed.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { sessionMaterial, titleReadySessions } from '@myco-server-worker/core/titling.js';
 import { BLOB_RESERVATION_TTL_MS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
-import { listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1272,7 +1271,7 @@ describe('parsing a held transcript', () => {
     expect((await sessionMaterial(serverEnv.db, PROJECT, SESSION)).map((row) => row.prompt)).toEqual([
       'Read the project rules heading', 'Wait for the second turn before summarizing',
     ]);
-    expect((await listUnprocessedPrompts(serverEnv.db, { projectId: PROJECT })).rows).toHaveLength(2);
+    expect(await serverEnv.db.prepare('SELECT SUM(eligible_prompts) AS n FROM session_read_facts WHERE project_id=?').bind(PROJECT).first()).toEqual({ n: 2 });
     expect(await titleReadySessions(titledEnv, NOW + SESSION_END_SETTLE_MS + 2)).toBe(0);
     expect(count(sqlite, 'agent_runs')).toBe(1);
     expect(target(sqlite).fidelity).toBe('no_tool_results');

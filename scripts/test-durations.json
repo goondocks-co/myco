@@ -1,5 +1,11 @@
 {
   "sources": [
+    "local: vault PR8 recovery context on pinned Bun1.4.0 darwin-arm64/vendored SQLite3.53.0. Unchanged three recovery owner files plus expanded admission55pass measured35917ms runner; admission15227.67ms summed bodies with six staged41/101 in-flight controls and forged/borrowed/expired/replaced/aliased authority controls, file weight35000ms covers twice plus startup. Recovery owners backup-cli3768.43ms, local-recovery9161.73ms and cloudflare-recovery5166.65ms retain existing weights. Shared live/hosted/source focus136pass58646ms; hosted40046.17ms bodies retains95000ms weight. Boundary/legacy75pass5existing skips61071ms; frozen fixture unchanged. No new testfile/parity scenario or changed deadline/assertion.",
+    "local: vault PR8 correction2 legacy-applier owner repair, pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53.0. All20 server-bin contract cases passed in6873ms runner; new allowed102->104 partial-step rollback/retry case measured313.26ms. Existing9437ms file weight retained above observed file wall; historical step48 data/shape/torn-prefix assertions retained through the103 stepping-stone fixture. No new test file/parity scenario and no changed deadline.",
+    "local: vault PR8 correction2, pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53.0, npm test five-owner focus97pass in63331ms runner. Native stepping-stone/allowed-path matrix measured11239.67ms summed bodies (25000ms file weight); hosted schema/update including converted concurrent-dispatch gates measured44052.26ms (95000ms file weight). Both weights cover twice measured bodies plus startup. No new committed test file or parity scenario, no deadline or assertion changed.",
+    "local: vault PR8 correction1, pinned Bun1.4.0 darwin-arm64 with vendored SQLite3.53.0. Expanded native admission matrix plus protocol cases measured9355.50ms summed test bodies;20000ms file weight covers twice observed duration plus startup. Hosted schema/update matrix measured38305.82ms summed bodies and retains80000ms allowance. Six CI-owner suites126pass measured13691ms runner; source boundary/admission74pass measured31461ms. No new committed test file or parity scenario; no deadline or assertion ceiling changed.",
+    "local: vault PR8 after #1939 merge0e0a78563, pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53. Frozen-input metadata projection verified90 assertions in6370ms without candidate result generation. Exact legacy/boundary/admission selection measured70287ms runner,75pass/5PR-time skips; legacy90000ms and boundary60000ms existing allowances retained. Six selected parity scenarios passed both native/local Cloudflare in173578ms including boots; existing per-scenario allowances retained. Repair node group46pass/1opt-in skip measured86350ms and the separate steady-state case passed after rekeying two unchanged T origins. No new committed test file/scenario; admission6000ms measured allowance retained, no deadline or assertion ceiling changed.",
+    "local: vault evolution PR8 on pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53.0. Admission native/local-D1 plus native migration four-case file measured2386.01ms summed bodies in the focused run; 6000ms weight covers twice that plus startup. Hosted schema/update file measured29243.31ms restored,39079.03ms during initial recovery checks; 80000ms weight covers twice observed maximum plus startup. Removed pure thin-page/history files and their solo registration. Kept acknowledgement scale bodies40819.22ms/35514.33ms retain CI weights123450/125703ms. Selected extraction/session-citation/learning-pause parity passed both targets in64700ms including boots; selected clock parity passed in22640ms; existing parity allowances retained, no new scenario or changed deadline.",
     "local: #1724 PR C correction1, pinned Bun1.4.0 darwin-arm64 and repository SQLite3.53.0. Expanded harness-attribution11 cases measured1468ms runner; file weight5000ms covers twice measured runner plus startup. New hook placement then wake native/local-D1 scenario passed2 cases in23189ms runner;60000ms weight covers twice target boots plus startup. Existing scenario weights and all assertions/deadlines retained; the ordered replay composes the actual hookPlacement and tick scenarios on fresh dedicated targets. All30 mutation controls caught, including old context-answer timestamps reproducing retention count contamination.",
     "local: #1724 PR C rebase onto0e0a78563, pinned Bun1.4.0 darwin-arm64. Merged duration keys individually, preserving all PR4b.1a weights and measured sources. Boundary plus harness-health79 cases measured27608ms runner; scoped-silence native/local-D1 parity2 cases measured25244ms runner. Existing60000ms boundary and parity weights retained; no new test file or parity scenario, no deadline or assertion changes. Six merged native/local-D1 harness activity, view-read closure and view-store cases passed in64320ms runner using the repository SQLite3.53.0 library; shared-TMPDIR283 cases passed in22171ms runner. Scenario weights retained.",
     "local: #1724 PR C pinned Bun1.4.0 darwin-arm64. New tests/symbionts/harness-attribution.test.ts measured5pass in588ms runner (native two-Deployment health case251.36ms);3000ms weight covers twice runner plus startup. New harness deployment activity parity ran2 native/local-D1 cases in22126ms runner;60000ms covers twice both target boots and startup. Existing owning weights retained; no deadline or assertion changes. Final expanded scoped-silence/replacement/trust-idempotence parity measured20452ms for both native/local-D1 targets;60000ms retained. Added fixed-clock settlement, partial-publication, legacy-pending migration and logout/rejoin cases in the existing keep-current file.",
@@ -522,8 +528,6 @@
     "tests/myco-server/extraction-coverage-budget.test.ts": 123450,
     "tests/myco-server/extraction-coverage-steady-state-budget.test.ts": 125703,
     "tests/myco-server/extraction-coverage.test.ts": 1500,
-    "tests/myco-server/extraction-history-budget.test.ts": 142417,
-    "tests/myco-server/extraction-prompts.test.ts": 134,
     "tests/myco-server/fleet-correction.test.ts": 25,
     "tests/myco-server/foreign-lineage-authority.test.ts": 896,
     "tests/myco-server/gates.test.ts": 5709,
@@ -819,7 +823,7 @@
     "tests/server/cloudflare-record-messages.test.ts": 4000,
     "tests/server/cloudflare-recovery-database.test.ts": 3511,
     "tests/server/cloudflare-recovery.test.ts": 7942,
-    "tests/server/cloudflare-schema-update.test.ts": 8720,
+    "tests/server/cloudflare-schema-update.test.ts": 95000,
     "tests/server/cloudflare-stage.test.ts": 742,
     "tests/server/compose-retired-cli.test.ts": 354,
     "tests/server/deployment-binding-isolation.test.ts": 173,
@@ -941,7 +945,8 @@
     "tests/meta/view-read-boundary.test.ts": 60000,
     "tests/myco-server/view-read-legacy.test.ts": 90000,
     "tests/server/view-read-operators.test.ts": 10000,
-    "tests/symbionts/harness-attribution.test.ts": 5000
+    "tests/symbionts/harness-attribution.test.ts": 5000,
+    "tests/myco-server/thin-learning-admission.test.ts": 35000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

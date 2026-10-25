@@ -53,7 +53,7 @@ export const scheduledTasks: ParityScenario = {
     expect(await target.sql(`SELECT id FROM agent_runs WHERE task = 'embedding-reconcile' AND status IN ('pending','running','queued')`)).toEqual([]);
 
     // Extraction is enabled at every awake state for this scenario.
-    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts', runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-capture-since-map', runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
     const first = await wake();
     expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });
     expect(await runs(target.projectId)).toEqual([{ status: 'queued', harness: null, timeoutSeconds: 900, reason: null }]);
@@ -65,7 +65,8 @@ export const scheduledTasks: ParityScenario = {
 
     // The ceiling: one a day, the interval past — a skipped row names it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ${now} WHERE task = 'canopy-map'`);
-    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts', runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1, reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+    await target.sql(`UPDATE sessions SET last_received_at=(SELECT MAX(started_at)+1 FROM agent_runs WHERE task='canopy-map') WHERE project_id=${lit(target.projectId)} AND session_id='clock-live-session'`);
+    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-capture-since-map', runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1, reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
     const atCeiling = [
       { status: 'completed', harness: null, timeoutSeconds: 900, reason: null },

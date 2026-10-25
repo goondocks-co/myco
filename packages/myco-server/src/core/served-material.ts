@@ -7,14 +7,19 @@ import { LEDGER_ENABLED_AT } from '../db/schema-v95.js';
 import { writeGuardStore } from './write-guard-store.js';
 import { notTombstonedSql } from './tombstones.js';
 import type { ReadScope } from '../read/scope.js';
-import type { UnprocessedPrompt } from '../read/prompts.js';
+
+/** A captured material item identified by the canonical prompt and session ids. */
+export interface PromptMaterial {
+  promptId: string; sessionId: string; createdAt: number; endedAt: number | null;
+  text?: string | null; response?: string | null;
+}
 
 /** A body page's item with its immutable serving identity. */
-export type ServedPrompt = UnprocessedPrompt & { servedId: string };
+export type ServedPrompt = PromptMaterial & { servedId: string };
 
 /** Commit the entire bounded body page before its caller can answer it. */
 export async function recordServedPrompts(
-  db: RelationalStore, scope: ReadScope, runId: string, rows: readonly UnprocessedPrompt[], now: number, instanceId: string | null = null,
+  db: RelationalStore, scope: ReadScope, runId: string, rows: readonly PromptMaterial[], now: number, instanceId: string | null = null,
 ): Promise<ServedPrompt[]> {
   if (rows.length === 0) return [];
   const items = JSON.stringify([...new Map(rows.map(({ promptId, sessionId }) => [promptId, { promptId, sessionId, servedId: crypto.randomUUID() }])).values()]);

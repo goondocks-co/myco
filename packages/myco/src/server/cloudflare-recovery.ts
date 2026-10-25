@@ -1,3 +1,4 @@
+import { assertThinLearningDrained } from '@myco-server-worker/db/thin-learning-admission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -14,6 +15,7 @@ import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/ato
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { copyRecoveryBundle, copyRecoveryObjects, preparedObjectKeys, restoredFleet, verifyRecoveryBundle } from './recovery-bundle.js';
+import { withRecoveryDatabaseCopy } from './recovery-copy.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { assertRecoveryTenantChoice, prepareRecoveredTenant, type RecoveryTenantMode } from '@myco-server-worker/core/recovered-tenant.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
@@ -127,10 +129,8 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     if (saved.some((secret) => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
   } finally { db.close(); }
   if (held().preparedFingerprint === undefined) {
-    const staging = fs.mkdtempSync(path.join(root, '.recovery-data-'));
-    try {
-      const prepared = path.join(staging, 'myco.sqlite');
-      fs.copyFileSync(path.join(artifact, 'myco.sqlite'), prepared, fs.constants.COPYFILE_EXCL);
+    await withRecoveryDatabaseCopy(path.join(artifact, 'myco.sqlite'), manifest.snapshot!.database, async copy => {
+      const prepared = copy.databasePath;
       const data = new Database(prepared);
       try {
         const store = sqliteRelationalStore(data);
@@ -142,10 +142,11 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       // The one migration applier brings the copy to the bundled schema, so the import stamps every step it holds and
       // the destination applies none twice. The source's object lifecycle is cleared, and every registered blob is
       // named under one fresh restore generation the objects are copied to.
-      migrateOnly(prepared, options.native);
+      migrateOnly(prepared, options.native, copy);
       const lifecycle = new Database(prepared);
       try {
         const store = sqliteRelationalStore(lifecycle);
+        await assertThinLearningDrained(store);
         await prepareRecoveredTenant(store, options.tenantMode ?? 'replacement', Date.now());
         await resetRecoveryLedger(store);
         await assignRestoreGeneration(store, crypto.randomUUID());
@@ -155,7 +156,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       fs.renameSync(prepared, databasePath);
       syncDirectoryForDurability(root);
       confirmed({ preparedFingerprint: await databaseFingerprint(databasePath) });
-    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+    });
   }
   if (await databaseFingerprint(databasePath) !== held().preparedFingerprint) throw new Error('prepared recovery database changed; no remote data was written');
   const bare = { ...options, configDir: root };

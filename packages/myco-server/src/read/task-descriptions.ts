@@ -15,7 +15,8 @@ import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { EXTRACTION_RULES } from '../core/extraction-rules.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
 import { runAllowlist } from '../mcp/run-allowlist.js';
 
@@ -47,6 +48,7 @@ export const startableByHand = (task: string): boolean => (RETAINED_TASKS as rea
 export function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
   const builder = inputBuilderFor(task);
   if (builder !== null) return builder.template(patterns);
+  if (UNLANDED_TASKS.includes(task)) return { promptTemplate: null, standingRules: task === EXTRACTION_TASK ? EXTRACTION_RULES : null, templateVariants: [] };
   if (!RUNTIME_SERVED_TASKS.includes(task)) throw new Error(`No task template for ${task}`);
   return { promptTemplate: null, standingRules: null, templateVariants: [] };
 }

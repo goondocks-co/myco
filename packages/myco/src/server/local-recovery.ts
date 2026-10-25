@@ -1,3 +1,4 @@
+import { assertThinLearningDrained } from '@myco-server-worker/db/thin-learning-admission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -9,9 +10,11 @@ import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worke
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import { assertRecoveryTenantChoice, prepareRecoveredTenant, type RecoveryTenantMode } from '@myco-server-worker/core/recovered-tenant.js';
+import type { PrivateRecoveryCopy } from '@myco-server-worker/platform/bun/private-recovery-copy.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { copyRecoveryBundle, preparedObjectKeys, restoredFleet } from './recovery-bundle.js';
+import { withRecoveryDatabaseCopy } from './recovery-copy.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
 import { LocalVolume } from './local-volume.js';
 import {
@@ -25,12 +28,13 @@ import {
  * move to the keys the database now registers, so the volume published is the layout its rows name. Answers the schema
  * version the prepared volume holds.
  */
-async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined, tenantMode: RecoveryTenantMode): Promise<number> {
-  migrateOnly(staging.databasePath, native);
+async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined, tenantMode: RecoveryTenantMode, recovery: PrivateRecoveryCopy): Promise<number> {
+  migrateOnly(staging.databasePath, native, recovery);
   const db = new Database(staging.databasePath);
   let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
+    await assertThinLearningDrained(store);
     await prepareRecoveredTenant(store, tenantMode, Date.now());
     await resetRecoveryLedger(store);
     await assignRestoreGeneration(store, crypto.randomUUID());
@@ -71,22 +75,26 @@ export async function restoreLocalDeployment(options: {
       const carried = restoredFleet(manifest.snapshot!.configuration);
       const published = carried.fleet === null ? record : { ...record, fleet: carried.fleet };
       assertRecordServable(published);
-      const db = new Database(staging.databasePath);
-      let rebuildEmbeddings: boolean;
-      try {
-        const store = sqliteRelationalStore(db);
-        await holdRecoveredSwitch(store, Date.now());
-        const heldSecrets = await deploymentSecretStore(store, key).list();
-        if (heldSecrets.some((secret) => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
-        rebuildEmbeddings = manifest.source.target === 'cloudflare'
-          || db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_vectors'").get() === null;
-        if (rebuildEmbeddings) {
-          const projects = db.query<{ project_id: string }, []>('SELECT project_id FROM projects').all();
-          for (const project of projects) await resetEmbeddingIndex(store, project.project_id);
-          options.report?.('Embedding rebuild required before semantic search is ready');
-        }
-      } finally { db.close(); }
-      const schemaVersion = await prepareRestoredObjects(staging, options.native, options.tenantMode ?? 'replacement');
+      const { schemaVersion, rebuildEmbeddings } = await withRecoveryDatabaseCopy(staging.databasePath, manifest.snapshot!.database, async copy => {
+        const db = new Database(copy.databasePath);
+        let rebuildEmbeddings: boolean;
+        try {
+          const store = sqliteRelationalStore(db);
+          await holdRecoveredSwitch(store, Date.now());
+          const heldSecrets = await deploymentSecretStore(store, key).list();
+          if (heldSecrets.some((secret) => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
+          rebuildEmbeddings = manifest.source.target === 'cloudflare'
+            || db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_vectors'").get() === null;
+          if (rebuildEmbeddings) {
+            const projects = db.query<{ project_id: string }, []>('SELECT project_id FROM projects').all();
+            for (const project of projects) await resetEmbeddingIndex(store, project.project_id);
+            options.report?.('Embedding rebuild required before semantic search is ready');
+          }
+        } finally { db.close(); }
+        const schemaVersion = await prepareRestoredObjects({ ...staging, databasePath: copy.databasePath }, options.native, options.tenantMode ?? 'replacement', copy);
+        fs.renameSync(copy.databasePath, staging.databasePath);
+        return { schemaVersion, rebuildEmbeddings };
+      });
       writeLocalSecrets(secrets, staging);
       writeLocalRecord(published, staging);
       options.report?.(carried.report);

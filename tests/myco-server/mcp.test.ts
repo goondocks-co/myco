@@ -1,3 +1,4 @@
+import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
  * meets it. JSON-RPC in, JSON-RPC out; every refusal an error envelope whose
@@ -659,7 +660,8 @@ async function runSetup(options: Parameters<typeof sqliteEnv>[0] = {}) {
     return { status: res.status, body: await res.json() as any };
   };
   const writes = (from: number) => e.executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql));
-  return { ...e, harness, member, dispatch, call, list, writes };
+  const serve = (items = [{promptId:'p_1',sessionId:'sess_1',createdAt:RUN_NOW,endedAt:RUN_NOW}]) => recordServedPrompts(e.db, {projectId:'proj_1'}, 'run_1', items, RUN_NOW);
+  return { ...e, harness, member, dispatch, call, list, writes, serve };
 }
 
 
@@ -817,23 +819,19 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it("authorizes extraction save and consolidate only from this run's served sessions", async () => {
-    const { harness, member, dispatch, call, sqlite, executed } = await runSetup();
+    const { harness, member, dispatch, call, sqlite, executed, serve } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
     const args = { op: 'save', type: 'gotcha', content: 'Learned from the whole session', session_id: 'sess_1' };
     expect((await call(harness.token, 'myco_spores', { ...args, session_id: undefined })).result)
       .toEqual({ ok: false, error: 'session_id is required for extraction spore writes' });
     expect((await call(harness.token, 'myco_spores', args)).result)
       .toEqual({ ok: false, error: 'session_id not served to this run' });
-    const ids = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed' })).result;
-    expect(ids.prompts).toHaveLength(1);
-    expect(ids.prompts[0].served_id).toBeUndefined();
     expect(sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
     const from = executed.length;
-    const bodies = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).result;
-    expect(bodies.prompts).toEqual([expect.objectContaining({ prompt_id: 'p_1', session_id: 'sess_1', served_id: expect.any(String), text: 'hello' })]);
+    const [served] = await serve();
     expect(executed.slice(from).filter(sql => /INSERT INTO run_served_material/.test(sql))).toHaveLength(1);
-    expect(sqlite.query('SELECT served_id, run_id, session_id, instance_id, record_id, source_transcript_id, source_offset, source_end FROM run_served_material').all())
-      .toEqual([{ served_id: bodies.prompts[0].served_id, run_id: 'run_1', session_id: 'sess_1', instance_id: null, record_id: 'p_1', source_transcript_id: null, source_offset: null, source_end: null }]);
+    expect(sqlite.query('SELECT served_id,run_id,session_id,record_id FROM run_served_material').all())
+      .toEqual([{served_id:served!.servedId,run_id:'run_1',session_id:'sess_1',record_id:'p_1'}]);
     const saved = (await call(harness.token, 'myco_spores', args)).result;
     expect(saved.id).toEqual(expect.any(String));
     const combined = (await call(harness.token, 'myco_spores', {
@@ -863,7 +861,7 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('admits every served session regardless of the dispatch-named session and refuses an unserved session', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { sessionId: 'sess_1' });
     for (const sessionId of ['sess_2', 'sess_3']) {
       sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
@@ -871,8 +869,7 @@ describe('POST /mcp over a run credential', () => {
     }
     sqlite.run(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
       VALUES ('proj_1','sess_2','p_2','e_2','second session','user','h_2',?,?,'tok_1',?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
-    const page = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).result;
-    expect(page.prompts.map((row: { session_id: string }) => row.session_id).sort()).toEqual(['sess_1', 'sess_2']);
+    await serve([{promptId:'p_1',sessionId:'sess_1',createdAt:RUN_NOW,endedAt:RUN_NOW},{promptId:'p_2',sessionId:'sess_2',createdAt:RUN_NOW,endedAt:RUN_NOW}]);
     const args = { op: 'save', type: 'gotcha', content: 'A finding from the second session', session_id: 'sess_2' };
     const saved = (await call(harness.token, 'myco_spores', args)).result;
     expect(saved.id).toEqual(expect.any(String));
@@ -885,7 +882,7 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('refuses citation authority held only by another Project with the same run and session ids', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP);
     sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES ('proj_2','sess_1','m1','tok_1',1,1)`);
@@ -933,14 +930,14 @@ describe('POST /mcp over a run credential', () => {
   it('rechecks a served citation at the save and consolidate commit after a concurrent tombstone', async () => {
     for (const op of ['save', 'consolidate']) {
       let armed = false;
-      const { harness, dispatch, call, sqlite } = await runSetup({ onSql(sql, store) {
+      const { harness, dispatch, call, sqlite, serve } = await runSetup({ onSql(sql, store) {
         if (!armed || !/INSERT INTO spores/.test(sql)) return;
         armed = false;
         store.run(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by)
           VALUES ('proj_1','sess_1','deleted',1,'mem_machine_1')`);
       } });
       await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
-      await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+      await serve();
       sqlite.run(`INSERT INTO spores(project_id,id,agent_id,session_id,observation_type,content,created_at)
         VALUES ('proj_1','source','myco-agent','sess_1','gotcha','existing',1)`);
       armed = true;
@@ -954,20 +951,17 @@ describe('POST /mcp over a run credential', () => {
     }
   });
 
-  it('fails the body page before answering when its ledger insert fails', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+  it('fails serving evidence atomically when its ledger insert fails', async () => {
+    const { harness, dispatch, sqlite, serve } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP);
     sqlite.exec(`CREATE TRIGGER fail_served BEFORE INSERT ON run_served_material BEGIN SELECT RAISE(ABORT, 'ledger unavailable'); END`);
-    const answer = await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
-    expect(answer.error).toBeDefined();
-    expect(answer.result).toBeUndefined();
-    expect(JSON.stringify(answer.body)).not.toContain('hello');
+    await expect(serve()).rejects.toThrow('ledger unavailable');
     expect(sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
     expect(sqlite.query('SELECT * FROM run_reads').all()).toEqual([]);
   });
 
   it('requires ledger authority at the exact dispatch boundary and preserves old queued and resumed runs', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = await runSetup();
     const boundary = Date.now();
     sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(boundary)]);
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null, startedAt: boundary });
@@ -979,7 +973,7 @@ describe('POST /mcp over a run credential', () => {
     const modern = { op: 'save', type: 'gotcha', content: 'Claimed after the boundary', session_id: 'sess_1' };
     expect((await call(harness.token, 'myco_spores', modern)).result)
       .toEqual({ ok: false, error: 'session_id not served to this run' });
-    await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+    await serve();
     const saved = (await call(harness.token, 'myco_spores', modern)).result;
     expect(saved.id).toEqual(expect.any(String));
     const combined = (await call(harness.token, 'myco_spores', {
@@ -1041,7 +1035,7 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('keeps titling on its dispatch session without requiring extraction citation authority', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = await runSetup();
     await dispatch(harness, 'run_1', 'title-summary');
     sqlite.run(`UPDATE agent_runs SET run_context = ? WHERE id = 'run_1'`, [JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: 300 })]);
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result).toMatchObject({ session_id: 'sess_1', prompt_count: 1 });
@@ -1051,7 +1045,7 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('keeps a seeding write attributed to its run when its dispatch session is absent', async () => {
-    const { harness, dispatch, call, sqlite } = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = await runSetup();
     await dispatch(harness, 'run_1', 'vault-seed', { sessionId: 'sess_missing' });
     const saved = (await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'orphaned dispatch' })).result;
     expect(sqlite.query(`SELECT author, session_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ author: 'run_1', session_id: null });
@@ -1061,9 +1055,9 @@ describe('POST /mcp over a run credential', () => {
     const { harness, dispatch, call, list } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { dryRun: true });
     const tools = (await list(harness.token)).body.result.tools;
-    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores', 'myco_search']);
+    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_sessions', 'myco_run_spores', 'myco_search']);
     expect(tools.find((t: any) => t.name === 'myco_run_spores').inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
-    expect(tools.find((t: any) => t.name === 'myco_run_prompts').inputSchema.properties.op.enum).toEqual(['unprocessed']);
+    expect(tools.find((t: any) => t.name === 'myco_run_prompts')).toBeUndefined();
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x' })).error.data.code).toBe('unknown_tool');
     expect((await call(harness.token, 'myco_run_spores', { op: 'list' })).result).toMatchObject({ total: 0 });
   });

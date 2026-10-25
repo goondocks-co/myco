@@ -3,7 +3,7 @@ const CALL_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   myco_run: { report: 'Reported', state_get: 'Read its saved progress', state_set: 'Saved its progress' },
   myco_run_spores: { list: 'Listed spores', get: 'Read a spore' },
   myco_run_sessions: { list: 'Listed sessions', material: 'Read session material', title: 'Wrote a session title and summary' },
-  myco_run_prompts: { unprocessed: 'Read new prompts', mark_processed: 'Marked a prompt as read' },
+  myco_run_prompts: { mark_processed: 'Marked a prompt as read' },
   myco_spores: { save: 'Saved a spore', supersede: 'Replaced a spore', obsolete: 'Retired a spore', consolidate: 'Combined spores' },
   myco_search: { '*': 'Searched Myco' },
 };
