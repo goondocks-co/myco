@@ -13,7 +13,7 @@ const HOUR = 60 * 60_000;
 const PATH = '/members/harnesses/report';
 
 const fact = (id: string, state: 'ready' | 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed', action?: string, ranAt?: number) =>
-  ({ id, provisioned: true as const, state, ...(action === undefined ? {} : { action }), ...(ranAt === undefined ? {} : { ranAt }) });
+  ({ id, provisioned: true as const, activityScope: 'deployment' as const, state, ...(action === undefined ? {} : { action }), ...(ranAt === undefined ? {} : { ranAt }) });
 
 async function rig(onSql?: (sql: string) => void) {
   const fixture = sqliteEnv(onSql === undefined ? {} : { onSql });
@@ -259,7 +259,7 @@ describe('provisioned harness health', () => {
 
 it('accepts held tools as informational wiring without repair attention while preserving capture-silence attention', async () => {
   const r = await rig();
-  const held = { id: 'claude-code', provisioned: true as const, state: 'held_elsewhere' as const, toolsDeployment: 'https://other.myco.example', ranAt: NOW };
+  const held = { activityScope: 'deployment' as const, id: 'claude-code', provisioned: true as const, state: 'held_elsewhere' as const, toolsDeployment: 'https://other.myco.example', ranAt: NOW };
   expect(SERVER_FEATURES).toContain(HARNESS_HELD_ELSEWHERE_FEATURE);
   r.session('machine_1', 'old_claude', 'claude-code', NOW - 2 * HARNESS_SILENT_MS);
   const response = await r.post(r.token1, { harnesses: [held] });
@@ -274,4 +274,44 @@ it('accepts held tools as informational wiring without repair attention while pr
   expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, toolsDeployment: undefined }] })).toBeNull();
   expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, state: 'ready' }] })).toBeNull();
   expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, action: 'Provision it' }] })).toBeNull();
+});
+
+it('legacy activity cannot trigger silence and scoped replacement clears earlier use, including a trust hold', async () => {
+  const r = await rig();
+  r.session('machine_1', 'old', 'codex', NOW - 2 * HARNESS_SILENT_MS);
+  r.session('machine_1', 'active_other', 'cursor', NOW);
+  const scoped = fact('codex', 'ready', undefined, NOW);
+  const { activityScope: _scope, ...legacy } = scoped;
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [legacy] }, NOW);
+  expect(await r.attention()).toEqual([]);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [scoped] }, NOW);
+  expect((await r.attention()).map(item => item.kind)).toEqual(['harness_capture_silent']);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);
+  expect(await r.attention()).toEqual([]);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve capture.', NOW)] }, NOW);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW + 1);
+  expect((await provisionedHarnessHealth(r.fixture.db))[0]).toMatchObject({ state: 'trust_required', activityScope: 'deployment' });
+  expect((await provisionedHarnessHealth(r.fixture.db))[0].ranAt).toBeUndefined();
+  expect(parseProvisionedHarnessReport({ harnesses: [{ ...scoped, activityScope: 'unavailable' }] })).toBeNull();
+  expect(parseProvisionedHarnessReport({ harnesses: [{ ...scoped, activityScope: 'global' }] })).toBeNull();
+});
+
+it('unscoped use of another harness cannot establish this Deployment machine activity', async () => {
+  const r = await rig();
+  r.session('machine_1', 'old_scoped', 'codex', NOW - 2 * HARNESS_SILENT_MS);
+  const { activityScope: _scope, ...legacy } = fact('cursor', 'ready', undefined, NOW);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready', undefined, NOW - 2 * HOUR), legacy] }, NOW);
+  expect(await r.attention()).toEqual([]);
+});
+
+it('keeps a confirmed repair generation confirmed across later activity reports while other destinations wait', async () => {
+  const r = await rig();
+  const held = { ...fact('codex', 'trust_required', 'Approve capture.'), hookRepairAt: NOW - HOUR };
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [held] }, NOW - 100);
+  r.session('machine_1', 'confirmed', 'codex', NOW - 50);
+  expect(await r.attention()).toEqual([]);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [{ ...held, ranAt: NOW }] }, NOW);
+  expect(await r.attention()).toEqual([]);
+  await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [{ ...held, hookRepairAt: NOW + 1 }] }, NOW + 1);
+  expect(await r.attention(NOW + 1)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', state: 'trust_required', since: NOW + 1 })]);
 });

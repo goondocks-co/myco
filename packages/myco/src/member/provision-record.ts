@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
+import { readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** The record, under the member home. */
@@ -23,6 +24,8 @@ export interface ProvisionRecord {
   binaries?: Record<string, string>;
   /** Hook trust actions waiting to reach the Deployment. */
   pendingTrust?: Record<string, { action: string; at: number }>;
+  /** The last issued hook repair generation, retained after acknowledgement. */
+  hookRepairGeneration?: number;
   /** Each agent's Deployments awaiting configuration logout reconciliation. */
   pendingLogout?: Record<string, string[]>;
   at: number;
@@ -30,6 +33,27 @@ export interface ProvisionRecord {
 
 export function provisionRecordPath(mycoHome: string): string {
   return path.join(mycoHome, PROVISION_RECORD);
+}
+
+const hookRepairGenerationPath = (mycoHome: string): string => path.join(mycoHome, 'member', 'hook-repair-generation.json');
+
+/** The durable issued generation remains authoritative after partial record publication or logout. */
+export function readHookRepairGeneration(mycoHome: string): number {
+  const read = readPrivateJson<{ generation: number }>(hookRepairGenerationPath(mycoHome));
+  if (!read.ok) {
+    if (read.reason === 'missing') return 0;
+    throw new Error('Hook repair generation is unavailable');
+  }
+  if (!Number.isSafeInteger(read.value?.generation) || read.value.generation < 0) throw new Error('Hook repair generation is invalid');
+  return read.value.generation;
+}
+
+function retainHookRepairGeneration(mycoHome: string, ...records: Array<Pick<ProvisionRecord, 'hookRepairGeneration' | 'pendingTrust'> | null>): number {
+  const held = readHookRepairGeneration(mycoHome);
+  const generation = Math.max(held, ...records.flatMap(record => record === null ? [] : [record.hookRepairGeneration ?? 0, ...Object.values(record.pendingTrust ?? {}).map(trust => trust.at)]));
+  if (!Number.isSafeInteger(generation) || generation < 0) throw new Error('Hook repair generation is invalid');
+  if (generation > held) writePrivateFileAtomic(hookRepairGenerationPath(mycoHome), JSON.stringify({ generation }));
+  return generation;
 }
 
 export class UnreadableProvisionRecordError extends Error {
@@ -54,6 +78,7 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
   try {
     const value = JSON.parse(fs.readFileSync(provisionRecordPath(mycoHome), 'utf8')) as Partial<ProvisionRecord>;
     if (typeof value.version !== 'string' || typeof value.serverUrl !== 'string' || !Array.isArray(value.agents)) return null;
+    if (value.hookRepairGeneration !== undefined && (!Number.isSafeInteger(value.hookRepairGeneration) || value.hookRepairGeneration < 0)) return null;
     const binaries = value.binaries !== null && typeof value.binaries === 'object' && !Array.isArray(value.binaries)
       ? Object.fromEntries(Object.entries(value.binaries).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
     const pendingTrust = value.pendingTrust !== null && typeof value.pendingTrust === 'object' && !Array.isArray(value.pendingTrust)
@@ -62,7 +87,7 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
     const valid = (entry: [string, unknown]): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(url => typeof url === 'string');
     if (strict && value.pendingLogout !== undefined && (entries === null || !entries.every(valid))) return null;
     const pendingLogout = entries === null ? undefined : Object.fromEntries(entries.filter(valid));
-    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
+    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(value.hookRepairGeneration === undefined ? {} : { hookRepairGeneration: value.hookRepairGeneration }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
   } catch {
     return null;
   }
@@ -80,13 +105,14 @@ function withProvisionLock<T>(mycoHome: string, fn: () => T): T {
 
 function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
   const before = readProvisionRecord(mycoHome);
+  const generation = retainHookRepairGeneration(mycoHome, before, record);
   const kept = !opts.replace && before !== null ? before.agents : [];
   const binaries = { ...(!opts.replace && before !== null ? before.binaries : {}), ...record.binaries };
   const pendingTrust = record.pendingTrust ?? (!opts.replace && before !== null ? before.pendingTrust : undefined);
   const pendingLogout = record.pendingLogout ?? (!opts.replace && before !== null ? before.pendingLogout : undefined);
   const discoverAgents = record.discoverAgents ?? (record.agents.length > 0 ? true : !opts.replace ? before?.discoverAgents : undefined);
-  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(discoverAgents === false ? { discoverAgents: false } : {}), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
-  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && before.discoverAgents === next.discoverAgents && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
+  const next: ProvisionRecord = { ...(generation === 0 ? {} : { hookRepairGeneration: generation }), version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(discoverAgents === false ? { discoverAgents: false } : {}), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
+  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && before.discoverAgents === next.discoverAgents && before.hookRepairGeneration === next.hookRepairGeneration && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
   atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;
@@ -103,6 +129,7 @@ export function updateProvisionRecord(mycoHome: string, update: (record: Provisi
     const next = update(before);
     if (next === undefined) return before;
     if (next === null) {
+      retainHookRepairGeneration(mycoHome, before);
       fs.rmSync(provisionRecordPath(mycoHome), { force: true });
       return null;
     }

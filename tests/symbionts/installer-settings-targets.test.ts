@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,6 +18,7 @@ import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { recordProvision, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 
 const SERVER = 'https://myco.example';
+const statesFile = () => path.join(memberHome, 'member', `harness-report-${crypto.createHash('sha256').update(SERVER).digest('hex')}.sha256.states`);
 const KEY = 'chat.tools.terminal.autoApprove';
 const VALUE = { myco: true, 'myco-dev': true };
 const saved = { HOME: process.env.HOME, MYCO_HOME: process.env.MYCO_HOME, CODEX_HOME: process.env.CODEX_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
@@ -260,7 +262,7 @@ it.each(['{"hooks":{"a":1,"a":2}}', '\ufeff{"hooks":{}}', `{"note":"${KEY}","hoo
     expect(run).not.toThrow();
     expect(JSON.parse(fs.readFileSync(claude, 'utf8')).hooks).toBeDefined();
     expect(fs.readFileSync(file, 'utf8')).toBe(raw);
-    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+    expect(JSON.parse(fs.readFileSync(statesFile(), 'utf8'))['claude-code'].state).toBe('ready');
   }
 });
 
@@ -277,7 +279,7 @@ it.each(['{"x":1,"x":2,', '\ufeff{'])('isolates ambiguous retired Copilot settin
     expect(() => runProvision(['claude-code', '--server', SERVER], { mycoHome: memberHome, cwd: home })).not.toThrow();
     expect(() => provisionAgents(['claude-code'], memberHome, SERVER, null)).not.toThrow();
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
-    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+    expect(JSON.parse(fs.readFileSync(statesFile(), 'utf8'))['claude-code'].state).toBe('ready');
     const reports = [...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file));
     expect(reports).toHaveLength(1);
     expect(String(reports[0][0])).toContain('Copilot');
@@ -295,7 +297,7 @@ it('isolates a peer claim refusal per file through keep-current and refresh', ()
     expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
     expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
-    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('repair_failed');
+    expect(JSON.parse(fs.readFileSync(statesFile(), 'utf8'))['claude-code'].state).toBe('repair_failed');
     expect([...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file))).toHaveLength(1);
   } finally { stderr.mockRestore(); warn.mockRestore(); }
 });
@@ -316,7 +318,7 @@ it('isolates an unreadable retired settings file with a typed named refusal', ()
     fs.unlinkSync(hooksFile('claude-code'));
     expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
     expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
-    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+    expect(JSON.parse(fs.readFileSync(statesFile(), 'utf8'))['claude-code'].state).toBe('ready');
     expect(stderr.mock.calls.filter(([text]) => String(text).includes(file))).toHaveLength(1);
   } finally { fail.mockRestore(); stderr.mockRestore(); }
 });
@@ -328,7 +330,7 @@ it('keeps Cursor duplicate-key tolerance when the retired key is absent', () => 
   fs.writeFileSync(file, raw);
   expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
   expect(fs.readFileSync(file, 'utf8')).toBe(raw);
-  expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8')).cursor.state).toBe('ready');
+  expect(JSON.parse(fs.readFileSync(statesFile(), 'utf8')).cursor.state).toBe('ready');
 });
 
 it('gives a typed named refusal for ambiguous Cursor settings with a retired key', () => {
@@ -399,7 +401,7 @@ it('reports ambiguous captured Cursor settings once while recording its failure 
   try {
     expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
     expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
-    const states = JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'));
+    const states = JSON.parse(fs.readFileSync(statesFile(), 'utf8'));
     expect(states.cursor.state).toBe('repair_failed');
     expect(states.cursor.localAction).toContain(file);
     expect(states['claude-code'].state).toBe('ready');

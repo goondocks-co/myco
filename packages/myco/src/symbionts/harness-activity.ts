@@ -64,19 +64,25 @@ function* sqliteSessions(source: Extract<ActivitySource, { kind: 'sqlite' }>, cu
 }
 
 /** Read only per-session identity and time; unavailable sources throw rather than imply idle activity. */
-export function readHarnessActivity(manifest: SymbiontManifest, mycoHome: string, now: number): number | undefined {
+export function readHarnessSessions(manifest: SymbiontManifest, mycoHome: string, now: number): Array<{ id: string; at: number }> {
   const workers = new WorkerSessionEvidence(mycoHome);
   const epoch = workers.epoch(manifest.name);
   if (workers.starting(manifest.name)) throw new Error('Worker session identity is not yet available');
   workers.prune(now);
   const cutoff = now - HARNESS_SILENT_MS;
-  let newest: number | undefined;
+  const activity: Array<{ id: string; at: number }> = [];
   for (const source of manifest.health?.activityLocations ?? []) {
     const sessions = source.kind === 'sqlite' ? sqliteSessions(source, cutoff, mycoHome) : fileSessions(source, manifest, mycoHome);
     for (const { id, at } of sessions) {
-      if (at >= cutoff && !workers.has(manifest.name, id)) newest = Math.max(newest ?? 0, at);
+      if (at >= cutoff && !workers.has(manifest.name, id)) activity.push({ id, at });
     }
   }
   if (workers.starting(manifest.name) || workers.epoch(manifest.name) !== epoch) throw new Error('Worker session identity changed during activity inspection');
-  return newest;
+  return activity;
+}
+
+/** Recent interactive activity across the native store, without a Deployment attribution. */
+export function readHarnessActivity(manifest: SymbiontManifest, mycoHome: string, now: number): number | undefined {
+  const sessions = readHarnessSessions(manifest, mycoHome, now);
+  return sessions.reduce<number | undefined>((latest, session) => Math.max(latest ?? 0, session.at), undefined);
 }

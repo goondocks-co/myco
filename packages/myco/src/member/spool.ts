@@ -686,6 +686,25 @@ export class MemberSpool {
     }
   }
 
+  /** Strict identity evidence includes fully delivered sessions and refuses incomplete reads. */
+  readSessionRoutes(): Array<{ sessionId: string; agent: string }> {
+    assertMemberPathContained(this.dir, this.mycoHome);
+    if (pathIsAbsent(this.dir)) return [];
+    this.assertDestination();
+    const ids = fs.readdirSync(this.dir).filter(file => file.endsWith(STATE_FILE_SUFFIX)).map(file => file.slice(0, -STATE_FILE_SUFFIX.length));
+    return ids.flatMap(sessionId => {
+      const file = sessionStatePath(this.dir, sessionId);
+      assertMemberPathContained(file, this.mycoHome);
+      assertMemberPathContained(bufferLockPath(this.dir, sessionId), this.mycoHome);
+      const read = readSessionStateResult(this.dir, sessionId, { createLock: false });
+      if (!read.ok && read.reason === 'missing') return [];
+      if (!read.ok) throw new Error(`Session route evidence is ${read.reason}: ${file}`);
+      if (read.state.agent === undefined) return [];
+      if (typeof read.state.agent !== 'string' || !/^[A-Za-z0-9._-]+$/.test(read.state.agent)) throw new Error(`Session route agent is invalid: ${file}`);
+      return [{ sessionId, agent: read.state.agent }];
+    });
+  }
+
   /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool that is not there is empty; a lock this process cannot take still throws, as every writer here does. */
   readRecords(sessionId: string): Array<SpoolRecord | null> {
     const file = this.spoolFile(sessionId);
@@ -928,10 +947,15 @@ export class MemberSpool {
   // Drain
   // ---------------------------------------------------------------------------
 
+  private assertDestination(): void {
+    assertMemberPathContained(path.join(this.dir, ROUTING_FILE), this.mycoHome);
+    const destination = readPrivateJson<MemberRoutingIdentity>(path.join(this.dir, ROUTING_FILE));
+    if (!destination.ok || this.routing === null || !sameRoutingIdentity(memberRoutingIdentity(destination.value), this.routing)) throw new Error('Member spool destination is unavailable or mismatched');
+  }
+
   /** Check the persisted spool identity and the client before any delivery. */
   assertClientDestination(client: ServerClient): void {
-    const destination = readPrivateJson<MemberRoutingIdentity>(path.join(this.dir, ROUTING_FILE));
-    if (!destination.ok || this.routing === null || !sameRoutingIdentity(destination.value, this.routing)) throw new Error('Member spool destination is unavailable or mismatched');
+    this.assertDestination();
     if (this.routing === null || client.projectId === undefined || !sameRoutingIdentity(this.routing, { serverUrl: client.serverUrl, projectId: client.projectId })) {
       throw new Error('Member capture client does not match its buffered destination');
     }

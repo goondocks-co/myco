@@ -20,14 +20,14 @@ import fs from 'node:fs';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
-import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
 import { PROMPT_KEY_TEXT_MAX_CHARS, type ASK_IDENTITY_MARKER, type DeliveredSessionRecord, type PromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
-const HARNESS_FEATURES = [HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE] as const;
+const HARNESS_FEATURES = [HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE] as const;
 type CachedFeature = MemberFeature | (typeof HARNESS_FEATURES)[number];
 
 /** Capture kinds and helper services this member knows how to use. */
@@ -106,8 +106,11 @@ function readCache<T extends { version: number }>(file: string): T | null {
   return read.ok && read.value !== null && typeof read.value === 'object' && read.value.version === CACHE_VERSION ? read.value : null;
 }
 
-export function readProjectContext(spoolDir: string): ProjectContextCache {
+const isFeatureList = (value: unknown): value is string[] => Array.isArray(value) && value.every(feature => typeof feature === 'string');
+
+export function readProjectContext(spoolDir: string, options: { strict?: boolean } = {}): ProjectContextCache {
   const cached = readCache<ProjectContextCache>(projectContextPath(spoolDir));
+  if (options.strict && (cached === null || !isFeatureList(cached.features) || (cached.featuresAt !== undefined && (!Number.isSafeInteger(cached.featuresAt) || cached.featuresAt < 0)))) throw new Error('Cannot read the Project feature cache');
   if (cached === null) return emptyProject();
   return {
     version: CACHE_VERSION,
@@ -251,7 +254,7 @@ export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeatu
 }
 
 type Deployment = Pick<RegistryEntry, 'serverUrl' | 'projectId'>;
-function newestProjectFeatures(deployment: Deployment, mycoHome: string): CachedFeature[] {
+function newestProjectFeatures(deployment: Deployment, mycoHome: string, strict = false): CachedFeature[] | null {
   const registry = listRegistryEntriesResult(mycoHome);
   if (!registry.readable) throw new Error('Cannot read the member registry for Deployment features');
   const projects = new Set([...(deployment.projectId.length > 0 ? [deployment.projectId] : []), ...registry.entries
@@ -261,19 +264,29 @@ function newestProjectFeatures(deployment: Deployment, mycoHome: string): Cached
   for (const projectId of projects) {
     const spoolDir = spoolDirFor({ projectId, serverUrl: deployment.serverUrl }, mycoHome);
     if (pathIsAbsent(projectContextPath(spoolDir))) continue;
-    const cache = readProjectContext(spoolDir);
+    const cache = readProjectContext(spoolDir, { strict });
     if (newest === undefined || (cache.featuresAt ?? 0) > (newest.featuresAt ?? 0)) newest = cache;
   }
-  return newest?.features ?? [];
+  return newest === undefined || (newest.featuresAt === undefined && newest.features.length === 0) ? null : newest.features;
 }
 
 /** The Deployment advertisement; reporting surfaces unreadable snapshots and registries. */
-export function readDeploymentFeaturesStrict(deployment: Deployment, mycoHome: string): CachedFeature[] {
+function deploymentFeatureEvidence(deployment: Pick<RegistryEntry, 'serverUrl'> & Partial<Pick<RegistryEntry, 'projectId'>>, mycoHome: string, strict: boolean): CachedFeature[] | null {
   const snapshotPath = deploymentFeaturesPath(deployment.serverUrl, mycoHome);
   const snapshot = readCache<FeatureSnapshot>(snapshotPath);
-  if (snapshot !== null && Array.isArray(snapshot.features)) return cachedDeploymentFeatures(snapshot.features.join(','));
+  if (snapshot !== null && Array.isArray(snapshot.features) && (!strict || (isFeatureList(snapshot.features) && (snapshot.receivedAt === undefined || (Number.isSafeInteger(snapshot.receivedAt) && snapshot.receivedAt >= 0))))) return cachedDeploymentFeatures(snapshot.features.join(','));
   if (!pathIsAbsent(snapshotPath)) throw new Error('Cannot read the Deployment feature snapshot');
-  return newestProjectFeatures(deployment, mycoHome);
+  return newestProjectFeatures({ ...deployment, projectId: deployment.projectId ?? '' }, mycoHome, strict);
+}
+
+/** Reporting admits only readable, well-formed capability evidence; absence remains unknown. */
+export function readDeploymentFeatureEvidence(deployment: Pick<RegistryEntry, 'serverUrl'> & Partial<Pick<RegistryEntry, 'projectId'>>, mycoHome: string): CachedFeature[] | null {
+  return deploymentFeatureEvidence(deployment, mycoHome, true);
+}
+
+/** Unknown advertisements retain the compatibility reader's empty feature list. */
+export function readDeploymentFeaturesStrict(deployment: Pick<RegistryEntry, 'serverUrl'> & Partial<Pick<RegistryEntry, 'projectId'>>, mycoHome: string): CachedFeature[] {
+  return readDeploymentFeatureEvidence(deployment, mycoHome) ?? [];
 }
 
 /** Capture reads recover from cache failures using their own project, then the newest bound project. */
@@ -284,7 +297,7 @@ export function readDeploymentFeatures(deployment: Deployment, mycoHome: string)
   let features: CachedFeature[] = [];
   let fallback = false;
   try {
-    features = readDeploymentFeaturesStrict(deployment, mycoHome);
+    features = deploymentFeatureEvidence(deployment, mycoHome, false) ?? [];
     fallback = pathIsAbsent(deploymentFeaturesPath(deployment.serverUrl, mycoHome));
     featureCacheDiagnostic(deployment.serverUrl, mycoHome, 'read');
   } catch (error) {
@@ -298,7 +311,7 @@ export function readDeploymentFeatures(deployment: Deployment, mycoHome: string)
     } catch { /* An unreadable own-project cache leaves the bound-project fallback available. */ }
     if (ownFeatures !== undefined) features = ownFeatures;
     else {
-      try { features = newestProjectFeatures(deployment, mycoHome); }
+      try { features = newestProjectFeatures(deployment, mycoHome) ?? []; }
       catch { /* The read failure was diagnosed; capture proceeds with no optional features. */ }
     }
   }

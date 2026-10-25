@@ -118,6 +118,8 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 | Deployment settings | `packages/myco-server/src/core/settings.ts` — admits each leaf, authorizes, validates, persists with its actor and re-arms affected schedules. |
 | Machine settings | `packages/myco/src/member/machine-settings.ts` — owns validated member settings persistence. |
 | Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries and audited harness settings; `symbionts/member-skill-links.ts` owns global member skill links. |
+| Member provision record and hook repair generation | `member/provision-record.ts` — serializes record changes and retains the issued generation across settlement and logout. |
+| Per-Deployment harness report hashes, diagnostics and trust receipts | `cli/member-keep-current.ts` — admits capability evidence, serializes each destination's reports and retires trust holds only against accepted markers. |
 | Worker attempt directories and harness process ownership | `runner/run-directory.ts` — allocates a private attempt manifest before credentials, records process launches, and disposes or recovers only directories with no live owner. |
 | Runner update journal, binary handoff and guardian service | `runner/update.ts` + `runner/update-helper.ts` — serialize checks and replacement, admit verified releases only between runs, and retain rollback ownership until authenticated health. |
 | Native Deployment volume, configuration and credentials | `LocalVolume` (`packages/myco/src/server/local-volume.ts`) — holds an exclusive lease for lifecycle mutations and the entire serving lifetime; native recovery publishes only into a fresh directory. |

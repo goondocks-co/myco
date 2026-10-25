@@ -11,15 +11,17 @@ import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock, withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { isBinaryOnPath, loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
-import { readProvisionRecord, recordProvision, settleHookTrust, UnreadableProvisionRecordError, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { readProvisionRecord, settleHookTrust, UnreadableProvisionRecordError, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { provisionGlobally, withManagedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
-import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
-import { listRegistryEntries, deploymentUrl, type RegistryEntry } from '@myco/member/registry.js';
+import { updateProvisionRecord } from '@myco/member/provision-record.js';
+import { readDeploymentFeatureEvidence, readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
+import { listRegistryEntriesResult, listDeploymentMembershipsResult, deploymentPath, deploymentUrl, type DeploymentMembership, type RegistryEntry } from '@myco/member/registry.js';
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
+import { deploymentHarnessRanAt } from '@myco/symbionts/harness-attribution.js';
 import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
-import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 
 export { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 const REPORT_CAP_MS = 2_000;
@@ -39,13 +41,38 @@ export function harnessRanAt(manifest: SymbiontManifest, mycoHome = resolveMycoH
   return readHarnessActivity(manifest, mycoHome, now);
 }
 
+function scopedHarnessFact(fact: ProvisionedHarnessFact, manifest: SymbiontManifest | undefined, mycoHome: string, serverUrl: string, now: number, sourceUrl = serverUrl): ProvisionedHarnessFact {
+  const { ranAt: _ranAt, activityScope: _scope, ...original } = fact;
+  let base = original;
+  if (deploymentUrl(serverUrl) !== deploymentUrl(sourceUrl) && (base.state === 'ready' || base.state === 'held_elsewhere')) {
+    const { toolsDeployment: _tools, ...unheld } = base;
+    try {
+      const status = memberHarnessStatus(base.id, mycoHome, serverUrl, {});
+      base = status.toolsDeployment === undefined ? { ...unheld, state: 'ready' } : { ...unheld, state: 'held_elsewhere', toolsDeployment: status.toolsDeployment };
+    } catch (error) {
+      const action = error instanceof MemberProvisionConflictError ? joinSentences(error.problem, error.remedy) : `Can't inspect ${manifest?.displayName ?? fact.id}'s tools; run myco doctor to check its configuration`;
+      base = { ...unheld, state: 'repair_failed', action };
+    }
+  }
+  try {
+    if (manifest === undefined) throw new Error('Harness manifest is unavailable');
+    const ranAt = deploymentHarnessRanAt(manifest, mycoHome, serverUrl, now);
+    return { ...base, activityScope: 'deployment', ...(ranAt === undefined ? {} : { ranAt }) };
+  } catch {
+    if (base.state === 'trust_required') return { ...base, activityScope: 'unavailable' };
+    const { toolsDeployment: _tools, hookRepairAt: _repair, ...unavailable } = base;
+    const activityAction = `Can't tell whether ${manifest?.displayName ?? fact.id} ran for this Deployment; run myco doctor to check session access and capture routing`;
+    return { ...unavailable, activityScope: 'unavailable', state: 'repair_failed', action: base.action ?? activityAction };
+  }
+}
+
 function installEvidence(manifest: SymbiontManifest, binaryFound: (binary: string) => boolean): boolean {
   return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some((location) => fs.existsSync(expandHome(location)));
 }
 
 function rememberState(mycoHome: string, result: KeepCurrentResult, reportedProblems: ReadonlySet<string>): void {
   const { harnesses, localActions } = result;
-  const target = path.join(mycoHome, 'member', 'harness-states.json');
+  const target = `${harnessReportPath(mycoHome, result.serverUrl)}.states`;
   let before: Record<string, unknown> = {};
   try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -56,6 +83,9 @@ function rememberState(mycoHome: string, result: KeepCurrentResult, reportedProb
     if (words !== undefined && !reportedProblems.has(fact.id) && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${words}\n`);
   }
   if (JSON.stringify(before) !== JSON.stringify(next)) atomicWriteFileSync(target, JSON.stringify(next));
+  try { fs.unlinkSync(path.join(mycoHome, 'member', 'harness-states.json')); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 
 function rememberProvisionProblem(mycoHome: string, problem: string | null): void {
@@ -131,17 +161,11 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
             (result.localActions ??= {})[id] = error instanceof MemberStaleRegistrationError ? error.problem : joinSentences(error.problem, remedy);
           }
         }
-        let ranAt: number | undefined;
-        try { if (manifest !== undefined && !waitingForLogout) ranAt = harnessRanAt(manifest, mycoHome); } catch {
-          state = 'repair_failed';
-          delete result.localActions?.[id];
-          toolsDeployment = undefined;
-          action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
-        }
-        result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
+        const fact: ProvisionedHarnessFact = { id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(state !== 'trust_required' || result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) };
+        result.harnesses.push(waitingForLogout ? fact : scopedHarnessFact(fact, manifest, mycoHome, record.serverUrl, Date.now()));
       }
       if (result.harnesses.length === 0 || result.harnesses.some(fact => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) {
-        recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
+        updateProvisionRecord(mycoHome, current => current === null || current.version === getPluginVersion() ? undefined : { ...current, version: getPluginVersion(), at: Date.now() }, { strict: true });
       }
       rememberState(mycoHome, result, retiredSettingsProblems);
       return result;
@@ -155,19 +179,60 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
 
 /** Report only to a Deployment that advertised the additive harness-health surface; delivery has its own capped share. */
 export async function reportHarnesses(result: KeepCurrentResult | null, mycoHome: string, deadline: number, deps: {
-  fetch?: FetchLike; now?: () => number; entry?: RegistryEntry;
+  fetch?: FetchLike; now?: () => number; entry?: RegistryEntry; serverUrl?: string;
 } = {}): Promise<void> {
   if (result === null) return;
+  const memberships = listDeploymentMembershipsResult(mycoHome);
+  const bindings = listRegistryEntriesResult(mycoHome);
+  const registryUnavailable = !memberships.readable || memberships.unavailableEntries > 0 || !bindings.readable || bindings.unavailableEntries > 0 || Boolean(bindings.conflicts?.length);
+  const destinations = new Map<string, DeploymentMembership | RegistryEntry>();
+  for (const entry of [...bindings.entries, ...memberships.memberships]) destinations.set(deploymentUrl(entry.serverUrl), entry);
+  if (deps.entry !== undefined) destinations.set(deploymentUrl(deps.entry.serverUrl), deps.entry);
+  const live = [...destinations.values()].filter(entry => !entry.refreshTerminal && memberships.readable && !memberships.unavailableFiles.includes(deploymentPath(entry.serverUrl, mycoHome)));
+  const errors: unknown[] = registryUnavailable ? [new Error('Harness reporting memberships or project connections are unavailable')] : [];
+  for (const entry of live) {
+    const selected = deps.entry?.serverUrl ?? deps.serverUrl;
+    if (selected !== undefined && deploymentUrl(entry.serverUrl) !== deploymentUrl(selected)) continue;
+    try { await reportHarnessesTo(result, mycoHome, deadline, entry, deps); }
+    catch (error) { errors.push(error); }
+  }
+  if (!registryUnavailable) {
+    const required = live.filter(entry => readDeploymentFeatureEvidence(entry, mycoHome)?.includes(HARNESS_HEALTH_FEATURE) !== false);
+    const settled = Object.fromEntries(Object.entries(result.pendingTrust ?? {}).filter(([id, trust]) => required.length > 0 && required.every(entry => {
+      const file = `${harnessReportPath(mycoHome, entry.serverUrl)}.trust`;
+      return readHarnessTrustReceipt(file)?.[id] === trust.at;
+    })));
+    if (Object.keys(settled).length > 0) settleHookTrust(mycoHome, settled);
+  }
+  if (errors.length > 0) throw new AggregateError(errors, registryUnavailable ? 'Harness reports have unavailable memberships or project connections; run myco doctor to check them' : 'Harness reports could not reach every Deployment');
+}
+
+function readHarnessTrustReceipt(file: string): Record<string, number> | null {
+  let raw: string;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  let accepted: Record<string, number>;
+  try { accepted = JSON.parse(raw); } catch { throw new Error('Harness trust receipt is invalid'); }
+  if (accepted === null || typeof accepted !== 'object' || Array.isArray(accepted) || Object.values(accepted).some(at => !Number.isSafeInteger(at) || at < 0)) throw new Error('Harness trust receipt is invalid');
+  return accepted;
+}
+
+function harnessReportPath(mycoHome: string, serverUrl: string): string {
+  return path.join(mycoHome, 'member', `harness-report-${crypto.createHash('sha256').update(deploymentUrl(serverUrl)).digest('hex')}.sha256`);
+}
+
+async function reportHarnessesTo(result: KeepCurrentResult, mycoHome: string, deadline: number, entry: DeploymentMembership | RegistryEntry, deps: { fetch?: FetchLike; now?: () => number }): Promise<void> {
   const now = deps.now ?? Date.now;
-  const entry = deps.entry ?? listRegistryEntries(mycoHome).find((candidate) => deploymentUrl(candidate.serverUrl) === deploymentUrl(result.serverUrl));
-  if (entry === undefined || deploymentUrl(entry.serverUrl) !== deploymentUrl(result.serverUrl)) return;
   const budget = deadlineBudget(deadline);
   if (!canStartRequest(budget, now())) return;
   const features = readDeploymentFeaturesStrict(entry, mycoHome);
-  const harnesses = features.includes(HARNESS_HELD_ELSEWHERE_FEATURE) ? result.harnesses : result.harnesses.filter((fact) => fact.state !== 'held_elsewhere');
+  const manifests = loadManifests();
+  const scoped = result.harnesses.map(fact => scopedHarnessFact(fact, manifests.find(manifest => manifest.name === fact.id), mycoHome, entry.serverUrl, now(), result.serverUrl));
+  const admitted = features.includes(HARNESS_HELD_ELSEWHERE_FEATURE) ? scoped : scoped.filter(fact => fact.state !== 'held_elsewhere');
+  const harnesses = features.includes(HARNESS_DEPLOYMENT_ACTIVITY_FEATURE) ? admitted : admitted.map(({ activityScope: _scope, ...fact }) => fact);
   const body = JSON.stringify({ harnesses });
   const digest = crypto.createHash('sha256').update(body).digest('hex');
-  const hashPath = path.join(mycoHome, 'member', `harness-report-${crypto.createHash('sha256').update(deploymentUrl(result.serverUrl)).digest('hex')}.sha256`);
+  const hashPath = harnessReportPath(mycoHome, entry.serverUrl);
   const acquired = LifecycleLock.acquire(`${hashPath}.lock`, { command: 'myco member harness report' });
   if (!acquired.acquired) return;
   try {
@@ -180,18 +245,28 @@ export async function reportHarnesses(result: KeepCurrentResult | null, mycoHome
     }
     if (previous !== state) {
       atomicWriteFileSync(featureStatePath, state);
-      if (!advertised) process.stderr.write(`[myco] keep-current: harness report skipped for ${deploymentUrl(result.serverUrl)} (${HARNESS_HEALTH_FEATURE} not advertised)\n`);
+      if (!advertised) process.stderr.write(`[myco] keep-current: harness report skipped for ${deploymentUrl(entry.serverUrl)} (${HARNESS_HEALTH_FEATURE} not advertised)\n`);
     }
     if (!advertised) return;
-    try { if (fs.readFileSync(hashPath, 'utf8') === digest) return; } catch (error) {
+    const trust = Object.fromEntries(harnesses.flatMap(fact => fact.state === 'trust_required' && fact.hookRepairAt !== undefined ? [[fact.id, fact.hookRepairAt]] : []));
+    let trustAcknowledged = Object.keys(trust).length === 0;
+    if (!trustAcknowledged) {
+      try {
+        const accepted = readHarnessTrustReceipt(`${hashPath}.trust`);
+        trustAcknowledged = Object.entries(trust).every(([id, at]) => accepted?.[id] === at);
+      } catch {
+        process.stderr.write('[myco] keep-current: harness trust receipt is unavailable; confirming the report again\n');
+      }
+    }
+    try { if (fs.readFileSync(hashPath, 'utf8') === digest && trustAcknowledged) return; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     const answer = classifyEventAnswer(await new ServerClient(entry, deps.fetch).request('POST', '/members/harnesses/report', {
-      body, headers: { 'content-type': 'application/json' },
+      body, headers: { 'content-type': 'application/json' }, scope: 'deployment',
       budget: subRequestBudget(budget, REPORT_CAP_MS, now()),
     }));
     if (answer.class === 'acked') {
-      settleHookTrust(mycoHome, result.pendingTrust);
+      atomicWriteFileSync(`${hashPath}.trust`, JSON.stringify(trust));
       atomicWriteFileSync(hashPath, digest);
     } else process.stderr.write(`[myco] keep-current: harness report not delivered (${answer.class}); the next helper pass retries\n`);
   } finally { acquired.lock.release(); }
