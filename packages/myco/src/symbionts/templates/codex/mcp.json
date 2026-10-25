@@ -1,6 +1,7 @@
 {
   "myco": {
     "command": "{{mycoBinary}}",
+    "env_vars": ["MYCO_HOME"],
     "args": [
       "mcp"
     ]

@@ -156,7 +156,14 @@ export interface CheckFacts {
   /** The symbiont it names, where it names one. */
   symbiont: string | null;
   /** The configuration scope it read, where it read one. */
-  scope: 'global' | 'project' | null;
+  scope: 'global' | 'project' | 'local' | null;
+  toolsDeployment?: string;
+  projectId?: string;
+  memberHome?: string;
+  homeSource?: import('../paths/home.js').MycoHomeSource;
+  configPath?: string;
+  context?: import('../symbionts/installer.js').MemberMcpInspection['context'];
+  folder?: string;
   /** The project root it read, and null for a check that read no project. */
   root?: string | null;
   fixable: boolean;
@@ -211,7 +218,7 @@ export interface MemberDiagnostics {
 }
 
 /** HTTP routing URL without userinfo, query or fragment; null for an unusable URL. */
-function exportedServerUrl(raw: string): string | null {
+export function exportedServerUrl(raw: string): string | null {
   let url: URL;
   try {
     url = new URL(raw);

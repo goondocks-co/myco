@@ -87,6 +87,7 @@ const ALLOWLIST: readonly string[] = [
   // The `hook` verb's launch preamble (#1561): it anchors the process to the harness's project and honours the
   // project's runtime pin, read by the pin leaf, the binary resolver it shares, and the managed install paths.
   'cli/launch-preamble.ts',
+  'cli/flags.ts',
   // What the preamble reads from the manifests (each harness's project directory and stdin workspace), generated.
   'cli/launch-preamble.generated.ts',
   'runtime/runtime-pin.ts',

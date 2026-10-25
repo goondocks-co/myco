@@ -39,6 +39,10 @@ import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from './helpers/server.js';
 import { recordingFetch, runHelperHere, runHook } from './helpers/hooks.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { recordProvision } from '@myco/symbionts/member-provision-record.js';
+import * as memberRepair from '@myco/cli/member-repair.js';
 
 const SERVER_URL = 'https://member-test.invalid';
 const savedHome = process.env.MYCO_HOME;
@@ -274,6 +278,57 @@ describe('a hook in a repository with no connection', () => {
 });
 
 describe('the member helper\'s join bucket', () => {
+  for (const interruption of ['none', 'repair-busy', 'binding-before-state'] as const) it(`publishes provisioned Claude tools and reconnect notice after ${interruption}`, async () => {
+    const previousHome = process.env.HOME;
+    const home = path.join(mycoHome, 'agent-home');
+    fs.mkdirSync(home);
+    process.env.HOME = home;
+    try {
+      const existing = repository(path.join(base, 'Repos'), 'existing', null);
+      const personal = repository(path.join(base, 'personal'), 'private', null);
+      for (const [root, serverUrl, token] of [[existing, SERVER_URL, rig.token], [personal, 'https://personal.invalid', 'B'.repeat(43)]]) {
+        writeRegistryEntry({ version: REGISTRY_VERSION, root, projectId: 'proj_existing', serverUrl, token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+      }
+      const manifest = loadManifests().find(manifest => manifest.name === 'claude-code')!;
+      const installer = new SymbiontInstaller(manifest, existing, resolvePackageRoot(), false, mycoHome);
+      installer.installMemberMcp();
+      recordProvision(mycoHome, { version: 'test', serverUrl: SERVER_URL, agents: ['claude-code'] });
+      const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
+      const config = (): any => JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+      expect(config().projects[root]).toBeUndefined();
+      expect(config().mcpServers?.myco).toBeUndefined();
+      const started = await runHook('session-start', { session_id: 'sess-tools', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-tools'), cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
+      expect(started.stdout).not.toContain('Reconnect Myco tools');
+      const prompt = (sessionId: string) => runHook('user-prompt-submit', { session_id: sessionId, prompt: 'Continue', cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
+      if (interruption === 'binding-before-state') {
+        writeRegistryEntry({ version: REGISTRY_VERSION, root, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+        expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).toBeNull();
+      }
+      if (interruption === 'repair-busy') {
+        const busy = spyOn(memberRepair, 'reconcileProjectMcp').mockImplementationOnce(() => { throw new memberRepair.MemberRepairBusyError(); });
+        try { await joinPass(mycoHome, { fetch: rig.fetch })(Date.now() + 60_000, { force: false }); }
+        finally { busy.mockRestore(); }
+        expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(SERVER_URL);
+        expect(config().projects[root]).toBeUndefined();
+        expect(requested()).toContain(root);
+        expect(rig.env.sqlite.query("SELECT count(*) AS n FROM events WHERE session_id = 'sess-tools' AND kind = 'session.start'").get()).toEqual({ n: 1 });
+        expect((await prompt('sess-tools')).stdout).not.toContain('Reconnect Myco tools');
+      }
+      await joinPass(mycoHome, { fetch: rig.fetch })(Date.now() + 60_000, { force: false });
+      expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(SERVER_URL);
+      expect(config().projects[root].mcpServers.myco.args).toEqual(['mcp', '--credential', 'registry', '--root', root]);
+      expect(config().projects[root].hasTrustDialogAccepted).toBeUndefined();
+      expect(config().projects[personal].mcpServers.myco).toBeDefined();
+      expect(requested()).not.toContain(root);
+      expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)?.mcpReady).toEqual(['claude-code']);
+      expect((await prompt('sess-tools')).stdout).toContain('Reconnect Myco tools with /mcp');
+      expect((await prompt('sess-tools')).stdout).not.toContain('Reconnect Myco tools');
+      expect((await prompt('sess-fresh')).stdout).not.toContain('Reconnect Myco tools');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    }
+  });
+
   it('joins the repository a hook asked about, in the helper, and delivers what was held', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     // The hook asks for the join and kicks the bucket; its helper runs here.

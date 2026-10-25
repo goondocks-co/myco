@@ -4,6 +4,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { credentialRequiredError } from './credential-refusal.js';
 import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
+import { mcpProjectFolder } from '@myco/cli/flags.js';
+import { memberHomeFor } from '@myco/member/home-for-folder.js';
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
 /** Parent-death watchdog cadence. */
@@ -111,15 +113,32 @@ interface UpstreamSource {
 
   resolve(): Upstream | null;
 
+  validate(): void;
+
   heartbeatMs: number;
 
   maxHealAttempts: number;
 }
 
 function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
-  const resolve = (): Upstream | null => {
-    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'mcp' });
+  const cwd = mcpProjectFolder(process.argv.slice(2), process.cwd());
+  const mycoHome = memberHomeFor(cwd).home;
+  let destination: { projectId: string; url: string } | undefined;
+  const current = () => {
+    if (memberHomeFor(cwd).home !== mycoHome) throw new Error('The project home changed; reconnect the MCP server before calling tools');
+    const upstream = resolveDeploymentUpstream(source, { cwd, mycoHome, env: process.env, invokedBy: 'mcp',
+      missingMembershipMessage: root => `Myco tools need a connected project folder; ${root} has no connection. Run \`myco member join\` from this project, then reconnect Myco tools.` });
     if (!upstream) return null;
+    const selected = { projectId: upstream.projectId, url: upstream.mcpUrl.href };
+    if (destination !== undefined && (destination.projectId !== selected.projectId || destination.url !== selected.url)) {
+      throw new Error('The project connection changed; reconnect the MCP server before calling tools');
+    }
+    destination = selected;
+    return upstream;
+  };
+  const resolve = (): Upstream | null => {
+    const upstream = current();
+    if (upstream === null) return null;
     return {
       transport: deploymentTransport(upstream),
       probe: () => probeDeploymentHealth(upstream.healthUrl),
@@ -139,6 +158,9 @@ function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
       return upstream;
     },
     resolve,
+    validate() {
+      if (current() === null) throw new Error('The project membership is unavailable; reconnect the MCP server after restoring it');
+    },
     heartbeatMs: DEPLOYMENT_HEARTBEAT_INTERVAL_MS,
     maxHealAttempts: DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS,
   };
@@ -241,6 +263,11 @@ export async function main(): Promise<void> {
 
   downstream.onmessage = (msg) => {
     const send = async (attempt = 0): Promise<void> => {
+      try { upstreamSource.validate(); }
+      catch (error) {
+        respondWithError(msg, error instanceof Error ? error.message : String(error));
+        return;
+      }
       if (reconnectInFlight) await reconnectInFlight;
       try {
         await withTimeout(upstream.send(msg), UPSTREAM_SEND_TIMEOUT_MS, 'upstream.send');

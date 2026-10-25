@@ -465,6 +465,9 @@ const RegistrationSchema = z.object({
    * supplying the member credential's headers, rather than a stdio launcher.
    */
   memberMcpHeadersHelperKey: z.string().optional(),
+  /** Multi-Deployment member context supplied by this host's MCP configuration. */
+  memberMcpRouting: z.enum(['private-projects', 'session-cwd']).optional(),
+  memberMcpReconnectNotice: z.string().optional(),
   skillsTarget: z.string().optional(),
   /**
    * Legacy project-local skill dirs for this agent — locations from before its

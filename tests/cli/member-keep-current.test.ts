@@ -607,9 +607,9 @@ it('omits held tools for the older feature set, clears prior repair attention, a
   const rig = await memberRig();
   rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)`, [Date.now()]);
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
-  writeRegistryEntry(entry, { mycoHome: home });
   toolsHeldElsewhere();
   const result = keepCurrent(home, { binaryFound: () => true })!;
+  writeRegistryEntry(entry, { mycoHome: home });
   const spool = new MemberSpool(entry, { mycoHome: home }).dir;
   updateProjectContext(spool, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   const bodies: Array<{ harnesses: Array<{ state: string }> }> = [];
@@ -740,7 +740,7 @@ it('refuses to settle tools pointing at a Deployment this home no longer has a m
   expect(JSON.parse(fs.readFileSync(target, 'utf8')).mcpServers.myco.url).toBe(SERVER + '/mcp');
 });
 
-it('keeps the machine.agents JSON contract and settles held tools in guided setup', async () => {
+it('keeps the machine.agents JSON contract and routes connected project tools in guided setup', async () => {
   const target = toolsHeldElsewhere();
   const before = fs.readFileSync(target, 'utf8');
   const lines: string[] = [];
@@ -756,14 +756,17 @@ it('keeps the machine.agents JSON contract and settles held tools in guided setu
   writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   const code = await setup(['--join', SERVER, '--no-runner', '--yes'], deps);
   expect({ code, errors }).toEqual({ code: 0, errors: [] });
-  expect(lines.join('\n')).toContain('use other.myco.example');
   expect(lines.join('\n')).not.toContain('member provision');
-  expect(fs.readFileSync(target, 'utf8')).toBe(before);
+  expect(fs.readFileSync(target, 'utf8')).not.toBe(before);
+  const written = JSON.parse(fs.readFileSync(target, 'utf8'));
+  expect(written.mcpServers?.myco).toBeUndefined();
+  expect(written.projects[agentHome].mcpServers.myco.args).toEqual(['mcp', '--credential', 'registry', '--root', agentHome]);
   lines.length = 0;
   await setup(['--status', '--json'], deps);
   const body = JSON.parse(lines.join('\n'));
   const agents = body.observations.find((fact: { id: string }) => fact.id === 'machine.agents');
-  expect(agents).toMatchObject({ state: 'complete', informational: true, detail: expect.stringContaining('use other.myco.example') });
+  expect(agents).toMatchObject({ state: 'complete' });
+  expect(agents.detail).not.toContain('use other.myco.example');
   expect(body.observations.some((fact: { id: string }) => fact.id === 'machine.tools')).toBe(false);
 });
 

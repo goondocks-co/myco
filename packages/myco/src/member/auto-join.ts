@@ -185,6 +185,7 @@ export interface AutoJoinState {
   /** When this machine last reported the repository for "Needs you", and the hold it reported then. */
   reportedAt?: number;
   reportedHeld?: HeldState;
+  mcpReady?: string[];
 }
 
 const SALT_FILE = 'salt';
@@ -414,7 +415,8 @@ function readStateFile(file: string): AutoJoinState | null {
   }
   const value = read.value;
   if (value?.version === STATE_VERSION && typeof value.root === 'string' && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
-    && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)) return value;
+    && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+    && (value.mcpReady === undefined || Array.isArray(value.mcpReady) && value.mcpReady.every(agent => typeof agent === 'string'))) return value;
   reportSkippedPrivateFile('auto-join state', file, { reason: 'invalid' });
   return null;
 }
@@ -673,11 +675,18 @@ function readSeen(rootKey: string, mycoHome: string, serverUrl?: string): SeenSe
   return read.ok && Array.isArray(read.value?.seen) && typeof read.value.unreported === 'number' ? read.value : { seen: [], unreported: 0 };
 }
 
+const seenSessionId = (sessionId: string): string => crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
+
+/** Whether this session met the repository before it had a connection. */
+export function sessionMetUnconnected(rootKey: string, sessionId: string, mycoHome: string, serverUrl: string): boolean {
+  return readSeen(rootKey, mycoHome, serverUrl).seen.includes(seenSessionId(sessionId));
+}
+
 /** Count a session that met the repository, once. A lost write costs a count, never the hook. */
 export function recordSessionSeen(rootKey: string, sessionId: string, mycoHome: string, serverUrl?: string): void {
   try {
     const seen = readSeen(rootKey, mycoHome, serverUrl);
-    const id = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
+    const id = seenSessionId(sessionId);
     if (seen.seen.includes(id)) return;
     const file = seenPath(rootKey, mycoHome, serverUrl);
     ensureMemberDir(path.dirname(file), mycoHome);
@@ -777,9 +786,10 @@ export function clearLeft(rootKey: string, mycoHome: string): void {
 }
 
 /** Whether this session has not been told on this Deployment yet, marking it told. A marker that cannot be written tells it again next time. */
-export function noticeOnce(sessionId: string, mycoHome: string, now: number, serverUrl?: string): boolean {
+export function noticeOnce(sessionId: string, mycoHome: string, now: number, serverUrl?: string, purpose?: 'tools'): boolean {
   const dir = path.join(autoJoinDir(mycoHome), 'noticed');
-  const marker = path.join(dir, crypto.createHash('sha256').update(serverUrl === undefined ? sessionId : `${deploymentUrl(serverUrl)}\0${sessionId}`).digest('hex').slice(0, 32));
+  const identity = serverUrl === undefined ? sessionId : `${deploymentUrl(serverUrl)}\0${sessionId}`;
+  const marker = path.join(dir, crypto.createHash('sha256').update(purpose === undefined ? identity : `${purpose}\0${identity}`).digest('hex').slice(0, 32));
   if (fs.existsSync(marker)) return false;
   try {
     ensureMemberDir(dir, mycoHome);

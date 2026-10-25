@@ -192,7 +192,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
   checks.push(...captureChecks(root, mycoHome, packageRoot));
   const vaultDir = path.join(root, '.myco');
-  checks.push(...await checkMemberMcpResolution(vaultDir, { ...envOf(deps), MYCO_HOME: mycoHome }, { registryRead: 'strict' }));
+  checks.push(...checkMemberMcpResolution(vaultDir, envOf(deps), { registryRead: 'strict', folder: deps.cwd ?? process.cwd(), mycoHome }));
   return checks;
 }
 

@@ -783,7 +783,7 @@ describe('Deployment-scoped logout', () => {
     expect(bytes(file)).toEqual(before);
   });
 
-  it('preserves every byte of B credentials, bindings, hooks, MCP and spool after logging out of A', async () => {
+  it('preserves B credentials, bindings, hooks and spool while restoring its one-Deployment global tools', async () => {
     join(A, 'proj_a');
     const folderB = join(B, 'proj_b')!;
     recordDefaultDeployment(B, { mycoHome });
@@ -792,13 +792,20 @@ describe('Deployment-scoped logout', () => {
     const dirB = spool(B, 'proj_b');
     fs.writeFileSync(deploymentFeaturesPath(B, mycoHome), 'work features');
     fs.writeFileSync(machineSettingsPath(B, mycoHome), 'work machine settings');
+    const mcp = path.join(home, '.claude.json');
+    const scopeB = JSON.parse(bytes(mcp).toString()).projects[folderB];
     const files = [deploymentPath(B, mycoHome), registryEntryPath(folderB, mycoHome), deploymentFeaturesPath(B, mycoHome), machineSettingsPath(B, mycoHome),
-      defaultDeploymentPath(mycoHome), provisionRecordPath(mycoHome), ...globalInstaller(B).memberGlobalTargets().all.filter((f) => fs.existsSync(f))];
+      defaultDeploymentPath(mycoHome), provisionRecordPath(mycoHome), ...globalInstaller(B).memberGlobalTargets().all.filter((f) => f !== mcp && fs.existsSync(f))];
     const snapshots = files.map((f) => [f, bytes(f)] as const);
     const beforeA = tree(dirA);
     const beforeB = tree(dirB);
     await logoutDeployment(A, { mode: 'revoke' }, deps);
     for (const [file, before] of snapshots) expect(bytes(file)).toEqual(before);
+    const projects = JSON.parse(bytes(mcp).toString()).projects;
+    const { mcpServers: _tools, ...survivor } = scopeB;
+    expect(projects?.[folderB]).toEqual(Object.keys(survivor).length === 0 ? undefined : survivor);
+    expect(projects?.[path.join(root, 'proj_a')]).toBeUndefined();
+    expect(JSON.parse(bytes(mcp).toString()).mcpServers.myco.url).toBe(B + '/mcp');
     expect(tree(dirA)).toEqual(beforeA);
     expect(tree(dirB)).toEqual(beforeB);
     expect(readDeploymentMembership(A, mycoHome)).toBeNull();

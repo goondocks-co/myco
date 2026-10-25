@@ -1699,7 +1699,7 @@ describe('teammate journey (c)', () => {
     writeDeploymentMembership({ serverUrl: other, token: 'T'.repeat(43), machineId: 'other-machine', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
     recordDefaultDeployment(other, { mycoHome: home, replace: true });
     const before = await observeSetup(home, { role: 'join', url: URL, root: project }, deps);
-    expect(before.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
+    expect(before.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'stale' });
     const transcript = path.join(process.env.CLAUDE_CONFIG_DIR!, 'projects', `-${rootSlug(project)}`, 'pending-transcript.jsonl');
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, JSON.stringify({ type: 'user', cwd: project, sessionId: 'pending-transcript', message: { content: 'Pending history ' + 'x'.repeat(5000) }, timestamp: new Date(Date.now() - 86_400_000).toISOString() }) + '\n');
@@ -1720,6 +1720,7 @@ describe('teammate journey (c)', () => {
     expect(legacyMigrationState(home).state).toBe('moved');
     expect(readRegistryEntry(project, home)?.serverUrl).toBe(URL);
     expect(readDefaultDeployment(home)?.serverUrl).toBe(other);
+    expect((await observeSetup(home, { role: 'join', url: URL, root: project }, deps)).find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
     for (const key of ['role', 'url', 'root', 'runWork', 'noAgents', 'makeDefault'] as const) expect(readSetupFile(home).answers[key]).toBeUndefined();
     expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
     expect(await run([], deps)).toBe(0);

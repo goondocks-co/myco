@@ -322,6 +322,8 @@ registration:
   # connection, and again after a 401 or 403 on a tool call — not after a 401
   # while connecting, which fails the connection.
   memberMcpHeadersHelperKey: headersHelper
+  memberMcpRouting: private-projects
+  memberMcpReconnectNotice: "Myco connected this repository. Reconnect Myco tools with /mcp."
   globalMcpTarget: ~/.claude.json
   skillsTarget: .claude/skills
   globalSkillsTarget: ~/.claude/skills

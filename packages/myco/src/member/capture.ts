@@ -22,7 +22,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { withAsk, type ContextAskRequest } from './context-cache.js';
 import { deliveryNotice, withNotice } from './delivery-notice.js';
-import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
+import { autoJoinHold, connectedToolsNotice, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending, appendPendingTurnEnd } from './pending.js';
 import { restoreHeldReceiptsForHook } from './held.js';
 import { ensureJoinedFromCode } from './join-code.js';
@@ -378,6 +378,9 @@ export async function runMemberHook(
       process.stderr.write(`[myco] ${notice}\n`);
       if (outcome.notice) response = outcome.notice(notice, response);
     }
+    const toolsNotice = source === 'registry' ? connectedToolsNotice({ root: resolveMemberProjectRoot(cwd), hookName, agent: input.agent,
+      sessionId, mycoHome, now: now(), spawn: opts.helperSpawn }) : null;
+    if (toolsNotice !== null) response = withNotice(toolsNotice, response);
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);
   } finally {

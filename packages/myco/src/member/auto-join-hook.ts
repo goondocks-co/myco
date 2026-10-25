@@ -7,7 +7,7 @@
  */
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import {
-  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone,
+  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone, readAutoJoinState, sessionMetUnconnected,
 } from './auto-join.js';
 import { kickHelper } from './helper.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
@@ -32,6 +32,25 @@ export interface AutoJoinHold {
 export function hookTakesNotice(hookName: string, agent: string): boolean {
   if (hookName === 'user-prompt-submit') return true;
   return hookName === 'session-start' && HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true;
+}
+
+/** A connected session that started without project tools needs a client reconnect. */
+export function connectedToolsNotice(opts: { root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; spawn?: DetachedSpawn }): string | null {
+  const text = HOOK_CONFIG[opts.agent]?.mcpReconnectNotice;
+  if (text === undefined || !hookTakesNotice(opts.hookName, opts.agent)) return null;
+  const binding = readRegistryEntryResult(opts.root, opts.mycoHome);
+  if (binding.status !== 'present') return null;
+  const serverUrl = binding.entry.serverUrl;
+  const rootKey = rootKeyFor(opts.root, opts.mycoHome);
+  const state = readAutoJoinState(rootKey, opts.mycoHome, serverUrl);
+  if (!sessionMetUnconnected(rootKey, opts.sessionId, opts.mycoHome, serverUrl)) return null;
+  if (state?.mcpReady === undefined) {
+    requestJoin(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now);
+    kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now });
+    return null;
+  }
+  if (state.outcome !== 'joined' || !state.mcpReady.includes(opts.agent)) return null;
+  return noticeOnce(opts.sessionId, opts.mycoHome, opts.now, serverUrl, 'tools') ? text : null;
 }
 
 /** A repository left with `myco member leave`: its hooks capture, hold and say nothing. */

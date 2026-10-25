@@ -84,6 +84,8 @@ Cursor and OpenCode use a small local connection to reach Myco's tools. They rea
 
 **Known limit:** with two Deployments on one machine, an agent's Myco tools may reach only one. Use `myco doctor` to check the setup ([#1724](https://github.com/goondocks-co/myco/issues/1724)).
 
+For connected projects on a machine with two Deployments, Claude Code uses private project entries in its user configuration, keyed by the canonical repository root shared by subfolders and worktrees. Codex resolves tools from the session folder. Claude Code accepts trust for the project or an ancestor folder; Myco leaves that trust decision to you. After a repository auto-joins, its waiting session receives a notice to reconnect Myco tools with `/mcp`. Doctor names each project's tools destination and any missing trust. Cursor and OpenCode still have the routing limit above.
+
 ## Who sees what
 
 Processed project knowledge is available to members across the Deployment. Raw capture is private to its uploader. Your machine's name appears beside your own work; other members see the member's name. Administrators can see machine names on **People & machines** and **Health**.

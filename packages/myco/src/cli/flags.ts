@@ -3,6 +3,18 @@
  * daemon client, no vault, no Deployment. The CLI entry reads `--help` with
  * them before it knows which verb runs.
  */
+import path from 'node:path';
+
+export const MCP_ROOT_FLAG = '--root';
+
+/** The explicit project directory, or the session directory supplied by the client. */
+export function mcpProjectFolder(argv: readonly string[], cwd: string): string {
+  const roots = argv.flatMap((word, index) => word === MCP_ROOT_FLAG ? [argv[index + 1]] : word.startsWith(`${MCP_ROOT_FLAG}=`) ? [word.slice(MCP_ROOT_FLAG.length + 1)] : []);
+  if (roots.length === 0) return cwd;
+  const root = roots[0];
+  if (roots.length !== 1 || root === undefined || !path.isAbsolute(root)) throw new Error(`${MCP_ROOT_FLAG} requires one absolute project directory`);
+  return root;
+}
 
 export function isHelpRequest(args: readonly string[]): boolean {
   return args.includes('--help') || args.includes('-h');

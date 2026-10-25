@@ -25,7 +25,7 @@ import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, markSweepDone, placeRepository, queueImport,
-  readAutoJoinState, repositoryAt, sweepDone, takeRepositoryLock,
+  readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
   autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
@@ -42,14 +42,30 @@ import { deploymentUrl, readDeploymentMembership, readRegistryEntry, readRegistr
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { postRoute } from './deployment-reader.js';
 import type { MemberCliDeps } from './member.js';
+import { reconcileProjectMcp } from './member-repair.js';
+import { joinSentences } from '@myco/utils/sentences.js';
+
+async function settleAutoJoin(entry: RegistryEntry, deps: MemberCliDeps & { mycoHome: string; now: () => number }): Promise<{ moved: number; toolsPending?: true }> {
+  let mcpReady: string[] | undefined;
+  const moved = await settleConnection(entry, { ...deps, tell: false, onTools: ready => { mcpReady = ready; } });
+  const repo = repositoryAt(entry.root, deps.mycoHome);
+  const state = { ...readAutoJoinState(repo.rootKey, deps.mycoHome, entry.serverUrl), root: entry.root, rootKey: repo.rootKey,
+    label: repo.label, serverUrl: entry.serverUrl, projectId: entry.projectId, outcome: 'joined' as const, attemptAt: deps.now() };
+  writeAutoJoinState({ ...state, mcpReady }, deps.mycoHome);
+  if (mcpReady === undefined) {
+    requestJoin(entry.root, repo.rootKey, entry.serverUrl, deps.mycoHome, deps.now());
+    return { moved, toolsPending: true };
+  }
+  return { moved };
+}
 
 /** How long one request of a join waits for the Deployment. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /** What one repository's attempt came to. */
 export type AutoJoinResult =
-  | { root: string; result: 'joined'; projectId: string; moved: number; imported: number }
-  | { root: string; result: 'connected' | 'connected-elsewhere' }
+  | { root: string; result: 'joined'; projectId: string; moved: number; imported: number; toolsPending?: true }
+  | { root: string; result: 'connected' | 'connected-elsewhere'; toolsPending?: true }
   | { root: string; result: 'silent' | 'busy' | 'left' | 'binding-unavailable' }
   | { root: string; result: AutoJoinState['outcome']; reason?: string };
 
@@ -79,7 +95,8 @@ const STATE_TIMEOUT_MS = 10_000;
  * join`, and by the next attempt after a join that stopped between writing the connection and moving the capture. How
  * many records moved.
  */
-export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: string; now: () => number; fetch?: FetchLike; tell: boolean }): Promise<number> {
+export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: string; now: () => number; fetch?: FetchLike; tell: boolean; packageRoot?: string;
+  stderr?: (line: string) => void; onTools?: (ready: string[] | undefined) => void }): Promise<number> {
   const rootKey = rootKeyFor(entry.root, opts.mycoHome);
   withRegistryLock(() => {
     const held = readRegistryEntryResult(entry.root, opts.mycoHome);
@@ -101,6 +118,13 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
   }
   // The Project's blocks, cached before the repository's first session asks: it is served them whole.
   await warmProjectContext(entry, { mycoHome: opts.mycoHome, fetch: opts.fetch, now: opts.now }).catch(() => 0);
+  let mcpReady: string[] | undefined;
+  try { mcpReady = reconcileProjectMcp(entry.root, opts.mycoHome, opts); }
+  catch (error) {
+    (opts.stderr ?? console.error)(joinSentences(`Myco connected ${entry.root}, but its tools could not be published: ${error instanceof Error ? error.message : String(error)}`,
+      'Inspect agent configuration with `myco doctor`; run `myco member provision --refresh` after resolving it.'));
+  }
+  opts.onTools?.(mcpReady);
   return moved;
 }
 
@@ -117,8 +141,8 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     const connected = binding.entry;
     if (deploymentUrl(connected.serverUrl) !== deploymentUrl(membership.serverUrl)) return { root, result: 'connected-elsewhere' };
     // Connected already: by `myco member join`, or by a join that stopped before moving the held capture.
-    await settleConnection(connected, { mycoHome, now, fetch: deps.fetch, tell: false });
-    return { root, result: 'connected' };
+    const { toolsPending } = await settleAutoJoin(connected, deps);
+    return { root, result: 'connected', ...(toolsPending ? { toolsPending } : {}) };
   }
   if (silentRepository(root, { mycoHome, env: deps.env })) return { root, result: 'silent' };
   const repo: Repository = repositoryAt(root, mycoHome);
@@ -194,14 +218,18 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   }, mycoHome);
   if (committed.status === 'left') return { root, result: 'left' };
   if (committed.status === 'unavailable') return { root, result: 'binding-unavailable' };
-  if (committed.status === 'present') return { root, result: deploymentUrl(committed.entry.serverUrl) === deploymentUrl(membership.serverUrl) ? 'connected' : 'connected-elsewhere' };
+  if (committed.status === 'present') {
+    if (deploymentUrl(committed.entry.serverUrl) !== deploymentUrl(membership.serverUrl)) return { root, result: 'connected-elsewhere' };
+    const { toolsPending } = await settleAutoJoin(committed.entry, deps);
+    return { root, result: 'connected', ...(toolsPending ? { toolsPending } : {}) };
+  }
   const entry = committed.entry;
   clearMissingMembership(root, mycoHome);
   markSessionsReported(repo.rootKey, sessions, mycoHome, membership.serverUrl);
   writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl: membership.serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo }, mycoHome);
 
   // The Deployment cleared its row as it answered; nothing more to tell it.
-  const moved = await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: false });
+  const { moved, toolsPending } = await settleAutoJoin(entry, deps);
   // What moved is delivered here, in the process making the join (the helper's join bucket, or a run by hand): the
   // session leases keep it apart from the project's own helper.
   try {
@@ -213,12 +241,12 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   // passes, so one repository's history never holds another's first join.
   if (!deps.importNow) {
     queueImport({ root, rootKey: repo.rootKey, projectId, serverUrl: membership.serverUrl, at: now() }, mycoHome);
-    return { root, result: 'joined', projectId, moved, imported: 0 };
+    return { root, result: 'joined', projectId, moved, imported: 0, ...(toolsPending ? { toolsPending } : {}) };
   }
   const report = await runImport({ project: projectId, serverUrl: membership.serverUrl }, {
     fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
   }).catch(() => null);
-  return { root, result: 'joined', projectId, moved, imported: importedBy(report) };
+  return { root, result: 'joined', projectId, moved, imported: importedBy(report), ...(toolsPending ? { toolsPending } : {}) };
 }
 
 const importedBy = (report: Awaited<ReturnType<typeof runImport>> | null): number =>
@@ -281,7 +309,8 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
       if (now() >= deadline) return { more: true };
       const destination = request.serverUrl === undefined ? null : readDeploymentMembership(request.serverUrl, mycoHome);
       if (destination === null) continue;
-      if (joinStanding(request.root, request.rootKey, destination.serverUrl, mycoHome, now()).standing !== 'due') {
+      if (joinStanding(request.root, request.rootKey, destination.serverUrl, mycoHome, now()).standing !== 'due'
+        && readRegistryEntryResult(request.root, mycoHome).status !== 'present') {
         clearJoinRequest(request, mycoHome);
         continue;
       }
@@ -294,7 +323,7 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
         continue;
       }
       err(`auto-join ${request.root}: ${result.result}${'projectId' in result ? ` ${result.projectId}` : ''}`);
-      if (result.result !== 'busy' && result.result !== 'binding-unavailable') clearJoinRequest(request, mycoHome);
+      if (result.result !== 'busy' && result.result !== 'binding-unavailable' && !('toolsPending' in result && result.toolsPending)) clearJoinRequest(request, mycoHome);
     }
     for (const pending of listPendingImports(mycoHome)) {
       if (now() >= deadline) return { more: true };

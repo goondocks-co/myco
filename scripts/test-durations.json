@@ -1,5 +1,8 @@
 {
   "sources": [
+    "local: #1724 CI2, pinned Bun1.4.0 darwin-arm64. All89 affected files ran sequentially through npm test:2219pass/5skip/0fail,698930ms outer wall including npm startups. Owning file runners: journeys112691ms(216cases), SIGKILL47243ms(42 interruption/growth probes), cutover36403ms(146pass/1skip), agent-set4583ms(39cases), member-machine-verbs1420ms(22cases), worker-permissions8313ms(31cases). Existing CI-derived weights retained; no new test file, parity scenario, deadline or assertion ceiling.",
+    "local: #1724 PR A correction1, pinned Bun1.4.0 darwin-arm64. Routing17 tests measured1053ms Bun/1068ms runner; existing3000ms weight retained. Auto-join normal/repair-busy/binding-before-state additions measured474.28/249.08/160.32ms bodies (883.68ms sum),1104ms runner; file24500ms retains prior21893ms calibration plus twice added bodies and startup. Compiled-binary RBAC smoke with four stdio clients against two native Deployments measured1694.89ms body; file4500ms covers twice that plus startup. No new test file or parity scenario.",
+    "local: #1724 PR A, pinned Bun1.4.0 darwin-arm64 via npm test -- tests/symbionts/member-mcp-routing.test.ts. Fifteen fake-home/client cases measured835ms Bun wall /849ms runner; new3000ms file weight covers twice observed wall plus startup. Existing test-file allowances retained; no new native/D1 parity scenario because routing changes only the member and harness adapters.",
     "local: vault evolution 2.0 PR2 correction3, pinned Bun1.4.0 and SQLite3.53.0. Native26-case migration run measured2466ms runner; new pruned-sample convergence body266.88ms within the211-case focused run48542ms. Existing migration7000ms weight retained. Extended portable-restore parity passed native240.45ms and local Cloudflare611.22ms,25547ms combined runner including boots; existing150000ms scenario allowance retained. Accounting/incremental read-bound bodies7548.98ms/4660.81ms retain35000ms file allowance. No new test file/scenario, no changed deadline or assertion ceiling.",
     "local: vault evolution 2.0 PR2 correction2, pinned Bun1.4.0 and SQLite3.53.0. Final682-test/30-file focused run passed in83161ms runner. Actual accounting18-fixture body5783.30ms plus incremental1000/5000 rare-key both-store body4692.47ms retain35000ms read-bound weight; strengthened99-case followup passed14614ms. Core43 tests4251ms runner and67 owning/metadata cases6007ms retain governor4000/migration7000ms allowances. All three scoped budget parity scenarios passed both native/local Cloudflare in71920ms including six boots; existing150000/150000/240000ms weights retained. No new test file/scenario, no changed deadline or bound.",
     "local: #1942 correction1 pinned Bun1.4.0 darwin-arm64 npm test release suites: 31 tests in24847ms; new manifest-build integration measured970.79ms. Release-workflow weight6500ms retains4500ms prior calibration plus twice the new case, rounded up. Expanded create-release invalid-manifest matrix measured7078.67ms inside the existing22000ms file allowance. No new test file or parity scenario.",
@@ -166,7 +169,7 @@
     "tests/mcp/stdio-bridge.test.ts": 34,
     "tests/member/auto-join-lock-contention.test.ts": 13253,
     "tests/member/auto-join-lock.test.ts": 6465,
-    "tests/member/auto-join.test.ts": 21893,
+    "tests/member/auto-join.test.ts": 24500,
     "tests/member/backlog.test.ts": 250,
     "tests/member/budget.test.ts": 266,
     "tests/member/buffer-concurrent-append.test.ts": 819,
@@ -242,7 +245,7 @@
     "tests/member/protocol-pins.test.ts": 578,
     "tests/member/provision.test.ts": 1856,
     "tests/member/provisioning.test.ts": 1610,
-    "tests/member/rbac-routing-smoke.test.ts": 3718,
+    "tests/member/rbac-routing-smoke.test.ts": 4500,
     "tests/member/refresh.test.ts": 1927,
     "tests/member/refusal-permanence.test.ts": 147,
     "tests/member/registry-read-during-write.test.ts": 173,
@@ -916,7 +919,8 @@
     "tests/utils/lock-file-identity.test.ts": 4872,
     "tests/utils/order-stamp.test.ts": 100,
     "tests/utils/repository-name.test.ts": 482,
-    "tests/utils/windows-atomic-replace.test.ts": 2
+    "tests/utils/windows-atomic-replace.test.ts": 2,
+    "tests/symbionts/member-mcp-routing.test.ts": 3000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
