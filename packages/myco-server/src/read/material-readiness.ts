@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { titleRunInFlightSql } from '../core/runs.js';
+import { titleRunInFlightSql } from '../db/session-read-model.js';
 import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { transcriptPendingSql } from '../db/session-read-model.js';
 

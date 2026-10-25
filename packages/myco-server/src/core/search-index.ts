@@ -1,4 +1,5 @@
-import { processedResourceProofSql } from './processed-resources.js';
+import { prepareNextSearchBlob } from '../read/view-store.js';
+export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/view-store.js";
 import { registeredObjectKeySql } from './blob-objects.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
@@ -7,29 +8,6 @@ import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
 export const SEARCH_CHUNK_CHARS = 64 * 1024;
 export const SEARCH_QUERY_MAX_CHARS = 512;
 export const SEARCH_CHUNKS_PER_PASS = 16;
-
-/** Only currently referenced text blobs contribute to the search backlog. */
-const REFERENCED = `EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'prompt', 'p.prompt_id', 'p.blob_key')})
-  OR EXISTS (SELECT 1 FROM responses r WHERE r.project_id = q.project_id AND r.blob_key = q.blob_key AND ${processedResourceProofSql('r.project_id', 'response', 'r.response_id', 'r.blob_key')})
-  OR EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'plan', 'p.plan_key', 'p.blob_key')})`;
-
-/** The referenced text blobs the full-text index has not finished: every Project's, one Project's, or a set's. */
-export async function pendingSearchBlobs(db: RelationalStore, projects?: string | ProjectSet): Promise<number> {
-  const scoped = projects === undefined ? null
-    : typeof projects === 'string' ? { sql: 'q.project_id = ?', params: [projects] } : projectsBoundOnce(projects, 'q');
-  const row = await db.prepare(`SELECT COUNT(*) AS n FROM search_blob_queue q
-    WHERE q.complete = 0 AND (${REFERENCED})${scoped === null ? '' : ` AND ${scoped.sql}`}`)
-    .bind(...(scoped?.params ?? [])).first<{ n: number }>();
-  return row?.n ?? 0;
-}
-
-/** The referenced text blobs still waiting for the full-text index, and the store instant of the longest-waiting of them. */
-export async function searchBacklog(db: RelationalStore): Promise<{ pending: number; oldestStoredAt: number | null }> {
-  const row = await db.prepare(`SELECT COUNT(*) AS n, MIN(b.received_at) AS oldest FROM search_blob_queue q
-    JOIN blobs b ON b.project_id = q.project_id AND b.key = q.blob_key
-    WHERE q.complete = 0 AND (${REFERENCED})`).first<{ n: number; oldest: number | null }>();
-  return { pending: row?.n ?? 0, oldestStoredAt: row?.oldest ?? null };
-}
 
 interface TextChunk { offset: number; text: string; nextOffset: number; complete: boolean }
 
@@ -73,9 +51,7 @@ async function* chunks(body: ReadableStream, start: number): AsyncGenerator<Text
 
 /** The single writer of derived blob text. A committed chunk and its resume cursor advance in one transaction. */
 export async function reconcileSearchIndex(db: RelationalStore, blobs: BlobStore, now: number): Promise<number> {
-  const row = await db.prepare(`SELECT q.project_id, q.blob_key, q.next_offset, ${registeredObjectKeySql('q.project_id', 'q.blob_key')} AS object_key
-    FROM search_blob_queue q
-    WHERE q.complete = 0 AND (${REFERENCED}) ORDER BY q.attempted_at, q.project_id, q.blob_key LIMIT 1`)
+  const row = await prepareNextSearchBlob(db)
     .first<{ project_id: string; blob_key: string; next_offset: number; object_key: string | null }>();
   if (row === null) return 0;
   await db.prepare(`UPDATE search_blob_queue SET attempted_at = ? WHERE project_id = ? AND blob_key = ?`)

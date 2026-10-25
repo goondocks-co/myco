@@ -1,3 +1,4 @@
+import { currentSporeVectorIds } from '../../../packages/myco-server/src/read/view-store.js';
 /**
  * Runtime proof for spore calibration (#1429), on a local D1 in real workerd.
  *
@@ -15,7 +16,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '../../../packages/myco-server/src/db/schema.js';
 import { reconcileEmbedding, type EmbeddingContext } from '../../../packages/myco-server/src/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '../../../packages/myco-server/src/core/embedding/jobs.js';
-import { CURRENT_SPORE_VECTORS, missingSporeVectors } from '../../../packages/myco-server/src/core/embedding/hubness.js';
+import { missingSporeVectors } from '../../../packages/myco-server/src/core/embedding/hubness.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '../../../packages/myco-server/src/core/embedding/provider.js';
 import { cloudflareVectorStore } from '../../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cosineSimilarity } from '../../../packages/myco-server/src/core/embedding/vectors.js';
@@ -65,7 +66,7 @@ try {
     throw new Error('calibration did not settle');
   };
   const exact = async () => {
-    const ids = (await db.prepare(`${CURRENT_SPORE_VECTORS} ORDER BY r.id`).bind('p', 'm').all<{ id: string }>()).results.map((r) => r.id);
+    const ids = await currentSporeVectorIds(db, 'p', 'm');
     const held = new Map((await vectors.get({ projectId: 'p', modelKey: 'm' }, ids)).map((v) => [v.id, v.values]));
     let worst = 0;
     for (const id of ids) {

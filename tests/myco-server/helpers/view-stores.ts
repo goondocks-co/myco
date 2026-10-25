@@ -7,6 +7,10 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { envelope, uuid } from './fixtures.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createProject} from '@myco-server-worker/read/sessions.js';
 
 export async function withViewStores(run: (db: RelationalStore, target: string) => Promise<void>, through = Infinity): Promise<void> {
   const native = new Database(':memory:');
@@ -17,7 +21,7 @@ export async function withViewStores(run: (db: RelationalStore, target: string) 
     const stores = [sqliteRelationalStore(native), await mf.getD1Database('DB')];
     for (const [index, db] of stores.entries()) {
       for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
-      await db.batch(['project', 'other'].map(project => db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project)));
+      for(const project of ['project','other'])await createProject(db,project,project,1);
       await run(db, index === 0 ? 'native' : 'D1');
     }
   } finally { native.close(); await mf.dispose(); }
@@ -39,4 +43,38 @@ export async function captureViewSession(db: RelationalStore, projectId = 'proje
     const result = await ingestEvent(db, ctx, event, options.blobs === undefined ? undefined : { db, blobs: options.blobs });
     if (!result.persisted) throw new Error(`fixture capture refused: ${JSON.stringify(result)}`);
   }
+}
+
+/** Independent copies retain the canonical ids and revisions minted by the fixture's writers. */
+export async function withViewStorePair(target:'native'|'D1',seed:(db:RelationalStore)=>Promise<unknown>,run:(baseline:RelationalStore,candidate:RelationalStore)=>Promise<void>):Promise<void>{
+ const initialize=async(db:RelationalStore)=>{
+  for(const step of SCHEMA_STEPS)await db.batch(step.statements.map(sql=>db.prepare(sql)));
+  await createProject(db,'project','project',1);await createProject(db,'other','other',1);
+  await seed(db);
+ };
+ if(target==='native'){
+  const source=new Database(':memory:');let candidate:Database|undefined;
+  try{
+   source.exec('PRAGMA foreign_keys=ON');
+   const baseline=sqliteRelationalStore(source);await initialize(baseline);
+   candidate=Database.deserialize(source.serialize());
+   candidate.exec('PRAGMA foreign_keys=ON');
+   await run(baseline,sqliteRelationalStore(candidate));
+  }finally{source.close();candidate?.close();}
+  return;
+ }
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-view-pair-'));
+ const boot=(persist:string)=>new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-01',d1Databases:{DB:'00000000-0000-4000-8000-000000000001'},resourcePersistencePath:persist}));
+ let source:InstanceType<typeof Miniflare>|undefined,baseline:InstanceType<typeof Miniflare>|undefined,candidate:InstanceType<typeof Miniflare>|undefined;
+ try{
+  const original=path.join(root,'source');source=boot(original);
+  await initialize(await source.getD1Database('DB'));await source.dispose();source=undefined;
+  const first=path.join(root,'baseline'),second=path.join(root,'candidate');
+  fs.cpSync(original,first,{recursive:true});fs.cpSync(original,second,{recursive:true});
+  baseline=boot(first);candidate=boot(second);
+  await run(await baseline.getD1Database('DB'),await candidate.getD1Database('DB'));
+ }finally{
+  try{await Promise.all([source?.dispose(),baseline?.dispose(),candidate?.dispose()]);}
+  finally{fs.rmSync(root,{recursive:true,force:true});}
+ }
 }

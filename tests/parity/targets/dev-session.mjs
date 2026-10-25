@@ -6,12 +6,15 @@ import { once } from 'node:events';
 const require = createRequire(process.argv[2]);
 const { unstable_DevEnv, unstable_splitSqlQuery } = require('wrangler');
 const workers = new Map();
+const observations = new Map();
 const DISCONNECT_DISPOSAL_TIMEOUT_MS = 10_000;
 
 async function command(message) {
   const { id, op, tag, config, persist, vars } = message;
   try {
     if (op === 'start') {
+      const records=[];
+      observations.set(tag,records);
       const bindings = Object.fromEntries(Object.entries(vars).map(([name, value]) => [name, { type: 'plain_text', value }]));
       const dev = new unstable_DevEnv();
       dev.on('error', error => console.error(inspect(error, { depth: 8 })));
@@ -23,7 +26,14 @@ async function command(message) {
           remote: false, watch: false, registry: undefined, inspector: false,
           server: { hostname: '127.0.0.1', port: 0 }, persist,
           logLevel: 'debug', testScheduled: true,
-          structuredLogsHandler: log => console.log(JSON.stringify(log)),
+          structuredLogsHandler: log => {
+            console.log(JSON.stringify(log));
+            if(typeof log.message==='string'&&log.message.startsWith('{')){
+              let record;
+              try{record=JSON.parse(log.message);}catch(error){if(log.message.includes('view_read_'))throw error;return;}
+              if(record!==null&&typeof record==='object'&&typeof record.kind==='string'&&record.kind.startsWith('view_read_'))records.push(record);
+            }
+          },
         },
       }).then(worker => { workers.set(tag, worker); return worker; }), loaded]);
       const runtime = worker.raw.runtimes.find(runtime => runtime.mf !== undefined);
@@ -39,6 +49,19 @@ async function command(message) {
       const currentUrl = (await runtime.mf.ready).origin;
       if (currentUrl !== url) throw new Error(`UserWorker listener changed from its configured origin ${url} to ${currentUrl}`);
       process.send({ id, url: currentUrl, headers: reloaded[0].proxyData.headers });
+    } else if(op==='read-trace'){
+      if(!workers.has(tag)||!observations.has(tag))throw new Error(`No observed Worker for ${tag}`);
+      await new Promise(resolve=>setImmediate(resolve));
+      process.send({id,records:observations.get(tag).splice(0)});
+    } else if(op==='alarm'||op==='embedding'){
+      const worker=workers.get(tag),mf=worker?.raw.runtimes.find(runtime=>runtime.mf!==undefined)?.mf;
+      if(!mf)throw new Error(`No live clock runtime for ${tag}`);
+      if(typeof message.clockName!=='string')throw new Error('The clock name is required');
+      const namespace=await mf.getDurableObjectNamespace('CLOCK');
+      const clock=namespace.get(namespace.idFromName(message.clockName));
+      if(op==='alarm')await clock.observeAlarm(message.at);
+      else {if(typeof message.projectId!=='string')throw new Error('Embedding fixture requires a Project');await clock.observeEmbedding(message.projectId);}
+      process.send({id});
     } else if (op === 'sql') {
       const worker = workers.get(tag);
       const mf = worker?.raw.runtimes.find(runtime => runtime.mf !== undefined)?.mf;
@@ -49,10 +72,12 @@ async function command(message) {
     } else if (op === 'stop') {
       await workers.get(tag)?.dispose();
       workers.delete(tag);
+      observations.delete(tag);
       process.send({ id });
     } else if (op === 'close') {
       await Promise.all([...workers.values()].map(worker => worker.dispose()));
       workers.clear();
+      observations.clear();
       process.send({ id });
       process.disconnect();
     } else throw new Error(`Unknown parity dev operation: ${op}`);

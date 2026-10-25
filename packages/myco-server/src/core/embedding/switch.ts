@@ -1,3 +1,4 @@
+import { prepareSwitchEnd } from '../../read/view-store.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
  * answering with the current one.
@@ -24,7 +25,7 @@ import { calibrationPending } from './hubness.js';
 import { VECTOR_DIMENSIONS } from './vectors.js';
 import { EMBEDDING_TASK } from './task.js';
 import {
-  completionCondition, completionStatements, deleteSwitch, insertSwitch, pauseSwitch, readSwitch, resumeSwitch,
+  deleteSwitch, insertSwitch, pauseSwitch, readSwitch, resumeSwitch,
   sourceTotals, switchComplete, switchProgress, waitSwitch, type EmbeddingSwitch,
 } from './switch-store.js';
 
@@ -280,7 +281,7 @@ export async function completeEmbeddingSwitch(env: ServerEnv, now: number): Prom
     await pauseSwitch(env.db, sw.id, unresolved(sw.model), now);
     return false;
   }
-  return writeSwitchedEmbedding(env.db, choice, sw.startedBy, now, completionCondition(sw, now), completionStatements(env.db, sw, now));
+  return writeSwitchedEmbedding(env.db, choice, sw.startedBy, now, sw, prepareSwitchEnd(env.db, sw, now));
 }
 
 /** Whether a standing switch's model is asked now: building, and not held off after a failure. */

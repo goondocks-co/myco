@@ -1,3 +1,4 @@
+import ts from 'typescript-v6';
 /**
  * The settings contract: every live Deployment and machine leaf is bound to a policy whose consumer a production
  * entry reaches, and writing it through the real route changes what that consumer does, on every target it applies to.
@@ -460,7 +461,24 @@ describe('the settings contract', () => {
   it('reads the settings table only inside the policy owners', () => {
     const owners = new Set([...SETTING_POLICIES.flatMap((policy) => policy.owners), 'core/settings.ts', 'core/settings-policies.ts']);
     const READERS = /\b(leafValues|settingTexts|storedSettings|storedEmbedding|leafOffChecks)\b/;
-    const readers = filesUnder(SERVER_SRC).map((file) => ({ file: path.relative(SERVER_SRC, file).split(path.sep).join('/'), code: codeOf(readFileSync(file, 'utf8'), file) }))
+    const readers = filesUnder(SERVER_SRC).map((file) => {
+      let source=readFileSync(file,'utf8');
+      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/view-store.ts') {
+        const parsed=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
+        const factories=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='prepareSwitchedSettings');
+        expect(factories).toHaveLength(1);
+        const factory=factories[0]!;
+        const body=factory.getText(parsed);
+        expect(body).not.toMatch(/\.(?:first|all|run|batch)\s*\(/);
+        expect([...body.matchAll(/prepareViewRead\(db, "([^"]+)"/g)].map(match=>match[1])).toEqual([
+          'M35:prepareSwitchedSettings:0','M35:prepareSwitchedSettings:1','M35:prepareSwitchedSettings:2',
+        ]);
+        const executors=filesUnder(SERVER_SRC).filter(other=>other!==file && /prepareSwitchedSettings\(db,/.test(readFileSync(other,'utf8')));
+        expect(executors.map(other=>path.relative(SERVER_SRC,other).split(path.sep).join('/'))).toEqual(['core/settings.ts']);
+        source=source.slice(0,factory.getStart(parsed))+source.slice(factory.end);
+      }
+      return {file:path.relative(SERVER_SRC,file).split(path.sep).join('/'),code:codeOf(source,file)};
+    })
       .filter(({ code }) => READERS.test(code) || /\bdeployment_settings\b/.test(code));
     const outside = readers.filter(({ file, code }) => !owners.has(file) && !(file === 'core/backup.ts' && !READERS.test(code)) && !file.startsWith('db/'));
     expect(outside.map(({ file }) => file)).toEqual([]);
