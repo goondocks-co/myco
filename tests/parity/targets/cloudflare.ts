@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
+import {build as buildObservedWorker} from 'esbuild';
 import { Database } from 'bun:sqlite';
 import { renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -11,6 +12,10 @@ import { assertMigrationMutationDetected, assertUpgradeState, expectedSchema, fi
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
+import {instrumentReadSource,preparationOrigins} from '../../setup/view-read-preload.js';
+import {decodeReadTrace} from '../../helpers/statement-recorder.js';
+import {CLOCK_NAME} from '@myco-server-worker/platform/cloudflare/clock-name.js';
+import {durableObservationViolations} from '../../helpers/view-read-contract.js';
 
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
 const require = createRequire(path.join(SERVER_DIR, 'package.json'));
@@ -80,6 +85,7 @@ export function lockedRetryWaitMs(said: string, attempt: number): number | null 
 export interface CloudflareBootOptions {
   /** The Worker entry, relative to `packages/myco-server`, in place of the shipped `src/index.ts`. */
   main?: string;
+  embeddingFixture?:boolean;
   /** Apply the latest migration to a seeded database at the preceding schema step. */
   latestSchemaUpgrade?: boolean;
 }
@@ -96,16 +102,28 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   fs.mkdirSync(path.dirname(entryPath), { recursive: true });
   const main = path.resolve(SERVER_DIR, options.main ?? 'src/index.ts');
   const observer = path.resolve(import.meta.dir, '..', 'observed-worker.ts');
+  const diagnostics = path.resolve(import.meta.dir, '..', '..', 'helpers', 'statement-recorder.ts');
   const telemetry = path.join(root, 'telemetry.ts');
   const originalTelemetry = path.join(SERVER_DIR, 'src', 'telemetry.ts');
-  fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
-  fs.writeFileSync(entryPath, `import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport default observedWorker(worker);\n`);
+  fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(diagnostics)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
+  const fixtureSetup=options.embeddingFixture?'import { installObservedEmbeddingFixture } from '+JSON.stringify(observer)+';\ninstallObservedEmbeddingFixture();\n':'';
+  fs.writeFileSync(entryPath, fixtureSetup+`import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport { ObservedDeploymentClock as DeploymentClock, ObservedRecoveryProducer as RecoveryProducer } from ${JSON.stringify(observer)};\nexport default observedWorker(worker,${JSON.stringify(preparationOrigins)});\n`);
+  const bundledEntry=path.join(root,'observed-entry.mjs');
+  await buildObservedWorker({entryPoints:[entryPath],outfile:bundledEntry,bundle:true,format:'esm',platform:'browser',target:'es2022',external:['cloudflare:workers','node:*'],tsconfig:path.join(SERVER_DIR,'tsconfig.json'),plugins:[{name:'view-read-origins',setup(build){
+   build.onResolve({filter:/\.bin$/},args=>({path:path.resolve(args.resolveDir,args.path),external:true}));
+   build.onResolve({filter:/telemetry\.js$/},args=>{
+    if(args.importer!==telemetry&&PARITY_TELEMETRY_ALIASES.some(alias=>alias===args.path))return {path:telemetry};
+   });
+   build.onLoad({filter:/\.ts$/},args=>({contents:instrumentReadSource(fs.readFileSync(args.path,'utf8'),args.path),loader:'ts'}));
+  }}]});
   const derived = parityWranglerConfig();
+  const classification=durableObservationViolations([...derived.matchAll(/^class_name\s*=\s*"([^"]+)"/gm)].map(match=>match[1]!));
+  if(classification.length)throw new Error(classification.join('\n'));
   // Request diagnostics require asynchronous context propagation.
   const observed = /^compatibility_flags = /m.test(derived)
     ? derived.replace(/^(compatibility_flags = \[)(.*)(\])$/m, '$1$2, "nodejs_als"$3')
     : `compatibility_flags = ["nodejs_als"]\n${derived}`;
-  const config = entryConfig(observed, entryPath).replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(path.join(SERVER_DIR, 'migrations'))}`);
+  const config = entryConfig(observed, bundledEntry).replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(path.join(SERVER_DIR, 'migrations'))}`);
   const aliases = PARITY_TELEMETRY_ALIASES
     .map(key => `${JSON.stringify(key)} = ${JSON.stringify(telemetry)}`).join('\n');
   const configTail = `\n[alias]\n${aliases}\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`;
@@ -271,6 +289,13 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         const res = await fetch(`${url}/__scheduled?cron=${encodeURIComponent('*/15 * * * *')}`);
         if (!res.ok) throw new Error(`the scheduled wake answered ${res.status}`);
         await res.body?.cancel();
+      },
+      clockAlarm:async(at)=>{await runtime.command({op:'alarm',tag,clockName:CLOCK_NAME,at});},
+      primeEmbedding:async(projectId)=>{await runtime.command({op:'embedding',tag,clockName:CLOCK_NAME,projectId});},
+      readTrace:async()=>{
+        const reply=await runtime.command({op:'read-trace',tag});
+        if(!reply.records)throw new Error('Worker returned no read observations');
+        return decodeReadTrace(reply.records);
       },
       runtime: runtime.runtime,
       healthy: async () => {

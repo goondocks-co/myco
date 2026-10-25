@@ -1,3 +1,4 @@
+import { prepareReleasePaths, prepareReleaseCandidates, prepareReleaseClassification, prepareReleasePropagation } from '../read/view-store.js';
 /**
  * Release provenance for one Project: its configuration, its credential, and
  * the scheduled check that answers whether captured work shipped.
@@ -338,19 +339,11 @@ const leaseMs = (maxLookups: number) => Math.min(maxLookups * GITHUB_READ_TIMEOU
 
 interface Candidate extends ReleaseSource { sessionId: string; pathsMark: number }
 
-/**
- * How many tool calls the session holds when a package map is in use, so
- * changed paths that arrive later mark its classification stale, and 0
- * without a package map. Binds the map flag.
- */
-const PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN (SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = g.project_id AND t.session_id = g.session_id) ELSE 0 END';
-
 const identityOf = (projectId: string, namespace: string, recordId: string) => `${projectId}:${namespace}:${recordId}`;
 
 /** The paths a session's tool calls touched, or null when a stored list cannot be read. */
 async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<string[] | null> {
-  const { results } = await db.prepare(`SELECT files_affected AS files FROM tool_calls
-    WHERE project_id = ? AND session_id = ? AND files_affected IS NOT NULL LIMIT 200`).bind(projectId, sessionId).all<{ files: string }>();
+  const { results } = await prepareReleasePaths(db, projectId, sessionId).all<{ files: string }>();
   const paths = new Set<string>();
   for (const { files } of results) {
     let list: string[];
@@ -368,30 +361,7 @@ const uncaptured = (c: Candidate, basisKind: Classification['basisKind'], reason
 });
 
 interface Claim { projectId: string; runId: string; revision: string }
-
-/** The claim the fenced writes carry: they land only while this run holds the Project under the revision it read. */
-const FENCE = 'EXISTS (SELECT 1 FROM project_release_provenance f WHERE f.project_id = ? AND f.check_run_id = ? AND f.revision = ?)';
 const fenceParams = (claim: Claim) => [claim.projectId, claim.runId, claim.revision];
-
-const HELD_SOURCE = "json_extract(knowledge_release_state.evidence_json, '$.source')";
-const NEW_SOURCE = "json_extract(excluded.evidence_json, '$.source')";
-/**
- * The upsert every release state write ends with. A released row stays for its
- * recorded source, and a row without a recorded source stays released; any
- * change of state keeps the replaced state in `evidence_json.previous`.
- */
-const RELEASE_UPSERT = `ON CONFLICT(project_id, identity_key) DO UPDATE SET source_session_id = excluded.source_session_id, state = excluded.state, confidence = excluded.confidence,
-    basis_kind = excluded.basis_kind, basis_ref = excluded.basis_ref, basis_sha = excluded.basis_sha,
-    release_pr_number = excluded.release_pr_number, reason = excluded.reason,
-    evidence_json = CASE WHEN knowledge_release_state.state IS excluded.state AND ${HELD_SOURCE} IS ${NEW_SOURCE}
-      THEN json_set(excluded.evidence_json, '$.previous', json(COALESCE(json_extract(knowledge_release_state.evidence_json, '$.previous'), 'null')))
-      ELSE json_set(excluded.evidence_json, '$.previous', json_object('state', knowledge_release_state.state, 'source', ${HELD_SOURCE},
-        'basis_ref', knowledge_release_state.basis_ref, 'checked_at', knowledge_release_state.checked_at)) END,
-    checked_at = excluded.checked_at, updated_at = excluded.checked_at
-  WHERE knowledge_release_state.state <> 'released' OR (${HELD_SOURCE} IS NOT NULL AND ${HELD_SOURCE} IS NOT ${NEW_SOURCE})`;
-
-/** The records that carry their session's release state: namespace, table and key column. */
-const DERIVED = [['spores', 'spores', 'id'], ['plans', 'plans', 'plan_key']] as const;
 
 /**
  * Write one session's classification and carry it to the spores and plans the
@@ -408,19 +378,7 @@ async function writeClassification(
   const k = classification;
   const evidence = JSON.stringify({ ...k.evidence, source: sourceOf(c), refs_fingerprint: fingerprint, paths_mark: c.pathsMark });
   const columns = [k.state, k.confidence, k.basisKind, k.basisRef, k.basisSha, k.releasePrNumber, k.reason, evidence, now];
-  const derived = (namespace: string, table: string, key: string) => db.prepare(`INSERT INTO knowledge_release_state
-      (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence, basis_kind, basis_ref,
-       basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
-    SELECT project_id, 'rs_' || lower(hex(randomblob(16))), project_id || ':${namespace}:' || ${key}, '${namespace}', ${key}, session_id,
-       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      FROM ${table} WHERE project_id = ? AND session_id = ? AND ${FENCE} ${RELEASE_UPSERT}`).bind(...columns, now, projectId, c.sessionId, ...fenceParams(claim));
-  await db.batch([
-    db.prepare(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, source_session_id,
-        state, confidence, basis_kind, basis_ref, basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
-      SELECT ?, ?, ?, 'sessions', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${FENCE} ${RELEASE_UPSERT}`)
-      .bind(projectId, `rs_${crypto.randomUUID().replaceAll('-', '')}`, identity, c.sessionId, c.sessionId, ...columns, now, ...fenceParams(claim)),
-    ...DERIVED.map(([namespace, table, key]) => derived(namespace, table, key)),
-  ]);
+  await db.batch(prepareReleaseClassification(db, projectId, c.sessionId, identity, columns, now, fenceParams(claim)));
   // The row is read back rather than counted: a store may report no changes for an INSERT ... SELECT.
   const written = await db.prepare(`SELECT 1 AS written FROM knowledge_release_state WHERE project_id = ? AND identity_key = ?
     AND checked_at = ? AND json_extract(evidence_json, '$.source') = ?`).bind(projectId, identity, now, sourceOf(c)).first();
@@ -437,17 +395,7 @@ async function writeClassification(
 async function propagateDerived(db: RelationalStore, claim: Claim, now: number): Promise<void> {
   const { projectId } = claim;
   const sessionPrefix = identityOf(projectId, 'sessions', '');
-  await db.batch(DERIVED.map(([namespace, table, key]) => db.prepare(`INSERT INTO knowledge_release_state
-      (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence, basis_kind, basis_ref,
-       basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
-    SELECT r.project_id, 'rs_' || lower(hex(randomblob(16))), r.project_id || ':${namespace}:' || r.${key}, '${namespace}', r.${key}, r.session_id,
-       k.state, k.confidence, k.basis_kind, k.basis_ref, k.basis_sha, k.release_pr_number, k.reason,
-       json_remove(k.evidence_json, '$.previous'), k.checked_at, ?
-      FROM ${table} r JOIN knowledge_release_state k ON k.project_id = r.project_id AND k.identity_key = ? || r.session_id
-      WHERE r.project_id = ? AND ${FENCE} AND NOT EXISTS (SELECT 1 FROM knowledge_release_state d
-        WHERE d.project_id = r.project_id AND d.identity_key = r.project_id || ':${namespace}:' || r.${key}
-          AND (d.source_session_id IS r.session_id OR d.state = 'released'))
-      LIMIT ? ${RELEASE_UPSERT}`).bind(now, sessionPrefix, projectId, ...fenceParams(claim), SESSIONS_PER_CHECK)));
+  await db.batch(prepareReleasePropagation(db, projectId, sessionPrefix, now, fenceParams(claim), SESSIONS_PER_CHECK));
 }
 
 const holds = async (db: RelationalStore, claim: Claim) => (await db.prepare(`SELECT 1 AS held FROM project_release_provenance
@@ -525,20 +473,7 @@ async function classifyProject(
   const fingerprint = run.fingerprint === null ? null : `repo=${settings.githubRepo}\n${run.fingerprint}`;
   const mapped = settings.packageMap.length > 0 ? 1 : 0;
   // The session's latest captured commit: its end, or its start while no end is captured.
-  const { results: candidates } = await db.prepare(`SELECT g.session_id AS sessionId, g.capture_point AS point, g.head_sha AS headSha,
-      ${CLEANLINESS_SQL} AS cleanliness, ${PATHS_MARK_SQL} AS pathsMark, g.captured_at AS capturedAt
-    FROM knowledge_git_provenance g
-    WHERE g.project_id = ? AND g.session_id IS NOT NULL AND g.head_sha IS NOT NULL
-      AND (g.capture_point = 'session_end' OR (g.capture_point = 'session_start' AND NOT EXISTS (
-        SELECT 1 FROM knowledge_git_provenance e WHERE e.project_id = g.project_id AND e.identity_key = 'session:' || g.session_id || ':session_end')))
-      AND NOT EXISTS (SELECT 1 FROM knowledge_release_state k
-        WHERE k.project_id = g.project_id AND k.identity_key = ? || g.session_id
-          AND ((k.state = 'released' AND json_extract(k.evidence_json, '$.source') IS NULL)
-            OR (json_extract(k.evidence_json, '$.source') = g.capture_point || ':' || g.head_sha || ':' || ${CLEANLINESS_SQL}
-              AND (k.state = 'released' OR (? IS NOT NULL AND json_extract(k.evidence_json, '$.refs_fingerprint') = ?
-                AND json_extract(k.evidence_json, '$.paths_mark') IS ${PATHS_MARK_SQL})))))
-    ORDER BY capturedAt DESC, sessionId LIMIT ?`)
-    .bind(mapped, projectId, identityOf(projectId, 'sessions', ''), fingerprint, fingerprint, mapped, SESSIONS_PER_CHECK + 1)
+  const { results: candidates } = await prepareReleaseCandidates(db, projectId, mapped, identityOf(projectId, 'sessions', ''), fingerprint, SESSIONS_PER_CHECK + 1)
     .all<Candidate & { capturedAt: number }>();
   if (candidates.length > SESSIONS_PER_CHECK) counts.deferred += candidates.length - SESSIONS_PER_CHECK;
   const compare = memoizedCompare(reads);

@@ -5,7 +5,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessionSummaries, projectStats, sessionCounts, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
-import { listSessionActivity, SESSION_ACTIVITY_SOURCES, type SessionActivityType } from '../read/session-activity.js';
+import { listSessionActivity, SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
@@ -183,7 +183,7 @@ export async function handleSessionActivity(env: ServerEnv, ctx: OwnerContext): 
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const type = ctx.url.searchParams.get('type');
-  if (type !== null && !SESSION_ACTIVITY_SOURCES.some(source => source.type === type)) return badRequest('unknown activity type');
+  if (type !== null && !SESSION_ACTIVITY_TYPES.some(value => value === type)) return badRequest('unknown activity type');
   const failed = ctx.url.searchParams.get('failed');
   if (failed !== null && failed !== 'true' && failed !== 'false') return badRequest('failed must be true or false');
   const tool = ctx.url.searchParams.get('tool');

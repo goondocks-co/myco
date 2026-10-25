@@ -1,221 +1,23 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
-import { processedResourceProofSql } from '../core/processed-resources.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
 import { clampLimit, containsPattern, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
+export {
+  type plans_ProjectPlanRow as ProjectPlanRow,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_progressOf as progressOf,
+  plans_listProjectPlans as listProjectPlans,
+  plans_pageProjectPlans as pageProjectPlans,
+  type plans_PlanAcrossRow as PlanAcrossRow,
+  plans_pagePlansAcross as pagePlansAcross,
+  plans_planTotals as planTotals,
+  type plans_ProjectPlanSummary as ProjectPlanSummary,
+  plans_getPlan as getPlan,
+  plans_planInSession as planInSession,
+} from './view-store.js';
 
-/** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
-export interface ProjectPlanRow {
-  planKey: string;
-  sessionId: string;
-  promptId: string | null;
-  title: string | null;
-  status: string;
-  content: string | null;
-  blobKey: string | null;
-  /** The registered object admitted by this plan's processed-field provenance, or null. */
-  objectKey: string | null;
-  originPath: string | null;
-  /** `checked/total` over the plan's task list, or `N/A` when it has none. */
-  progress: string;
-  updatedBy: string | null;
-  createdAt: number;
-  updatedAt: number;
-  tags: string[];
-}
 
-/** The statuses an administrative edit may write — the catalogue's; the list filter alone admits 'all'. */
-export const WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(PLAN_STATUSES);
-export const PLAN_STATUS_MESSAGE = `status must be one of: ${PLAN_STATUSES.join(', ')}`;
-
-/** `checked/total` over the plan's task list, or `N/A` when it has none; a spilled plan reads as none. */
-export function progressOf(content: string | null): string {
-  const text = content ?? '';
-  const checked = (text.match(/- \[x\]/gi) ?? []).length;
-  const unchecked = (text.match(/- \[ \]/g) ?? []).length;
-  const total = checked + unchecked;
-  return total === 0 ? 'N/A' : `${checked}/${total}`;
-}
-
-const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key,
-  CASE WHEN ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')}
-    THEN ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
-  origin_path, updated_by, created_at, updated_at`;
-
-function toPlan(row: Record<string, unknown>, tags: string[]): ProjectPlanRow {
-  return {
-    planKey: row.plan_key as string,
-    sessionId: row.session_id as string,
-    promptId: (row.prompt_id as string | null) ?? null,
-    title: (row.title as string | null) ?? null,
-    status: row.status as string,
-    content: (row.content as string | null) ?? null,
-    blobKey: (row.blob_key as string | null) ?? null,
-    objectKey: (row.object_key as string | null) ?? null,
-    originPath: (row.origin_path as string | null) ?? null,
-    progress: progressOf((row.content as string | null) ?? null),
-    updatedBy: (row.updated_by as string | null) ?? null,
-    createdAt: row.created_at as number,
-    updatedAt: row.updated_at as number,
-    tags,
-  };
-}
-
-/** The tags of each named plan, keyed by plan key; a plan with none maps to an empty list. */
-async function tagsOf(db: RelationalStore, scope: ReadScope, planKeys: readonly string[]): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>(planKeys.map((k) => [k, []]));
-  // A page of plans names more keys than one statement may bind, so the keys are read in runs.
-  for (const run of inListChunks(planKeys)) {
-    const { results } = await db
-      .prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
-      .bind(scope.projectId, ...run)
-      .all<{ entity_id: string; tag: string }>();
-    for (const r of results) out.get(r.entity_id)?.push(r.tag);
-  }
-  return out;
-}
-
-/** The tags of each named plan of each Project, keyed by Project and then plan key, every statement in one batch. */
-async function tagsAcross(db: RelationalStore, keysByProject: ReadonlyMap<string, readonly string[]>): Promise<Map<string, Map<string, string[]>>> {
-  const out = new Map<string, Map<string, string[]>>();
-  const reads: { projectId: string; statement: ReturnType<RelationalStore['prepare']> }[] = [];
-  for (const [projectId, keys] of keysByProject) {
-    out.set(projectId, new Map(keys.map((k) => [k, []])));
-    for (const run of inListChunks(keys)) {
-      reads.push({ projectId, statement: db
-        .prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
-        .bind(projectId, ...run) });
-    }
-  }
-  if (reads.length === 0) return out;
-  const results = await db.batch(reads.map((r) => r.statement));
-  results.forEach((result, i) => {
-    const held = out.get(reads[i]!.projectId)!;
-    for (const r of result.results as { entity_id: string; tag: string }[]) held.get(r.entity_id)?.push(r.tag);
-  });
-  return out;
-}
-
-/** The project's plans, most recently updated first; optionally one status or one session. */
-export async function listProjectPlans(
-  db: RelationalStore,
-  scope: ReadScope,
-  opts: { status?: string; sessionId?: string; limit?: number } = {},
-): Promise<ProjectPlanRow[]> {
-  return [...(await pageProjectPlans(db, scope, opts)).rows];
-}
-
-/**
- * One page of the project's plans, most recently updated first, and the cursor of the next. A plan edited while a
- * reader pages moves to the head of the list, which that reader already holds; a refresh reads it there.
- */
-export async function pageProjectPlans(
-  db: RelationalStore,
-  scope: ReadScope,
-  opts: { status?: string; sessionId?: string; limit?: number; cursor?: string } = {},
-): Promise<Page<ProjectPlanRow>> {
-  const listed = await selectPlans(db, { sql: 'project_id = ?', params: [scope.projectId] }, opts);
-  return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
-}
-
-/** A plan of a read across Projects, with the Project it belongs to. */
-export type PlanAcrossRow = ProjectPlanRow & { projectId: string };
-
-/** One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a start instant. */
-export async function pagePlansAcross(
-  db: RelationalStore,
-  set: ProjectSet,
-  opts: { status?: string; since?: number; q?: string; limit?: number; cursor?: string } = {},
-): Promise<Page<PlanAcrossRow>> {
-  return selectPlans(db, projectsFiltering(set, 'plans'), opts, 'idx_plans_updated_deployment');
-}
-
-/**
- * The plans a text matches: its title or its body as the Deployment holds it inline, with `%` and `_` read as text.
- * Case is folded for ASCII letters only: `é` does not match `É`. A body spilled to a blob is matched by
- * `/api/search`, not here.
- */
-function planText(q: string | undefined): { sql: string; params: string[] } | null {
-  if (q === undefined || q.trim() === '') return null;
-  const pattern = containsPattern(q.trim());
-  return { sql: `(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`, params: [pattern, pattern] };
-}
-
-/**
- * How many plans of each status the set holds under the other filters: a start instant and a text. Read through each
- * Project's own plans, one statement. A status no plan holds is absent. The totals and the page are two statements, so
- * a plan written between them can leave a total one off the page it sits beside.
- */
-export async function planTotals(db: RelationalStore, set: ProjectSet, opts: { since?: number; q?: string } = {}): Promise<Record<string, number>> {
-  const projects = projectsDriving(set, 'project_id');
-  const conditions = [projects.sql];
-  const params: unknown[] = [...projects.params];
-  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
-  const text = planText(opts.q);
-  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
-  const { results } = await db.prepare(`SELECT status, COUNT(*) AS n FROM plans WHERE ${conditions.join(' AND ')} GROUP BY status`)
-    .bind(...params).all<{ status: string; n: number }>();
-  return Object.fromEntries(results.map((r) => [r.status, Number(r.n)]));
-}
-
-/**
- * One plan page over the rows `projects` admits. A read that walks a Deployment-wide index (`walks`, named in the
- * statement) also takes the cursor's instant as an upper bound beside the keyset predicate, which the predicate
- * already implies, so the walk seeks to the cursor.
- */
-async function selectPlans(
-  db: RelationalStore,
-  projects: { sql: string; params: readonly unknown[] },
-  opts: { status?: string; sessionId?: string; since?: number; q?: string; limit?: number; cursor?: string },
-  walks = '',
-): Promise<Page<PlanAcrossRow>> {
-  const k = keyset({ limit: clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const conditions = [projects.sql];
-  const params: unknown[] = [...projects.params];
-  if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
-  if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
-  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
-  const text = planText(opts.q);
-  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
-  if (k.where !== '') {
-    if (walks !== '') { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
-    conditions.push(k.where); params.push(...k.params);
-  }
-  const { results } = await db
-    .prepare(`SELECT project_id, ${COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
-    .bind(...params, k.limit + 1)
-    .all<Record<string, unknown>>();
-  const shown = results.slice(0, k.limit);
-  // Tags are keyed by Project first, so they are read per Project over its keys on the page, in one batch.
-  const keysByProject = new Map<string, string[]>();
-  for (const r of shown) keysByProject.set(r.project_id as string, [...(keysByProject.get(r.project_id as string) ?? []), r.plan_key as string]);
-  const tags = await tagsAcross(db, keysByProject);
-  const rows = shown.map((r) => ({ ...toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
-  const last = rows[rows.length - 1];
-  return { rows, cursor: results.length > k.limit && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null };
-}
-
-/** A plan's bounded metadata, including the content revision and source session. */
-export type ProjectPlanSummary = Pick<ProjectPlanRow, 'planKey' | 'title' | 'status' | 'sessionId'> & { contentHash: string | null };
-
-/** One plan inside the scope, or null — including when the key exists under another project. */
-export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<ProjectPlanSummary | null>;
-export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<ProjectPlanRow | null>;
-export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<ProjectPlanSummary | ProjectPlanRow | null> {
-  const row = await db.prepare(`SELECT ${options.summary ? 'plan_key, title, status, session_id, content_hash' : COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
-  if (row === null) return null;
-  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
-    sessionId: row.session_id as string, contentHash: row.content_hash as string | null };
-  const tags = await tagsOf(db, scope, [planKey]);
-  return toPlan(row, tags.get(planKey) ?? []);
-}
-
-/** True when the plan sits in the session inside the scope. */
-export async function planInSession(db: RelationalStore, scope: ReadScope, sessionId: string, planKey: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ?`).bind(scope.projectId, sessionId, planKey).first<{ present: number }>();
-  return row !== null;
-}
 
 /**
  * Writes a plan's status as an administrative edit by a member. The stamp lands strictly after the row's, so a capture event replayed with the row's old stamp never wins over the edit. False when no such plan sits in the scope or it already holds the status.

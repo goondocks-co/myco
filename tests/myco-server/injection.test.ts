@@ -19,7 +19,7 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/plans.js';
-import { receiptPlans } from '@myco-server-worker/read/injection-served-items.js';
+import { receiptPlans } from '@myco-server-worker/read/view-store.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
 const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);

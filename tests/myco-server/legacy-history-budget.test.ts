@@ -1,9 +1,10 @@
+import { statementRecorder } from '../helpers/statement-recorder.js';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { importedLegacyRows } from '@myco-server-worker/read/legacy-history.js';
-import { IMPORTED_PROMPT_SESSIONS_SQL, sessionsWithImportedPrompts } from '@myco-server-worker/read/sessions.js';
+import { sessionsWithImportedPrompts } from '@myco-server-worker/read/sessions.js';
 import { LEGACY_HISTORY_MAX_EVENTS } from '@goondocks/myco-shared/member-protocol';
 import { measuredStore } from './helpers/read-budget.js';
 
@@ -43,10 +44,15 @@ it('D1 source proof reads a bounded set of identities independently of retained 
     const large = await measure();
     expect(large).toBe(small);
     expect(large).toBeLessThanOrEqual(6 * LEGACY_HISTORY_MAX_EVENTS);
-    const plan = await db.prepare(`EXPLAIN QUERY PLAN ${IMPORTED_PROMPT_SESSIONS_SQL}`).bind(JSON.stringify(sessions), 'project', 'legacy-import').all<{ detail: string }>();
+    const observed = statementRecorder(db, { accounting: 'd1' });
+    await sessionsWithImportedPrompts(observed.db, { projectId: 'project' }, sessions, 'legacy-import');
+    expect(observed.statements.length).toBeGreaterThan(0);
+    for (const selected of observed.statements) {
+    const plan = await db.prepare(`EXPLAIN QUERY PLAN ${selected.sql}`).bind(...selected.binds).all<{ detail: string }>();
     const details = plan.results.map(row => row.detail).join('\n');
     expect(details).toMatch(/SEARCH e (?:EXISTS )?USING (?:COVERING )?INDEX idx_events_imported_prompt \(project_id=\? AND session_id=\? AND producer_adapter=\?\)/);
     expect(details).not.toMatch(/SCAN e\b/);
+    }
     console.info('LEGACY_HISTORY_D1_BUDGET', { identities: 1000, retainedRows: 100000, rowsRead: large });
   } finally { await mf.dispose(); }
 }, 120_000);

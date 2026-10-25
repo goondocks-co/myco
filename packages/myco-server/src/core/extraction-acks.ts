@@ -1,3 +1,4 @@
+import { prepareExtractionAckItem, prepareRecordAcknowledgement } from '../read/view-store.js';
 import type { RelationalStore } from './adapters.js';
 import { commitAttributedWrite } from './runs.js';
 import { dispatchedBeforeLedger } from './served-material.js';
@@ -35,14 +36,7 @@ export async function acknowledgePrompt(
   }
   const legacy = servedId === undefined && target.promptId !== undefined && await dispatchedBeforeLedger(db, scope, runId);
   if (servedId === undefined && !legacy) return { ok: false, error: 'material not served to this run; use served_id from a body page' };
-  const source = servedId === undefined
-    ? `SELECT p.project_id, p.prompt_id AS record_id, p.session_id, NULL AS served_id FROM prompt_batches p
-        JOIN agent_runs r ON r.project_id = p.project_id AND r.id = ?
-        WHERE p.project_id = ? AND p.prompt_id = ?`
-    : `SELECT m.project_id, m.record_id, m.session_id, m.served_id FROM run_served_material m
-        WHERE m.run_id = ? AND m.project_id = ? AND m.served_id = ?`;
-  const params = [runId, scope.projectId, servedId ?? target.promptId];
-  const item = await db.prepare(source).bind(...params).first<{ record_id: string }>();
+  const item = await prepareExtractionAckItem(db, scope.projectId, runId, servedId ?? target.promptId, servedId).first<{ record_id: string }>();
   if (item === null) return { ok: false, error: 'material not served to this run' };
   if (target.promptId !== undefined) {
     const store = db;
@@ -52,17 +46,7 @@ export async function acknowledgePrompt(
       throw error;
     });
   }
-  const statement = db.prepare(`INSERT INTO extraction_acks
-    (project_id, ack_id, session_id, kind, record_id, served_id, run_id, acknowledged_at)
-    SELECT material.project_id, ?, material.session_id, 'record', material.record_id, material.served_id, ?, ?
-    FROM (${source}) material
-    JOIN prompt_batches p ON p.project_id = material.project_id AND p.prompt_id = material.record_id AND p.session_id = material.session_id
-    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
-    WHERE ${notTombstonedSql('s')}
-      AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id = material.project_id
-        AND a.record_id = material.record_id AND a.kind = 'record' AND a.run_id = ? AND a.served_id IS material.served_id)
-    ON CONFLICT (project_id, served_id) DO NOTHING`)
-    .bind(crypto.randomUUID(), runId, now, ...params, runId);
+  const statement = prepareRecordAcknowledgement(db, scope.projectId, runId, servedId ?? target.promptId, servedId, crypto.randomUUID(), now);
   let result;
   try {
     result = await commitAttributedWrite(db, scope, statement, {

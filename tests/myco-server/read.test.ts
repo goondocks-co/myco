@@ -1,6 +1,7 @@
 import { legacyBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { statementRecorder } from '../helpers/statement-recorder.js';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -236,7 +237,7 @@ describe('read/children', () => {
   });
 });
 
-import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS, toolUsage, turnCollection, sessionTurnContexts, toolUsageSql } from '@myco-server-worker/read/turns.js';
+import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS, toolUsage, turnCollection, sessionTurnContexts } from '@myco-server-worker/read/turns.js';
 import { listAttachments } from '@myco-server-worker/read/children.js';
 import { bucketActivity, containsPattern, listSessionSummaries, ACTIVITY_BUCKETS } from '@myco-server-worker/read/sessions.js';
 import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
@@ -384,12 +385,15 @@ describe('read/turns', () => {
     expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(3), limit: 1 })).rows.map((t) => t.toolName)).toEqual(['Bash']);
     expect((await listAttachments(db, { projectId: 'proj_1' }, 's1')).rows.map((a) => a.promptId)).toEqual([UUID(1)]);
   });
-  it('seeks session/prompt tool calls without statistics', () => {
-    const { sqlite } = sqliteEnv();
+  it('seeks session/prompt tool calls without statistics', async () => {
+    const { db, sqlite } = sqliteEnv();
     seedTurns(sqlite);
     for (const prompt of [false, true]) {
-      const params = ['proj_1', 's1', ...(prompt ? [UUID(1)] : [])];
-      const plan = sqlite.query('EXPLAIN QUERY PLAN ' + toolUsageSql(prompt)).all(...params) as { detail: string }[];
+      const recorded = statementRecorder(db, { accounting: 'native' });
+      await toolUsage(recorded.db, { projectId: 'proj_1' }, 's1', prompt ? UUID(1) : undefined);
+      expect(recorded.statements).toHaveLength(1);
+      const statement = recorded.statements[0]!;
+      const plan = sqlite.query('EXPLAIN QUERY PLAN ' + statement.sql).all(...statement.binds) as { detail: string }[];
       expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toMatch(/idx_tool_calls_(?:prompt|activity) \(project_id=\? AND session_id=\?/);
       if (prompt) expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('prompt_id=?');
     }

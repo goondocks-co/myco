@@ -30,7 +30,7 @@ import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle
 import { restoreArchivedEvent } from './event-content.js';
 import { restoreToolInput } from './tool-input-restore.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
-import { RESTORED_SESSION_UNREAD_SQL } from '../db/read-budget-session-statements.js';
+import { prepareRestoredSessionUnread } from '../read/view-store.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
@@ -946,7 +946,7 @@ export async function restoreArtifact(
     }
   }
   if (restoredSessions.size > 0) await db.batch([
-    db.prepare(RESTORED_SESSION_UNREAD_SQL).bind(JSON.stringify([...restoredSessions.values()])),
+    prepareRestoredSessionUnread(db, JSON.stringify([...restoredSessions.values()])),
     db.prepare('UPDATE backup_restore_progress SET next_row=1 WHERE table_name=? AND artifact_hash=?').bind(recountPhase, hash),
   ]);
   return outcome;

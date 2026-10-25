@@ -1,3 +1,4 @@
+import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -171,16 +172,23 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const input = { sessionId: 'session', admission: sessionWriteAdmission({ projectId: SCOPE.projectId, machineId: 'machine' }, 'session'), promptId: 'recall', promptHash: 'recall', prompt: 'fixture prompt for recall', now: 2000 };
       const leaves = { enabled: true, maxPerPrompt: 3 };
       const selection = await selectSporesForPrompt(db, SCOPE, leaves, true, input, async () => semantic(matches));
+      let oracleSubstitutions = 0;
+      let distinguishOracle = false;
       const fromOracle: RelationalStore = { ...db, prepare: (sql) => {
-        if (!sql.startsWith('WITH hits AS MATERIALIZED')) return db.prepare(sql);
+        if (!significantStatement(sql).startsWith('WITH hits AS MATERIALIZED')) return db.prepare(sql);
+        oracleSubstitutions++;
         let params: unknown[] = [];
         const statement: PreparedStatement = { bind: (...values) => { params = values; return statement; },
-          all: async <T,>() => ({ results: (await oracle(db, matches.filter((hit) => params.slice(2).includes(hit.id)))).map(({ score: _score, ...row }) => row) as T[] }),
+          all: async <T,>() => { const rows = (await oracle(db, matches.filter((hit) => params.slice(2).includes(hit.id)))).map(({score:_score,...row}) => row); if(distinguishOracle && rows[0]) rows[0] = {...rows[0],text:'oracle-substitution-canary'}; return {results:rows as T[]}; },
           first: async () => { throw new Error('unexpected first'); }, run: async () => { throw new Error('unexpected run'); } };
         return statement;
       } };
       await db.prepare("DELETE FROM spore_injections WHERE project_id='proj_1'").run();
       expect(await selectSporesForPrompt(fromOracle, SCOPE, leaves, true, input, async () => semantic(matches))).toEqual({ ...selection, receiptId: expect.any(String) });
+      expect(oracleSubstitutions).toBeGreaterThan(0);
+      distinguishOracle = true;
+      const canary = await semanticHits(fromOracle, SCOPE, semantic(matches), [1,0], {topK:100});
+      expect(canary.some(row=>row.text==='oracle-substitution-canary')).toBe(true);
     } finally { sqlite.close(); await mf?.dispose(); }
   }, 60_000);
 }

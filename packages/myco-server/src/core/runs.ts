@@ -3,6 +3,8 @@ export { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } fro
 import { runOriginSql } from '../db/run-context.js';
 import { budgetClaimPredicate, type ClaimBudget } from './run-budget.js';
 import { pausedLearningSql, LEARNING_PAUSED } from './learning-pause.js';
+import { titleRunInFlightSql } from '../db/session-read-model.js';
+export { titleRunInFlightSql } from '../db/session-read-model.js';
 import { memberWriteBatch, type MemberWriteActor } from '../auth/member-write-store.js';
 import { RUN_CONTROL_REFUSAL_WORDS, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 /**
@@ -173,25 +175,6 @@ export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
  * container — and each projects the columns it needs from it.
  */
 
-
-/**
- * A run in flight, queued included: what single-flight and the queue's own
- * refusals read. A `queued` row is still the task's one run — it is waiting to
- * be launched or claimed, not finished — so admitting a second dispatch beside
- * it would double the work rather than replace it.
- *
- * This is the other half of `LIVE_RUN_STATUSES`, and both exist so no statement
- * spells either set by hand. A lease is deliberately absent from both: expiry is
- * interpreted in exactly one place, `expireLeases`, which returns the row to the
- * queue. Reading a lapsed lease as "not in flight" here would admit a duplicate
- * of a run that is merely waiting for another worker to take it.
- */
-
-
-/** A `title-summary` run naming the session is queued or running. */
-export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
-    AND r.${IN_FLIGHT_RUN_STATUSES}
-    AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.session_id') = ${session}.session_id)`;
 
 
 /** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */

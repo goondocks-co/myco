@@ -1,3 +1,4 @@
+import { observeStatement } from '../helpers/statement-recorder.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -5,7 +6,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
-import { newestUnprocessedSession, newestUnprocessedSessionQuery } from '@myco-server-worker/read/prompts.js';
+import { newestUnprocessedSession } from '@myco-server-worker/read/prompts.js';
 import { hasUnprocessedPrompts } from '@myco-server-worker/core/schedule-rules.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
@@ -127,7 +128,7 @@ async function verify(db: RelationalStore) {
   expect(await listProjects(db)).toHaveLength(1);
   await expect(db.batch([db.prepare(session('rollback', 1)), db.prepare('INSERT INTO absent_table VALUES(1)')])).rejects.toThrow();
   await assertProjection(db);
-  const select = newestUnprocessedSessionQuery({ projectId: 'proj_1' });
+  const select = await observeStatement(db, db => newestUnprocessedSession(db, { projectId: 'proj_1' }));
   const extractionPlan = (await db.prepare(`EXPLAIN QUERY PLAN ${select.sql}`).bind(...select.binds).all<{ detail: string }>()).results.map((r) => r.detail).join('\n');
   expect(extractionPlan).toContain('idx_session_read_extraction');
   expect(extractionPlan).not.toContain('TEMP B-TREE');

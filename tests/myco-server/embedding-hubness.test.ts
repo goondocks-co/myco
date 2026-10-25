@@ -1,3 +1,4 @@
+import { currentSporeVectorIds } from '../../packages/myco-server/src/read/view-store.js';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -5,7 +6,7 @@ import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from '../../packages/myco-server/src/core/embedding/reconcile.js';
-import { CURRENT_SPORE_VECTORS, missingSporeVectors } from '../../packages/myco-server/src/core/embedding/hubness.js';
+import { missingSporeVectors } from '../../packages/myco-server/src/core/embedding/hubness.js';
 import { VECTOR_DELETE_CONFIRM_MS as C, VECTOR_LOST_MS as LOST, VECTOR_REWRITE_LIMIT, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { embeddingRunReport, runEmbeddingSteps } from '../../packages/myco-server/src/core/embedding/run.js';
 import { cosineSimilarity, type VectorStore } from '../../packages/myco-server/src/core/embedding/vectors.js';
@@ -95,11 +96,11 @@ function fixture(target: Target) {
     throw new Error(`embedding did not settle: ${phases.slice(-5).join(',')}`);
   };
   const work = (now: number) => hasEmbeddingWork(f.db, 'p', MODEL, now);
-  const current = () => (f.sqlite.query(`${CURRENT_SPORE_VECTORS} ORDER BY r.id`).all('p', MODEL) as Array<{ id: string }>).map((r) => r.id);
+  const current = () => currentSporeVectorIds(f.db, 'p', MODEL);
   const members = () => f.sqlite.query('SELECT id, state, n FROM embedding_hubness_members ORDER BY id').all() as Array<{ id: string; state: number; n: number }>;
   /** Each current spore vector's distance moments recomputed from the vector store, in one pass over all pairs. */
   const recompute = async () => {
-    const ids = current();
+    const ids = await current();
     const held = new Map((await native.get(SCOPE, ids)).map((v) => [v.id, v.values]));
     expect(held.size).toBe(ids.length);
     return new Map(ids.map((id) => {
@@ -126,7 +127,7 @@ function fixture(target: Target) {
       expect(Math.abs(row.neighbor_mean! - want.mean!)).toBeLessThan(1e-12);
       expect(Math.abs(row.neighbor_std! - want.std!)).toBeLessThan(1e-12);
     }
-    expect(members()).toEqual(current().map((id) => ({ id, state: 0, n: expected.size - 1 })));
+    expect(members()).toEqual((await current()).map((id) => ({ id, state: 0, n: expected.size - 1 })));
     expect(f.sqlite.query('SELECT hubness_model, hubness_count FROM embedding_cursors').get()).toEqual({ hubness_model: MODEL, hubness_count: expected.size });
   };
   return { ...f, spore, index, native, reads, commitPause, context, step, settle, work, current, members, recompute, expectExact, repaired };
@@ -167,7 +168,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
       expect(await f.work(now)).toBe(false);
       for (let round = 0; round < 8; round++) {
         now += C;
-        const before = f.current().length;
+        const before = (await f.current()).length;
         const changes = 1 + Math.floor(next() * 4);
         for (let c = 0; c < changes; c++) {
           const roll = next();
@@ -178,7 +179,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
           else { const id = live[Math.floor(next() * live.length)]!; f.sqlite.run("UPDATE spores SET content = ? WHERE project_id = 'p' AND id = ?", [text(), id]); }
         }
         const phases = await f.settle(now);
-        const size = Math.max(before, f.current().length);
+        const size = Math.max(before, (await f.current()).length);
         // At most one leaving and one joining operation for a change of fewer than a page of spores.
         expect({ seed, round, steps: hubnessSteps(phases) <= 2 * operationSteps(size) }).toEqual({ seed, round, steps: true });
         await f.expectExact();
@@ -215,7 +216,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     const f = fixture(target);
     for (let i = 0; i < 12; i++) f.spore(`s${i}`, `spore ${i}`);
     await f.settle(T);
-    const gone = f.sqlite.query('SELECT id, type, record_id AS recordId, revision FROM embedding_receipts WHERE id = ?').get(f.current()[3]!) as { id: string; type: 'spore'; recordId: string; revision: string };
+    const gone = f.sqlite.query('SELECT id, type, record_id AS recordId, revision FROM embedding_receipts WHERE id = ?').get((await f.current())[3]!) as { id: string; type: 'spore'; recordId: string; revision: string };
     await f.native.delete(SCOPE, [gone]);
     f.index?.apply();
     expect(await f.native.get(SCOPE, [gone.id])).toEqual([]);
@@ -321,7 +322,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     const hidden = (f.sqlite.query("SELECT id FROM embedding_receipts WHERE record_id = 's99'").get() as { id: string }).id;
     const native = f.context.vectors;
     f.context.vectors = { ...native, get: async (scope, ids) => (await native.get(scope, ids)).filter((v) => v.id !== hidden) };
-    const gone = f.current().find((id) => id !== hidden)!;
+    const gone = (await f.current()).find((id) => id !== hidden)!;
     f.sqlite.run("UPDATE spores SET status = 'superseded' WHERE project_id = 'p' AND id = (SELECT record_id FROM embedding_receipts WHERE id = ?)", [gone]);
     for (let i = 0; i < 3; i++) { await f.settle(T + i * C); f.index?.apply(); }
     expect(f.members().map((m) => m.id)).not.toContain(gone);
@@ -457,7 +458,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
       expect({ attempt, steps: phases.length <= 5 }).toEqual({ attempt, steps: true });
       expect(lost.writes).toBe(1 + attempt);
       expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: attempt, neighbor_mean: null });
-      expect(f.current()).not.toContain(receiptOf(f, 'lost')!.id);
+      expect(await f.current()).not.toContain(receiptOf(f, 'lost')!.id);
       await f.expectExact();
       expect(await missing(now)).toEqual({ rewriting: 0, waiting: 1, abandoned: 0 });
       // Each new write is looked for until the bound from that write.
@@ -495,7 +496,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     // One joining operation over the 60 settled members: no full recompute.
     expect(hubnessSteps(phases)).toBe(operationSteps(60));
     expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: 0 });
-    expect(f.current()).toContain(receiptOf(f, 'lost')!.id);
+    expect(await f.current()).toContain(receiptOf(f, 'lost')!.id);
     await f.expectExact();
     expect(f.repaired()).toBe(0);
     expect(await f.work(T + LOST)).toBe(false);
@@ -519,7 +520,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     clock = T + 3 * MINUTE;
     await f.settle(clock);
     await f.expectExact();
-    expect(f.current()).toContain(receiptOf(f, 'slow')!.id);
+    expect(await f.current()).toContain(receiptOf(f, 'slow')!.id);
     expect(await f.work(clock)).toBe(false);
     for (const later of [LOST, 2 * LOST, 10 * LOST]) {
       clock = T + later;
@@ -620,7 +621,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     for (let i = 0; i < 30; i++) f.spore(`s${String(i).padStart(2, '0')}`, `spore ${i}`);
     await f.settle(T);
     // Twenty-two spores were written again the most times and are no longer written again; the store returns only the last two by id.
-    const ids = f.current().slice(0, 22);
+    const ids = (await f.current()).slice(0, 22);
     f.sqlite.run(`UPDATE embedding_receipts SET rewrites = ${VECTOR_REWRITE_LIMIT}, updated_at = ? WHERE id IN (SELECT value FROM json_each(?))`, [T, JSON.stringify(ids)]);
     const hidden = new Set(ids.slice(0, 20));
     const inner = f.context.vectors;

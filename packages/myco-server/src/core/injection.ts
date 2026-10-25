@@ -1,4 +1,4 @@
-import { hookPlacementSql } from '../read/hook-placement.js';
+import { injectedPromptRecord } from '../read/view-store.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -312,13 +312,7 @@ export async function injectionsForSession(db: RelationalStore, scope: ReadScope
  * what went into the prompt.
  */
 export async function injectionForPrompt(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<PromptInjection | null> {
-  const row = await db
-    .prepare(`SELECT spore_ids, created_at FROM spore_injections
-               WHERE project_id = ? AND session_id = ? AND delivered_prompt_id = ?
-                 AND ${hookPlacementSql({ project: 'spore_injections.project_id', session: 'spore_injections.session_id', prompt: 'spore_injections.delivered_prompt_id' })}
-               ORDER BY created_at DESC LIMIT 1`)
-    .bind(scope.projectId, sessionId, promptId)
-    .first<{ spore_ids: string; created_at: number }>();
+  const row = await injectedPromptRecord(db, scope, sessionId, promptId);
   if (row === null) return null;
   const sporeIds = parseIds(row.spore_ids);
   const hydrated = await listSporesByIds(db, scope, sporeIds);

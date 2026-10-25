@@ -1,14 +1,8 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
-import { unreadPromptSql } from '../read/extraction-coverage.js';
+import { unreadPromptSql } from './session-read-model.js';
 import { EXTRACTION_CANDIDATE_SQL, transcriptPendingSql } from './session-read-model.js';
 
 const liveSession = (row: string): string => `(${row}.has_session = 1 AND ${row}.tombstoned = 0)`;
-
-/** Recompute restored sessions together after their prompts and durable acknowledgements have landed. */
-export const RESTORED_SESSION_UNREAD_SQL = `UPDATE session_read_facts SET eligible_prompts =
-  (SELECT COUNT(*) FROM prompt_batches p WHERE p.project_id = session_read_facts.project_id
-    AND p.session_id = session_read_facts.session_id AND ${unreadPromptSql('p')})
-  WHERE (project_id, session_id) IN (SELECT json_extract(value, '$.projectId'), json_extract(value, '$.sessionId') FROM json_each(?))`;
 
 /** Apply a child-row contribution to its session, including children received before the session itself. */
 function contribution(row: string, values: Record<string, string>, sign: 1 | -1): string {

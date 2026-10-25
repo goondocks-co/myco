@@ -1,6 +1,6 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { promptSessionReadTriggers } from './read-budget-session-statements.js';
-import { unreadPromptSql } from '../read/extraction-coverage.js';
+import { unreadPromptSql } from './session-read-model.js';
 import { ACTIVE_EXTRACTION_CANDIDATE_SQL } from './session-read-model.js';
 
 /** Durable extraction acknowledgements and constant-cost unread contributions. */

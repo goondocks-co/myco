@@ -1,5 +1,13 @@
 {
   "sources": [
+    "local: #1924 PR4b.1a correction3, pinned Bun 1.4.0 darwin-arm64 and worktree SQLite 3.53. Focused boundary suite: 29 cases, 363 assertions, 45530ms Bun wall and 45601ms runner wall; earlier contended runs measured 53719ms and 44009ms. The 60000ms file weight covers observed wall time. Cached importer scan measured 10644.56ms in the final focused run (earlier 4264ms and contended 11356ms), versus 22149ms before caching and 32593ms in CI 40115386189. Its explicit 30000ms limit preserves the original deadline and leaves the measured maximum below the 80 percent headroom threshold. Existing legacy/parity weights retained; no new test file or parity scenario. Broad local validation is deferred to CI under the coordinator host-load rule.",
+    "local: #1924 PR4b.1a corrections1-2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Canonical npm test legacy measured39086ms and39280ms standalone and85444ms under concurrent whole-shard/source-gate load; full Node file samples58536ms. Legacy weight90000ms retains every measurement. Boundary full-Node summed cases33429.62ms, weight38000ms. Whole-Node samples: claim-takeover10599.479ms, backup-credential20346.941ms, source-install19403.746ms, lineage44657.994ms, checker46442.323ms. Rebalanced allowances18000/30000/23000/130000/85000ms retain these samples, recorded CI floors8561/21016/11162/117542/42189ms, prior source-install14207ms and lineage123943.39ms observations, and prior combined shard-suite71419ms wall. Both viewReadClosure/viewStoreInert native/local-D1 parity measured56019ms combined including boots; existing parity weights retained. No new test file or parity scenario.",
+    "local: #1924 PR4b.1a post-rebase onto9583bf198, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Separate canonical npm test commands measured view-read-legacy32482ms (11pass/5PR-time skips), view-read-boundary19097ms (24pass) and view-read-operators4243ms (4pass); weights35000/25000/10000ms. Boundary25000ms retains more than its measured standalone wall and removes the merged Node-plan headroom overrun. Schema ownership plus identity/read-layer/schema contracts measured11880ms paired; existing weights retained. Both viewReadClosure/viewStoreInert scenarios on native/local-D1 measured44739ms together including boots; parity weights retained. Frozen program/schema recaptured only from git archive9583bf198; domain, applicability, SQL text, calibration and CI trace payloads unchanged.",
+    "local: #1924 PR4b.1a, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0. npm test -- tests/myco-server/view-read-legacy.test.ts measured31.56s (11pass/5PR-time skips/15811assertions;1791CIcases pertarget), weight35000ms. npm test -- tests/myco-server/view-store-schema.test.ts tests/meta/view-read-boundary.test.ts measured22.11s paired wall after final instrumentation regression, boundary weight35000ms. npm test -- tests/server/view-read-operators.test.ts measured8.09s (4pass/35assertions), weight10000ms. npm run test:parity -- --test-name-pattern view read closure: measured24.375s command wall/22.65s Bun wall on native/local workerd D1, weight26000ms includes target startup. Whole node/DOM/parity shard plans use these measured weights; final planner and shard contract commands are recorded in the PR evidence.",
+    "local: #1924 PR4b.1a full PR-time proof is opt-in and excluded from CI weights. Domain452355enumerated/452239applicable/116N-A. Native identity446297listing variants/299827classes measured191033.399ms plus5942arity variants/1222classes measured2253.447ms. Full native/local-D1 class E:299827listing classes measured1984764.804ms with1065408D1rows_read;1222arity classes measured13319.784ms with143426D1rows_read. Full301049classes passed; ordinary CI runs1791strata pertarget plus44HTTP/MCP compositions pertarget. Commands: MYCO_VIEW_READ_FULL=1 MYCO_VIEW_READ_CAPSULE=<scratch capsule> MYCO_RUNNER_GROUP_BUDGET_MS=7200000 npm test -- tests/myco-server/view-read-legacy.test.ts; family listing and arity selections were measured independently, with logs and capsule hashes in scratch pr-body.md.",
+    "local: correction 4 boundary controls measured with pinned Bun 1.4.0 on darwin-arm64 after rebase to e16ede9e5: npm test -- tests/meta/view-read-boundary.test.ts passed 42 tests / 442 assertions in 19.98s (runner 20024ms, command 21525ms); retained 60000ms file weight",
+    "local: #1924 PR4b.1a correction5, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Final boundary48 cases measured21689.98ms summed case time; paired boundary/real operator CLI58 cases and511 assertions passed in25650ms Bun wall,25699ms runner and27314ms outer command. Existing60000ms boundary weight retained above the complete paired command. Added deferred exact-SQL, synchronous forwarding, opaque/mixed batch, source-order and stamped-schema controls in the existing file; no new test file or parity scenario. Thirty affected parity scenarios passed60 native/local-D1 cases across seven shards in502820ms including boots, existing scenario weights retained. No deadline or assertion changed.",
+    "local: PR4b.1a correction6 on pinned Bun1.4.0 and worktree SQLite3.53.0: all49 view-read-boundary cases passed in 20979.79ms summed measured bodies in the focused meta/legacy/operator run. The new real sqliteD1 project-existence forwarding control measured196.54ms there and1466ms alone including startup; it fails when exact-byte logical origin inheritance is removed and passes restored. Existing60000ms file weight retained. No new test file or parity scenario, no deadline or assertion changes.",
     "local: #1724 PR B CI1, pinned Bun1.4.0 darwin-arm64 via npm test with a shared isolated TMPDIR. Setup, utilities, routing and the reported meta suites passed702 tests/4skips across29 files in247663ms runner. Added setup filesystem-boundary regression measured581.71ms; utility boundary and physical-symlink cases47.90/16.61ms. Existing file weights retain CI calibration; no new test file or parity scenario, timeout or assertion changes.",
     "local: #1724 PR B correction1 pinned Bun1.4.0 darwin-arm64 via npm test. Expanded routing/Doctor/roots focused run59pass in4594ms runner; prior routing-only35case run5146ms runner. Ten added gates include measured legacy runtime188.92/123.30/263.86ms, unconnected roots318.71ms, bound-Project conflict137.17ms, unavailable root208.92ms, terminal26.25ms and settlement19.85ms, with selected-home case6.69ms and emitted no-roots two-home case204.07ms on followup. Existing7000ms routing-file weight gains twice the added bodies, rounded to10000ms. No new test file or parity scenario; deadlines unchanged.",
     "local: #1724 PR B pinned Bun1.4.0 darwin-arm64 npm test focused roots/installer/Doctor/preamble run: 88 tests in3536ms runner; client-roots five protocol cases initially measured5.00ms summed body, new file500ms includes startup. Expanded member-mcp-routing file measured4580ms runner in the sequential audit;7000ms retains the prior3000ms allowance plus twice added protocol bodies rounded up. Compiled native RBAC smoke covers five emitted adapters, spores and plan bodies plus capture isolation:2183.96ms test body /3599ms runner;8000ms covers twice measured runner plus startup. Existing native scenario expanded; no new parity scenario.",
@@ -82,7 +90,9 @@
     "local: PR2 read-bound fixture optimization batches identical seed rows through json_each and reuses one local D1 instance, while retaining all18 before/after fixtures and actual production mint/claim/status SQL. Pinned Bun1.4.0, SQLite3.53 scanstatus and local D1: 10400.72ms test body, 10655ms outer runner. Weight25000ms covers twice measured runtime plus startup. Review-fix migration/restore/estimator suite eight cases measured1859.77ms summed under parallel load; weight5000ms. No assertion, coefficient, history fixture or production statement was weakened.",
     "local: vault evolution 2.0 PR 2 parity on pinned Bun 1.4.0 and worktree SQLite3.53.0: both dedicated scenarios passed selfhosted and local workerd/D1 in 66620ms combined wall including four boots. Governor bodies 45.76ms native/168.37ms D1; portable restore 169.46ms native/326.40ms D1. Each new scenario weight150000ms conservatively covers twice the combined observed wall plus startup. No real account, Deployment or service manager.",
     "local: vault evolution 2.0 PR 2, pinned Bun 1.4.0 and worktree SQLite 3.53.0. Read-bound gate measured 86493ms for SQLite scanstatus plus local D1 across 1/100/1000 recent attempts, 0/1/20 live runs and old-history controls; file weight 180000ms covers twice observed runtime plus startup. Governor focused fixtures measured under 400ms summed test time; migration six cases under 1000ms; boundary source gates 17ms. File weights 1500/3000/1500ms include startup headroom. Parity timings recorded separately after real front-door runs.",
-    "local: vault PR2 correction1 on pinned Bun1.4.0 and repository SQLite3.53.0: all40 governor/migration cases passed together in2472ms outer runner, including native refusal, activation retry-floor and interleaved stale-sweep controls; existing4000/7000ms weights cover that combined observed wall per file. The unchanged18-fixture native/D1 read-bound proof measured32356.31ms body during the contended665-test run; weight35000ms retained. Budget boundary source checks measured155.01ms; weight1500ms retained. No new test file or parity scenario, no changed deadline or assertion ceiling."
+    "local: vault PR2 correction1 on pinned Bun1.4.0 and repository SQLite3.53.0: all40 governor/migration cases passed together in2472ms outer runner, including native refusal, activation retry-floor and interleaved stale-sweep controls; existing4000/7000ms weights cover that combined observed wall per file. The unchanged18-fixture native/D1 read-bound proof measured32356.31ms body during the contended665-test run; weight35000ms retained. Budget boundary source checks measured155.01ms; weight1500ms retained. No new test file or parity scenario, no changed deadline or assertion ceiling.",
+    "local: PR4b.1a CI7 on pinned Bun1.4.0 and worktree SQLite3.53.0: all52 view-read-boundary cases passed in19778.26ms summed bodies in the focused meta/legacy/operator run. Three new nested/ambient/identity controls retain the60000ms file weight. Original restore head20/20fail, pristine main1pass, final fix20/20pass with16assertions per repetition on native andlocalD1. No new test file or parity scenario; numeric weights and deadlines unchanged.",
+    "local: PR4b.1a CI8 on pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0: all57 view-read-boundary cases measured19617.34ms summed bodies in npm test -- tests/meta tests/myco-server/gates.test.ts. Five new method/optional-chain controls retain the60000ms file weight. Baseline3020 DOM shards228/602pass in17.23s/37.40s; corrected shards228/602pass in17.85s/38.72s. SIGKILL cutover baseline80.22s/corrected76.89s, unchanged180s deadline; view-bundle references20/20pass. No new test file or parity scenario; numeric weights and deadlines unchanged."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -137,7 +147,7 @@
     "tests/cli/runner-service.test.ts": 1130,
     "tests/cli/runner-update-compiled.test.ts": 799,
     "tests/cli/runtime-redirect.test.ts": 952,
-    "tests/cli/server-backup-credential.test.ts": 45000,
+    "tests/cli/server-backup-credential.test.ts": 30000,
     "tests/cli/server-github-app.test.ts": 446,
     "tests/cli/server-owner-copy.test.ts": 189,
     "tests/cli/server-port.test.ts": 189,
@@ -178,7 +188,7 @@
     "tests/member/buffer-concurrent-append.test.ts": 819,
     "tests/member/buffer.test.ts": 106,
     "tests/member/capture-dependencies.test.ts": 177,
-    "tests/member/claim-takeover.test.ts": 40000,
+    "tests/member/claim-takeover.test.ts": 18000,
     "tests/member/claims-home-pin.test.ts": 172,
     "tests/member/cli.test.ts": 846,
     "tests/member/context-render.test.ts": 3110,
@@ -552,7 +562,7 @@
     "tests/myco-server/legacy-history.test.ts": 41,
     "tests/myco-server/lineage-replay.test.ts": 128,
     "tests/myco-server/lineage-restore.test.ts": 24566,
-    "tests/myco-server/lineage-schema.test.ts": 140000,
+    "tests/myco-server/lineage-schema.test.ts": 130000,
     "tests/myco-server/lists-all.test.ts": 200,
     "tests/myco-server/live-actor-writes.test.ts": 1672,
     "tests/myco-server/live-worker-writes.test.ts": 148,
@@ -783,13 +793,13 @@
     "tests/runtime/binary-resolution.test.ts": 272,
     "tests/runtime/bundled-path.test.ts": 97,
     "tests/runtime/spawn-detached.test.ts": 157,
-    "tests/scripts/check-test-shards.test.ts": 140000,
+    "tests/scripts/check-test-shards.test.ts": 85000,
     "tests/scripts/ensure-deps.test.ts": 21000,
     "tests/scripts/make-dogfood.test.ts": 455,
     "tests/scripts/run-bun-tests-guards.test.ts": 179531,
     "tests/scripts/run-test-command.test.ts": 2111,
     "tests/scripts/smoke-worker-service.test.ts": 164,
-    "tests/scripts/source-install.test.ts": 30000,
+    "tests/scripts/source-install.test.ts": 23000,
     "tests/scripts/test-shards.test.ts": 12000,
     "tests/scripts/test-temp-root.test.ts": 132,
     "tests/server/backup-cli.test.ts": 7791,
@@ -924,7 +934,10 @@
     "tests/utils/repository-name.test.ts": 482,
     "tests/utils/windows-atomic-replace.test.ts": 2,
     "tests/symbionts/member-mcp-routing.test.ts": 10000,
-    "tests/mcp/client-roots.test.ts": 500
+    "tests/mcp/client-roots.test.ts": 500,
+    "tests/meta/view-read-boundary.test.ts": 60000,
+    "tests/myco-server/view-read-legacy.test.ts": 90000,
+    "tests/server/view-read-operators.test.ts": 10000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1021,6 +1034,7 @@
     "transcript live service: equal-time deployed checkpoints, fair indexed selection, and matching pending counts": 74000,
     "transcript repair priority: fresh live bytes precede a large rewind and repair completes through indexed selections": 131000,
     "two Deployments: every HTTP route and served MCP operation refuses foreign authority before writes": 182000,
+    "view read closure: actual HTTP MCP scheduled clock alarm and recovery constructors": 26000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "worker writes: required state and responses commit together under late authority loss": 232000,
     "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000
