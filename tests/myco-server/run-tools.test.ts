@@ -1,3 +1,4 @@
+import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
 import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
 /**
@@ -39,6 +40,29 @@ const NOW = Date.now();
 const SWEEP = 'extract-curate';
 const TITLING = 'title-summary';
 const SMOKE = 'embedding-reconcile';
+
+it('removes thin prompt discovery and returns named refusals without writing or closing the transport', async () => {
+  const f = await setup();
+  try {
+    await f.dispatch('removed-reader', SWEEP);
+    const definition = runDefinitionOf('myco_run_prompts')!;
+    expect(definition.inputSchema.properties.op!.enum).toEqual(['mark_processed']);
+    expect(Object.keys(definition.inputSchema.properties).sort()).toEqual(['op', 'project', 'prompt_id', 'served_id']);
+    expect(RUN_TOOL_REGISTRY.myco_run_prompts!.ops).not.toHaveProperty('unprocessed');
+    expect(RUN_TOOL_MAP).not.toHaveProperty('vault_unprocessed');
+    expect(Object.values(TASK_TOOLS).flat()).not.toContain('vault_unprocessed');
+    const before = f.sqlite.query('SELECT * FROM agent_run_events').all();
+    for (const args of [{op:'unprocessed'}, {}, {op:'unprocessed',include_text:true}]) {
+      expect((await f.call(f.harness.token,'myco_run_prompts',args)).error?.data.code).toBe('unknown_tool');
+      expect((await f.call(f.member.token,'myco_run_prompts',args)).error?.data.code).toBe('unknown_tool');
+    }
+    expect(f.sqlite.query('SELECT * FROM agent_run_events').all()).toEqual(before);
+    expect(f.sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
+    expect(f.sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
+    expect((await f.call(f.harness.token,'myco_run_spores',{op:'list'})).result).toMatchObject({total:0});
+    expect(await f.list(f.harness.token)).toContain('myco_run_prompts');
+  } finally { f.sqlite.close(); }
+});
 
 const rpc = (method: string, params?: unknown) => JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) });
 const post = (token: string, body: string, extra: Record<string, string> = {}) =>
@@ -104,7 +128,7 @@ describe('the run surface and the member surface do not overlap', () => {
       const response = await worker.fetch(post(f.harness.token, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', content: 'must not learn', observation_type: 'gotcha' } })), f.env);
       expect(await response.json()).toMatchObject({ error: { data: { code: 'unknown_tool' } } });
       expect(f.sqlite.query('SELECT count(*) AS n FROM spores').get()).toEqual({ n: 0 });
-      const report = await f.call(f.harness.token, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'project work switched off' });
+      const report = await f.call(f.harness.token, 'myco_run', { op: 'report', action: 'extract', summary: 'project work switched off' });
       expect(report.error).toBeUndefined();
       expect(report.result).toMatchObject({ recorded: true });
     } finally { f.sqlite.close(); }
@@ -129,14 +153,14 @@ describe('the run surface and the member surface do not overlap', () => {
       expect(await f.list(f.harness.token)).toContain('myco_run_prompts');
       expect(count() - before).toBe(1);
       before = count();
-      await f.call(f.harness.token, 'myco_run_prompts', { op: 'unprocessed' });
+      await f.call(f.harness.token, 'myco_run_spores', { op: 'list' });
       expect(count() - before).toBe(1);
       await settingsWriter(f.db).setCapability('proj_1', 'vault_evolution', false, 'test', NOW);
       before = count();
       expect(await f.list(f.harness.token)).toEqual(['myco_run']);
       expect(count() - before).toBe(1);
       before = count();
-      expect((await f.call(f.harness.token, 'myco_run_prompts', { op: 'unprocessed' })).error?.data?.code).toBe('unknown_tool');
+      expect((await f.call(f.harness.token, 'myco_run_spores', { op: 'list' })).error?.data?.code).toBe('unknown_tool');
       expect(count() - before).toBe(1);
     } finally { f.sqlite.close(); }
   });
@@ -247,7 +271,7 @@ describe('the handshake is the principal\'s', () => {
     expect(await initialize(member.token)).toBe(SERVER_INSTRUCTIONS);
     // A run is told the actions its task's close rule accepts, so the refusal is the backstop rather than the channel.
     expect(await initialize(harness.token)).toBe(runInstructionsFor(acceptedActions(SWEEP)));
-    expect(await initialize(harness.token)).toContain('under action "extract" or "skip"; no other action is accepted');
+    expect(await initialize(harness.token)).toContain('under action "extract"; no other action is accepted');
     const res = await worker.fetch(grantRequest(grant.key, rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } })), env);
     expect((await res.json() as any).result.instructions).toBe(GRANT_INSTRUCTIONS);
 
@@ -323,7 +347,7 @@ describe('a run reports whatever its task declares', () => {
     expect(acceptedActions('not-a-task')).toBeNull();
     // A pass with nothing to do is a designed outcome of these tasks and no other; the canopy map says it with its own action.
     const skipping = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.reports.includes(RUN_SKIP_ACTION)).map(([task]) => task).sort();
-    expect(skipping).toEqual(['extract-curate', 'title-summary', 'vault-seed']);
+    expect(skipping).toEqual(['title-summary', 'vault-seed']);
     expect(unacceptedActionError(MAP_TASK, [MAP_ACTION, MAP_UNCHANGED_ACTION])).toBe(`a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"`);
   });
 
@@ -338,8 +362,8 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, list } = await setup();
     await dispatch('run_dry', SWEEP, { dryRun: true });
     expect(await list(harness.token)).toContain('myco_run');
-    expect((await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to do' })).result)
-      .toEqual({ recorded: true, action: RUN_SKIP_ACTION });
+    expect((await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'extract', summary: 'nothing to do' })).result)
+      .toEqual({ recorded: true, action: 'extract' });
     expect((await call(harness.token, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' })).error.data.code).toBe('unknown_tool');
   });
 });
@@ -498,62 +522,6 @@ describe('a run\'s state is a compare-and-set', () => {
   });
 });
 
-describe('the extraction cursor', () => {
-  it('serves fresh completed-session material through the run surface while retaining historical work', async () => {
-    const { harness, dispatch, call, prompt, sqlite } = await setup();
-    await dispatch('run_e', SWEEP);
-    for (let i = 0; i < 30; i++) prompt(`old_${i}`, { createdAt: NOW - 3_000 + i });
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at)
-      VALUES ('proj_1', 'sess_new', 'm1', 'tok_1', ?, ?, ?)`, [NOW, NOW, NOW + 1]);
-    prompt('fresh_1', { session: 'sess_new', createdAt: NOW });
-    prompt('fresh_2', { session: 'sess_new', createdAt: NOW + 1 });
-    const result = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true, limit: 20 }) as any).result;
-    expect(result.prompts.map((p: any) => p.prompt_id)).toEqual(['fresh_1', 'fresh_2', ...Array.from({ length: 18 }, (_, i) => `old_${i}`)]);
-    expect(result.prompts[0].text).toBe('body of fresh_1');
-    expect(sqlite.query(`SELECT count(*) AS n FROM prompt_batches WHERE processed = 1`).get()).toEqual({ n: 0 });
-  });
-
-  it('pages forward without repeating, drops a marked prompt, and reads no body unless asked', async () => {
-    const { harness, dispatch, call, prompt } = await setup();
-    await dispatch('run_e', SWEEP);
-    for (let i = 0; i < 3; i += 1) prompt(`p_${i}`, { createdAt: NOW - 3_000 + i });
-
-    const first = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', limit: 2 }) as any).result;
-    expect(first.prompts.map((p: any) => p.prompt_id)).toEqual(['p_0', 'p_1']);
-    expect(first.prompts[0].text).toBeUndefined();
-    const second = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', limit: 2, cursor: first.next_cursor }) as any).result;
-    expect(second.prompts.map((p: any) => p.prompt_id)).toEqual(['p_2']);
-
-    await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
-    expect((await call(harness.token, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p_0' }) as any).result)
-      .toEqual({ prompt_id: 'p_0', marked: true });
-    const after = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed' }) as any).result;
-    expect(after.prompts.map((p: any) => p.prompt_id)).toEqual(['p_1', 'p_2']);
-
-    const withText = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true }) as any).result;
-    expect(withText.prompts[0].text).toBe('body of p_1');
-    expect((await call(harness.token, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p_absent' }) as any).result).toMatchObject({ ok: false, error: expect.stringContaining('not served') });
-  });
-
-  it('reads the origins a person speaks through and skips the rest, and hides an in-flight session unless asked', async () => {
-    const { harness, dispatch, call, prompt, sqlite } = await setup();
-    await dispatch('run_e', SWEEP);
-    prompt('p_user', { origin: 'user', createdAt: NOW - 3_000 });
-    prompt('p_unknown', { origin: 'unknown', createdAt: NOW - 2_900 });
-    prompt('p_system', { origin: 'system', createdAt: NOW - 2_800 });
-    prompt('p_dispatch', { origin: 'agent_dispatch', createdAt: NOW - 2_700 });
-    prompt('p_hook', { origin: 'hook_injected', createdAt: NOW - 2_600 });
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at)
-                VALUES ('proj_1', 'sess_open', 'm1', 'tok_1', ?, ?, ?)`, [NOW, NOW, NOW]);
-    prompt('p_open', { session: 'sess_open', createdAt: NOW - 2_500 });
-
-    const settled = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed' }) as any).result;
-    expect(settled.prompts.map((p: any) => p.prompt_id)).toEqual(['p_user', 'p_unknown']);
-    const withOpen = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_active: true }) as any).result;
-    expect(withOpen.prompts.map((p: any) => p.prompt_id)).toEqual(['p_user', 'p_unknown', 'p_open']);
-  });
-});
-
 describe('a titling run reads and writes its own session', () => {
   it('refuses incomplete material and title writes on the run MCP path until parsing finishes', async () => {
     for (const mode of ['claim', 'owner']) {
@@ -654,10 +622,10 @@ describe('a titling run reads and writes its own session', () => {
 
 describe('a sweep consolidates through the member op', () => {
   it('records the wisdom spore and moves every active source in one write, and refuses a source already resolved', async () => {
-    const { harness, dispatch, call, spore, prompt, sqlite } = await setup();
+    const { harness, dispatch, call, spore, prompt, sqlite, db } = await setup();
     await dispatch('run_s', SWEEP);
     prompt('source-prompt');
-    await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
+    await recordServedPrompts(db, {projectId:'proj_1'}, 'run_s', [{promptId:'source-prompt',sessionId:'sess_1',createdAt:NOW,endedAt:NOW}], NOW);
     spore('sp_a', 'first source');
     spore('sp_b', 'second source');
     spore('sp_gone', 'already resolved');

@@ -20,7 +20,7 @@ afterEach(() => { cleanup(); client?.clear(); globalThis.fetch = originalFetch; 
 const description = (index: number): TaskDescription => ({
   task: `task-${index}`, name: `Task from registry ${index}`, description: `Description from registry ${index}`,
   triggers: [`Trigger from registry ${index}`], tools: [`Tool from registry ${index}`], done: [`Done from registry ${index}`],
-  budget: { timeoutSeconds: 420 + index, readWindow: { sporePage: 10, sporePreviewChars: 20, sporeBodyChars: 30, sporeFullReads: 40, sessionPage: 50, sessionTitleChars: 60, sessionSummaryChars: 70, sessionLabelChars: 80, promptPage: 90 } },
+  budget: { timeoutSeconds: 420 + index, readWindow: { sporePage: 10, sporePreviewChars: 20, sporeBodyChars: 30, sporeFullReads: 40, sessionPage: 50, sessionTitleChars: 60, sessionSummaryChars: 70, sessionLabelChars: 80 } },
   tier: 'high', profiles: [{ harness: 'codex', model: `model-from-registry-${index}`, effort: 'high', note: null }], profileNote: null, availabilityNote: null, startable: false, capability: null,
   promptTemplate: `Exact ask ${index}\n\n  Preserve indentation.\n`, standingRules: `Exact rules ${index}\n\nDo the declared work.\n`,
   templateVariants: [{ name: `Variant ${index}`, prompt: `Exact variant ${index}\n` }],

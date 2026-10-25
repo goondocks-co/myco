@@ -39,7 +39,7 @@ describe('task description registry gates', () => {
           expect(task.budget?.timeoutSeconds).toBeGreaterThan(0);
         }
         expect(task.done.length).toBeGreaterThan(0);
-        if (Object.hasOwn(TASK_TIERS, task.task)) expect(task.promptTemplate?.length).toBeGreaterThan(0);
+        if (Object.hasOwn(TASK_TIERS, task.task) && task.availabilityNote !== 'Learning resumes with whole-session reading') expect(task.promptTemplate?.length).toBeGreaterThan(0);
       }
     } finally { f.sqlite.close(); }
   });

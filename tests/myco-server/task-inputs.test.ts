@@ -20,9 +20,9 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, DISPATCH_REFUSAL_MESSAGE, dispatchTask, HARNESS_MEMBER_ID, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, uninstructedError } from '@myco-server-worker/core/task-inputs.js';
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
-import { buildExtractionInput, EXTRACTION_PAGE, EXTRACTION_RULES } from '@myco-server-worker/core/extraction-input.js';
+import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { buildSeedingInput, SEEDING_CHECKOUT_DIR, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { EXTRACTION_TASK, OUTCOME_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_TASK, OUTCOME_TASKS, UNLANDED_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -97,23 +97,13 @@ describe('the instruction a titling run receives', () => {
   });
 });
 
-describe('the instruction an extraction run receives', () => {
-  it('asks for one page, every mark, and the close, and hands the standing rules as the instructions file', async () => {
-    const built = await buildExtractionInput();
-    expect(built.instruction).toContain(`\`limit\` ${EXTRACTION_PAGE}`);
-    expect(built.instruction).toContain('`myco_run_prompts` op "unprocessed"');
-    expect(built.instruction).toContain('`myco_run_prompts` op "mark_processed"');
-    expect(built.instruction).toContain('EVERY item on the page');
-    expect(built.instruction).toContain('with its `served_id`');
-    expect(built.instruction).toContain('If a page is empty and has `next_cursor`, call again');
-    expect(built.instruction).toContain('Only an empty page with no `next_cursor` means there is nothing to read');
-    expect(built.instruction).toContain(`action "${EXTRACTION_REPORT_ACTION}"`);
-    expect(built.instruction).toContain(`action "${RUN_SKIP_ACTION}"`);
-    expect(built.instruction).toContain('AGENTS.md');
-    expect(built.instructions).toBe(EXTRACTION_RULES);
+describe('paused learning retains editorial rules without a thin builder', () => {
+  it('keeps session citation, agent lines and search-before-write while building no extraction input', async () => {
+    expect(await buildTaskInput((await rig()).e.serverEnv, EXTRACTION_TASK, 'proj_1', NOW)).toBeNull();
     expect(EXTRACTION_RULES).toContain('Search before every write');
     expect(EXTRACTION_RULES).toContain('supporting whole session with `session_id`');
-    expect(built.inputHash).toHaveLength(64);
+    expect(EXTRACTION_RULES).toContain('agent_line');
+    expect(EXTRACTION_RULES).toContain('Full reads are counted against this run');
   });
 });
 
@@ -188,7 +178,7 @@ describe('every instruction the Deployment builds', () => {
   });
 
   it('is built for exactly the three outcomes', () => {
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].filter(task => !UNLANDED_TASKS.includes(task)).sort());
   });
 });
 

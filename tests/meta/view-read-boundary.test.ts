@@ -359,7 +359,8 @@ test('schema fixture origins admit exactly the stamped bootstrap relations',asyn
 });
 
 test('historical renderings retain exact-base statement bytes',()=>{
- expect(SCHEMA_STEPS.map(step=>({version:step.version,sha256:createHash('sha256').update(JSON.stringify(step.statements)).digest('hex')}))).toEqual(legacy.schema.steps);
+ const through=legacy.schema.steps.at(-1)!.version;
+ expect(SCHEMA_STEPS.filter(step=>step.version<=through).map(step=>({version:step.version,sha256:createHash('sha256').update(JSON.stringify(step.statements)).digest('hex')}))).toEqual(legacy.schema.steps);
 });
 
 test('fresh and upgraded native and D1 catalogs admit only frozen FTS synchronization',async()=>{

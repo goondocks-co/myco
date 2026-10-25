@@ -9,12 +9,9 @@
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { DEPLOYMENT_LEAF_SPECS, isScheduleCount, settingTexts, storedSettings } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
-import { newestUnprocessedSession } from '../read/prompts.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { capturedSinceMap } from './canopy.js';
-
-const DAY_MS = 86_400_000;
 
 /** The 1.4 defaults for the recency gates, applied where the leaves are unset. */
 export const COLD_PROJECT_THRESHOLD_DAYS_DEFAULT = 14;
@@ -98,11 +95,6 @@ export function scheduleFor(task: string, declared: TaskSchedule, overrides: Rec
   return resolveSchedule(declared, scheduleOverride(task, overrides));
 }
 
-/** Whether a completed, undeleted session has unread extraction material with every known transcript ready. */
-export async function hasUnprocessedPrompts(db: RelationalStore, projectId: string): Promise<boolean> {
-  return (await newestUnprocessedSession(db, { projectId })) !== null;
-}
-
 /**
  * Named preconditions a schedule may name; a task naming one absent here is
  * refused by a gate, never skipped in silence.
@@ -122,12 +114,7 @@ type ScheduleCondition = (args: { db: RelationalStore; projectId: string; now: n
 const condition = (description: string, check: ScheduleCondition): ScheduleCondition & { description: string } => Object.assign(check, { description });
 
 export const PRE_CONDITIONS: Readonly<Record<string, ScheduleCondition & { description: string }>> = {
-  'has-unprocessed-prompts': condition('Only when unread prompts remain.', ({ db, projectId }) => hasUnprocessedPrompts(db, projectId)),
   'has-capture-since-map': condition('Only after new session material arrives.', ({ db, projectId }) => capturedSinceMap(db, { projectId })),
-  'has-recent-live-prompts': condition('Only when recent live sessions have unread prompts.', async ({ db, projectId, now }) => {
-    const session = await newestUnprocessedSession(db, { projectId });
-    return session !== null && session.liveCapture === 1 && session.endedAt >= now - DAY_MS && session.endedAt <= now;
-  }),
 };
 
 /** Named accelerators: a count of pending work that shortens a task's interval, read over the same store and looked up the same way. */

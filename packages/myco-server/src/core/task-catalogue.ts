@@ -30,7 +30,7 @@ import type { RunAdmissionGate } from './runs.js';
 
 /** The task that writes a session's title and summary. */
 export const TITLING_TASK = 'title-summary';
-/** The task that reads the prompts nobody has read, writes what they taught, and retires what they replaced. */
+/** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
@@ -82,11 +82,11 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['vault_canopy_map', 'vault_report'],
   'embedding-reconcile': [],
   [EXTRACTION_TASK]: [
-    'vault_unprocessed', 'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
+    'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
   [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
-  [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_unprocessed', 'vault_update_session'],
+  [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_update_session'],
 };
 
 /** The tools a task declares, or none for a task this Deployment does not serve. */
@@ -98,8 +98,8 @@ export function taskTools(task: string | null): readonly string[] {
  * How long one run of a task may take, by task.
  *
  * The dispatcher's flat default is a titling run's shape: a handful of turns at
- * low reasoning, done in seconds. An extraction pass reads a page of prompts
- * and searches before each write; a seeding or map run explores a whole
+ * low reasoning, done in seconds. Learning searches before each write;
+ * a seeding or map run explores a whole
  * checkout. Each takes minutes, and a run aborted mid-work has spent its money and left only
  * what it had written. A task named here carries its own budget into the run's
  * context, which is also the window the run's own routes admit it inside and
@@ -133,7 +133,7 @@ export function admissionForTask(taskName: string): RunAdmissionGate | null {
 
 /** Reader descriptions owned by the task declarations. */
 export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
-  [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Read new prompts, save durable knowledge as spores, and retire knowledge they replace.' },
+  [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Save durable knowledge from sessions as spores, and retire knowledge they replace.' },
   [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
   [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },
   [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },

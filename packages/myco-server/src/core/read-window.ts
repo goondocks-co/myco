@@ -10,9 +10,6 @@
 import { SPORE_BODY_CHARS, SPORE_FULL_READ_BUDGET, SPORE_PREVIEW_CHARS, MAX_SPORE_LIMIT } from './spores.js';
 import { RUN_SESSION_LABEL_CHARS, RUN_SESSION_SUMMARY_CHARS, RUN_SESSION_TITLE_CHARS, RUN_SESSIONS_MAX_LIMIT } from './run-material.js';
 
-/** The default page of unprocessed prompts, matching the page the extraction outcome reads at a time. */
-export const PROMPT_PAGE_LIMIT = 50;
-
 /** What one run may read in a pass. */
 export interface ReadWindow {
   /** The most spores one inventory page carries. */
@@ -28,8 +25,6 @@ export interface ReadWindow {
   sessionTitleChars: number;
   sessionSummaryChars: number;
   sessionLabelChars: number;
-  /** The most unprocessed prompts one page carries. */
-  promptPage: number;
 }
 
 const SWEEP: ReadWindow = {
@@ -41,7 +36,6 @@ const SWEEP: ReadWindow = {
   sessionTitleChars: RUN_SESSION_TITLE_CHARS,
   sessionSummaryChars: RUN_SESSION_SUMMARY_CHARS,
   sessionLabelChars: RUN_SESSION_LABEL_CHARS,
-  promptPage: PROMPT_PAGE_LIMIT,
 };
 
 /** The window a run of this task reads inside. */

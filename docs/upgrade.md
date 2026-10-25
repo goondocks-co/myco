@@ -53,6 +53,10 @@ On the runner machine, `myco update` also queues the service's update between ru
 
 ## Update a Deployment
 
+An update from schema 101 or earlier to schema 104 or later refuses `thin_learning_stepping_stone_required`: Update to 2.0.0-alpha.13 first (schema 103), let in-flight learning runs finish or lapse, then update again. New empty Deployments can be created directly. Recovery can migrate a verified private staging copy directly; it refuses in-flight extraction before applying the pause migration and checks drain admission before publication.
+
+If an update from schema 102 or 103 refuses `thin_learning_not_drained`, let in-flight learning runs finish or lapse under the current version, then retry. These preflight refusals leave the database at its original schema version. `thin_learning_pause_required` means the learning pause marker is missing or invalid; restore the valid Deployment state before retrying.
+
 On the machine that manages it, update the binary, then run the command for its target:
 
 ```bash

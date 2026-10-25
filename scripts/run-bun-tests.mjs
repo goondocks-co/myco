@@ -302,7 +302,6 @@ const SOLO_NODE_FILES = [
   // Scale fixtures reserve one process's duration budget.
   'tests/myco-server/extraction-coverage-budget.test.ts',
   'tests/myco-server/extraction-coverage-steady-state-budget.test.ts',
-  'tests/myco-server/extraction-history-budget.test.ts',
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
   'tests/agent/tools-skills.test.ts',

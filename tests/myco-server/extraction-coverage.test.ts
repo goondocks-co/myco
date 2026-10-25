@@ -9,8 +9,7 @@ import type { ToolContext } from '@myco-server-worker/mcp/context.js';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
-import { hasProcessedPrompts, listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
-import { nothingUnread } from '@myco-server-worker/core/run-postconditions.js';
+import { hasProcessedPrompts } from '@myco-server-worker/read/prompts.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -54,98 +53,6 @@ async function fixture() {
 }
 
 describe('served extraction coverage', () => {
-  it('advances empty pages under plain and legacy floors and snapshot cutoffs without declaring all material read', async () => {
-    const f = await fixture();
-    try {
-      const sessionIds = Array.from({ length: 55 }, (_, i) => 'visit-' + String(i).padStart(3, '0'));
-      for (const [i, id] of sessionIds.entries()) await f.capture(id, i + 1);
-      const floor = '9007199254740991:~';
-      for (const mode of ['plain', 'legacy', 'snapshot'] as const) {
-        const history = mode === 'snapshot' ? { receivedThrough: f.now - 1, sessionIds } : undefined;
-        let cursor: string | null = mode === 'plain' ? floor : mode === 'legacy' ? 'ex1:' + JSON.stringify([sessionIds.at(-1), false, floor]) : null;
-        const visited = new Set<string>();
-        let pages = 0;
-        do {
-          const result = await listUnprocessedPrompts(f.db, f.scope, { limit: 2, cursor: cursor ?? undefined, history });
-          expect(result.rows).toEqual([]);
-          cursor = result.cursor; pages++;
-          if (cursor !== null) {
-            const decoded = JSON.parse(cursor.slice(4));
-            expect(decoded.history.prompt).toBe(false);
-            expect(decoded.floor).toBe(mode === 'snapshot' ? null : floor);
-            expect(visited.has(decoded.history.position.id)).toBe(false);
-            visited.add(decoded.history.position.id);
-          }
-          expect(pages).toBeLessThanOrEqual(sessionIds.length);
-        } while (cursor !== null);
-        expect(pages).toBeGreaterThan(1);
-        expect(await nothingUnread(f.db, f.scope)).toBe(false);
-      }
-      const run = await f.run();
-      const empty = await run.call({ op: 'unprocessed', cursor: floor, limit: 2, include_text: true }) as { prompts: unknown[]; next_cursor: string | null };
-      expect(empty.prompts).toEqual([]);
-      expect(empty.next_cursor).not.toBeNull();
-      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM run_served_material').get()).toEqual({ n: 0 });
-      const resumed = await run.call({ op: 'unprocessed', cursor: empty.next_cursor!, limit: 2, include_text: true }) as { prompts: unknown[]; next_cursor: string | null };
-      expect(resumed.prompts).toEqual([]);
-      expect(resumed.next_cursor).not.toBe(empty.next_cursor);
-      expect(await nothingUnread(f.db, f.scope)).toBe(false);
-      const fresh = await run.call({ op: 'unprocessed', limit: 2, include_text: true }) as { prompts: { served_id: string }[] };
-      expect(fresh.prompts).toHaveLength(2);
-      expect(fresh.prompts.every(row => typeof row.served_id === 'string')).toBe(true);
-    } finally { f.sqlite.close(); }
-  });
-
-  it('pages history in candidate-session order with immutable positions, snapshot cutoffs and scoped cursor structure', async () => {
-    const f = await fixture();
-    try {
-      for (let i = 0; i < 10; i++) await f.capture('zz-primary', 100 + i);
-      const later = [];
-      for (let i = 0; i < 3; i++) later.push(await f.capture('yy-history', 200 + i));
-      const older = [await f.capture('aa-history', 1), await f.capture('aa-history', 2)];
-      const history = { receivedThrough: f.now, sessionIds: ['zz-primary', 'yy-history', 'aa-history'] };
-      const first = await listUnprocessedPrompts(f.db, f.scope, { limit: 4, history });
-      expect(first.rows.map(row => row.sessionId)).toEqual(['zz-primary', 'zz-primary', 'zz-primary', 'yy-history']);
-      await expect(listUnprocessedPrompts(f.db, { projectId: 'proj_2' }, { cursor: first.cursor! })).rejects.toThrow('Invalid extraction cursor');
-      await expect(listUnprocessedPrompts(f.db, f.scope, { cursor: 'ex1:' + JSON.stringify(['', null, null]) })).rejects.toThrow('Invalid extraction cursor');
-      const forged = JSON.parse(first.cursor!.slice(4));
-      forged.history.prompt = 'invalid-key';
-      await expect(listUnprocessedPrompts(f.db, f.scope, { cursor: 'ex2:' + JSON.stringify(forged) })).rejects.toThrow('Invalid extraction cursor');
-      f.sqlite.run("UPDATE sessions SET ended_at=? WHERE project_id='proj_1' AND session_id='yy-history'", [f.now + 100]);
-      const late = await f.capture('zzz-late', 300);
-      const seen = [...first.rows];
-      let cursor = first.cursor;
-      while (cursor !== null) {
-        const next = await listUnprocessedPrompts(f.db, f.scope, { limit: 4, history, cursor });
-        seen.push(...next.rows); cursor = next.cursor;
-      }
-      expect(new Set(seen.map(row => row.promptId)).size).toBe(15);
-      expect(seen.filter(row => row.sessionId !== 'zz-primary').map(row => row.promptId)).toEqual([...later, ...older].map(row => row.promptId));
-      expect(seen.some(row => row.promptId === late.promptId)).toBe(false);
-      expect((await listUnprocessedPrompts(f.db, f.scope)).rows.some(row => row.promptId === late.promptId)).toBe(true);
-    } finally { f.sqlite.close(); }
-  });
-
-  it('continues immutable cursors after anchor deletion and session tombstones', async () => {
-    const f = await fixture();
-    try {
-      for (let i = 0; i < 8; i++) await f.capture('zz-primary', 100 + i);
-      for (let i = 0; i < 3; i++) await f.capture('yy-history', 200 + i);
-      const remaining = [await f.capture('aa-history', 1), await f.capture('aa-history', 2)];
-      const first = await listUnprocessedPrompts(f.db, f.scope, { limit: 4 });
-      const anchor = first.rows[2]!;
-      f.sqlite.run('DELETE FROM prompt_batches WHERE project_id=? AND prompt_id=?', [f.scope.projectId, anchor.promptId]);
-      const next = await listUnprocessedPrompts(f.db, f.scope, { limit: 4, cursor: first.cursor! });
-      expect(next.rows).toHaveLength(4);
-      expect(next.rows.some(row => first.rows.some(prior => prior.promptId === row.promptId))).toBe(false);
-      await tombstoneSession(f.env, f.scope, 'zz-primary', 'test', f.now);
-      await tombstoneSession(f.env, f.scope, 'yy-history', 'test', f.now);
-      const tail = await listUnprocessedPrompts(f.db, f.scope, { limit: 4, cursor: next.cursor! });
-      expect(tail.rows.map(row => row.promptId)).toEqual(remaining.map(row => row.promptId));
-      expect(tail.cursor).toBeNull();
-      expect((await listUnprocessedPrompts(f.db, f.scope, { cursor: '100:' + anchor.promptId })).rows.map(row => row.promptId)).toEqual([]);
-    } finally { f.sqlite.close(); }
-  });
 
   it('rejects prepared flag reads and mutations outside the coverage owner', () => {
     const column = 'processed';
@@ -163,6 +70,7 @@ describe('served extraction coverage', () => {
       const r = await f.run();
       const [item] = await r.serve([a]);
       await r.call({ op: 'mark_processed', served_id: item!.servedId });
+      f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
       const options = { text, allowForeignLineage: true, authorization: { kind: 'recovery' as const } };
@@ -193,19 +101,18 @@ describe('served extraction coverage', () => {
       const first = await f.capture('session', 200);
       const tie = await f.capture('session', 200);
       const r = await f.run();
-      const page = await r.call({ op: 'unprocessed', include_text: true }) as { prompts: { prompt_id: string; served_id: string }[] };
-      const served = page.prompts.find(p => p.prompt_id === first.promptId)!;
-      expect(await r.call({ op: 'mark_processed', served_id: served.served_id })).toMatchObject({ marked: true });
-      expect(await r.call({ op: 'mark_processed', served_id: served.served_id })).toMatchObject({ marked: false });
+      const [served] = await r.serve([first, tie]);
+      expect(await r.call({ op: 'mark_processed', served_id: served!.servedId })).toMatchObject({ marked: true });
+      expect(await r.call({ op: 'mark_processed', served_id: served!.servedId })).toMatchObject({ marked: false });
       const hole = await f.capture('session', 100);
       const next = await f.run();
-      const rest = await next.call({ op: 'unprocessed', include_text: true }) as { prompts: { prompt_id: string; served_id: string }[] };
-      expect(rest.prompts.map(p => p.prompt_id)).toEqual([hole.promptId, tie.promptId]);
+      const rest = await next.serve([hole, tie]);
+      expect(rest.map(p => p.promptId)).toEqual([hole.promptId, tie.promptId]);
       expect(await hasProcessedPrompts(f.db, f.scope)).toBe(true);
-      expect(await nothingUnread(f.db, f.scope)).toBe(false);
+      expect(f.count()).toEqual({ n: 2 });
       f.assertCounts();
-      for (const item of rest.prompts) expect(await next.call({ op: 'mark_processed', served_id: item.served_id })).toMatchObject({ marked: true });
-      expect(await nothingUnread(f.db, f.scope)).toBe(true);
+      for (const item of rest) expect(await next.call({ op: 'mark_processed', served_id: item.servedId })).toMatchObject({ marked: true });
+      expect(f.count()).toEqual({ n: 0 });
       expect(f.sqlite.query('SELECT DISTINCT processed FROM prompt_batches').all()).toEqual([{ processed: 0 }]);
       expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type='run_write' AND tool_name='myco_run_prompts'").get()).toEqual({ n: 3 });
       f.assertCounts();
@@ -304,6 +211,7 @@ describe('served extraction coverage', () => {
         `UPDATE prompt_batches SET text='Changed body',updated_at=2 WHERE prompt_id='${a.promptId}'`,
         `DELETE FROM prompt_batches WHERE prompt_id='${c.promptId}'`,
       ]) { f.sqlite.run(sql); f.assertCounts(); }
+      f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
       await restoreArtifact(restored.db, { text, blobs: restoredEnv.blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
@@ -335,8 +243,9 @@ describe('served extraction coverage', () => {
       expect(f.sqlite.query('SELECT * FROM agent_runs').all()).toEqual([]);
       expect(f.sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks').get()).toEqual({ n: 2 });
-      expect((await listUnprocessedPrompts(f.db, f.scope)).rows).toEqual([]);
+      expect(f.count()).toEqual({ n: 0 });
       f.assertCounts();
+      f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
       const restored = sqliteEnv();
@@ -344,7 +253,7 @@ describe('served extraction coverage', () => {
         await restoreArtifact(restored.db, { text, authorization: { kind: 'recovery' }, allowForeignLineage: true });
         expect(restored.sqlite.query('SELECT * FROM agent_runs').all()).toEqual([]);
         expect(restored.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks').get()).toEqual({ n: 2 });
-        expect(await nothingUnread(restored.db, f.scope)).toBe(true);
+        expect(restored.sqlite.query('SELECT SUM(eligible_prompts) AS n FROM session_read_facts').get()).toEqual({ n: 0 });
       } finally { restored.sqlite.close(); }
     } finally { f.sqlite.close(); }
   });

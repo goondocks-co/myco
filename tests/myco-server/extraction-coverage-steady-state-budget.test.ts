@@ -6,14 +6,13 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
-import { listUnprocessedPrompts, hasProcessedPrompts } from '@myco-server-worker/read/prompts.js';
-import { nothingUnread } from '@myco-server-worker/core/run-postconditions.js';
+import { hasProcessedPrompts } from '@myco-server-worker/read/prompts.js';
 import { assertExtractionPlans, extractionSqlStore } from './helpers/extraction-sql.js';
 import { fixtureBatchStore } from './helpers/extraction-budget.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { PAGE, scope, runId, fill, acknowledgeHistory, restoreCapturedHistory } from './helpers/extraction-coverage.js';
 
-it('D1 page and nothingUnread stay bounded with 7k and 14k acknowledged prompts in other sessions', async () => {
+it('D1 acknowledgement existence stays bounded with 7k and 14k acknowledged prompts in other sessions', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
     compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   const planning = new Database(':memory:');
@@ -39,13 +38,7 @@ it('D1 page and nothingUnread stay bounded with 7k and 14k acknowledged prompts 
       if (!write.write.interpret(await db.batch(write.write.statements)).persisted) throw new Error('fresh capture failed');
       if (i < PAGE) freshIds.push(promptId);
     }
-    const candidateSessions = 1;
-    const counterSeeks = 4;
     const rowAndIndex = 2;
-    const responseProbe = 1;
-    const bodyReads = PAGE * (rowAndIndex + responseProbe);
-    const pageBound = rowAndIndex * (counterSeeks * candidateSessions + PAGE) + bodyReads;
-    const emptyBound = rowAndIndex * candidateSessions;
     let previous = 0;
     for (const acknowledged of [7_000, 14_000]) {
       await restoreCapturedHistory(source, d1, previous, acknowledged);
@@ -54,20 +47,9 @@ it('D1 page and nothingUnread stay bounded with 7k and 14k acknowledged prompts 
       expect(initialization.reads()).toBeLessThanOrEqual(2 * rowAndIndex);
       await acknowledgeHistory(fixtureBatchStore(d1), acknowledged, previous);
       const measured = measuredStore(d1);
-      const tracked = extractionSqlStore(measured.db);
-      const page = await listUnprocessedPrompts(tracked.db, scope, { limit: PAGE, includeText: true });
-      expect(page.rows.map(row => row.promptId)).toEqual(freshIds);
-      const pageReads = measured.reads();
-      expect(pageReads).toBeLessThanOrEqual(pageBound);
-      measured.reset();
-      expect(await nothingUnread(tracked.db, scope)).toBe(false);
-      const emptyReads = measured.reads();
-      expect(emptyReads).toBeLessThanOrEqual(emptyBound);
-      measured.reset();
       expect(await hasProcessedPrompts(measured.db, scope)).toBe(true);
       expect(measured.reads()).toBeLessThanOrEqual(2 * rowAndIndex);
-      await assertExtractionPlans(d1, tracked.queries, `D1 steady ${acknowledged}`);
-      console.info('EXTRACTION_STEADY_COST', { acknowledged, pageReads, pageBound, emptyReads, emptyBound });
+      console.info('EXTRACTION_STEADY_COST', { acknowledged, reads: measured.reads() });
       previous = acknowledged;
     }
   } finally { planning.close(); await mf.dispose(); }

@@ -20,7 +20,6 @@ export interface TaskDescription {
       sessionTitleChars: number;
       sessionSummaryChars: number;
       sessionLabelChars: number;
-      promptPage: number;
     };
   } | null;
   tier: ReasoningTier | null;

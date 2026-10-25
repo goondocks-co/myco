@@ -26,6 +26,8 @@ import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
 import { budgetMigration,budgetCompletionMessage } from '../../db/budget-activation.js';
+import { thinLearningUpgradeAdmission } from '../../db/thin-learning-admission.js';
+import { assertPrivateRecoveryCopy, recoveryCopyAdmission, type PrivateRecoveryCopy } from './private-recovery-copy.js';
 import { EmbeddingRuntime } from './embedding-runtime.js';
 import { RuntimeDraining } from '../../core/harness.js';
 import type { ServerEnv } from '../../core/adapters.js';
@@ -105,7 +107,8 @@ export interface StartedDeployment {
  * the Cloudflare target migrates through `wrangler d1 migrations apply` —
  * equally an operator action, off the request path.
  */
-export function migrateOnly(databasePath: string, native?: NativeSqlite): number {
+export function migrateOnly(databasePath: string, native?: NativeSqlite, recovery?: PrivateRecoveryCopy): number {
+  if (recovery !== undefined) assertPrivateRecoveryCopy(recovery, databasePath);
   configureSqliteLibrary(native);
   const sqlite = new Database(databasePath, { create: true });
   try {
@@ -120,6 +123,13 @@ export function migrateOnly(databasePath: string, native?: NativeSqlite): number
       // An absent meta table is a volume at version 0, not a failure.
       if (!/no such table/i.test((err as Error).message)) throw err;
     }
+
+    const target = SCHEMA_STEPS.at(-1)!.version;
+    const report = (line: string) => console.warn(line);
+    const admission = recovery === undefined ? thinLearningUpgradeAdmission(stamped, target, report)
+      : recoveryCopyAdmission(recovery, databasePath, stamped, target, report);
+    let admitted = admission.next();
+    while (!admitted.done) admitted = admission.next(sqlite.query(admitted.value).all() as Record<string, unknown>[]);
 
     let applied = 0;
     for (const step of SCHEMA_STEPS) {
