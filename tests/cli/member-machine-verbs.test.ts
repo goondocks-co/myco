@@ -260,7 +260,7 @@ describe('a joined member with no 1.4 vault', () => {
     const ran = await verb('doctor', [], rig.fetch);
 
     expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
-    expect(ran.stdout).toMatch(/Member MCP resolution\s*.*ok.*Claude Code declares a member entry in its global configuration over http transport/);
+    expect(ran.stdout).toMatch(/Member MCP resolution\s*.*ok.*Claude Code's global tools are configured for https:\/\/member-test.invalid, Project proj_1, over http; runtime reach was not checked/);
     expect(ran.stdout).not.toMatch(/Capture\s+.*FAIL/);
   });
 

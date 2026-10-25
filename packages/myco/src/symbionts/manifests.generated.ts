@@ -630,6 +630,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "memberMcpHeadersHelperKey": "headersHelper",
+      "memberMcpRouting": "private-projects",
+      "memberMcpReconnectNotice": "Myco connected this repository. Reconnect Myco tools with /mcp.",
       "skillsTarget": ".claude/skills",
       "settingsTarget": ".claude/settings.json",
       "settingsFormat": "json",
@@ -1520,6 +1522,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "toml",
       "mcpServersKey": "mcpServers",
       "memberMcpHeadersHelperKey": "http_headers_helper",
+      "memberMcpRouting": "session-cwd",
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"

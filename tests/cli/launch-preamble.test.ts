@@ -37,6 +37,16 @@ interface Harness {
   pinReturns: string | null;
 }
 
+it('selects the explicit MCP folder before resolving its runtime pin without changing process cwd', () => {
+  const harness = makeHarness();
+  const seen: string[] = [];
+  harness.deps.resolveRuntimePin = folder => { seen.push(folder); return null; };
+  const folder = path.resolve(os.tmpdir(), 'myco-explicit-project');
+  runLaunchPreamble('mcp', ['--credential', 'registry', '--root', folder], harness.deps);
+  expect(seen).toEqual([folder]);
+  expect(harness.chdirCalls).toEqual([]);
+});
+
 /**
  * Build a deps harness with every side-effecting seam stubbed. `pin` is what
  * the runtime-pin resolver returns; `execResult` simulates the re-exec child's

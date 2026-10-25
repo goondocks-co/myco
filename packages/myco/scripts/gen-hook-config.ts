@@ -77,6 +77,7 @@ interface HookConfigEntry {
   transcriptDiscovery?: unknown;
   subagentTranscripts?: string;
   hookResponse?: unknown;
+  mcpReconnectNotice?: string;
   capturePrompts?: unknown;
   captureRules?: unknown;
   subagentParentPath?: string;
@@ -191,6 +192,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
   if (manifest.capture?.subagentTranscripts) entry.subagentTranscripts = manifest.capture.subagentTranscripts;
   const hookResponse = manifest.registration?.hookResponse;
   if (hookResponse) entry.hookResponse = hookResponse;
+  if (manifest.registration?.memberMcpReconnectNotice) entry.mcpReconnectNotice = manifest.registration.memberMcpReconnectNotice;
   const capturePrompts = manifest.capture?.prompts;
   if (capturePrompts) entry.capturePrompts = capturePrompts;
   const captureRules = manifest.capture?.rules;
@@ -351,6 +353,7 @@ export interface HookConfigEntry {
   /** Glob, relative to the session transcript's directory, of the subagent transcripts a session writes beside it. */
   subagentTranscripts?: string;
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
+  mcpReconnectNotice?: string;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
   subagentParentPath?: string;

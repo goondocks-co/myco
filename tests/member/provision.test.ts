@@ -15,6 +15,7 @@ import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { recordProvision, reconcileProvisionAgents, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict } from '@myco/symbionts/member-provision-record.js';
@@ -346,24 +347,22 @@ describe('myco member provision', () => {
   });
 });
 
-it('names the other 2.0 Myco without prescribing legacy cutover or changing its config', async () => {
+it('migrates an owned Codex HTTP entry to session routing when its project moves to another Deployment', async () => {
   join();
   const first = await provision(['codex']);
   expect(first.err).toEqual([]);
   const config = path.join(agentHome, '.codex', 'config.toml');
-  const before = fs.readFileSync(config, 'utf8');
+  const before = parseToml(fs.readFileSync(config, 'utf8')) as { mcp_servers: { myco: { http_headers_helper: string } } };
   writeRegistryEntry({
     version: REGISTRY_VERSION, projectId: 'proj_other', serverUrl: 'https://other.example',
     token: TOKEN, root, machineId: 'm1', joinedAt: 1, updatedAt: 2,
   }, { mycoHome });
-  const refused = await provision(['codex']);
-  const text = refused.err.join('\n');
-  expect(text).toContain("Codex's Myco tools stay on https://myco.example");
-  expect(text).toContain('Capture goes to the right one.');
-  expect(text).toContain('myco doctor');
-  expect(text).not.toContain('myco logout');
-  expect(text).not.toContain('cutover');
-  expect(fs.readFileSync(config, 'utf8')).toBe(before);
+  const migrated = await provision(['codex']);
+  expect(migrated.err).toEqual([]);
+  const after = parseToml(fs.readFileSync(config, 'utf8')) as { mcp_servers: { myco: unknown } };
+  expect(after.mcp_servers.myco).toEqual({ command: before.mcp_servers.myco.http_headers_helper.split(' ')[0],
+    args: ['mcp', CREDENTIAL_FLAG, 'registry'], env_vars: ['MYCO_HOME'] });
+  expect(resolveDeploymentUpstream('registry', { cwd: root, mycoHome, env: {} })?.mcpUrl.href).toBe('https://other.example/mcp');
 });
 
 for (const holder of ['hook', 'same-url'] as const) it(`keeps another 2.0 ${holder} holder without prescribing cutover`, async () => {

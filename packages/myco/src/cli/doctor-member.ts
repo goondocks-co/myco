@@ -12,6 +12,14 @@ import path from 'node:path';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 import { getPluginVersion } from '@myco/version.js';
 import { fileURLToPath } from 'node:url';
+import { exportedServerUrl } from '@myco/member/diagnostics.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
+import { resolveMycoHome, defaultMycoHome, readMachineHomePin, type MycoHomeSource } from '@myco/paths/home.js';
+import { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult, deploymentUrl } from '@myco/member/registry.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { memberHomeFor } from '@myco/member/home-for-folder.js';
+import { SymbiontInstaller, type MemberMcpInspection } from '@myco/symbionts/installer.js';
 
 /** Column width for the check name in output. */
 const NAME_COL_WIDTH = 17;
@@ -26,6 +34,7 @@ export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target
   | 'binary_manifest_missing' | 'binary_manifest_unreadable' | 'binary_manifest_unversioned'
   | 'binary_version_skew' | 'binary_version_current'
   | 'mcp_cwd_ambiguous' | 'mcp_cwd_elsewhere' | 'mcp_server_mismatch' | 'mcp_server_stale'
+  | 'mcp_project_untrusted' | 'mcp_project_override' | 'mcp_home_mismatch'
   | 'runtime_pin_refused' | 'runtime_pin_redundant' | 'runtime_pin_target_absent' | 'runtime_pin_override';
 
 export interface DoctorCheck {
@@ -37,9 +46,16 @@ export interface DoctorCheck {
   /** The symbiont a check names, where it names one. */
   symbiont?: string;
   /** The configuration scope a check read, where it read one. */
-  scope?: 'global' | 'project';
+  scope?: 'global' | 'project' | 'local';
   /** The project root a check is about, where its answer holds for that root alone. */
   root?: string;
+  toolsDeployment?: string;
+  projectId?: string;
+  memberHome?: string;
+  homeSource?: MycoHomeSource;
+  configPath?: string;
+  context?: MemberMcpInspection['context'];
+  folder?: string;
   fixable: boolean;
   fixId?: 'runtime-pin-redundant';
   fixData?: Record<string, unknown>;
@@ -81,32 +97,30 @@ export async function checkWorkerServices(vaultDir: string, deps: import('./work
  * machine: the machine pin for a non-default home, and the Myco MCP server each
  * symbiont declares.
  *
- * The entry is read at the symbiont's global installation targets, and
- * the check reports its scope, transport, and whether
+ * The effective entry is read using the symbiont's scope precedence. The
+ * check reports its scope, transport, and whether
  * it is the entry provisioning writes — the one carrying this member's
  * credential — or that a target could not be read. It reports what the
  * configuration declares, never that a server answers or that a credential
  * authenticates.
  */
-export async function checkMemberMcpResolution(
+export function checkMemberMcpResolution(
   vaultDir: string,
   env: NodeJS.ProcessEnv = process.env,
-  opts: { registryRead?: 'migrate' | 'strict' } = {},
-): Promise<DoctorCheck[]> {
-  const { resolveProjectRoot } = await import('../project-root.js');
-  const { resolveMycoHome, defaultMycoHome, readMachineHomePin } = await import('../paths/home.js');
-  const { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult, deploymentUrl } = await import('../member/registry.js');
-  const { loadManifests } = await import('../symbionts/detect.js');
+  opts: { registryRead?: 'migrate' | 'strict'; folder?: string; mycoHome?: string } = {},
+): DoctorCheck[] {
   const root = resolveProjectRoot(vaultDir);
-  const home = resolveMycoHome({ cwd: root, env });
+  const homeChoice = memberHomeFor(opts.folder ?? root, env);
+  const home = opts.mycoHome ?? homeChoice.home;
   // Strict reads leave legacy entries unchanged and acquire no write lock.
   const strict = opts.registryRead === 'strict' ? readRegistryEntryResult(root, home) : null;
   const membership = strict !== null
     ? (strict.status === 'present' ? strict.entry : null)
     : readRegistryEntry(root, home);
   if (membership === null) return [];
-  // The Deployment this project is a member of; every entry must name it.
+  // The project's recorded Deployment is the expected tools destination.
   const selectedDeployment = deploymentUrl(membership.serverUrl);
+  const selectedDisplay = deploymentUrl(exportedServerUrl(selectedDeployment) ?? 'unavailable');
   const checks: DoctorCheck[] = [];
   const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : undefined;
   const nonDefaultHome = path.resolve(home) !== path.resolve(defaultMycoHome(homeDir));
@@ -120,23 +134,40 @@ export async function checkMemberMcpResolution(
       fixable: false,
     });
   }
-  // Global member targets are the active registrations this check validates.
-  const { SymbiontInstaller } = await import('../symbionts/installer.js');
+  // Inspection applies local, project and user configuration precedence.
   // Counted as a report reads it: no migration, and an entry it could not read is not one it can claim resolves.
   const readable = listRegistryEntriesResult(home);
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
     if (!manifest.registration) continue;
-    const global = new SymbiontInstaller(manifest, root, packageRoot, false, home);
-    const seen = global.inspectMemberMcp(selectedDeployment);
+    const global = new SymbiontInstaller(manifest, root, packageRoot, false, home).forProjectFolder(opts.folder);
+    const seen = global.inspectMemberMcp(selectedDeployment, true);
     if (seen.length === 0) continue;
 
     for (const target of seen.filter((t) => t.present)) {
+      const report = (check: DoctorCheck): void => { checks.push({ memberHome: homeChoice.home, homeSource: homeChoice.source,
+        configPath: target.configPath, context: target.context, root, folder: opts.folder ?? root, ...check,
+        ...(path.resolve(homeChoice.home) === path.resolve(home) ? {} : { status: 'warn' as const, reason: 'mcp_home_mismatch' as const, toolsDeployment: undefined,
+          detail: `${manifest.displayName}'s client resolves ${homeChoice.home} via ${homeChoice.source}, while this project's connection is stored in ${home}. Select that home with MYCO_HOME or a trusted home pin before relying on its tools.` }),
+      }); };
+      const configuredDisplay = target.configuredDeployment === undefined ? undefined : exportedServerUrl(target.configuredDeployment);
+      const toolsDeployment = configuredDisplay == null ? undefined : deploymentUrl(configuredDisplay);
+      if (target.trusted === false || target.shadowed === true) {
+        report({
+          name: 'Member MCP resolution', status: 'warn', symbiont: manifest.name, scope: target.scope, root,
+          toolsDeployment: toolsDeployment ?? selectedDisplay, projectId: membership.projectId, fixable: false,
+          reason: target.trusted === false ? 'mcp_project_untrusted' : 'mcp_project_override',
+          detail: target.trusted === false
+            ? `${manifest.displayName}'s local Myco tools for ${root} are unavailable until you open that folder in ${manifest.displayName}, accept its project trust dialog, and reconnect Myco with /mcp. Their configured Deployment is ${selectedDisplay}.`
+            : `${manifest.displayName}'s project configuration overrides the managed Myco tools for ${root}; review its Myco entry before relying on the project's Deployment ${selectedDisplay}.`,
+        });
+        continue;
+      }
       // An entry that does not carry this member's credential cannot
       // authenticate or resolve the membership, whatever it routes over.
       if (!target.carriesCredential) {
-        checks.push({
+        report({
           name: 'Member MCP resolution',
           status: 'warn',
           detail: `${manifest.displayName}'s ${target.scope} configuration declares a Myco MCP server that carries no member credential, so it resolves no membership. Run \`myco member join --provision ${manifest.name}\`.`,
@@ -151,11 +182,11 @@ export async function checkMemberMcpResolution(
       // its root, or from any directory where the machine holds one membership.
       if (target.transport === 'stdio') {
         const cwd = target.declaredCwd !== null && path.isAbsolute(target.declaredCwd) ? target.declaredCwd : null;
-        const resolves = cwd === null
+        const resolves = target.sessionCwd === true || (cwd === null
           ? readable.readable && readable.unavailableEntries === 0 && readable.entries.length === 1
-          : path.resolve(cwd) === path.resolve(root);
+          : path.resolve(resolveMemberProjectRoot(cwd)) === path.resolve(root));
         if (!resolves) {
-          checks.push({
+          report({
             name: 'Member MCP resolution',
             status: 'warn',
             detail: cwd === null
@@ -174,11 +205,12 @@ export async function checkMemberMcpResolution(
       // one the URL names. Whether those two agree is true of the entry itself;
       // whether they name this project's Deployment is true of this project.
       if (target.deploymentsAgree === false) {
-        checks.push({
+        report({
           name: 'Member MCP resolution',
           status: 'warn',
           detail: `${manifest.displayName}'s ${target.scope} entry sends its headers to a Deployment its helper does not mint them for.`,
           reason: 'mcp_server_mismatch',
+          root: undefined,
           scope: target.scope,
           symbiont: manifest.name,
           fixable: false,
@@ -186,10 +218,12 @@ export async function checkMemberMcpResolution(
         continue;
       }
       if (target.namesExpectedDeployment === false) {
-        checks.push({
+        report({
           name: 'Member MCP resolution',
           status: 'warn',
-          detail: `${manifest.displayName}'s ${target.scope} entry names a Deployment this project is not a member of, so it resolves no membership for it.`,
+          detail: `${manifest.displayName}'s ${target.scope} tools reach ${toolsDeployment ?? 'another Deployment'} instead of this project's Deployment ${selectedDisplay}.`,
+          toolsDeployment,
+          projectId: membership.projectId,
           reason: 'mcp_server_stale',
           scope: target.scope,
           root,
@@ -201,15 +235,18 @@ export async function checkMemberMcpResolution(
       // A member entry is on disk; whether the server answers is not read here.
       // One that names no transport cannot be dialed, so it is a warning that
       // keeps its own reason.
-      checks.push({
+      report({
         name: 'Member MCP resolution',
         status: target.transport === null ? 'warn' : 'ok',
         detail: target.transport === null
           ? `${manifest.displayName}'s ${target.scope} configuration declares a member entry that names neither a URL nor a launcher, so nothing can reach it.`
-          : `${manifest.displayName} declares a member entry in its ${target.scope} configuration over ${target.transport} transport.`,
+          : `${manifest.displayName}'s ${target.scope} tools are configured for ${selectedDisplay}, Project ${membership.projectId}, over ${target.transport}${target.sessionCwd === true ? ' when the client supplies this session folder' : ''}; runtime reach was not checked.`,
         reason: target.transport === null ? 'mcp_entry_unknown_transport' : TRANSPORT_REASON[target.transport],
         scope: target.scope,
         symbiont: manifest.name,
+        root,
+        toolsDeployment: toolsDeployment ?? selectedDisplay,
+        projectId: membership.projectId,
         fixable: false,
       });
     }
@@ -260,7 +297,8 @@ export function formatCheck(check: DoctorCheck): string {
   const name = check.name ? check.name.padEnd(NAME_COL_WIDTH) : CONTINUATION_INDENT;
   const { text, color } = STATUS_LABELS[check.status];
   const paddedText = text.padEnd(Math.max(STATUS_COL_WIDTH, text.length + 1));
-  return `  ${name}${color}${paddedText}\x1b[0m${check.detail}`;
+  const context = check.configPath === undefined ? '' : `\n${CONTINUATION_INDENT}folder: ${check.folder}; config: ${check.configPath}; context: ${check.context}; Myco home: ${check.memberHome} (${check.homeSource})`;
+  return `  ${name}${color}${paddedText}\x1b[0m${check.detail}${context}`;
 }
 
 /** Compare the running binary version with its installed package manifest. */

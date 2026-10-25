@@ -588,5 +588,14 @@ for (const role of ['join', 'create'] as const) it(`${role} first-run journey se
     expect({ code, errors }).toEqual({ code: 0, errors: [] });
     expect(lines.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
     expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+    if (role === 'create') {
+      const config = JSON.parse(fs.readFileSync(path.join(process.env.HOME!, '.claude.json'), 'utf8'));
+      expect(config.projects[fs.realpathSync(root)].mcpServers.myco.args).toEqual(['mcp', '--credential', 'registry', '--root', fs.realpathSync(root)]);
+      expect(config.mcpServers?.myco).toBeUndefined();
+      const codex = fs.readFileSync(path.join(process.env.CODEX_HOME!, 'config.toml'), 'utf8');
+      expect(codex).toContain('args = ["mcp", "--credential", "registry"]');
+      expect(codex).toContain('env_vars = ["MYCO_HOME"]');
+      expect(codex).not.toContain('http_headers_helper');
+    }
   } finally { await server?.close(); }
 });
