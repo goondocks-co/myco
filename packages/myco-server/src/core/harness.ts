@@ -1,3 +1,9 @@
+import { estimateForClaim } from './budget-estimates.js';
+import { budgetActivation } from '../db/budget-activation.js';
+import { budgetHeld } from './run-budget.js';
+import { queueHeads } from './queue-heads.js';
+import type { ClaimCandidate } from './runs.js';
+import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { learningPaused, LEARNING_PAUSED } from './learning-pause.js';
 import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
@@ -26,11 +32,11 @@ import { repositoryIdentity } from './repositories.js';
  * Deterministic embedding work uses the configured embedding provider.
  * Credentials travel only in the runtime environment, never in telemetry or answers.
  */
-import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
+import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, LIMIT_LEAVES, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
-import { type ProjectCapability, projectWorkEnabled } from './settings.js';
+import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
@@ -393,13 +399,13 @@ export async function endQueuedRun(
   scope: { projectId: string },
   run: { id: string },
   now: number,
-  outcome: { failed: string; errorCode: RunErrorCode } | { skipped: string },
+  outcome: { failed: string; errorCode: RunErrorCode; guard?:{sql:string;params:unknown[]} } | { skipped: string },
 ): Promise<boolean> {
   // Retiring the right credential requires the write's own answer: a drain that
   // relaunched and re-queued this row between the caller's read and this write
   // leaves the row naming one the caller never saw.
   const ended = 'failed' in outcome
-    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed, outcome.errorCode)
+    ? await failQueuedRun(env.db, scope, run.id, now, outcome.failed, outcome.errorCode,outcome.guard)
     : await skipQueued(env.db, scope, run.id, now, outcome.skipped);
   if (ended.applied) await retireDispatchCredential(env, ended.displaced, now);
   return ended.applied;
@@ -877,7 +883,7 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
     else held.set(missing, [...(held.get(missing) ?? []), task]);
   }
   await recordTaskHolder(env.db, served, CAPABILITY_HOLDS, 'worker');
-  for (const [hold, tasks] of held) await recordTaskHolder(env.db, tasks, ['worker', ...CAPABILITY_HOLDS.filter((other) => other !== hold)], hold, true);
+  for (const [hold, tasks] of held) await recordTaskHolder(env.db, tasks, ['worker','budget', ...CAPABILITY_HOLDS.filter((other) => other !== hold)], hold, true);
 }
 
 type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
@@ -899,11 +905,11 @@ async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPri
   for (const task of OUTCOME_TASKS) {
     const tierRefusal = taskTierRefusal(task, settings);
     if (tierRefusal !== null) {
-      await recordTaskHolder(env.db, [task], ['worker', ...CAPABILITY_HOLDS], tierRefusal, true);
+      await recordTaskHolder(env.db, [task], ['worker','budget', ...CAPABILITY_HOLDS], tierRefusal, true);
       continue;
     }
     const { holder } = await fleetExecution(env, task, reports, settings, login);
-    await recordTaskHolder(env.db, [task], ['worker'], holder, true);
+    await recordTaskHolder(env.db, [task], holder==='worker'?['worker']:['worker','budget'], holder, true);
   }
 }
 
@@ -931,32 +937,65 @@ export async function repositoryWorkerAvailable(env: ServerEnv, task: string, no
 export async function claimNextRun(
   env: ServerEnv,
   worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
+  retries = 0,
 ): Promise<ClaimOutcome> {
   if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
   // A task is offered only to a worker that reports everything it needs.
   const reported = worker.capabilities ?? [];
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
-  const settings = await claimSettings(env);
+  const policy=await observedSettingsGuard(env.db,[...CLAIM_SETTING_LEAVES,...Object.values(LIMIT_LEAVES)],true);
+  const settings = await claimSettings({...env,db:policy.view});
   await recordCapabilityHolds(env, reported, unmet, worker.now, settings);
   const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
   await recordProfileHolds(env, worker, settings);
-  let candidate = await nextClaimable(env.db, excluded);
+  const activation = await budgetActivation(env.db);
+  const claimLimits = await readDispatchLimits(env);
+  const refusedHeads = new Set<string>();
+  const headKey=(row:ClaimCandidate)=>JSON.stringify([row.projectId,row.id]);
+  const limitHolders=new Map<string,ReturnType<typeof heldBy>>();
+  let limitHeld=false;
+  const next = async () => {
+    if(!activation.active)return nextClaimable(env.db,excluded);
+    const heads=await queueHeads(env.db,excluded);
+    for(const task of new Set(heads.map(row=>row.task))) {
+      if(limitHolders.has(task))continue;
+      const holder=heldBy(await dispatchLoad(env.db,task,worker.now),claimLimits);
+      limitHolders.set(task,holder);
+      const limitNames=['fleet',...Object.keys(LIMIT_LEAVES)];
+      if(holder!==null) {
+        limitHeld=true;
+        await recordTaskHolder(env.db,[task],[null,'worker','budget',...limitNames],holder,true);
+      } else await recordTaskHolder(env.db,[task],limitNames,'worker');
+    }
+    return heads.find(row=>limitHolders.get(row.task)===null&&!refusedHeads.has(headKey(row)))??null;
+  };
+  let candidate = await next();
   let chosen: SelectedExecution | null = null;
   let held = false;
   while (candidate !== null) {
     if (candidate.task === EXTRACTION_TASK && await learningPaused(env.db)) {
       await endQueuedRun(env, { projectId: candidate.projectId }, candidate, worker.now, { skipped: LEARNING_PAUSED });
-      candidate = await nextClaimable(env.db, excluded);
+      candidate = await next();
       continue;
     }
     const { selected } = await selectWorkerExecution(env, candidate.task, worker.harnesses, settings, worker.principal);
     chosen = selected;
-    if (chosen !== null) break;
+    if (chosen !== null) {
+      const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,chosen.harness,chosen.profile);
+      if (await budgetHeld(env.db,candidate.projectId,candidate.id,price.estimate,worker.now)) {
+        await recordQueueHolder(env.db,{projectId:candidate.projectId},candidate.id,'budget',{usd:price.estimate,at:worker.now});
+        refusedHeads.add(headKey(candidate));
+        candidate=await next();
+        chosen=null;
+        continue;
+      }
+      break;
+    }
     held = true;
     excluded.push(candidate.task);
-    candidate = await nextClaimable(env.db, excluded);
+    candidate = await next();
   }
-  if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : 'no_work' };
+  if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : limitHeld&&refusedHeads.size===0?'at_limit':'no_work' };
   const { harness, credentialEnv } = chosen;
   // What the claiming machine's harness listed the requested model as resolving to, so the run's model is judged against it.
   const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
@@ -999,33 +1038,30 @@ export async function claimNextRun(
   }
 
   const limits = await readDispatchLimits(env);
-  const admission = { limits, now: worker.now, ...(capability === null ? {} : { capability }) };
-  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false, gate: workerClaimAdmission(candidate, admission, worker.principal, worker.now) });
-  const minted = mint.issued;
-  const setup = [
-    ensureMemberStatement(env.db, HARNESS_MEMBER_ID, worker.now, 'member', undefined, 'harness runtime'),
-    ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now),
-    mint.statement,
-  ];
-
-  // The claim carries the same admission the launch does, in the write. A run
-  // held by a limit stays queued with that limit recorded on it, and two
-  // workers deciding at once cannot both pass a limit of one.
-  const row = await claimQueuedRun(env.db, candidate, {
-    dispatchedBy: minted.tokenId, worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+  const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
+  const claimed = await claimQueuedRun(env, candidate, {
+    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+    settingsGuard:{sql:policy.sql,params:policy.params},
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
-  }, { ...admission, setup });
+  });
+  const row=claimed?.row ?? null;
+  const minted=claimed?.issued;
   if (row === null) {
     if (candidate.task === EXTRACTION_TASK && await learningPaused(env.db)) return skipRefused(LEARNING_PAUSED);
     if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
     if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
-    if (held === null) return { claimed: false, reason: 'lost_race' };
+    if (held === null) {
+      if (await budgetHeld(env.db,candidate.projectId,candidate.id,price.estimate,worker.now)) await recordQueueHolder(env.db,scope,candidate.id,'budget',{usd:price.estimate,at:worker.now});
+      else await recordQueueHolder(env.db,scope,candidate.id,'worker');
+      return activation.active && retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
+    }
     await recordQueueHolder(env.db, scope, candidate.id, held);
     return { claimed: false, reason: 'at_limit' };
   }
 
+  if(minted===undefined) throw new Error('A claimed run requires its issued credential');
   emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, ...workerTelemetry(worker.principal) });
   return {
     claimed: true,
@@ -1090,7 +1126,9 @@ export async function endLeasedRun(
     ...update, completed_at: now,
   }, { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
-  const [changed, retired] = await env.db.batch([statement, revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, {
+  const accounting = settleAttemptCostStatement(env.db,{projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
+    typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);
+  const [, changed, retired] = await env.db.batch([accounting, statement, revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, {
     sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
     params: [run.projectId, run.runId, row.dispatchedBy, ...TERMINAL_RUN_STATUSES],
   })]);

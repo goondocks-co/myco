@@ -2,9 +2,10 @@ import type { RelationalStore } from './adapters.js';
 import { ensureAgent, getState, mutateState } from './runs.js';
 import { HARNESS_AGENT_ID } from './harness.js';
 import { emit } from '../telemetry.js';
+import { SERVER_STATE_PREFIX } from '../constants.js';
 
 /** State keys owned by the server; run tools cannot write them. */
-export const SERVER_STATE_PREFIX = 'server.';
+export { SERVER_STATE_PREFIX } from '../constants.js';
 export const schedulerStateKey = (key: string): string => `${SERVER_STATE_PREFIX}schedule.${key}`;
 
 /** Typed scheduler control state; invalid stored values reset with a telemetry event. */

@@ -64,14 +64,12 @@ it('fences a prepared claim before queued cleanup and permits the low-level clai
     f.queue('race');
     const candidate = (await nextClaimable(f.db, []))!;
     const admission = { limits: NO_LIMITS, now: NOW + 1 };
-    const mint = await mintInsert(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW, null, NO_RUNTIME_CLAIMS,
-      { rotates: false, gate: workerClaimAdmission(candidate, admission, f.principal, NOW + 1) });
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
     const profile = { tier: 'default' as const, model: PROFILE_HARNESSES['claude-code'].models.default!, effort: null, sources: { tier: 'task' as const, model: 'default' as const } };
-    const claim = () => claimQueuedRun(f.db, candidate, {
-      dispatchedBy: mint.issued.tokenId, worker: f.principal, harness: 'claude-code', now: NOW + 1,
+    const claim = () => claimQueuedRun(f.serverEnv, candidate, {
+      worker: f.principal, harness: 'claude-code', now: NOW + 1,
       leaseExpiresAt: NOW + WORKER_LEASE_MS, profile,
-    }, { ...admission, setup: [mint.statement] });
+    });
     expect(await claim()).toBeNull();
     expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='race'").get()).toEqual({ status: 'queued' });
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_attempts").get()).toEqual({ n: 0 });
@@ -82,7 +80,7 @@ it('fences a prepared claim before queued cleanup and permits the low-level clai
       .toEqual({status:'skipped',run_context:'{"reason":"learning_paused"}'});
     f.sqlite.run("UPDATE agent_runs SET status='queued' WHERE id='race'");
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_resumed_at','2')");
-    expect(await claim()).toMatchObject({ id: 'race' });
+    expect(await claim()).toMatchObject({ row:{id: 'race'} });
   } finally { f.sqlite.close(); }
 });
 

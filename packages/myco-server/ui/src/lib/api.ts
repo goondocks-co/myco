@@ -1,3 +1,4 @@
+import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import type { FleetQueue, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import type { CaptureRow, MachineHarnessHealth } from '../features/today/wire';
 
@@ -71,6 +72,7 @@ export function postJson<T>(path: string, body?: unknown): Promise<T> {
 
 /** `GET /api/status`. */
 export interface StatusResponse {
+  budget?: BudgetStatus;
   harnesses?: MachineHarnessHealth[];
   schema: { expected: number; found: number | null; matches: boolean };
   /** The target this Deployment runs on, as it names itself (`cloudflare`, `bun`), or null when it has no platform descriptor. */

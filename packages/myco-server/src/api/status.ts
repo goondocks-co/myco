@@ -1,3 +1,4 @@
+import { readBudgetStatus } from '../read/budget.js';
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
 import { pendingTranscripts } from '../ingest/parse.js';
 import type { CredentialContext, OwnerContext } from '../context.js';
@@ -77,7 +78,9 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
       return toolsDeployment !== undefined && ownedMachines?.has(fact.machineId) ? fact : rest;
     })),
   ]);
+  const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
   return ok({
+    budget,
     schema: schemaCheck(found ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,

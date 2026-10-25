@@ -1,3 +1,5 @@
+import { estimateInvalidationStatements } from './budget-estimates.js';
+import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { VIEW_FACT_TABLES, VIEW_FTS_TABLES, VIEW_REGENERABLE_TABLES } from '../db/view-tables.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
@@ -224,6 +226,7 @@ const MACHINE_REPORT_COLUMNS = new Set(['settings_cached_revision', 'settings_ca
 
 /** Portable machine identities carry no confirmation of the attached member's current cache. */
 function portableRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  if(table==='agent_run_attempts')return portableAttemptRow(row);
   return table === 'machine_claims' ? Object.fromEntries(Object.entries(row).filter(([column]) => !MACHINE_REPORT_COLUMNS.has(column))) : row;
 }
 
@@ -420,6 +423,8 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
+  agent_state: restoreAgentStateStatement,
+  agent_run_attempts: restoreAttemptStatement,
   extraction_acks: restoreExtractionAckStatement,
   session_artifacts: restoreSessionArtifactStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
@@ -453,13 +458,13 @@ async function claimRestoreTable(db: RelationalStore, table: string, hash: strin
 }
 
 /** A receipt advances only when every supplied column agrees with the rows held by the target. */
-function restoredRowsMatch(table: string, rows: readonly Record<string, unknown>[]): string {
+function restoredRowsMatch(table: string, rows: readonly Record<string, unknown>[], keys:readonly string[]=['id']): string {
   const columns = [...new Set(rows.flatMap(Object.keys))];
   const mismatch = columns.map((column) =>
     `(json_type(expected.value, '$.${column}') IS NOT NULL AND held.${column} IS NOT json_extract(expected.value, '$.${column}'))`);
   return `NOT EXISTS (SELECT 1 FROM json_each(?) AS expected
-    LEFT JOIN ${table} AS held ON held.id = json_extract(expected.value, '$.id')
-    WHERE held.id IS NULL OR ${mismatch.join(' OR ')})`;
+    LEFT JOIN ${table} AS held ON ${keys.map(key=>`held.${key} = json_extract(expected.value, '$.${key}')`).join(' AND ')}
+    WHERE held.${keys[0]} IS NULL OR ${mismatch.join(' OR ')})`;
 }
 
 const TRANSCRIPT_RAW_COLUMNS = ['project_id', 'transcript_id', 'session_id', 'machine_id', 'token_id', 'agent', 'origin_path', 'role', 'head_hash', 'size', 'segment_count', 'first_received_at', 'last_received_at', 'imported_at'] as const;
@@ -868,6 +873,15 @@ export async function restoreArtifact(
         : '';
       const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
       const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
+      const budgetKeys:Readonly<Record<string,readonly string[]>>={agent_runs:['project_id','id'],agent_run_attempts:['project_id','run_id','attempt_id'],agent_state:['project_id','agent_id','key']};
+      const keys=budgetKeys[table];
+      if(keys!==undefined) {
+        const compared=chunk.map(row=>table==='agent_run_attempts'?attemptRestoreComparison(row):Object.fromEntries(keys.map(key=>[key,row[key]])));
+        const profiledTimes=table==='agent_run_attempts'?chunk.flatMap(row=>row.profile_json!=null&&typeof row.claimed_at==='number'?[row.claimed_at]:[]):[];
+        const restoredFloor=profiledTimes.length===0?undefined:profiledTimes.reduce((floor,time)=>Math.min(floor,time),Infinity);
+        statements.push(...estimateInvalidationStatements(db,{sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor));
+      }
+      const inserts=statements.length;
       statements.push(...chunk.map((row) => {
         if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, ownership);
         if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
@@ -879,7 +893,6 @@ export async function restoreArtifact(
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
       }));
       if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
-      const inserts = references.length === 0 ? 0 : 1;
       if (ordered) {
         statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
           WHERE ${RESTORE_OWNER} RETURNING next_row`)

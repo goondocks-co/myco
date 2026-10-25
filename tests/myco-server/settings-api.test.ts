@@ -420,6 +420,7 @@ function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
     if (spec.type === 'integer') return spec.min;
+    if (spec.type === 'number') return spec.min;
     if (spec.type === 'task-overrides') return { 'title-summary': { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };
     if (spec.type === 'profile-model') return spec.harness === 'opencode' ? 'openai/gpt-5' : spec.harness === 'claude-code' ? 'sonnet' : 'gpt-5';
     if (spec.type === 'profile-effort') return 'high';

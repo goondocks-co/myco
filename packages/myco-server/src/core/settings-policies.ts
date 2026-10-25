@@ -1,3 +1,5 @@
+import { BUDGET_LEAF } from './budget-policy.js';
+import { dailyBudget } from './settings.js';
 /**
  * The settings contract: every live Deployment leaf bound to the policy that acts on it.
  *
@@ -349,6 +351,9 @@ const taskOverrides: SettingPolicy = {
 
 /** Every live leaf's policy. A leaf belongs to exactly one, and every live leaf to one: the contract gate holds both. */
 export const SETTING_POLICIES: readonly SettingPolicy[] = [
+  { id:'budget', owners:['core/settings.ts'], leaves:[BUDGET_LEAF], async resolve(env) {
+    return { [BUDGET_LEAF]:{effective:await dailyBudget(env.db)} };
+  } },
   scheduling, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
 ];
 

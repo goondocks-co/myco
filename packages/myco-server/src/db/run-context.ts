@@ -21,6 +21,15 @@ export const contextValue = (key: string): string => `CASE WHEN json_valid(run_c
  */
 export const DISPATCH_ACTOR_SQL = `CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec, '$.actor') = 'text' THEN NULLIF(json_extract(dispatch_spec, '$.actor'), '') END END`;
 
+/** A run origin is fixed by its dispatch actor; absent attribution remains manual. */
+export const runOriginSql = (alias = ''): string => {
+  const prefix = alias ? `${alias}.` : '';
+  const actor = DISPATCH_ACTOR_SQL.replace(/\bdispatch_spec\b/g, `${prefix}dispatch_spec`);
+  return `COALESCE(${prefix}origin,CASE WHEN ${actor} IN ('clock','backfill','deployment') THEN 'automatic' ELSE 'manual' END)`;
+};
+
 /** A harness ending retained independently of the task outcome. */
 export const HARNESS_STOP_KEY = 'harnessStop';
 export const ENDED_NOTE_KEY = 'endedNote';
+export const BUDGET_QUOTE_USD_KEY = 'budgetEstimateUsd';
+export const BUDGET_QUOTE_AT_KEY = 'budgetQuotedAt';

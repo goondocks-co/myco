@@ -1,3 +1,4 @@
+import { estimateRefreshDue } from './budget-estimates.js';
 import { storageCleanupPending } from './storage-cleanup.js';
 import { deviceReclamationPending } from '../auth/enrollment.js';
 import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
@@ -154,8 +155,9 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 
 /** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. One existence read, whatever the count. */
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
-  const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
+  const [inside, queued,budgetQueued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db,'other'),hasQueuedRun(env.db,'budget')]);
   const assertions: PowerAssertion[] = [];
+  if (await estimateRefreshDue(env.db,now)) assertions.push({name:'estimate:due',maxDepth:'sleep'});
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
@@ -167,6 +169,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   else if (await embeddingSweepPending(env, now)) assertions.push({ name: EMBEDDING_SWEEP_ASSERTION, maxDepth: 'sleep' });
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });
+  if (budgetQueued) assertions.push({ name: 'queue:budget', maxDepth: 'sleep' });
   if (inside) assertions.push({ name: 'run:live', maxDepth: 'idle' });
   // A configured backup that is due keeps the Deployment no deeper than sleep, where the job that admits it
   // runs. An inactive Deployment therefore still takes its due attempt, and deep sleep still runs nothing.

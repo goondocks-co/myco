@@ -1,6 +1,7 @@
 import path from 'node:path';
+import { budgetMigration,budgetCompletionMessage } from '@myco-server-worker/db/budget-activation.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
+import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, queryCloudflareDatabase, runCloudflareStatement, D1_STATEMENT_TIMEOUT_MS, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 
 interface SchemaOptions extends CloudflareOptions {
@@ -83,5 +84,17 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
       await options.persist(record);
     }
   }
+  const completion = budgetMigration(Date.now());
+  let next = completion.next();
+  while (!next.done) {
+    const step = next.value;
+    const request = { ...database, sql: step.sql, timeoutMs: D1_STATEMENT_TIMEOUT_MS };
+    let rows:Record<string,unknown>[];
+    try {rows=step.read ? await queryCloudflareDatabase(request) as Record<string, unknown>[] : (await runCloudflareStatement(request), []);}
+    catch(error) {next=completion.throw(error);continue;}
+    next = completion.next(rows);
+  }
+  const message=budgetCompletionMessage(next.value);
+  if(message!==null)options.report?.(message);
   return record;
 });

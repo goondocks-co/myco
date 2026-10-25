@@ -35,8 +35,8 @@ function files(dir: string): string[] {
   return out;
 }
 
-/** Where a harness credential may be revoked: the rule's owner, and the release a terminal run goes through. */
-const REVOKE_CALLERS: readonly string[] = ['core/harness.ts', 'core/release.ts'];
+/** Harness credentials retire at run release or after a refused claim's mint. */
+const REVOKE_CALLERS: readonly string[] = ['core/harness.ts', 'core/release.ts', 'core/worker-claim.ts'];
 
 describe('meta: ending a queued run', () => {
   it('happens only through the release that retires what the row holds', () => {

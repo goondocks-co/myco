@@ -21,6 +21,8 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings-policies.js';
 import { DEPLOYMENT_LEAF_SPECS, settingTexts } from '@myco-server-worker/core/settings.js';
+import { budgetHeld } from '@myco-server-worker/core/run-budget.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { taskFactsKey } from '@myco-server-worker/core/runs.js';
@@ -265,6 +267,15 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'agent.tasks': {
     consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['cortex.canopy.refresh.background_enabled', true]], value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'canopy-map')?.schedule.intervalSeconds,
+  },
+  'agent.budget.daily_usd': {
+    consumer:at('core/run-budget.ts',budgetHeld),value:()=>5,invalid:()=>0.5,
+    async observe(r) {
+      await completeBudgetMigration(r.env.db,NOW);
+      r.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,0)");
+      r.sqlite.run("INSERT OR IGNORE INTO agent_runs(project_id,id,agent_id,task,status,queued_at,origin) VALUES('proj_1','budget-contract','myco-agent','title-summary','queued',0,'automatic')");
+      return budgetHeld(r.env.db,'proj_1','budget-contract',6,NOW);
+    },
   },
   ...Object.fromEntries((['concurrent_runs', 'task_concurrent_runs', 'task_runs_per_hour'] as const).map((limit) => [`agent.limits.${limit}`, {
     consumer: at('core/harness.ts', dispatchTask), value: () => 1, invalid: () => 1.5, observe: heldDispatch,

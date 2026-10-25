@@ -36,6 +36,8 @@ import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/
 import { asSchema41 } from './legacy-recovery-fixture.js';
 import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
 import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
+import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
+import { seedRecoveryBudget, assertRecoveryBudget } from './budget-recovery-fixture.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -102,7 +104,7 @@ const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false,
-    learningSource = null as 'paused' | 'pre-pause' | null } = {}) {
+    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -140,6 +142,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     source.sqlite.run("DELETE FROM schema_meta WHERE key='learning_paused_at'");
     if(learningSource==='paused') await source.db.batch(V102_STATEMENTS.map(sql=>source.db.prepare(sql)));
   }
+  if(budgetSource) seedRecoveryBudget(source.sqlite,true,Date.now());
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -151,6 +154,20 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
         const snapshot=new Database(file);
         try {snapshot.run("UPDATE schema_meta SET value='101' WHERE key='version'");}
         finally {snapshot.close();}
+      }
+      if(budgetSource==='pre-budget') {
+        const snapshot=new Database(file);
+        try {
+          for(const sql of V103_STATEMENTS) {
+            const name=/CREATE TRIGGER IF NOT EXISTS (\w+)/.exec(sql)?.[1];
+            if(name)snapshot.exec(`DROP TRIGGER IF EXISTS ${name}`);
+          }
+          snapshot.exec('DROP INDEX IF EXISTS idx_attempts_claimed');
+          snapshot.exec('DROP INDEX IF EXISTS idx_agent_runs_queue_head');
+          for(const column of ['estimate_usd','cost_usd','cost_source','profile_json'])snapshot.exec(`ALTER TABLE agent_run_attempts DROP COLUMN ${column}`);
+          snapshot.exec('ALTER TABLE agent_runs DROP COLUMN origin');
+          snapshot.exec("DELETE FROM schema_meta WHERE key LIKE 'budget%'; UPDATE schema_meta SET value='102' WHERE key='version'");
+        }finally{snapshot.close();}
       }
       return { configuration, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
@@ -168,6 +185,19 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
+
+it('retains all attempt prices through a full native recovery and repeated startup migration',async()=>{
+  for(const budgetSource of ['current','pre-budget'] as const) {
+  const f=await fixture('local',{budgetSource});
+  try {
+    await f.restore();
+    expect(migrateOnly(f.paths.databasePath)).toBe(0);
+    expect(migrateOnly(f.paths.databasePath)).toBe(0);
+    const db=new Database(f.paths.databasePath);
+    try{await assertRecoveryBudget(db,budgetSource==='current',Date.now());}finally{db.close();}
+  }finally{f.cleanup();}
+  }
+});
 
 it('recovers paused learning preferences and migrates a snapshot lacking the pause state', async () => {
   for(const learningSource of ['paused','pre-pause'] as const) {

@@ -1695,7 +1695,7 @@ describe('gates', () => {
     const offenders: string[] = [];
     for (const file of files(SRC)) {
       const relative = file.slice(SRC.length);
-      if (relative.endsWith('core/runs.ts')) continue;
+      if (relative.endsWith('db/run-statuses.ts')) continue;
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (/status\s+IN\s*\(\s*'(pending|running|queued)'/.test(line)) offenders.push(`${relative}: ${line.trim().slice(0, 80)}`);
       }
@@ -1704,7 +1704,7 @@ describe('gates', () => {
   });
 
   it('declares each run-status set exactly once, and nothing else spells one', () => {
-    const source = readFileSync(join(SRC, 'core', 'runs.ts'), 'utf8');
+    const source = readFileSync(join(SRC, 'db', 'run-statuses.ts'), 'utf8');
     const spelled = [...source.matchAll(/status IN \('pending'[^)]*\)/g)].map((m) => m[0]);
     // Three sets, three definitions, and no fourth spelling in the file that owns them.
     // Three sets, three definitions, in the order the file declares them.

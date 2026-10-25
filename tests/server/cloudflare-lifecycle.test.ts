@@ -3,7 +3,9 @@
  * writes. A fake runner scripts wrangler's answers; nothing here provisions
  * real infrastructure.
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { fileURLToPath } from 'node:url';
+import { budgetD1Database, budgetD1Reply } from './helpers/budget-d1.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
@@ -29,6 +31,7 @@ const DB_ID = '11111111-2222-4333-8444-555555555555';
 const STORE = 'f'.repeat(32);
 
 let calls: { args: string[]; input?: string; cwd?: string; cwdOnDisk: boolean | null }[] = [];
+let budgetDb:ReturnType<typeof budgetD1Database>;
 
 /** Answers each wrangler subcommand the way the real one does; the account's state accumulates across calls like the real one's. */
 const buckets = new Set<string>();
@@ -50,6 +53,10 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     // is not a directory this command could run in.
     calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd, cwdOnDisk: opts?.cwd === undefined ? null : existsSync(opts.cwd) });
     const flat = args.join(' ');
+    if(flat.includes('d1 execute')) {
+      const answer=budgetD1Reply(budgetDb,args[args.indexOf('--command')+1] ?? '');
+      if(answer!==undefined)return answer;
+    }
     if (flat.includes('d1 execute') && flat.includes('sqlite_master')) {
       const fresh = calls.some((call) => call.args.includes('d1') && call.args.includes('create'));
       return { code: 0, stdout: JSON.stringify([{ success: true, results: fresh ? [] : [{ name: 'schema_meta' }] }]), stderr: '' };
@@ -82,7 +89,8 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     return { code: 0, stdout: '', stderr: '', ...(match?.[1] ?? {}) };
   },
 });
-beforeEach(() => { calls = []; buckets.clear(); storeSecrets.clear(); workerSecrets.clear(); });
+beforeEach(() => { calls = []; buckets.clear(); storeSecrets.clear(); workerSecrets.clear(); budgetDb=budgetD1Database(); });
+afterEach(()=>budgetDb.close());
 
 const setup = () => {
   const home = mkdtempSync(join(tmpdir(), 'myco-cf-life-'));
@@ -639,7 +647,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
     `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
-    `  *"d1 execute"*) echo '[{"success":true,"results":[]}]';;`,
+    `  *"d1 execute"*) exec '${process.execPath.replaceAll("'","'\\''")}' '${fileURLToPath(new URL('./helpers/budget-d1.ts',import.meta.url)).replaceAll("'","'\\''")}' "$@";;`,
     '  *"d1 list --json"*) echo "[]";;',
     `  *"secret list --name"*) echo '[]';;`,
     `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,
