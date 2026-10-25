@@ -7,7 +7,8 @@ import semver from 'semver';
 import { readBinaryVersion, installedVersionSupersedes, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
 import { installedBinaryPath, isRunningExecutable } from '@myco/runtime/binary-resolution.js';
 import { selfExecOf } from '@myco/runtime/self-exec.js';
-import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { withMemberRepair } from './member-repair.js';
+export { MemberRepairBusyError } from './member-repair.js';
 /**
  * `myco member <op>` — the member's own CLI: `join`/`leave` record and forget
  * this machine's membership of a project (the token never reaches argv);
@@ -31,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalRootIdentity } from '../utils/git-files.js';
 import { readInstallation } from '@myco/install/installation.js';
-import { checkInstallation, checkAutomaticUpdate, formatCheck, type DoctorCheck } from './doctor-member.js';
+import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
@@ -58,7 +59,7 @@ import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
-import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
+import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -274,7 +275,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
@@ -389,7 +390,7 @@ async function connectFolder(
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   clearMissingMembership(root, mycoHome);
@@ -399,7 +400,7 @@ async function connectFolder(
   reportMachinePin(machinePinned, mycoHome, out);
   await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
   if (!parsed.noAgents) {
-    for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents }))) out(line);
+    for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents, cwd: deps.cwd }))) out(line);
   } else recordNoAgents(mycoHome, serverUrl);
   await importJoinedHistory(entry, mycoHome, deps, out, err);
   return entry;
@@ -459,10 +460,10 @@ export type ProvisionOutcome =
  * is connected, when global provisioning neither reads nor retires any project's registrations.
  */
 function globalInstaller(
-  manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] },
+  manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[]; cwd?: string },
 ): SymbiontInstaller {
   const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome)
-    .replacingLegacy(opts.legacyHomes ?? []);
+    .replacingLegacy(opts.legacyHomes ?? []).forProjectFolder(root === null ? undefined : opts.cwd);
   return root === null ? installer.withoutProjectRoot() : installer;
 }
 
@@ -503,26 +504,7 @@ export function memberProvisionTarget(mycoHome: string, serverUrl?: string): str
   return memberships.length === 1 ? memberships[0].serverUrl : undefined;
 }
 
-const MEMBER_REPAIR_WAIT_MS = 15_000;
-
-export class MemberRepairBusyError extends Error {
-  constructor() {
-    super("Myco is updating this machine's agents. Retry this command after the current update finishes.");
-  }
-}
-
-function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait: true; timeoutMs?: number }): T;
-function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts?: { wait?: boolean; timeoutMs?: number }): T | null;
-function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait?: boolean; timeoutMs?: number } = {}): T | null {
-  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command, ...opts, ...(opts.wait ? { timeoutMs: opts.timeoutMs ?? MEMBER_REPAIR_WAIT_MS } : {}) });
-  if (!acquired.acquired) {
-    if (opts.wait) throw new MemberRepairBusyError();
-    return null;
-  }
-  try { return fn(); } finally { acquired.lock.release(); }
-}
-
-function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string }): ProvisionOutcome {
+function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; cwd?: string }): ProvisionOutcome {
   const outcome = withMemberRepair(mycoHome, 'myco member provision', () => {
     const backup = provisionBackup(mycoHome);
     try { return provisionGlobally(agent, root, mycoHome, { ...opts, backup }); }
@@ -611,7 +593,7 @@ export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl:
 
 export function provisionGlobally(
   agent: string, root: string | null, mycoHome: string,
-  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup; preserveOtherMemberTools?: boolean } = {},
+  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup; preserveOtherMemberTools?: boolean; cwd?: string } = {},
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
@@ -701,7 +683,7 @@ export interface DetectedProvision {
  * then provisioning is global alone, with no project root to check or retire registrations in.
  */
 export function provisionDetectedAgents(
-  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
+  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean; timeoutMs?: number; cwd?: string } = {},
 ): DetectedProvision {
   return provisionAgents((opts.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))(), mycoHome, serverUrl, root, opts);
 }
@@ -710,7 +692,7 @@ export function provisionDetectedAgents(
  * Provision `agents` as `provisionDetectedAgents` does; the installer records each successful global registration.
  */
 export function provisionAgents(
-  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean; timeoutMs?: number; cwd?: string } = {},
 ): DetectedProvision {
   const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true, timeoutMs: opts.timeoutMs });
   withManagedMemberHarnesses(mycoHome, opts, () => {});
@@ -829,8 +811,9 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     else if (agent === undefined) agent = arg;
     else return fail('provision takes one agent');
   }
-  const root = path.resolve(rootArg ?? resolveMemberProjectRoot(deps.cwd));
-  const chosen = homeChoiceFor(deps, root);
+  const invocationFolder = path.resolve(rootArg ?? deps.cwd ?? process.cwd());
+  const root = resolveMemberProjectRoot(invocationFolder);
+  const chosen = homeChoiceFor(deps, invocationFolder);
   const mycoHome = chosen.home;
   if (refresh) {
     if (remove) return fail('--refresh and --remove cannot be combined');
@@ -907,11 +890,11 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   }
   const folder = binding === null ? null : root;
   if (agent === undefined) {
-    const found = provisionDetectedAgents(mycoHome, serverUrl, folder, { packageRoot: deps.packageRoot, agents: deps.agents });
+    const found = provisionDetectedAgents(mycoHome, serverUrl, folder, { packageRoot: deps.packageRoot, agents: deps.agents, cwd: invocationFolder });
     for (const line of detectedProvisionLines(found)) out(line);
     return true;
   }
-  const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl });
+  const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, cwd: invocationFolder });
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
   out(outcome.detail);
@@ -960,6 +943,10 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   void optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
     .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry?.serverUrl ?? 'Myco')} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
+  for (const manifest of loadManifests()) {
+    relinquish(() => globalInstaller(manifest, null, mycoHome, deps).reconcileMemberProjectMcp(),
+      `updated ${manifest.displayName}'s private Myco tools entries`, `${manifest.displayName}'s private Myco tools`, out, err);
+  }
   clearMissingMembership(root, mycoHome);
   out(`left ${entry?.projectId ?? 'repository connections'} for ${root}; auto-join leaves it alone until you join it again`);
   // The pin points at a home that no longer holds this project. Left standing it
@@ -1089,6 +1076,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`project:    ${membership.projectId}`);
     out(`root:       ${(entry.displayRoot ?? membership.root) || 'no repository currently bound'}`);
     out(`server:     ${membership.serverUrl ?? 'unknown'}`);
+    for (const check of projectMcpChecks(entry, mycoHome, deps, selection.all)) out(formatCheck(check));
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
     out(`refresh:    ${membership.refreshTerminal === null ? 'unknown'
@@ -1125,6 +1113,26 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
   reportMissedCapture(out, selection, deps);
   reportRefusedHooks(out, deps);
   reportAutoJoin(out, selection, deps);
+}
+
+/** Read each recorded presentation folder against the same canonical project binding. */
+function projectMcpChecks(entry: RegistryEntry, mycoHome: string, deps: MemberCliDeps, all: boolean): DoctorCheck[] {
+  if (entry.root.length === 0) return [];
+  const folders = new Set([entry.displayRoot ?? entry.root]);
+  const refused: DoctorCheck[] = [];
+  if (all) for (const manifest of loadManifests()) {
+    const scopes = globalInstaller(manifest, null, mycoHome, deps).memberMcpProjectFolders();
+    if (scopes.status === 'unreadable') {
+      refused.push({ name: 'Member MCP folders', status: 'warn', reason: 'mcp_target_unreadable', symbiont: manifest.name,
+        scope: 'global', fixable: false, detail: `${manifest.displayName}'s project scopes could not be read: ${scopes.detail}` });
+      continue;
+    }
+    for (const folder of scopes.folders) {
+      if (canonicalRootIdentity(resolveMemberProjectRoot(folder)) === canonicalRootIdentity(entry.root)) folders.add(folder);
+    }
+  }
+  const selected = all ? [...folders] : [deps.cwd ?? entry.displayRoot ?? entry.root];
+  return [...refused, ...selected.flatMap(folder => checkMemberMcpResolution(path.join(entry.root, '.myco'), deps.env ?? process.env, { registryRead: 'strict', folder, mycoHome }))];
 }
 
 /** The hooks on this machine their own command refused (`member/refused-hooks.ts`): a count each, machine-wide. */
@@ -1185,17 +1193,18 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const { root, all, entries, heldDestinations, ...registry } = registrySelection(args, deps);
   const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor-member.js');
-  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root).filter((root) => root.length > 0) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
     name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
     scope: check.scope ?? null, root: check.root ?? (check.scope === 'global' ? null : checkRoot), fixable: check.fixable, fixId: check.fixId ?? null,
+    ...(check.toolsDeployment === undefined ? {} : { toolsDeployment: check.toolsDeployment }),
+    ...(check.projectId === undefined ? {} : { projectId: check.projectId }),
+    ...(check.memberHome === undefined ? {} : { memberHome: check.memberHome, homeSource: check.homeSource }),
+    ...(check.configPath === undefined ? {} : { configPath: check.configPath, context: check.context }),
+    ...(check.folder === undefined ? {} : { folder: check.folder }),
   });
   const machineChecks = [checkBinaryVersionSkew(), await checkRuntimePin()]
     .filter((check): check is DoctorCheck => check !== null).map((check) => toFacts(check));
-  const projectChecks = await Promise.all(checkRoots.map(async (checkRoot) =>
-    // A report reads the registry where it stands: no upgrade, no write lock.
-    (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }, { registryRead: 'strict' }))
-      .map((check) => toFacts(check, checkRoot))));
+  const projectChecks = entries.map(entry => projectMcpChecks(entry, mycoHome, deps, all).map(check => toFacts(check, entry.root)));
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify({ ...memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture, heldDestinations,

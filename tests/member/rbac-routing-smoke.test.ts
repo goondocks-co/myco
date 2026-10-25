@@ -4,15 +4,20 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { parse as parseToml } from 'smol-toml';
 import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { callTool } from '@myco/mcp/client-call.js';
+import { extractStructuredResult } from '@myco/mcp/client-call.js';
+import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { mcpProjectFolder } from '@myco/cli/flags.js';
 import { readRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const PROJECT = 'proj_routing_same';
 const SESSION = 'sess_routing_same';
@@ -58,8 +63,9 @@ async function createDeployment(index: number): Promise<Deployment> {
 }
 
 function childEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, MYCO_HOME: mycoHome, CODEX_HOME: codeHome,
-    CLAUDE_CONFIG_DIR: claudeHome, TMPDIR: tmp, TMP: tmp, TEMP: tmp, MYCO_NO_AUTO_SPAWN: '1', NO_COLOR: '1' };
+  const env: NodeJS.ProcessEnv = sandboxChildEnv(scratch, { HOME: userHome, MYCO_HOME: mycoHome, CODEX_HOME: codeHome,
+    CLAUDE_CONFIG_DIR: claudeHome, XDG_CONFIG_HOME: path.join(scratch, 'xdg'), LOCALAPPDATA: path.join(scratch, 'localappdata'),
+    TMPDIR: tmp, TMP: tmp, TEMP: tmp, MYCO_NO_AUTO_SPAWN: '1', NO_COLOR: '1' });
   for (const key of ['MYCO_SERVER_URL', 'MYCO_MEMBER_TOKEN', 'MYCO_PROJECT', 'MYCO_JOIN_CODE',
     'MYCO_CLAIMS_HOME', 'MYCO_TEST_REAL_HOME', 'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) delete env[key];
   env.NO_PROXY = '127.0.0.1,localhost';
@@ -107,23 +113,47 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
     expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(deployment.url);
   }
 
+  const originalEnv = process.env;
+  try {
+    process.env = childEnv();
+    for (const manifest of loadManifests().filter(manifest => ['codex', 'claude-code'].includes(manifest.name)))
+      new SymbiontInstaller(manifest, roots[0], resolvePackageRoot(), false, mycoHome).installMemberMcp();
+  } finally { process.env = originalEnv; }
+  type StdioEntry = { command: string; args: string[]; cwd?: string; env_vars?: string[] };
+  const codex = parseToml(fs.readFileSync(path.join(userHome, '.codex/config.toml'), 'utf8')) as { mcp_servers: { myco: StdioEntry } };
+  const entry = codex.mcp_servers.myco;
+  expect(entry).toEqual({ command: managedBinary, args: ['mcp', '--credential', 'registry'], env_vars: ['MYCO_HOME'] });
+  const claude = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as { projects: Record<string, { mcpServers: { myco: StdioEntry } }> };
+  const clients: Array<{ client: Client; index: number }> = [];
+  try {
+    for (const [index, root] of roots.entries()) {
+      const local = claude.projects[root].mcpServers.myco;
+      expect(local.command).toBe(managedBinary);
+      expect(local.args).toEqual(['mcp', '--credential', 'registry', '--root', root]);
+      const folder = mcpProjectFolder(local.args, userHome);
+      expect(resolveDeploymentUpstream('registry', { cwd: folder, mycoHome, env: childEnv() })?.mcpUrl.href).toBe(`${deployments[index].url}/mcp`);
+      const env = Object.fromEntries(Object.entries(childEnv()).filter((pair): pair is [string, string] => pair[1] !== undefined));
+      for (const [agent, emitted, cwd] of [['codex', entry, root], ['claude', local, userHome]] as const) {
+        const client = new Client({ name: `${agent}-routing-smoke`, version: '1' });
+        clients.push({ client, index });
+        await client.connect(new StdioClientTransport({ command: emitted.command, args: emitted.args, cwd, env, stderr: 'pipe' }), { timeout: 10_000 });
+        if (agent === 'codex') {
+          const saved = await client.callTool({ name: 'myco_spores', arguments: {
+            op: 'save', project: PROJECT, type: 'gotcha', content: `routing marker ${index} for the same project`,
+          } });
+          expect(saved.isError).not.toBe(true);
+        }
+      }
+    }
+    for (const { index, client } of clients) {
+      const listed = await client.callTool({ name: 'myco_spores', arguments: { op: 'list', project: PROJECT } });
+      expect(listed.isError).not.toBe(true);
+      const text = JSON.stringify(extractStructuredResult(listed));
+      expect(text).toContain(`routing marker ${index}`);
+      expect(text).not.toContain(`routing marker ${1 - index}`);
+    }
+  } finally { await Promise.all(clients.map(({ client }) => client.close())); }
   for (const [index, root] of roots.entries()) {
-    const deployment = deployments[index];
-    const codex = loadManifests().find((manifest) => manifest.name === 'codex')!;
-    const rendered = new SymbiontInstaller(codex, root, resolvePackageRoot(), false, mycoHome).renderMemberMcp('registry');
-    const entry = rendered!.myco as { url: string; http_headers_helper: string };
-    expect(entry.url).toBe(`${deployment.url}/mcp`);
-    const [binary, ...args] = entry.http_headers_helper.split(' ');
-    expect(binary).toBe(managedBinary);
-    const helper = await cli(root, args, undefined, binary);
-    expect(helper.code, helper.err).toBe(0);
-    const headers = JSON.parse(helper.out) as Record<string, string>;
-    expect(headers['x-myco-project']).toBe(PROJECT);
-    const transport = () => new StreamableHTTPClientTransport(new URL(entry.url), { requestInit: { headers } });
-    const saved = await callTool(transport(), 'myco_spores', {
-      op: 'save', project: PROJECT, type: 'gotcha', content: `routing marker ${index} for the same project`,
-    });
-    expect(saved.ok).toBe(true);
     const search = await cli(root, ['search', `routing marker ${index}`, '--credential', 'registry']);
     expect(search.code).toBe(0);
     expect(search.out).toContain(`routing marker ${index}`);

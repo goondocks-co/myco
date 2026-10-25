@@ -25,7 +25,10 @@ import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
-import { deploymentUrl, listDeploymentMembershipsResult, readDeploymentMembershipResult } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult, readDeploymentMembershipResult } from '../member/registry.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { MCP_ROOT_FLAG, mcpProjectFolder } from '@myco/cli/flags.js';
+import { privateMcpProjects, reconcilePrivateMcpProjects } from './member-mcp-projects.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
@@ -189,6 +192,7 @@ const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
 const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
 
 const CREDENTIAL_ARGV_WORDS = 2;
+const ROOT_ARGV_WORDS = 2;
 
 const HELPER_FLAG_WORDS = 4;
 
@@ -238,6 +242,23 @@ export interface InstallResult {
   pluginManifest: boolean;
 }
 
+export interface MemberMcpInspection {
+  scope: 'global' | 'project' | 'local';
+  present: boolean;
+  transport: 'http' | 'stdio' | null;
+  carriesCredential: boolean;
+  declaredCwd: string | null;
+  deploymentsAgree: boolean | null;
+  namesExpectedDeployment: boolean | null;
+  readable: boolean;
+  trusted?: boolean;
+  sessionCwd?: boolean;
+  shadowed?: boolean;
+  configuredDeployment?: string;
+  configPath?: string;
+  context?: 'explicit-folder' | 'session-cwd' | 'fixed-deployment' | 'launch-cwd';
+}
+
 function emptyInstallResult(): InstallResult {
   return {
     hooks: false,
@@ -252,12 +273,12 @@ function emptyInstallResult(): InstallResult {
 
 const JSON_ONLY_MCP_KEYS: readonly string[] = ['type', ...Object.keys(MEMBER_MCP_LEVERS)];
 
-export function tomlMemberServers(block: Record<string, unknown>, projectRoot: string): Record<string, unknown> {
+export function tomlMemberServers(block: Record<string, unknown>, projectRoot?: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(block)) {
     if (!def || typeof def !== 'object') continue;
     const server = Object.fromEntries(Object.entries(def as Record<string, unknown>).filter(([key]) => !JSON_ONLY_MCP_KEYS.includes(key)));
-    out[name] = 'url' in server ? server : { ...server, cwd: projectRoot };
+    out[name] = 'url' in server || projectRoot === undefined ? server : { ...server, cwd: projectRoot };
   }
   return out;
 }
@@ -480,7 +501,7 @@ export class SymbiontInstaller {
   renderMemberMcp(source: CredentialSource, serverUrlOverride?: string): Record<string, unknown> | null {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
-    if (reg.memberMcpHeadersHelperKey) {
+    if (reg.memberMcpHeadersHelperKey && !this.sessionMcpRouting()) {
       const serverUrl = serverUrlOverride ?? readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
       if (serverUrl === undefined) return null;
       const binaryPath = this.binaryPath();
@@ -493,8 +514,101 @@ export class SymbiontInstaller {
     return template === null ? null : memberMcpTemplate(template, source);
   }
 
+  private multipleMcpDeployments(): boolean {
+    if (this.manifest.registration?.memberMcpRouting === undefined) return false;
+    const read = listDeploymentMembershipsResult(this.memberHomeDir());
+    if (!read.readable || read.unavailableEntries > 0) throw this.memberMcpConflict("this machine's Myco connections could not all be read", 'Restore access to its connection files');
+    if (new Set(read.memberships.map(member => deploymentUrl(member.serverUrl))).size <= 1) return false;
+    const projects = listRegistryEntriesResult(this.memberHomeDir());
+    if (!projects.readable || projects.unavailableEntries > 0 || projects.conflicts?.length) throw this.memberMcpConflict('the project connections could not all be read', 'Restore access to the project connection files');
+    return projects.entries.length > 0;
+  }
+
+  private sessionMcpRouting(): boolean {
+    return this.manifest.registration?.memberMcpRouting === 'session-cwd' && this.multipleMcpDeployments();
+  }
+
+  private ownRoutedMcp(entry: unknown): boolean {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const server = entry as Record<string, unknown>;
+    if (server.env !== undefined || server.environment !== undefined) return false;
+    const recorded = readProvisionRecord(this.memberHomeDir())?.binaries?.[this.manifest.name];
+    const binary = this.helperWords(server)?.[0] ?? this.launcherBinary(server);
+    if (binary == null || ![this.binaryPath(), managedBinaryPath(this.memberHomeDir(), process.platform), recorded].includes(binary) && !this.takesOver(binary)) return false;
+    if (typeof server.url === 'string') {
+      const helper = this.canonicalHelper(server);
+      const deployment = this.entryDeployment(server);
+      return helper?.source === 'registry' && deployment !== null && helper.deployment === deployment
+        && readDeploymentMembershipResult(deployment, this.memberHomeDir()).status === 'present';
+    }
+    return this.declaresUsableCredential(server) && parseCredentialFlag(this.launcherArgv(server) ?? []) === 'registry';
+  }
+
+  private privateMcpRouting(): boolean {
+    if (this.manifest.registration?.memberMcpRouting !== 'private-projects') return false;
+    return this.multipleMcpDeployments() || privateMcpProjects(this.readMemberMcpTarget() ?? {}).some(scope => this.ownPrivateMcp(scope.entry));
+  }
+
+  private ownPrivateMcp(entry: unknown): boolean {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const server = entry as Record<string, unknown>;
+    return server.url === undefined && this.launcherArgv(server)?.includes(MCP_ROOT_FLAG) === true && this.ownRoutedMcp(server);
+  }
+
+  private canReplaceGlobalMcp(entry: unknown): boolean {
+    return this.ownRoutedMcp(entry) || this.legacyHomes.length > 0 && mcpVerdict(entry, this.legacyHomes) === 'legacy';
+  }
+
+  private privateMcpPlan(remove = false, leavingDeployment?: string): Record<string, unknown> {
+    const data = this.readMemberMcpTarget() ?? {};
+    const read = listRegistryEntriesResult(this.memberHomeDir());
+    if (!read.readable || read.unavailableEntries > 0 || read.conflicts?.length) throw this.memberMcpConflict('the project connections could not all be read', 'Restore access to the project connection files');
+    const candidates = new Set(read.entries.flatMap(entry => [entry.root, ...(entry.displayRoot ? [entry.displayRoot] : [])]));
+    for (const scope of privateMcpProjects(data)) if (this.ownPrivateMcp(scope.entry)) candidates.add(scope.root);
+    if (!this.noProjectRoot) candidates.add(this.projectRoot);
+    if (this.projectFolder !== undefined) candidates.add(this.projectFolder);
+    const roots = remove ? [] : [...new Set([...candidates].map(root => resolveMemberProjectRoot(root)))].filter(root => {
+      const binding = readRegistryEntryResult(resolveMemberProjectRoot(root), this.memberHomeDir());
+      if (binding.status === 'unavailable') throw this.memberMcpConflict(`the project connection for ${root} is unavailable`, 'Restore its connection');
+      return binding.status === 'present' && (leavingDeployment === undefined || deploymentUrl(binding.entry.serverUrl) !== deploymentUrl(leavingDeployment));
+    });
+    try {
+      const global = data.mcpServers as Record<string, unknown> | undefined;
+      if (global?.[MYCO_MCP_SERVER_NAME] !== undefined && !this.canReplaceGlobalMcp(global[MYCO_MCP_SERVER_NAME]))
+        this.assertMcpDeploymentConnected(global[MYCO_MCP_SERVER_NAME], this.memberMcpTargetPath()!, 'mcpServers');
+      const multiple = this.multipleMcpDeployments();
+      const next = reconcilePrivateMcpProjects(data, remove || !multiple ? [] : roots, root => ({
+        type: 'stdio', command: this.binaryPath(), args: [...MEMBER_BRIDGE_ARGS, CREDENTIAL_FLAG, 'registry', MCP_ROOT_FLAG, root], ...MEMBER_MCP_LEVERS,
+      }), { local: entry => this.ownPrivateMcp(entry), global: entry => this.canReplaceGlobalMcp(entry) });
+      const members = listDeploymentMembershipsResult(this.memberHomeDir());
+      if (!remove && !multiple && members.memberships.length === 1) {
+        next.mcpServers = { ...(next.mcpServers as Record<string, unknown> | undefined), ...this.renderMemberMcp('registry', members.memberships[0].serverUrl) };
+      }
+      return next;
+    } catch (error) {
+      if (error instanceof MemberMcpConflictError) throw error;
+      throw this.memberMcpConflict(error instanceof Error ? error.message : String(error), 'Review the affected tools entry');
+    }
+  }
+
   private memberHomeDir(): string {
     return this.memberHome ?? resolveMycoHome({ cwd: this.projectRoot });
+  }
+
+  private assertMcpDeploymentConnected(entry: unknown, target: string, serversKey: string): void {
+    if (!this.isMemberMcpServer(entry)) return;
+    const other = this.entryDeployment(entry as Record<string, unknown>);
+    if (other === null) return;
+    const memberships = listDeploymentMembershipsResult(this.memberHomeDir());
+    if (!memberships.readable || memberships.unavailableEntries > 0
+      || memberships.memberships.some(member => deploymentUrl(member.serverUrl) === other && !member.refreshTerminal)) return;
+    this.assertDeploymentLogoutFinished(other);
+    const home = process.env.HOME ?? os.homedir();
+    const file = target.startsWith(home + path.sep) ? '~' + target.slice(home.length) : target;
+    const toolsRecovery = { address: other, file, entry: `${serversKey}.${MYCO_MCP_SERVER_NAME}` };
+    const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
+    const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
+    throw new MemberMcpConflictError(problem, toolsRecoveryRemedy(toolsRecovery), { repairAction, toolsRecovery });
   }
 
   private binaryPath(): string {
@@ -516,6 +630,10 @@ export class SymbiontInstaller {
 
   installMemberMcp(scan = this.scanMemberRegistrations()): boolean {
     const toolsDeployment = this.assertMemberMcpWritable(scan);
+    if (this.privateMcpRouting()) {
+      const data = this.privateMcpPlan();
+      return this.writeRegistrationTarget(this.memberMcpTargetPath(), 'mcp', scan, target => writeJsonFile(target, data));
+    }
     const block = this.renderMemberMcp('registry', toolsDeployment);
     if (block === null) return false;
     return this.writeRegistrationTarget(this.memberMcpTargetPath(), 'mcp', scan, (targetPath) => {
@@ -525,7 +643,7 @@ export class SymbiontInstaller {
         // below is for the JSON targets. The JSON hosts' levers are not written.
         // Codex's remote entry needs no `cwd`: it runs the headers helper in the
         // session's directory, where the membership resolves the way every hook's does.
-        if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
+        if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.sessionMcpRouting() ? undefined : this.projectRoot));
         const serversKey = reg.mcpServersKey ?? 'mcpServers';
         const data = this.readMemberMcpTarget() ?? {};
         for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
@@ -550,6 +668,10 @@ export class SymbiontInstaller {
   }
 
   uninstallMemberMcp(): boolean {
+    if (this.privateMcpRouting()) {
+      const target = this.memberMcpTargetPath();
+      return target !== null && writeJsonFile(target, this.privateMcpPlan(true));
+    }
     if (this.preserveOtherMemberTools && this.memberToolsDeployment() !== undefined) return false;
     const targetPath = this.memberMcpTargetPath();
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
@@ -573,6 +695,19 @@ export class SymbiontInstaller {
     if (!removed) return false;
     this.writeMemberJson(targetPath, data, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
     return true;
+  }
+
+  reconcileMemberProjectMcp(): boolean {
+    return (this.privateMcpRouting() || this.sessionMcpRouting()) && this.installMemberMcp();
+  }
+
+  memberMcpProjectFolders(): { status: 'readable'; folders: string[] } | { status: 'unreadable'; detail: string } {
+    try {
+      return { status: 'readable', folders: this.manifest.registration?.memberMcpRouting === 'private-projects'
+        ? privateMcpProjects(this.readMemberMcpTarget() ?? {}).filter(scope => this.ownPrivateMcp(scope.entry)).map(scope => scope.root) : [] };
+    } catch (error) {
+      return { status: 'unreadable', detail: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   private isMemberMcpServer(def: unknown): boolean {
@@ -622,9 +757,14 @@ export class SymbiontInstaller {
     const binary = this.launcherBinary(entry);
     if (binary === null || !this.namesMemberBinary(binary)) return false;
     const argv = this.launcherArgv(entry);
-    if (argv === null || argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS) return false;
+    if (argv === null) return false;
+    const rootIndex = argv.indexOf(MCP_ROOT_FLAG);
+    if (rootIndex !== -1) {
+      if (rootIndex !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS || argv.length !== rootIndex + ROOT_ARGV_WORDS) return false;
+      try { mcpProjectFolder(argv, this.projectRoot); } catch { return false; }
+    } else if (argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS) return false;
     if (argv.slice(0, MEMBER_BRIDGE_ARGS.length).join(' ') !== MEMBER_BRIDGE_ARGS.join(' ')) return false;
-    return parseCredentialFlag(argv.slice(-CREDENTIAL_ARGV_WORDS)) !== null;
+    return parseCredentialFlag(argv.slice(MEMBER_BRIDGE_ARGS.length, MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS)) !== null;
   }
 
   private launcherArgv(entry: Record<string, unknown>): string[] | null {
@@ -700,15 +840,37 @@ export class SymbiontInstaller {
     return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
 
-  inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
+  inspectMemberMcp(expectedDeployment?: string, includeDestination = false): MemberMcpInspection[] {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
-    const scope = 'global' as const;
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
+      let configPath = filePath;
+      let scope: MemberMcpInspection['scope'] = 'global';
+      let trusted: boolean | undefined;
+      let shadowed: boolean | undefined;
       // A TOML host keeps its servers under one section whatever the manifest names.
       const key = toml ? TOML_MCP_SERVERS_KEY : serversKey;
       let file: Record<string, unknown> | null;
       try {
         file = this.readMcpFile(filePath, toml);
+        if (!this.noProjectRoot && this.manifest.registration?.memberMcpRouting === 'private-projects') {
+          const local = privateMcpProjects(file ?? {}).find(project => path.resolve(project.root) === path.resolve(resolveMemberProjectRoot(this.projectFolder ?? this.projectRoot)));
+          if (local?.entry !== undefined) {
+            file = { [key]: { [MYCO_MCP_SERVER_NAME]: local.entry } };
+            scope = 'local';
+            trusted = local.trusted;
+          }
+        }
+        if (!this.noProjectRoot && scope === 'global' && this.manifest.registration?.memberMcpRouting !== undefined) {
+          const projectTarget = this.manifest.registration.mcpTarget;
+          const override = projectTarget === undefined ? null : this.readMcpFile(path.join(this.projectFolder ?? this.projectRoot, projectTarget), toml);
+          const servers = override?.[key];
+          if (servers && typeof servers === 'object' && MYCO_MCP_SERVER_NAME in servers) {
+            file = override;
+            configPath = path.join(this.projectFolder ?? this.projectRoot, projectTarget!);
+            scope = 'project';
+            shadowed = true;
+          }
+        }
       } catch {
         return { scope, present: false, transport: null, carriesCredential: false, declaredCwd: null, deploymentsAgree: null, namesExpectedDeployment: null, readable: false };
       }
@@ -731,7 +893,10 @@ export class SymbiontInstaller {
       const transport = typeof entry.url === 'string' ? 'http' as const : launcher ? 'stdio' as const : null;
       // A launcher started outside the project finds its membership through the
       // directory the entry names, so the directory is a fact about it.
-      const declaredCwd = typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : null;
+      const argv = this.launcherArgv(entry);
+      const explicitRoot = argv?.includes(MCP_ROOT_FLAG) === true;
+      const declaredCwd = explicitRoot && this.declaresUsableCredential(entry) ? mcpProjectFolder(argv!, this.projectRoot)
+        : typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : null;
       // What the entry declares is one fact; whether it is the entry member
       // provisioning writes — the one carrying this member's credential — is
       // another, and a server that is not cannot resolve the membership.
@@ -750,7 +915,13 @@ export class SymbiontInstaller {
         : expected !== null && both && dialled === expected && minted === expected;
       return {
         scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
-        deploymentsAgree, namesExpectedDeployment, readable: true
+        deploymentsAgree, namesExpectedDeployment, readable: true,
+        ...(trusted === undefined ? {} : { trusted }), ...(shadowed === undefined ? {} : { shadowed }),
+        ...(scope === 'global' && transport === 'stdio' && this.manifest.registration?.memberMcpRouting === 'session-cwd' && declaredCwd === null ? { sessionCwd: true } : {}),
+        ...(includeDestination && dialled !== null ? { configuredDeployment: dialled } : {}),
+        ...(includeDestination ? { configPath, context: scope === 'local' ? 'explicit-folder' as const
+          : transport === 'http' ? 'fixed-deployment' as const
+            : scope === 'global' && this.manifest.registration?.memberMcpRouting === 'session-cwd' ? 'session-cwd' as const : 'launch-cwd' as const } : {}),
       };
     });
   }
@@ -791,6 +962,7 @@ export class SymbiontInstaller {
   private expectedServerUrl: string | undefined;
   private deploymentUrl: string | undefined;
   private noProjectRoot = false;
+  private projectFolder?: string;
   private preserveOtherMemberTools = false;
 
   preservingOtherMemberTools(): this {
@@ -804,6 +976,11 @@ export class SymbiontInstaller {
 
   withoutProjectRoot(): this {
     this.noProjectRoot = true;
+    return this;
+  }
+
+  forProjectFolder(folder: string | undefined): this {
+    if (folder !== undefined) this.projectFolder = path.resolve(folder);
     return this;
   }
 
@@ -840,6 +1017,21 @@ export class SymbiontInstaller {
   }
 
   private reconcileDeploymentMcp(leavingUrl: string, nextDefault: string | null, removeUnscoped: boolean, scan: MemberRegistrationScan): void {
+    if (this.privateMcpRouting()) {
+      this.assertGlobalMemberOwnership('hooks', scan);
+      const target = this.memberMcpTargetPath();
+      const data = this.privateMcpPlan(false, leavingUrl);
+      if (target !== null) writeJsonFile(target, data);
+      return;
+    }
+    if (this.manifest.registration?.memberMcpRouting === 'session-cwd' && nextDefault !== null && !this.multipleMcpDeployments()) {
+      const target = this.memberMcpTargetPath();
+      const entry = target === null ? null : this.mycoServerIn(target, true, TOML_MCP_SERVERS_KEY);
+      if (entry !== null && entry.url === undefined && this.ownRoutedMcp(entry)) {
+        this.installMemberMcp(scan);
+        return;
+      }
+    }
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     for (const declared of this.resolveAbsoluteMcpTargets()) {
       const target = { ...declared, path: throughLink(declared.path) };
@@ -1009,11 +1201,12 @@ export class SymbiontInstaller {
       };
       if (Object.keys(managed).length !== Object.keys(expectedHooks).length || Object.entries(expectedHooks).some(([event, groups]) => !sameGroups(managed[event] ?? [], groups as unknown[]))) return false;
     }
+    if (this.privateMcpRouting()) return isDeepStrictEqual(this.readMemberMcpTarget() ?? {}, this.privateMcpPlan());
     const targetMcp = this.memberMcpTargetPath();
     const desired = this.renderMemberMcp('registry', toolsDeployment);
     if (targetMcp === null || desired === null || (allowStaleTools && blocked.length > 0)) return true;
     const toml = this.manifest.registration?.mcpFormat === 'toml';
-    const expected = (toml ? tomlMemberServers(desired, this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
+    const expected = (toml ? tomlMemberServers(desired, this.sessionMcpRouting() ? undefined : this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
     const existing = this.mycoServerIn(targetMcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
     return existing !== null && Object.entries(expected).every(([key, value]) => isDeepStrictEqual(existing[key], value));
   }
@@ -1188,12 +1381,18 @@ export class SymbiontInstaller {
       }
     }
     if (targetOverride === 'hooks') return;
+    if (this.privateMcpRouting()) {
+      this.privateMcpPlan();
+      return;
+    }
     const reg = this.manifest.registration;
     const mcpTarget = targetOverride?.path ?? this.memberMcpTargetPath();
     if (!mcpTarget) return;
     const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers')));
     if (existing === null) return;
     if (this.blocksRegistration(mcpTarget, 'mcp', scan)) return;
+    if (this.manifest.registration?.memberMcpRouting === 'session-cwd' && this.ownRoutedMcp(existing)
+      && (this.sessionMcpRouting() || this.entryDeployment(existing) === null)) return;
     return this.withWritableMcpEntry(existing, () => {
       if (this.takesOver(ownedMcpBinary(existing))) return;
       const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
@@ -1213,14 +1412,8 @@ export class SymbiontInstaller {
           const readable = memberships.readable && memberships.unavailableEntries === 0;
           const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
           if (readable && !connected) {
-            this.assertDeploymentLogoutFinished(other);
-            const home = process.env.HOME ?? os.homedir();
-            const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
             const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
-            const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
-            const toolsRecovery = { address: other, file, entry: `${serversKey}.${MYCO_MCP_SERVER_NAME}` };
-            const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
-            throw new MemberMcpConflictError(problem, toolsRecoveryRemedy(toolsRecovery), { repairAction, toolsRecovery });
+            this.assertMcpDeploymentConnected(existing, mcpTarget, serversKey);
           }
           const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
             && readable && connected;

@@ -81,7 +81,7 @@ describe('member export --all across two projects', () => {
 
     const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'cursor');
     expect(found.filter((c) => c.reason === 'mcp_entry_stdio')).toEqual([
-      expect.objectContaining({ root: null, scope: 'global', status: 'ok' }),
+      expect.objectContaining({ root: alpha, scope: 'global', status: 'ok' }),
     ]);
     expect(found.filter((c) => c.reason === 'mcp_cwd_elsewhere')).toEqual([
       expect.objectContaining({ root: beta, scope: 'global', status: 'warn' }),
@@ -89,7 +89,7 @@ describe('member export --all across two projects', () => {
   });
 
   it('keeps the affected root on a global entry that names another Deployment', async () => {
-    project('alpha', 'proj_alpha');
+    const alpha = project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta', 'https://other.example');
     fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'),
@@ -97,7 +97,7 @@ describe('member export --all across two projects', () => {
 
     const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'codex');
     expect(found.filter((c) => c.reason === 'mcp_entry_http')).toEqual([
-      expect.objectContaining({ root: null, scope: 'global', status: 'ok' }),
+      expect.objectContaining({ root: alpha, scope: 'global', status: 'ok' }),
     ]);
     expect(found.filter((c) => c.reason === 'mcp_server_stale')).toEqual([
       expect.objectContaining({ root: beta, scope: 'global', status: 'warn' }),
@@ -114,7 +114,7 @@ describe('member export --all across two projects', () => {
     ]);
   });
 
-  it('reports the active global entry once and preserves repository overrides', async () => {
+  it('reports the active global entry per project and preserves repository overrides', async () => {
     const alpha = project('alpha', 'proj_alpha');
     const beta = project('beta', 'proj_beta');
     // One global entry, reached from either project.
@@ -133,11 +133,10 @@ describe('member export --all across two projects', () => {
     expect(JSON.parse(fs.readFileSync(path.join(alpha, '.cursor', 'mcp.json'), 'utf8'))).toEqual(cursorMember(alpha));
     expect(JSON.parse(fs.readFileSync(path.join(beta, '.cursor', 'mcp.json'), 'utf8'))).toEqual(cursorMember(beta));
 
-    // The global entry is the same fact from both roots, so it is named once
-    // and carries no root of its own.
+    // Each project carries its own tools destination and context.
     const global = mcpChecks(report.checks).filter((c) => c.scope === 'global' && c.symbiont === 'codex');
-    expect(global).toHaveLength(1);
-    expect(global[0]).toMatchObject({ reason: 'mcp_entry_http', root: null, status: 'ok' });
+    expect(global).toHaveLength(2);
+    for (const root of [alpha, beta]) expect(global).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_http', root, status: 'ok', toolsDeployment: SERVER }));
   });
 
   it('names a project whose override could not be read without hiding the other project\'s', async () => {
@@ -156,11 +155,11 @@ describe('member export --all across two projects', () => {
 
 describe('a server entry that is not the member\'s', () => {
   it('warns that it carries no credential rather than reporting the membership resolved', async () => {
-    project('alpha', 'proj_alpha');
+    const alpha = project('alpha', 'proj_alpha');
     writeJson(path.join(home, '.cursor', 'mcp.json'), notMember(`${SERVER}/mcp`));
 
     const found = mcpChecks((await exportAll()).checks).filter((c) => c.symbiont === 'cursor');
-    expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_no_credential', root: null, scope: 'global', status: 'warn' }));
+    expect(found).toContainEqual(expect.objectContaining({ reason: 'mcp_entry_no_credential', root: alpha, scope: 'global', status: 'warn' }));
     expect(found.some((c) => c.status === 'ok')).toBe(false);
   });
 });

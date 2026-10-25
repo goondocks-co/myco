@@ -48,6 +48,7 @@ export interface HookConfigEntry {
   /** Glob, relative to the session transcript's directory, of the subagent transcripts a session writes beside it. */
   subagentTranscripts?: string;
   hookResponse?: NonNullable<SymbiontRegistration['hookResponse']>;
+  mcpReconnectNotice?: string;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
   subagentParentPath?: string;
@@ -194,6 +195,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "retention": "harness"
     },
     "subagentTranscripts": "{sessionId}/subagents/*.jsonl",
+    "mcpReconnectNotice": "Myco connected this repository. Reconnect Myco tools with /mcp.",
     "capturePrompts": {
       "shapes": [
         {

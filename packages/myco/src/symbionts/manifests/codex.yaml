@@ -265,6 +265,7 @@ registration:
   # for the request headers when it connects and again after a 401, so a
   # rotated member token reaches it without a restart.
   memberMcpHeadersHelperKey: http_headers_helper
+  memberMcpRouting: session-cwd
   globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.agents/skills
