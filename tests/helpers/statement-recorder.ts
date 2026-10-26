@@ -1,4 +1,5 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {inheritStoreContext} from '../../packages/myco-server/src/core/adapters.js';
 import type ts from 'typescript-v6';
 import type { RelationalStore, PreparedStatement } from '../../packages/myco-server/src/core/adapters.js';
 
@@ -9,9 +10,10 @@ export interface StatementFrame {
   parentSpanId?: string;
   exceptionId?: string;
   origin?: PreparationOrigin;
+  captured?: boolean;
 }
 
-export type PreparationOrigin = {kind:'module'} | {kind:'oracle';sha256:string} | {
+export type PreparationOrigin = {kind:'module';capture?:unknown} | {kind:'oracle';sha256:string} | {
  kind:'exception';id:string;file:string;owner:string;expression:string;phase:'W'|'P'|'H'|'T';relations?:readonly string[];
  callers?:readonly string[];callerKeys?:readonly string[];callerRelations?:readonly {callers:readonly string[];relations:readonly string[]}[];
  nonSql?:boolean;
@@ -217,7 +219,7 @@ export function instrumentReadPreparations(compiler:typeof ts,source:string,file
   if(edit.origin){
    const origin=edit.origin,expression=edit.node.expression,method=compiler.isPropertyAccessExpression(expression)?expression.name.text:'';
    const physical=origin.kind==='exception'&&(method==='query'||method==='exec'||compiler.isPropertyAccessExpression(expression)&&nativeDatabase(expression.expression,edit.node));
-   body=physical?'__viewPhysicalPreparation('+JSON.stringify(origin)+',__args[0],'+JSON.stringify(method)+',()=>'+body+')':'__viewPreparedRead('+JSON.stringify(origin)+',__args[0],()=>'+body+')';
+   body=physical?'__viewPhysicalPreparation('+JSON.stringify(origin)+',__args[0],'+JSON.stringify(method)+',()=>'+body+')':'__viewPreparedRead('+(origin.kind==='module'&&file==='packages/myco-server/src/read/view-store.ts'&&source.includes('capture?: SourcePreparation')?'{...'+JSON.stringify(origin)+',capture}':JSON.stringify(origin))+',__args[0],()=>'+body+')';
   }
   if(edit.keys.length)body='__viewReadCaller('+JSON.stringify(edit.keys)+',()=>'+body+')';
   return body;
@@ -329,12 +331,35 @@ export function statementRecorder(db: RelationalStore, options: {
   const originals = new WeakMap<PreparedStatement, Held>();
   const originalKey = Symbol('recorded-statement');
   const isMarked = (statement: PreparedStatement): statement is PreparedStatement & {[originalKey]: Held} => originalKey in statement;
+  const captureObserved = (sql: string, origin: PreparationOrigin | undefined): boolean => {
+    if (origin?.kind !== 'module' || typeof origin.capture !== 'object' || origin.capture === null) return false;
+    const evidence = origin.capture;
+    if ('mode' in evidence && evidence.mode === 'pinned-set') return 'sources' in evidence && Array.isArray(evidence.sources)
+      && evidence.sources.every(source => typeof source === 'object' && source !== null && typeof source.projectId === 'string' && typeof source.sessionId === 'string' && (source.mode === 'legacy' || source.mode === 'published'));
+    if ('mode' in evidence && evidence.mode === 'batch-candidate') return 'batch' in evidence && typeof evidence.batch === 'object' && evidence.batch !== null
+      && 'carrierSql' in evidence.batch && typeof evidence.batch.carrierSql === 'string'
+      && evidence.batch.carrierSql.includes('FROM session_views sv') && evidence.batch.carrierSql.includes('__myco_capture')
+      && /^\/\*vs:M(?:15:sessions_countStatements|16:sessions_instantStatements):0\*\//.test(sql);
+    if ('mode' in evidence && evidence.mode === 'fact-write') return 'projectId' in evidence && typeof evidence.projectId === 'string'
+      && 'recordId' in evidence && typeof evidence.recordId === 'string'
+      && /^\/\*vs:M10:plans_planInSession:0\*\/UPDATE plans\b/.test(sql) && sql.includes('FROM session_views sv') && sql.includes('FROM fact_classes fc');
+    if ('mode' in evidence && evidence.mode === 'fact') return 'table' in evidence && evidence.table === 'attachments'
+      && 'projectId' in evidence && typeof evidence.projectId === 'string' && 'recordId' in evidence && typeof evidence.recordId === 'string'
+      && /\bFROM attachments d\b/.test(sql) && protectedRelations(sql).every(name => name === 'processed_resources');
+    if ('mode' in evidence && evidence.mode === 'capture') return 'projectId' in evidence && typeof evidence.projectId === 'string'
+      && (!protectedSql(sql) || /\b(?:FROM|JOIN) session_views sv\b/.test(sql) && sql.includes('__myco_capture'));
+    if (!('mode' in evidence) || evidence.mode !== 'pinned' || !('sources' in evidence)
+      || typeof evidence.sources !== 'object' || evidence.sources === null) return false;
+    const sources = evidence.sources;
+    return 'mode' in sources && (sources.mode === 'legacy' || sources.mode === 'published')
+      && 'projectId' in sources && typeof sources.projectId === 'string' && 'sessionId' in sources && typeof sources.sessionId === 'string';
+  };
   const frame = (sql: string): StatementFrame => {
     const supplied = options.context?.()??nativeSpans.getStore();
     const origin=executions.getStore()===undefined?preparations.getStore():executionOrigin(sql);
-    if (supplied) return {...supplied,...(origin?.kind==='exception'?{phase:origin.phase,exceptionId:origin.id}:{}),...(origin?{origin}:{})};
+    if (supplied) return {...supplied,...(origin?.kind==='exception'?{phase:origin.phase,exceptionId:origin.id}:{}),...(origin?{origin}:{}),captured:captureObserved(sql,origin)};
     const tag = /^\/\*vs:([A-Za-z0-9_:]+)\*\//.exec(sql);
-    return {operation:tag?.[1] ?? (origin?.kind==='exception'?origin.file+'#'+origin.owner:'unclassified'),phase:tag?'logical':origin?.kind==='exception'?origin.phase:'unclassified',...(origin?.kind==='exception'?{exceptionId:origin.id}:{}),...(origin?{origin}:{})};
+    return {operation:tag?.[1] ?? (origin?.kind==='exception'?origin.file+'#'+origin.owner:'unclassified'),phase:tag?'logical':origin?.kind==='exception'?origin.phase:'unclassified',...(origin?.kind==='exception'?{exceptionId:origin.id}:{}),...(origin?{origin}:{}),captured:captureObserved(sql,origin)};
   };
   const begin = (held: Omit<Held,'statement'>, method: RecordedStatement['method']): RecordedStatement => {
     const entry: RecordedStatement = {...held.frame,statementId:held.statementId,sql:held.sql,binds:held.binds,method};
@@ -415,7 +440,7 @@ export function statementRecorder(db: RelationalStore, options: {
     },
   };
   return {
-    db: recorded, statements, events,
+    db: inheritStoreContext(db, recorded), statements, events,
     drain: async () => {
       const failures:unknown[]=[];
       while(pending.size)for(const result of await Promise.allSettled([...pending]))if(result.status==='rejected')failures.push(result.reason);

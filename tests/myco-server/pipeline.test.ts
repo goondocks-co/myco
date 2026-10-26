@@ -76,6 +76,10 @@ const post = (token?: string, opts: { source?: string | null; body?: string; pro
 describe('pipeline (via the deployed entry)', () => {
   it('serves the public route with no credential', async () => {
     expect((await worker.fetch(new Request('https://s/health'), {} as any)).status).toBe(200);
+    const env = serverEnvFromBindings(await envFor(mintMemberToken()));
+    Object.defineProperty(env, 'db', { get() { throw new Error('Public route accessed storage'); } });
+    const server = createServer({ now: () => 0, sourceOf: () => { throw new Error('Public route requested source identity'); }, fetchImpl: noOutboundFetch });
+    expect((await server.handleRequest(new Request('https://s/health'), env)).status).toBe(200);
   });
 
   it('answers 401 for an unmatched path, not 404', async () => {

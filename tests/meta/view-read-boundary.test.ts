@@ -1,13 +1,16 @@
+import {LEGACY_ONLY_OPERATIONS} from '@myco-server-worker/read/view-store.js';
+import {preparationOrigins,preparationOriginEnvelope,preparationSourcePins,preparationSourceInventory} from '../helpers/view-read-policy.js';
 import { createHash } from 'node:crypto';
 import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {withViewStores} from '../myco-server/helpers/view-stores.js';
 import type {StatementException,ExceptionClosure,ParameterCaller} from '../helpers/view-read-contract.js';
-import {statementRecorder,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS} from '../helpers/statement-recorder.js';
+import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS} from '../helpers/statement-recorder.js';
 import {Database} from 'bun:sqlite';
 import {sqliteRelationalStore} from '@myco-server-worker/platform/bun/sqlite.js';
 import ts from 'typescript-v6';
 import {nativeReadObservations,instrumentReadSource} from '../setup/view-read-preload.js';
+import {planTotals} from '@myco-server-worker/read/plans.js';
 import {listTurns} from '@myco-server-worker/read/turns.js';
 import {projectExists} from '@myco-server-worker/read/sessions.js';
 import {seededSqlite,sqliteD1} from '../myco-server/helpers/d1.js';
@@ -19,7 +22,7 @@ import { sourceBoundary, runtimeBoundary, viewSchemaViolations, armPlanViolation
 
 const owner = 'packages/myco-server/src/read/view-store.ts';
 const reader = 'packages/myco-server/src/read/probe.ts';
-const operation = VIEW_READ_OPERATIONS.find(operation => operation.family === 'M01')!.id;
+const operation = 'M24:plans_planTotals:0';
 const tagged = '/*vs:' + operation + '*/SELECT prompt_id FROM prompt_batches WHERE project_id=?';
 test('preparation loading and origin identity agree for Windows native and mixed paths',()=>{
  const source=readFileSync(owner,'utf8');
@@ -28,7 +31,7 @@ test('preparation loading and origin identity agree for Windows native and mixed
   for(const file of ['D:\\a\\myco\\myco\\packages\\myco-server\\src\\read\\view-store.ts','D:/a/myco/myco/packages/myco-server/src/read/view-store.ts','d:/a/myco/myco/packages\\myco-server/src/read/view-store.ts']){
    expect(paths.filter.test(file)).toBe(true);
    expect(paths.relative(file)).toBe(owner);
-   expect(instrumentReadPreparations(ts,source,paths.relative(file),[],'recorder')).toContain('__viewPreparedRead({"kind":"module"}');
+   expect(instrumentReadPreparations(ts,source,paths.relative(file),[],'recorder')).toContain('__viewPreparedRead({...{"kind":"module"},capture}');
   }
   const file='D:\\a\\myco\\myco\\tests\\fixture.ts';
   const origin={kind:'exception' as const,id:'fixture',file:'tests/fixture.ts',owner:'rows',expression:"'SELECT * FROM plans'",phase:'T' as const};
@@ -161,7 +164,7 @@ describe('view read runtime boundary controls', () => {
   });
 
   test('an admitted exception origin cannot add a protected relation through an SQL fragment',async()=>{
-    const origins=await checkedPreparationOrigins(legacy.preparationOrigins),origin=origins.find(row=>row.id==='maintenance-learning-hold')!;
+    const origins=preparationOrigins,origin=origins.find(row=>row.id==='maintenance-learning-hold')!;
     expect(origin.relations).toEqual(['session_views']);
     const statement={sql:'SELECT 1 FROM session_views',operation:'probe',phase:origin.phase,statementId:'hold',exceptionId:origin.id,origin};
     const options={known:new Set<string>(),legacy:new Set<string>(),origins};
@@ -327,13 +330,56 @@ describe('view read schema boundary controls', () => {
   });
 });
 
-test('current read module has no run-writer import or source-capture engine',()=>{
-  const text=readFileSync('packages/myco-server/src/read/view-store.ts','utf8');
-  expect(text).not.toMatch(/from\s+['"]\.\.\/core\/runs\.js/);
-  expect(text).not.toMatch(/\b(?:ResponseRead|SelectedSource|RELATIONAL_CONTEXT|effectiveMaterial|recordRows|sessionRows)\b/);
+const CAPTURED_OPERATIONS = [
+  "M01:turns_listTurns:0",
+  "M02:turns_promptInSession:0",
+  "M03:turns_readTurnBodies:0",
+  "M04:children_listChildren:0",
+  "M04:children_listChildrenByPrompt:0",
+  "M05:turns_steeringChildPage:0",
+  "M06:turns_toolUsage:0",
+  "M07:turns_sessionTurnContexts:0",
+  "M08:hook_placement_sessionContextHints:0",
+  "M08:hook_placement_listUnplacedHookRecords:0",
+  "M09:plans_getPlan:0",
+  "M10:plans_planInSession:0",
+  "M11:sessions_sessionCounts:0",
+  "M11:sessions_sessionCounts:1",
+  "M12:sessions_getSession:0",
+  "M13:sessions_selectSessions:ordinary",
+  "M14:sessions_selectSessions:receipt",
+  "M14:sessions_selectSessions:working",
+  "M15:sessions_countStatements:0",
+  "M16:sessions_instantStatements:0",
+  "M18:lineage_sessionsNamed:0",
+  "M18:lineage_childIdsOf:0",
+  "M19:activity_activityFeed:0",
+  "M20:session_activity_listSessionActivity:0",
+  "M20:session_activity_toolRows:0",
+  "M20:session_activity_edgeRows:0",
+  "M21:hook_placement_countUnplacedContextRecords:0",
+  "M23:children_materialRows:0",
+  "M26:processed_processedField:0",
+  "M26:processedBundle:0",
+  "M45:injectedPromptRecord:0",
+  "M47:receiptPlans:0"
+] as const;
+test('read membership is the exact protected-operation partition and retains the run-writer boundary',()=>{
+ const text=readFileSync(owner,'utf8');
+ expect(text).not.toMatch(/from\s+['"]\.\.\/core\/runs\.js/);
+ const captured=new Set<string>(CAPTURED_OPERATIONS),remaining=new Set<string>(LEGACY_ONLY_OPERATIONS);
+ const protectedIds=VIEW_READ_OPERATIONS.filter(operation=>operation.id.startsWith('M')).map(operation=>operation.id);
+ expect(captured.size).toBe(32);
+ expect(remaining.size).toBe(64);
+ expect<string[]>([...protectedIds].filter(id=>!remaining.has(id)).sort()).toEqual([...captured].sort());
+ for(const id of protectedIds){
+  const sql='/*vs:'+id+'*/SELECT 1',row={sql,operation:'probe',phase:'logical',statementId:id,origin:{kind:'module' as const}};
+  expect(runtimeBoundary([row]),id).toEqual(captured.has(id)?['nonmember missing source capture: '+id]:[]);
+  if(remaining.has(id))expect(runtimeBoundary([{...row,sql:'/*vs:'+id+'*/SELECT * FROM view_prompts'}])).toContain('legacy-only operation reads view rows');
+ }
 });
 
-const sourceFiles = (dir: string): string[] => readdirSync(dir).flatMap(name => {const file=dir+'/'+name;return statSync(file).isDirectory()?sourceFiles(file):file.endsWith('.ts')?[file]:[]});
+const sourceFiles = (dir: string): string[] => readdirSync(dir).flatMap(name => {const file=dir+'/'+name;return statSync(file).isDirectory()?sourceFiles(file):/\.tsx?$/.test(file)?[file]:[]});
 const exceptionPhase = (phase: string): StatementException['phase'] => {if(phase==='W'||phase==='P'||phase==='H'||phase==='T')return phase;throw new Error('Unknown statement phase '+phase)};
 test('the complete Deployment source boundary admits only frozen statement and foundation tuples',()=>{
  const sources=new Map(['packages/myco-server/src','packages/myco/src','packages/myco-shared/src'].flatMap(sourceFiles).map(file=>[file,readFileSync(file,'utf8')]));
@@ -348,7 +394,7 @@ test('all source and test importers preserve the closed SQL-bearing foundation b
 },30000);
 
 test('schema fixture origins admit exactly the stamped bootstrap relations',async()=>{
- const helpers=(await checkedPreparationOrigins(legacy.preparationOrigins)).filter(origin=>origin.id.startsWith('H:'));
+ const helpers=(preparationOrigins).filter(origin=>origin.id.startsWith('H:'));
  expect(helpers.map(origin=>[origin.id,origin.file,origin.owner,origin.expression,origin.phase])).toEqual([
   ['H:catalog-upgrade','tests/meta/view-read-boundary.test.ts','test:fresh and upgraded native and D1 catalogs admit only frozen FTS synchronization','sql','H'],
   ['H:pair-schema','tests/myco-server/helpers/view-stores.ts','initialize','sql','H'],
@@ -406,7 +452,7 @@ test('SQL relation detection preserves quoted data and closes comments and quali
 test('ordinary native and local D1 factories observe the actual typed operation',async()=>{
  await withViewStores(async(db,target)=>{
   const key=target==='native'?'native':'d1',before=nativeReadObservations();
-  await listTurns(db,{projectId:'project'},'missing');
+  await planTotals(db,{all:false,projectIds:['project']});
   const after=nativeReadObservations(),first=before.targets.get(key)?.get(operation),last=after.targets.get(key)?.get(operation);
   expect((last?.prepares??0)-(first?.prepares??0),target+' preparation wrapper').toBe(1);
   expect((last?.binds??0)-(first?.binds??0),target+' bind wrapper').toBe(1);
@@ -428,7 +474,7 @@ test('actual factory recorders kill untagged dynamic SQL and forged closed tags 
    expect(recorded.events.at(-1)?.failed).toBe(true);
    expect(recorded.statements).toHaveLength(0);
   }
-  const origin=(await checkedPreparationOrigins(legacy.preparationOrigins)).find(row=>row.id==='maintenance-learning-hold')!;
+  const origin=(preparationOrigins).find(row=>row.id==='maintenance-learning-hold')!;
   const fragment='SELECT 1 FROM session_views WHERE (SELECT COUNT(*) FROM prompt_batches) >= 0';
   expect(()=>withReadPreparation(origin,()=>recorded.db.prepare(fragment)),target+' interpolated exception bypass').toThrow('exception adds protected relations: maintenance-learning-hold: prompt_batches');
   await recorded.drain();
@@ -438,7 +484,7 @@ test('actual factory recorders kill untagged dynamic SQL and forged closed tags 
 test('a removed member kills the actual unchanged trace for missing capture',async()=>{
  await withViewStores(async(db,target)=>{
   const recorded=statementRecorder(db,{accounting:target==='native'?'native':'d1'});
-  await listTurns(recorded.db,{projectId:'project'},'missing');await recorded.drain();
+  await planTotals(recorded.db,{all:false,projectIds:['project']});await recorded.drain();
   expect(recorded.statements).toHaveLength(1);
   expect(runtimeBoundary(recorded.statements,{legacy:new Set()})).toEqual(['nonmember missing source capture: '+operation]);
  });
@@ -734,3 +780,213 @@ test('guarded writes and explicit undefined retain their source dependencies',()
   expect(sourceBoundary(new Map([[reader,mutant]]),[tuple],[],{closures,callers})).not.toEqual([]);
  }
 });
+
+test('preparation policy preserves the byte-equal sealed seed and only observed fixture extensions',async()=>{
+ const seed=await checkedPreparationOrigins(legacy.preparationOrigins);
+ expect(preparationOriginEnvelope.seedSha256).toBe(legacy.preparationOrigins.sha256);
+ expect(preparationOrigins.slice(0,seed.length)).toEqual(seed);
+ const extensions=preparationOriginEnvelope.extensions.flatMap(entry=>entry.ids);
+ expect(preparationOrigins.slice(seed.length).map(entry=>entry.id)).toEqual(extensions);
+ const keys=preparationSourcePins.callers.map(row=>row.key).sort();
+ const evidence=preparationOriginEnvelope.fixtureReconciliation;
+ expect(evidence.sourceGraphSha256).toBe(preparationOriginEnvelope.sourceClosureProgram.sha256);
+ expect(evidence.observedCount).toBe(extensions.length);
+ for(const row of evidence.files)
+  expect(createHash('sha256').update(readFileSync(row.file)).digest('hex')).toBe(row.sha256);
+ const authority=preparationOrigins.slice(seed.length).map(row=>
+  [row.id,row.file,row.owner,row.expression,row.phase,row.relations,{callerRelations:row.callerRelations}]);
+ expect(createHash('sha256').update(JSON.stringify(authority)).digest('hex')).toBe(evidence.authoritySha256);
+ for(const row of preparationOrigins.slice(seed.length)){
+  expect(row.phase).toBe('T');
+  expect(Array.isArray(row.relations)).toBe(true);
+  expect(row.callerKeys).toEqual(keys);
+  expect(row.callerRelations?.length).toBeGreaterThan(0);
+ }
+});
+
+test('fixture permissions retain exact current caller contexts and refuse an unobserved sealed caller',()=>{
+ const ids=new Set(preparationOriginEnvelope.extensions.flatMap(entry=>entry.ids));
+ const selected=preparationOrigins.filter(row=>ids.has(row.id)).flatMap(origin=>
+  (origin.callerRelations??[]).flatMap(context=>context.relations.map(table=>({origin,context,table}))))[0];
+ if(!selected)throw new Error('No protected fixture context');
+ const {origin,context,table}=selected;
+ const observedKeys=new Set(origin.callerRelations?.flatMap(row=>row.callers));
+ const other=preparationSourcePins.callers.find(row=>!observedKeys.has(row.key));
+ if(!other)throw new Error('No unobserved sealed caller');
+ const statement={operation:'fixture',phase:'T',statementId:'fixture',exceptionId:origin.id,
+  sql:'SELECT * FROM '+table,origin:{...origin,callers:context.callers}};
+ const options={known:new Set<string>(),legacy:new Set<string>(),origins:preparationOrigins};
+ expect(readPreparationViolations([statement],options)).toEqual([]);
+ expect(readPreparationViolations([{...statement,origin:{...origin,callers:[...context.callers,other.key]}}],options))
+  .toEqual(['exception lacks pinned caller: '+origin.id]);
+ expect(readPreparationViolations([{...statement,origin:{...origin,callers:[]}}],options))
+  .toEqual(['exception lacks pinned caller: '+origin.id]);
+});
+
+test('every admitted fixture tuple exists and every retired fixture tuple is absent',()=>{
+ const ids=new Set(preparationOriginEnvelope.extensions.flatMap(entry=>entry.ids));
+ const live=preparationOrigins.filter(row=>ids.has(row.id));
+ const retired=preparationOriginEnvelope.fixtureReconciliation.retired;
+ const tuple=(row:{file:string;owner:string;expression:string})=>JSON.stringify([row.file,row.owner,row.expression]);
+ const sites=new Set<string>();
+ for(const file of new Set([...live,...retired].map(row=>row.file))){
+  const source=readFileSync(file,'utf8'),tree=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
+  const visit=(node:ts.Node):void=>{
+   if(ts.isCallExpression(node)&&isSqlPreparation(ts,node,tree)&&node.arguments[0])
+    sites.add(tuple({file,owner:preparationOwner(ts,node,tree),expression:node.arguments[0].getText(tree)}));
+   ts.forEachChild(node,visit);
+  };
+  visit(tree);
+ }
+ for(const row of live)expect(sites.has(tuple(row))).toBe(true);
+ for(const row of retired){
+  expect(sites.has(tuple(row))).toBe(false);
+  expect(ids.has(row.id)).toBe(false);
+  expect(createHash('sha256').update(readFileSync(row.file)).digest('hex')).toBe(row.fileSha256);
+ }
+ expect(preparationOriginEnvelope.fixtureReconciliation.inputCount).toBe(live.length+retired.length);
+ expect(preparationOriginEnvelope.fixtureReconciliation.missing).toEqual([]);
+});
+
+function planStatusCallers(sources: ReadonlyMap<string, string>): {file:string;owner:string;line:number;escape:boolean}[] {
+ const files=new Map([...sources].map(([file,text])=>['/'+file,ts.createSourceFile('/'+file,text,ts.ScriptTarget.Latest,true)]));
+ const host:ts.CompilerHost={
+  getSourceFile:file=>files.get(file),getDefaultLibFileName:()=>'/lib.d.ts',writeFile:()=>{},getCurrentDirectory:()=>'/',
+  getDirectories:()=>[],fileExists:file=>files.has(file),readFile:file=>sources.get(file.slice(1)),getCanonicalFileName:file=>file,
+  useCaseSensitiveFileNames:()=>true,getNewLine:()=>'\n',
+  resolveModuleNames:(names,containing)=>names.map(name=>{
+   const file=(name.startsWith('@myco-server-worker/')?'/packages/myco-server/src/'+name.slice('@myco-server-worker/'.length)
+    :new URL(name,'file://'+containing).pathname).replace(/\.js$/,'.ts');
+   return files.has(file)?{resolvedFileName:file,extension:ts.Extension.Ts}:undefined;
+  }),
+ };
+ const program=ts.createProgram([...files.keys()],{target:ts.ScriptTarget.Latest,module:ts.ModuleKind.ESNext,noLib:true},host),checker=program.getTypeChecker();
+ const names=new Set(['setPlanStatus']);
+ for(let count=-1;count!==names.size;){
+  count=names.size;
+  for(const tree of files.values()){
+   const aliases=(node:ts.Node):void=>{
+    if((ts.isImportSpecifier(node)||ts.isExportSpecifier(node))&&names.has((node.propertyName??node.name).text))names.add(node.name.text);
+    ts.forEachChild(node,aliases);
+   };aliases(tree);
+  }
+ }
+ const owns=(symbol:ts.Symbol|undefined):boolean=>{
+  if(!symbol)return false;
+  if(symbol.flags&ts.SymbolFlags.Alias)symbol=checker.getAliasedSymbol(symbol);
+  return symbol.declarations?.some(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='setPlanStatus'
+   &&node.getSourceFile().fileName==='/packages/myco-server/src/read/plans.ts')??false;
+ };
+ const rows:{file:string;owner:string;line:number;escape:boolean}[]=[];
+ for(const [absolute,tree]of files){
+  const file=absolute.slice(1);
+  const add=(node:ts.Node,escape:boolean)=>rows.push({file,owner:preparationOwner(ts,node,tree),line:tree.getLineAndCharacterOfPosition(node.getStart(tree)).line+1,escape});
+  const visit=(node:ts.Node):void=>{
+   if(ts.isIdentifier(node)){
+    let namespace=checker.getSymbolAtLocation(node);
+    if(namespace&&(namespace.flags&ts.SymbolFlags.Alias))namespace=checker.getAliasedSymbol(namespace);
+    if(namespace&&(namespace.flags&(ts.SymbolFlags.ValueModule|ts.SymbolFlags.NamespaceModule))&&checker.getExportsOfModule(namespace).some(owns)){
+     const parent=node.parent;
+     const member=ts.isPropertyAccessExpression(parent)&&parent.expression===node
+      ||ts.isElementAccessExpression(parent)&&parent.expression===node&&ts.isStringLiteral(parent.argumentExpression);
+     const spy=ts.isCallExpression(parent)&&parent.expression.getText(tree)==='spyOn'&&parent.arguments[0]===node
+      &&parent.arguments[1]!==undefined&&ts.isStringLiteral(parent.arguments[1])&&!owns(namespace.exports?.get(ts.escapeLeadingUnderscores(parent.arguments[1].text)));
+     if(!ts.isNamespaceImport(parent)&&!member&&!spy)add(node,true);
+    }
+   }
+   if(ts.isIdentifier(node)&&names.has(node.text)&&owns(checker.getSymbolAtLocation(node))){
+    const parent=node.parent;
+    if(ts.isImportSpecifier(parent)||ts.isFunctionDeclaration(parent)&&parent.name===node)return;
+    const access=ts.isPropertyAccessExpression(parent)&&parent.name===node?parent:node;
+    add(node,!(ts.isCallExpression(access.parent)&&access.parent.expression===access));
+   }
+   if(ts.isElementAccessExpression(node)&&ts.isStringLiteral(node.argumentExpression)
+    &&owns(checker.getTypeAtLocation(node.expression).getProperty(node.argumentExpression.text))) {
+    add(node,!(ts.isCallExpression(node.parent)&&node.parent.expression===node));
+   }
+   if(ts.isCallExpression(node)&&node.expression.kind===ts.SyntaxKind.ImportKeyword&&node.arguments[0]&&ts.isStringLiteral(node.arguments[0])){
+    const module=checker.getSymbolAtLocation(node.arguments[0]);
+    if(module&&checker.getExportsOfModule(module).some(owns))add(node,true);
+   }
+   ts.forEachChild(node,visit);
+  };visit(tree);
+ }
+ return rows;
+}
+
+const FACT_STATUS_CALLERS = [
+ 'tests/myco-server/view-records.test.ts#it:fact-only status primitive retains the frozen result and complete empty-world statement work',
+ 'tests/myco-server/embedding-reconcile.test.ts#test:plan status writes report their own result and invalidate indexed metadata',
+ 'tests/myco-server/dashboard-conversation-honesty.test.ts#it:gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation',
+] as const;
+
+function planStatusCallerViolations(sources: ReadonlyMap<string,string>): string[] {
+ return planStatusCallers(sources).flatMap(row=>row.escape||!['packages/myco-server/src/core/plans.ts#changePlanStatus',...FACT_STATUS_CALLERS].includes(row.file+'#'+row.owner)
+  ?[row.file+':'+row.line+' status primitive bypass '+row.owner]:[]);
+}
+
+test('status primitive has one editorial caller and explicitly fact-only fixture callers',()=>{
+ const sources=new Map(['packages/myco-server/src','packages/myco/src','tests'].flatMap(sourceFiles).map(file=>[file,readFileSync(file,'utf8')]));
+ expect(planStatusCallerViolations(sources)).toEqual([]);
+ const calls=planStatusCallers(sources);
+ expect([...new Set(calls.map(row=>row.file+'#'+row.owner))].sort()).toEqual(['packages/myco-server/src/core/plans.ts#changePlanStatus',...FACT_STATUS_CALLERS].sort());
+});
+
+test('status primitive gate kills direct, aliased, escaped and namespace editorial bypasses',()=>{
+ const definition='packages/myco-server/src/read/plans.ts',canonical='packages/myco-server/src/core/plans.ts',route='packages/myco-server/src/api/probe.ts';
+ const root=[definition,'export function setPlanStatus(...args:unknown[]){return false}'] as const;
+ const admitted=[canonical,"import {setPlanStatus} from '../read/plans.js'; export function changePlanStatus(){return setPlanStatus()}"] as const;
+ expect(planStatusCallerViolations(new Map([root,admitted]))).toEqual([]);
+ for(const text of [
+  "import {setPlanStatus} from '../read/plans.js'; export function edit(){return setPlanStatus()}",
+  "import {setPlanStatus as write} from '../read/plans.js'; export function edit(){return write()}",
+  "import {setPlanStatus} from '../read/plans.js'; export const write=setPlanStatus",
+  "import * as plans from '../read/plans.js'; export function edit(){return plans['setPlanStatus']()}",
+  "import * as plans from '../read/plans.js'; export function edit(key:string){return plans[key]()}",
+  "import * as plans from '../read/plans.js'; const escaped=plans",
+  "export {setPlanStatus as write} from '../read/plans.js'",
+ ])expect(planStatusCallerViolations(new Map([root,admitted,[route,text]])),text).not.toEqual([]);
+});
+
+
+function sourceSealChanges(before:{closures:readonly ExceptionClosure[];callers:readonly ParameterCaller[]},after:typeof before):{kind:string;change:string;tupleId:string}[]{
+ const changes:{kind:string;change:string;tupleId:string}[]=[];
+ for(const kind of ['closures','callers'] as const){
+  const key=(row:ExceptionClosure|ParameterCaller)=>'key' in row?row.key:JSON.stringify([row.file,row.owner,row.expression]);
+  const old=new Map(before[kind].map(row=>[key(row),row])),current=new Map(after[kind].map(row=>[key(row),row]));
+  for(const identity of [...new Set([...old.keys(),...current.keys()])].sort()){
+   const left=old.get(identity),right=current.get(identity);
+   if(JSON.stringify(left)===JSON.stringify(right))continue;
+   const change=left===undefined?'added':right===undefined?'removed':'changed';
+   changes.push({kind,change,tupleId:createHash('sha256').update(JSON.stringify([kind,change,left??null,right??null])).digest('hex')});
+  }
+ }
+ return changes;
+}
+
+test('the live source seal equals the complete derivation and accounts for every tuple change',async()=>{
+ expect(createHash('sha256').update(readFileSync('tests/myco-server/fixtures/view-read-legacy.json')).digest('hex')).toBe('e95bb12b3b2298b72141912d06cfea9f24546730011376520d08afb719fb6746');
+ const files=preparationSourceInventory(process.cwd());
+ const sources=new Map(files.map(file=>[file,readFileSync(file,'utf8')]));
+ const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[],dependencyDiffs:unknown[]=[];
+ const exceptions=legacy.sourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
+ sourceBoundary(sources,exceptions,legacy.foundationImports,{
+  closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),
+  captureDependencies:(exception,dependencies)=>{if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id);},
+ });
+ expect(dependencyDiffs).toHaveLength(0);
+ const derived={closures,callers};
+ expect(sourceSealChanges(derived,preparationSourcePins)).toEqual([]);
+ expect(preparationOriginEnvelope.sourceClosureProgram.sources).toEqual(files.map(file=>({file,sha256:createHash('sha256').update(sources.get(file)!).digest('hex')})));
+ const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
+ const changed=sourceSealChanges(historical,derived);
+ const classes=new Set(['moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
+ const accounted=preparationOriginEnvelope.sourceClosureChanges;
+ expect(accounted.map(({reason,...row})=>row).sort((a,b)=>a.tupleId.localeCompare(b.tupleId))).toEqual([...changed].sort((a,b)=>a.tupleId.localeCompare(b.tupleId)));
+ expect(accounted.every(row=>classes.has(row.reason))).toBe(true);
+ expect(new Set(accounted.map(row=>row.tupleId)).size).toBe(accounted.length);
+ const first=callers[0]!;
+ expect(sourceSealChanges(derived,{closures,callers:callers.slice(1)})).not.toEqual([]);
+ expect(sourceSealChanges(derived,{closures,callers:[...callers,{...first,key:first.key+'extra'}]})).not.toEqual([]);
+ expect(sourceSealChanges(derived,{closures,callers:callers.map((row,index)=>index===0?{...row,argument:row.argument+'stale'}:row)})).not.toEqual([]);
+},60000);

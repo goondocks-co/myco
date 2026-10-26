@@ -300,6 +300,12 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
           : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
+    case 'view_state_inconsistent':
+      return {
+        title: 'Some session reads were refused',
+        detail: `${count(item.refusals, 'read')} refused recently, most recently ${ago(item.lastRefusedAt, now)}.`,
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+      };
     case 'harness_needs_repair':
       return {
         title: HARNESS_REPAIR_TITLE[item.state](harnessLabel(item.harness), item.machineName ?? 'a machine'),
@@ -379,6 +385,7 @@ export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   no_worker: 'machines',
   access_key_expiring: 'access keys',
   schema_mismatch: 'the database',
+  view_state_inconsistent: 'recent session reads',
   harness_needs_repair: 'installed agents',
   harness_capture_silent: 'agent capture',
 };

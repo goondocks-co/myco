@@ -39,10 +39,19 @@ export interface PreparedStatement {
   run(): Promise<RunResult>;
 }
 
+/** Opaque request state preserved by relational decorators. */
+export const RELATIONAL_CONTEXT = Symbol('relationalContext');
 /** The relational store. `batch` MUST apply its statements atomically: the ingest path relies on a batch being all-or-nothing for the receipt-and-row commit point. */
 export interface RelationalStore {
   prepare(sql: string): PreparedStatement;
   batch(statements: PreparedStatement[]): Promise<RunResult[]>;
+}
+
+/** Store decorators carry opaque request state without exposing the underlying store's extra methods. */
+export function inheritStoreContext<T extends RelationalStore>(source: RelationalStore, target: T): T {
+  const context = source != null && RELATIONAL_CONTEXT in source ? source[RELATIONAL_CONTEXT] : undefined;
+  if(context!==undefined)Object.assign(target,{[RELATIONAL_CONTEXT]:context});
+  return target;
 }
 
 // ---------------------------------------------------------------------------
