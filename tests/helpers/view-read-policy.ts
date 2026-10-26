@@ -9,8 +9,10 @@ const fixtureIds=new Set(policy.extensions.flatMap(entry=>entry.ids));
 const fixtureCallerKeys=preparationSourcePins.callers.map(row=>row.key).sort();
 
 /** Fixture permissions match the entire sealed caller context. */
-export const preparationOrigins = (await checkedPreparationOrigins(policy)).map(origin=>
- fixtureIds.has(origin.id)&&origin.callerRelations!==undefined?{...origin,callerKeys:fixtureCallerKeys}:origin);
+export const preparationOrigins = (await checkedPreparationOrigins(policy)).map(origin=>{
+ if(policy.replayOnly.includes(origin.id))return {...origin,relations:[],...(origin.callerRelations===undefined?{}:{callerRelations:origin.callerRelations.map(context=>({...context,relations:[]}))})};
+ return fixtureIds.has(origin.id)&&origin.callerRelations!==undefined?{...origin,callerKeys:fixtureCallerKeys}:origin;
+});
 
 /** The candidate source inventory includes tracked and unignored new files. */
 export function preparationSourceInventory(root:string):string[]{

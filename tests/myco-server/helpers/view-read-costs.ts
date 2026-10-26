@@ -57,22 +57,6 @@ export async function appendCostHistory(db:RelationalStore,value:{
   return recordIds;
 }
 
-function bracketEnd(sql: string, start: number): number {
-  let depth = 0, quote = '';
-  for (let at = start; at < sql.length; at++) {
-    const char = sql[at]!;
-    if (quote !== '') {
-      if (char === quote) {
-        if (sql[at + 1] === quote) at++;
-        else quote = '';
-      }
-    } else if (char === "'" || char === '"' || char === '`') quote = char;
-    else if (char === '(') depth++;
-    else if (char === ')' && --depth === 0) return at;
-  }
-  throw new Error('Unclosed capture arm');
-}
-
 const M21_AGGREGATE_OPERATION='M21:hook_placement_countUnplacedContextRecords:0';
 
 const M21_OWNER_POINT_SQL=`(SELECT json_object('projectId', sv.project_id, 'sessionId', sv.session_id, 'legacy', sv.legacy,
@@ -82,7 +66,7 @@ const M21_OWNER_POINT_SQL=`(SELECT json_object('projectId', sv.project_id, 'sess
       'state', vi.state, 'base', vi.base, 'parent', vi.parent_instance,
       'ready', NOT EXISTS (SELECT 1 FROM view_checkpoints cp LEFT JOIN transcripts t ON t.project_id=cp.project_id AND t.transcript_id=cp.transcript_id
         WHERE cp.project_id=vi.project_id AND cp.instance_id=vi.instance_id AND cp.session_id=vi.session_id
-          AND (cp.parse_error IS NOT NULL OR cp.lost_context<>0 OR cp.parsed_offset<COALESCE(t.size,cp.parsed_offset)))))
+          AND (cp.parse_error IS NOT NULL OR cp.parsed_offset<COALESCE(t.size,cp.parsed_offset)))))
       FROM view_visible vv LEFT JOIN view_instances vi ON vi.project_id = vv.project_id AND vi.instance_id = vv.instance_id
       WHERE vv.project_id = sv.project_id AND vv.session_id = sv.session_id))) FROM session_views sv WHERE sv.project_id=r.project_id AND sv.session_id=r.session_id)`;
 
@@ -141,7 +125,7 @@ function m21AggregateArm(sql:string):string{
  return 'SELECT COUNT(*) AS n FROM projects s CROSS JOIN ('+restored+sql.slice(end);
 }
 
-/** Captured statements retain their original legacy selection as a complete arm. */
+/** Comparator transformations reconstruct M21 placement, strip the M10 fact fence, and exclude plan notused. */
 export function emptyReadSql(sql: string): string {
   if (sql === "SELECT value,\n    (SELECT value FROM schema_meta WHERE key = 'attention.view_read_refusal') AS __myco_status_refusal\n    FROM schema_meta WHERE key = 'version'") return "SELECT value FROM schema_meta WHERE key = 'version'";
   const tag = readTag(sql);
@@ -485,7 +469,7 @@ function replace(s:SqlSpan,pattern:RegExp,text:string):SqlSpan{
  return result;
 }
 const lexicalSql=()=>/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\]|[A-Za-z_][A-Za-z_0-9]*|[()]/g;
-function closing(sql:string,start:number):number{
+function bracketEnd(sql:string,start:number):number{
  if(sql[start]!=='(')throw new Error('SQL arm must begin at its opening parenthesis');
  let depth=0;
  for(const match of sql.slice(start).matchAll(lexicalSql())){
@@ -495,7 +479,7 @@ function closing(sql:string,start:number):number{
  throw new Error('Unclosed SQL source arm');
 }
 function aggregateLayout(arm:SqlSpan):SqlSpan{
- const start=arm.text.indexOf('FROM projects s CROSS JOIN ')+ 'FROM projects s CROSS JOIN '.length,end=closing(arm.text,start);
+ const start=arm.text.indexOf('FROM projects s CROSS JOIN ')+ 'FROM projects s CROSS JOIN '.length,end=bracketEnd(arm.text,start);
  const inner=slice(arm,start+1,end),marker=', created_at, ',projectionAt=inner.text.indexOf(marker);
  if(projectionAt<0)throw new Error('Missing aggregate source projection');
  let at=projectionAt+marker.length,fieldStart=at,depth=0,quote='';const fields:SqlSpan[]=[];
@@ -524,16 +508,16 @@ export function legacyLayout(sql:string,operation:string):SqlSpan{
  let arm=source(sql);const tag=/^\/\*vs:[^*]+\*\//.exec(sql);if(tag)arm=slice(arm,tag[0].length);
  const prefix='COALESCE((WITH __myco_capture_scalar AS MATERIALIZED (';
  for(let start=arm.text.indexOf(prefix);start>=0;start=arm.text.indexOf(prefix)){
-  const valueEnd=closing(arm.text,start+'COALESCE('.length),end=closing(arm.text,start+'COALESCE'.length);
+  const valueEnd=bracketEnd(arm.text,start+'COALESCE('.length),end=bracketEnd(arm.text,start+'COALESCE'.length);
   let legacy=trim(slice(arm,valueEnd+2,end)),replaceStart=start,replaceEnd=end;
   if(arm.text.slice(Math.max(0,start-13),start)==='json_extract('){
    if(!legacy.text.startsWith("json_object('value', "))throw new Error('Invalid scalar legacy value');
-   legacy=slice(legacy,"json_object('value', ".length,legacy.text.length-1);replaceStart=start-13;replaceEnd=closing(arm.text,replaceStart+'json_extract'.length);
+   legacy=slice(legacy,"json_object('value', ".length,legacy.text.length-1);replaceStart=start-13;replaceEnd=bracketEnd(arm.text,replaceStart+'json_extract'.length);
   }
   arm=concat(slice(arm,0,replaceStart),legacy,slice(arm,replaceEnd+1));
  }
  for(let start=arm.text.lastIndexOf('(CASE WHEN ');start>=0;start=arm.text.lastIndexOf('(CASE WHEN ',start-1)){
-  const end=closing(arm.text,start),part=slice(arm,start,end+1),then=part.text.indexOf(' THEN '),otherwise=part.text.lastIndexOf(' ELSE ');
+  const end=bracketEnd(arm.text,start),part=slice(arm,start,end+1),then=part.text.indexOf(' THEN '),otherwise=part.text.lastIndexOf(' ELSE ');
   if(then<0||otherwise<0)continue;
   const yes=slice(part,then+6,otherwise),no=slice(part,otherwise+6,part.text.length-5);
   if(yes.text===no.text)arm=concat(slice(arm,0,start),no,slice(arm,end+1));
@@ -544,9 +528,9 @@ export function legacyLayout(sql:string,operation:string):SqlSpan{
   arm=replace(arm,/LEFT JOIN session_views sv ON [\s\S]*?WHERE s.item_id IS NOT NULL OR p.plan_key IS NOT NULL OR sv.session_id IS NOT NULL/g,'WHERE s.item_id IS NOT NULL OR p.plan_key IS NOT NULL');
  }
  if(arm.text.startsWith('WITH __myco_candidate AS NOT MATERIALIZED (')){
-  const start=arm.text.indexOf('(');arm=slice(arm,start+1,closing(arm.text,start));
+  const start=arm.text.indexOf('(');arm=slice(arm,start+1,bracketEnd(arm.text,start));
  }else if(arm.text.startsWith('SELECT ')&&/NULL AS __myco_capture,(?:NULL AS __myco_owner,)? ?0 AS __myco_sentinel FROM \(/.test(arm.text)){
-  const start=arm.text.indexOf('FROM (')+5;arm=slice(arm,start+1,closing(arm.text,start));
+  const start=arm.text.indexOf('FROM (')+5;arm=slice(arm,start+1,bracketEnd(arm.text,start));
  }
  if(['M15:sessions_countStatements:0','M16:sessions_instantStatements:0'].includes(operation)&&arm.text.includes(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')){
   arm=replace(slice(arm,0,arm.text.indexOf('\n    UNION ALL SELECT')),/, NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM /g,' FROM ');
@@ -617,7 +601,7 @@ export function generatedSelectRoles(input:Parameters<typeof partitionLegacyPlan
  const scalar='COALESCE((WITH __myco_capture_scalar AS MATERIALIZED (';
  for(let start=input.sql.indexOf(scalar);start>=0;start=input.sql.indexOf(scalar,start+1)){
   if(!starts.has(start))continue;
-  const value=start+'COALESCE('.length,end=closing(input.sql,value),last=closing(input.sql,start+'COALESCE'.length);
+  const value=start+'COALESCE('.length,end=bracketEnd(input.sql,value),last=bracketEnd(input.sql,start+'COALESCE'.length);
   published.push({start:value,end});fallback.push({start:end+2,end:last});
  }
  for(let start=input.sql.indexOf(columns);start>=0;start=input.sql.indexOf(columns,start+columns.length))if(starts.has(start))headers.push({start,end:start+columns.length});
@@ -647,7 +631,7 @@ export function generatedSelectRoles(input:Parameters<typeof partitionLegacyPlan
   let body=text.replaceAll(columns,'@CAPTURE');
   const positions=[...body.matchAll(lexicalSql())].filter(match=>match[0]==='(').map(match=>match.index);
   for(const start of positions.reverse()){
-   const end=closing(body,start),value=atomic(body.slice(start+1,end));
+   const end=bracketEnd(body,start),value=atomic(body.slice(start+1,end));
    if(value)body=body.slice(0,start)+value+body.slice(end+1);
   }
   return normalize(body);
@@ -700,7 +684,7 @@ export function readStatementLimits(sql:string):{compoundTerms:number[];effectiv
  if(stack.length!==1)throw new Error('Unclosed compound group');if(stack[0])compoundTerms.push(stack[0]);
  const effectiveSourceTerms:number[]=[];
  for(const match of sql.matchAll(/\b(?:__myco_)?(?:prompt_batches|responses|tool_calls|plans) AS NOT MATERIALIZED \(/g)){
-  const start=match.index+match[0].length-1,end=closing(sql,start),body=sql.slice(start+1,end);
+  const start=match.index+match[0].length-1,end=bracketEnd(sql,start),body=sql.slice(start+1,end);
   let depth=0,terms=1;
   for(const token of body.matchAll(lexicalSql())){
    if(token[0]==='(')depth++;else if(token[0]===')')depth--;
@@ -746,7 +730,7 @@ function declaredCaptureProbes(sql:string){
  let scalarDefinitions=0,materializations=0;
  for(let begin=sql.indexOf(scalar);begin>=0;begin=sql.indexOf(scalar,begin+scalar.length)){
   scalarDefinitions++;
-  const start=begin+'COALESCE('.length,end=closing(sql,start);
+  const start=begin+'COALESCE('.length,end=bracketEnd(sql,start);
   let depth=0,selected=-1;
   for(const token of sql.slice(start,end+1).matchAll(lexicalSql())){
    if(token[0]==='(')depth++;else if(token[0]===')')depth--;
@@ -794,7 +778,7 @@ function scalarCaptureOwners(input:Parameters<typeof partitionLegacyPlan>[0]):Sc
    if(!input.sql.slice(frame.then,frame.otherwise).includes('COALESCE((WITH __myco_capture_scalar AS MATERIALIZED ('))continue;
    const otherwise=frame.otherwise+4,body=input.sql.slice(otherwise,token.index).trim(),open=otherwise+input.sql.slice(otherwise,token.index).indexOf(body);
    if(body==='NULL'&&input.sql.slice(token.index+3).startsWith(') AS __myco_capture_context'))continue;
-   if(!/^\(SELECT\b/.test(body)||closing(input.sql,open)!==open+body.length-1)throw new Error('Capture owner requires one scalar expression');
+   if(!/^\(SELECT\b/.test(body)||bracketEnd(input.sql,open)!==open+body.length-1)throw new Error('Capture owner requires one scalar expression');
    const selected=current.find(row=>row.start===open+1),oldPosition=selected===undefined?undefined:positions.get(selected.start);
    const source=original.find(row=>row.start===oldPosition);
    if(source===undefined)throw new Error('Capture owner lacks an original SELECT position');
@@ -900,7 +884,7 @@ export function isolatedViewSources(query:Pick<RecordedStatement,'sql'|'binds'>,
   const preamble=numbered.slice(start.index,selected);
   const names=[...preamble.matchAll(/\b((?:__myco_)?(?:prompt_batches|responses|tool_calls|plans)|processed_resources) AS NOT MATERIALIZED \(/g)]
    .filter(match=>positions.has(start.index+match.index)).map(match=>match[1]!);
-  const capture=preamble.slice(0,closing(preamble,preamble.indexOf('('))+1);
+  const capture=preamble.slice(0,bracketEnd(preamble,preamble.indexOf('('))+1);
   const aliases=[...new Set([...capture.matchAll(/sv\.project_id = ([a-z_]+)\.project_id AND sv\.session_id = \1\.session_id/g)].map(match=>match[1]!))];
   const literal=(value:string)=>"'"+value.replaceAll("'","''")+"'";
   const outer=aliases.map(alias=>`(SELECT ${literal(owner.projectId)} AS project_id,${literal(owner.sessionId)} AS session_id) ${alias}`).join(' CROSS JOIN ');
@@ -922,7 +906,7 @@ export function viewSourceArmPlans(query:Pick<RecordedStatement,'sql'|'binds'>,p
  const words=new Set(tokens.filter(token=>/^[a-z_]/i.test(token[0])).map(token=>token.index));
  const identifier=(value:string|undefined)=>value?.replace(/^"([\s\S]*)"$/,'$1').replace(/^`([\s\S]*)`$/,'$1').replace(/^\[([\s\S]*)\]$/,'$1');
  const pinStart=[...numbered.matchAll(/__myco_pins AS MATERIALIZED \(/g)].find(match=>words.has(match.index))?.index??-1;
- const pinEnd=pinStart<0?-1:closing(numbered,numbered.indexOf('(',pinStart));
+ const pinEnd=pinStart<0?-1:bracketEnd(numbered,numbered.indexOf('(',pinStart));
  const drivers:{kind:string;table:string;maximum:number;parameter:number|null}[]=[],recognizedDrivers=new Set<number>();
  for(const match of numbered.matchAll(/\bjson_each\((\?\d+|'(?:''|[^'])*')\)/g)){
   if(!words.has(match.index))continue;
@@ -959,7 +943,7 @@ export function viewSourceArmPlans(query:Pick<RecordedStatement,'sql'|'binds'>,p
  }
  for(const [index,match]of tokens.entries()){
    if(identifier(match[0])?.toLowerCase()!=='json_each'||tokens[index+1]?.[0]!=='(')continue;
-   const end=closing(numbered,tokens[index+1]!.index),expression=numbered.slice(match.index,end+1),cross=/^ j CROSS JOIN (?:main\.)?([a-z_]+) (f|v)\b/.exec(numbered.slice(end+1));
+   const end=bracketEnd(numbered,tokens[index+1]!.index),expression=numbered.slice(match.index,end+1),cross=/^ j CROSS JOIN (?:main\.)?([a-z_]+) (f|v)\b/.exec(numbered.slice(end+1));
    const alias=[...numbered.slice(end+1).matchAll(lexicalSql())].filter(token=>!/^--|^\/\*/.test(token[0])).slice(0,2).map(token=>token[0]);
    const rawAlias=alias[0]?.toUpperCase()==='AS'?alias[1]:alias[0];
    const sourceAlias=identifier(rawAlias);

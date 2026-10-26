@@ -24,6 +24,24 @@ import {uuid} from './helpers/fixtures.js';
 
 const fullReplay=process.env.MYCO_VIEW_READ_FULL==='1';
 
+function recordedPlanStatement(query:{sql:string;binds:readonly unknown[]}){
+ return {...query,sql:readTag(query.sql)===null?query.sql:significantRead(query.sql)};
+}
+
+test('recorded plan SQL uses fixture permissions and cannot claim a copied module origin',async()=>{
+ await withViewStores(async(db,target)=>{
+  const recorded=statementRecorder(db,{accounting:target==='D1'?'d1':'native'});
+  const query={sql:'/*vs:M24:plans_planTotals:0*/SELECT plan_key FROM plans WHERE project_id=? AND plan_key=? /* artifact control */',binds:['project','absent']};
+  await expect(explainReadPlan(recorded.db,query)).rejects.toThrow('Unadmitted module SQL replay');
+  const plan=await explainReadPlan(recorded.db,recordedPlanStatement(query));
+  expect(plan.some(row=>row.detail.includes('project_id=? AND plan_key=?')),target).toBe(true);
+  const prepared=recorded.events.find(row=>row.kind==='prepare');
+  expect(prepared?.origin?.kind,target).toBe('exception');
+  expect(prepared?.captured,target).toBe(false);
+  expect(query.sql.startsWith('/*vs:M24:'),target).toBe(true);
+ });
+},30_000);
+
 test.skipIf(!process.env.MYCO_VIEW_READ_Q_CASES)('every recorded independent SQL pair retains its native and D1 legacy plan and exact capture probes',async()=>{
  const files=process.env.MYCO_VIEW_READ_Q_CASES!.split(',');
  for(const file of files){
@@ -40,7 +58,7 @@ test.skipIf(!process.env.MYCO_VIEW_READ_Q_CASES)('every recorded independent SQL
     if(footer||row.kind!=='view_read_plan_case'||!('baseline'in row)||!('candidate'in row)||!('operation'in row)||typeof row.operation!=='string'||!('caseId'in row))throw new Error('Invalid recorded independent pair');
     const shape=(value:unknown):value is {sql:string;binds:unknown[]}=>typeof value==='object'&&value!==null&&'sql'in value&&typeof value.sql==='string'&&'binds'in value&&Array.isArray(value.binds);
     if(!shape(row.baseline)||!shape(row.candidate))throw new Error('Recorded plan statement is malformed');
-    const before=await explainReadPlan(baseline,row.baseline),after=await explainReadPlan(candidate,row.candidate);
+    const before=await explainReadPlan(baseline,recordedPlanStatement(row.baseline)),after=await explainReadPlan(candidate,recordedPlanStatement(row.candidate));
     const input={sql:row.candidate.sql,original:row.baseline.sql,operation:row.operation,baseline:before,candidate:after};
     let errors:string[],retained=after;
     if(row.operation==='M21:hook_placement_countUnplacedContextRecords:0'){
@@ -745,3 +763,9 @@ test('M21 alone admits the declared FILTER transformation with exact empty-world
   });
  });
 },60_000);
+
+test('the empty-world M10 fence transformation applies only to its declared UPDATE',()=>{
+ const sql='UPDATE plans SET status=? WHERE project_id=? AND plan_key=? AND (NOT EXISTS (SELECT 1 FROM session_views sv WHERE sv.project_id=plans.project_id)) RETURNING plan_key';
+ expect(emptyReadSql('/*vs:M10:plans_planInSession:0*/'+sql)).toBe('UPDATE plans SET status=? WHERE project_id=? AND plan_key=? RETURNING plan_key');
+ for(const operation of ['M24:plans_planTotals:0','M42:kpis_countOf:0'])expect(emptyReadSql('/*vs:'+operation+'*/'+sql)).toBe(sql);
+});

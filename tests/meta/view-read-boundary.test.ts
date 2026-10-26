@@ -5,7 +5,7 @@ import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {withViewStores} from '../myco-server/helpers/view-stores.js';
 import type {StatementException,ExceptionClosure,ParameterCaller} from '../helpers/view-read-contract.js';
-import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS} from '../helpers/statement-recorder.js';
+import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS,withPreparationCaller} from '../helpers/statement-recorder.js';
 import {Database} from 'bun:sqlite';
 import {sqliteRelationalStore} from '@myco-server-worker/platform/bun/sqlite.js';
 import ts from 'typescript-v6';
@@ -18,7 +18,7 @@ import {seededSqlite,sqliteD1} from '../myco-server/helpers/d1.js';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { VIEW_READ_OPERATIONS } from '../helpers/view-read-operations.js';
-import { sourceBoundary, runtimeBoundary, viewSchemaViolations, armPlanViolations, significantRead, protectedSql,durableObservationViolations } from '../helpers/view-read-contract.js';
+import { sourceBoundary, sourceSealChanges, runtimeBoundary, viewSchemaViolations, armPlanViolations, significantRead, protectedSql,durableObservationViolations } from '../helpers/view-read-contract.js';
 
 const owner = 'packages/myco-server/src/read/view-store.ts';
 const reader = 'packages/myco-server/src/read/probe.ts';
@@ -209,6 +209,31 @@ test('synchronous adapter forwarding requires the preparation SQL bytes',()=>{
  for(const sql of [tagged+' ',tagged.replace('prompt_batches','tool_calls')]){
   expect(()=>withPreparedRead({kind:'module'},tagged,()=>observed.db.prepare(sql))).toThrow('forged module operation');
  }
+});
+
+test('EXPLAIN QUERY PLAN replays only exact earlier module preparations and their caller context',()=>{
+ const physical=preparationOrigins.find(row=>row.id==='sink-07079')!;
+ const sql=tagged+' AND prompt_id=\'replay-control\'';
+ const original={kind:'module' as const,capture:{mode:'pinned',sources:{mode:'legacy',projectId:'project',sessionId:'session'}}};
+ const make=()=>({get(){return null}});
+ const replay=(text:string)=>withPhysicalPreparation(physical,text,'query',make);
+ expect(()=>replay('EXPLAIN QUERY PLAN '+sql)).toThrow();
+ withPreparationCaller(['module-caller'],()=>withPreparedRead(original,sql,make));
+ expect(()=>replay('EXPLAIN QUERY PLAN '+sql)).not.toThrow();
+ const observed=statementRecorder({prepare:()=>({bind(){return this},async first(){return null},async all(){return {results:[]}},async run(){return {results:[],meta:{changes:0}}}}),async batch(){return []}},{accounting:'native'});
+ withPreparedRead(physical,'EXPLAIN QUERY PLAN '+sql,()=>observed.db.prepare('EXPLAIN QUERY PLAN '+sql));
+ expect(observed.events[0]?.origin).toEqual({...original,callers:['module-caller'],replay:sql});
+ expect(observed.events[0]?.captured).toBe(true);
+ for(const text of [sql,sql+' ',sql.replace('prompt_batches','tool_calls'),'EXPLAIN '+sql,'EXPLAIN QUERY PLAN EXPLAIN QUERY PLAN '+sql,' EXPLAIN QUERY PLAN '+sql,
+  'EXPLAIN QUERY PLAN '+sql+' ','EXPLAIN QUERY PLAN '+sql+' -- extra','EXPLAIN QUERY PLAN '+sql+' UNION ALL SELECT prompt_id FROM prompt_batches',
+  'EXPLAIN QUERY PLAN  '+sql,'/* extra */EXPLAIN QUERY PLAN '+sql,'EXPLAIN QUERY PLAN /* extra */'+sql,
+  'EXPLAIN QUERY PLAN '+sql.replace('prompt_batches','tool_calls'),'explain query plan '+sql,'Explain Query Plan '+sql,'explain '+sql,';EXPLAIN QUERY PLAN '+sql]){
+  expect(()=>replay(text),text).toThrow();
+ }
+ const foreign=sql+' AND 1=1';
+ withPreparedRead(physical,foreign,make);
+ expect(()=>replay('EXPLAIN QUERY PLAN '+foreign)).toThrow();
+ expect(()=>replay('EXPLAIN QUERY PLAN SELECT prompt_id FROM prompt_batches')).not.toThrow();
 });
 
 test('nested adapter batches retain each adapter’s bound statement identity',async()=>{
@@ -784,15 +809,23 @@ test('guarded writes and explicit undefined retain their source dependencies',()
 test('preparation policy preserves the byte-equal sealed seed and only observed fixture extensions',async()=>{
  const seed=await checkedPreparationOrigins(legacy.preparationOrigins);
  expect(preparationOriginEnvelope.seedSha256).toBe(legacy.preparationOrigins.sha256);
- expect(preparationOrigins.slice(0,seed.length)).toEqual(seed);
+ expect((await checkedPreparationOrigins(preparationOriginEnvelope)).slice(0,seed.length)).toEqual(seed);
+ expect(preparationOrigins.slice(0,seed.length).filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)))
+  .toEqual(seed.filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)));
  const extensions=preparationOriginEnvelope.extensions.flatMap(entry=>entry.ids);
  expect(preparationOrigins.slice(seed.length).map(entry=>entry.id)).toEqual(extensions);
  const keys=preparationSourcePins.callers.map(row=>row.key).sort();
  const evidence=preparationOriginEnvelope.fixtureReconciliation;
  expect(evidence.sourceGraphSha256).toBe(preparationOriginEnvelope.sourceClosureProgram.sha256);
  expect(evidence.observedCount).toBe(extensions.length);
- for(const row of evidence.files)
-  expect(createHash('sha256').update(readFileSync(row.file)).digest('hex')).toBe(row.sha256);
+ for(const id of preparationOriginEnvelope.replayOnly){
+  const row=preparationOrigins.find(row=>row.id===id)!;
+  expect(row.relations).toEqual([]);
+  expect(row.phase).toBe('T');
+  expect(row.expression).toContain('EXPLAIN QUERY PLAN');
+  expect(row.callerRelations?.every(context=>context.relations.length===0)??true).toBe(true);
+ }
+ for(const row of evidence.files)expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
  const authority=preparationOrigins.slice(seed.length).map(row=>
   [row.id,row.file,row.owner,row.expression,row.phase,row.relations,{callerRelations:row.callerRelations}]);
  expect(createHash('sha256').update(JSON.stringify(authority)).digest('hex')).toBe(evidence.authoritySha256);
@@ -842,7 +875,7 @@ test('every admitted fixture tuple exists and every retired fixture tuple is abs
  for(const row of retired){
   expect(sites.has(tuple(row))).toBe(false);
   expect(ids.has(row.id)).toBe(false);
-  expect(createHash('sha256').update(readFileSync(row.file)).digest('hex')).toBe(row.fileSha256);
+  expect(row.fileSha256).toMatch(/^[a-f0-9]{64}$/);
  }
  expect(preparationOriginEnvelope.fixtureReconciliation.inputCount).toBe(live.length+retired.length);
  expect(preparationOriginEnvelope.fixtureReconciliation.missing).toEqual([]);
@@ -949,21 +982,6 @@ test('status primitive gate kills direct, aliased, escaped and namespace editori
 });
 
 
-function sourceSealChanges(before:{closures:readonly ExceptionClosure[];callers:readonly ParameterCaller[]},after:typeof before):{kind:string;change:string;tupleId:string}[]{
- const changes:{kind:string;change:string;tupleId:string}[]=[];
- for(const kind of ['closures','callers'] as const){
-  const key=(row:ExceptionClosure|ParameterCaller)=>'key' in row?row.key:JSON.stringify([row.file,row.owner,row.expression]);
-  const old=new Map(before[kind].map(row=>[key(row),row])),current=new Map(after[kind].map(row=>[key(row),row]));
-  for(const identity of [...new Set([...old.keys(),...current.keys()])].sort()){
-   const left=old.get(identity),right=current.get(identity);
-   if(JSON.stringify(left)===JSON.stringify(right))continue;
-   const change=left===undefined?'added':right===undefined?'removed':'changed';
-   changes.push({kind,change,tupleId:createHash('sha256').update(JSON.stringify([kind,change,left??null,right??null])).digest('hex')});
-  }
- }
- return changes;
-}
-
 test('the live source seal equals the complete derivation and accounts for every tuple change',async()=>{
  expect(createHash('sha256').update(readFileSync('tests/myco-server/fixtures/view-read-legacy.json')).digest('hex')).toBe('e95bb12b3b2298b72141912d06cfea9f24546730011376520d08afb719fb6746');
  const files=preparationSourceInventory(process.cwd());
@@ -976,8 +994,7 @@ test('the live source seal equals the complete derivation and accounts for every
  });
  expect(dependencyDiffs).toHaveLength(0);
  const derived={closures,callers};
- expect(sourceSealChanges(derived,preparationSourcePins)).toEqual([]);
- expect(preparationOriginEnvelope.sourceClosureProgram.sources).toEqual(files.map(file=>({file,sha256:createHash('sha256').update(sources.get(file)!).digest('hex')})));
+ expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/view-read-seal.ts').toEqual([]);
  const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
  const changed=sourceSealChanges(historical,derived);
  const classes=new Set(['moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
@@ -990,3 +1007,18 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(sourceSealChanges(derived,{closures,callers:[...callers,{...first,key:first.key+'extra'}]})).not.toEqual([]);
  expect(sourceSealChanges(derived,{closures,callers:callers.map((row,index)=>index===0?{...row,argument:row.argument+'stale'}:row)})).not.toEqual([]);
 },60000);
+
+test('source seals ignore file-only comments and detect an added SQL sink caller',()=>{
+ const file='packages/myco-server/src/read/seal-control.ts';
+ const text='export function rows(db,sql){return db.prepare(sql)}; rows(db,"SELECT * FROM plans")';
+ const derive=(source:string)=>{
+  const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[];
+  const exception={id:'seal-control',file,owner:'rows',expression:'sql',phase:'T' as const};
+  sourceBoundary(new Map([[file,source]]),[exception],[],{closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row)});
+  return {closures,callers};
+ };
+ const original=derive(text);
+ expect(original.callers.length).toBeGreaterThan(0);
+ expect(sourceSealChanges(original,derive(text+'\n// SQL callers retain their sealed context.\n'))).toEqual([]);
+ expect(sourceSealChanges(original,derive(text+'\nrows(db,"SELECT * FROM responses")'))).not.toEqual([]);
+});

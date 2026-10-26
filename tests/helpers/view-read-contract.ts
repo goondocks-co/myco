@@ -870,3 +870,18 @@ export function viewSchemaViolations(rows: readonly { type: string; name: string
   }
   return errors;
 }
+
+export function sourceSealChanges(before:{closures:readonly ExceptionClosure[];callers:readonly ParameterCaller[]},after:typeof before):{kind:string;change:string;tupleId:string}[]{
+ const changes:{kind:string;change:string;tupleId:string}[]=[];
+ for(const kind of ['closures','callers'] as const){
+  const key=(row:ExceptionClosure|ParameterCaller)=>'key' in row?row.key:JSON.stringify([row.file,row.owner,row.expression]);
+  const old=new Map(before[kind].map(row=>[key(row),row])),current=new Map(after[kind].map(row=>[key(row),row]));
+  for(const identity of [...new Set([...old.keys(),...current.keys()])].sort()){
+   const left=old.get(identity),right=current.get(identity);
+   if(JSON.stringify(left)===JSON.stringify(right))continue;
+   const change=left===undefined?'added':right===undefined?'removed':'changed';
+   changes.push({kind,change,tupleId:createHash('sha256').update(JSON.stringify([kind,change,left??null,right??null])).digest('hex')});
+  }
+ }
+ return changes;
+}

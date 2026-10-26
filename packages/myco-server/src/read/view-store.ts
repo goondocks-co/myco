@@ -250,7 +250,7 @@ function sourceCaptureColumns(): string {
       'state', vi.state, 'base', vi.base, 'parent', vi.parent_instance,
       'ready', NOT EXISTS (SELECT 1 FROM view_checkpoints cp LEFT JOIN transcripts t ON t.project_id=cp.project_id AND t.transcript_id=cp.transcript_id
         WHERE cp.project_id=vi.project_id AND cp.instance_id=vi.instance_id AND cp.session_id=vi.session_id
-          AND (cp.parse_error IS NOT NULL OR cp.lost_context<>0 OR cp.parsed_offset<COALESCE(t.size,cp.parsed_offset)))))
+          AND (cp.parse_error IS NOT NULL OR cp.parsed_offset<COALESCE(t.size,cp.parsed_offset)))))
       FROM view_visible vv LEFT JOIN view_instances vi ON vi.project_id = vv.project_id AND vi.instance_id = vv.instance_id
       WHERE vv.project_id = sv.project_id AND vv.session_id = sv.session_id)))`;
 }

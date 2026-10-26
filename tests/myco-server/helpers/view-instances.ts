@@ -174,6 +174,12 @@ export async function setViewCheckpointFailure(db:RelationalStore,project:string
   .bind(project,instance,session,instance+':source',error).run();
 }
 
+/** Synthetic checkpoints expose cursor readiness and accepted loss independently. */
+export async function setViewCheckpointProgress(db:RelationalStore,project:string,instance:string,transcript:string,offset:number,lost:number):Promise<void>{
+ await db.prepare('UPDATE view_checkpoints SET transcript_id=?,parsed_offset=?,lost_context=? WHERE project_id=? AND instance_id=?')
+  .bind(transcript,offset,lost,project,instance).run();
+}
+
 /** Header state controls are confined to synthetic instances. */
 export async function setSyntheticInstanceState(db:RelationalStore,project:string,instance:string,state:typeof INSTANCE_STATES[number]):Promise<void>{
  await db.prepare('UPDATE view_instances SET state=? WHERE project_id=? AND instance_id=?').bind(state,project,instance).run();

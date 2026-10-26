@@ -169,7 +169,7 @@ it('M21 capture probes retain their derived per-delivery multiplicities',async()
    if(target==='D1')expect(query.rowsRead).toBeGreaterThan(0);else expect(query.rowsRead).toBeUndefined();
    console.info('M21_PROBE_MULTIPLICITY',JSON.stringify({target,index,deliveries,instances,probes:result.probes,scalarDefinitions:result.scalarDefinitions,scalarMultiplicity:result.scalarMultiplicity,bounds,rowsRead:query.rowsRead??null,
     units:'structural upper bounds per statement; checkpoint bound counts indexed ranges, with transcript work per checkpoint'}));
-   const extra={...query,sql:query.sql.replace('AS __myco_aggregate_sources','AS __myco_aggregate_sources, (SELECT COUNT(*) FROM view_visible) AS __probe')};
+   const extra={...query,sql:query.sql.replace(/^\/\*vs:[^*]+\*\//,'').replace('AS __myco_aggregate_sources','AS __myco_aggregate_sources, (SELECT COUNT(*) FROM view_visible) AS __probe')};
    expect((await deliveryProbeMultiplicity(db,extra)).errors.some(error=>error.includes('unbounded capture scan'))).toBe(true);
   }
  });

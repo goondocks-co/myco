@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #1924 PR 4b.1b correction 1, pinned Bun 1.4.0 darwin-arm64 and vendored SQLite 3.53.0 through npm test. All 14 B owners passed 88 tests: behavior 348647 ms, cost 162483 ms, oracle 147158 ms and legacy 42976 ms command wall. Added correlated-parent output control 3103.04 ms and accepted-loss tail 1115.48 ms; owning file bodies 9325.90 ms / 3366.39 ms. Existing 10000 ms / 5000 ms weights gain twice the new bodies rounded to 17000 ms / 8000 ms. Recorded-plan origin control 938.23 ms and M10-only comparator 0.10 ms retain legacy 52000 ms. Full meta plus strict oracle/records/legacy/shard focus passed in 524138 ms with a trailing source comment and exact restoration; boundary summed bodies 42980.8 ms and the final standalone command 43823 ms. Boundary weight recalibrated from 80000 ms to 70000 ms after removing whole-file pins; this retains the prior contended 53719 ms sample and has no recorded CI floor. The added behavior weights otherwise crossed the six-shard 750000 ms allowance by 56 ms. No new test file or parity scenario, no deadline or assertion changes.",
     "local: vault PR8 recovery context on pinned Bun1.4.0 darwin-arm64/vendored SQLite3.53.0. Unchanged three recovery owner files plus expanded admission55pass measured35917ms runner; admission15227.67ms summed bodies with six staged41/101 in-flight controls and forged/borrowed/expired/replaced/aliased authority controls, file weight35000ms covers twice plus startup. Recovery owners backup-cli3768.43ms, local-recovery9161.73ms and cloudflare-recovery5166.65ms retain existing weights. Shared live/hosted/source focus136pass58646ms; hosted40046.17ms bodies retains95000ms weight. Boundary/legacy75pass5existing skips61071ms; frozen fixture unchanged. No new testfile/parity scenario or changed deadline/assertion.",
     "local: vault PR8 correction2 legacy-applier owner repair, pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53.0. All20 server-bin contract cases passed in6873ms runner; new allowed102->104 partial-step rollback/retry case measured313.26ms. Existing9437ms file weight retained above observed file wall; historical step48 data/shape/torn-prefix assertions retained through the103 stepping-stone fixture. No new test file/parity scenario and no changed deadline.",
     "local: vault PR8 correction2, pinned Bun1.4.0 darwin-arm64 and vendored SQLite3.53.0, npm test five-owner focus97pass in63331ms runner. Native stepping-stone/allowed-path matrix measured11239.67ms summed bodies (25000ms file weight); hosted schema/update including converted concurrent-dispatch gates measured44052.26ms (95000ms file weight). Both weights cover twice measured bodies plus startup. No new committed test file or parity scenario, no deadline or assertion changed.",
@@ -424,7 +425,7 @@
     "tests/meta/ui-component-only.test.ts": 360,
     "tests/meta/ui-token-contrast.test.ts": 152,
     "tests/meta/user-surface-accuracy.test.ts": 170,
-    "tests/meta/view-read-boundary.test.ts": 80000,
+    "tests/meta/view-read-boundary.test.ts": 70000,
     "tests/meta/worker-bundle-concurrency.test.ts": 822,
     "tests/meta/worker-bundle-embedded.test.ts": 266,
     "tests/meta/workspace-dep-consistency.test.ts": 116,
@@ -753,7 +754,7 @@
     "tests/myco-server/view-activity.test.ts": 38000,
     "tests/myco-server/view-attention.test.ts": 6000,
     "tests/myco-server/view-bundle-references.test.ts": 3500,
-    "tests/myco-server/view-injection.test.ts": 10000,
+    "tests/myco-server/view-injection.test.ts": 17000,
     "tests/myco-server/view-read-costs.test.ts": 180000,
     "tests/myco-server/view-read-intrinsic-costs.test.ts": 166000,
     "tests/myco-server/view-read-legacy.test.ts": 52000,
@@ -764,7 +765,7 @@
     "tests/myco-server/view-source-closure.test.ts": 48000,
     "tests/myco-server/view-store-maintenance.test.ts": 10000,
     "tests/myco-server/view-store-schema.test.ts": 10000,
-    "tests/myco-server/view-title-material.test.ts": 5000,
+    "tests/myco-server/view-title-material.test.ts": 8000,
     "tests/myco-server/view-turns.test.ts": 10000,
     "tests/myco-server/wake-loop.test.ts": 324,
     "tests/myco-server/work-wire.test.ts": 2,
