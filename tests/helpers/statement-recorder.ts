@@ -61,7 +61,6 @@ function executionOrigin(sql:string):PreparationOrigin|undefined{
   const original=sql.slice(EXPLAIN_REPLAY_PREFIX.length),prepared=modulePreparations.get(original);
   if(prepared!==undefined)return {...prepared,replay:original};
  }
- if(/^(?:[\s;]|\/\*[\s\S]*?\*\/|--[^\n]*\n)*EXPLAIN\b[\s\S]*\/\*vs:/i.test(sql))throw new Error('Unadmitted module SQL replay');
  return undefined;
 }
 function retainPreparedRead<T>(value:T,execution:PreparedExecution):T{

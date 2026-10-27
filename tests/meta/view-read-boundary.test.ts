@@ -5,7 +5,7 @@ import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {withViewStores} from '../myco-server/helpers/view-stores.js';
 import type {StatementException,ExceptionClosure,ParameterCaller} from '../helpers/view-read-contract.js';
-import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS,withPreparationCaller} from '../helpers/statement-recorder.js';
+import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS,withPreparationCaller,observePhysicalStatements,type StatementEvent} from '../helpers/statement-recorder.js';
 import {Database} from 'bun:sqlite';
 import {sqliteRelationalStore} from '@myco-server-worker/platform/bun/sqlite.js';
 import ts from 'typescript-v6';
@@ -216,24 +216,56 @@ test('EXPLAIN QUERY PLAN replays only exact earlier module preparations and thei
  const sql=tagged+' AND prompt_id=\'replay-control\'';
  const original={kind:'module' as const,capture:{mode:'pinned',sources:{mode:'legacy',projectId:'project',sessionId:'session'}}};
  const make=()=>({get(){return null}});
- const replay=(text:string)=>withPhysicalPreparation(physical,text,'query',make);
- expect(()=>replay('EXPLAIN QUERY PLAN '+sql)).toThrow();
- withPreparationCaller(['module-caller'],()=>withPreparedRead(original,sql,make));
- expect(()=>replay('EXPLAIN QUERY PLAN '+sql)).not.toThrow();
- const observed=statementRecorder({prepare:()=>({bind(){return this},async first(){return null},async all(){return {results:[]}},async run(){return {results:[],meta:{changes:0}}}}),async batch(){return []}},{accounting:'native'});
- withPreparedRead(physical,'EXPLAIN QUERY PLAN '+sql,()=>observed.db.prepare('EXPLAIN QUERY PLAN '+sql));
- expect(observed.events[0]?.origin).toEqual({...original,callers:['module-caller'],replay:sql});
- expect(observed.events[0]?.captured).toBe(true);
- for(const text of [sql,sql+' ',sql.replace('prompt_batches','tool_calls'),'EXPLAIN '+sql,'EXPLAIN QUERY PLAN EXPLAIN QUERY PLAN '+sql,' EXPLAIN QUERY PLAN '+sql,
-  'EXPLAIN QUERY PLAN '+sql+' ','EXPLAIN QUERY PLAN '+sql+' -- extra','EXPLAIN QUERY PLAN '+sql+' UNION ALL SELECT prompt_id FROM prompt_batches',
-  'EXPLAIN QUERY PLAN  '+sql,'/* extra */EXPLAIN QUERY PLAN '+sql,'EXPLAIN QUERY PLAN /* extra */'+sql,
-  'EXPLAIN QUERY PLAN '+sql.replace('prompt_batches','tool_calls'),'explain query plan '+sql,'Explain Query Plan '+sql,'explain '+sql,';EXPLAIN QUERY PLAN '+sql]){
-  expect(()=>replay(text),text).toThrow();
- }
- const foreign=sql+' AND 1=1';
- withPreparedRead(physical,foreign,make);
- expect(()=>replay('EXPLAIN QUERY PLAN '+foreign)).toThrow();
- expect(()=>replay('EXPLAIN QUERY PLAN SELECT prompt_id FROM prompt_batches')).not.toThrow();
+ const events:StatementEvent[]=[];
+ const stop=observePhysicalStatements(record=>{if(record.kind==='event'&&record.value.kind==='prepare')events.push(record.value)});
+ const replay=(text:string,sink=physical)=>{
+  const before=events.length;let error:unknown;
+  try{withPhysicalPreparation(sink,text,'query',make)}catch(caught){error=caught}
+  expect(events).toHaveLength(before+1);
+  return {event:events.at(-1)!,error};
+ };
+ const sinkOrigin=(event:StatementEvent,sink=physical)=>{
+  expect(event.origin).toMatchObject(sink);
+  expect(event.origin?.kind).toBe('exception');
+  expect(event.origin!==undefined&&'replay' in event.origin).toBe(false);
+  expect(event.captured).toBe(false);
+ };
+ try{
+  const unprepared=replay('EXPLAIN QUERY PLAN '+sql);
+  sinkOrigin(unprepared.event);expect(unprepared.error).toBeUndefined();
+  withPreparationCaller(['module-caller'],()=>withPreparedRead(original,sql,make));
+  const exact=replay('EXPLAIN QUERY PLAN '+sql);
+  expect(exact.error).toBeUndefined();
+  expect(exact.event.origin).toEqual({...original,callers:['module-caller'],replay:sql});
+  expect(exact.event.captured).toBe(true);
+  const observed=statementRecorder({prepare:()=>({bind(){return this},async first(){return null},async all(){return {results:[]}},async run(){return {results:[],meta:{changes:0}}}}),async batch(){return []}},{accounting:'native'});
+  withPreparedRead(physical,'EXPLAIN QUERY PLAN '+sql,()=>observed.db.prepare('EXPLAIN QUERY PLAN '+sql));
+  expect(observed.events[0]?.origin).toEqual({...original,callers:['module-caller'],replay:sql});
+  expect(observed.events[0]?.captured).toBe(true);
+  for(const text of ['EXPLAIN '+sql,'EXPLAIN QUERY PLAN EXPLAIN QUERY PLAN '+sql,' EXPLAIN QUERY PLAN '+sql,
+   'EXPLAIN QUERY PLAN '+sql+' ','EXPLAIN QUERY PLAN '+sql+' -- extra','EXPLAIN QUERY PLAN '+sql+' UNION ALL SELECT prompt_id FROM prompt_batches',
+   'EXPLAIN QUERY PLAN  '+sql,'/* extra */EXPLAIN QUERY PLAN '+sql,'EXPLAIN QUERY PLAN /* extra */'+sql,
+   'EXPLAIN QUERY PLAN '+sql.replace('prompt_batches','tool_calls'),'explain query plan '+sql,'Explain Query Plan '+sql,'explain '+sql,';EXPLAIN QUERY PLAN '+sql,
+   'EXPLAIN QUERY PLAN\n'+sql,'EXPLAIN QUERY PLAN\t'+sql,'EXPLAIN QUERY PLAN '+sql+';','EXPLAIN QUERY PLAN '+sql+'\n']){
+   sinkOrigin(replay(text).event);
+  }
+  const foreign=sql+' AND 1=1';
+  withPreparedRead(physical,foreign,make);
+  sinkOrigin(replay('EXPLAIN QUERY PLAN '+foreign).event);
+  const failed=sql+' AND 2=2';
+  expect(()=>withPreparedRead(original,failed,()=>{throw new Error('preparation failed')})).toThrow('preparation failed');
+  sinkOrigin(replay('EXPLAIN QUERY PLAN '+failed).event);
+  const forged=replay(sql);
+  sinkOrigin(forged.event);expect(forged.error).toBeInstanceOf(Error);
+  expect(String(forged.error)).toContain('forged module operation');
+  const replayOnly=preparationOrigins.find(row=>row.id===preparationOriginEnvelope.replayOnly[0])!;
+  expect(replayOnly.relations).toEqual([]);
+  const refused=replay('EXPLAIN QUERY PLAN '+sql+' AND 3=3',replayOnly);
+  sinkOrigin(refused.event,replayOnly);expect(refused.error).toBeInstanceOf(Error);
+  expect(String(refused.error)).toContain('exception adds protected relations');
+  const admitted=replay('EXPLAIN QUERY PLAN '+sql,replayOnly);
+  expect(admitted.error).toBeUndefined();expect(admitted.event.origin?.kind).toBe('module');
+ }finally{stop()}
 });
 
 test('nested adapter batches retain each adapter’s bound statement identity',async()=>{
