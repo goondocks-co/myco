@@ -6,12 +6,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { parse } from 'yaml';
-import { PARITY_PLAN_PREFIX } from './test-shards.mjs';
+import { PARITY_PLAN_PREFIX, VIEW_PROOF_FILES } from './test-shards.mjs';
 import { assertNodeShardHeadroom, assertTestCaseHeadroom, declaredTestTimeout, testDurationSamples } from './node-test-durations.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = parse(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
 const MAX_TEST_JOB_SHARE = 1 / 2;
+
+export function auditViewProofJob(workflow, durations, proofs) {
+  const job = workflow.jobs['view-proof'];
+  assert.deepEqual([...job.strategy.matrix.file].sort(), [...VIEW_PROOF_FILES].sort(), 'View proof matrix must cover every proof file');
+  assert.equal(new Set(job.strategy.matrix.file).size, VIEW_PROOF_FILES.length, 'Duplicate view proof file');
+  assert.equal(job.env.MYCO_TEST_KIND, 'view-proof');
+  assert.equal(job.env.MYCO_TEST_GROUP, 'view proof ${{ matrix.file }}');
+  assert.equal(job.if, undefined, 'View proof job must always run');
+  assert.ok(job.steps.some(step => step.run === 'npm test' && step.if === undefined), 'View proof job must execute the test driver unconditionally');
+  assert.ok(workflow.jobs.check.needs.includes('view-proof'), 'View proof job must be required');
+  assert.ok(durations.jobs['view-proof']?.source, 'View proof headroom needs its measurement source');
+  for (const file of VIEW_PROOF_FILES) assert.ok(Number.isFinite(durations.files[file]) && durations.files[file] > 0, `View proof file needs a measured duration: ${file}`);
+  for (const proof of proofs) assertJobHeadroom(proof.label, job['timeout-minutes'], proof.estimatedMs, durations.jobs['view-proof']);
+}
 
 export function assertJobHeadroom(job, timeoutMinutes, milliseconds, policy) {
   const timeoutMs = timeoutMinutes * 60_000;
@@ -94,7 +108,7 @@ function audit() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
   const manifestPath = path.join(scratch, 'manifest.json');
   const baseEnv = { ...process.env };
-  for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD']) delete baseEnv[key];
+  for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD']) delete baseEnv[key];
   baseEnv.MYCO_RUNNER_REPORT_DIR = path.join(scratch, 'reports');
 
   function manifest(command, env, outputPrefix) {
@@ -135,14 +149,23 @@ function audit() {
       .filter((file) => /\.test\.tsx?$/.test(file)).map((file) => `tests/${file.split(path.sep).join('/')}`);
     exactlyOnce(full.flatMap((phase) => phase.files), discovered, 'Full suite');
     const nodePlans = [];
-    const sharded = workflow.jobs.tests.strategy.matrix.include.flatMap(({ kind, shard }) => {
+    const ordinary = workflow.jobs.tests.strategy.matrix.include.flatMap(({ kind, shard }) => {
       const plan = testPlan({ MYCO_TEST_KIND: kind, MYCO_TEST_SHARD: shard });
       if (kind === 'node') nodePlans.push(plan);
       console.log(`${kind} ${shard}: estimated ${Math.round(plan.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
       return plan;
     });
+    const proofJob = workflow.jobs['view-proof'];
+    exactlyOnce(proofJob.strategy.matrix.file, VIEW_PROOF_FILES, 'CI view proof matrix');
+    const proofs = proofJob.strategy.matrix.file.flatMap(file => testPlan({
+      MYCO_TEST_KIND: proofJob.env.MYCO_TEST_KIND,
+      MYCO_TEST_GROUP: proofJob.env.MYCO_TEST_GROUP.replace('${{ matrix.file }}', file),
+    }));
+    exactlyOnce(proofs.flatMap(phase => phase.files), VIEW_PROOF_FILES, 'CI view proof files');
+    const sharded = [...ordinary, ...proofs];
     exactlyOnce(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
     const durations = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8'));
+    auditViewProofJob(workflow, durations, proofs);
     auditJobHeadroom(workflow, durations.jobs);
     const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-durations.json'), 'utf8'));
     auditTestHeadroom();

@@ -1,4 +1,5 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {inheritStoreContext} from '../../packages/myco-server/src/core/adapters.js';
 import type ts from 'typescript-v6';
 import type { RelationalStore, PreparedStatement } from '../../packages/myco-server/src/core/adapters.js';
 
@@ -9,9 +10,10 @@ export interface StatementFrame {
   parentSpanId?: string;
   exceptionId?: string;
   origin?: PreparationOrigin;
+  captured?: boolean;
 }
 
-export type PreparationOrigin = {kind:'module'} | {kind:'oracle';sha256:string} | {
+export type PreparationOrigin = {kind:'module';capture?:unknown;callers?:readonly string[];replay?:string} | {kind:'oracle';sha256:string} | {
  kind:'exception';id:string;file:string;owner:string;expression:string;phase:'W'|'P'|'H'|'T';relations?:readonly string[];
  callers?:readonly string[];callerKeys?:readonly string[];callerRelations?:readonly {callers:readonly string[];relations:readonly string[]}[];
  nonSql?:boolean;
@@ -45,6 +47,8 @@ const callers=new AsyncLocalStorage<readonly string[]>();
 interface PreparedExecution { sql:string; origin:PreparationOrigin }
 const executions=new AsyncLocalStorage<readonly PreparedExecution[]>();
 const preparedReads=new WeakMap<object,readonly PreparedExecution[]>();
+const modulePreparations=new Map<string,Extract<PreparationOrigin,{kind:'module'}>>();
+const EXPLAIN_REPLAY_PREFIX='EXPLAIN QUERY PLAN ';
 function executionOrigin(sql:string):PreparationOrigin|undefined{
  const matching=(executions.getStore()??[]).filter(entry=>entry.sql===sql);
  const first=matching[0]?.origin;
@@ -52,7 +56,12 @@ function executionOrigin(sql:string):PreparationOrigin|undefined{
  if(first&&matching.some(({origin})=>origin!==first&&(origin.kind==='oracle'||first.kind==='oracle'
   ?origin.kind!=='oracle'||first.kind!=='oracle'||oracleTokens.get(origin)!==sql||oracleTokens.get(first)!==sql
   :identity(origin)!==identity(first))))throw new Error('Conflicting prepared execution provenance');
- return first;
+ if(first)return first;
+ if(sql.startsWith(EXPLAIN_REPLAY_PREFIX)){
+  const original=sql.slice(EXPLAIN_REPLAY_PREFIX.length),prepared=modulePreparations.get(original);
+  if(prepared!==undefined)return {...prepared,replay:original};
+ }
+ return undefined;
 }
 function retainPreparedRead<T>(value:T,execution:PreparedExecution):T{
  if(typeof value!=='object'||value===null)return value;
@@ -114,9 +123,13 @@ export function withPreparedBatch<T>(args:readonly unknown[],run:(args:readonly 
 /** Deferred adapters retain the preparation's origin only for its exact SQL bytes. */
 export function withPreparedRead<T>(origin:PreparationOrigin,sql:string,run:()=>T):T{
  const inherited=executionOrigin(sql)??origin;
- const prepared=inherited.kind==='exception'?{...inherited,callers:inherited.callers??callers.getStore()??[]}:inherited;
+ const prepared=inherited.kind==='exception'||inherited.kind==='module'?{...inherited,callers:inherited.callers??callers.getStore()??[]}:inherited;
  const execution={origin:prepared,sql};
- return executions.run([execution],()=>retainPreparedRead(run(),execution));
+ return executions.run([execution],()=>{
+  const value=run();
+  if(prepared.kind==='module'&&prepared.replay===undefined)modulePreparations.set(sql,prepared);
+  return retainPreparedRead(value,execution);
+ });
 }
 export function withPreparationCaller<T>(keys:readonly string[],run:()=>T):T{return callers.run([...(callers.getStore()??[]),...keys],run);}
 let preparationBoundary:((statement:StatementEvent)=>void)|undefined;
@@ -217,7 +230,7 @@ export function instrumentReadPreparations(compiler:typeof ts,source:string,file
   if(edit.origin){
    const origin=edit.origin,expression=edit.node.expression,method=compiler.isPropertyAccessExpression(expression)?expression.name.text:'';
    const physical=origin.kind==='exception'&&(method==='query'||method==='exec'||compiler.isPropertyAccessExpression(expression)&&nativeDatabase(expression.expression,edit.node));
-   body=physical?'__viewPhysicalPreparation('+JSON.stringify(origin)+',__args[0],'+JSON.stringify(method)+',()=>'+body+')':'__viewPreparedRead('+JSON.stringify(origin)+',__args[0],()=>'+body+')';
+   body=physical?'__viewPhysicalPreparation('+JSON.stringify(origin)+',__args[0],'+JSON.stringify(method)+',()=>'+body+')':'__viewPreparedRead('+(origin.kind==='module'&&file==='packages/myco-server/src/read/view-store.ts'&&source.includes('capture?: SourcePreparation')?'{...'+JSON.stringify(origin)+',capture}':JSON.stringify(origin))+',__args[0],()=>'+body+')';
   }
   if(edit.keys.length)body='__viewReadCaller('+JSON.stringify(edit.keys)+',()=>'+body+')';
   return body;
@@ -302,6 +315,31 @@ function accounting(result: unknown, entry: RecordedStatement,captureRows=false)
   if ('changes' in meta && typeof meta.changes === 'number') entry.changes = meta.changes;
 }
 
+function captureObserved (sql: string, origin: PreparationOrigin | undefined): boolean {
+    if (origin?.kind !== 'module' || typeof origin.capture !== 'object' || origin.capture === null) return false;
+    sql=origin.replay??sql;
+    const evidence = origin.capture;
+    if ('mode' in evidence && evidence.mode === 'pinned-set') return 'sources' in evidence && Array.isArray(evidence.sources)
+      && evidence.sources.every(source => typeof source === 'object' && source !== null && typeof source.projectId === 'string' && typeof source.sessionId === 'string' && (source.mode === 'legacy' || source.mode === 'published'));
+    if ('mode' in evidence && evidence.mode === 'batch-candidate') return 'batch' in evidence && typeof evidence.batch === 'object' && evidence.batch !== null
+      && 'carrierSql' in evidence.batch && typeof evidence.batch.carrierSql === 'string'
+      && evidence.batch.carrierSql.includes('FROM session_views sv') && evidence.batch.carrierSql.includes('__myco_capture')
+      && /^\/\*vs:M(?:15:sessions_countStatements|16:sessions_instantStatements):0\*\//.test(sql);
+    if ('mode' in evidence && evidence.mode === 'fact-write') return 'projectId' in evidence && typeof evidence.projectId === 'string'
+      && 'recordId' in evidence && typeof evidence.recordId === 'string'
+      && /^\/\*vs:M10:plans_planInSession:0\*\/UPDATE plans\b/.test(sql) && sql.includes('FROM session_views sv') && sql.includes('FROM fact_classes fc');
+    if ('mode' in evidence && evidence.mode === 'fact') return 'table' in evidence && evidence.table === 'attachments'
+      && 'projectId' in evidence && typeof evidence.projectId === 'string' && 'recordId' in evidence && typeof evidence.recordId === 'string'
+      && /\bFROM attachments d\b/.test(sql) && protectedRelations(sql).every(name => name === 'processed_resources');
+    if ('mode' in evidence && evidence.mode === 'capture') return 'projectId' in evidence && typeof evidence.projectId === 'string'
+      && (!protectedSql(sql) || /\b(?:FROM|JOIN) session_views sv\b/.test(sql) && sql.includes('__myco_capture'));
+    if (!('mode' in evidence) || evidence.mode !== 'pinned' || !('sources' in evidence)
+      || typeof evidence.sources !== 'object' || evidence.sources === null) return false;
+    const sources = evidence.sources;
+    return 'mode' in sources && (sources.mode === 'legacy' || sources.mode === 'published')
+      && 'projectId' in sources && typeof sources.projectId === 'string' && 'sessionId' in sources && typeof sources.sessionId === 'string';
+}
+
 /** Records adapter calls, their originating spans and deferred completion. */
 export function statementRecorder(db: RelationalStore, options: {
   accounting: 'native' | 'd1';
@@ -331,10 +369,10 @@ export function statementRecorder(db: RelationalStore, options: {
   const isMarked = (statement: PreparedStatement): statement is PreparedStatement & {[originalKey]: Held} => originalKey in statement;
   const frame = (sql: string): StatementFrame => {
     const supplied = options.context?.()??nativeSpans.getStore();
-    const origin=executions.getStore()===undefined?preparations.getStore():executionOrigin(sql);
-    if (supplied) return {...supplied,...(origin?.kind==='exception'?{phase:origin.phase,exceptionId:origin.id}:{}),...(origin?{origin}:{})};
+    const origin=executionOrigin(sql)??(executions.getStore()===undefined?preparations.getStore():undefined);
+    if (supplied) return {...supplied,...(origin?.kind==='exception'?{phase:origin.phase,exceptionId:origin.id}:{}),...(origin?{origin}:{}),captured:captureObserved(sql,origin)};
     const tag = /^\/\*vs:([A-Za-z0-9_:]+)\*\//.exec(sql);
-    return {operation:tag?.[1] ?? (origin?.kind==='exception'?origin.file+'#'+origin.owner:'unclassified'),phase:tag?'logical':origin?.kind==='exception'?origin.phase:'unclassified',...(origin?.kind==='exception'?{exceptionId:origin.id}:{}),...(origin?{origin}:{})};
+    return {operation:tag?.[1] ?? (origin?.kind==='exception'?origin.file+'#'+origin.owner:'unclassified'),phase:tag?'logical':origin?.kind==='exception'?origin.phase:'unclassified',...(origin?.kind==='exception'?{exceptionId:origin.id}:{}),...(origin?{origin}:{}),captured:captureObserved(sql,origin)};
   };
   const begin = (held: Omit<Held,'statement'>, method: RecordedStatement['method']): RecordedStatement => {
     const entry: RecordedStatement = {...held.frame,statementId:held.statementId,sql:held.sql,binds:held.binds,method};
@@ -415,7 +453,7 @@ export function statementRecorder(db: RelationalStore, options: {
     },
   };
   return {
-    db: recorded, statements, events,
+    db: inheritStoreContext(db, recorded), statements, events,
     drain: async () => {
       const failures:unknown[]=[];
       while(pending.size)for(const result of await Promise.allSettled([...pending]))if(result.status==='rejected')failures.push(result.reason);
@@ -573,11 +611,12 @@ export function readPreparationViolations(statements:readonly BoundaryStatement[
   indexed=rows;originIndexes.set(options.origins,indexed);
  }
  for(const statement of statements){
-  const match=/^\/\*vs:([A-Za-z0-9_:]+)\*\//.exec(statement.sql),tag=match?.[1];
+  const sql=statement.origin?.kind==='module'&&statement.origin.replay!==undefined&&statement.sql===EXPLAIN_REPLAY_PREFIX+statement.origin.replay?statement.origin.replay:statement.sql;
+  const match=/^\/\*vs:([A-Za-z0-9_:]+)\*\//.exec(sql),tag=match?.[1];
   if(tag!==undefined){
    if(!options.known.has(tag)){errors.push('unknown operation '+tag);continue;}
    if(statement.origin?.kind!=='module'){errors.push('forged module operation '+tag);continue;}
-   const text=statement.sql.slice(match![0].length);
+   const text=sql.slice(match![0].length);
    if(text.includes('/*vs:'))errors.push('multiple operation tags');
    if(tag.startsWith('N:'))continue;
    if(options.legacy.has(tag)){
@@ -678,7 +717,7 @@ export function observePhysicalStatements(observe:(record:{kind:'event';value:St
 export function withPhysicalPreparation<T>(origin:PreparationOrigin,sql:string,method:string,make:()=>T):T{
  origin=executionOrigin(sql)??origin;
  if(origin.kind==='exception')origin={...origin,callers:origin.callers??callers.getStore()??[]};
- const supplied=nativeSpans.getStore(),frame:StatementFrame={operation:supplied?.operation??(origin.kind==='exception'?origin.file+'#'+origin.owner:'physical'),phase:origin.kind==='exception'?origin.phase:supplied?.phase??'physical',...(supplied?.spanId?{spanId:supplied.spanId}:{}),...(supplied?.parentSpanId?{parentSpanId:supplied.parentSpanId}:{}),origin,...(origin.kind==='exception'?{exceptionId:origin.id}:{})};
+ const supplied=nativeSpans.getStore(),frame:StatementFrame={operation:supplied?.operation??(origin.kind==='exception'?origin.file+'#'+origin.owner:'physical'),phase:origin.kind==='exception'?origin.phase:supplied?.phase??'physical',...(supplied?.spanId?{spanId:supplied.spanId}:{}),...(supplied?.parentSpanId?{parentSpanId:supplied.parentSpanId}:{}),origin,captured:captureObserved(sql,origin),...(origin.kind==='exception'?{exceptionId:origin.id}:{})};
  const statementId='physical-'+String(++physicalSequence);
  const emit=(event:StatementEvent)=>{for(const observe of physicalObservers)observe({kind:'event',value:event});};
  const prepared:StatementEvent={...frame,kind:'prepare',statementId,sql,binds:[]};

@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
 const READ_DIR = join(SRC, 'read');
+const namesRunColumn=(source:string,column:string)=>new RegExp('\\b'+column+'\\b').test(source);
 
 const allFiles = (dir: string): string[] =>
   readdirSync(dir).flatMap((e) => {
@@ -123,12 +124,19 @@ describe('read layer', () => {
       const source = readFileSync(file, 'utf8');
       const rel = file.slice(READ_DIR.length + 1);
       for (const column of ['execution_overrides', 'run_context', 'cost_data', 'checkpoints']) {
-        if (!source.includes(column)) continue;
+        if (!namesRunColumn(source,column)) continue;
         if (rel === 'runs.ts' && (column === 'checkpoints' || column === 'run_context')) continue;
         offenders.push(`${rel}: ${column}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('run configuration columns remain distinct from instance checkpoint tables',()=>{
+    expect(namesRunColumn('SELECT ready FROM view_checkpoints','checkpoints')).toBe(false);
+    for(const source of ['SELECT checkpoints FROM runs','SELECT r.checkpoints AS phases FROM runs r','SELECT "checkpoints" AS phases FROM runs'])
+      expect(namesRunColumn(source,'checkpoints')).toBe(true);
+    for(const column of ['execution_overrides','run_context','cost_data'])expect(namesRunColumn('SELECT r.'+column+' AS value FROM runs r',column)).toBe(true);
   });
 
   it('publishes exactly the named context keys, each one read out of the column rather than with it', () => {
@@ -255,7 +263,7 @@ describe('read layer', () => {
     // core/legacy-workers.ts owns offline contact removal and its immutable receipts.
     // core/embedding/work-state.ts owns atomic wake-marker acknowledgment; selection, work and work-sweep read its source journals.
     // core/session-artifacts.ts owns session_artifacts: the guarded insert of a reported artifact, its read-back and its restore.
-    const ALLOWED = [/^core\/(attempt-accounting|worker-claim|run-budget|queue-heads|budget-estimates)\.ts$/,/^core\/learning-(hold|pause)\.ts$/, /^core\/(served-material|extraction-acks|session-artifacts)\.ts$/, /^core\/legacy-workers\.ts$/, /^core\/(archive-bundle|content-registration|event-content|registered-content|storage-cleanup|event-content-restore|content-budget|tool-input-restore|raw-archive)\.ts$/, /^auth\/(authorization|http-authorization|mcp-authorization)\.ts$/, /^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/device\.ts$/, /^auth\/runners\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/run-write-store\.ts$/, /^core\/write-guard-store\.ts$/, /^auth\/member-write-store\.ts$/, /^core\/recovery-forget\.ts$/, /^core\/raw-resources\.ts$/, /^core\/raw-claims\.ts$/, /^core\/ownership\.ts$/, /^core\/raw-backfill\.ts$/, /^core\/raw-provenance\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/restore-authorization\.ts$/, /^core\/recovered-tenant\.ts$/, /^core\/relational-snapshot\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs|switch-store|selection|work|work-state|work-sweep)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/runner-updates\.ts$/, /^core\/run-steps\.ts$/, /^core\/model-catalogs\.ts$/, /^core\/harness-health\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^core\/first-owner\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^core\/attention-state\.ts$/, /^core\/(attempt-accounting|worker-claim|run-budget|queue-heads|budget-estimates)\.ts$/,/^core\/learning-(hold|pause)\.ts$/, /^core\/(served-material|extraction-acks|session-artifacts)\.ts$/, /^core\/legacy-workers\.ts$/, /^core\/(archive-bundle|content-registration|event-content|registered-content|storage-cleanup|event-content-restore|content-budget|tool-input-restore|raw-archive)\.ts$/, /^auth\/(authorization|http-authorization|mcp-authorization)\.ts$/, /^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/device\.ts$/, /^auth\/runners\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/run-write-store\.ts$/, /^core\/write-guard-store\.ts$/, /^auth\/member-write-store\.ts$/, /^core\/recovery-forget\.ts$/, /^core\/raw-resources\.ts$/, /^core\/raw-claims\.ts$/, /^core\/ownership\.ts$/, /^core\/raw-backfill\.ts$/, /^core\/raw-provenance\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/restore-authorization\.ts$/, /^core\/recovered-tenant\.ts$/, /^core\/relational-snapshot\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs|switch-store|selection|work|work-state|work-sweep)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/runner-updates\.ts$/, /^core\/run-steps\.ts$/, /^core\/model-catalogs\.ts$/, /^core\/harness-health\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^core\/first-owner\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

@@ -14,6 +14,7 @@ import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent } from '../ingest/events.js';
 import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
+import { editablePlan, withViewReadResponse } from '../read/view-store.js';
 import type { ReadScope } from '../read/scope.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 
@@ -61,7 +62,7 @@ export async function savePlan(env: ServerEnv, member: SavingMember, scope: Read
 
   const planKey = await planKeyFor(scope.projectId, input);
   if (planKey === null) return { ok: false, error: 'source_path or plan_key is required when creating a new plan' };
-  const existing = await getPlan(env.db, scope, planKey);
+  const existing = await editablePlan(env.db, scope, planKey);
   if (input.id !== undefined && existing === null) return { ok: false, error: 'Plan not found' };
 
   const text = input.content ?? existing?.content ?? null;
@@ -96,6 +97,8 @@ export async function savePlan(env: ServerEnv, member: SavingMember, scope: Read
 
 /** Sets a plan's status as an administrative edit by a member and answers the row as it stands; null when no such plan sits in the scope. */
 export async function changePlanStatus(db: RelationalStore, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {
-  await setPlanStatus(db, scope, planKey, status, by, nowMs);
-  return getPlan(db, scope, planKey);
+  return withViewReadResponse(db, () => nowMs, async bound => {
+    await setPlanStatus(bound, scope, planKey, status, by, nowMs);
+    return editablePlan(bound, scope, planKey);
+  });
 }

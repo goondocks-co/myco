@@ -1,5 +1,14 @@
 const MAX_SHARDS = 256;
 export const PARITY_PLAN_PREFIX = '[myco-parity-plan] ';
+export const VIEW_PROOF_FILES = Object.freeze([
+  'tests/myco-server/view-read-costs.test.ts',
+  'tests/myco-server/view-read-oracle.test.ts',
+  'tests/myco-server/view-read-intrinsic-costs.test.ts',
+  'tests/myco-server/view-records.test.ts',
+  'tests/myco-server/view-sessions.test.ts',
+  'tests/myco-server/view-source-closure.test.ts',
+  'tests/myco-server/view-read-legacy.test.ts',
+]);
 
 /** Fill execution groups in input order within duration and worker limits. */
 export function groupByDuration(items, budgetMs, weight, maxItems = Infinity) {

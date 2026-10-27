@@ -29,7 +29,7 @@ export function significantStatement(statement: string): string {
 }
 
 /** The identifier at `at`, unquoted, and whether a schema qualifier follows it. */
-export function identifierAt(sql: string, at: number): { name: string; qualified: boolean } | null {
+function readIdentifier(sql: string, at: number): { name: string; qualified: boolean; after: number } | null {
   let index = at;
   while (index < sql.length && /\s/.test(sql[index]!)) index += 1;
   const opening = sql[index];
@@ -52,7 +52,41 @@ export function identifierAt(sql: string, at: number): { name: string; qualified
     if (name === '') return null;
   }
   while (index < sql.length && /\s/.test(sql[index]!)) index += 1;
-  return { name, qualified: sql[index] === '.' };
+  return { name, qualified: sql[index] === '.', after: index };
+}
+
+export function identifierAt(sql: string, at: number): { name: string; qualified: boolean } | null {
+ const value=readIdentifier(sql,at);return value===null?null:{name:value.name,qualified:value.qualified};
+}
+
+/** SELECT reads retain that classification through common table expressions. */
+export function isSelectStatement(statement: string): boolean {
+  const significant = significantStatement(statement);
+  if (/^SELECT\b/i.test(significant)) return true;
+  if (!/^WITH\b/i.test(significant)) return false;
+  const sql = normalizeDefinition(significant);
+  const head = /^WITH\s+(?:RECURSIVE\s+)?/i.exec(sql);
+  if (head === null) return false;
+  let at = head[0].length;
+  for (;;) {
+    const identifier = readIdentifier(sql, at);
+    if (identifier === null || identifier.qualified) return false;
+    at = identifier.after;
+    if (sql[at] === '(') {
+      const columns = bracketed(sql, at);
+      if (columns === null) return false;
+      at = columns.after;
+    }
+    const definition = /^\s*AS\b\s*(?:(?:NOT\s+)?MATERIALIZED\b\s*)?/i.exec(sql.slice(at));
+    if (definition === null) return false;
+    at += definition[0].length;
+    const body = bracketed(sql, at);
+    if (body === null) return false;
+    at = body.after;
+    while (/\s/.test(sql[at] ?? '')) at++;
+    if (sql[at] !== ',') return /^SELECT\b/i.test(sql.slice(at));
+    at++;
+  }
 }
 
 /**

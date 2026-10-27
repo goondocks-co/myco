@@ -7,7 +7,8 @@ import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
 import { storedBytes } from '../ingest/live-credential.js';
 import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
-import { schemaVersion } from '../read/meta.js';
+import { schemaVersion, statusMetadata } from '../read/meta.js';
+import { viewReadRefusalFinding } from '../core/attention-state.js';
 import { listVisibleProjects } from './scope.js';
 import { readFleetProjection } from '../read/fleet.js';
 import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
@@ -64,8 +65,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     if (own === undefined) throw new Error('Machine ownership is unavailable');
     return own === null ? rows : rows.filter((row) => row.machineId !== null && own.has(row.machineId));
   };
-  const [found, transcriptBacklog, projects, workerFacts, capture, harnesses] = await Promise.all([
-    readFact('schema', () => schemaVersion(env.db)),
+  const [metadata, transcriptBacklog, projects, workerFacts, capture, harnesses] = await Promise.all([
+    readFact('schema', () => statusMetadata(env.db)),
     readFact('transcriptBacklog', () => pendingTranscripts(env.db)),
     readFact('projects', () => listVisibleProjects(env.db, ctx.member, { includeArchived: true })),
     readFact('workers', async () => {
@@ -78,14 +79,16 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
       return toolsDeployment !== undefined && ownedMachines?.has(fact.machineId) ? fact : rest;
     })),
   ]);
+  const finding = metadata === undefined ? undefined : await readFact('view_state_inconsistent', async () => viewReadRefusalFinding(metadata.viewReadRefusal, ctx.now));
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
   return ok({
     budget,
-    schema: schemaCheck(found ?? null), target, capabilities,
+    schema: schemaCheck(metadata?.version ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,
     projects: (projects ?? []).map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
     capture: capture ?? [], harnesses: harnesses ?? [], unavailable,
+    ...(finding == null ? {} : { findings: [finding] }),
   });
 }
 

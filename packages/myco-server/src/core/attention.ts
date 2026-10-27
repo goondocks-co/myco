@@ -1,9 +1,8 @@
 /**
  * Needs you: what on this Deployment an administrator should act on, now.
  *
- * Each item is a kind, a tone and the numbers its words need, never prose: the dashboard words it. Every rule reads
- * the state the problem is in rather than the events that passed through it, so a failure something later recovered
- * from is never an item:
+ * Each item is a kind, a tone and the numbers its words need, never prose: the dashboard words it. Rules read current
+ * state or a bounded record of observed refusals:
  *
  * - the last backup is older than twice its interval, or there is none while automatic backups are configured;
  * - a learning or map outcome failed, and no later run of that task completed in that Project;
@@ -16,6 +15,7 @@
  * - runs are queued for a worker and no worker has been heard from lately;
  * - an access key expires within `ACCESS_KEY_NOTICE_MS`;
  * - the schema the store holds is not the one this server expects.
+ * - session reads were refused for inconsistent saved sources within the outcome window.
  *
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
@@ -25,7 +25,9 @@ import type { ServerEnv } from './adapters.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
-import { schemaVersion } from '../read/meta.js';
+import { statusMetadata, type StatusMetadata } from '../read/meta.js';
+import { OUTCOME_LOOKBACK_MS, viewReadRefusalFinding, type ViewReadRefusalFinding } from './attention-state.js';
+export { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
 import { RUN_CLOSE_RULES } from './run-postconditions.js';
 import { stoppedTranscripts } from '../ingest/parse.js';
@@ -49,8 +51,6 @@ export const SEARCH_BEHIND_MS = 30 * MINUTE_MS;
 export const CAPABILITY_HOLD_MS = 30 * MINUTE_MS;
 /** How far ahead an access key's expiry is announced. */
 export const ACCESS_KEY_NOTICE_MS = 7 * DAY_MS;
-/** How far back a failed outcome is looked for; an older failure nothing retried has stopped being news. */
-export const OUTCOME_LOOKBACK_MS = 7 * DAY_MS;
 /** How long the recovery producer is given to say what its last attempt did. */
 const PRODUCER_STATUS_MS = 5_000;
 
@@ -61,6 +61,7 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
+  | ViewReadRefusalFinding
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
@@ -82,7 +83,7 @@ export interface AttentionAnswer {
   unavailable: AttentionKind[];
 }
 
-type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>) => Promise<AttentionItem[]> };
+type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>, metadata: () => Promise<StatusMetadata>) => Promise<AttentionItem[]> };
 
 /** The instant of the last backup, from the backup index and from the recovery producer's last complete attempt. */
 async function lastBackup(env: ServerEnv): Promise<number | null> {
@@ -105,9 +106,16 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'schema_mismatch',
-    read: async (env) => {
-      const found = await schemaVersion(env.db);
+    read: async (_env, _now, _harnessFacts, metadata) => {
+      const found = (await metadata()).version;
       return found === SERVER_SCHEMA_VERSION ? [] : [{ kind: 'schema_mismatch', tone: 'bad', expected: SERVER_SCHEMA_VERSION, found }];
+    },
+  },
+  {
+    kind: 'view_state_inconsistent',
+    read: async (_env, now, _harnessFacts, metadata) => {
+      const finding = viewReadRefusalFinding((await metadata()).viewReadRefusal, now);
+      return finding === null ? [] : [finding];
     },
   },
   {
@@ -195,7 +203,9 @@ const RULES: readonly Rule[] = [
 export async function readAttention(env: ServerEnv, now: number): Promise<AttentionAnswer> {
   let pendingHarnessFacts: Promise<HarnessAttentionFact[]> | undefined;
   const harnessFacts = () => pendingHarnessFacts ??= provisionedHarnessAttention(env.db, now);
-  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts)));
+  let pendingMetadata: Promise<StatusMetadata> | undefined;
+  const metadata = () => pendingMetadata ??= statusMetadata(env.db);
+  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts, metadata)));
   const items: AttentionItem[] = [];
   const unavailable: AttentionKind[] = [];
   settled.forEach((outcome, i) => {

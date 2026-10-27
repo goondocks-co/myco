@@ -1,5 +1,6 @@
+import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
-import { significantStatement } from './sql-statements.js';
+import { isSelectStatement } from './sql-statements.js';
 
 /** Mutations and their authority assertion execute in one atomic store batch. */
 export function writeGuardStore(
@@ -20,8 +21,8 @@ export function writeGuardStore(
     underlying.set(wrapped, { statement, writes });
     return wrapped;
   };
-  return {
-    prepare: sql => wrap(db.prepare(sql), !/^SELECT\b/i.test(significantStatement(sql))),
+  const guarded:RelationalStore = {
+    prepare: sql => wrap(db.prepare(sql), !isSelectStatement(sql)),
     batch: async statements => {
       const captured = statements.map(statement => {
         const held = underlying.get(statement);
@@ -32,6 +33,8 @@ export function writeGuardStore(
       return captured.some(held => held.writes) ? execute(statementsToRun) : db.batch(statementsToRun);
     },
   };
+  inheritStoreContext(db,guarded);
+  return guarded;
 }
 
 /** The assertion and every supplied mutation commit together or leave no rows. */

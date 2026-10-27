@@ -182,6 +182,654 @@ import type { EmbeddingSwitch } from '../core/embedding/switch-store.js';
 import { EMBEDDING_SELECTION_LEAVES as switchSettingLeaves, type StoredEmbedding as SwitchSettings } from '../core/embedding/policy.js';
 import { CLEANLINESS_SQL as releaseCleanliness } from '../core/provenance.js';
 
+import { ViewReadRefusal, observedViewRead } from '../core/read-refusals.js';
+import { SessionMaterialPendingError } from './material-readiness.js';
+import { transcriptPendingSql } from '../db/session-read-model.js';
+import { RELATIONAL_CONTEXT } from '../core/adapters.js';
+
+
+
+type VisibleInstance = Readonly<{ instanceId: string; role: 'live' | 'parent'; precedence: number }>;
+type SessionSources =
+  | Readonly<{ projectId: string; sessionId: string; mode: 'legacy'; fence: number | null; instances: readonly [] }>
+  | Readonly<{ projectId: string; sessionId: string; mode: 'published'; fence: number; ready: boolean; instances: readonly VisibleInstance[] }>;
+type ResponseReadContext = ReadonlyMap<string, SessionSources>;
+type SelectedSource = Readonly<{
+  projectId: string; sessionId: string; table: MaterialTable; recordId: string;
+  instanceId: string | null; sources: SessionSources;
+  source: null | Readonly<{ transcriptId: string; offset: number; end: number }>;
+}>;
+class ResponseRead {
+  context: ResponseReadContext = new Map();
+  readonly selected = new Map<string, SelectedSource>();
+  readonly captures = new Map<string, string | null>();
+  private admission:Promise<void>|undefined;
+  capture<T>(operation:()=>Promise<T>):Promise<T>{
+    const previous=this.admission;
+    let release!:()=>void;
+    const current=new Promise<void>(resolve=>{release=resolve});
+    this.admission=current;
+    const run=async()=>{
+      try{return await observedViewRead(this.db,this.clock,operation);}
+      finally{if(this.admission===current)this.admission=undefined;release();}
+    };
+    return previous===undefined?run():previous.then(run);
+  }
+  constructor(private readonly db:sessions_import_RelationalStore,readonly clock: () => number = Date.now) {}
+}
+
+const sourceKey = (projectId: string, sessionId: string): string => JSON.stringify([projectId, sessionId]);
+function responseRead(db: sessions_import_RelationalStore): ResponseRead {
+  const context = RELATIONAL_CONTEXT in db ? db[RELATIONAL_CONTEXT] : undefined;
+  if (context instanceof ResponseRead) return context;
+  return new ResponseRead(db);
+}
+
+/** One request owns its captured closures; the bound store is never retained on the environment. */
+export function withViewReadResponse<T>(db: sessions_import_RelationalStore, clock: () => number, read: (db: sessions_import_RelationalStore) => Promise<T>): Promise<T> {
+  const held = RELATIONAL_CONTEXT in db ? db[RELATIONAL_CONTEXT] : undefined;
+  return read(bindResponseRead(db, held instanceof ResponseRead ? held : new ResponseRead(db,clock)));
+}
+function bindResponseRead(db: sessions_import_RelationalStore, read: ResponseRead): sessions_import_RelationalStore {
+  const bound: sessions_import_RelationalStore = { prepare: sql => db.prepare(sql), batch: statements => db.batch(statements) };
+  return Object.assign(bound, { [RELATIONAL_CONTEXT]: read });
+}
+/** Direct compositions retain one closure across all their nested operations. */
+function sourceOperation<A extends unknown[], T>(operation: (db: sessions_import_RelationalStore, ...args: A) => Promise<T>): (db: sessions_import_RelationalStore, ...args: A) => Promise<T> {
+  return (db, ...args) => withViewReadResponse(db, Date.now, bound => operation(bound, ...args));
+}
+const sqlText = (value: string): string => "'" + value.replaceAll("'", "''").replaceAll('\0', "' || char(0) || '") + "'";
+const objectValue = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Captures visibility and immutable instance headers in one statement snapshot. */
+function sourceCaptureColumns(): string {
+  return `json_object('projectId', sv.project_id, 'sessionId', sv.session_id, 'legacy', sv.legacy,
+    'fence', sv.fence, 'live', sv.live_instance,
+    'instances', json((SELECT json_group_array(json_object('instanceId', vv.instance_id,
+      'role', vv.role, 'precedence', vv.precedence, 'sessionId', vi.session_id,
+      'state', vi.state, 'base', vi.base, 'parent', vi.parent_instance,
+      'ready', NOT EXISTS (SELECT 1 FROM view_checkpoints cp LEFT JOIN transcripts t ON t.project_id=cp.project_id AND t.transcript_id=cp.transcript_id
+        WHERE cp.project_id=vi.project_id AND cp.instance_id=vi.instance_id AND cp.session_id=vi.session_id
+          AND (cp.parse_error IS NOT NULL OR cp.parsed_offset<COALESCE(t.size,cp.parsed_offset)))))
+      FROM view_visible vv LEFT JOIN view_instances vi ON vi.project_id = vv.project_id AND vi.instance_id = vv.instance_id
+      WHERE vv.project_id = sv.project_id AND vv.session_id = sv.session_id)))`;
+}
+
+function capturedSources(raw: unknown, projectId: string, sessionId: string): SessionSources {
+  const absent: SessionSources = Object.freeze({ projectId, sessionId, mode: 'legacy', fence: null, instances: [] as const });
+  if (raw === null) return absent;
+  let value: unknown;
+  try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; }
+  catch { throw new ViewReadRefusal('view_state_inconsistent', {projectId,sessionId,fence:null}); }
+  const fence = objectValue(value) && typeof value.fence === 'number' && Number.isSafeInteger(value.fence) ? value.fence : null;
+  const refuse = (): never => { throw new ViewReadRefusal('view_state_inconsistent', { projectId, sessionId, fence }); };
+  if (!objectValue(value) || value.projectId !== projectId || value.sessionId !== sessionId || fence === null || fence < 0) return refuse();
+  if (value.legacy === 'live' || value.legacy === 'converting') return Object.freeze({ ...absent, fence });
+  if (!['published', 'cleaning', 'gone'].includes(String(value.legacy)) || typeof value.live !== 'string' || !Array.isArray(value.instances)) return refuse();
+  const instances = value.instances;
+  if (instances.length < 1 || instances.length > 2 || !instances.every(objectValue)) return refuse();
+  const live = instances.find(i => i.role === 'live');
+  const parent = instances.find(i => i.role === 'parent');
+  if (!live || live.instanceId !== value.live || live.sessionId !== sessionId || live.state !== 'live' || live.precedence !== 0) return refuse();
+  if (live.base === 'tail') {
+    if (!parent || parent.instanceId !== live.parent || parent.sessionId !== sessionId || parent.state !== 'frozen' ||
+      parent.base !== 'frozen' || parent.parent !== null || parent.precedence !== 1 || parent.instanceId === live.instanceId) return refuse();
+  } else if (live.base !== 'full' || live.parent !== null || parent !== undefined || instances.length !== 1) return refuse();
+  const visible: VisibleInstance[] = instances.map(i => {
+    if (typeof i.instanceId !== 'string' || (i.role !== 'live' && i.role !== 'parent') || typeof i.precedence !== 'number') return refuse();
+    return Object.freeze({ instanceId: i.instanceId, role: i.role, precedence: i.precedence });
+  });
+  return Object.freeze({ projectId, sessionId, mode: 'published', fence, ready: live.ready===1, instances: Object.freeze(visible) });
+}
+
+/** Titling reads a captured live checkpoint before admitting material or a claim. */
+export async function assertSessionSourceReady(db:sessions_import_RelationalStore,projectId:string,sessionId:string):Promise<void>{
+  const read=responseRead(db);
+  const rows=await sessionRows<Record<string,unknown>>(db,'M23:children_materialRows:0',read,projectId,sessionId,
+    `SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ?
+    AND (${transcriptPendingSql('t')}) LIMIT 1`,[projectId,sessionId],1,null,undefined,'first');
+  const source=read.context.get(sourceKey(projectId,sessionId));
+  if(source?.mode==='published'?!source.ready:rows.length!==0)throw new SessionMaterialPendingError();
+}
+
+const MATERIAL_READS = {
+  prompt_batches: { view: 'view_prompts', id: 'prompt_id', sessionIndex:'idx_prompt_batches_session', viewColumn:(column:string,alias:string):string=>column==='processed'?'0 AS processed':alias+'.'+column,
+    columns: 'project_id,prompt_id,session_id,event_id,parent_prompt_id,thread_id,thread_label,origin,prompt_kind,text,blob_key,content_hash,created_at,updated_at,ended_at,token_id,received_at,processed,prompt_key_hash,claim,source_key,source_thread,source_record' },
+  responses: { view: 'view_responses', id: 'response_id', sessionIndex:'idx_responses_session',
+    columns: 'project_id,response_id,session_id,prompt_id,event_id,text,blob_key,content_hash,created_at,token_id,received_at' },
+  tool_calls: { view: 'view_tool_calls', id: 'tool_call_id', sessionIndex:'idx_tool_calls_session',
+    columns: 'project_id,tool_call_id,session_id,prompt_id,event_id,tool_name,myco_tool,myco_op,input,input_blob_key,output_preview,output_blob_key,success,error_message,duration_ms,files_affected,canopy_injection_tokens,created_at,token_id,received_at,input_bytes,content_revision,input_bundle_id,input_bundle_entry,result_reason' },
+  plans: { view: 'view_plans', id: 'plan_key', sessionIndex:'idx_plans_session',
+    columns: 'project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,created_at,updated_at,token_id,received_at,prompt_id,updated_by,source' },
+} as const;
+type MaterialTable = keyof typeof MATERIAL_READS;
+
+/** Session ranges retain their owner index through window and ordering pushdown. */
+function factSource(table:MaterialTable,point=false):string{
+  return `main.${table} f${point?'':` INDEXED BY ${MATERIAL_READS[table].sessionIndex}`}`;
+}
+
+function viewColumns(table:MaterialTable,alias:string):string{
+ const material=MATERIAL_READS[table];
+ return material.columns.split(',').map(column=>'viewColumn'in material?material.viewColumn(column,alias):alias+'.'+column).join(',');
+}
+
+function survivingFact(table: MaterialTable, alias: string): string {
+  const material = MATERIAL_READS[table];
+  return `NOT EXISTS (SELECT 1 FROM fact_classes fc WHERE fc.project_id = ${alias}.project_id
+    AND fc.table_name = '${table}' AND fc.record_id = ${alias}.${material.id} AND fc.class = 'legacy')`;
+}
+
+/** Status edits affect surviving facts; classified parser rows remain immutable. */
+export function planStatusStatement(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string,
+  status: string, by: string, nowMs: number): sessions_import_PreparedStatement {
+  return prepareViewRead(db, 'M10:plans_planInSession:0', `UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ? AND (NOT EXISTS (SELECT 1 FROM session_views sv WHERE sv.project_id = plans.project_id AND sv.session_id = plans.session_id AND sv.legacy IN ('published', 'cleaning', 'gone')) OR ${survivingFact('plans', 'plans')}) RETURNING plan_key`,
+    { mode: 'fact-write', projectId: scope.projectId, recordId: planKey }).bind(status, by, nowMs, scope.projectId, planKey, status);
+}
+
+/** Editorial reads refuse a view-only plan through the same source selection as ordinary reads. */
+export async function editablePlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string): Promise<plans_ProjectPlanRow | null> {
+  const read = responseRead(db);
+  const row = await plans_getPlan(bindResponseRead(db, read), scope, planKey);
+  const selected = read.selected.get(JSON.stringify([scope.projectId, 'plans', planKey]));
+  if (selected !== undefined && selected.instanceId !== null) throw new ViewReadRefusal('view_plan_requires_promotion', selected.sources);
+  return row;
+}
+
+/** Three precedence terms: surviving facts, live instance, frozen parent. */
+function effectiveMaterial(table: MaterialTable, sources: Extract<SessionSources, { mode: 'published' }>, binds: unknown[], recordId?:string): string {
+  const material = MATERIAL_READS[table];
+  const project = sqlText(sources.projectId), session = sqlText(sources.sessionId);
+  const columns = material.columns.split(',');
+  const identity = (alias: string, view: boolean): string => `json_object('table', '${table}', 'recordId', ${alias}.${material.id},
+    'instanceId', ${view ? alias + '.instance_id' : 'NULL'}, 'transcriptId', ${view ? alias + '.source_transcript_id' : 'NULL'},
+    'offset', ${view ? alias + '.source_offset' : 'NULL'}, 'end', ${view ? alias + '.source_end' : 'NULL'}) AS __myco_source`;
+  const pin = (alias: string): string => `SELECT pin.instance_id FROM __myco_pins pin
+    WHERE pin.table_name = '${table}' AND pin.record_id = ${alias}.${material.id}`;
+  const unpinned = (alias: string): string => `NOT EXISTS (${pin(alias)})`;
+  const point = (alias:string):string => recordId===undefined?'':` AND ${alias}.${material.id} = ${sqlText(recordId)}`;
+  const factColumns = columns.map(column => 'f.' + column).join(', ');
+  const fact = `SELECT ${factColumns}, ${identity('f', false)} FROM ${factSource(table,recordId!==undefined)}
+    WHERE f.project_id = ${project} AND f.session_id = ${session}${point('f')}
+      AND ((${unpinned('f')} AND ${survivingFact(table, 'f')}) OR EXISTS (${pin('f')} AND pin.instance_id IS NULL))`;
+  const instanceTerm = (role: 'live' | 'parent'): string => {
+    const ids = sources.instances.filter(i => i.role === role).map(i => i.instanceId);
+    binds.push(JSON.stringify(ids));
+    const selected = viewColumns(table,'v');
+    const live = sources.instances.find(i => i.role === 'live')!;
+    return `SELECT ${selected}, ${identity('v', true)} FROM json_each(?) j CROSS JOIN ${material.view} v
+      WHERE v.project_id = ${project} AND v.instance_id = j.value AND v.session_id = ${session}${point('v')}
+      AND (EXISTS (${pin('v')} AND pin.instance_id = v.instance_id) OR (${unpinned('v')}
+      AND NOT EXISTS (SELECT 1 FROM main.${table} winner WHERE winner.project_id = v.project_id
+        AND winner.${material.id} = v.${material.id} AND ${survivingFact(table, 'winner')})
+      ${role === 'parent' ? `AND NOT EXISTS (SELECT 1 FROM ${material.view} winner WHERE winner.project_id = v.project_id
+        AND winner.instance_id = ${sqlText(live.instanceId)} AND winner.${material.id} = v.${material.id})` : ''}))`;
+  };
+  return [fact, instanceTerm('live'), ...(sources.instances.some(i => i.role === 'parent') ? [instanceTerm('parent')] : [])].join(' UNION ALL ');
+}
+
+/** Proofs are point reads of the selected canonical record, blob and source instance. */
+function effectiveStatement(db: sessions_import_RelationalStore, operation: ViewReadOperation, read: ResponseRead, sql: string, sources: Extract<SessionSources, { mode: 'published' }>, values: readonly unknown[], selection?:Selection) {
+  const pins = [...read.selected.values()].filter(pin => pin.projectId === sources.projectId && pin.sessionId === sources.sessionId);
+  const binds: unknown[] = [JSON.stringify(pins.map(pin => ({ table: pin.table, id: pin.recordId, instance: pin.instanceId })))];
+  const ctes = (Object.keys(MATERIAL_READS) as MaterialTable[]).map(table =>
+    `${table} AS NOT MATERIALIZED (${effectiveMaterial(table, sources, binds,selection?.table===table?selection.recordId:undefined)})`);
+  const relationalSql=sql.replace(/'(?:''|[^'])*'|--[^\n]*|\/\*[\s\S]*?\*\//g,' ');
+  const proofReferences=[...relationalSql.matchAll(/(?:(\b[a-z_][a-z_0-9]*|"(?:""|[^"])+"|`(?:``|[^`])+`|\[[^\]]+\])\s*\.\s*)?(?:\bprocessed_resources\b|"processed_resources"|`processed_resources`|\[processed_resources\])/gi)];
+  if(proofReferences.length){
+    if(selection?.recordId===undefined||proofReferences.some(reference=>reference[1]!==undefined))throw new ViewReadRefusal('view_source_identity_missing',sources);
+    const material=MATERIAL_READS[selection.table];
+    const keys=Object.entries(processed_import_PROCESSED_FIELDS).filter(([,field])=>field.table===selection.table).map(([kind,field])=>
+      `SELECT winner.project_id,winner.session_id,${sqlText(kind)} AS kind,winner.${material.id} AS resource_id,
+        winner.${field.blob} AS blob_key,json_extract(winner.__myco_source,'$.instanceId') AS instance_id
+       FROM ${selection.table} winner WHERE winner.project_id=${sqlText(sources.projectId)}
+         AND winner.${material.id}=${sqlText(selection.recordId)} AND winner.${field.blob} IS NOT NULL`);
+    ctes.push(`__myco_proof_keys AS NOT MATERIALIZED (${keys.join(' UNION ALL ')})`);
+    ctes.push(`processed_resources AS NOT MATERIALIZED (
+      SELECT proof.project_id,proof.kind,proof.resource_id,proof.blob_key,proof.classification
+        FROM __myco_proof_keys k CROSS JOIN main.processed_resources proof
+       WHERE k.instance_id IS NULL AND proof.project_id=k.project_id AND proof.kind=k.kind
+         AND proof.resource_id=k.resource_id AND proof.blob_key=k.blob_key
+      UNION ALL SELECT proof.project_id,proof.kind,proof.record_id,proof.blob_key,'processed'
+        FROM __myco_proof_keys k CROSS JOIN view_content_proofs proof
+       WHERE k.instance_id IS NOT NULL AND proof.project_id=k.project_id AND proof.instance_id=k.instance_id
+         AND proof.session_id=k.session_id AND proof.kind=k.kind AND proof.record_id=k.resource_id AND proof.blob_key=k.blob_key
+         AND proof.digest=proof.blob_key AND EXISTS (SELECT 1 FROM blobs b WHERE b.project_id=proof.project_id AND b.key=proof.blob_key AND b.size=proof.size))`);
+  }
+  return prepareViewRead(db, operation, `WITH __myco_pins AS MATERIALIZED (SELECT json_extract(value, '$.table') AS table_name,
+    json_extract(value, '$.id') AS record_id, json_extract(value, '$.instance') AS instance_id FROM json_each(?)),
+    ${ctes.join(', ')} ${sql.replace(/\s+INDEXED BY [A-Za-z0-9_]+/g, '')}`, { mode: 'pinned', sources }).bind(...binds, ...values);
+}
+
+
+class ScalarSources {
+  readonly known:readonly SessionSources[];
+  readonly values:unknown[]=[];
+  private saved:string|undefined;
+  constructor(readonly read:ResponseRead){this.known=[...read.context.values()];}
+  manifest():string{
+    if(this.saved===undefined){
+      this.saved='__myco_sources_parameter_'+this.values.length+'__';
+      this.values.push(JSON.stringify(this.known.map(source=>({projectId:source.projectId,sessionId:source.sessionId,
+        mode:source.mode,capture:this.read.captures.get(sourceKey(source.projectId,source.sessionId))??null}))));
+    }
+    return this.saved;
+  }
+}
+
+/** Captured manifests are bound after the unchanged logical parameters. */
+function prepareScalarRead(db:sessions_import_RelationalStore,operation:ViewReadOperation,sources:ScalarSources,sql:string,values:readonly unknown[],capture:SourcePreparation):sessions_import_PreparedStatement{
+  if(sources.values.length===0)return prepareViewRead(db,operation,sql,capture).bind(...values);
+  let parameter=0,quote='',numbered='';
+  for(let at=0;at<sql.length;at++){
+    const char=sql[at]!;
+    if(quote!==''){
+      numbered+=char;
+      if(char===quote){if(sql[at+1]===quote)numbered+=sql[++at];else quote='';}
+    }else if(char===String.fromCharCode(39)||char===String.fromCharCode(34)||char===String.fromCharCode(96)){
+      quote=char;numbered+=char;
+    }else if(char==='?'){numbered+='?'+(++parameter);}
+    else numbered+=char;
+  }
+  if(parameter!==values.length)throw new Error('Captured scalar parameters differ from their logical input');
+  numbered=numbered.replace(/__myco_sources_parameter_(\d+)__/g,(_,index:string)=>'?'+(values.length+Number(index)+1));
+  return prepareViewRead(db,operation,numbered,capture).bind(...values,...sources.values);
+}
+
+const SOURCE_PREDICATE_TERMS=4;
+
+/** Owner predicates keep logarithmic depth within the hosted expression limit. */
+function sourceOwnerDisjunction(terms:readonly string[]):string{
+ if(terms.length<=SOURCE_PREDICATE_TERMS)return terms.join(' OR ');
+ const width=Math.ceil(terms.length/SOURCE_PREDICATE_TERMS),groups:string[]=[];
+ for(let start=0;start<terms.length;start+=width)groups.push('('+sourceOwnerDisjunction(terms.slice(start,start+width))+')');
+ return groups.join(' OR ');
+}
+
+/** Aggregate owners retain absent sources as well as published closures. */
+function aggregateOwnerCapture(sources:ScalarSources,project:string,session:string):string{
+ const point=`(SELECT ${sourceCaptureColumns()} FROM session_views sv WHERE sv.project_id=${project} AND sv.session_id=${session})`;
+ if(sources.known.length===0)return point;
+ if(sources.known.every(source=>source.mode==='legacy')){
+  const held=sourceOwnerDisjunction(sources.known.map(source=>`(${project}=${sqlText(source.projectId)} AND ${session}=${sqlText(source.sessionId)})`));
+  return `(CASE WHEN ${held} THEN NULL ELSE ${point} END)`;
+ }
+ const manifest=sources.manifest();
+ const match=`json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session}`;
+ return `(CASE WHEN EXISTS(SELECT 1 FROM json_each(${manifest}) j WHERE ${match})
+   THEN (SELECT json_extract(j.value,'$.capture') FROM json_each(${manifest}) j WHERE ${match}) ELSE ${point} END)`;
+}
+
+/** A correlated scalar captures its own session before choosing effective material. */
+function correlatedScalar(context: ResponseRead | ScalarSources, project: string, session: string, legacy: string, tables: readonly MaterialTable[], packed = false): string {
+  const read=context instanceof ScalarSources?context.read:context;
+  const known = context instanceof ScalarSources?context.known:[...read.context.values()];
+  const key = (source: SessionSources): string => `${project} = ${sqlText(source.projectId)} AND ${session} = ${sqlText(source.sessionId)}`;
+  const published = known.filter(source=>source.mode==='published');
+  const saved = known.map(source=>({projectId:source.projectId,sessionId:source.sessionId,mode:source.mode,capture:read.captures.get(sourceKey(source.projectId,source.sessionId))}));
+  const manifest=published.length===0?null:context instanceof ScalarSources?context.manifest():sqlText(JSON.stringify(saved));
+  const member=(mode:'legacy'|'published'|'all'):string=>manifest===null?sourceOwnerDisjunction(known.filter(source=>mode==='all'||source.mode===mode).map(source=>'('+key(source)+')')):
+    `EXISTS (SELECT 1 FROM json_each(${manifest}) j WHERE json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session}
+      ${mode==='all'?'':`AND json_extract(j.value,'$.mode')='${mode}'`})`;
+  const capture = `SELECT ${sourceCaptureColumns()} AS value FROM session_views sv WHERE sv.project_id = ${project} AND sv.session_id = ${session}
+    ${known.length===0?'':`AND NOT (${member('all')})`}
+    ${manifest===null?'':`UNION ALL SELECT json_extract(j.value,'$.capture') FROM json_each(${manifest}) j
+      WHERE json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session} AND json_extract(j.value,'$.capture') IS NOT NULL`}`;
+  const ctes = tables.map(table => {
+    const m = MATERIAL_READS[table];
+    const columns = m.columns.split(',');
+    const projectSession = (a: string): string => `${a}.project_id = ${project} AND ${a}.session_id = ${session}`;
+    const fact = `SELECT ${columns.map(column => 'f.' + column).join(',')} FROM ${factSource(table)} WHERE ${projectSession('f')} AND ${survivingFact(table, 'f')}`;
+    const instance = (role: 'live' | 'parent'): string => `SELECT ${viewColumns(table,'v')}
+      FROM json_each(json_extract((SELECT value FROM __myco_capture_scalar), '$.instances')) j CROSS JOIN ${m.view} v
+      WHERE ${projectSession('v')} AND v.instance_id = json_extract(j.value, '$.instanceId') AND json_extract(j.value, '$.role') = '${role}'
+      AND NOT EXISTS (SELECT 1 FROM main.${table} winner WHERE winner.project_id = v.project_id AND winner.${m.id} = v.${m.id} AND ${survivingFact(table, 'winner')})
+      ${role === 'parent' ? `AND NOT EXISTS (SELECT 1 FROM ${m.view} winner WHERE winner.project_id = v.project_id AND winner.instance_id = json_extract((SELECT value FROM __myco_capture_scalar), '$.live') AND winner.${m.id} = v.${m.id})` : ''}`;
+    return `__myco_${table} AS NOT MATERIALIZED (${fact} UNION ALL ${instance('live')} UNION ALL ${instance('parent')})`;
+  });
+  let effective = legacy;
+  for (const table of tables) effective = effective.replace(new RegExp('\\b' + table + '\\b', 'g'), '__myco_' + table);
+  effective = effective.replace(/\s+INDEXED BY [A-Za-z0-9_]+/g, '');
+  const selected = `json_object('__myco_scalar', 1, 'capture', json(value), 'value', ${effective})`;
+  const publishedValue = `(WITH __myco_capture_scalar AS MATERIALIZED (${capture}), ${ctes.join(', ')}
+    SELECT ${packed?'CAST('+selected+' AS BLOB)':selected} FROM __myco_capture_scalar WHERE json_extract(value, '$.legacy') IN ('published','cleaning','gone'))`;
+  const result = packed ? `COALESCE(${publishedValue}, ${legacy})`
+    : `json_extract(COALESCE(${publishedValue}, json_object('value', ${legacy})), '$.value')`;
+  const gated = `(CASE WHEN EXISTS(SELECT 1 FROM session_views sv WHERE sv.project_id = ${project} AND sv.session_id = ${session}) THEN ${result} ELSE ${legacy} END)`;
+  const unchanged = known.filter(source=>source.mode==='legacy');
+  const current=published.length===0?gated:`(CASE WHEN ${member('published')} THEN ${result} ELSE ${gated} END)`;
+  return unchanged.length===0?current:`(CASE WHEN ${member('legacy')} THEN ${legacy} ELSE ${current} END)`;
+}
+
+function binaryMetadata(raw:unknown):unknown{
+  const bytes=raw instanceof Uint8Array?raw:raw instanceof ArrayBuffer?new Uint8Array(raw)
+      :Array.isArray(raw)&&raw.every(byte=>typeof byte==='number'&&Number.isInteger(byte)&&byte>=0&&byte<=255)?new Uint8Array(raw):null;
+  if(bytes===null)return undefined;
+  try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}
+  catch{throw new ViewReadRefusal('view_source_identity_missing',{projectId:'',sessionId:'',fence:null});}
+}
+
+/** Only the module's scalar envelope can carry a captured closure into a later statement. */
+function scalarProjection<T extends object>(read: ResponseRead, rows: T[]): T[] {
+  for (const row of rows) for (const [key, raw] of Object.entries(row)) {
+    const value=binaryMetadata(raw);
+    if(value===undefined)continue;
+    if (!objectValue(value) || !objectValue(value.capture) || typeof value.capture.projectId !== 'string' || typeof value.capture.sessionId !== 'string') throw new ViewReadRefusal('view_source_identity_missing', {projectId:'', sessionId:'', fence:null});
+    rememberSources(read, value.capture.projectId, value.capture.sessionId, JSON.stringify(value.capture));
+    Object.assign(row, {[key]: value.value});
+  }
+  for(const row of rows)Reflect.deleteProperty(row,'__myco_capture_context');
+  return rows;
+}
+
+/** Scalar statements select and retain their owners under the same admission lease. */
+function scalarRows<T extends object>(read:ResponseRead,select:(sources:ScalarSources)=>Promise<T[]>,owner:(row:T)=>{projectId:unknown;sessionId:unknown}|null):Promise<T[]>{
+ return read.capture(async()=>{
+  const rows=scalarProjection(read,await select(new ScalarSources(read)));
+  for(const row of rows){
+   const key=owner(row);
+   if(key===null)continue;
+   if(typeof key.projectId!=='string'||typeof key.sessionId!=='string')throw new ViewReadRefusal('view_source_identity_missing',{projectId:'',sessionId:'',fence:null});
+   rememberSources(read,key.projectId,key.sessionId,null);
+  }
+  return rows;
+ });
+}
+
+type Selection = Readonly<{ table: MaterialTable } & ({ column: string; recordId?: never } | { recordId: string; column?: never })>;
+
+function isMaterialTable(table: string): table is MaterialTable { return Object.hasOwn(MATERIAL_READS, table); }
+
+function childSelection(query: { table: string; idColumn: string }): Selection | undefined {
+  return isMaterialTable(query.table) ? { table: query.table, column: query.idColumn } : undefined;
+}
+
+function legacyRows<T extends Record<string, unknown>>(read: ResponseRead, sources: SessionSources, rows: T[], selection?: Selection): T[] {
+  if (selection !== undefined) for (const row of rows) {
+    const id = selection.recordId ?? row[selection.column];
+    if (typeof id !== 'string') throw new ViewReadRefusal('view_source_identity_missing', sources);
+    const pin: SelectedSource = Object.freeze({ projectId: sources.projectId, sessionId: sources.sessionId, table: selection.table,
+      recordId: id, instanceId: null, source: null, sources });
+    read.selected.set(JSON.stringify([sources.projectId, selection.table, id]), pin);
+  }
+  return rows;
+}
+
+async function publishedRows<T extends Record<string, unknown>>(db: sessions_import_RelationalStore, operation: ViewReadOperation, read: ResponseRead,
+  sources: Extract<SessionSources, { mode: 'published' }>, sql: string, binds: readonly unknown[], selection?: Selection, method: 'first' | 'all' = 'all'): Promise<T[]> {
+  const selected = selection === undefined ? sql : `SELECT selected.*, (SELECT source.__myco_source FROM ${selection.table} source
+    WHERE source.project_id = ${sqlText(sources.projectId)} AND source.session_id = ${sqlText(sources.sessionId)}
+      AND source.${MATERIAL_READS[selection.table].id} = ${selection.recordId === undefined ? 'selected.' + selection.column : sqlText(selection.recordId)} LIMIT 1) AS __myco_source
+    FROM (${sql}) selected`;
+  const results = await statementRows<T>(effectiveStatement(db, operation, read, selected, sources, binds,selection), method);
+  for (const row of results) {
+    if (row.__myco_source === undefined) continue;
+    const value: unknown = typeof row.__myco_source === 'string' ? JSON.parse(row.__myco_source) : null;
+    if (!objectValue(value) || typeof value.table !== 'string' || !isMaterialTable(value.table) || typeof value.recordId !== 'string' ||
+      !(value.instanceId === null || typeof value.instanceId === 'string')) {
+      throw new ViewReadRefusal('view_source_identity_missing', sources);
+    }
+    const table = value.table;
+    let source: SelectedSource['source'] = null;
+    if (typeof value.transcriptId === 'string' && Number.isSafeInteger(value.offset) && Number.isSafeInteger(value.end)
+      && Number(value.offset) >= 0 && Number(value.end) > Number(value.offset)) {
+      source = Object.freeze({ transcriptId: value.transcriptId, offset: Number(value.offset), end: Number(value.end) });
+    }
+    if(value.instanceId!==null&&(!sources.instances.some(instance=>instance.instanceId===value.instanceId)||source===null))throw new ViewReadRefusal('view_source_identity_missing',sources);
+    const pin: SelectedSource = Object.freeze({ projectId: sources.projectId, sessionId: sources.sessionId, sources, table,
+      recordId: value.recordId, instanceId: value.instanceId, source });
+    read.selected.set(JSON.stringify([sources.projectId, table, pin.recordId]), pin);
+    delete row.__myco_source; delete row.__myco_session;
+  }
+  return results;
+}
+
+type SourceBatch = Readonly<{ projectId: string; sessionIds: readonly string[]; carrierSql: string }>;
+
+/** One JSON manifest drives every table by its Project, session and captured instance. */
+function multiSessionStatement(db: sessions_import_RelationalStore, operation: ViewReadOperation, sources: readonly SessionSources[], table: MaterialTable,
+  sql: string, values: readonly unknown[]): sessions_import_PreparedStatement {
+  const m = MATERIAL_READS[table];
+  const columns = m.columns.split(',');
+  const same = (a: string): string => `${a}.project_id = json_extract(j.value,'$.projectId') AND ${a}.session_id = json_extract(j.value,'$.sessionId')`;
+  const fact = `SELECT ${columns.map(column=>'f.'+column).join(',')} FROM json_each(?) j CROSS JOIN ${factSource(table)}
+    WHERE ${same('f')} AND (json_extract(j.value,'$.mode') = 'legacy' OR ${survivingFact(table,'f')})`;
+  const payload = (role: 'live' | 'parent') => sources.flatMap(source => source.instances.filter(instance=>instance.role===role).map(instance=>({
+    projectId:source.projectId,sessionId:source.sessionId,instanceId:instance.instanceId,live:source.instances.find(i=>i.role==='live')!.instanceId,
+  })));
+  const term = (role: 'live' | 'parent'): string => `SELECT ${viewColumns(table,'v')}
+    FROM json_each(?) j CROSS JOIN ${m.view} v WHERE ${same('v')} AND v.instance_id = json_extract(j.value,'$.instanceId')
+    AND NOT EXISTS (SELECT 1 FROM main.${table} winner WHERE winner.project_id=v.project_id AND winner.${m.id}=v.${m.id} AND ${survivingFact(table,'winner')})
+    ${role==='parent'?`AND NOT EXISTS (SELECT 1 FROM ${m.view} winner WHERE winner.project_id=v.project_id AND winner.instance_id=json_extract(j.value,'$.live') AND winner.${m.id}=v.${m.id})`:''}`;
+  return prepareViewRead(db,operation,`WITH ${table} AS NOT MATERIALIZED (${fact} UNION ALL ${term('live')} UNION ALL ${term('parent')}) ${sql}`,
+    {mode:'pinned-set',sources}).bind(JSON.stringify(sources),JSON.stringify(payload('live')),JSON.stringify(payload('parent')),...values);
+}
+
+const SOURCE_CAPTURE_GROUP_TERMS = 4;
+/** Grouped point captures preserve the existing bind list and the compound-term ceiling. */
+function captureGroups(terms: readonly string[]): string {
+  let groups=[...terms];
+  while(groups.length>SOURCE_CAPTURE_GROUP_TERMS){
+    groups=Array.from({length:Math.ceil(groups.length/SOURCE_CAPTURE_GROUP_TERMS)},(_,index)=>
+      `SELECT * FROM (SELECT * FROM (${groups.slice(index*SOURCE_CAPTURE_GROUP_TERMS,(index+1)*SOURCE_CAPTURE_GROUP_TERMS).join(' UNION ALL ')}) LIMIT -1 OFFSET 0)`);
+  }
+  return groups.join(' UNION ALL ');
+}
+
+/** Candidate batches carry publication state in their first existing statement. */
+function sessionSetCarrier(read: ResponseRead, projectId: string, ids: readonly string[], sql: string, width: number): string {
+  const missing=[...new Set(ids)].filter(id=>!read.context.has(sourceKey(projectId,id)));
+  if(missing.length===0)return sql;
+  const captures=missing.map(id=>`SELECT sv.session_id FROM session_views sv WHERE sv.project_id=?1 AND sv.session_id=?${ids.indexOf(id)+2}`);
+  return `${sql.replace(' FROM ', ', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')}
+    UNION ALL SELECT ${Array.from({length:width},()=> 'NULL').join(',')},${sourceCaptureColumns()},sv.session_id,1
+      FROM (${captureGroups(captures)}) wanted CROSS JOIN session_views sv
+      WHERE sv.project_id=?1 AND sv.session_id=wanted.session_id`;
+}
+
+function sessionSetSources(read: ResponseRead, projectId: string, ids: readonly string[], rows: readonly unknown[]): readonly SessionSources[] {
+  for(const value of rows){
+    if(!objectValue(value))throw new Error('Relational result row must be an object');
+    const row=value;
+    if(row.__myco_sentinel!==1)continue;
+    if(typeof row.__myco_owner!=='string')throw new ViewReadRefusal('view_source_identity_missing',{projectId,sessionId:'',fence:null});
+    rememberSources(read,projectId,row.__myco_owner,row.__myco_capture);
+  }
+  return ids.map(id=>read.context.get(sourceKey(projectId,id))??rememberSources(read,projectId,id,null));
+}
+
+type SourcePreparation =
+  | Readonly<{ mode: 'capture'; projectId: string; sessionId?: string }>
+  | Readonly<{ mode: 'pinned-set'; sources: readonly SessionSources[] }>
+  | Readonly<{ mode: 'batch-candidate'; batch: SourceBatch }>
+  | Readonly<{ mode: 'fact'; projectId: string; table: 'attachments'; recordId: string }>
+  | Readonly<{ mode: 'fact-write'; projectId: string; recordId: string }>
+  | Readonly<{ mode: 'pinned'; sources: SessionSources }>;
+
+async function statementRows<T extends Record<string, unknown>>(statement: sessions_import_PreparedStatement, method: 'first' | 'all', diagnostic?: { generated: string; logical: string }): Promise<T[]> {
+  try {
+    if (method === 'all') return (await statement.all<T>()).results;
+    const row = await statement.first<T>();
+    return row === null ? [] : [row];
+  } catch (error) {
+    if (diagnostic !== undefined && error instanceof Error && /at offset \d+: SQLITE_ERROR$/.test(error.message)) {
+      const start = diagnostic.generated.indexOf(diagnostic.logical);
+      const tag = /^\/\*vs:[A-Za-z0-9_:]+\*\//.exec(diagnostic.generated)?.[0] ?? '';
+      const prefix = processed_import_utf8(diagnostic.generated.slice(0, start)).byteLength;
+      const end = prefix + processed_import_utf8(diagnostic.logical).byteLength;
+      if (start >= 0) error.message = error.message.replace(/at offset (\d+)/g, (match, raw: string) => {
+        const offset = Number(raw);
+        return offset >= prefix && offset < end ? 'at offset ' + (offset - prefix + processed_import_utf8(tag).byteLength) : match;
+      });
+    }
+    throw error;
+  }
+}
+
+/** Internal columns and publication carriers never enter public results. */
+export function legacyProjection<T extends Record<string, unknown>>(row: T): T | null {
+  if (row.__myco_sentinel === 1) return null;
+  const result = { ...row };
+  for (const key of ['__myco_capture', '__myco_session', '__myco_owner', '__myco_source', '__myco_sentinel', '__myco_status_refusal', '__myco_capture_context', '__myco_aggregate_sources']) delete result[key];
+  return result;
+}
+
+function rememberSources(read: ResponseRead, projectId: string, sessionId: string, raw: unknown): SessionSources {
+  const key = sourceKey(projectId, sessionId);
+  const held = read.context.get(key);
+  if (held !== undefined) return held;
+  const sources = capturedSources(raw ?? null, projectId, sessionId);
+  read.captures.set(key, typeof raw === 'string' ? raw : raw === null || raw === undefined ? null : JSON.stringify(raw));
+  read.context = new Map([...read.context, [key, sources]]);
+  return sources;
+}
+
+/** Empty publication state contributes no sentinel and no continuation. */
+async function sessionRowsUnchecked<T extends Record<string, unknown>>(
+  db: sessions_import_RelationalStore, operation: ViewReadOperation, read: ResponseRead, projectId: string, sessionId: string,
+  sql: string, binds: readonly unknown[], width: number, publishedSql: string | null = sql, selection?: Selection, method: 'first' | 'all' = 'all', labels?: readonly string[],
+): Promise<T[]> {
+  let sources = read.context.get(sourceKey(projectId, sessionId));
+  if (sources !== undefined) {
+    if (sources.mode === 'published' && publishedSql !== null) return publishedRows<T>(db, operation, read, sources, publishedSql, binds, selection, method);
+    return legacyRows(read, sources, await statementRows<T>(prepareViewRead(db, operation, sql, { mode: 'pinned', sources }).bind(...binds), method), selection);
+  }
+  const capture = `(SELECT ${sourceCaptureColumns()} FROM session_views sv
+    WHERE sv.project_id = ${sqlText(projectId)} AND sv.session_id = ${sqlText(sessionId)})`;
+  const projection = labels === undefined ? 'legacy.*' : labels.map(label => 'legacy."' + label + '" AS "' + label + '"').join(', ');
+  const carrier = method === 'first'
+    ? `WITH __myco_candidate AS NOT MATERIALIZED (${sql})
+      SELECT legacy.*, ${capture} AS __myco_capture, 0 AS __myco_sentinel FROM __myco_candidate legacy
+      UNION ALL SELECT ${Array.from({ length: width }, () => 'NULL').join(', ')}, ${sourceCaptureColumns()}, 1
+        FROM session_views sv WHERE sv.project_id = ${sqlText(projectId)} AND sv.session_id = ${sqlText(sessionId)}
+          AND NOT EXISTS (SELECT 1 FROM __myco_candidate)`
+    : `SELECT ${projection}, NULL AS __myco_capture, 0 AS __myco_sentinel FROM (${sql}) legacy
+      UNION ALL SELECT ${Array.from({ length: width }, () => 'NULL').join(', ')}, ${sourceCaptureColumns()}, 1
+        FROM session_views sv WHERE sv.project_id = ${sqlText(projectId)} AND sv.session_id = ${sqlText(sessionId)}`;
+  const results = await statementRows<T>(prepareViewRead(db, operation, carrier, { mode: 'capture', projectId, sessionId }).bind(...binds), method,
+    { generated: '/*vs:' + operation + '*/' + carrier, logical: sql });
+  const tail = results.find(row => row.__myco_capture !== null);
+  sources = rememberSources(read, projectId, sessionId, tail?.__myco_capture);
+  if (sources.mode === 'published' && publishedSql !== null) return publishedRows<T>(db, operation, read, sources, publishedSql, binds, selection, method);
+  return legacyRows(read, sources, results.flatMap(row => { const projected = legacyProjection(row); return projected === null ? [] : [projected]; }), selection);
+}
+
+function sessionRows<T extends Record<string, unknown>>(
+  db: sessions_import_RelationalStore, operation: ViewReadOperation, read: ResponseRead, projectId: string, sessionId: string,
+  sql: string, binds: readonly unknown[], width: number, publishedSql: string | null = sql, selection?: Selection, method: 'first' | 'all' = 'all', labels?: readonly string[],
+): Promise<T[]> {
+  const execute=()=>sessionRowsUnchecked<T>(db, operation, read, projectId, sessionId, sql, binds, width, publishedSql, selection, method, labels);
+  return read.context.has(sourceKey(projectId,sessionId))?execute():read.capture(execute);
+}
+
+/** Canonical record identity supplies its stored session before source selection. */
+/** Captured owners suppress subsequent publication acquisition. */
+function capturedSessionPredicate(read:ResponseRead,projectId:string,session:string,mode?:SessionSources['mode']):string|null{
+  const known=[...read.context.values()].filter(source=>source.projectId===projectId&&(mode===undefined||source.mode===mode));
+  return known.length===0?null:`${session} IN (${known.map(source=>sqlText(source.sessionId)).join(',')})`;
+}
+
+async function recordRows<T extends Record<string, unknown>>(db: sessions_import_RelationalStore, operation: ViewReadOperation, read: ResponseRead,
+  projectId: string, table: MaterialTable, recordId: string, sql: string, binds: readonly unknown[], width: number,
+  ownerColumn: 'session_id' | '__myco_session' = 'session_id', method: 'first' | 'all' = 'first'): Promise<T[]> {
+  const material = MATERIAL_READS[table];
+  const selected = read.selected.get(JSON.stringify([projectId, table, recordId]));
+  if (selected !== undefined) {
+    return sessionRows<T>(db, operation, read, projectId, selected.sessionId, sql, binds, width, undefined, { table, recordId }, method);
+  }
+  return read.capture(async () => {
+    const held=[...read.context.values()].filter(source=>source.projectId===projectId&&source.mode==='published');
+    const capture = (session: string): string => {
+      const known = capturedSessionPredicate(read,projectId,session);
+      const fresh = `(SELECT ${sourceCaptureColumns()} FROM session_views sv
+        WHERE sv.project_id = ${sqlText(projectId)} AND sv.session_id = ${session})`;
+      return known === null ? fresh : `CASE WHEN ${known} THEN NULL ELSE ${fresh} END`;
+    };
+    const viewOwner=capturedSessionPredicate(read,projectId,'v.session_id');
+    const tail=held.length>0?`UNION ALL SELECT ${Array.from({length:width},()=> 'NULL').join(',')},NULL,
+      (SELECT CAST(json_array(v.session_id,${capture('v.session_id')}) AS BLOB) FROM ${material.view} v
+        WHERE v.project_id=${sqlText(projectId)} AND v.${material.id}=${sqlText(recordId)} LIMIT 1),1
+      WHERE NOT EXISTS (SELECT 1 FROM __myco_candidate)`:
+      `UNION ALL SELECT ${Array.from({ length: width }, () => 'NULL').join(',')}, ${sourceCaptureColumns()}, sv.session_id, 1
+        FROM session_views sv WHERE sv.project_id = ${sqlText(projectId)}
+          AND sv.session_id = (SELECT ${viewOwner===null?'v.session_id':`CASE WHEN ${viewOwner} THEN NULL ELSE v.session_id END`} FROM ${material.view} v
+            WHERE v.project_id = ${sqlText(projectId)} AND v.${material.id} = ${sqlText(recordId)} LIMIT 1)
+          AND NOT EXISTS (SELECT 1 FROM __myco_candidate)`;
+    const carrier = `WITH __myco_candidate AS NOT MATERIALIZED (${sql}) SELECT candidate.*, ${capture('candidate.' + ownerColumn)} AS __myco_capture,
+        candidate.${ownerColumn} AS __myco_owner, 0 AS __myco_sentinel FROM __myco_candidate candidate ${tail}`;
+    const results = await statementRows<T>(prepareViewRead(db, operation, carrier, { mode: 'capture', projectId }).bind(...binds), method,
+      { generated: '/*vs:' + operation + '*/' + carrier, logical: sql });
+    const sessions = new Map<string, SessionSources>();
+    for (const row of results) {
+      if(held.length>0&&row.__myco_sentinel===1){
+        if(row.__myco_owner===null)continue;
+        const packet=binaryMetadata(row.__myco_owner);
+        if(!Array.isArray(packet)||packet.length!==2||typeof packet[0]!=='string'||packet[1]!==null&&typeof packet[1]!=='string'&&!objectValue(packet[1]))
+          throw new ViewReadRefusal('view_source_identity_missing',{projectId,sessionId:'',fence:null});
+        Object.assign(row,{__myco_owner:packet[0],__myco_capture:packet[1]});
+      }
+      if (typeof row.__myco_owner !== 'string') throw new ViewReadRefusal('view_source_identity_missing', { projectId, sessionId: '', fence: null });
+      const sources = rememberSources(read, projectId, row.__myco_owner, row.__myco_capture);
+      sessions.set(sourceKey(projectId, row.__myco_owner), sources);
+    }
+    const published = [...sessions.values()].filter((sources): sources is Extract<SessionSources, { mode: 'published' }> => sources.mode === 'published');
+    if (published.length > 0) {
+      const found: T[] = [];
+      for (const sources of published) found.push(...await publishedRows<T>(db, operation, read, sources, sql, binds, { table, recordId }, method));
+      if (found.length > 1) throw new ViewReadRefusal('view_state_inconsistent', published[0]!);
+      return found;
+    }
+    return results.flatMap(row => {
+      const sources = sessions.get(sourceKey(projectId, String(row.__myco_owner)))!;
+      const projected = legacyProjection(row);
+      if (projected === null) return [];
+      delete projected.__myco_owner;
+      return legacyRows(read, sources, [projected], { table, recordId });
+    });
+  });
+}
+
+
+function projectionLabels(columns: string): string[] {
+  let depth = 0, quote = '', start = 0;
+  const fields: string[] = [];
+  for (let at = 0; at < columns.length; at++) {
+    const char = columns[at]!;
+    if (quote !== '') {
+      if (char === quote) {
+        if (columns[at + 1] === quote) at++;
+        else quote = '';
+      }
+    } else if (char === String.fromCharCode(39) || char === String.fromCharCode(34) || char === String.fromCharCode(96)) quote = char;
+    else if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (char === ',' && depth === 0) { fields.push(columns.slice(start, at)); start = at + 1; }
+  }
+  if (depth !== 0 || quote !== '') throw new Error('Unbalanced material projection');
+  fields.push(columns.slice(start));
+  return fields.map(field => {
+    const match = /(?:\bAS\s+)?([a-z_][a-z0-9_]*)\s*$/i.exec(field);
+    if (match === null) throw new Error('A projected column requires a label');
+    return match[1]!;
+  });
+}
+function projectionWidth(columns: string): number {
+  let depth = 0, quote = '', width = 1;
+  for (let at = 0; at < columns.length; at++) {
+    const char = columns[at]!;
+    if (quote !== '') {
+      if (char === quote) {
+        if (columns[at + 1] === quote) at++;
+        else quote = '';
+      }
+    } else if (char === String.fromCharCode(39) || char === String.fromCharCode(34) || char === String.fromCharCode(96)) quote = char;
+    else if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (char === ',' && depth === 0) width++;
+  }
+  if (depth !== 0 || quote !== '') throw new Error('Unbalanced material projection');
+  return width;
+}
 const VIEW_READ_OPERATION_IDS = [
   "M08:hook_placement_sessionContextHints:0",
   "M21:hook_placement_countUnplacedContextRecords:0",
@@ -295,15 +943,8 @@ const VIEW_READ_OPERATION_IDS = [
 ] as const;
 
 export const LEGACY_ONLY_OPERATIONS = [
-  "M08:hook_placement_sessionContextHints:0",
-  "M21:hook_placement_countUnplacedContextRecords:0",
   "M24:plans_planTotals:0",
   "M24:plans_selectPlans:0",
-  "M13:sessions_selectSessions:ordinary",
-  "M14:sessions_selectSessions:receipt",
-  "M14:sessions_selectSessions:working",
-  "M15:sessions_countStatements:0",
-  "M16:sessions_instantStatements:0",
   "M17:sessions_projectStats:0",
   "M17:sessions_projectStats:1",
   "M36:sessions_sessionsWithImportedPrompts:0",
@@ -311,13 +952,6 @@ export const LEGACY_ONLY_OPERATIONS = [
   "M22:children_candidatePage:0",
   "M22:children_countOwed:0",
   "M22:children_untitledReason:0",
-  "M18:lineage_sessionsNamed:0",
-  "M18:lineage_childIdsOf:0",
-  "M19:activity_activityFeed:0",
-  "M20:session_activity_listSessionActivity:0",
-  "M20:session_activity_toolRows:0",
-  "M20:session_activity_edgeRows:0",
-  "M47:receiptPlans:0",
   "M29:embedding_semanticHits:0",
   "M40:extraction_coverage_hasAcknowledgedPrompts:0",
   "M42:kpis_countOf:0",
@@ -332,24 +966,6 @@ export const LEGACY_ONLY_OPERATIONS = [
   "M43:kpis_promptIdentityCounts:4",
   "M36:prompts_extractionSourceSession:0",
   "M25:search_searchType:0",
-  "M08:hook_placement_listUnplacedHookRecords:0",
-  "M09:plans_getPlan:0",
-  "M10:plans_planInSession:0",
-  "M12:sessions_getSession:0",
-  "M11:sessions_sessionCounts:0",
-  "M11:sessions_sessionCounts:1",
-  "M04:children_listChildren:0",
-  "M04:children_listChildrenByPrompt:0",
-  "M23:children_materialRows:0",
-  "M26:processed_processedField:0",
-  "M01:turns_listTurns:0",
-  "M02:turns_promptInSession:0",
-  "M03:turns_readTurnBodies:0",
-  "M05:turns_steeringChildPage:0",
-  "M06:turns_toolUsage:0",
-  "M07:turns_sessionTurnContexts:0",
-  "M45:injectedPromptRecord:0",
-  "M26:processedBundle:0",
   "M33:core_embedding_reconcile_passedOverSources:0",
   "M33:core_embedding_reconcile_passedOverSources:1",
   "M33:core_embedding_reconcile_embeddingFailureWakeAt:0",
@@ -409,8 +1025,7 @@ const hook_placement_DELIVERY_RECORD_SOURCES = [
   { table: 'spore_injections', kind: 'receipt', id: 'id', hint: 'r.delivered_prompt_id', label: "'Context received'", where: 'delivered_at IS NOT NULL' },
   {
     table: 'prompt_context_answers', kind: 'answer', id: 'id', hint: 'r.delivered_prompt_id', label: "'Context received'", where: `outcome = 'served' AND delivered_at IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM spore_injections receipt WHERE receipt.project_id = r.project_id AND receipt.session_id = r.session_id AND receipt.id = r.receipt_id)
-    AND NOT ${hook_placement_hookPlacementSql({ project: 'r.project_id', session: 'r.session_id', prompt: 'r.prompt_id' })}`
+    AND NOT EXISTS (SELECT 1 FROM spore_injections receipt WHERE receipt.project_id = r.project_id AND receipt.session_id = r.session_id AND receipt.id = r.receipt_id)`, unplacedPrompt:'r.prompt_id'
   },
 ] as const;
 
@@ -429,20 +1044,24 @@ function hook_placement_unplacedSourceSql(source: typeof hook_placement_HOOK_REC
   return `SELECT project_id, session_id, '${source.kind}:' || ${source.id} AS record_key,
     '${source.kind}' AS record_kind, ${source.id} AS record_id, ${source.hint} AS prompt_hint,
     ${source.label} AS label, created_at FROM ${table}
-    WHERE ${source.where}
+    WHERE ${source.where}${'unplacedPrompt' in source?'\n    AND NOT '+hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.unplacedPrompt}):''}
       AND NOT ${hook_placement_hookPlacementSql({ project: 'r.project_id', session: 'r.session_id', prompt: source.hint })}`;
 }
 
 /** Sub-agent context carries the canonical agent identity and its start event's parent hint. */
 async function hook_placement_sessionContextHints(db: hook_placement_import_RelationalStore, scope?: hook_placement_import_ReadScope, sessionId?: string) {
+  const read=responseRead(db);
   const conditions = ['r.project_id = pr.project_id'];
   const params: unknown[] = [];
   if (scope !== undefined) { conditions.push('r.project_id = ?'); params.push(scope.projectId); }
   if (sessionId !== undefined) { conditions.push('r.session_id = ?'); params.push(sessionId); }
   const records = { sql: `SELECT r.* FROM projects pr CROSS JOIN session_injections r WHERE ${conditions.join(' AND ')}`, params };
-  const { results } = await prepareViewRead(db, "M08:hook_placement_sessionContextHints:0", `SELECT r.project_id, r.session_id, r.kind FROM (${records.sql}) r
-    WHERE r.kind >= 'cortex:' AND r.kind < 'cortex;'`).bind(...records.params).all<{ project_id: string; session_id: string; kind: string }>();
-  const identities = await subagentContextIdentities(results);
+  const projected = await scalarRows(read,async scalars=>{
+  const { results } = await prepareScalarRead(db, "M08:hook_placement_sessionContextHints:0", scalars, `SELECT r.project_id, r.session_id, r.kind, ${correlatedScalar(scalars,"r.project_id","r.session_id","NULL",["prompt_batches"],true)} AS __myco_capture_context FROM (${records.sql}) r
+    WHERE r.kind >= 'cortex:' AND r.kind < 'cortex;'`, records.params, {mode:'capture',projectId:scope?.projectId??''}).all<{ project_id: string; session_id: string; kind: string }>();
+  return results;
+  },row=>({projectId:row.project_id,sessionId:row.session_id}));
+  const identities = await subagentContextIdentities(projected);
   return {
     sql: `SELECT si.*, (SELECT MAX(json_extract(e.payload, '$.parentPromptId')) FROM events e INDEXED BY idx_events_subagent_start
       WHERE e.project_id = si.project_id AND e.session_id = si.session_id AND e.kind = 'subagent.start'
@@ -467,17 +1086,45 @@ const hook_placement_HOOK_STATUS_WINDOW_MS = hook_placement_HOOK_STATUS_WINDOW_D
 
 /** The status window counts delivered receipts and served answers, excluding tombstoned sessions. */
 async function hook_placement_countUnplacedContextRecords(db: hook_placement_import_RelationalStore, scope?: hook_placement_import_ReadScope, sessionId?: string, now = Date.now()): Promise<number> {
+  const read=responseRead(db);
   const from = now - hook_placement_HOOK_STATUS_WINDOW_MS;
   const conditions = ['r.project_id = s.project_id', 'r.created_at >= ?', 'NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)'];
   const params: unknown[] = [from];
   if (scope !== undefined) { conditions.push('r.project_id = ?'); params.push(scope.projectId); }
   if (sessionId !== undefined) { conditions.push('r.session_id = ?'); params.push(sessionId); }
-  const counts = await Promise.all(hook_placement_DELIVERY_RECORD_SOURCES.map(source => {
-    return prepareViewRead(db, "M21:hook_placement_countUnplacedContextRecords:0", `SELECT COUNT(*) AS n FROM projects s CROSS JOIN (${hook_placement_unplacedSourceSql(source)}) r
-      WHERE ${conditions.join(' AND ')}`)
-      .bind(...params).first<{ n: number }>();
-  }));
-  return counts.reduce((sum, row) => sum + (row?.n ?? 0), 0);
+  let total=0;
+  for(const source of hook_placement_DELIVERY_RECORD_SOURCES){
+   total+=await read.capture(async()=>{
+    const scalars=new ScalarSources(read);
+    const hint=hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.hint});
+    const prompt='unplacedPrompt' in source?hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.unplacedPrompt}):null;
+    const captures=aggregateOwnerCapture(scalars,'r.project_id','r.session_id');
+    const placed=correlatedScalar(scalars,'r.project_id','r.session_id',hint,['prompt_batches']);
+    const promptPlaced=prompt!==null?', '+correlatedScalar(scalars,'r.project_id','r.session_id',prompt,['prompt_batches'])+' AS __myco_delivery_prompt_placed':'';
+    const sql=`SELECT COUNT(*) FILTER (WHERE NOT r.__myco_delivery_placed${prompt!==null?' AND NOT r.__myco_delivery_prompt_placed':''}) AS n,
+      json_group_array(json_object('projectId',r.project_id,'sessionId',r.session_id,'capture',json(r.__myco_delivery_capture))) AS __myco_aggregate_sources
+      FROM projects s CROSS JOIN (SELECT project_id, session_id, '${source.kind}:' || ${source.id} AS record_key,
+    '${source.kind}' AS record_kind, ${source.id} AS record_id, ${source.hint} AS prompt_hint,
+    ${source.label} AS label, created_at, ${captures} AS __myco_delivery_capture, ${placed} AS __myco_delivery_placed${promptPlaced} FROM ${source.table} r
+    WHERE ${source.where}) r
+      WHERE ${conditions.join(' AND ')}`;
+    const row=await prepareScalarRead(db,"M21:hook_placement_countUnplacedContextRecords:0",scalars,sql,params,{mode:'capture',projectId:scope?.projectId??''})
+      .first<{n:number;__myco_aggregate_sources:unknown}>();
+    if(row===null)return 0;
+    let owners:unknown;
+    if(typeof row.__myco_aggregate_sources!=='string')throw new ViewReadRefusal('view_source_identity_missing',{projectId:scope?.projectId??'',sessionId:sessionId??'',fence:null});
+    try{owners=JSON.parse(row.__myco_aggregate_sources);}
+    catch{throw new ViewReadRefusal('view_source_identity_missing',{projectId:scope?.projectId??'',sessionId:sessionId??'',fence:null});}
+    if(!Array.isArray(owners))throw new ViewReadRefusal('view_source_identity_missing',{projectId:scope?.projectId??'',sessionId:sessionId??'',fence:null});
+    for(const owner of owners){
+     if(!objectValue(owner)||typeof owner.projectId!=='string'||typeof owner.sessionId!=='string'||!Object.hasOwn(owner,'capture'))
+      throw new ViewReadRefusal('view_source_identity_missing',{projectId:scope?.projectId??'',sessionId:sessionId??'',fence:null});
+     rememberSources(read,owner.projectId,owner.sessionId,owner.capture);
+    }
+    return row.n;
+   });
+  }
+  return total;
 }
 
 /** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
@@ -762,9 +1409,13 @@ const sessions_FIRST_PROMPT_CHARS = 160;
 const sessions_LABEL_MAX_CHARS = 80;
 
 /** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the sessions alias `alias`; `idx_prompt_batches_first` serves the whole order, so it stops at the first row, and a spilled prompt (no inline text) is skipped. */
-const sessions_firstPromptSql = (alias: string): string => `(SELECT substr(pb.text, 1, ${sessions_FIRST_PROMPT_CHARS}) FROM prompt_batches pb
+const sessions_legacyFirstPromptSql = (alias: string): string => `(SELECT substr(pb.text, 1, ${sessions_FIRST_PROMPT_CHARS}) FROM prompt_batches pb
        WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
        ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
+const sessions_firstPromptSql = (alias: string, read?: ResponseRead | ScalarSources, packed = true): string => {
+  const legacy = sessions_legacyFirstPromptSql(alias);
+  return read === undefined ? legacy : correlatedScalar(read, alias + '.project_id', alias + '.session_id', legacy, ['prompt_batches'], packed);
+};
 const sessions_FIRST_PROMPT_SQL = sessions_firstPromptSql('s');
 
 /** What a label shows for a session with no title, typed prompt or agent, where an id fragment must never reach the reader. */
@@ -996,10 +1647,11 @@ async function sessions_selectSessions(
   opts: { limit?: number; cursor?: string } & sessions_SessionFilters,
   walks: string = '',
 ): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
+  const sourceRead = responseRead(db);
   const active = sessions_activityWindow(opts);
   const k = sessions_import_keyset(opts, { order: sessions_SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
-  const read = async (window: 'receipt' | 'working', through: string): Promise<Record<string, unknown>[]> => {
+  const read = (window: 'receipt' | 'working', through: string): Promise<Record<string, unknown>[]> => scalarRows(sourceRead,async scalars=>{
     const bounded = through === sessions_SESSIONS_ACROSS_INDEX;
     const conditions = [projects.sql, sessions_LIVE_SESSION];
     if ((opts.fidelity ?? 'full') === 'full') conditions.push(sessions_FULL_FIDELITY);
@@ -1034,18 +1686,17 @@ async function sessions_selectSessions(
     if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
     if (opts.q !== undefined && opts.q.trim() !== '') {
       const pattern = sessions_import_containsPattern(opts.q.trim());
-      conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${sessions_FIRST_PROMPT_SQL} LIKE ? ESCAPE '\\')`);
+      conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${sessions_firstPromptSql('s', scalars, false)} LIKE ? ESCAPE '\\')`);
       params.push(pattern, pattern, pattern, pattern, pattern);
     }
     if (k.where !== '') {
       if (bounded) { conditions.push(`${sessions_SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
       conditions.push(k.where); params.push(...k.params);
     }
-    const { results } = await prepareViewRead(db, active ? (window === 'working' ? "M14:sessions_selectSessions:working" : "M14:sessions_selectSessions:receipt") : "M13:sessions_selectSessions:ordinary", `SELECT s.project_id, ${sessions_SESSION_COLUMNS} ${sessions_sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${sessions_SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`)
-      .bind(...params, k.limit + 1)
+    const { results } = await prepareScalarRead(db, active ? (window === 'working' ? "M14:sessions_selectSessions:working" : "M14:sessions_selectSessions:receipt") : "M13:sessions_selectSessions:ordinary", scalars, `SELECT s.project_id, ${sessions_SESSION_COLUMNS.replace(sessions_FIRST_PROMPT_SQL, sessions_firstPromptSql('s', scalars))} ${sessions_sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${sessions_SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`, [...params,k.limit+1], {mode: 'capture', projectId: ''})
       .all<Record<string, unknown>>();
     return results;
-  };
+  },row=>({projectId:row.project_id,sessionId:row.session_id}));
   const received = await read('receipt', walks);
   // An activity window judged at an instant also lists the sessions working now, read apart through the index that
   // holds them alone, and merged into the page in its own order.
@@ -1119,21 +1770,39 @@ async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, sc
 const sessions_COUNTED_TABLES = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
 
 /** The statements `sessionCountsFor` sends, and how their results read, so a caller may send them in a batch of its own. */
-function sessions_countStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Map<string, sessions_SessionCounts> } {
-  const statements = sessions_import_inListChunks(sessionIds).flatMap((ids) => sessions_COUNTED_TABLES.map(([, table]) =>
-    prepareViewRead(db, "M15:sessions_countStatements:0", `SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`).bind(scope.projectId, ...ids)));
-  const parse = (results: readonly sessions_import_RunResult[]): Map<string, sessions_SessionCounts> => {
-    const out = new Map<string, sessions_SessionCounts>(sessionIds.map((id) => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 }]));
-    results.forEach((result, i) => {
-      const [key] = sessions_COUNTED_TABLES[i % sessions_COUNTED_TABLES.length];
-      for (const row of result.results as { session_id: string; n: number }[]) {
-        const counts = out.get(row.session_id);
-        if (counts) counts[key] = row.n;
-      }
+function sessions_countStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<Map<string, sessions_SessionCounts>> } {
+  const read=responseRead(db);
+  const chunks=sessions_import_inListChunks(sessionIds);
+  const queries=chunks.map(ids=>{
+    const sql=(table:string)=>`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`;
+    const sources=ids.map(id=>read.context.get(sourceKey(scope.projectId,id)));
+    const known=sources.every(source=>source!==undefined)?sources:undefined;
+    const carrierSql=sessionSetCarrier(read,scope.projectId,ids,sql('prompt_batches'),2);
+    const batch:SourceBatch=Object.freeze({projectId:scope.projectId,sessionIds:ids,carrierSql});
+    const statements=sessions_COUNTED_TABLES.map(([,table],index)=>{
+      if(known!==undefined&&known.some(source=>source.mode==='published')&&isMaterialTable(table))
+        return multiSessionStatement(db,'M15:sessions_countStatements:0',known,table,sql(table),[scope.projectId,...ids]);
+      const query=index===0?carrierSql:sql(table);
+      const capture:SourcePreparation=known!==undefined?{mode:'pinned-set',sources:known}:{mode:'batch-candidate',batch};
+      return prepareViewRead(db,'M15:sessions_countStatements:0',query,capture).bind(scope.projectId,...ids);
     });
+    return {ids,sql,known,statements};
+  });
+  return {statements:queries.flatMap(query=>query.statements),parse:results=>read.capture(async()=>{
+    const out=new Map<string,sessions_SessionCounts>(sessionIds.map(id=>[id,{prompts:0,toolCalls:0,responses:0,plans:0,attachments:0}]));
+    for(const [chunk,query]of queries.entries()){
+      const first=results[chunk*sessions_COUNTED_TABLES.length]!;
+      const sources=query.known??sessionSetSources(read,scope.projectId,query.ids,first.results);
+      for(const [index,[key,table]]of sessions_COUNTED_TABLES.entries()){
+        const candidate=results[chunk*sessions_COUNTED_TABLES.length+index]!;
+        const rows=query.known===undefined&&sources.some(source=>source.mode==='published')&&isMaterialTable(table)
+          ? (await multiSessionStatement(db,'M15:sessions_countStatements:0',sources,table,query.sql(table),[scope.projectId,...query.ids]).all()).results
+          : candidate.results.flatMap(row=>{if(!objectValue(row))throw new Error('Relational result row must be an object');const projected=legacyProjection(row);return projected===null?[]:[projected]});
+        for(const row of rows){const counts=out.get(String(row.session_id));if(counts)counts[key]=Number(row.n);}
+      }
+    }
     return out;
-  };
-  return { statements, parse };
+  })};
 }
 
 /** How many lifetime buckets a session's activity is spread over; the rail's sparkline width. */
@@ -1184,17 +1853,35 @@ async function sessions_promptInstants(db: sessions_import_RelationalStore, scop
 }
 
 /** The statements `promptInstants` sends, and how their results read. */
-function sessions_instantStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => { sessionId: string; at: number }[] } {
-  const statements = sessions_import_inListChunks(sessionIds).map((ids) =>
-    prepareViewRead(db, "M16:sessions_instantStatements:0", `SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`).bind(scope.projectId, ...ids));
-  return {
-    statements,
-    parse: (results) => results.flatMap((r) => (r.results as { session_id: string; created_at: number }[]).map((row) => ({ sessionId: row.session_id, at: row.created_at }))),
-  };
+function sessions_instantStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<{ sessionId: string; at: number }[]> } {
+  const read=responseRead(db);
+  const queries=sessions_import_inListChunks(sessionIds).map(ids=>{
+    const sql=`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`;
+    const sources=ids.map(id=>read.context.get(sourceKey(scope.projectId,id)));
+    const known=sources.every(source=>source!==undefined)?sources:undefined;
+    const carrierSql=sessionSetCarrier(read,scope.projectId,ids,sql,2);
+    const statement=known!==undefined&&known.some(source=>source.mode==='published')
+      ?multiSessionStatement(db,'M16:sessions_instantStatements:0',known,'prompt_batches',sql,[scope.projectId,...ids])
+      :prepareViewRead(db,'M16:sessions_instantStatements:0',carrierSql,known===undefined?{mode:'batch-candidate',batch:Object.freeze({projectId:scope.projectId,sessionIds:ids,carrierSql})}:{mode:'pinned-set',sources:known}).bind(scope.projectId,...ids);
+    return {ids,sql,known,statement};
+  });
+  return {statements:queries.map(query=>query.statement),parse:results=>read.capture(async()=>{
+    const out:{sessionId:string;at:number}[]=[];
+    for(const [index,query]of queries.entries()){
+      const candidate=results[index]!;
+      const sources=query.known??sessionSetSources(read,scope.projectId,query.ids,candidate.results);
+      const rows=query.known===undefined&&sources.some(source=>source.mode==='published')
+        ?(await multiSessionStatement(db,'M16:sessions_instantStatements:0',sources,'prompt_batches',query.sql,[scope.projectId,...query.ids]).all()).results
+        :candidate.results.flatMap(row=>{if(!objectValue(row))throw new Error('Relational result row must be an object');const projected=legacyProjection(row);return projected===null?[]:[projected]});
+      out.push(...rows.map(row=>({sessionId:String(row.session_id),at:Number(row.created_at)})));
+    }
+    return out;
+  })};
 }
 
 /** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
-async function sessions_listSessionSummaries(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<sessions_import_Page<sessions_SessionSummaryRow>> {
+const sessions_listSessionSummaries = sourceOperation(sessions_listSessionSummariesImpl);
+async function sessions_listSessionSummariesImpl(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<sessions_import_Page<sessions_SessionSummaryRow>> {
   // A person and an agent browsing history see every session, labelled by what
   // its transcript could carry; the caller may still narrow.
   const listed = await sessions_listSessions(db, scope, { fidelity: 'any', now: nowMs, ...opts });
@@ -1218,7 +1905,8 @@ type sessions_SessionAcrossRow = sessions_SessionSummaryRow & { projectId: strin
  * The session list across a set of Projects with the per-Project list's rail facts. Each child table is keyed by
  * Project first, so the facts are read per Project over that Project's ids on the page, every statement in one batch.
  */
-async function sessions_listSessionSummariesAcross(db: sessions_import_RelationalStore, set: sessions_import_ProjectSet, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number): Promise<sessions_import_Page<sessions_SessionAcrossRow>> {
+const sessions_listSessionSummariesAcross = sourceOperation(sessions_listSessionSummariesAcrossImpl);
+async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_RelationalStore, set: sessions_import_ProjectSet, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number): Promise<sessions_import_Page<sessions_SessionAcrossRow>> {
   const listed = await sessions_listSessionsAcross(db, set, { fidelity: 'any', now: nowMs, ...opts });
   const byProject = new Map<string, string[]>();
   for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
@@ -1228,8 +1916,8 @@ async function sessions_listSessionSummariesAcross(db: sessions_import_Relationa
   const facts = new Map<string, { counts: Map<string, sessions_SessionCounts>; buckets: Map<string, number[]> }>();
   let at = 0;
   for (const read of reads) {
-    const counts = read.counts.parse(results.slice(at, at += read.counts.statements.length));
-    const instants = read.instants.parse(results.slice(at, at += read.instants.statements.length));
+    const counts = await read.counts.parse(results.slice(at, at += read.counts.statements.length));
+    const instants = await read.instants.parse(results.slice(at, at += read.instants.statements.length));
     facts.set(read.projectId, { counts, buckets: sessions_bucketActivity(listed.rows.filter((r) => r.projectId === read.projectId), instants, nowMs) });
   }
   return {
@@ -1741,12 +2429,15 @@ const lineage_byStart = (a: { startedAt: number | null; sessionId: string }, b: 
 
 /** The live sessions this Project holds among `ids`. */
 async function lineage_sessionsNamed(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, ids: readonly string[]): Promise<lineage_Row[]> {
+  const read = responseRead(db);
   const out: lineage_Row[] = [];
   for (const run of lineage_import_inListChunks(ids)) {
-    const { results } = await prepareViewRead(db, "M18:lineage_sessionsNamed:0", `SELECT ${lineage_LINEAGE_COLUMNS} FROM sessions s
-        WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND ${lineage_LIVE}`)
-      .bind(scope.projectId, ...run).all<lineage_Row>();
-    out.push(...results);
+    const rows=await scalarRows(read,async scalars=>{
+    const { results } = await prepareScalarRead(db, "M18:lineage_sessionsNamed:0", scalars, `SELECT ${lineage_LINEAGE_COLUMNS.replace(sessions_FIRST_PROMPT_SQL, sessions_firstPromptSql('s', scalars))} FROM sessions s
+        WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND ${lineage_LIVE}`, [scope.projectId,...run], {mode: 'capture', projectId: scope.projectId}).all<lineage_Row>();
+    return results;
+    },row=>({projectId:scope.projectId,sessionId:row.session_id}));
+    out.push(...rows);
   }
   return out;
 }
@@ -1756,15 +2447,18 @@ async function lineage_sessionsNamed(db: lineage_import_RelationalStore, scope: 
  * (parent, then child id), so the read stops at the limit whatever the family's size.
  */
 async function lineage_childIdsOf(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, kind: lineage_LineageEdgeKind, ids: readonly string[], limit: number): Promise<string[]> {
+  const read=responseRead(db);
   const out: string[] = [];
   const column = lineage_PARENT_COLUMN[kind];
   for (const run of lineage_import_inListChunks([...ids].sort())) {
     if (out.length >= limit) break;
-    const { results } = await prepareViewRead(db, "M18:lineage_childIdsOf:0", `SELECT s.session_id FROM sessions s INDEXED BY ${lineage_CHILDREN_INDEX[kind]}
+    const rows=await scalarRows(read,async scalars=>{
+    const { results } = await prepareScalarRead(db, "M18:lineage_childIdsOf:0", scalars, `SELECT s.session_id, ${correlatedScalar(scalars,"s.project_id","s.session_id","NULL",["prompt_batches"],true)} AS __myco_capture_context FROM sessions s INDEXED BY ${lineage_CHILDREN_INDEX[kind]}
         WHERE s.project_id = ? AND s.${column} IN (${run.map(() => '?').join(', ')}) AND ${lineage_LIVE}
-        ORDER BY s.${column}, s.session_id LIMIT ?`)
-      .bind(scope.projectId, ...run, limit - out.length).all<{ session_id: string }>();
-    out.push(...results.map((row) => row.session_id));
+        ORDER BY s.${column}, s.session_id LIMIT ?`, [scope.projectId,...run,limit-out.length], {mode:'capture',projectId:scope.projectId}).all<{ session_id: string }>();
+    return results;
+    },row=>({projectId:scope.projectId,sessionId:row.session_id}));
+    out.push(...rows.map(row=>row.session_id));
   }
   return out;
 }
@@ -1776,7 +2470,8 @@ async function lineage_childIdsOf(db: lineage_import_RelationalStore, scope: lin
  * sessions; a session met again is not walked again, so a cycle in the records ends the walk. Null when the Project
  * does not hold the session.
  */
-async function lineage_sessionLineage(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string): Promise<lineage_SessionLineage | null> {
+const lineage_sessionLineage = sourceOperation(lineage_sessionLineageImpl);
+async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string): Promise<lineage_SessionLineage | null> {
   const [self] = await lineage_sessionsNamed(db, scope, [sessionId]);
   if (self === undefined) return null;
   const rows = new Map<string, lineage_Row>([[sessionId, self]]);
@@ -1888,11 +2583,13 @@ const activity_MAX_FEED = 100;
  * NULL so the compound select stays uniform.
  */
 async function activity_activityFeed(db: activity_import_RelationalStore, scope: activity_import_ReadScope, limit?: number): Promise<activity_FeedItem[]> {
+  const read = responseRead(db);
   const n = limit === undefined || !Number.isSafeInteger(limit) || limit < 1 ? activity_DEFAULT_FEED : Math.min(limit, activity_MAX_FEED);
-  const { results } = await prepareViewRead(db, "M19:activity_activityFeed:0", `SELECT * FROM (
+  const rows=await scalarRows(read,async scalars=>{
+  const { results } = await prepareScalarRead(db, "M19:activity_activityFeed:0", scalars, `SELECT * FROM (
         SELECT 'session' AS type, s.session_id AS id, '' AS summary,
                ${sessions_SESSION_OCCURRED_AT} AS at_ms, s.session_id AS session_id,
-               s.title AS title, ${sessions_FIRST_PROMPT_SQL} AS first_prompt, s.agent AS agent
+               s.title AS title, ${sessions_firstPromptSql('s', scalars)} AS first_prompt, s.agent AS agent
           FROM sessions s WHERE s.project_id = ? AND ${activity_import_notTombstonedSql('s')} ORDER BY at_ms DESC LIMIT ?)
       UNION ALL SELECT * FROM (
         SELECT 'run' AS type, id, COALESCE(task, 'run') || ' — ' || status AS summary,
@@ -1902,10 +2599,11 @@ async function activity_activityFeed(db: activity_import_RelationalStore, scope:
         SELECT 'spore' AS type, id, observation_type || ': ' || substr(content, 1, 80) AS summary,
                created_at AS at_ms, session_id, NULL AS title, NULL AS first_prompt, NULL AS agent
           FROM spores WHERE project_id = ? AND status = 'active' ORDER BY at_ms DESC LIMIT ?)
-      ORDER BY at_ms DESC LIMIT ?`)
-    .bind(scope.projectId, n, scope.projectId, n, scope.projectId, n, n)
+      ORDER BY at_ms DESC LIMIT ?`, [scope.projectId,n,scope.projectId,n,scope.projectId,n,n], {mode: 'capture', projectId: scope.projectId})
     .all<Record<string, unknown>>();
-  return results.map((r) => ({
+  return results;
+  },row=>row.type==='session'?{projectId:scope.projectId,sessionId:row.session_id}:null);
+  return rows.map((r) => ({
     type: r.type as activity_FeedItem['type'],
     id: r.id as string,
     summary: r.type === 'session'
@@ -1998,7 +2696,8 @@ const session_activity_EDGE_DETAILS: Readonly<Record<session_activity_EdgeKey, s
 const session_activity_NOT_CAPTURED_TITLE = 'A session not captured here';
 
 /** Stored tool outcomes and parent edges only; tool bodies and provider errors never enter this projection. */
-async function session_activity_listSessionActivity(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, opts: session_activity_SessionActivityOptions = {}): Promise<session_activity_import_Page<session_activity_SessionActivityRow> & { tools: string[] }> {
+const session_activity_listSessionActivity = sourceOperation(session_activity_listSessionActivityImpl);
+async function session_activity_listSessionActivityImpl(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, opts: session_activity_SessionActivityOptions = {}): Promise<session_activity_import_Page<session_activity_SessionActivityRow> & { tools: string[] }> {
   const named = (source: { type: string }) => opts.type === undefined || source.type === opts.type;
   const toolSources = session_activity_TOOL_SOURCES.filter(named);
   const edgeSources = opts.tool !== undefined || opts.failed === true ? [] : session_activity_EDGE_SOURCES.filter(named);
@@ -2008,10 +2707,9 @@ async function session_activity_listSessionActivity(db: session_activity_import_
     ...toolSources.length === 0 ? [] : await session_activity_toolRows(db, scope, sessionId, toolSources, opts),
     ...edgeSources.length === 0 ? [] : await session_activity_edgeRows(db, scope, sessionId, edgeSources, opts),
   ].sort((a, b) => b.at - a.at || session_activity_import_binaryOrder(b.id, a.id)).slice(0, limit + 1);
-  const tools = await prepareViewRead(db, "M20:session_activity_listSessionActivity:0", `SELECT DISTINCT t.tool_name FROM tool_calls t WHERE t.project_id = ? AND t.session_id = ?
-    AND (${session_activity_TOOL_SOURCES.map(source => `(${source.where})`).join(' OR ')}) ORDER BY t.tool_name`)
-    .bind(scope.projectId, sessionId).all<{ tool_name: string }>();
-  return { ...session_activity_import_page(rows, limit, row => ({ createdAt: row.at, id: row.id })), tools: tools.results.map(row => row.tool_name) };
+  const tools = await sessionRows<{tool_name:string}>(db, "M20:session_activity_listSessionActivity:0", responseRead(db), scope.projectId, sessionId, `SELECT DISTINCT t.tool_name FROM tool_calls t WHERE t.project_id = ? AND t.session_id = ?
+    AND (${session_activity_TOOL_SOURCES.map(source => `(${source.where})`).join(' OR ')}) ORDER BY t.tool_name`, [scope.projectId,sessionId],1);
+  return { ...session_activity_import_page(rows, limit, row => ({ createdAt: row.at, id: row.id })), tools: tools.map(row => row.tool_name) };
 }
 
 async function session_activity_toolRows(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, sources: readonly typeof session_activity_TOOL_SOURCES[number][], opts: session_activity_SessionActivityOptions): Promise<session_activity_SessionActivityRow[]> {
@@ -2022,12 +2720,11 @@ async function session_activity_toolRows(db: session_activity_import_RelationalS
   if (opts.tool !== undefined) { filters.push(`${source.tool} = ?`); params.push(opts.tool); }
   if (opts.failed !== undefined) filters.push(opts.failed ? source.failed : `NOT (${source.failed})`);
   if (paging.where) { filters.push(paging.where); params.push(...paging.params); }
-  const { results } = await prepareViewRead(db, "M20:session_activity_toolRows:0", `SELECT CASE ${sources.map(source => `WHEN ${source.where} THEN '${source.type}'`).join(' ')} END AS type,
+  const results = await sessionRows<{ type: session_activity_SessionActivityType; id: string; tool_name: string; result_reason: session_activity_import_ToolResultReason | null; at: number; prompt_id: string | null }>(db, "M20:session_activity_toolRows:0", responseRead(db), scope.projectId, sessionId, `SELECT CASE ${sources.map(source => `WHEN ${source.where} THEN '${source.type}'`).join(' ')} END AS type,
       t.tool_call_id AS id, t.tool_name AS tool_name, t.result_reason AS result_reason, t.created_at AS at,
       ${hook_placement_placedHintSql({ project: 't.project_id', session: 't.session_id', prompt: 't.prompt_id' })} AS prompt_id
     FROM tool_calls t WHERE t.project_id = ? AND t.session_id = ? AND ${filters.join(' AND ')}
-    ORDER BY ${source.order} DESC, ${source.id} DESC LIMIT ?`)
-    .bind(...params, paging.limit + 1).all<{ type: session_activity_SessionActivityType; id: string; tool_name: string; result_reason: session_activity_import_ToolResultReason | null; at: number; prompt_id: string | null }>();
+    ORDER BY ${source.order} DESC, ${source.id} DESC LIMIT ?`, [...params,paging.limit+1],6,undefined,{table:'tool_calls',column:'id'});
   return results.map((row): session_activity_SessionActivityRow => ({
     id: row.id, type: row.type, title: row.result_reason === null ? 'Tool call did not succeed' : row.tool_name,
     detail: [row.result_reason === null ? 'Reason not recorded' : session_activity_REASON_DETAILS[row.result_reason], row.prompt_id === null ? 'Not placed on a turn' : null].filter(Boolean).join(' · '),
@@ -2037,14 +2734,17 @@ async function session_activity_toolRows(db: session_activity_import_RelationalS
 
 /** One statement over every selected edge, ordered and paged as one list. */
 async function session_activity_edgeRows(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, sources: readonly typeof session_activity_EDGE_SOURCES[number][], opts: session_activity_SessionActivityOptions): Promise<session_activity_SessionActivityRow[]> {
+  const read=responseRead(db);
   const paging = session_activity_import_keyset(opts, { order: 'e.at', id: 'e.id', direction: 'DESC' })!;
-  const terms = sources.flatMap(source => source.terms);
-  const { results } = await prepareViewRead(db, "M20:session_activity_edgeRows:0", `SELECT e.type, e.edge, e.id, e.at, e.related, e.title, e.first_prompt, e.agent, e.reason
+  const rows=await scalarRows(read,async scalars=>{
+  const terms = sources.flatMap(source => source.terms.map(sql=>sql.replaceAll(sessions_firstPromptSql('r'),sessions_firstPromptSql('r',scalars))));
+  const { results } = await prepareScalarRead(db, "M20:session_activity_edgeRows:0", scalars, `SELECT e.type, e.edge, e.id, e.at, e.related, e.title, e.first_prompt, e.agent, e.reason
     FROM (${terms.join(' UNION ALL ')}) e ${paging.where ? `WHERE ${paging.where}` : ''}
-    ORDER BY e.at DESC, e.id DESC LIMIT ?`)
-    .bind(...terms.flatMap(() => [scope.projectId, sessionId]), ...paging.params, paging.limit + 1)
+    ORDER BY e.at DESC, e.id DESC LIMIT ?`, [...terms.flatMap(() => [scope.projectId,sessionId]),...paging.params,paging.limit+1], {mode:'capture',projectId:scope.projectId})
     .all<{ type: session_activity_SessionActivityType; edge: session_activity_EdgeKey; id: string; at: number; related: string | null; title: string | null; first_prompt: string | null; agent: string | null; reason: string | null }>();
-  return results.map((row): session_activity_SessionActivityRow => ({
+  return results;
+  },row=>row.related===null?null:{projectId:scope.projectId,sessionId:row.related});
+  return rows.map((row): session_activity_SessionActivityRow => ({
     id: row.id, type: row.type, at: row.at,
     title: row.related === null ? session_activity_NOT_CAPTURED_TITLE : sessions_relatedSessionLabel(row.title, row.first_prompt, row.agent),
     detail: [session_activity_EDGE_DETAILS[row.edge], row.reason].filter(Boolean).join(' · '),
@@ -2067,9 +2767,11 @@ async function receiptPlans(
   scope: injection_served_items_import_ReadScope,
   receipts: readonly { receiptId: string; planIds: readonly string[] }[],
 ): Promise<Map<string, injection_served_items_ServedPlan[]>> {
+  const read=responseRead(db);
   const out = new Map<string, injection_served_items_ServedPlan[]>(receipts.map(receipt => [receipt.receiptId, []]));
   for (const run of injection_served_items_import_inListChunks(receipts)) {
-    const { results } = await prepareViewRead(db, "M47:receiptPlans:0", `SELECT json_extract(w.value, '$.receiptId') AS receipt_id,
+   await read.capture(async()=>{
+    const sql = `SELECT json_extract(w.value, '$.receiptId') AS receipt_id,
         item.value AS item_id,
         CASE WHEN s.item_id IS NOT NULL THEN s.title ELSE p.title END AS title,
         CASE WHEN s.item_id IS NOT NULL THEN s.session_id ELSE p.session_id END AS session_id,
@@ -2080,17 +2782,37 @@ async function receiptPlans(
         AND s.kind = 'plan' AND s.item_id = item.value
       LEFT JOIN plans p ON s.item_id IS NULL AND p.project_id = ? AND p.plan_key = item.value
       WHERE s.item_id IS NOT NULL OR p.plan_key IS NOT NULL
-      ORDER BY CAST(w.key AS INTEGER), CAST(item.key AS INTEGER)`)
-      .bind(JSON.stringify(run), scope.projectId, scope.projectId)
-      .all<{ receipt_id: string; item_id: string; title: string | null; session_id: string | null; content_hash: string | null; unavailable: number }>();
-    for (const row of results) out.get(row.receipt_id)!.push({
-      planKey: row.item_id, title: row.title, sessionId: row.session_id, contentHash: row.content_hash,
+      ORDER BY CAST(w.key AS INTEGER), CAST(item.key AS INTEGER)`;
+    const owner=`COALESCE(p.session_id,(SELECT v.session_id FROM view_plans v WHERE v.project_id = ?3 AND v.plan_key = item.value LIMIT 1))`;
+    const known=capturedSessionPredicate(read,scope.projectId,owner,'published');
+    const captured=capturedSessionPredicate(read,scope.projectId,owner);
+    const fresh=captured===null?owner:`CASE WHEN ${captured} THEN NULL ELSE ${owner} END`;
+    const numbered=sql.replace('FROM json_each(?) w','FROM json_each(?1) w').replace('s.project_id = ? AND','s.project_id = ?2 AND').replace('p.project_id = ? AND','p.project_id = ?3 AND');
+    const candidate=(known===null?sql:numbered).replace('AS unavailable\n      FROM', `AS unavailable,
+        CASE WHEN sv.session_id IS NOT NULL THEN ${sourceCaptureColumns()} END AS __myco_capture,
+        COALESCE(p.session_id,sv.session_id${known===null?'':','+owner}) AS __myco_owner
+      FROM`).replace('WHERE s.item_id IS NOT NULL OR p.plan_key IS NOT NULL',
+      `LEFT JOIN session_views sv ON s.item_id IS NULL AND sv.project_id = ?2 AND sv.session_id = ${fresh}
+      WHERE s.item_id IS NOT NULL OR p.plan_key IS NOT NULL OR sv.session_id IS NOT NULL${known===null?'':' OR '+known}`);
+    const values=[JSON.stringify(run),scope.projectId,scope.projectId];
+    const rows=(await prepareViewRead(db,'M47:receiptPlans:0',candidate,{mode:'capture',projectId:scope.projectId}).bind(...values).all<Record<string,unknown>>()).results;
+    const sources=new Map<string,SessionSources>();
+    for(const row of rows)if(typeof row.__myco_owner==='string'){
+      const source=rememberSources(read,scope.projectId,row.__myco_owner,row.__myco_capture);
+      sources.set(source.sessionId,source);
+    }
+    const results=[...sources.values()].some(source=>source.mode==='published')
+      ?(await multiSessionStatement(db,'M47:receiptPlans:0',[...sources.values()],'plans',sql,values).all<Record<string,unknown>>()).results
+      :rows;
+
+    for (const row of results) out.get(String(row.receipt_id))!.push({
+      planKey: String(row.item_id), title: row.title as string | null, sessionId: row.session_id as string | null, contentHash: row.content_hash as string | null,
       unavailable: row.unavailable === 1,
     });
+   });
   }
   return out;
 }
-
 type processed_ProcessedBodyKind = keyof typeof processed_import_PROCESSED_FIELDS;
 type processed_ProcessedTextKind = Exclude<processed_ProcessedBodyKind, 'attachment'>;
 
@@ -3203,55 +3925,54 @@ export {
 };
 
 /** Unplaced records stay visible at session level, in immutable capture order. */
-async function hook_placement_listUnplacedHookRecords(db: hook_placement_import_RelationalStore, scope: hook_placement_import_ReadScope, sessionId: string, opts: { limit?: number; cursor?: string } = {}) {
+ const hook_placement_listUnplacedHookRecords = sourceOperation(hook_placement_listUnplacedHookRecordsImpl);
+async function hook_placement_listUnplacedHookRecordsImpl(db: hook_placement_import_RelationalStore, scope: hook_placement_import_ReadScope, sessionId: string, opts: { limit?: number; cursor?: string } = {}, read: ResponseRead = responseRead(db)) {
   const k = hook_placement_import_keyset(opts, { order: 'created_at', id: 'record_key', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
   const contexts = await hook_placement_sessionContextHints(db, scope, sessionId);
-  const pages = await Promise.all(hook_placement_HOOK_RECORD_SOURCES.map(source => prepareViewRead(db, "M08:hook_placement_listUnplacedHookRecords:0", `SELECT * FROM (${hook_placement_unplacedSourceSql(source, source.table === 'session_injections' ? `(${contexts.sql})` : source.table)})
+  const sourceRows = (source: typeof hook_placement_HOOK_RECORD_SOURCES[number]) => sessionRows<Record<string, unknown>>(db, "M08:hook_placement_listUnplacedHookRecords:0", read, scope.projectId, sessionId, `SELECT * FROM (${hook_placement_unplacedSourceSql(source, source.table === 'session_injections' ? `(${contexts.sql})` : source.table)})
     WHERE project_id = ? AND session_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
-    ORDER BY created_at, record_key LIMIT ?`).bind(...(source.table === 'session_injections' ? contexts.params : []), scope.projectId, sessionId, ...k.params, k.limit + 1).all<Record<string, unknown>>()));
-  const results = pages.flatMap(result => result.results).sort((a, b) => Number(a.created_at) - Number(b.created_at)
+    ORDER BY created_at, record_key LIMIT ?`, [...(source.table === 'session_injections' ? contexts.params : []), scope.projectId, sessionId, ...k.params, k.limit + 1], 8);
+  const [first, ...remaining] = hook_placement_HOOK_RECORD_SOURCES;
+  const captured = await sourceRows(first);
+  const pages = [captured, ...await Promise.all(remaining.map(sourceRows))];
+  const results = pages.flat().sort((a, b) => Number(a.created_at) - Number(b.created_at)
     || hook_placement_import_binaryOrder(String(a.record_key), String(b.record_key)));
-  const rows: hook_placement_UnplacedHookRecord[] = results.map(row => ({
-    key: row.record_key as string, kind: row.record_kind as string,
-    id: row.record_id as string, promptHint: row.prompt_hint as string | null, label: row.label as string, createdAt: row.created_at as number
-  }));
+  const rows: hook_placement_UnplacedHookRecord[] = results.map(row => ({ key: row.record_key as string, kind: row.record_kind as string,
+    id: row.record_id as string, promptHint: row.prompt_hint as string | null, label: row.label as string, createdAt: row.created_at as number }));
   return hook_placement_import_page(rows, k.limit, row => ({ createdAt: row.createdAt, id: row.key }));
 }
 
 /** One plan inside the scope, or null — including when the key exists under another project. */
-function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary: true }): Promise<plans_ProjectPlanSummary | null>;
+ function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary: true }): Promise<plans_ProjectPlanSummary | null>;
 
-function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string): Promise<plans_ProjectPlanRow | null>;
+ function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string): Promise<plans_ProjectPlanRow | null>;
 
-async function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<plans_ProjectPlanSummary | plans_ProjectPlanRow | null> {
-  const row = await prepareViewRead(db, "M09:plans_getPlan:0", `SELECT ${options.summary ? 'plan_key, title, status, session_id, content_hash' : plans_COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
+ async function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<plans_ProjectPlanSummary | plans_ProjectPlanRow | null> {
+  const columns = options.summary ? 'plan_key, title, status, session_id, content_hash' : plans_COLUMNS;
+  const row = (await recordRows<Record<string, unknown>>(db, "M09:plans_getPlan:0", responseRead(db), scope.projectId, 'plans', planKey, `SELECT ${columns} FROM plans WHERE project_id = ? AND plan_key = ?`, [scope.projectId, planKey], projectionWidth(columns)))[0] ?? null;
   if (row === null) return null;
-  if (options.summary) return {
-    planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
-    sessionId: row.session_id as string, contentHash: row.content_hash as string | null
-  };
+  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
+    sessionId: row.session_id as string, contentHash: row.content_hash as string | null };
   const tags = await plans_tagsOf(db, scope, [planKey]);
   return plans_toPlan(row, tags.get(planKey) ?? []);
 }
 
 /** True when the plan sits in the session inside the scope. */
-async function plans_planInSession(db: plans_import_RelationalStore, scope: plans_import_ReadScope, sessionId: string, planKey: string): Promise<boolean> {
-  const row = await prepareViewRead(db, "M10:plans_planInSession:0", `SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ?`).bind(scope.projectId, sessionId, planKey).first<{ present: number }>();
+ async function plans_planInSession(db: plans_import_RelationalStore, scope: plans_import_ReadScope, sessionId: string, planKey: string): Promise<boolean> {
+  const row = (await sessionRows<{ present: number }>(db, "M10:plans_planInSession:0", responseRead(db), scope.projectId, sessionId, `SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ?`, [scope.projectId, sessionId, planKey], 1, undefined, { table: 'plans', recordId: planKey }, 'first'))[0] ?? null;
   return row !== null;
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
 /** One session; given `nowMs`, marked working or not. */
-async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number): Promise<sessions_SessionRow | null> {
-  const row = await prepareViewRead(db, "M12:sessions_getSession:0", `SELECT ${sessions_SESSION_COLUMNS} ${sessions_SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ? AND ${sessions_LIVE_SESSION}`)
-    .bind(scope.projectId, sessionId)
-    .first<Record<string, unknown>>();
+ async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number): Promise<sessions_SessionRow | null> {
+  const row = (await sessionRows<Record<string, unknown>>(db, "M12:sessions_getSession:0", responseRead(db), scope.projectId, sessionId, `SELECT ${sessions_SESSION_COLUMNS} ${sessions_SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ? AND ${sessions_LIVE_SESSION}`, [scope.projectId, sessionId], projectionWidth(sessions_SESSION_COLUMNS), undefined, undefined, 'first'))[0] ?? null;
   return row === null ? null : sessions_toSession(row, nowMs);
 }
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */
-async function sessions_sessionCounts(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<sessions_SessionCounts> {
+ async function sessions_sessionCounts(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, read: ResponseRead = responseRead(db)): Promise<sessions_SessionCounts> {
   const tables = [
     ['prompts', 'prompt_batches'],
     ['toolCalls', 'tool_calls'],
@@ -3262,24 +3983,25 @@ async function sessions_sessionCounts(db: sessions_import_RelationalStore, scope
   const counts = {} as Record<string, number>;
   // A deleted session holds nothing, whether or not every row has gone yet:
   // one check ahead of the five counts rather than a predicate repeated in each.
-  const deleted = await prepareViewRead(db, "M11:sessions_sessionCounts:0", `SELECT 1 AS present FROM session_tombstones WHERE project_id = ? AND session_id = ?`).bind(scope.projectId, sessionId).first<{ present: number }>();
+  const deleted = (await sessionRows<{present:number}>(db, 'M11:sessions_sessionCounts:0', read, scope.projectId, sessionId, `SELECT 1 AS present FROM session_tombstones WHERE project_id = ? AND session_id = ?`, [scope.projectId,sessionId],1,null,undefined,'first'))[0] ?? null;
   if (deleted !== null) return { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 };
   for (const [key, table] of tables) {
-    const row = await prepareViewRead(db, "M11:sessions_sessionCounts:1", `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id = ?`)
-      .bind(scope.projectId, sessionId)
-      .first<{ n: number }>();
+    const sql = `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id = ?`;
+    const row = table === 'attachments'
+      ? await prepareViewRead(db, "M11:sessions_sessionCounts:1", sql, {mode: "pinned", sources: read.context.get(sourceKey(scope.projectId, sessionId))!}).bind(scope.projectId, sessionId).first<{ n: number }>()
+      : (await sessionRows<{ n: number }>(db, "M11:sessions_sessionCounts:1", read, scope.projectId, sessionId, sql, [scope.projectId, sessionId], 1, undefined, undefined, 'first'))[0];
     counts[key] = row?.n ?? 0;
   }
   return counts as unknown as sessions_SessionCounts;
 }
 
-async function children_listChildren<T>(
+ async function children_listChildren<T>(
   db: children_import_RelationalStore,
   query: children_ChildQuery<T>,
   scope: children_import_ReadScope,
   sessionId: string,
   opts: children_ChildOptions = {},
-  filters: readonly children_ChildFilter[] = []
+  filters: readonly children_ChildFilter[] = [], read: ResponseRead = responseRead(db)
 ): Promise<children_import_Page<T & { orderedAt: number }>> {
   const order = query.orderColumn;
   const k = children_import_keyset(opts, { order, id: query.idColumn, direction: 'ASC' });
@@ -3296,24 +4018,23 @@ async function children_listChildren<T>(
   const sql = `SELECT ${children_childColumns(query)}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
                 WHERE ${conditions.join(' AND ')}
                 ORDER BY ${order} ASC, ${query.idColumn} ASC LIMIT ?`;
-  const { results } = await prepareViewRead(db, "M04:children_listChildren:0", sql).bind(...params, limit + 1).all<Record<string, unknown>>();
+  const { results } = await ({ results: await sessionRows<Record<string, unknown>>(db, "M04:children_listChildren:0", read, scope.projectId, sessionId, sql, [...params, limit + 1], projectionWidth(children_childColumns(query)) + 2, undefined, childSelection(query), 'all', [...projectionLabels(children_childColumns(query)), 'order_at', query.idColumn]) });
   const rows = results.map((row) => ({ ...query.map(row), orderedAt: row.order_at as number, __id: row[query.idColumn] as string }));
   const paged = children_import_page(rows, limit, (r) => ({ createdAt: r.orderedAt, id: r.__id }));
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
 }
 
 /** First pages for several prompts, each bounded independently, in one scoped query. */
-async function children_listChildrenByPrompt<T>(db: children_import_RelationalStore, query: children_ChildQuery<T>, scope: children_import_ReadScope, sessionId: string, promptIds: readonly string[], limit: number): Promise<Map<string, children_import_Page<T & { orderedAt: number }>>> {
+ async function children_listChildrenByPrompt<T>(db: children_import_RelationalStore, query: children_ChildQuery<T>, scope: children_import_ReadScope, sessionId: string, promptIds: readonly string[], limit: number, read: ResponseRead = responseRead(db)): Promise<Map<string, children_import_Page<T & { orderedAt: number }>>> {
   const pages = new Map<string, children_import_Page<T & { orderedAt: number }>>();
   if (promptIds.length === 0) return pages;
-  const { results } = await prepareViewRead(db, "M04:children_listChildrenByPrompt:0", `SELECT * FROM (
+  const { results } = await ({ results: await sessionRows<Record<string, unknown>>(db, "M04:children_listChildrenByPrompt:0", read, scope.projectId, sessionId, `SELECT * FROM (
     SELECT ${children_childColumns(query)}, ${query.orderColumn} AS order_at, ${query.idColumn},
       ROW_NUMBER() OVER (PARTITION BY ${query.promptHint ?? 'prompt_id'} ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
     FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN ${query.table}
     WHERE project_id = ? AND session_id = ? AND ${query.promptHint ?? 'prompt_id'} = wanted.wanted_prompt
       ${query.promptHint === undefined ? '' : `AND ${hook_placement_hookPlacementSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` })}`}
-  ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`)
-    .bind(JSON.stringify(promptIds), scope.projectId, sessionId, limit + 1).all<Record<string, unknown>>();
+  ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`, [JSON.stringify(promptIds), scope.projectId, sessionId, limit + 1], projectionWidth(children_childColumns(query)) + 3, undefined, childSelection(query)) });
   const grouped = new Map<string, Record<string, unknown>[]>();
   for (const r of results) {
     const id = r.prompt_id as string;
@@ -3327,33 +4048,38 @@ async function children_listChildrenByPrompt<T>(db: children_import_RelationalSt
   }
   return pages;
 }
-
-const children_MATERIAL_SQL = `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
+const children_materialSql = (published: boolean): string => `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
                      (SELECT substr(r.text, 1, ?) FROM responses r
                        WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
                        ORDER BY r.created_at, r.response_id LIMIT 1) AS response
                 FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND ${children_MATERIAL_PROMPT_SQL} AND ${children_import_sessionMaterialReadySql('pb')}`;
+               WHERE pb.project_id = ? AND pb.session_id = ? AND ${children_MATERIAL_PROMPT_SQL}${published ? '' : ' AND ' + children_import_sessionMaterialReadySql('pb')}`;
+const children_MATERIAL_SQL = children_materialSql(false);
 
-async function children_materialRows(db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC'): Promise<children_MaterialRow[]> {
-  const { results } = await prepareViewRead(db, "M23:children_materialRows:0", `${children_MATERIAL_SQL} ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`)
-    .bind(opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit)
-    .all<{ prompt_id: string; prompt: string; response: string | null }>();
-  await children_import_assertSessionMaterialReady(db, projectId, sessionId);
+async function children_materialRows(db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC', read: ResponseRead = responseRead(db)): Promise<children_MaterialRow[]> {
+  const ordering = ` ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`;
+  const sql = children_MATERIAL_SQL + ordering;
+  const published = children_materialSql(true) + ordering;
+  const results = await sessionRows<{ prompt_id: string; prompt: string; response: string | null }>(db, "M23:children_materialRows:0", read, projectId, sessionId, sql, [opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit], 3, published);
+  const source=read.context.get(sourceKey(projectId,sessionId));
+  if(source?.mode==='published'){if(!source.ready)throw new SessionMaterialPendingError();}
+  else await children_import_assertSessionMaterialReady(db, projectId, sessionId);
   return results.map((r) => ({ promptId: r.prompt_id, prompt: r.prompt, response: r.response ?? null }));
 }
 
 /** A projected field whose inline value or exact stored-body provenance is admitted. */
 async function processed_processedField(env: Pick<processed_import_ServerEnv, 'db'>, scope: processed_import_ReadScope, kind: processed_ProcessedBodyKind, id: string): Promise<processed_ProcessedField | null> {
   const field = processed_import_PROCESSED_FIELDS[kind];
-  const row = await prepareViewRead(env.db, "M26:processed_processedField:0", `SELECT ${field.text === null ? 'NULL' : `d.${field.text}`} AS text, d.${field.blob} AS blob_key,
+  const sql = `SELECT ${field.text === null ? 'NULL' : `d.${field.text}`} AS text, d.${field.blob} AS blob_key,
       ${processed_import_registeredObjectKeySql('d.project_id', `d.${field.blob}`)} AS object_key,
       (SELECT b.size FROM blobs b WHERE b.project_id = d.project_id AND b.key = d.${field.blob}) AS registered_size,
       ${kind === 'tool-input' ? 'd.input_bytes' : 'NULL'} AS total_bytes,
       ${kind === 'attachment' ? 'd.media_type' : 'NULL'} AS media_type,
-      ${processed_import_processedResourceProofSql('d.project_id', kind, `d.${field.id}`, `d.${field.blob}`)} AS admitted
-    FROM ${field.table} d WHERE d.project_id = ? AND d.${field.id} = ?`)
-    .bind(scope.projectId, id).first<processed_ProcessedField>();
+      ${processed_import_processedResourceProofSql('d.project_id', kind, `d.${field.id}`, `d.${field.blob}`)} AS admitted${kind === 'attachment' ? '' : ', d.session_id AS __myco_session'}
+    FROM ${field.table} d WHERE d.project_id = ? AND d.${field.id} = ?`;
+  const row = isMaterialTable(field.table)
+    ? (await recordRows<processed_ProcessedField & Record<string, unknown>>(env.db, "M26:processed_processedField:0", responseRead(env.db), scope.projectId, field.table, id, sql, [scope.projectId, id], 8, '__myco_session'))[0] ?? null
+    : await prepareViewRead(env.db, "M26:processed_processedField:0", sql, {mode: 'fact', projectId: scope.projectId, table: 'attachments', recordId: id}).bind(scope.projectId, id).first<processed_ProcessedField>();
   if (row === null) return null;
   if (kind === 'tool-input' && row.blob_key === null && row.text !== null && row.total_bytes !== null && row.total_bytes > processed_import_utf8(row.text).byteLength) {
     throw new Error('Processed tool input has a truncated prefix without its complete body');
@@ -3364,7 +4090,7 @@ async function processed_processedField(env: Pick<processed_import_ServerEnv, 'd
 }
 
 /** A session's top-level prompts, keyset-paged in the requested direction; a named prompt resolves to its turn. */
-async function turns_listTurns(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, opts: { origins?: readonly string[]; limit?: number; cursor?: string; order?: 'ASC' | 'DESC'; promptId?: string } = {}): Promise<turns_import_Page<turns_TurnRow>> {
+ async function turns_listTurns(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, opts: { origins?: readonly string[]; limit?: number; cursor?: string; order?: 'ASC' | 'DESC'; promptId?: string } = {}, read: ResponseRead = responseRead(db)): Promise<turns_import_Page<turns_TurnRow>> {
   const direction = opts.order ?? 'ASC';
   const k = turns_import_keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction });
   if (k === null) return { rows: [], cursor: null };
@@ -3377,13 +4103,11 @@ async function turns_listTurns(db: turns_import_RelationalStore, scope: turns_im
     params.push(scope.projectId, sessionId, opts.promptId);
   }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
-  const { results } = await prepareViewRead(db, "M01:turns_listTurns:0", `SELECT pb.prompt_id, pb.origin, pb.prompt_kind, pb.thread_label, substr(pb.text, 1, ${turns_TURN_PREVIEW_CHARS}) AS preview, length(pb.text) AS text_chars, pb.blob_key, pb.created_at,
+  const { results } = await ({ results: await sessionRows<Record<string, unknown>>(db, "M01:turns_listTurns:0", read, scope.projectId, sessionId, `SELECT pb.prompt_id, pb.origin, pb.prompt_kind, pb.thread_label, substr(pb.text, 1, ${turns_TURN_PREVIEW_CHARS}) AS preview, length(pb.text) AS text_chars, pb.blob_key, pb.created_at,
                      ${turns_TOOL_CALL_COUNT} AS tool_call_count, ${turns_RESPONSE_COUNT} AS response_count, ${turns_CHILD_COUNT} AS child_count, ${turns_PLAN_COUNT} AS plan_count, ${turns_ATTACHMENT_COUNT} AS attachment_count
                 FROM prompt_batches pb
                WHERE ${conditions.join(' AND ')}
-               ORDER BY pb.created_at ${direction}, pb.prompt_id ${direction} LIMIT ?`)
-    .bind(...params, k.limit + 1)
-    .all<Record<string, unknown>>();
+               ORDER BY pb.created_at ${direction}, pb.prompt_id ${direction} LIMIT ?`, [...params, k.limit + 1], 13, undefined, {table:'prompt_batches',column:'prompt_id'}) });
   const rows: turns_TurnRow[] = results.map((r) => ({
     promptId: r.prompt_id as string,
     origin: r.origin as string,
@@ -3403,17 +4127,16 @@ async function turns_listTurns(db: turns_import_RelationalStore, scope: turns_im
 }
 
 /** True when a prompt of that id sits in the session. */
-async function turns_promptInSession(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string): Promise<boolean> {
-  const row = await prepareViewRead(db, "M02:turns_promptInSession:0", `SELECT 1 AS present FROM prompt_batches WHERE project_id = ? AND session_id = ? AND prompt_id = ?`)
-    .bind(scope.projectId, sessionId, promptId)
-    .first<{ present: number }>();
+ async function turns_promptInSession(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, read: ResponseRead = responseRead(db)): Promise<boolean> {
+  const row = await ((await sessionRows<{ present: number }>(db, "M02:turns_promptInSession:0", read, scope.projectId, sessionId, `SELECT 1 AS present FROM prompt_batches WHERE project_id = ? AND session_id = ? AND prompt_id = ?`, [scope.projectId, sessionId, promptId], 1, undefined, {table:'prompt_batches',recordId:promptId}, 'first'))[0] ?? null);
   return row !== null;
 }
 
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */
-async function turns_turnDetail(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string): Promise<turns_TurnDetail | null> {
-  const children = await turns_steeringChildPage(db, scope, sessionId, promptId, { limit: turns_TURN_BODY_LIMIT });
-  const bodies = await turns_readTurnBodies(db, scope, sessionId, [promptId, ...children.rows.map(r => r.prompt_id as string)]);
+ const turns_turnDetail = sourceOperation(turns_turnDetailImpl);
+async function turns_turnDetailImpl(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, read: ResponseRead = responseRead(db)): Promise<turns_TurnDetail | null> {
+  const children = await turns_steeringChildPage(db, scope, sessionId, promptId, { limit: turns_TURN_BODY_LIMIT }, read);
+  const bodies = await turns_readTurnBodies(db, scope, sessionId, [promptId, ...children.rows.map(r => r.prompt_id as string)], read);
   const body = bodies.get(promptId);
   if (body === undefined) return null;
   body.children = [...turns_steeringBodies(children, bodies).rows];
@@ -3422,10 +4145,11 @@ async function turns_turnDetail(db: turns_import_RelationalStore, scope: turns_i
 }
 
 /** First pages are hydrated in bulk; each child keeps its own collection cursors. */
-async function turns_readTurnBodies(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptIds: readonly string[]): Promise<Map<string, turns_TurnDetail>> {
+const turns_readTurnBodies = sourceOperation(turns_readTurnBodiesImpl);
+async function turns_readTurnBodiesImpl(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptIds: readonly string[], read: ResponseRead = responseRead(db)): Promise<Map<string, turns_TurnDetail>> {
   const bodies = new Map<string, turns_TurnDetail>();
   if (promptIds.length === 0) return bodies;
-  const { results } = await prepareViewRead(db, "M03:turns_readTurnBodies:0", `SELECT ${turns_PROMPT_COLUMNS},
+  const { results } = await ({ results: await sessionRows<Record<string, unknown>>(db, "M03:turns_readTurnBodies:0", read, scope.projectId, sessionId, `SELECT ${turns_PROMPT_COLUMNS},
     (SELECT MAX(+created_at) FROM responses WHERE project_id = pb.project_id AND session_id = pb.session_id AND prompt_id = pb.prompt_id) AS last_reply,
     (SELECT json_group_array(json_object('toolName', tool_name, 'count', n)) FROM (
       ${turns_toolUsageSql(true, true)})) AS tools,
@@ -3435,14 +4159,13 @@ async function turns_readTurnBodies(db: turns_import_RelationalStore, scope: tur
       ORDER BY +i.created_at DESC LIMIT 1) AS injection,
     (SELECT agent FROM sessions s WHERE s.project_id = pb.project_id AND s.session_id = pb.session_id) AS agent
     FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN prompt_batches pb
-    WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = wanted.wanted_prompt`)
-    .bind(JSON.stringify(promptIds), scope.projectId, sessionId).all<Record<string, unknown>>();
+    WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = wanted.wanted_prompt`, [JSON.stringify(promptIds), scope.projectId, sessionId], 12, undefined, {table:'prompt_batches',column:'prompt_id'}) });
   const ids = results.map(r => r.prompt_id as string);
   const [responses, attachments, plans, answers] = await Promise.all([
-    children_listChildrenByPrompt(db, children_RESPONSE_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT),
-    children_listChildrenByPrompt(db, children_ATTACHMENT_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT),
-    children_listChildrenByPrompt(db, children_TURN_PLAN_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT),
-    children_listChildrenByPrompt(db, turns_ANSWER_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT),
+    children_listChildrenByPrompt(db, children_RESPONSE_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT, read),
+    children_listChildrenByPrompt(db, children_ATTACHMENT_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT, read),
+    children_listChildrenByPrompt(db, children_TURN_PLAN_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT, read),
+    children_listChildrenByPrompt(db, turns_ANSWER_QUERY, scope, sessionId, ids, turns_TURN_BODY_LIMIT, read),
   ]);
   type Served = { receiptId: string; sporeIds: string[]; createdAt: number; planIds: string[]; };
   const served = new Map(results.map(r => {
@@ -3459,91 +4182,88 @@ async function turns_readTurnBodies(db: turns_import_RelationalStore, scope: tur
     const id = prompt.promptId;
     const receipt = served.get(id);
     const planById = new Map((receipt == null ? [] : plansByReceipt.get(receipt.receiptId) ?? []).map(plan => [plan.planKey, { planKey: plan.planKey, title: plan.title }]));
-    const injection = receipt == null ? null : {
-      sporeIds: receipt.sporeIds, planIds: receipt.planIds, createdAt: receipt.createdAt,
+    const injection = receipt == null ? null : { sporeIds: receipt.sporeIds, planIds: receipt.planIds, createdAt: receipt.createdAt,
       plans: receipt.planIds.flatMap(id => { const plan = planById.get(id); return plan === undefined ? [] : [plan]; }),
       spores: receipt.sporeIds.flatMap(id => {
         const spore = byId.get(id);
         return spore === undefined ? [] : [{ id, observationType: spore.observationType, preview: turns_import_oneLine(spore.agentLine ?? spore.content) }];
-      })
-    };
+      }) };
     bodies.set(id, {
       prompt, responses: [...responses.get(id)!.rows], attachments: [...attachments.get(id)!.rows],
       plans: [...plans.get(id)!.rows], answers: [...answers.get(id)!.rows], injection, children: [],
       metrics: { tools: JSON.parse(row.tools as string), durationMs: !turns_import_sourceTimestampsRecorded(turns_import_CAPTURE_RULE_BUNDLES, row.agent as string | null) || row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null },
-      cursors: {
-        responses: responses.get(id)!.cursor, attachments: attachments.get(id)!.cursor,
-        plans: plans.get(id)!.cursor, answers: answers.get(id)!.cursor, children: null
-      },
+      cursors: { responses: responses.get(id)!.cursor, attachments: attachments.get(id)!.cursor,
+        plans: plans.get(id)!.cursor, answers: answers.get(id)!.cursor, children: null },
     });
   }
   return bodies;
 }
 
 /** A bounded page of steering prompts, with their bodies hydrated together. */
-async function turns_listSteeringChildren(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<turns_import_Page<turns_TurnChild>> {
-  const children = await turns_steeringChildPage(db, scope, sessionId, promptId, opts);
-  const bodies = await turns_readTurnBodies(db, scope, sessionId, children.rows.map(r => r.prompt_id as string));
+ const turns_listSteeringChildren = sourceOperation(turns_listSteeringChildrenImpl);
+async function turns_listSteeringChildrenImpl(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string } = {}, read: ResponseRead = responseRead(db)): Promise<turns_import_Page<turns_TurnChild>> {
+  const children = await turns_steeringChildPage(db, scope, sessionId, promptId, opts, read);
+  const bodies = await turns_readTurnBodies(db, scope, sessionId, children.rows.map(r => r.prompt_id as string), read);
   return turns_steeringBodies(children, bodies);
 }
 
-async function turns_steeringChildPage(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string }): Promise<turns_import_Page<Record<string, unknown>>> {
+async function turns_steeringChildPage(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string }, read: ResponseRead = responseRead(db)): Promise<turns_import_Page<Record<string, unknown>>> {
   const k = turns_import_keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
-  const { results } = await prepareViewRead(db, "M05:turns_steeringChildPage:0", `SELECT ${turns_PROMPT_COLUMNS}, ${turns_TOOL_CALL_COUNT} AS tool_call_count, ${turns_CHILD_COUNT} AS child_count FROM prompt_batches pb
+  const { results } = await ({ results: await sessionRows<Record<string, unknown>>(db, "M05:turns_steeringChildPage:0", read, scope.projectId, sessionId, `SELECT ${turns_PROMPT_COLUMNS}, ${turns_TOOL_CALL_COUNT} AS tool_call_count, ${turns_CHILD_COUNT} AS child_count FROM prompt_batches pb
     WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
-    ORDER BY +pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
-    .bind(scope.projectId, sessionId, promptId, ...k.params, k.limit + 1).all<Record<string, unknown>>();
+    ORDER BY +pb.created_at ASC, pb.prompt_id ASC LIMIT ?`, [scope.projectId, sessionId, promptId, ...k.params, k.limit + 1], 10, undefined, {table:'prompt_batches',column:'prompt_id'}) });
   return turns_import_page(results, k.limit, (r) => ({ createdAt: r.created_at as number, id: r.prompt_id as string }));
 }
 
 /** A turn collection's continuation, confined to the prompt's Project and session. */
-function turns_turnCollection(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, collection: turns_TurnCollection, opts: { limit?: number; cursor?: string }) {
+ const turns_turnCollection = sourceOperation(turns_turnCollectionImpl);
+async function turns_turnCollectionImpl(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, collection: turns_TurnCollection, opts: { limit?: number; cursor?: string }, read: ResponseRead = responseRead(db)) {
   const bounded = { ...opts, limit: Math.min(opts.limit ?? turns_TURN_BODY_LIMIT, turns_TURN_BODY_LIMIT), promptId };
   switch (collection) {
-    case 'responses': return children_listChildren(db, children_RESPONSE_QUERY, scope, sessionId, bounded);
-    case 'attachments': return children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, bounded);
-    case 'plans': return children_listChildren(db, children_TURN_PLAN_QUERY, scope, sessionId, bounded);
-    case 'answers': return children_listChildren(db, turns_ANSWER_QUERY, scope, sessionId, bounded);
-    case 'children': return turns_listSteeringChildren(db, scope, sessionId, promptId, bounded);
+    case 'responses': return children_listChildren(db, children_RESPONSE_QUERY, scope, sessionId, bounded, [], read);
+    case 'attachments': return children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, bounded, [], read);
+    case 'plans': return children_listChildren(db, children_TURN_PLAN_QUERY, scope, sessionId, bounded, [], read);
+    case 'answers': return children_listChildren(db, turns_ANSWER_QUERY, scope, sessionId, bounded, [], read);
+    case 'children': return turns_listSteeringChildren(db, scope, sessionId, promptId, bounded, read);
   }
 }
 
 /** Counts every stored call, independent of the page of call details. */
-async function turns_toolUsage(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId?: string): Promise<turns_ToolUsage[]> {
-  const { results } = await prepareViewRead(db, "M06:turns_toolUsage:0", turns_toolUsageSql(promptId !== undefined))
-    .bind(scope.projectId, sessionId, ...(promptId === undefined ? [] : [promptId])).all<{ tool_name: string; n: number }>();
+ async function turns_toolUsage(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId?: string, read: ResponseRead = responseRead(db)): Promise<turns_ToolUsage[]> {
+  const { results } = await ({ results: await sessionRows<{ tool_name: string; n: number }>(db, "M06:turns_toolUsage:0", read, scope.projectId, sessionId, turns_toolUsageSql(promptId !== undefined), [scope.projectId, sessionId, ...(promptId === undefined ? [] : [promptId])], 2) });
   return results.map((r) => ({ toolName: r.tool_name, count: r.n }));
 }
 
+
 /** Sub-agent preambles use the parent hint carried by their canonical start event. */
-async function turns_sessionTurnContexts(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string): Promise<Record<string, turns_TurnContext>> {
+ const turns_sessionTurnContexts = sourceOperation(turns_sessionTurnContextsImpl);
+async function turns_sessionTurnContextsImpl(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, read: ResponseRead = responseRead(db)): Promise<Record<string, turns_TurnContext>> {
   const contexts = await hook_placement_sessionContextHints(db, scope, sessionId);
-  const { results } = await prepareViewRead(db, "M07:turns_sessionTurnContexts:0", `SELECT r.placement_hint AS prompt_id, COUNT(*) AS n FROM (${contexts.sql}) r
+  const { results } = await ({ results: await sessionRows<{ prompt_id: string; n: number }>(db, "M07:turns_sessionTurnContexts:0", read, scope.projectId, sessionId, `SELECT r.placement_hint AS prompt_id, COUNT(*) AS n FROM (${contexts.sql}) r
     WHERE r.project_id = ? AND r.session_id = ? AND r.kind LIKE 'cortex:%'
       AND ${hook_placement_hookPlacementSql({ project: 'r.project_id', session: 'r.session_id', prompt: 'r.placement_hint' })}
-    GROUP BY r.placement_hint`).bind(...contexts.params, scope.projectId, sessionId).all<{ prompt_id: string; n: number }>();
+    GROUP BY r.placement_hint`, [...contexts.params, scope.projectId, sessionId], 2) });
   return Object.fromEntries(results.map(row => [row.prompt_id, { subagents: row.n }]));
 }
 
-export async function injectedPromptRecord(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, promptId: string): Promise<{ spore_ids: string; created_at: number } | null> {
-  return prepareViewRead(db, "M45:injectedPromptRecord:0", `SELECT spore_ids, created_at FROM spore_injections
+export async function injectedPromptRecord(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope,
+  sessionId: string, promptId: string): Promise<{ spore_ids: string; created_at: number } | null> {
+  return (await sessionRows<{ spore_ids: string; created_at: number }>(db, "M45:injectedPromptRecord:0", responseRead(db), scope.projectId, sessionId, `SELECT spore_ids, created_at FROM spore_injections
                WHERE project_id = ? AND session_id = ? AND delivered_prompt_id = ?
                  AND ${hook_placement_hookPlacementSql({ project: 'spore_injections.project_id', session: 'spore_injections.session_id', prompt: 'spore_injections.delivered_prompt_id' })}
-               ORDER BY created_at DESC LIMIT 1`)
-    .bind(scope.projectId, sessionId, promptId)
-    .first<{ spore_ids: string; created_at: number }>();
+               ORDER BY created_at DESC LIMIT 1`, [scope.projectId, sessionId, promptId], 2, undefined, undefined, 'first'))[0] ?? null;
 }
 
 export async function processedBundle(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, id: string) {
-  return prepareViewRead(db, "M26:processedBundle:0", `SELECT t.input_bundle_id AS bundle_id, t.input_bundle_entry AS entry,
-        t.input AS preview, t.input_bytes AS bytes, t.token_id
+  const read=responseRead(db);
+  const row=(await recordRows<{ bundle_id: number | null; entry: number | null; preview: string | null; bytes: number | null; token_id: string }>(db, "M26:processedBundle:0", read, scope.projectId, 'tool_calls', id, `SELECT t.input_bundle_id AS bundle_id, t.input_bundle_entry AS entry,
+        t.input AS preview, t.input_bytes AS bytes, t.token_id, t.session_id AS __myco_session
       FROM tool_calls t
-      WHERE t.project_id=? AND t.tool_call_id=?`).bind(scope.projectId, id)
-    .first<{
-      bundle_id: number | null; entry: number | null; preview: string | null; bytes: number | null;
-      token_id: string
-    }>();
+      WHERE t.project_id=? AND t.tool_call_id=?`, [scope.projectId, id], 6, '__myco_session'))[0] ?? null;
+  const selected=read.selected.get(JSON.stringify([scope.projectId,'tool_calls',id]));
+  if(selected?.instanceId!=null&&row?.bundle_id!=null)throw new ViewReadRefusal('view_source_identity_missing',selected.sources);
+  return row;
 }
 
 export {
@@ -4121,7 +4841,8 @@ export function prepareReleasePropagation(db: sessions_import_RelationalStore, p
 
 type ViewReadOperation = (typeof VIEW_READ_OPERATION_IDS)[number];
 
-function prepareViewRead(db: sessions_import_RelationalStore, operation: ViewReadOperation, sql: string) {
+function prepareViewRead(db: sessions_import_RelationalStore, operation: ViewReadOperation, sql: string, capture?: SourcePreparation) {
+  void capture;
   return db.prepare('/*vs:' + operation + '*/' + sql);
 }
 

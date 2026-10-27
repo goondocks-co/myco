@@ -9,12 +9,13 @@
  * nothing is compiled per request.
  */
 import type { JsonSchemaProperty, ToolDefinition } from './definitions.js';
+import type { ViewReadRefusalCode } from '../core/read-refusals.js';
 
 export type ToolInput = Record<string, unknown>;
 
 /** A failure the caller can act on, carried to the wire as a JSON-RPC error with `data.code`. */
 export class ToolError extends Error {
-  constructor(readonly code: 'invalid_input' | 'unknown_tool' | 'not_served' | 'tool_call_failed', message: string) {
+  constructor(readonly code: 'invalid_input' | 'unknown_tool' | 'not_served' | 'tool_call_failed' | ViewReadRefusalCode, message: string) {
     super(message);
     this.name = 'ToolError';
   }

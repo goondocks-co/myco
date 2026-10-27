@@ -1,6 +1,7 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
+import { planStatusStatement } from './view-store.js';
 import { clampLimit, containsPattern, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 export {
   type plans_ProjectPlanRow as ProjectPlanRow,
@@ -20,12 +21,9 @@ export {
 
 
 /**
- * Writes a plan's status as an administrative edit by a member. The stamp lands strictly after the row's, so a capture event replayed with the row's old stamp never wins over the edit. False when no such plan sits in the scope or it already holds the status.
+ * Updates a surviving fact plan and stamps it strictly after its current revision. Returns false for an unknown, view-only or same-status target. Canonical editorial callers use changePlanStatus to resolve the response and refuse a view-only target.
  */
 export async function setPlanStatus(db: RelationalStore, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<boolean> {
-  const result = await db
-    .prepare(`UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ? RETURNING plan_key`)
-    .bind(status, by, nowMs, scope.projectId, planKey, status)
-    .first();
+  const result = await planStatusStatement(db, scope, planKey, status, by, nowMs).first();
   return result !== null;
 }

@@ -1,8 +1,12 @@
+import {emptyReadSql,emptyReadRows,activeCatalogueRows,explainReadPlan,legacyArmPlanViolations,partitionLegacyPlan,captureProbePlan,armPlanViolations} from './helpers/view-read-costs.js';
 import {Database} from 'bun:sqlite';
 import {sqliteRelationalStore} from '@myco-server-worker/platform/bun/sqlite.js';
 import type {PreparedStatement} from '@myco-server-worker/core/adapters.js';
 import {statementRecorder,withReadPreparation} from '../helpers/statement-recorder.js';
 import {createHash} from 'node:crypto';
+import fs from 'node:fs';
+const {appendFileSync,createReadStream}=fs;
+import {createInterface} from 'node:readline';
 import {expect,test,spyOn} from 'bun:test';
 import legacy from './fixtures/view-read-legacy.json';
 import {legacyExecutionCases,legacyVariants,legacyApplicability,legacyReceiptReferences,legacyReferencedEvents,legacyCIVariants,withFrozenCIOracle,withFrozenOracle,frozenListingReaders,executeListingVariant,executeReadVariant,frozenReadPort,currentReadPort,seedLegacyFixture,seedLegacyPromptArity,seedLegacyCISwitch,legacyCISwitchReads,seedLegacyCIResults,legacyCIResultReads,seedLegacyPublicFixture,legacyBodyBlobs,legacyPublicRequests,legacyPublicServer,type LegacyVariant} from '../helpers/view-read-legacy-fixtures.js';
@@ -12,12 +16,158 @@ import type {StatementEvent} from '../helpers/statement-recorder.js';
 import {significantRead,protectedSql,readTag,runtimeBoundary} from '../helpers/view-read-contract.js';
 import {withViewStores,withViewStorePair} from './helpers/view-stores.js';
 import {gunzipSync} from 'node:zlib';
+import {VIEW_READ_OPERATIONS} from '../helpers/view-read-operations.js';
 import {LEGACY_ONLY_OPERATIONS} from '@myco-server-worker/read/view-store.js';
 import {AssertionError} from 'node:assert';
 import {ToolError} from '@myco-server-worker/mcp/validate.js';
 import {uuid} from './helpers/fixtures.js';
 
 const fullReplay=process.env.MYCO_VIEW_READ_FULL==='1';
+
+test('recorded plan SQL uses fixture permissions and cannot claim a copied module origin',async()=>{
+ await withViewStores(async(db,target)=>{
+  const recorded=statementRecorder(db,{accounting:target==='D1'?'d1':'native'});
+  const query={sql:'/*vs:M24:plans_planTotals:0*/SELECT plan_key FROM plans WHERE project_id=? AND plan_key=? /* artifact control */',binds:['project','absent']};
+  const plan=await explainReadPlan(recorded.db,query);
+  expect(plan.some(row=>row.detail.includes('project_id=? AND plan_key=?')),target).toBe(true);
+  const prepared=recorded.events.find(row=>row.kind==='prepare');
+  expect(prepared?.origin?.kind,target).toBe('exception');
+  expect(prepared?.origin!==undefined&&'replay' in prepared.origin,target).toBe(false);
+  expect(prepared?.captured,target).toBe(false);
+  expect(query.sql.startsWith('/*vs:M24:'),target).toBe(true);
+ });
+},30_000);
+
+test.skipIf(!process.env.MYCO_VIEW_READ_Q_CASES)('every recorded independent SQL pair retains its native and D1 legacy plan and exact capture probes',async()=>{
+ const files=process.env.MYCO_VIEW_READ_Q_CASES!.split(',');
+ for(const file of files){
+  const fixture=file.includes('listing')?'listing':'arity';
+  for(const target of ['native','D1'] as const)await withViewStorePair(target,fixture==='listing'?seedLegacyFixture:seedLegacyPromptArity,async(baseline,candidate)=>{
+   const lines=createInterface({input:createReadStream(file),crlfDelay:Infinity});let cases=0,footer=false,physicalProbes=0;
+   const costEstimateOnly:Record<string,number>={};
+   try{for await(const line of lines){
+    const row:unknown=JSON.parse(line);
+    if(typeof row!=='object'||row===null||!('kind'in row))throw new Error('Invalid recorded plan case');
+    if(row.kind==='view_read_plan_cases_complete'){
+     if(!('classes'in row)||row.classes!==cases)throw new Error('Recorded plan case footer differs');footer=true;continue;
+    }
+    if(footer||row.kind!=='view_read_plan_case'||!('baseline'in row)||!('candidate'in row)||!('operation'in row)||typeof row.operation!=='string'||!('caseId'in row))throw new Error('Invalid recorded independent pair');
+    const shape=(value:unknown):value is {sql:string;binds:unknown[]}=>typeof value==='object'&&value!==null&&'sql'in value&&typeof value.sql==='string'&&'binds'in value&&Array.isArray(value.binds);
+    if(!shape(row.baseline)||!shape(row.candidate))throw new Error('Recorded plan statement is malformed');
+    const before=await explainReadPlan(baseline,row.baseline),after=await explainReadPlan(candidate,row.candidate);
+    const input={sql:row.candidate.sql,original:row.baseline.sql,operation:row.operation,baseline:before,candidate:after};
+    let errors:string[],retained=after;
+    if(row.operation==='M21:hook_placement_countUnplacedContextRecords:0'){
+     expect(emptyReadSql(input.sql),target+'/'+row.caseId+' M21 frozen reconstruction').toBe(input.original);
+     const restored=await explainReadPlan(candidate,{sql:emptyReadSql(input.sql),binds:row.candidate.binds});
+     retained=restored;
+     errors=armPlanViolations({baseline:before,legacy:restored,publication:[],view:[]}).filter(error=>error!=='publication gate requires one exact indexed session_views search');
+     errors.push(...captureProbePlan(input.sql,after).errors);
+    }else{errors=legacyArmPlanViolations(input);retained=partitionLegacyPlan(input).legacy;}
+    if(errors.length)console.info('VIEW_Q_FAILURE',JSON.stringify({target,caseId:row.caseId,operation:row.operation,before,after,baseline:row.baseline,candidate:row.candidate}));
+    expect(errors,target+'/'+row.caseId+'/'+row.operation).toEqual([]);
+    if(retained.some((plan,index)=>plan.notused!==before[index]?.notused))costEstimateOnly[row.operation]=(costEstimateOnly[row.operation]??0)+1;
+    const report=process.env.MYCO_VIEW_READ_Q_REPORT;
+    if(report)appendFileSync(report,JSON.stringify({kind:'view_read_Q_pair',fixture,target,caseId:row.caseId,operation:row.operation,before,after,retained})+'\n');
+    physicalProbes+=captureProbePlan(input.sql,after).actual.publication;cases++;
+    if(cases%10000===0)console.info('VIEW_Q_PROGRESS',JSON.stringify({fixture,target,cases,physicalProbes}));
+   }}finally{lines.close();}
+   expect(footer,target+'/'+fixture+' completed E artifact').toBe(true);
+   expect(cases).toBeGreaterThan(0);
+   const result={kind:'view_read_Q_complete',fixture,target,cases,physicalProbes,costEstimateOnly};
+   console.info('VIEW_Q_COMPLETE',JSON.stringify(result));
+   const report=process.env.MYCO_VIEW_READ_Q_REPORT;if(report)appendFileSync(report,JSON.stringify(result)+'\n');
+  });
+ }
+},7200000);
+
+test('scalar probe ownership follows independent pruning and rejects missing, extra and exchanged captures',async()=>{
+ const unreachableFilterVariant='M13.0006913';
+ const variant=[...legacyVariants()].find(row=>row.id===unreachableFilterVariant);
+ if(variant===undefined)throw new Error('Missing unreachable-filter corpus variant');
+ await withFrozenCIOracle(async oracle=>{
+  const readers=frozenListingReaders(oracle);
+  const metadataVariant=[...legacyVariants()].find(row=>row.id==='M07.0000001');
+  if(metadataVariant===undefined)throw new Error('Missing metadata carrier corpus variant');
+  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyFixture,async(baseline,candidate)=>{
+   const beforeRecorder=statementRecorder(baseline,{accounting:target==='native'?'native':'d1'});
+   const afterRecorder=statementRecorder(candidate,{accounting:target==='native'?'native':'d1'});
+   await executeReadVariant(oracle.replayStore(beforeRecorder.db),metadataVariant,frozenReadPort(oracle));
+   await executeReadVariant(afterRecorder.db,metadataVariant,currentReadPort);
+   await beforeRecorder.drain();await afterRecorder.drain();
+   const after=afterRecorder.statements.find(row=>readTag(row.sql)?.operation==='M08:hook_placement_sessionContextHints:0');
+   if(after===undefined)throw new Error('Metadata corpus variant produced no carrier');
+   const before=beforeRecorder.statements[afterRecorder.statements.indexOf(after)]!;
+   const input={sql:after.sql,original:before.sql,operation:readTag(after.sql)!.operation,baseline:await explainReadPlan(baseline,before),candidate:await explainReadPlan(candidate,after)};
+   expect(legacyArmPlanViolations(input),target+' metadata carrier').toEqual([]);
+   const proof=captureProbePlan(input.sql,input.candidate,input);
+   expect(proof.owners).toHaveLength(1);expect(proof.expected.publication).toBeGreaterThan(0);
+   const probe=input.candidate.find(row=>/^SEARCH sv USING /.test(row.detail))!;
+   const missing=input.candidate.filter(row=>row.id!==probe.id);
+   expect(captureProbePlan(input.sql,missing,{...input,candidate:missing}).errors).toContain('outer publication probe multiplicity differs');
+  });
+  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyFixture,async(baseline,candidate)=>{
+   const beforeRecorder=statementRecorder(baseline,{accounting:target==='native'?'native':'d1'});
+   const afterRecorder=statementRecorder(candidate,{accounting:target==='native'?'native':'d1'});
+   await executeListingVariant(oracle.replayStore(beforeRecorder.db),variant,readers);
+   await executeListingVariant(afterRecorder.db,variant);
+   await beforeRecorder.drain();await afterRecorder.drain();
+   const before=beforeRecorder.statements[0],after=afterRecorder.statements[0];
+   if(before===undefined||after===undefined)throw new Error('Scalar corpus variant produced no statement');
+   const input={sql:after.sql,original:before.sql,operation:readTag(after.sql)!.operation,baseline:await explainReadPlan(baseline,before),candidate:await explainReadPlan(candidate,after)};
+   expect(legacyArmPlanViolations(input),target).toEqual([]);
+   const proof=captureProbePlan(input.sql,input.candidate,input),owners=proof.owners.filter(row=>row.name!=='outer');
+   expect(owners).toHaveLength(2);
+   expect(owners.filter(row=>row.active)).toHaveLength(target==='D1'?1:2);
+   const active=owners.find(row=>row.active)!;
+   const probe=input.candidate.find(row=>active.planIds.includes(row.id)&&/^SEARCH sv USING /.test(row.detail))!;
+   const missing=input.candidate.filter(row=>row.id!==probe.id);
+   expect(captureProbePlan(input.sql,missing,{...input,candidate:missing}).errors).toContain(active.name+' publication probe multiplicity differs');
+   const nextId=Math.max(...input.candidate.map(row=>row.id))+1;
+   const extra=[...input.candidate,{...probe,id:nextId}];
+   expect(captureProbePlan(input.sql,extra,{...input,candidate:extra}).errors).toContain(active.name+' publication probe multiplicity differs');
+   const inactive=owners.find(row=>!row.active);
+   if(inactive!==undefined){
+    const root={id:nextId,parent:0,notused:0,detail:'CORRELATED SCALAR SUBQUERY '+inactive.labels[0]};
+    const unexpected={...probe,id:nextId+1,parent:root.id};
+    const surviving=[...input.candidate,root,unexpected],exchanged=[...missing,root,unexpected];
+    expect(captureProbePlan(input.sql,surviving,{...input,candidate:surviving}).errors).toContain(inactive.name+' publication probe multiplicity differs');
+    const exchange=captureProbePlan(input.sql,exchanged,{...input,candidate:exchanged});
+    expect(exchange.actual).toEqual(proof.actual);
+    expect(exchange.errors).toContain(active.name+' publication probe multiplicity differs');
+    expect(exchange.errors).toContain(inactive.name+' publication probe multiplicity differs');
+   }
+  });
+ });
+ const expression='(CASE WHEN EXISTS(SELECT 1 FROM session_views sv WHERE sv.project_id = s.project_id AND sv.session_id = s.session_id) THEN COALESCE((WITH __myco_capture_scalar AS MATERIALIZED (SELECT 1) SELECT 1), (SELECT 1)) ELSE (SELECT 1) END)';
+ for(const prefix of ['SELECT * FROM ','SELECT * FROM (','SELECT * FROM sessions, ','SELECT * FROM sessions JOIN members ON 1, ','SELECT 1 IN ','SELECT (1,2) IN ']){
+  const suffix=prefix.endsWith('(')?')':'',original=prefix+'(SELECT 1)'+suffix,sql=prefix+expression+suffix;
+  const baseline=prefix.includes(' IN ')?[{id:1,parent:0,notused:0,detail:'LIST SUBQUERY 1'}]:[];
+  expect(()=>captureProbePlan(sql,[],{sql,original,operation:'probe',baseline,candidate:[]})).toThrow('not a supported scalar role');
+ }
+},30000);
+
+test('legacy membership preserves exact SQL while migrated reads compare their original arm',()=>{
+ const base='SELECT prompt_id FROM prompt_batches WHERE project_id=?';
+ const wrapper=`SELECT legacy.*, NULL AS __myco_capture, 0 AS __myco_sentinel FROM (${base}) legacy UNION ALL SELECT NULL, NULL, 1 FROM session_views sv`;
+ const member='/*vs:M24:plans_selectPlans:0*/'+wrapper;
+ const migrated='/*vs:M01:turns_listTurns:0*/'+wrapper;
+ const members=new Set<string>(LEGACY_ONLY_OPERATIONS);
+ expect(members.has('M24:plans_selectPlans:0')).toBe(true);
+ expect(members.has('M01:turns_listTurns:0')).toBe(false);
+ expect(emptyReadSql(member)).toBe(wrapper);
+ expect(emptyReadSql(migrated)).toBe(base);
+ expect(emptyReadRows([{prompt_id:'p',__myco_capture:null,__myco_sentinel:0}])).toEqual([{prompt_id:'p'}]);
+ expect(()=>emptyReadRows([{prompt_id:null,__myco_capture:'{}',__myco_sentinel:1}])).toThrow('publication sentinel');
+});
+
+test('a supplied capture flag cannot replace observed source preparation',()=>{
+ const sqlite=new Database(':memory:');
+ try{
+  const recorder=statementRecorder(sqliteRelationalStore(sqlite),{accounting:'native',context:()=>({operation:'probe',phase:'read',captured:true})});
+  expect(()=>withReadPreparation({kind:'module'},()=>recorder.db.prepare('/*vs:M01:turns_listTurns:0*/SELECT 1'))).toThrow('nonmember missing source capture');
+ }finally{sqlite.close();}
+});
 
 test('legacy read execution matches independent base bytes, methods, order and D1 accounting',async()=>{
  await withViewStores(async(db,target)=>{
@@ -28,7 +178,7 @@ test('legacy read execution matches independent base bytes, methods, order and D
   for(const [name,actual]of Object.entries(observed)){
    const expected=frozen[name]!;
    expect({name,bytes:actual.bytes}).toEqual({name,bytes:expected.bytes});
-   expect<unknown>(actual.statements.map(statement=>({sql:readTag(statement.sql)===null ? (()=>{expect(protectedSql(statement.sql),name+' untagged protected statement').toBe(false);return statement.sql})() : significantRead(statement.sql),binds:statement.binds,method:statement.method,...(statement.rowsRead===undefined?{}:{rowsRead:statement.rowsRead})})),name)
+   expect<unknown>(actual.statements.map(statement=>({sql:readTag(statement.sql)===null ? (()=>{expect(protectedSql(statement.sql),name+' untagged protected statement').toBe(false);return statement.sql})() : emptyReadSql(statement.sql),binds:statement.binds,method:statement.method,...(statement.rowsRead===undefined?{}:{rowsRead:statement.rowsRead})})),name)
     .toEqual(expected.statements.map(statement=>({sql:legacy.calibration.statementText[statement.text],binds:statement.binds,method:statement.method,...(statement.rowsRead===undefined?{}:{rowsRead:statement.rowsRead})})));
   }
  });
@@ -110,7 +260,7 @@ test.skipIf(!fullReplay)('frozen program replays representative SQL through the 
     const expected=await executeListingVariant(oracle.replayStore(baseline.db),variant,readers);
     const actual=await executeListingVariant(current.db,variant);
     expect(JSON.stringify(actual),target+' '+variant.id).toBe(JSON.stringify(expected));
-    expect<unknown>(current.statements.map(row=>({sql:readTag(row.sql)?significantRead(row.sql):row.sql,binds:row.binds,method:row.method,rowsRead:row.rowsRead})))
+    expect<unknown>(current.statements.map(row=>({sql:emptyReadSql(row.sql),binds:row.binds,method:row.method,rowsRead:row.rowsRead})))
      .toEqual(baseline.statements.map(row=>({sql:row.sql,binds:row.binds,method:row.method,rowsRead:row.rowsRead})));
    }
   });
@@ -118,7 +268,7 @@ test.skipIf(!fullReplay)('frozen program replays representative SQL through the 
 },120000);
 
 function eventIdentity(events:readonly StatementEvent[],tagged:boolean){
- return events.map(event=>({kind:event.kind,sql:tagged&&readTag(event.sql)?significantRead(event.sql):event.sql,binds:event.binds,...(event.method?{method:event.method}:{}),...(event.failed?{failed:true}:{})}));
+ return events.map(event=>({kind:event.kind,sql:tagged?emptyReadSql(event.sql):event.sql,binds:event.binds,...(event.method?{method:event.method}:{}),...(event.failed?{failed:true}:{})}));
 }
 async function operationOutcome(work:()=>Promise<unknown>){
  try{return {bytes:JSON.stringify(await work(),(_,value)=>value instanceof Map?[...value]:value instanceof Set?[...value]:value)}}
@@ -233,7 +383,11 @@ async function nativeVariantIdentity(fixture:'listing'|'arity'){
 test.skipIf(!fullReplay)('all 446297 listing variants preserve native preparation, binds, execution and response identity',()=>nativeVariantIdentity('listing'),1800000);
 test.skipIf(!fullReplay)('all applicable remaining variants preserve native preparation, binds, execution and response identity',()=>nativeVariantIdentity('arity'),1800000);
 
-async function distinctExecutionClasses(fixture:'listing'|'arity'){
+async function distinctExecutionClasses(fixture:'listing'|'arity',everyVariant=false){
+ const legacyMembers=new Set<string>(LEGACY_ONLY_OPERATIONS);
+ const migratedFamilies=new Set(VIEW_READ_OPERATIONS.filter(row=>!legacyMembers.has(row.id)&&row.id.startsWith('M')).map(row=>row.id.split(':')[0]));
+ const planCaseFile=everyVariant?process.env.MYCO_VIEW_READ_PLAN_CASES:undefined;
+ const planClasses=new Set<string>();
  await withFrozenOracle(async oracle=>{
   const frozen=frozenReadPort(oracle),listings=frozenListingReaders(oracle),classes=new Set<string>();
   const seed=fixture==='listing'?seedLegacyFixture:seedLegacyPromptArity;
@@ -246,7 +400,8 @@ async function distinctExecutionClasses(fixture:'listing'|'arity'){
     await withViewStorePair('D1',seed,async(d1Baseline,d1Candidate)=>{
      const native=statementRecorder(nativeBaseline,{accounting:'native',captureRows:true});
      const pending:Promise<void>[]=[];
-     const execute=async(variant:LegacyVariant,expectedNative:Awaited<ReturnType<typeof operationOutcome>>,nativeTrace:ReturnType<typeof eventIdentity>)=>{
+     const nativeWork=(rows:ReturnType<typeof statementRecorder>['statements'],tagged:boolean)=>rows.map(row=>({sql:tagged?emptyReadSql(row.sql):row.sql,binds:row.binds,method:row.method,rows:emptyReadRows(row.rows),rowCount:row.rowCount,rowsRead:row.rowsRead,rowsWritten:row.rowsWritten,failed:row.failed}));
+     const execute=async(variant:LegacyVariant,expectedNative:Awaited<ReturnType<typeof operationOutcome>>,nativeTrace:ReturnType<typeof eventIdentity>,expectedNativeWork:ReturnType<typeof nativeWork>)=>{
       const current=statementRecorder(nativeCandidate,{accounting:'native',captureRows:true});
       const before=statementRecorder(d1Baseline,{accounting:'d1',captureRows:true}),after=statementRecorder(d1Candidate,{accounting:'d1',captureRows:true});
       const large=fixture==='listing';
@@ -254,47 +409,62 @@ async function distinctExecutionClasses(fixture:'listing'|'arity'){
       const observedNative=await variantOutcome(variant,()=>run(current.db,false));
       if(JSON.stringify(expectedNative)!==JSON.stringify(observedNative))throw new Error('Native class response differs '+variant.id);
       if(JSON.stringify(nativeTrace)!==JSON.stringify(eventIdentity(current.events,true)))throw new Error('Native class trace differs '+variant.id);
+      if(JSON.stringify(expectedNativeWork)!==JSON.stringify(nativeWork(current.statements,true)))throw new Error('Native statement result or cost differs '+variant.id);
       const [expected,actual]=await Promise.all([variantOutcome(variant,()=>run(oracle.replayStore(before.db),true)),variantOutcome(variant,()=>run(after.db,false))]);
       await Promise.all([current.drain(),before.drain(),after.drain()]);
       if(JSON.stringify(expected)!==JSON.stringify(d1DiagnosticOutcome(actual,after.events)))throw new Error('D1 class response differs '+variant.id+'\n'+JSON.stringify({expected,actual}));
       const original=eventIdentity(before.events,false),candidate=eventIdentity(after.events,true);
       if(JSON.stringify(original)!==JSON.stringify(candidate))throw new Error('D1 class trace differs '+variant.id+'\n'+JSON.stringify({original,candidate}));
-      const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(row=>({sql:tagged&&readTag(row.sql)?significantRead(row.sql):row.sql,binds:row.binds,method:row.method,rows:row.rows,rowCount:row.rowCount,rowsRead:row.rowsRead,rowsWritten:row.rowsWritten,failed:row.failed}));
+      const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(row=>({sql:tagged?emptyReadSql(row.sql):row.sql,binds:row.binds,method:row.method,rows:emptyReadRows(row.rows),rowCount:row.rowCount,rowsRead:row.rowsRead,rowsWritten:row.rowsWritten,failed:row.failed}));
       expect(work(after.statements,true),variant.id).toEqual(work(before.statements,false));
       for(const statement of before.statements)if(!statement.failed){
        expect(statement.rowsRead,variant.id+' D1 physical read accounting').toBeNumber();
        totalRowsRead+=statement.rowsRead!;
       }
+      if(planCaseFile)for(const [index,query]of current.statements.entries()){
+       const original=expectedNativeWork[index],tag=readTag(query.sql);
+       if(!original||original.failed||query.failed||!tag||legacyMembers.has(tag.operation))continue;
+       const baseline={sql:original.sql,binds:original.binds,method:original.method};
+       const candidate={sql:query.sql,binds:query.binds,method:query.method};
+       const bindTypes=(values:readonly unknown[])=>values.map(value=>value===null?'null':typeof value);
+       const key=JSON.stringify([baseline.sql,candidate.sql,baseline.method,bindTypes(baseline.binds),bindTypes(candidate.binds)]);
+       if(planClasses.has(key))continue;
+       planClasses.add(key);
+       appendFileSync(planCaseFile,JSON.stringify({kind:'view_read_plan_case',caseId:variant.id,fixture,index,operation:tag.operation,baseline,candidate})+'\n');
+      }
       completed++;
-      if(completed%2000===0)console.info(JSON.stringify({kind:'view_read_execution_progress',fixture,classes:completed,variants,milliseconds:performance.now()-started}));
+      if(completed%2000===0)console.info(JSON.stringify({kind:'view_read_execution_progress',fixture,mode:everyVariant?'variants':'classes',completed,classes:classes.size,variants,milliseconds:performance.now()-started}));
      };
      for(const variant of legacyVariants()){
-      if((family!==null&&variant.family!==family)||(fixture==='listing')!==['M13','M14','M24','M25'].includes(variant.family)||!legacyApplicability(variant).applicable)continue;
+      if((everyVariant&&!migratedFamilies.has(variant.family))||(family!==null&&variant.family!==family)||(fixture==='listing')!==['M13','M14','M24','M25'].includes(variant.family)||!legacyApplicability(variant).applicable)continue;
       native.reset();
       const expected=await variantOutcome(variant,()=>fixture==='listing'?executeListingVariant(oracle.replayStore(native.db),variant,listings):executeReadVariant(oracle.replayStore(native.db),variant,frozen));
       await native.drain();variants++;
       const trace=eventIdentity(native.events,false),identity=createHash('sha256').update(fixture+'\n'+JSON.stringify(trace)).digest('hex');
-      if(classes.has(identity))continue;
+      if(!everyVariant&&classes.has(identity))continue;
       classes.add(identity);
       if(fixture==='listing'){
-       pending.push(execute(variant,expected,trace));
+       pending.push(execute(variant,expected,trace,nativeWork(native.statements,false)));
        if(pending.length>=32)await Promise.all(pending.splice(0));
-      }else await execute(variant,expected,trace);
+      }else await execute(variant,expected,trace,nativeWork(native.statements,false));
      }
      await Promise.all(pending);
     });
    });
-   console.info(JSON.stringify({kind:'view_read_execution_family',fixture,family,variants:variants-priorVariants,classes:completed-priorClasses,totalRowsRead:totalRowsRead-priorRowsRead,milliseconds:performance.now()-familyStarted}));
+   console.info(JSON.stringify({kind:'view_read_execution_family',fixture,family,mode:everyVariant?'variants':'classes',variants:variants-priorVariants,classes:completed-priorClasses,totalRowsRead:totalRowsRead-priorRowsRead,milliseconds:performance.now()-familyStarted}));
    }
   }finally{random.mockRestore();}
-  expect(completed).toBe(classes.size);
-  expect(completed).toBe(legacy.identity.executionClasses[fixture]);
-  expect(variants).toBe(Object.entries(legacy.applicability.families).filter(([family])=>(fixture==='listing')===['M13','M14','M24','M25'].includes(family)).reduce((sum,[,row])=>sum+row.applicable,0));
-  console.info(JSON.stringify({kind:'view_read_execution',fixture,variants,classes:completed,milliseconds:performance.now()-started,totalRowsRead,nativeWork:'adapter exposes no physical row counter; base/candidate exact on each target; D1 physical row accounting'}));
+  expect(completed).toBe(everyVariant?variants:classes.size);
+  if(!everyVariant)expect(completed).toBe(legacy.identity.executionClasses[fixture]);
+  expect(variants).toBe(Object.entries(legacy.applicability.families).filter(([family])=>(!everyVariant||migratedFamilies.has(family))&&(fixture==='listing')===['M13','M14','M24','M25'].includes(family)).reduce((sum,[,row])=>sum+row.applicable,0));
+  if(planCaseFile)appendFileSync(planCaseFile,JSON.stringify({kind:'view_read_plan_cases_complete',fixture,variants,completed,classes:planClasses.size})+'\n');
+  console.info(JSON.stringify({kind:'view_read_execution',fixture,mode:everyVariant?'variants':'classes',variants,completed,targetComparisons:2*completed,classes:classes.size,milliseconds:performance.now()-started,totalRowsRead,nativeWork:'adapter exposes no physical row counter; base/candidate exact on each target; D1 physical row accounting'}));
  });
 }
 test.skipIf(!fullReplay)('every listing statement-sequence class preserves actual native and D1 execution',()=>distinctExecutionClasses('listing'),7200000);
 test.skipIf(!fullReplay)('every remaining statement-sequence class preserves actual native and D1 execution',()=>distinctExecutionClasses('arity'),7200000);
+test.skipIf(!fullReplay)('every migrated listing variant preserves actual native and D1 result and cost',()=>distinctExecutionClasses('listing',true),7200000);
+test.skipIf(!fullReplay)('every migrated remaining variant preserves actual native and D1 result and cost',()=>distinctExecutionClasses('arity',true),7200000);
 
 const aggregateColumns:Readonly<Record<string,readonly string[]>>={
  'M01:turns_listTurns:0':['tool_call_count','response_count','child_count','plan_count','attachment_count'],
@@ -347,7 +517,8 @@ const multiplexedAggregates=new Set([
  'M21:hook_placement_countUnplacedContextRecords:0','M42:kpis_countOf:0',
 ]);
 function aggregateIdentity(target:string,operation:string,sql:string):string{
- return JSON.stringify([target,operation,multiplexedAggregates.has(operation)?sql:'projection']);
+ const text=operation==='M21:hook_placement_countUnplacedContextRecords:0'?emptyReadSql('/*vs:'+operation+'*/'+sql):sql;
+ return JSON.stringify([target,operation,multiplexedAggregates.has(operation)?text:'projection']);
 }
 function nonzeroColumns(rows:readonly unknown[],columns:readonly string[]):ReadonlySet<string>{
  return new Set(columns.filter(column=>rows.some(row=>typeof row==='object'&&row!==null&&column in row&&typeof Reflect.get(row,column)==='number'&&Number.isFinite(Reflect.get(row,column))&&Reflect.get(row,column)!==0)));
@@ -417,11 +588,11 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
     expect<unknown>(legacyReferencedEvents(eventIdentity(current.events,true),references),target+' '+row.id).toEqual(row.events);
     witness(target,current.statements);
     for(const event of current.events){const tag=readTag(event.sql);if(tag)templates.add(tag.operation);}
-    const work=(statements:typeof current.statements,tagged:boolean)=>statements.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged&&readTag(sql)?significantRead(sql):sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed}));
+    const work=(statements:typeof current.statements,tagged:boolean)=>statements.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:emptyReadRows(rows),rowCount,rowsRead,rowsWritten,failed}));
     expect(work(current.statements,true),target+' '+row.id).toEqual(work(replay.statements,false));
    }
    console.info(JSON.stringify({kind:'view_read_CI_phase',fixture,target,stage:'complete',milliseconds:performance.now()-started}));
-  });
+  },'native');
   let serial=100000;
   random.mockImplementation(()=>uuid(serial++) as ReturnType<typeof crypto.randomUUID>);
   for(const target of ['native','D1']as const)for(const [seed,read]of [[seedLegacyCIResults,legacyCIResultReads],[seedLegacyCISwitch,legacyCISwitchReads]]as const)await withViewStorePair(target,seed,async(baseline,candidate)=>{
@@ -436,11 +607,11 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
     expect(counts.live,target+' live title backlog').toBeGreaterThan(0);
     expect(counts.imported,target+' imported title backlog').toBeGreaterThan(0);
    }else expect(actual).toContainEqual({name:'switch-completion',value:true});
-   const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,changes,failed})=>({sql:tagged&&readTag(sql)?significantRead(sql):sql,binds,method,rows,rowCount,rowsRead,rowsWritten,changes,failed}));
+   const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,changes,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:emptyReadRows(rows),rowCount,rowsRead,rowsWritten,changes,failed}));
    expect(work(after.statements,true),target+' positive statement results and work').toEqual(work(before.statements,false));
    witness(target,after.statements);
    console.info(JSON.stringify({kind:'view_read_CI_positive',target,fixture:seed.name,stage:'complete'}));
-  });
+  },'native');
   for(const target of ['native','D1']){
    const missing=[...LEGACY_ONLY_OPERATIONS].filter(id=>!witnesses.get(target)?.has(id));
    console.info(JSON.stringify({kind:'view_read_CI_results',target,missing}));
@@ -459,10 +630,7 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
  });}finally{random.mockRestore()}
 },120000);
 
-function activeCatalogueRows(rows:readonly unknown[]|undefined,version:number){
- return rows?.map(row=>typeof row==='object'&&row!==null&&'schema_version'in row&&row.schema_version===String(version)
-  ? {...row,schema_version:'active-catalogue'}:row);
-}
+
 test('catalogue identity admits only each program declared schema stamp and preserves other fields',()=>{
  expect(activeCatalogueRows([{schema_version:'103',id:'member'}],103)).toEqual(activeCatalogueRows([{schema_version:'104',id:'member'}],104));
  expect(activeCatalogueRows([{schema_version:'105',id:'member'}],104)).not.toEqual(activeCatalogueRows([{schema_version:'103',id:'member'}],103));
@@ -489,7 +657,7 @@ test('public HTTP and MCP compositions preserve exact base status content type b
      const frozen=legacy.ci.publicCompositions.requests[index]!;
      expect({status:actual.status,contentType:actual.contentType,method:request.method,url:request.url}).toEqual(frozen);
      expect(eventIdentity(after.events,true),target+' '+request.url+' preparation and execution count').toEqual(eventIdentity(before.events,false));
-     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged&&readTag(sql)?significantRead(sql):sql,binds,method,rows:activeCatalogueRows(rows,tagged?SCHEMA_STEPS.at(-1)!.version:legacy.schema.steps.at(-1)!.version),rowCount,rowsRead,rowsWritten,failed}));
+     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:activeCatalogueRows(emptyReadRows(rows),tagged?SCHEMA_STEPS.at(-1)!.version:legacy.schema.steps.at(-1)!.version),rowCount,rowsRead,rowsWritten,failed}));
      expect(work(after.statements,true),target+' '+request.url+' statement results').toEqual(work(before.statements,false));
     }
    });
@@ -563,4 +731,37 @@ test('oracle tokens retain loader identity and are bound to one exact statement'
    await recorder.drain();
   }finally{sqlite.close()}
  });
+});
+
+
+test('M21 alone admits the declared FILTER transformation with exact empty-world output and work',async()=>{
+ await withFrozenCIOracle(async oracle=>{
+  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyCIResults,async(baseline,candidate)=>{
+   for(const [scope,session]of [[undefined,undefined],[{projectId:'project'},undefined],[{projectId:'project'},'session'],[{projectId:'project'},'unknown']] as const){
+    const before=statementRecorder(baseline,{accounting:target==='D1'?'d1':'native',captureRows:true});
+    const after=statementRecorder(candidate,{accounting:target==='D1'?'d1':'native',captureRows:true});
+    const expected=await frozenReadPort(oracle)('hookPlacement','countUnplacedContextRecords',[oracle.replayStore(before.db),scope,session,700]);
+    const actual=await currentReadPort('hookPlacement','countUnplacedContextRecords',[after.db,scope,session,700]);
+    await before.drain();await after.drain();
+    expect(actual,target).toEqual(expected);
+    expect(before.statements.map(row=>row.method)).toEqual(['first','first']);
+    expect(after.statements.map(row=>row.method)).toEqual(['first','first']);
+    expect(eventIdentity(after.events,true)).toEqual(eventIdentity(before.events,false));
+    const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(row=>({sql:tagged?emptyReadSql(row.sql):row.sql,binds:row.binds,method:row.method,rows:emptyReadRows(row.rows),rowCount:row.rowCount,rowsRead:row.rowsRead,rowsWritten:row.rowsWritten,failed:row.failed}));
+    expect(work(after.statements,true),target+' M21 exact E').toEqual(work(before.statements,false));
+    const first=after.statements[0]!.sql,base=before.statements[0]!.sql;
+    expect(()=>emptyReadSql(first.replace('M21:hook_placement_countUnplacedContextRecords:0','M42:kpis_countOf:0'))).toThrow('M21 aggregate rule cannot admit another operation');
+    expect(()=>emptyReadSql(first.replace('WHERE NOT r.__myco_delivery_placed','WHERE r.__myco_delivery_placed'))).toThrow('Invalid M21 aggregate count');
+    expect(emptyReadSql(first.replaceAll('hook_prompt.prompt_id = r.delivered_prompt_id','hook_prompt.prompt_id = r.session_id'))).not.toBe(base);
+    const extra=first.replace(' AS __myco_delivery_capture'," || (CASE WHEN EXISTS(SELECT 1 FROM session_views) THEN (SELECT COUNT(*) FROM plans) ELSE '' END) AS __myco_delivery_capture");
+    expect(()=>emptyReadSql(extra)).toThrow('Invalid M21 owner capture');
+   }
+  });
+ });
+},60_000);
+
+test('the empty-world M10 fence transformation applies only to its declared UPDATE',()=>{
+ const sql='UPDATE plans SET status=? WHERE project_id=? AND plan_key=? AND (NOT EXISTS (SELECT 1 FROM session_views sv WHERE sv.project_id=plans.project_id)) RETURNING plan_key';
+ expect(emptyReadSql('/*vs:M10:plans_planInSession:0*/'+sql)).toBe('UPDATE plans SET status=? WHERE project_id=? AND plan_key=? RETURNING plan_key');
+ for(const operation of ['M24:plans_planTotals:0','M42:kpis_countOf:0'])expect(emptyReadSql('/*vs:'+operation+'*/'+sql)).toBe(sql);
 });

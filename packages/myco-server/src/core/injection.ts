@@ -1,4 +1,4 @@
-import { injectedPromptRecord } from '../read/view-store.js';
+import { injectedPromptRecord, withViewReadResponse } from '../read/view-store.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -354,7 +354,19 @@ function parseIds(raw: string): string[] {
  * the agent saw would count an observation as served that never reached it, and
  * the session-wide exclusion set would then withhold it from every later prompt.
  */
-export async function selectSporesForPrompt(
+export function selectSporesForPrompt(
+  db: RelationalStore,
+  scope: ReadScope,
+  leaves: InjectionLeaves,
+  capabilityOn: boolean,
+  input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
+  resolveSemantic?: () => Promise<SemanticSearch | null>,
+  timings?: ContextTimings,
+): Promise<InjectionSelection> {
+
+  return withViewReadResponse(db,()=>input.now,bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings));
+}
+async function readSporesForPrompt(
   db: RelationalStore,
   scope: ReadScope,
   leaves: InjectionLeaves,

@@ -5,6 +5,8 @@
  */
 import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { explainReadPlan } from './helpers/view-read-costs.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { endTurnStatement, startTurnStatement } from '@myco-server-worker/ingest/turns.js';
@@ -43,13 +45,13 @@ function emptyStore(): Database {
 const STORES = { unanalyzed: emptyStore(), stale: analyzedStore(PROFILES.stale), current: analyzedStore(PROFILES.current) };
 afterAll(() => { for (const store of Object.values(STORES)) store.close(); });
 
-const planOf = (db: Database, { sql, params }: Statement): string =>
-  (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>).map((r) => r.detail).join('\n');
+const planOf = async (db: Database, { sql, params }: Statement): Promise<string> =>
+  (await explainReadPlan(sqliteRelationalStore(db), { sql, binds: params })).map((r) => r.detail).join('\n');
 
 async function plans(act: (db: RelationalStore) => Promise<unknown>): Promise<Array<{ store: string; sql: string; plan: string }>> {
   const { db, statements } = recordingStore();
   await act(db);
-  return Object.entries(STORES).flatMap(([store, sqlite]) => statements.map((s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: planOf(sqlite, s) })));
+  return Promise.all(Object.entries(STORES).flatMap(([store, sqlite]) => statements.map(async (s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: await planOf(sqlite, s) }))));
 }
 
 const NOW = 1_790_000_000_000;

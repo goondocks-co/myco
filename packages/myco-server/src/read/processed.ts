@@ -1,4 +1,4 @@
-import { processed_processedField as processedField, processedBundle, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './view-store.js';
+import { withViewReadResponse, processed_processedField as processedField, processedBundle, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './view-store.js';
 export { processed_isProcessedBodyKind as isProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './view-store.js';
 import type { ServerEnv, StoredObjectBody } from '../core/adapters.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
@@ -14,7 +14,10 @@ async function storedField(env: Pick<ServerEnv, 'blobs'>, row: ProcessedField): 
 }
 
 /** A processed text field in its Project; an unclassified stored body is unavailable. */
-export async function processedBody(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, kind: ProcessedTextKind, id: string): Promise<string | null> {
+export function processedBody(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, kind: ProcessedTextKind, id: string): Promise<string | null> {
+  return withViewReadResponse(env.db,Date.now,db=>readProcessedBody({...env,db},scope,kind,id));
+}
+async function readProcessedBody(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, kind: ProcessedTextKind, id: string): Promise<string | null> {
   if (kind === 'tool-input') {
     const bundled = await processedBundle(env.db, scope, id);
     if (bundled?.bundle_id !== null && bundled?.bundle_id !== undefined) {

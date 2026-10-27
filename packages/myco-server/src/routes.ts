@@ -1,4 +1,5 @@
 import { handleSetup } from './api/setup.js';
+import { readRefusalHandler } from './core/read-refusals.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
 import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
@@ -139,7 +140,7 @@ async function health(): Promise<Response> {
   return Response.json({ ok: true });
 }
 
-export const ROUTES: readonly Route[] = [
+const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/start', auth: 'enroll', handler: handleDeviceStart },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/poll', auth: 'enroll', handler: handleDevicePoll },
   { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/preview', auth: 'session', authority: 'member', handler: handleDevicePreview },
@@ -350,6 +351,19 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'POST', path: '/auth/logout', auth: 'session', authority: 'account', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];
+
+/** Each HTTP entry point shares the named read refusal boundary. */
+export const ROUTES: readonly Route[] = ROUTE_DECLARATIONS.map(route => {
+  const guarded = { ...route };
+  if ('handler' in guarded && guarded.handler !== undefined) guarded.handler = readRefusalHandler(guarded.handler);
+  if ('run' in guarded && guarded.run !== undefined) guarded.run = readRefusalHandler(guarded.run);
+  if ('grant' in guarded && guarded.grant !== undefined) guarded.grant = readRefusalHandler(guarded.grant);
+  if ('credential' in guarded && guarded.credential !== undefined) guarded.credential = readRefusalHandler(guarded.credential);
+  if ('deployment' in guarded && guarded.deployment !== undefined) guarded.deployment = readRefusalHandler(guarded.deployment);
+  if ('runner' in guarded && guarded.runner !== undefined) guarded.runner = readRefusalHandler(guarded.runner);
+  if ('unbound' in guarded && guarded.unbound !== undefined) guarded.unbound = readRefusalHandler(guarded.unbound);
+  return guarded;
+});
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
 export interface RetiredRoute {

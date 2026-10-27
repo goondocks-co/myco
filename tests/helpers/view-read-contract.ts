@@ -5,10 +5,10 @@ import { createHash } from 'node:crypto';
 import { LEGACY_ONLY_OPERATIONS } from '../../packages/myco-server/src/read/view-store.js';
 import { VIEW_READ_OPERATIONS } from './view-read-operations.js';
 
-import {protectedSql,protectedRelations,preparationOwner,isSqlPreparation,OPEN_RELATION_PREPARATIONS,MATERIAL_RELATIONS,readPreparationViolations,checkedPreparationOrigins,checkedPreparationSource,type SqlDeclarationPin,type SqlSinkParameter,type SqlParameterCaller,type SqlExceptionClosure,type PreparationOrigin} from './statement-recorder.js';
+import {protectedSql,protectedRelations,preparationOwner,isSqlPreparation,OPEN_RELATION_PREPARATIONS,MATERIAL_RELATIONS,readPreparationViolations,checkedPreparationOrigins,type SqlDeclarationPin,type SqlSinkParameter,type SqlParameterCaller,type SqlExceptionClosure,type PreparationOrigin} from './statement-recorder.js';
 export {protectedSql,MATERIAL_RELATIONS} from './statement-recorder.js';
 const ids = new Set<string>(VIEW_READ_OPERATIONS.map(operation=>operation.id));
-const preparationOrigins=await checkedPreparationOrigins(legacy.preparationOrigins);
+import {preparationOrigins,preparationSourcePins} from './view-read-policy.js';
 const legacyOperations=new Set<string>(LEGACY_ONLY_OPERATIONS);
 const observedDurableClasses=new Set(['DeploymentClock','RecoveryProducer']);
 export function durableObservationViolations(classes:readonly string[]):string[]{
@@ -39,7 +39,7 @@ export interface StatementException {
 export type SinkParameter=SqlSinkParameter;
 export type ParameterCaller=SqlParameterCaller;
 export type ExceptionClosure=SqlExceptionClosure;
-const sourcePins=await checkedPreparationSource(legacy.sourceClosureProgram);
+const sourcePins=preparationSourcePins;
 
 export interface SourceScanMetrics { parses:number; importEdges:number; taintNodes:number }
 
@@ -828,7 +828,8 @@ export function runtimeBoundary(
 export interface PlanRow { id: number; parent: number; detail: string; relation?:string; notused?:number }
 function planIdentity(rows: readonly PlanRow[]): readonly { id: number; parent: number; detail: string }[] {
   const ids = new Map(rows.map((row, index) => [row.id, index]));
-  return rows.map((row, index) => ({ ...row, id: index, parent: ids.get(row.parent) ?? -1 }));
+  // P3 carries the WhereLoop cost estimate; structural identity excludes that column.
+  return rows.map(({notused:_estimatedRunCost,...row}, index) => ({ ...row, id: index, parent: ids.get(row.parent) ?? -1 }));
 }
 
 export function armPlanViolations(input: {
@@ -868,4 +869,19 @@ export function viewSchemaViolations(rows: readonly { type: string; name: string
     if (!declared || writes.some(table => table !== row.tbl_name + '_fts')) errors.push(row.name + ': unclassified view trigger');
   }
   return errors;
+}
+
+export function sourceSealChanges(before:{closures:readonly ExceptionClosure[];callers:readonly ParameterCaller[]},after:typeof before):{kind:string;change:string;tupleId:string}[]{
+ const changes:{kind:string;change:string;tupleId:string}[]=[];
+ for(const kind of ['closures','callers'] as const){
+  const key=(row:ExceptionClosure|ParameterCaller)=>'key' in row?row.key:JSON.stringify([row.file,row.owner,row.expression]);
+  const old=new Map(before[kind].map(row=>[key(row),row])),current=new Map(after[kind].map(row=>[key(row),row]));
+  for(const identity of [...new Set([...old.keys(),...current.keys()])].sort()){
+   const left=old.get(identity),right=current.get(identity);
+   if(JSON.stringify(left)===JSON.stringify(right))continue;
+   const change=left===undefined?'added':right===undefined?'removed':'changed';
+   changes.push({kind,change,tupleId:createHash('sha256').update(JSON.stringify([kind,change,left??null,right??null])).digest('hex')});
+  }
+ }
+ return changes;
 }

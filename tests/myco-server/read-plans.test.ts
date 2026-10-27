@@ -17,6 +17,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { explainReadPlan } from './helpers/view-read-costs.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
@@ -56,8 +58,18 @@ function migrated(): Database {
   return db;
 }
 
-const planOf = (db: Database, sql: string, params: readonly unknown[]): string =>
-  (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>).map((r) => r.detail).join('\n');
+const planOf = async (db: Database, sql: string, params: readonly unknown[]): Promise<string> =>
+  (await explainReadPlan(sqliteRelationalStore(db), { sql, binds: params })).map((r) => r.detail).join('\n');
+
+/** The page's ordering runs outside scalar source selections. */
+async function sessionPagePlan(db: Database, sql: string, params: readonly unknown[]) {
+  const rows = await explainReadPlan(sqliteRelationalStore(db), { sql, binds: params });
+  return {
+    sort: rows.some((row) => row.parent === 0 && /TEMP B-TREE/.test(row.detail)),
+    scan: rows.some((row) => /SCAN sessions/.test(row.detail)),
+    plan: rows.map((row) => row.detail).join('\n'),
+  };
+}
 
 /** The statement `listSessions` issues for one page, and the values it binds. */
 async function sessionPage(opts: Parameters<typeof listSessions>[2]): Promise<{ sql: string; params: unknown[] }> {
@@ -79,12 +91,10 @@ describe('the reads a person waits on', () => {
   it('pages a project\'s sessions over an index, with no sort step and no table scan', async () => {
     const { sql, params } = await sessionPage({ limit: 50, fidelity: 'any' });
     const db = migrated();
-    const plan = planOf(db, sql, params);
+    const plan = await sessionPagePlan(db, sql, params);
     db.close();
-    // Both halves. A temp b-tree means the ordering expression has no index;
-    // a SCAN means the project filter has none. Either is the regression.
-    expect({ sort: /TEMP B-TREE/.test(plan), scan: /SCAN sessions/.test(plan), plan })
-      .toEqual({ sort: false, scan: false, plan });
+    // Page ordering and the Project filter both use indexes.
+    expect(plan).toEqual({ sort: false, scan: false, plan: plan.plan });
   });
 
   it('looks a transcript up by each key on its own, so both halves are index lookups', async () => {
@@ -98,7 +108,7 @@ describe('the reads a person waits on', () => {
     const db = migrated();
     try {
       for (const read of reads) {
-        const plan = planOf(db, read.sql, read.params);
+        const plan = await planOf(db, read.sql, read.params);
         expect({ sql: read.sql.slice(0, 40), scan: /SCAN transcripts/.test(plan), plan }).toEqual({ sql: read.sql.slice(0, 40), scan: false, plan });
       }
     } finally {
@@ -106,7 +116,7 @@ describe('the reads a person waits on', () => {
     }
   });
 
-  it('resolves an imported session\'s presented dates over indexes, on every table it reads', () => {
+  it('resolves an imported session\'s presented dates over indexes, on every table it reads', async () => {
     // The refinement rides with the cursor on a parse pass, so a scan here is
     // paid once per pass per imported transcript for the whole backfill.
     const { db: recorder, statements } = recordingStore();
@@ -114,7 +124,7 @@ describe('the reads a person waits on', () => {
     expect(statements).toHaveLength(1);
 
     const db = migrated();
-    const plan = planOf(db, statements[0].sql, statements[0].params);
+    const plan = await planOf(db, statements[0].sql, statements[0].params);
     db.close();
     // Any SCAN at all, by whatever name the statement gives the table: a list of
     // table names would not see a scan of one the statement aliases.
@@ -144,9 +154,9 @@ describe('the reads a person waits on', () => {
         const plain = await statementOf({ limit: 50, cursor });
         const filtered = await statementOf({ limit: 50, cursor, status: 'active', q: 'search' });
         expect(/status = \?/.test(filtered.sql) && /title LIKE/.test(filtered.sql)).toBe(true);
-        const plan = planOf(db, filtered.sql, filtered.params);
+        const plan = await planOf(db, filtered.sql, filtered.params);
         expect({ index: /SEARCH plans USING INDEX idx_plans_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN plans/.test(plan), plan })
-          .toEqual({ index: true, scan: false, plan: planOf(db, plain.sql, plain.params) });
+          .toEqual({ index: true, scan: false, plan: await planOf(db, plain.sql, plain.params) });
       }
     } finally {
       db.close();
@@ -167,9 +177,9 @@ describe('the reads a person waits on', () => {
         const first = await statementOf({ sessionId: 's1', limit: 25, ...filters });
         const next = await statementOf({ sessionId: 's1', limit: 25, ...filters, cursor: encodeCursor(1_700_000_000_000, 'sp') });
         expect(/created_at < \?/.test(next.sql)).toBe(true);
-        const plan = planOf(db, next.sql, next.params);
+        const plan = await planOf(db, next.sql, next.params);
         expect({ index: /SEARCH spores USING INDEX idx_spores_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN spores/.test(plan), plan })
-          .toEqual({ index: true, scan: false, plan: planOf(db, first.sql, first.params) });
+          .toEqual({ index: true, scan: false, plan: await planOf(db, first.sql, first.params) });
       }
     } finally {
       db.close();
@@ -182,7 +192,7 @@ describe('the reads a person waits on', () => {
     expect(statements).toHaveLength(2);
     const db = migrated();
     try {
-      const [observed, release] = statements.map((s) => planOf(db, s.sql, s.params));
+      const [observed, release] = await Promise.all(statements.map((s) => planOf(db, s.sql, s.params)));
       expect({ index: /SEARCH g USING INDEX idx_fk_knowledge_git_provenance_project_id_session_id \(project_id=\? AND session_id=\?\)/.test(observed), scan: /\bSCAN\b/.test(observed), observed })
         .toEqual({ index: true, scan: false, observed });
       expect({ index: /SEARCH knowledge_release_state USING INDEX idx_knowledge_release_embedding/.test(release), scan: /\bSCAN\b/.test(release), release })
@@ -200,7 +210,7 @@ describe('the reads a person waits on', () => {
     const db = migrated();
     try {
       for (const statement of statements) {
-        const plan = planOf(db, statement.sql, statement.params);
+        const plan = await planOf(db, statement.sql, statement.params);
         expect({ index: /SEARCH session_artifacts USING INDEX idx_session_artifacts_session \(project_id=\? AND session_id=\?/.test(plan), scan: /\bSCAN\b/.test(plan), sort: /TEMP B-TREE/.test(plan), plan })
           .toEqual({ index: true, scan: false, sort: false, plan });
       }
@@ -218,12 +228,12 @@ describe('the reads a person waits on', () => {
         expect(statements).toHaveLength(opts.type === undefined ? 3 : 2);
         expect(statements.map(s => s.sql).join(' ')).not.toMatch(/error_message|output_preview|input_blob_key/);
         if (opts.type === undefined) {
-          const edges = planOf(db, statements[1].sql, statements[1].params);
+          const edges = await planOf(db, statements[1].sql, statements[1].params);
           expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_launch_parent \(project_id=\? AND launch_parent_session_id=\?\)/);
           expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_parent \(project_id=\? AND parent_session_id=\?\)/);
           expect(edges).not.toMatch(/SCAN [rs]\b/);
         }
-        const plan = planOf(db, statements[0].sql, statements[0].params);
+        const plan = await planOf(db, statements[0].sql, statements[0].params);
         expect(plan).toContain('idx_tool_calls_activity');
         expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
         expect(plan).toMatch(/SEARCH hook_prompt USING (?:COVERING )?INDEX/);
@@ -242,9 +252,8 @@ describe('the reads a person waits on', () => {
     expect(/WHERE/i.test(sql) && params.length > 1).toBe(true);
 
     const db = migrated();
-    const plan = planOf(db, sql, params);
+    const plan = await sessionPagePlan(db, sql, params);
     db.close();
-    expect({ sort: /TEMP B-TREE/.test(plan), scan: /SCAN sessions/.test(plan), plan })
-      .toEqual({ sort: false, scan: false, plan });
+    expect(plan).toEqual({ sort: false, scan: false, plan: plan.plan });
   });
 });

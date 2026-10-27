@@ -22,6 +22,8 @@ import { ownMachineNames } from '@myco-server-worker/read/capture.js';
 import { stoppedTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { grantsExpiringBy } from '@myco-server-worker/auth/grants.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
+import {emptyReadSql,legacyArmPlanViolations,partitionLegacyPlan} from './helpers/view-read-costs.js';
+import {readTag,type PlanRow} from '../helpers/view-read-contract.js';
 
 type Statement = { sql: string; params: unknown[] };
 
@@ -56,8 +58,17 @@ function emptyStore(): Database {
 const STORES = { unanalyzed: emptyStore(), stale: analyzedStore(PROFILES.stale), current: analyzedStore(PROFILES.current) };
 afterAll(() => { for (const store of Object.values(STORES)) store.close(); });
 
-const planOf = (db: Database, { sql, params }: Statement): string =>
-  (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>).map((r) => r.detail).join('\n');
+const planOf = (db: Database, { sql, params }: Statement): PlanRow[] => {
+  const candidate=db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as PlanRow[];
+  const tag=readTag(sql);
+  if(tag===null)return candidate;
+  const original=emptyReadSql(sql),baseline=planOf(db,{sql:original,params});
+  const input={sql,original,operation:tag.operation,baseline,candidate};
+  const errors=legacyArmPlanViolations(input);
+  if(errors.length)throw new Error(errors.join('\n'));
+  return partitionLegacyPlan(input).legacy;
+};
+const planText=(db:Database,statement:Statement):string=>planOf(db,statement).map(row=>row.detail).join('\n');
 
 /** The statements `read` issues. */
 async function captured(read: (db: RelationalStore) => Promise<unknown>, machineClaim = false): Promise<Statement[]> {
@@ -69,7 +80,7 @@ async function captured(read: (db: RelationalStore) => Promise<unknown>, machine
 /** Every statement `read` issues, explained on each store. */
 async function plans(read: (db: RelationalStore) => Promise<unknown>, machineClaim = false): Promise<Array<{ store: string; sql: string; plan: string }>> {
   const statements = await captured(read, machineClaim);
-  return Object.entries(STORES).flatMap(([store, db]) => statements.map((s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: planOf(db, s) })));
+  return Object.entries(STORES).flatMap(([store, db]) => statements.map((s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: planText(db, s) })));
 }
 
 /** The statements of `read` that read `table`, never none: a filter that matched nothing would assert nothing. */
@@ -324,20 +335,20 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   });
 
   it('needs the capture index named for an activity window: unnamed, the planner walks every session by its start', async () => {
-    const unnamed = (st: Statement): Statement => ({ ...st, sql: st.sql.replace(/ INDEXED BY \w+/g, '') });
+    const unnamed = (st: Statement): Statement => ({ ...st, sql: emptyReadSql(st.sql).replace(/ INDEXED BY \w+/g, '') });
     const [across] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000, agent: 'codex' }));
     const [one] = await captured((db) => listSessions(db, { projectId: 'proj_0' }, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000 }));
-    expect(planOf(STORES.current, unnamed(across!))).toMatch(/SCAN s USING INDEX idx_sessions_occurred_deployment/);
-    expect(planOf(STORES.current, unnamed(one!))).toMatch(/SEARCH s USING INDEX idx_sessions_occurred \(project_id=\?\)\n/);
+    expect(planText(STORES.current, unnamed(across!))).toMatch(/SCAN s USING INDEX idx_sessions_occurred_deployment/);
+    expect(planText(STORES.current, unnamed(one!))).toMatch(/SEARCH s USING INDEX idx_sessions_occurred \(project_id=\?\)\n/);
   });
 
   it('needs the index named in the session and plan lists: under stale statistics the planner reads every row and sorts without it', async () => {
-    const unnamed = (s: Statement): Statement => ({ ...s, sql: s.sql.replace(/ INDEXED BY \w+/g, '') });
+    const unnamed = (s: Statement): Statement => ({ ...s, sql: emptyReadSql(s.sql).replace(/ INDEXED BY \w+/g, '') });
     const [sessions] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, agent: 'codex', fidelity: 'any' }));
     const [plansPage] = await captured((db) => pagePlansAcross(db, ALL, { limit: 50 }));
     for (const s of [sessions!, plansPage!]) {
       expect(s.sql).toMatch(/ INDEXED BY /);
-      expect(sortsRows(planOf(STORES.stale, unnamed(s)))).toBe(true);
+      expect(sortsRows(planText(STORES.stale, unnamed(s)))).toBe(true);
     }
   });
 

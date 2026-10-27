@@ -40,6 +40,7 @@ import { ALWAYS_ALLOWED, isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './
 import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
+import { ViewReadRefusal } from '../core/read-refusals.js';
 import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
 import { authorizeTool, toolResource, toolSubject } from '../auth/mcp-authorization.js';
 
@@ -315,6 +316,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   admitted?.({ tool: name as AnyTool, op });
   try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }
   catch (error) {
+    if (error instanceof ViewReadRefusal) throw new ToolError(error.code, error.message);
     if (error instanceof RunWriteExpired) throw new ToolError('tool_call_failed', error.message);
     if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);
     throw error;
