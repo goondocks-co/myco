@@ -111,6 +111,7 @@ export type AttentionItem =
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
   | { kind: 'access_key_expiring'; tone: 'warn'; grantId: string; projectId: string; label: string | null; expiresAt: number }
   | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null }
+  | { kind: 'view_state_inconsistent'; tone: 'warn'; refusals: number; lastRefusedAt: number }
   | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }
   | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 

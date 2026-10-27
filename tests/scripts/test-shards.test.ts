@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { groupByDuration, parseShard, selectGroup, selectShard } from '../../scripts/test-shards.mjs';
-import { spawnSync } from 'node:child_process';
+import { groupByDuration, parseShard, selectGroup, selectShard, VIEW_PROOF_FILES } from '../../scripts/test-shards.mjs';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,51 @@ import { mergeNodeDurationWeights, assertTestCaseHeadroom, declaredTestTimeout, 
 const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
 
 describe('test shard selection', () => {
+  test('executes a selected proof file and writes its reports under the run directory', async () => {
+    const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proof-execution-'));
+    try {
+      const file = VIEW_PROOF_FILES[0]!;
+      const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
+      const result = await new Promise<{status: number | null; output: string}>((resolve, reject) => {
+        const child = spawn('node', ['scripts/run-bun-tests.mjs', file, '-t', '^plan identity excludes'], {
+          env: { ...inherited, MYCO_TEST_KIND: 'view-proof', MYCO_TEST_SHARD: '1/1', MYCO_TEST_GROUP: `view proof ${file}`, MYCO_RUNNER_REPORT_DIR: reports },
+          stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000,
+        });
+        let output = '';
+        child.stdout.on('data', chunk => { output += chunk; });
+        child.stderr.on('data', chunk => { output += chunk; });
+        child.on('error', reject);
+        child.on('close', status => resolve({status, output}));
+      });
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain(`FINISHED view proof ${file}`);
+      const files = fs.readdirSync(reports, { recursive: true }).map(String);
+      expect(files.filter(name => name.endsWith('.junit.xml'))).toHaveLength(1);
+      expect(files.some(name => /view-proof-tests-myco-server-view-read-costs-test-ts\.log$/.test(name))).toBe(true);
+    } finally { fs.rmSync(reports, { recursive: true, force: true }); }
+  }, 40_000);
+
+  test('owns each view proof once outside node shards and selects each matrix file intact', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proof-plan-'));
+    const plan = (kind: string, group?: string, targets: string[] = []): NodeGroup[] => {
+      const file = path.join(root, 'plan.json');
+      const result = spawnSync('node', ['scripts/run-bun-tests.mjs', ...targets], {
+        env: { ...process.env, MYCO_RUNNER_DRY_RUN: '1', MYCO_TEST_KIND: kind, MYCO_TEST_SHARD: '1/1',
+          ...(group ? { MYCO_TEST_GROUP: group } : {}), MYCO_RUNNER_PLAN_FILE: file, MYCO_RUNNER_REPORT_DIR: path.join(root, 'reports') },
+        encoding: 'utf8', timeout: 30_000,
+      });
+      expect({ status: result.status, error: result.error, stderr: result.stderr }).toMatchObject({ status: 0, error: undefined });
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    };
+    try {
+      const node = plan('node').flatMap(group => group.files);
+      expect(node.filter(file => VIEW_PROOF_FILES.includes(file))).toEqual([]);
+      expect(plan('view-proof').flatMap(group => group.files).sort()).toEqual([...VIEW_PROOF_FILES].sort());
+      for (const file of VIEW_PROOF_FILES) expect(plan('view-proof', `view proof ${file}`).map(group => group.files)).toEqual([[file]]);
+      expect(plan('view-proof', undefined, [VIEW_PROOF_FILES[0]!]).map(group => group.files)).toEqual([[VIEW_PROOF_FILES[0]!]]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }, 40_000);
+
   test('keeps heavy isolated files apart when small files are inserted before either journey', () => {
     const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
     const budget = nodeGroupBudget(workflow.jobs.tests['timeout-minutes'] * 60_000);

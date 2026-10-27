@@ -9,7 +9,6 @@ const PREFIX = 'packages/myco-server/src/';
 /** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
 const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
   'context.ts': 'type declarations consumed by route handlers',
-  'core/adapters.ts': 'type declarations consumed by storage and platform adapters',
   'core/cost/types.ts': 'type declarations consumed by cost resolution',
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',
   'core/first-owner.ts': 'operator bootstrap: packages/myco/src/server/local-owner.ts and cloudflare-owner.ts',

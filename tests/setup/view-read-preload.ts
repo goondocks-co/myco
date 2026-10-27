@@ -2,20 +2,19 @@ import * as miniflare from 'miniflare';
 import {afterEach, mock} from 'bun:test';
 import * as native from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import type {RelationalStore} from '../../packages/myco-server/src/core/adapters.js';
-import {statementRecorder,instrumentReadPreparations,instrumentObservedClock,instrumentNativeReadRequests,checkedPreparationOrigins,checkedPreparationSource,installReadPreparationBoundary,preparationSourcePaths} from '../helpers/statement-recorder.js';
+import {statementRecorder,instrumentReadPreparations,instrumentObservedClock,instrumentNativeReadRequests,installReadPreparationBoundary,preparationSourcePaths} from '../helpers/statement-recorder.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript-v6';
-import legacy from '../myco-server/fixtures/view-read-legacy.json';
 
-const sourcePins=await checkedPreparationSource(legacy.sourceClosureProgram);
-export const preparationOrigins=await checkedPreparationOrigins(legacy.preparationOrigins);
+import {preparationOrigins,preparationSourcePins} from '../helpers/view-read-policy.js';
+export {preparationOrigins} from '../helpers/view-read-policy.js';
 export const preparationRecorder=path.resolve(import.meta.dir,'../helpers/statement-recorder.ts');
 const repository=path.resolve(import.meta.dir,'../..')+path.sep;
 const sourcePaths=preparationSourcePaths(repository);
 export function instrumentReadSource(source:string,file:string):string{
  const relative=sourcePaths.relative(file);
- return instrumentObservedClock(ts,instrumentNativeReadRequests(ts,instrumentReadPreparations(ts,source,relative,preparationOrigins,preparationRecorder,sourcePins.callers),relative,preparationRecorder),relative,preparationRecorder);
+ return instrumentObservedClock(ts,instrumentNativeReadRequests(ts,instrumentReadPreparations(ts,source,relative,preparationOrigins,preparationRecorder,preparationSourcePins.callers),relative,preparationRecorder),relative,preparationRecorder);
 }
 Bun.plugin({name:'view-read-preparation-origins',setup(build){
  build.onLoad({filter:sourcePaths.filter},args=>{
