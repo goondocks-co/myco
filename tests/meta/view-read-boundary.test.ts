@@ -222,7 +222,7 @@ describe('view read runtime boundary controls', () => {
 
   test('an admitted exception origin cannot add a protected relation through an SQL fragment',async()=>{
     const origins=preparationOrigins,origin=origins.find(row=>row.id==='maintenance-learning-hold')!;
-    expect(origin.relations).toEqual(['session_views']);
+    expect(origin.relations).toEqual(['learning_sessions','session_views']);
     const statement={sql:'SELECT 1 FROM session_views',operation:'probe',phase:origin.phase,statementId:'hold',exceptionId:origin.id,origin};
     const options={known:new Set<string>(),legacy:new Set<string>(),origins};
     expect(readPreparationViolations([statement],options)).toEqual([]);

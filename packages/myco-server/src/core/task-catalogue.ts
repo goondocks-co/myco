@@ -32,6 +32,8 @@ import type { RunAdmissionGate } from './runs.js';
 export const TITLING_TASK = 'title-summary';
 /** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
+/** The task that writes one card per completed turn on the cheap tier, the material learning reads. */
+export const CARD_TASK = 'turn-cards';
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
 
@@ -39,23 +41,24 @@ export const SEEDING_TASK = 'vault-seed';
 export { MAP_TASK };
 
 /** The four run outcomes: every worker-served task with a prompt of its own. */
-export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK];
+export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK];
 
 /** The reasoning tier each worker outcome declares. */
 export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/execution-profile').ReasoningTier>> = {
   [TITLING_TASK]: 'low',
   [EXTRACTION_TASK]: 'default',
+  [CARD_TASK]: 'low',
   [MAP_TASK]: 'default',
   [SEEDING_TASK]: 'default',
 };
 
 /** Tasks whose required worker capability is not available for dispatch. */
-export const UNLANDED_TASKS: readonly string[] = [EXTRACTION_TASK];
+export const UNLANDED_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK];
 export const LEARNING_PAUSE_MESSAGE = 'Learning resumes with whole-session reading';
 
 /** The declared reason a retained task is unavailable on this Deployment. */
 export function taskAvailabilityNote(task: string): string | null {
-  return UNLANDED_TASKS.includes(task) && task === EXTRACTION_TASK ? LEARNING_PAUSE_MESSAGE : null;
+  return UNLANDED_TASKS.includes(task) && (task === EXTRACTION_TASK || task === CARD_TASK) ? LEARNING_PAUSE_MESSAGE : null;
 }
 
 /** Every retained task, with the gate it runs behind. */
@@ -63,6 +66,7 @@ export const TASK_ADMISSION = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
+  [CARD_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'capture' },
 } satisfies Readonly<Record<string, RunAdmissionGate>>;
@@ -82,9 +86,10 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['vault_canopy_map', 'vault_report'],
   'embedding-reconcile': [],
   [EXTRACTION_TASK]: [
-    'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
+    'vault_learning', 'vault_mark_processed', 'vault_spores', 'vault_spore',
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
+  [CARD_TASK]: ['vault_turn_cards', 'vault_report'],
   [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
   [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_update_session'],
 };
@@ -108,6 +113,7 @@ export function taskTools(task: string | null): readonly string[] {
 export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [MAP_TASK]: 900,
   [EXTRACTION_TASK]: 900,
+  [CARD_TASK]: 600,
   [SEEDING_TASK]: MAX_WORKER_RUN_SECONDS,
 };
 
@@ -133,6 +139,7 @@ export function admissionForTask(taskName: string): RunAdmissionGate | null {
 
 /** Reader descriptions owned by the task declarations. */
 export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
+  [CARD_TASK]: { name: 'Card session turns', description: 'Write a short card for each finished turn of a session, keeping errors, fixes and decisions word for word.' },
   [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Save durable knowledge from sessions as spores, and retire knowledge they replace.' },
   [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
   [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },

@@ -70,6 +70,29 @@ const LISTED: readonly Exception[] = [
 const EXCEPTIONS: readonly Exception[] = [
   ...LISTED,
   ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({ ...exception, step: 108 })),
+  ...['idx_learning_eligible', 'idx_learning_eligible_all', 'idx_learning_completed', 'idx_learning_init_pending'].map((object) => ({
+    step: 110,
+    object,
+    table: 'learning_sessions',
+    reason: 'Learning progress columns are indexed where their claim, status and initialization reads seek them.',
+  })),
+  { step: 110, object: 'idx_learning_init_walk', table: 'session_read_facts', reason: 'Learning initialization walks sessions newest first in bounded pages.' },
+  ...[
+    ['prompt_batches_learning_session', 'prompt_batches'],
+    ['prompt_batches_turn_card_open', 'prompt_batches'],
+    ['prompt_batches_turn_card_insert', 'prompt_batches'],
+    ['prompt_batches_turn_card_update', 'prompt_batches'],
+    ['responses_turn_card_insert', 'responses'],
+    ['tool_calls_turn_card_insert', 'tool_calls'],
+    ['tool_calls_turn_card_update', 'tool_calls'],
+    ['plans_turn_card_insert', 'plans'],
+    ['plans_turn_card_update', 'plans'],
+  ].map(([object, table]) => ({
+    step: 110,
+    object: object!,
+    table: table!,
+    reason: 'A record written into a turn makes that turn due for its card in the same statement.',
+  })),
 ];
 interface StatementException {
   step: number;
@@ -121,6 +144,23 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     step: 105,
     sql: 'ALTER TABLE view_checkpoints ADD COLUMN ' + column,
     reason: 'Empty checkpoints carry the complete live frontier.',
+  })),
+  ...[
+    'learned_seq INTEGER NOT NULL DEFAULT 0',
+    "init_state TEXT NOT NULL DEFAULT 'pending' CHECK (init_state IN ('pending','awaiting_publication','ready'))",
+    'eligible_at INTEGER',
+    'pending_cards INTEGER NOT NULL DEFAULT 0',
+    'due_cards INTEGER NOT NULL DEFAULT 0',
+    'failures INTEGER NOT NULL DEFAULT 0',
+    'skipped_by_owner INTEGER NOT NULL DEFAULT 0',
+    'handoff TEXT CHECK (handoff IS NULL OR length(CAST(handoff AS BLOB)) <= 4096)',
+    'positions TEXT',
+    'last_completed_at INTEGER',
+    'last_completed_reason TEXT',
+  ].map((column) => ({
+    step: 106,
+    sql: 'ALTER TABLE learning_sessions ADD COLUMN ' + column,
+    reason: 'Each session carries its learning progress, eligibility and last completion.',
   })),
   {
     step: 101,

@@ -290,5 +290,42 @@
   },
   "packages/myco-server/src/ingest/view-cutover-pending.ts": {
     "cutoverPending": "W"
+  },
+  "packages/myco-server/src/core/learning-sessions.ts": {
+    "sessionProgressStatements": "W",
+    "classify": "W",
+    "readySession": "W",
+    "initializeSession": "W",
+    "learningInitPending": "W",
+    "learningInit": "W",
+    "sessionPublishedStatement": "W",
+    "carryLearnedCardsStatements": "W",
+    "learningHead": "W",
+    "buildLearningAssignment": "W",
+    "claimLearningStatement": "W",
+    "assignedCards": "W",
+    "completeLearning": "W",
+    "readLearningStatus": "W",
+    "dispatchedBeforeResume": "W"
+  },
+  "packages/myco-server/src/core/turn-cards.ts": {
+    "cardStatements": "W",
+    "dueTurns": "W",
+    "settleTurns": "W",
+    "cardsWrittenStatement": "W"
+  },
+  "packages/myco-server/src/core/learning-stages.ts": {
+    "learningStage": "W",
+    "cardStage": "W"
+  },
+  "packages/myco-server/src/core/learning-hold.ts": {},
+  "packages/myco-server/src/mcp/tools/run-learning.ts": {
+    "handleRunCards": "W"
+  },
+  "tests/myco-server/learning-stages.test.ts": {
+    "ready": "T",
+    "it:cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice": "T",
+    "it:closes an all-mechanical session without a run and orders sessions newest first": "T",
+    "it:initializes from a cold start through its assertion and carries learned cards to an equal rebuild": "T"
   }
 }

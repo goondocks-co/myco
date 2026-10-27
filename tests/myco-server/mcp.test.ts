@@ -753,7 +753,7 @@ describe('POST /mcp over a run credential', () => {
     expect(listed.status).toBe(200);
     const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
     expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
-    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores', 'myco_search', 'myco_spores']);
+    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_prompts', 'myco_run_spores', 'myco_search', 'myco_spores']);
     const spores = listed.body.result.tools.find((t: any) => t.name === 'myco_spores');
     expect(spores.inputSchema.properties.op.enum.sort()).toEqual(['consolidate', 'obsolete', 'save', 'supersede']);
 
@@ -1055,7 +1055,7 @@ describe('POST /mcp over a run credential', () => {
     const { harness, dispatch, call, list } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { dryRun: true });
     const tools = (await list(harness.token)).body.result.tools;
-    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_sessions', 'myco_run_spores', 'myco_search']);
+    expect(tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_spores', 'myco_search']);
     expect(tools.find((t: any) => t.name === 'myco_run_spores').inputSchema.properties.op.enum.sort()).toEqual(['get', 'list']);
     expect(tools.find((t: any) => t.name === 'myco_run_prompts')).toBeUndefined();
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x' })).error.data.code).toBe('unknown_tool');

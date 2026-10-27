@@ -65,6 +65,10 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_member_credentials_machine', 'a canonical machine summary seeks its credentials by machine and newest issue time'],
   ['idx_runner_contacts_seen', 'the worker-contact sweep forgets runner observations by age across the Deployment, and a runner names no Project'],
   ['idx_runner_model_catalogs_received', 'Settings reads the model lists runners sent lately, and the lease sweep forgets the rest by age; a runner names no Project'],
+  ['idx_learning_eligible_all', 'a learning pull asks whether any Project has a session due before it reads per-Project heads'],
+  ['idx_learning_completed', 'the learning status line reads the most recent completion across the Deployment'],
+  ['idx_learning_init_walk', 'learning initialization walks every session newest first across Projects, one page per pass'],
+  ['idx_turn_cards_due_all', 'a card pull asks whether any Project has a turn due before it reads per-Project heads, and status counts them'],
   ['idx_device_requests_candidate', 'a runner registration admits each client-generated candidate once across the Deployment, before any runner exists'],
 ]);
 

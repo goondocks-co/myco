@@ -30,6 +30,8 @@ export interface TaskInput {
   inputHash: string;
   counts: Readonly<Record<string, number | boolean>>;
   repository?: RepositoryCheckoutSpec;
+  /** Fields the claim writes into the run's context: what the run's own tools read its assignment from. */
+  context?: Readonly<Record<string, unknown>>;
 }
 
 /** What a caller asks of one build beyond the Project and the instant. */

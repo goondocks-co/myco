@@ -1,4 +1,5 @@
 import { readBudgetStatus } from '../read/budget.js';
+import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
 import { pendingTranscripts } from '../ingest/parse.js';
 import type { CredentialContext, OwnerContext } from '../context.js';
@@ -98,6 +99,10 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   ]);
   const finding = metadata === undefined ? undefined : await readFact('view_state_inconsistent', async () => viewReadRefusalFinding(metadata.viewReadRefusal, ctx.now));
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
+  const learning=await readFact('learning',async()=>{
+    const status=await readLearningStatus(env.db);
+    return {...status,line:learningStatusLine(status,budget??null,ctx.now)};
+  });
   const views=await readFact('views',async()=>{
     if(projects===undefined)throw new Error('Project visibility unavailable');
     return readViewStatus(env.db,projects.map(project=>project.projectId),ctx.now);
@@ -105,6 +110,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   const viewCutover=await readFact('viewCutover',()=>readViewCutover(env.db));
   return ok({
     budget,
+    learning:learning??null,
     views:views??null,
     viewCutover:viewCutover??null,
     schema: schemaCheck(metadata?.version ?? null), target, capabilities,

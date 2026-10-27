@@ -403,6 +403,9 @@ export interface StatementEvent extends StatementFrame {
   failed?: true;
 }
 
+/** The modules that own learning progress write its rows directly; every other learning_sessions write is the view writer's. */
+const LEARNING_PROGRESS_OWNERS=['packages/myco-server/src/core/learning-sessions.ts','packages/myco-server/src/core/turn-cards.ts'];
+
 export function viewDmlBoundary(){
   const violations:StatementEvent[]=[];
   const check=(event:StatementEvent):void=>{
@@ -423,7 +426,8 @@ export function viewDmlBoundary(){
       ||origin.phase==='P'&&origin.file==='packages/myco-server/src/core/tombstones.ts'&&/^DELETE\s+FROM\b/i.test(event.sql.trim())
       ||origin.phase==='P'&&origin.file==='packages/myco/src/server/sql-dump.ts'&&origin.owner==='runOneStatement'
         &&/^INSERT INTO "(view_(?:prompts|responses|plans)_fts)"\("\1"\) VALUES\('rebuild'\);?$/i.test(event.sql.trim()));
-    if(event.operation==='view-writer-driver'||physical)return;
+    const learning=origin?.kind==='exception'&&origin.phase==='W'&&LEARNING_PROGRESS_OWNERS.includes(origin.file)&&writes.every(table=>table==='learning_sessions');
+    if(event.operation==='view-writer-driver'||physical||learning)return;
     violations.push(event);
     throw new Error('production_view_dml: '+writes.join(','));
   };

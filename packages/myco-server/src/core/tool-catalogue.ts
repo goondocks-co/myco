@@ -42,6 +42,8 @@ export const RUN_TOOLS = [
   'myco_run_sessions',
   'myco_run_prompts',
   'myco_run_map',
+  'myco_run_cards',
+  'myco_run_learning',
 ] as const;
 
 export type RunTool = (typeof RUN_TOOLS)[number];
@@ -52,6 +54,11 @@ export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
 export const PROMPT_MARK_TOOL: RunTool = 'myco_run_prompts';
 /** The run tool a map run reads its prior map and writes its new one through. */
 export const MAP_WRITE_TOOL: RunTool = 'myco_run_map';
+
+/** The run tool a card run reads its turns and writes their cards through; the close rule reads the write back under this name. */
+export const CARD_TOOL: RunTool = 'myco_run_cards';
+/** The run tool a learning run reads its slice and completes it through; the close rule reads the completion back under this name. */
+export const LEARNING_TOOL: RunTool = 'myco_run_learning';
 
 /** Whether this name is one of the run-only tools. */
 export function isRunTool(name: string): name is RunTool {
@@ -114,6 +121,8 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_run_sessions: ['title'],
   myco_run_prompts: ['mark_processed'],
   myco_run_map: ['write'],
+  myco_run_cards: ['write'],
+  myco_run_learning: ['complete'],
 };
 
 /** Whether this op of this tool writes. */
