@@ -25,6 +25,12 @@ const fixtureCallerKeys=preparationSourcePins.callers.map(row=>row.key).sort();
 /** Fixture permissions match the entire sealed caller context. */
 const writerOrigins=await checkedPreparationOrigins(policy.writer.preparationOrigins);
 type PhysicalOrigin=Awaited<ReturnType<typeof checkedPreparationOrigins>>[number];
+export function assertPreparationRelationsExtend(sealed:readonly string[],candidate:readonly string[]):void{
+ if(sealed.some(relation=>!candidate.includes(relation)))throw new Error('Preparation refresh removes sealed relations');
+}
+export function refreshPreparationRelations(sealed:readonly string[],observations:readonly {relations:readonly string[]}[]):string[]{
+ return [...new Set([...sealed,...observations.flatMap(row=>row.relations)])].sort();
+}
 export function mergePreparationOrigins(base:readonly PhysicalOrigin[],writer:readonly PhysicalOrigin[]):PhysicalOrigin[]{
  const key=(row:PhysicalOrigin)=>JSON.stringify([row.id,row.file,row.owner,row.expression,row.phase]);
  const overrides=new Map(writer.map(row=>[key(row),row]));

@@ -1,8 +1,12 @@
 import { expect, test } from 'bun:test';
-import {classifySourceSealChange} from '../../scripts/view-read-seal.js';
-import {mergeSourceExceptions} from '../helpers/view-read-policy.js';
+import {preparationSealEnvelope,classifySourceSealChange} from '../../scripts/view-read-seal.js';
+import {preparationOrigins,assertPreparationRelationsExtend,refreshPreparationRelations,mergeSourceExceptions} from '../helpers/view-read-policy.js';
 import legacy from '../myco-server/fixtures/view-read-legacy.json';
-import { readFileSync, readdirSync } from 'node:fs';
+import fs, { readFileSync, readdirSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {gzipSync,gunzipSync} from 'node:zlib';
 import ts from 'typescript-v6';
 import classes from '../myco-server/fixtures/material-write-classes.json';
 import { materialWriteInventory } from '../helpers/material-write-inventory.js';
@@ -230,12 +234,56 @@ test('an added production SQL tuple requires a named class',()=>{
  }
 });
 
-test('writer source exceptions may change only frozen dependency fingerprints',()=>{
+test('writer overrides preserve declaration fields and only add sealed preparation relations',()=>{
  const held=legacy.sourceExceptions.find(row=>row.dependencies?.length)!;
  const row={...held,dependencies:[]};
  expect(mergeSourceExceptions([held],[row])).toEqual([row]);
+ expect(()=>assertPreparationRelationsExtend(['plans'],['plans','learning_sessions'])).not.toThrow();
+ expect(()=>assertPreparationRelationsExtend(['plans'],['learning_sessions'])).toThrow('removes sealed relations');
  for(const key of ['phase','expression','file','owner','callers'] as const){
   const changed={...row,[key]:key==='callers'?['forged']:String(row[key as keyof typeof row])+'-forged'};
   expect(()=>mergeSourceExceptions([held],[changed])).toThrow('dependencies only');
  }
+});
+
+
+test('partial preparation observation refreshes preserve every sealed relation',()=>{
+ const sealed=['processed_resources','prompt_batches','responses','tool_calls'];
+ const partial=[{relations:['prompt_batches','responses','tool_calls']}];
+ expect(refreshPreparationRelations(sealed,partial)).toEqual(sealed);
+ expect(refreshPreparationRelations(sealed,[])).toEqual(sealed);
+ const extended=refreshPreparationRelations(sealed,[...partial,{relations:['plans','responses']}]);
+ expect(extended).toEqual(['plans',...sealed]);
+ expect(refreshPreparationRelations(extended,partial)).toEqual(extended);
+ expect(sealed).toEqual(['processed_resources','prompt_batches','responses','tool_calls']);
+});
+
+
+test('the tracked resealer preserves sealed production relations during a partial observation refresh',async()=>{
+ const origin=preparationOrigins.find(row=>row.id==='pr5-b65633b9142d6820');
+ if(!origin)throw new Error('Missing plan event preparation origin');
+ expect(origin.relations).toContain('processed_resources');
+ const files=['tests/myco-server/fixtures/view-read-preparations.json','tests/helpers/view-read-operations.ts','tests/myco-server/fixtures/material-write-classes.json'];
+ const before=files.map(file=>readFileSync(file));
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-partial-observations-'));
+ try{
+  const observations=path.join(root,'observations.jsonl');
+  fs.writeFileSync(observations,JSON.stringify({origin,callers:[],relations:['responses']})+'\n');
+  const child=Bun.spawn([process.execPath,'scripts/reseal-view-writer-preparations.ts','--check','--observations',observations],{env:process.env,stdout:'pipe',stderr:'pipe'});
+  const [stderr,,status]=await Promise.all([new Response(child.stderr).text(),new Response(child.stdout).text(),child.exited]);
+  expect(stderr).toBe('');
+  expect(status).toBe(0);
+  expect(files.map(file=>readFileSync(file))).toEqual(before);
+ }finally{fs.rmSync(root,{recursive:true,force:true})}
+},90000);
+
+
+test('unchanged preparation payloads retain any valid gzip representation and reject a forged envelope',()=>{
+ const raw=JSON.stringify({rows:['processed_resources','plans']});
+ const previous={encoding:'gzip-base64-json',sha256:createHash('sha256').update(raw).digest('hex'),data:gzipSync(raw,{level:0}).toString('base64')};
+ expect(preparationSealEnvelope(raw,previous)).toEqual(previous);
+ const next=preparationSealEnvelope(raw+' ',previous);
+ expect(next.sha256).not.toBe(previous.sha256);
+ expect(gunzipSync(Buffer.from(next.data,'base64')).toString()).toBe(raw+' ');
+ expect(()=>preparationSealEnvelope(raw,{...previous,data:gzipSync('forged').toString('base64')})).toThrow('Invalid sealed preparation envelope');
 });

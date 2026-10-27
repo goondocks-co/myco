@@ -1,10 +1,10 @@
 import legacy from '../tests/myco-server/fixtures/view-read-legacy.json';
-import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins} from '../tests/helpers/view-read-policy.js';
+import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins,refreshPreparationRelations,assertPreparationRelationsExtend} from '../tests/helpers/view-read-policy.js';
 import ts from 'typescript-v6';
-import {sealViewReadSource} from './view-read-seal.js';
+import {sealViewReadSource,preparationSealEnvelope} from './view-read-seal.js';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import { preparationOwner, isSqlPreparation, protectedRelations } from '../tests/helpers/statement-recorder.js';
 import { sourceBoundary, type ExceptionClosure, type ParameterCaller } from '../tests/helpers/view-read-contract.js';
 import sources from '../tests/helpers/view-writer-preparation-sources.json';
@@ -94,24 +94,20 @@ for(const row of rows){
  const records=recordsByOrigin.get(JSON.stringify([id,key,row[4]]))??[];
  if(!id.startsWith('pr5-')&&!records.length)continue;
  const metadata:Metadata={...(nonSql.has(key)||old?.[6]?.nonSql?{nonSql:true}:{}),...(callerKeys.length?{callerKeys}:{} )};
- const found=new Set<string>(id.startsWith('pr5-')&&records.length?[]:old?.[5]??relations.get(key)??[]);
+ const found=refreshPreparationRelations(old?.[5]??relations.get(key)??[],records);
  const contexts=new Map<string,Set<string>>();
  for(const held of old?.[6]?.callerRelations??[]){if(held.callers.some(value=>!keys.has(value)))continue;const scope=[...held.callers].sort();if(scope.length)contexts.set(JSON.stringify(scope),new Set(held.relations));}
- for(const held of records){const scope=JSON.stringify(held.callers.filter(value=>keys.has(value)).sort());if(callerKeys.length&&scope==='[]')throw new Error('Unscoped preparation observation: '+id+' '+file+'#'+owner);for(const relation of held.relations)found.add(relation);const values=contexts.get(scope)??new Set<string>();held.relations.forEach(relation=>values.add(relation));contexts.set(scope,values);}
+ for(const held of records){const scope=JSON.stringify(held.callers.filter(value=>keys.has(value)).sort());if(callerKeys.length&&scope==='[]')throw new Error('Unscoped preparation observation: '+id+' '+file+'#'+owner);const values=contexts.get(scope)??new Set<string>();held.relations.forEach(relation=>values.add(relation));contexts.set(scope,values);}
  if(callerKeys.length&&!contexts.size)throw new Error('Refresh preparation caller observations: '+id+' '+file+'#'+owner);
  if(callerKeys.length)metadata.callerRelations=[...contexts].map(([key,values])=>({callers:JSON.parse(key),relations:[...values].sort()})).sort((a,b)=>compare(JSON.stringify(a.callers),JSON.stringify(b.callers)));
- row[5]=metadata.nonSql?[]:[...found].sort();row[6]=metadata;
+ row[5]=metadata.nonSql?[]:found;assertPreparationRelationsExtend(old?.[5]??[],row[5]);row[6]=metadata;
 }
 data.writer.sourceExceptions=exceptions.filter(row=>JSON.stringify(row)!==JSON.stringify(legacy.sourceExceptions.find(held=>held.id===row.id)));
 data.writer.foundationImports=data.writer.foundationImports.filter((row:unknown)=>!legacy.foundationImports.some(held=>JSON.stringify(held)===JSON.stringify(row)));
 
 for(const row of rows)if(data.extensions.some((extension:{ids:string[]})=>extension.ids.includes(row[0]))&&row[6]?.callerRelations)delete row[6].callerKeys;
 const encoded = JSON.stringify(rows.filter(row=>row[0].startsWith('pr5-')||JSON.stringify(row)!==JSON.stringify(baseByTuple.get(originTuple(row)))));
-data.writer.preparationOrigins = {
-  encoding: 'gzip-base64-json',
-  sha256: digest(encoded),
-  data: gzipSync(encoded, { mtime: 0 }).toString('base64'),
-};
+data.writer.preparationOrigins=preparationSealEnvelope(encoded,data.writer.preparationOrigins);
 
 
 const operationsText = readFileSync(catalogue, 'utf8');

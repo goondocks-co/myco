@@ -1,12 +1,21 @@
 import {readFileSync,writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {gzipSync} from 'node:zlib';
+import {gzipSync,gunzipSync} from 'node:zlib';
 import legacy from '../tests/myco-server/fixtures/view-read-legacy.json';
 import {sourceBoundary,sourceSealChanges,type ExceptionClosure,type ParameterCaller,type StatementException} from '../tests/helpers/view-read-contract.js';
 import {checkedPreparationSource} from '../tests/helpers/statement-recorder.js';
 import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports} from '../tests/helpers/view-read-policy.js';
 
 const file='tests/myco-server/fixtures/view-read-preparations.json';
+export function preparationSealEnvelope(raw:string|Uint8Array,previous:{encoding:string;sha256:string;data:string}){
+ const sha256=createHash('sha256').update(raw).digest('hex');
+ if(previous.sha256===sha256){
+  if(previous.encoding!=='gzip-base64-json'||createHash('sha256').update(gunzipSync(Buffer.from(previous.data,'base64'))).digest('hex')!==sha256)throw new Error('Invalid sealed preparation envelope');
+  return previous;
+ }
+ return {encoding:'gzip-base64-json',sha256,data:gzipSync(raw).toString('base64')};
+}
+
 const namedTupleClasses=new Map<string,string>([
  ["d497a0f33d33410d048f75460442a1cc8687b4e133cd5858688e753e1c717adf","backup and restore SQL"],
  ["7be887ac862eae1e25cf58711d1080726bd613d9d55e3f54759b068275b7c5ea","backup and restore SQL"],
@@ -100,7 +109,7 @@ const compact=(row:ExceptionClosure|ParameterCaller)=>({...row,dependencies:row.
 })});
 const compactClosures=closures.map(compact),compactCallers=callers.map(compact);
 const raw=Buffer.from(JSON.stringify({codec:1,dependencies,closures:compactClosures,callers:compactCallers}));
-policy.sourceClosureProgram={encoding:'gzip-base64-json',sha256:createHash('sha256').update(raw).digest('hex'),data:gzipSync(raw).toString('base64')};
+policy.sourceClosureProgram=preparationSealEnvelope(raw,policy.sourceClosureProgram);
 policy.fixtureReconciliation.sourceGraphSha256=policy.sourceClosureProgram.sha256;
 if(writer)policy.writer.sourceExceptions=exceptions.filter(row=>JSON.stringify(row)!==JSON.stringify(legacy.sourceExceptions.find(held=>held.id===row.id)));
 const marker='__SOURCE_CLOSURE_CLASSES__';

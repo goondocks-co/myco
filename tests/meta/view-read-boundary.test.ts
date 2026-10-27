@@ -1224,7 +1224,7 @@ test('literal dollar-prefixed SQL fields cannot impersonate the key projection s
 test('writer preparation refreshes preserve each complete origin tuple',()=>{
  const left={kind:'exception' as const,id:'shared',file:'tests/fixture.ts',owner:'left',expression:'sql',phase:'T' as const,relations:['prompt_batches']};
  const right={...left,owner:'right',relations:['responses']};
- const refreshed={...right,relations:['plans']};
+ const refreshed={...right,relations:['plans','responses']};
  expect(mergePreparationOrigins([left,right],[refreshed])).toEqual([left,refreshed]);
  expect(mergePreparationOrigins([left,right],[{...refreshed,phase:'H'}])).toEqual([left,right]);
 });
