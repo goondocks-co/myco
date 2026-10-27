@@ -3,7 +3,7 @@ import {getPlan} from '@myco-server-worker/read/plans.js';
 import {getSession} from '@myco-server-worker/read/sessions.js';
 import {listTurns} from '@myco-server-worker/read/turns.js';
 import {withViewReadResponse} from '@myco-server-worker/read/view-store.js';
-import {captureViewSession,withViewStores} from './helpers/view-stores.js';
+import {captureViewSession,withViewStores,withViewStorePair} from './helpers/view-stores.js';
 import {mirrorViewSession,publishMirroredSession,setSyntheticInstanceState,setViewLayerValues,clearViewSourceIdentity} from './helpers/view-instances.js';
 import {statementRecorder} from '../helpers/statement-recorder.js';
 import {uuid} from './helpers/fixtures.js';
@@ -102,11 +102,13 @@ it('building headers and missing stored source coordinates refuse with named cod
 it('M21 count statements retain absent and published sources in every scope across a flip',async()=>{
  const evidence:{target:string;mode:string;scope:string;before:number;actual:number;after:number}[]=[];
  for(const mode of ['absent','published','all-placed'])for(const selection of ['all','project','session']){
-  await withViewStores(async(db,target)=>{
+  await withViewStorePair('native-D1',async db=>{
    await seedViewConsumerWorld(db);
    const issued=await captureViewSession(db,'project','session',{idOffset:47978});
    if(mode==='all-placed')await appendCostHistory(db,{projectId:'project',sessionId:'session',tokenId:issued.tokenId,material:COST_MATERIALS[0],from:0,through:1,idBase:47998,parser:false});
    if(mode!=='absent')await mirrorConsumerWorld(db);
+  },async(native,d1)=>{
+   for(const [db,target]of [[native,'native'],[d1,'D1']]as const){
    const project=selection==='all'?undefined:scope,session=selection==='session'?'session':undefined;
    const before=await countUnplacedContextRecords(db,project,session,700);
    await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'empty-next',state:'building'},false);
@@ -125,7 +127,8 @@ it('M21 count statements retain absent and published sources in every scope acro
    expect(after,target+' different complete source').toBe(3);
    expect(actual,target+' '+mode+' '+selection).toBe(before);
    expect(observed.statements.map(row=>row.method)).toEqual(['first','first']);
-  });
+   }
+  },'native');
  }
  console.info('M21_FLIP_EVIDENCE',JSON.stringify(evidence));
 },60_000);
