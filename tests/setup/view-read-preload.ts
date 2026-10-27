@@ -1,3 +1,4 @@
+import { sourceTransformCache } from '../helpers/source-transform-cache.js';
 import materialClasses from '../myco-server/fixtures/material-write-classes.json';
 import {materialWriteBoundary,materialWriteMode} from '../helpers/material-write-classification.js';
 import * as miniflare from 'miniflare';
@@ -20,9 +21,17 @@ export function instrumentReadSource(source:string,file:string):string{
  const relative=sourcePaths.relative(file);
  return instrumentObservedReadFiles(ts,instrumentObservedClock(ts,instrumentNativeReadRequests(ts,instrumentReadPreparations(ts,instrumentObservedStores(ts,source,relative,preparationRecorder),relative,preparationOrigins,preparationRecorder,preparationSourcePins.callers),relative,preparationRecorder),relative,preparationRecorder),relative,preparationRecorder);
 }
+const cache = process.env.MYCO_TEST_RUN_ROOT === undefined ? undefined : sourceTransformCache(
+ path.join(process.env.MYCO_TEST_RUN_ROOT,'view-source-cache'),
+ [repository,ts.version,...[import.meta.path,preparationRecorder,
+  '../helpers/source-transform-cache.ts','../helpers/view-read-policy.ts',
+  '../myco-server/fixtures/view-read-preparations.json','../myco-server/fixtures/view-read-legacy.json',
+ ].map(file=>fs.readFileSync(path.resolve(import.meta.dir,file),'utf8'))],
+);
 Bun.plugin({name:'view-read-preparation-origins',setup(build){
  build.onLoad({filter:sourcePaths.filter},args=>{
-  const source=fs.readFileSync(args.path,'utf8'),contents=args.path.includes('.generated.')?source:instrumentReadSource(source,args.path);
+  const source=fs.readFileSync(args.path,'utf8'),transform=()=>instrumentReadSource(source,args.path);
+  const contents=args.path.includes('.generated.')?source:cache?.(sourcePaths.relative(args.path),source,transform)??transform();
   return {contents,loader:args.path.endsWith('tsx')?'tsx':args.path.endsWith('.ts')?'ts':'js'};
  });
 }});

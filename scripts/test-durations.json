@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #1924 PR5 CI4, pinned Bun1.4.0 and SQLite3.53.0, identical isolated homes. Head412832b3b SIGKILL baseline42 cases75357ms body/76658ms runner/78531ms command; archived main196589b16 baseline70491ms body/74266ms command. Fixed three complete42-case runs measured54609/54809/55116ms command, below main. All boundaries/assertions and180000ms deadline retained. Main CI40446829384 file111447ms divided by main local body70491ms projects fixed work below90000ms;112148ms recorded CI floor retains the SIGKILL file weight. Audit command before55925ms, fixed three6414/6376/6578ms commands; old CI-greensuite72568ms scaled by6578/55925 projects8536ms, but recorded42189ms floor is retained (old configured83422ms). New source-transform-cache4-case suite588ms runner/2097ms command gets4000ms including main Linux/local ratio and startup. No new parity scenario; matrix mode lists every existing scenario without running parity work. Source cache keyed by exact source/file, transformer/policy inputs and compiler/repository identity; no guard, assertion or timeout removed.",
     "ci: #1924 PR5 CI3 run 40486862147 JUnit file-root testsuite times (include file import/preload cost), complete process logs only; 36 missing-file times use main run40446829384. Failed classification/material-facts files use conservative 1.5x partial suite times. Three parser files each retain the whole measured712ms concatenated parser bundle. Existing recorded CI replay floors retained. Create-SIGKILL and cutover-project describes split without changed assertions/deadlines: moved case times plus full original file overhead assigned to each part. Per-file derivation and paths recorded in scratch ci3-duration-weights.json. Eight node shards required: measured/floored workload exceeds seven times660000ms; parity and proof membership unchanged. No local projection used for rebalance.",
     "local: #1924 PR5 CI3 split-owner validation with pinned Bun1.4.0, isolated homes and SQLite3.53.0. npm test -- tests/cli/cutover.test.ts tests/cli/cutover-projects.test.ts tests/setup/journeys.test.ts tests/setup/create-sigkill-resume.test.ts completed363 cases,198492ms runner wall, zero failures. JUnit per-file suite times are saved in scratch ci3-split-owner-measurements.json. New file weights use the higher CI3 moved-body plus startup measurements, not local projections. No new parity scenario. Initial pre-reseal relocation refusal and its setup/home-guard cascade are retained separately; validation uses the resealed policy in normal throwing mode.",
     "CI 6: pinned Bun 1.4.0 darwin-arm64 with vendored SQLite through npm test. Native-seeded withViewStorePair worlds retain every reader, bound and assertion; local record-proof history 50356.26ms to 5125.11ms, maximum-page sessions 32677.35ms to 20692.27ms, and CI strata replay 25552.54ms to 19470.31ms. Sweep covers all 23 PR test files and 308 recorded JUnit cases from runs 40436321826 and 40439590607; three remaining D1 seeders converted, M21 already converted, two source-analysis checks have no D1 seeding. CI file weights remain unchanged until new Linux measurements; no deadline, world size, bound or assertion reduced. No new test file or parity scenario.",
@@ -443,6 +444,7 @@
     "tests/meta/setup-seams.test.ts": 666,
     "tests/meta/shared-subpath-declarations.test.ts": 1271,
     "tests/meta/sign-executable.test.ts": 1369,
+    "tests/meta/source-transform-cache.test.ts": 4000,
     "tests/meta/supervisor-start-boundary.test.ts": 125179,
     "tests/meta/temp-dirs-under-tmpdir.test.ts": 766,
     "tests/meta/test-suite-integrity.test.ts": 1052,
@@ -864,7 +866,7 @@
     "tests/runtime/binary-resolution.test.ts": 988,
     "tests/runtime/bundled-path.test.ts": 1374,
     "tests/runtime/spawn-detached.test.ts": 1133,
-    "tests/scripts/check-test-shards.test.ts": 83422,
+    "tests/scripts/check-test-shards.test.ts": 42189,
     "tests/scripts/ensure-deps.test.ts": 4414,
     "tests/scripts/make-dogfood.test.ts": 1224,
     "tests/scripts/run-bun-tests-guards.test.ts": 215937,

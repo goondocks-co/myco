@@ -102,9 +102,15 @@ if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});
 } else {
   const weights: Record<string, number> = durations.parity;
-  const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
+  const plan = (shard: string | undefined) => selectShard(scenarios, parseShard(shard), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
+  const selected = plan(process.env.MYCO_PARITY_SHARD);
   if (process.env.MYCO_PARITY_PLAN === '1') {
-    console.log(PARITY_PLAN_PREFIX + JSON.stringify(selected.map((scenario) => scenario.name)));
+    const selectors: string[] | undefined = process.env.MYCO_PARITY_PLAN_MATRIX === undefined ? undefined : JSON.parse(process.env.MYCO_PARITY_PLAN_MATRIX);
+    if (selectors !== undefined && (!Array.isArray(selectors) || !selectors.every(value => typeof value === 'string'))) throw new Error('Invalid parity matrix selectors');
+    const names = (shard: string | undefined) => plan(shard).map(scenario => scenario.name);
+    console.log(PARITY_PLAN_PREFIX + JSON.stringify(selectors === undefined ? selected.map(scenario => scenario.name) : {
+      full: names(undefined), shards: selectors.map(shard => ({ shard, scenarios: names(shard) })),
+    }));
     test.skip('parity shard manifest', () => {});
   } else {
     // A self-hosted scenario that queries vectors loads sqlite-vec, which needs an extension-enabled SQLite registered
