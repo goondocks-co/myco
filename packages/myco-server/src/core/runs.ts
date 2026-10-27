@@ -900,15 +900,18 @@ export async function commitAttributedWrite(
   scope: ReadScope,
   mutation: PreparedStatement,
   write?: RunWrite,
+  after:readonly PreparedStatement[]=[],
+  before:readonly PreparedStatement[]=[],
 ): Promise<import('./adapters.js').RunResult> {
-  if (write === undefined) return mutation.run();
-  const [result] = await db.batch([mutation,
+  if (write === undefined) return after.length||before.length?(await db.batch([...before,mutation,...after]))[before.length]!:mutation.run();
+  const results = await db.batch([...before,mutation,
     db.prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
       SELECT ?, ?, NULL, ?, ?, 'written', NULL, ?, ? WHERE changes() > 0`)
       .bind(scope.projectId, write.runId, RUN_WRITE_EVENT, write.toolName,
         JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), write.recordedAt),
+    ...after,
   ]);
-  return result!;
+  return results[before.length]!;
 }
 
 /**

@@ -14,6 +14,24 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/runs.ts#guardedStateStatement': [
     { tables: ['agent_state'], order: 'unverified' },
   ],
+  'ingest/view-flip-work.ts#beginFlipObservation': [
+    { tables: ['view_flip_calibrations'], order: 'unverified' },
+  ],
+  'core/material-versions.ts#publicationVersionStatements': [
+    { tables: ['material_versions'], order: 'unverified' },
+  ],
+  'ingest/view-lifecycle.ts#requestViewRebuildOnce': [
+    { tables: ['session_views'], order: 'unverified' },
+  ],
+  'ingest/view-projections.ts#viewPlanTransitionStatements': [
+    { tables: ['embedding_versions'], order: 'unverified' },
+  ],
+  'ingest/view-projections.ts#viewLiveProjectionStatements': [
+    { tables: ['embedding_versions'], order: 'unverified' },
+  ],
+  'ingest/view-writer.ts#viewRowStatements': [
+    { tables: ['view_prompts','view_responses','view_tool_calls','view_plans'], order: 'unverified' },
+  ],
   'auth/members-admin.ts#nameMemberFromLogin': [
     { tables: ['schema_meta'], order: 'unverified' },
   ],

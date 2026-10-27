@@ -17,6 +17,16 @@ export function utf8(input: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** A display prefix ends at a complete UTF-8 code point within its byte bound. */
+export function utf8Preview(text:string,maximumBytes:number):{preview:string;bytes:number;previewBytes:number;truncated:boolean}{
+  if(!Number.isSafeInteger(maximumBytes)||maximumBytes<0)throw new Error('Invalid UTF-8 preview bound');
+  const encoded=utf8(text);
+  if(encoded.length<=maximumBytes)return {preview:text,bytes:encoded.length,previewBytes:encoded.length,truncated:false};
+  let end=maximumBytes;
+  while(end>0&&(encoded[end]!&0xc0)===0x80)end--;
+  return {preview:new TextDecoder('utf-8',{fatal:true}).decode(encoded.subarray(0,end)),bytes:encoded.length,previewBytes:end,truncated:true};
+}
+
 export async function sha256HexOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');

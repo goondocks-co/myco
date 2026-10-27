@@ -19,7 +19,7 @@ it('step 100 adds only empty indexed instance storage and preserves captured fac
     const before = await factsNow();
     const step = SCHEMA_STEPS.find(step => step.version === 100)!;
     expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(100);
-    expect(VIEW_SESSION_TABLES.map(String).sort()).toEqual(TABLES.slice().sort());
+    expect(VIEW_SESSION_TABLES.filter(table => !['view_publication_material','view_legacy_ack_feed','view_build_work','view_work_samples','material_versions','learning_sessions'].includes(table)).map(String).sort()).toEqual(TABLES.slice().sort());
     for (const sql of step.statements) {
       if (/schema_meta/.test(sql)) continue;
       expect(sql).toMatch(/^CREATE (?:TABLE|VIRTUAL TABLE|INDEX|TRIGGER) IF NOT EXISTS /);

@@ -1,7 +1,15 @@
+import { readdirSync } from 'node:fs';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { expect, it } from 'bun:test';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 
-interface Exception { step: number; object: string; table: string; reason: string }
+interface Exception {
+  step: number;
+  object: string;
+  table: string;
+  reason: string;
+}
 const EXCEPTIONS: readonly Exception[] = [
   {step:103,object:'agent_attempt_settled_insert',table:'agent_run_attempts',reason:'New known costs receive Deployment-local settlement order.'},
   {step:103,object:'agent_attempt_settled_update',table:'agent_run_attempts',reason:'Newly known costs receive Deployment-local settlement order.'},
@@ -11,27 +19,119 @@ const EXCEPTIONS: readonly Exception[] = [
   {step:103,object:'agent_runs_origin_insert',table:'agent_runs',reason:'Omitted dispatch origins must be classified before queue-head admission.'},
   {step:103,object:'agent_runs_origin_fixed',table:'agent_runs',reason:'Persisted dispatch origin is immutable.'},
   {step:103,object:'agent_attempt_claim_fixed',table:'agent_run_attempts',reason:'Claim time, estimate and profile are immutable attempt evidence.'},
+
+  ...['prompts', 'responses', 'tool_calls', 'plans'].map((kind) => ({
+    step: 105,
+    object: 'idx_view_' + kind + '_identity',
+    table: 'view_' + kind,
+    reason: 'The writer extension requires empty instance storage.',
+  })),
+  {
+    step: 105,
+    object: 'idx_view_active_leases',
+    table: 'view_instances',
+    reason: 'Build slot admission indexes empty instance storage.',
+  },
+  {
+    step: 105,
+    object: 'idx_view_stale',
+    table: 'view_instances',
+    reason: 'Stale generation admission indexes empty instance storage.',
+  },
+  {
+    step: 105,
+    object: 'idx_view_promotions_pending',
+    table: 'plan_promotions',
+    reason: 'Publication admission indexes empty promotion storage.',
+  },
+  {
+    step: 105,
+    object: 'idx_view_prompt_source',
+    table: 'view_prompts',
+    reason: 'Coverage counterpart admission indexes empty material storage.',
+  },
 ];
-interface StatementException { step: number; sql: string; reason: string }
+interface StatementException {
+  step: number;
+  sql: string;
+  reason: string;
+}
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
-  { step: 101, sql: 'ALTER TABLE spores ADD COLUMN revision INTEGER NOT NULL DEFAULT 0',
-    reason: 'Each existing spore carries its revision.' },
-  { step: 101, sql: `INSERT OR IGNORE INTO schema_meta (key, value)
+  {
+    step: 105,
+    sql: 'INSERT INTO _v105_empty SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM view_instances) THEN 1 ELSE 0 END',
+    reason: 'Writer extensions require empty instance storage.',
+  },
+  { step: 105, sql: 'DROP TABLE IF EXISTS _v105_empty', reason: 'The admission table is temporary.' },
+  ...['view_prompts', 'view_responses', 'view_tool_calls', 'view_plans'].flatMap((table) =>
+    [
+      'material_seq INTEGER CHECK(material_seq IS NULL OR material_seq>0)',
+      'view_content_hash TEXT',
+      'hash_scheme TEXT',
+      'canonical_identity TEXT',
+    ].map((column) => ({
+      step: 105,
+      sql: 'ALTER TABLE ' + table + ' ADD COLUMN ' + column,
+      reason: 'Empty material storage carries publication identity and sequence.',
+    })),
+  ),
+  ...['outcome_source TEXT', 'call_source TEXT'].map((column) => ({
+    step: 105,
+    sql: 'ALTER TABLE view_tool_calls ADD COLUMN ' + column,
+    reason: 'Tool assembly persists canonical source order in empty storage.',
+  })),
+  {
+    step: 105,
+    sql: "ALTER TABLE view_plans ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'",
+    reason: 'Empty plan storage retains the complete logical tag set.',
+  },
+  ...[
+    'parsed_at INTEGER',
+    'parser_version INTEGER',
+    'fidelity TEXT',
+    'parse_segment_lines INTEGER',
+    'prompt_generation INTEGER',
+    'parse_failed_at INTEGER',
+  ].map((column) => ({
+    step: 105,
+    sql: 'ALTER TABLE view_checkpoints ADD COLUMN ' + column,
+    reason: 'Empty checkpoints carry the complete live frontier.',
+  })),
+  {
+    step: 101,
+    sql: 'ALTER TABLE spores ADD COLUMN revision INTEGER NOT NULL DEFAULT 0',
+    reason: 'Each existing spore carries its revision.',
+  },
+  {
+    step: 101,
+    sql: `INSERT OR IGNORE INTO schema_meta (key, value)
      VALUES ('guard_enabled_at', CAST(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) AS TEXT))`,
-    reason: 'The Deployment records its revision-guard dispatch boundary.' },
-  { step: 102, sql: `INSERT OR IGNORE INTO retired_deployment_settings (leaf,value,updated_at,updated_by,retired_at)
+    reason: 'The Deployment records its revision-guard dispatch boundary.',
+  },
+  {
+    step: 102,
+    sql: `INSERT OR IGNORE INTO retired_deployment_settings (leaf,value,updated_at,updated_by,retired_at)
     SELECT 'agent.tasks.extract-curate.schedule',value,updated_at,updated_by,unixepoch()*1000
     FROM deployment_settings WHERE leaf='agent.tasks' AND CASE WHEN json_valid(value) THEN json_type(value, '$."extract-curate".schedule') IS NOT NULL ELSE 1 END`,
-    reason: 'The Deployment retains the original extraction schedule preferences.' },
-  { step: 102, sql: `INSERT INTO _v102_guard_learning_settings(ok) SELECT CASE WHEN NOT EXISTS (
+    reason: 'The Deployment retains the original extraction schedule preferences.',
+  },
+  {
+    step: 102,
+    sql: `INSERT INTO _v102_guard_learning_settings(ok) SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM deployment_settings live WHERE leaf='agent.tasks' AND CASE WHEN json_valid(value) THEN json_type(value, '$."extract-curate".schedule') IS NOT NULL ELSE 1 END
     AND NOT EXISTS (SELECT 1 FROM retired_deployment_settings saved WHERE saved.leaf='agent.tasks.extract-curate.schedule'
       AND saved.value=live.value AND saved.updated_at=live.updated_at AND saved.updated_by=live.updated_by)
     ) THEN 1 ELSE 0 END`,
-    reason: 'The settings guard requires the complete retired preference record.' },
-  { step: 102, sql: `DROP TABLE _v102_guard_learning_settings`,
-    reason: 'The temporary settings guard is released after admission.' },
-  { step: 102, sql: `UPDATE deployment_settings
+    reason: 'The settings guard requires the complete retired preference record.',
+  },
+  {
+    step: 102,
+    sql: `DROP TABLE _v102_guard_learning_settings`,
+    reason: 'The temporary settings guard is released after admission.',
+  },
+  {
+    step: 102,
+    sql: `UPDATE deployment_settings
     SET value=json_set(value, '$."extract-curate".enabled', json(value -> '$."extract-curate".schedule.enabled')),
       write_id=lower(hex(randomblob(16)))
     WHERE leaf='agent.tasks' AND CASE WHEN json_valid(value) THEN
@@ -39,8 +139,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
       AND json_type(value, '$."extract-curate".schedule')='object'
       AND json_type(value, '$."extract-curate".schedule.enabled') IS NOT NULL
       AND json_type(value, '$."extract-curate".enabled') IS NULL ELSE 0 END`,
-    reason: 'The extraction enabled preference retains its stored value.' },
-  { step: 102, sql: `UPDATE deployment_settings
+    reason: 'The extraction enabled preference retains its stored value.',
+  },
+  {
+    step: 102,
+    sql: `UPDATE deployment_settings
     SET value=json_set(value, '$."extract-curate".memberRunsPerDay', json(value -> '$."extract-curate".schedule.memberRunsPerDay')),
       write_id=lower(hex(randomblob(16)))
     WHERE leaf='agent.tasks' AND CASE WHEN json_valid(value) THEN
@@ -48,20 +151,32 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
       AND json_type(value, '$."extract-curate".schedule')='object'
       AND json_type(value, '$."extract-curate".schedule.memberRunsPerDay') IS NOT NULL
       AND json_type(value, '$."extract-curate".memberRunsPerDay') IS NULL ELSE 0 END`,
-    reason: 'The extraction member allowance retains its stored value.' },
-  { step: 102, sql: `UPDATE deployment_settings SET value=json_remove(value, '$."extract-curate".schedule'),write_id=lower(hex(randomblob(16)))
+    reason: 'The extraction member allowance retains its stored value.',
+  },
+  {
+    step: 102,
+    sql: `UPDATE deployment_settings SET value=json_remove(value, '$."extract-curate".schedule'),write_id=lower(hex(randomblob(16)))
     WHERE leaf='agent.tasks' AND CASE WHEN json_valid(value) THEN
       json_type(value)='object' AND json_type(value, '$."extract-curate"')='object'
       AND json_type(value, '$."extract-curate".schedule')='object' ELSE 0 END`,
-    reason: 'The extraction task uses flat preferences.' },
-  { step: 102, sql: `INSERT OR IGNORE INTO schema_meta(key,value) VALUES ('learning_paused_at',CAST(unixepoch()*1000 AS TEXT))`,
-    reason: 'The Deployment records its learning pause boundary.' },
-  { step: 102, sql: `UPDATE member_credentials SET revoked_at=(SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='learning_paused_at'),
+    reason: 'The extraction task uses flat preferences.',
+  },
+  {
+    step: 102,
+    sql: `INSERT OR IGNORE INTO schema_meta(key,value) VALUES ('learning_paused_at',CAST(unixepoch()*1000 AS TEXT))`,
+    reason: 'The Deployment records its learning pause boundary.',
+  },
+  {
+    step: 102,
+    sql: `UPDATE member_credentials SET revoked_at=(SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='learning_paused_at'),
       revoked_by='mem_harness'
     WHERE member_id='mem_harness' AND revoked_at IS NULL AND EXISTS (
       SELECT 1 FROM agent_runs WHERE status='queued' AND task='extract-curate' AND dispatched_by=member_credentials.id)`,
-    reason: 'Queued extraction credentials are revoked at the pause boundary.' },
-  { step: 102, sql: `UPDATE agent_runs SET status='skipped',
+    reason: 'Queued extraction credentials are revoked at the pause boundary.',
+  },
+  {
+    step: 102,
+    sql: `UPDATE agent_runs SET status='skipped',
     completed_at=(SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='learning_paused_at'),
     run_context='{"reason":"learning_paused"}',held_by=NULL,dispatch_spec=NULL
     WHERE status='queued' AND task='extract-curate'`,
@@ -102,9 +217,18 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
 const IDENTIFIER = '(?:[a-zA-Z_][a-zA-Z_0-9]*|"[^"]+"|`[^`]+`|\\[[^\\]]+\\])';
 const QUALIFIED_IDENTIFIER = `(?:${IDENTIFIER}\\s*\\.\\s*)?${IDENTIFIER}`;
 const name = (value: string) => value.replace(/^["`\[]|["`\]]$/g, '').toLowerCase();
-const createTable = new RegExp(`^CREATE\\s+(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})(?:\\s|\\()`, 'i');
-const createIndex = new RegExp(`^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})\\s+ON\\s+(${QUALIFIED_IDENTIFIER})\\s*\\(`, 'i');
-const createTrigger = new RegExp(`^CREATE\\s+TRIGGER\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})\\s+(?:BEFORE|AFTER|INSTEAD\\s+OF)\\s+(?:INSERT|DELETE|UPDATE(?:\\s+OF\\s+${IDENTIFIER}(?:\\s*,\\s*${IDENTIFIER})*)?)\\s+ON\\s+(${QUALIFIED_IDENTIFIER})\\s`, 'i');
+const createTable = new RegExp(
+  `^CREATE\\s+(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})(?:\\s|\\()`,
+  'i',
+);
+const createIndex = new RegExp(
+  `^CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})\\s+ON\\s+(${QUALIFIED_IDENTIFIER})\\s*\\(`,
+  'i',
+);
+const createTrigger = new RegExp(
+  `^CREATE\\s+TRIGGER\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})\\s+(?:BEFORE|AFTER|INSTEAD\\s+OF)\\s+(?:INSERT|DELETE|UPDATE(?:\\s+OF\\s+${IDENTIFIER}(?:\\s*,\\s*${IDENTIFIER})*)?)\\s+ON\\s+(${QUALIFIED_IDENTIFIER})\\s`,
+  'i',
+);
 
 function withoutLeadingComments(sql: string): string | null {
   let rest = sql.trimStart();
@@ -121,33 +245,52 @@ function withoutLeadingComments(sql: string): string | null {
   return rest;
 }
 
-function ownershipViolations(steps: readonly SchemaStep[], exceptions = EXCEPTIONS, statementExceptions = STATEMENT_EXCEPTIONS): string[] {
+function ownershipViolations(
+  steps: readonly SchemaStep[],
+  exceptions = EXCEPTIONS,
+  statementExceptions = STATEMENT_EXCEPTIONS,
+): string[] {
   const errors: string[] = [];
   for (const exception of exceptions) {
-    if (!exception.reason.trim()) errors.push(`step ${exception.step}: ${exception.object} requires an exception reason`);
+    if (!exception.reason.trim())
+      errors.push(`step ${exception.step}: ${exception.object} requires an exception reason`);
   }
   for (const exception of statementExceptions) {
     if (!exception.reason.trim()) errors.push(`step ${exception.step}: statement requires an exception reason`);
   }
   const createdBefore = new Set<string>();
   for (const step of [...steps].sort((a, b) => a.version - b.version)) {
-    const statements = step.statements.map(sql => withoutLeadingComments(sql));
-    const declared = statements.flatMap(sql => {
+    const statements = step.statements.map((sql) => withoutLeadingComments(sql));
+    const declared = statements.flatMap((sql) => {
       const match = sql === null ? null : createTable.exec(sql);
       return match ? [name(match[1]!)] : [];
     });
-    const tables = new Set(declared.filter(table => !createdBefore.has(table)));
+    const tables = new Set(declared.filter((table) => !createdBefore.has(table)));
     for (const table of declared) createdBefore.add(table);
     if (step.version < 100) continue;
     const check = (object: string, table: string) => {
-      if (!tables.has(table) && !exceptions.some(exception => exception.step === step.version &&
-        exception.object === object && exception.table === table && exception.reason.trim())) {
+      if (
+        !tables.has(table) &&
+        !exceptions.some(
+          (exception) =>
+            exception.step === step.version &&
+            exception.object === object &&
+            exception.table === table &&
+            exception.reason.trim(),
+        )
+      ) {
         errors.push(`step ${step.version}: ${object} targets existing table ${table}`);
       }
     };
     for (const [index, sql] of statements.entries()) {
       if (sql === `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${step.version}')`) continue;
-      if (statementExceptions.some(exception => exception.step === step.version && exception.sql === step.statements[index] && exception.reason.trim())) continue;
+      if (
+        statementExceptions.some(
+          (exception) =>
+            exception.step === step.version && exception.sql === step.statements[index] && exception.reason.trim(),
+        )
+      )
+        continue;
       if (sql === null || (!createTable.test(sql) && !/^CREATE\s+(?:UNIQUE\s+)?(?:INDEX|TRIGGER)\b/i.test(sql))) {
         errors.push(`step ${step.version}: unclassifiable statement: ${sql}`);
         continue;
@@ -160,7 +303,8 @@ function ownershipViolations(steps: readonly SchemaStep[], exceptions = EXCEPTIO
       if (/^CREATE\s+VIRTUAL\s+TABLE\b/i.test(sql) && /\bUSING\s+fts5\s*\(/i.test(sql)) {
         const table = createTable.exec(sql);
         const content = /\bcontent\s*=\s*(['"])(.*?)\1/i.exec(sql);
-        if (/\bcontent\s*=/i.test(sql) && !content) errors.push(`step ${step.version}: unrecognized FTS content: ${sql}`);
+        if (/\bcontent\s*=/i.test(sql) && !content)
+          errors.push(`step ${step.version}: unrecognized FTS content: ${sql}`);
         else if (content?.[2]) check(name(table![1]!), name(content[2]));
       }
     }
@@ -176,12 +320,23 @@ it('ownership classifies every later statement after leading comments and reject
   const index = 'CREATE INDEX idx_probe ON sessions (session_id)';
   for (const prefix of ['', '-- x\n', '/* x */', '\n -- x\n /* y */ -- z\n']) {
     expect(ownershipViolations([{ version: 101, statements: [prefix + index] }])).toHaveLength(1);
-    expect(ownershipViolations([{ version: 101, statements: [prefix + 'CREATE TABLE new_rows(id INTEGER)',
-      prefix + 'CREATE INDEX idx_new ON new_rows(id)'] }])).toEqual([]);
+    expect(
+      ownershipViolations([
+        {
+          version: 101,
+          statements: [prefix + 'CREATE TABLE new_rows(id INTEGER)', prefix + 'CREATE INDEX idx_new ON new_rows(id)'],
+        },
+      ]),
+    ).toEqual([]);
   }
-  for (const sql of ['CREATE /* x */ INDEX idx_probe ON sessions(session_id)',
-    'CREATE INDEX idx_probe ON main.sessions(session_id)', '/* unterminated', '-- comment only',
-    'SELECT 1', 'CREATE INDEX idx_probe ON']) {
+  for (const sql of [
+    'CREATE /* x */ INDEX idx_probe ON sessions(session_id)',
+    'CREATE INDEX idx_probe ON main.sessions(session_id)',
+    '/* unterminated',
+    '-- comment only',
+    'SELECT 1',
+    'CREATE INDEX idx_probe ON',
+  ]) {
     expect(ownershipViolations([{ version: 101, statements: [sql] }])).toHaveLength(1);
   }
 });
@@ -193,21 +348,37 @@ it('ownership rejects index, trigger and FTS bypasses in later schema steps', ()
     'CREATE TRIGGER IF NOT EXISTS old_rows_ai AFTER INSERT ON sessions BEGIN SELECT 1; END',
     "CREATE VIRTUAL TABLE IF NOT EXISTS new_fts USING fts5(text,content='sessions')",
   ];
-  for (const sql of bypasses) expect(ownershipViolations([{ version: 101, statements: [create, sql] }])).toHaveLength(1);
-  expect(ownershipViolations([
-    { version: 99, statements: ['CREATE TABLE IF NOT EXISTS sessions (session_id TEXT)'] },
-    { version: 101, statements: ['CREATE TABLE IF NOT EXISTS sessions (session_id TEXT)', bypasses[0]!] },
-  ])).toHaveLength(1);
-  expect(ownershipViolations([{ version: 101, statements: [create,
-    'CREATE INDEX IF NOT EXISTS idx_new_rows ON new_rows (id)',
-    'CREATE TRIGGER IF NOT EXISTS new_rows_ai AFTER INSERT ON new_rows BEGIN SELECT 1; END',
-    "CREATE VIRTUAL TABLE IF NOT EXISTS new_fts USING fts5(text,content='new_rows')",
-  ] }])).toEqual([]);
+  for (const sql of bypasses)
+    expect(ownershipViolations([{ version: 101, statements: [create, sql] }])).toHaveLength(1);
+  expect(
+    ownershipViolations([
+      { version: 99, statements: ['CREATE TABLE IF NOT EXISTS sessions (session_id TEXT)'] },
+      { version: 101, statements: ['CREATE TABLE IF NOT EXISTS sessions (session_id TEXT)', bypasses[0]!] },
+    ]),
+  ).toHaveLength(1);
+  expect(
+    ownershipViolations([
+      {
+        version: 101,
+        statements: [
+          create,
+          'CREATE INDEX IF NOT EXISTS idx_new_rows ON new_rows (id)',
+          'CREATE TRIGGER IF NOT EXISTS new_rows_ai AFTER INSERT ON new_rows BEGIN SELECT 1; END',
+          "CREATE VIRTUAL TABLE IF NOT EXISTS new_fts USING fts5(text,content='new_rows')",
+        ],
+      },
+    ]),
+  ).toEqual([]);
 });
 
 it('existing-table exceptions name their step, object, table and reason', () => {
   const step = { version: 101, statements: ['CREATE INDEX IF NOT EXISTS idx_old ON sessions (session_id)'] };
-  const exception = { step: 101, object: 'idx_old', table: 'sessions', reason: 'Explicitly admitted existing-table maintenance.' };
+  const exception = {
+    step: 101,
+    object: 'idx_old',
+    table: 'sessions',
+    reason: 'Explicitly admitted existing-table maintenance.',
+  };
   expect(ownershipViolations([step], [exception])).toEqual([]);
   expect(ownershipViolations([step], [{ ...exception, reason: '' }])).toHaveLength(2);
   expect(ownershipViolations([{ ...step, version: 102 }], [exception])).toHaveLength(1);
@@ -223,4 +394,15 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
     }
     expect(ownershipViolations([step], [], [{ ...exception, reason: '' }])).toHaveLength(2);
   }
+});
+
+it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
+  expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
+    Array.from({ length: SERVER_SCHEMA_VERSION }, (_, index) => index + 1),
+  );
+  expect(
+    readdirSync('packages/myco-server/migrations')
+      .filter((name) => name.endsWith('.sql'))
+      .sort(),
+  ).toEqual(SCHEMA_STEPS.map(migrationFileName));
 });

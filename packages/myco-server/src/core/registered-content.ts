@@ -14,7 +14,7 @@ export interface DerivedContentSource {
   eventId: string;
   tokenId: string;
   envelopeHash: string;
-  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle';
+  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle' | 'view';
   resourceId?: string;
   memberTokenId?: string;
 }
@@ -30,6 +30,9 @@ export interface ContentPublicationGuard { sql: string; params: readonly unknown
 
 /** An internal source still belongs to the live Project and untombstoned session. */
 const sourceLive = (source: DerivedContentSource) => {
+  if(source.sourceKind==='view')return {sql:`EXISTS(SELECT 1 FROM view_instances WHERE project_id=? AND session_id=? AND instance_id=?
+      AND state IN ('live','building')) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
+    params:[source.projectId,source.sessionId,source.eventId,source.projectId,source.sessionId]};
   const credential = source.memberTokenId === undefined ? { sql: '1', params: [] } : credentialLive(source.memberTokenId);
   return {
   sql: `(${credential.sql}) AND EXISTS (SELECT 1 FROM projects WHERE project_id=?)
@@ -60,6 +63,22 @@ export function verifiedContentSql(source: DerivedContentSource, content: Verifi
 
 /** Verifies a complete stored body in bounded chunks without retaining the body in memory. */
 export async function verifyContentObject(env: Pick<ContentStore, 'blobs'>, physical: string, size: number, digest: string): Promise<void> {
+  return visitVerifiedContent(env,physical,size,digest);
+}
+
+/** Complete text is returned only after its registered size and digest are verified. */
+export async function readVerifiedContentText(env:Pick<ContentStore,'blobs'>,physical:string,size:number,digest:string):Promise<string>{
+  const decoder=new TextDecoder('utf-8',{fatal:true}),parts:string[]=[];
+  const decode=(bytes?:Uint8Array,stream=false)=>{
+    try{return decoder.decode(bytes,{stream});}
+    catch(error){if(error instanceof TypeError)throw new Error('content_text_invalid',{cause:error});throw error;}
+  };
+  await visitVerifiedContent(env,physical,size,digest,bytes=>parts.push(decode(bytes,true)));
+  parts.push(decode());
+  return parts.join('');
+}
+
+async function visitVerifiedContent(env:Pick<ContentStore,'blobs'>,physical:string,size:number,digest:string,chunk?:(bytes:Uint8Array)=>void):Promise<void>{
   const object = await env.blobs.get(physical);
   if (object === null) throw new Error('content_archive_missing');
   if (object.size !== size) { await object.body.cancel(); throw new Error('content_archive_size_mismatch'); }
@@ -73,6 +92,7 @@ export async function verifyContentObject(env: Pick<ContentStore, 'blobs'>, phys
       bytes += next.value.byteLength;
       if (bytes > size) throw new Error('content_archive_size_mismatch');
       hash.update(next.value);
+      chunk?.(next.value);
     }
     const actual = [...hash.digest()].map(value => value.toString(16).padStart(2, '0')).join('');
     if (bytes !== size || actual !== digest) throw new Error('content_archive_digest_mismatch');

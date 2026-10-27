@@ -25,7 +25,7 @@ import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { canonicalPromptId, promptKeyHash, type PromptIdScheme, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import {
-  callForResult, recordId, recordSource, optionalRecordSource, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  promptIdentity, callForResult, recordId, recordSource, optionalRecordSource, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ParserState, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -70,10 +70,10 @@ function submissionIn(turn: NonNullable<ParserState['turn']>, human: boolean, or
   return order === undefined ? { offset } : { order };
 }
 
-async function promptIdUnder(scheme: PromptIdScheme, sessionId: string, offset: number, turn: () => { turnId: string; submission: TurnSubmission }): Promise<string> {
-  if (scheme === 'offset-v1') return promptIdAt(sessionId, offset);
+async function promptIdUnder(scheme: PromptIdScheme, sessionId: string, offset: number, turn: () => { turnId: string; submission: TurnSubmission }, input:ParserInput): Promise<string> {
+  if (scheme === 'offset-v1' || scheme === 'offset-v2') return promptIdAtOffset('codex-prompt', sessionId, offset, input);
   if (scheme !== 'codex-turn-v1') throw new Error(`the Codex parser derives no prompt id under ${scheme}`);
-  return canonicalPromptId(uuidv5, { scheme, sessionId, ...turn() });
+  return promptIdentity(input, { scheme, sessionId, ...turn() });
 }
 
 /** A function call's arguments, which Codex ships as a JSON string. */
@@ -91,7 +91,7 @@ export const codexParser: TranscriptParser = {
   // This parser reads function and custom calls with string or content-array outputs.
   // Other tool-call shapes require the member's PostToolUse capture.
   fidelity: 'no_tool_results',
-  schemes: ['offset-v1', 'codex-turn-v1'],
+  schemes: ['offset-v1', 'offset-v2', 'codex-turn-v1'],
   planTags: ['proposed_plan'],
   headerContext: codexHeaderContext,
 
@@ -136,12 +136,15 @@ export const codexParser: TranscriptParser = {
           await flushReply();
           // A turn-keyed message outside any turn the window has read names no prompt: only a reread starting past a
           // pruned prefix reads one, and the rows the first read named stand.
-          if (scheme === 'codex-turn-v1' && held.turn === undefined) continue;
+          if (scheme === 'codex-turn-v1' && held.turn === undefined) {
+            if(input.view)(held.unattributed??=[]).push({offset,kind:'prompt'});
+            continue;
+          }
           const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'codex', { prompt: text, transcriptPath: sessionId, transcriptMeta: metadata, record: value });
           if (decision.action === 'drop') continue;
           const opensTurn = decision.origin === undefined || decision.origin === 'human';
           const capturedPromptId = await promptIdUnder(scheme, sessionId, offset,
-            () => ({ turnId: held.turn!.id, submission: submissionIn(held.turn!, opensTurn, acceptanceOrder(value), offset) }));
+            () => ({ turnId: held.turn!.id, submission: submissionIn(held.turn!, opensTurn, acceptanceOrder(value), offset) }), input);
           if (opensTurn) {
             promptId = capturedPromptId;
           }
@@ -179,10 +182,10 @@ export const codexParser: TranscriptParser = {
         const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, role: 'result' });
         if (source === undefined) continue;
         const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
-        const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
+        const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, input.view ? undefined : TOOL_OUTPUT_PREVIEW_CHARS);
         const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: payload });
         events.push({
-          kind: failed ? 'tool.failure' : 'tool.use', source, legacyId: call.toolCallId,
+          kind: failed ? 'tool.failure' : 'tool.use', source, ...(input.view?{callOffset:call.toolName==='unknown'?undefined:call.offset,outcomeOffset:offset}:{}), legacyId: call.toolCallId,
           payload: {
             toolCallId: call.toolCallId,
             promptId: call.promptId,

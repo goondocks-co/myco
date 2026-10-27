@@ -1,5 +1,5 @@
 import { prepareExtractionAckItem, prepareRecordAcknowledgement } from '../read/view-store.js';
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement,RelationalStore } from './adapters.js';
 import { commitAttributedWrite } from './runs.js';
 import { dispatchedBeforeLedger } from './served-material.js';
 import { PROMPT_MARK_TOOL } from './tool-catalogue.js';
@@ -26,6 +26,8 @@ export function restoreExtractionAckStatement(db: RelationalStore, row: Record<s
 /** Acknowledge only material belonging to this run, Project and surviving session. */
 export async function acknowledgePrompt(
   db: RelationalStore, scope: ReadScope, runId: string, target: AckTarget, now: number,
+  publication?: (input:{db:RelationalStore;projectId:string;sessionId:string;recordId:string;ackId:string})=>readonly PreparedStatement[]|{
+    before:readonly PreparedStatement[];after:readonly PreparedStatement[]},
 ): Promise<AckResult> {
   let servedId = target.servedId;
   if (servedId === undefined) {
@@ -36,7 +38,7 @@ export async function acknowledgePrompt(
   }
   const legacy = servedId === undefined && target.promptId !== undefined && await dispatchedBeforeLedger(db, scope, runId);
   if (servedId === undefined && !legacy) return { ok: false, error: 'material not served to this run; use served_id from a body page' };
-  const item = await prepareExtractionAckItem(db, scope.projectId, runId, servedId ?? target.promptId, servedId).first<{ record_id: string }>();
+  const item = await prepareExtractionAckItem(db, scope.projectId, runId, servedId ?? target.promptId, servedId).first<{ record_id: string;session_id:string }>();
   if (item === null) return { ok: false, error: 'material not served to this run' };
   if (target.promptId !== undefined) {
     const store = db;
@@ -46,13 +48,16 @@ export async function acknowledgePrompt(
       throw error;
     });
   }
-  const statement = prepareRecordAcknowledgement(db, scope.projectId, runId, servedId ?? target.promptId, servedId, crypto.randomUUID(), now);
+  const ackId=crypto.randomUUID();
+  const statement = prepareRecordAcknowledgement(db, scope.projectId, runId, servedId ?? target.promptId, servedId, ackId, now);
   let result;
   try {
+    const extra=publication?.({db,projectId:scope.projectId,sessionId:item.session_id,recordId:item.record_id,ackId});
+    const composition=extra===undefined?{before:[],after:[]}:'before' in extra?extra:{before:[],after:extra};
     result = await commitAttributedWrite(db, scope, statement, {
       runId, toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: now,
       detail: { prompt_id: item.record_id, ...(servedId === undefined ? {} : { served_id: servedId }) },
-    });
+    },composition.after,composition.before);
   } catch (error) {
     if (error instanceof AmbiguousServedPrompt) return { ok: false, error: AMBIGUOUS_PROMPT };
     throw error;

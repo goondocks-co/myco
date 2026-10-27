@@ -2,7 +2,7 @@ import { preparePromptAcknowledgement } from './helpers/extraction.js';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { applySchemaSteps } from './helpers/migrate.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -36,7 +36,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
     compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   try {
     const db = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    await applySchemaSteps(db);
     await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?, ?, 1)').bind(PROJECT, PROJECT).run();
     await db.prepare("INSERT INTO members(id,label,created_at) VALUES('member','member',1)").run();
     await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)").run();
@@ -129,7 +129,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
     const proof = `SELECT ${rawMemberResourceSql('?', 'blob', '?', '?')} AS admitted`;
     const native = new Database(':memory:');
     try {
-      for (const step of SCHEMA_STEPS) for (const sql of step.statements) native.exec(sql);
+      await applySchemaSteps(sqliteRelationalStore(native));
       const nativePlan = native.query<{ detail: string }, [string, string, string]>(`EXPLAIN QUERY PLAN ${proof}`).all(PROJECT, BLOB, 'member');
       const d1Plan = (await db.prepare(`EXPLAIN QUERY PLAN ${proof}`).bind(PROJECT, BLOB, 'member').all<{ detail: string }>()).results;
       for (const plan of [nativePlan, d1Plan]) {
@@ -168,10 +168,8 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
     const d1 = await mf.getD1Database('DB');
     const nativeDb = sqliteRelationalStore(native);
     const stores = [d1 as unknown as RelationalStore, nativeDb];
-    for (const step of SCHEMA_STEPS) {
-      await d1.batch(step.statements.map(sql => d1.prepare(sql)));
-      for (const sql of step.statements) native.exec(sql);
-    }
+    await applySchemaSteps(d1);
+    await applySchemaSteps(nativeDb);
     const measured = measuredStore(d1);
     for (const db of stores) {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('p','p',1)").run();
@@ -241,7 +239,7 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
     try {
       const db = await mf.getD1Database('DB');
-      for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+      await applySchemaSteps(db);
       await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?, ?, 1)').bind(PROJECT, PROJECT).run();
       await db.prepare("INSERT INTO members(id,label,created_at) VALUES('member','member',1)").run();
       await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)").run();

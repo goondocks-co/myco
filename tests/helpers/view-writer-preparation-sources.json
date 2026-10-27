@@ -1,0 +1,261 @@
+{
+  "packages/myco-server/src/ingest/view-guard.ts": {
+    "viewWriteOwned": "W"
+  },
+  "packages/myco-server/src/core/extraction-acks.ts": {
+    "acknowledgePrompt": "W"
+  },
+  "packages/myco-server/src/core/material-version-backup.ts": {
+    "exportMaterialVersions": "W",
+    "restoreMaterialVersionStatements": "W"
+  },
+  "packages/myco-server/src/ingest/parser-checkpoint.ts": {
+    "mirrorViewParserCheckpointStatements": "W"
+  },
+  "packages/myco-server/src/ingest/view-checkpoint.ts": {
+    "viewCheckpointStatements": "W",
+    "liveFrontierMirrorStatements": "W"
+  },
+  "tests/myco-server/view-writer-throughput.test.ts": {
+    "test:hook": "T"
+  },
+  "tests/myco-server/view-preflight.test.ts": {
+    "test:preflight resumes metadata pages without reading blobs or writing and admits only the selected owner": "T",
+    "test:transactional and metadata coverage rules agree for partial identities and positional, queued and stamped records": "T",
+    "test:coverage, transcript pins and inventory keysets resume bounded pages with partial sums": "T",
+    "clone": "T",
+    "prepare": "T",
+    "test:preflight keysets seek existing prompt chronology and session transcript rowid indexes on both stores": "T"
+  },
+  "packages/myco-server/src/ingest/view-parse.ts": {
+    "parseViewOnce": "W",
+    "updateError": "W"
+  },
+  "tests/myco-server/helpers/view-instances.ts": {
+    "setViewParserVersion": "T",
+    "completeViewConversion": "T",
+    "seedTailFrontier": "T",
+    "beforeViewWriteBatch": "T",
+    "beforeViewCheckpointRead": "T",
+    "seedViewWriterMetadata": "T",
+    "rebuildWriterMirror": "T",
+    "publishMirroredSession": "T"
+  },
+  "tests/cli/server-status.test.ts": {
+    "it:view-preflight drives the hosted operator command read-only and resumes its opaque cursor": "T"
+  },
+  "packages/myco-server/src/ingest/view-build-queue.ts": {
+    "selectViewBuild": "W",
+    "claimViewBuild": "W",
+    "yieldViewBuild": "W",
+    "releaseViewBuild": "W",
+    "resetViewFailure": "W",
+    "noteViewCaptureStatements": "W",
+    "failViewBuild": "W"
+  },
+  "packages/myco-server/src/ingest/view-run.ts": {
+    "runViewParseJob": "W"
+  },
+  "tests/myco-server/view-material-versions.test.ts": {
+    "test:published sequences serialize, carry only current identity/hash, and roll back together on native and D1": "T",
+    "publish": "T"
+  },
+  "tests/myco-server/view-writer.test.ts": {
+    "test:budget yields reuse durable prepared bodies before committing one terminal window on both stores": "T",
+    "test:full tool input survives checkpoint, pending flush, repeated keys and reported outcome on both stores": "T",
+    "test:an unpaired surrogate refuses the view record before its row or frontier can commit": "T",
+    "test:content preparation loses ownership with its instance stamp and leaves the committed checkpoint resumable": "T",
+    "test:content wall deadlines remain advisory unless the scope explicitly enforces them": "T"
+  },
+  "tests/myco-server/view-material-facts.test.ts": {
+    "beforeBatch": "T",
+    "version": "T",
+    "test:a reported tool outcome versions its complete original input after canonical bundle adoption on native and D1": "T",
+    "test:parser metadata replay versions an applied reason change and leaves an identical replay unchanged": "T",
+    "test:prompt metadata and reply-derived end times share the canonical material transaction on native and D1": "T",
+    "binding": "T",
+    "test:published fact status versions its canonical postimage and retries only changed evidence on native and D1": "T",
+    "test:the canonical save operation versions complete blob content and retains an administrative status on title-only edits": "T",
+    "test:canonical plan event publication versions tags and content, carries provenance and re-derives identity races atomically": "T",
+    "counter": "T",
+    "test:the canonical plan merge and tag operation define the same postimage for new, edited, stale and tied events": "T",
+    "test:twelve same-identity replies in descending and mixed order all persist within bounded contention admission": "T",
+    "test:exhausted material contention admission is typed and retryable without partial capture": "T",
+    "test:material retries continue after four separately committed canonical tag changes": "T",
+    "batch": "T",
+    "test:material wall exhaustion is typed and retryable without an event or partial capture": "T"
+  },
+  "packages/myco-server/src/core/material-versions.ts": {
+    "readFactVersion": "W",
+    "publicationVersionStatements": "W",
+    "finishVersionStatements": "W"
+  },
+  "packages/myco-server/src/core/plan-status.ts": {
+    "preparePlanStatusWrite": "W"
+  },
+  "packages/myco-server/src/ingest/view-lifecycle.ts": {
+    "createEmptyView": "W",
+    "requestViewRebuildOnce": "W",
+    "manifestStatements": "W",
+    "legacyAckFeedStatement": "W",
+    "convertLegacyCoveragePage": "W",
+    "prepareLegacyCoverage": "W",
+    "viewReady": "W",
+    "tryPublishView": "W"
+  },
+  "packages/myco-server/src/ingest/view-flip-work.ts": {
+    "readFlipWork": "W",
+    "flipCalibrationBlocked": "W",
+    "beginFlipObservation": "W",
+    "finishFlipObservation": "W"
+  },
+  "tests/myco-server/view-flip-admission.test.ts": {
+    "publicationState": "T",
+    "test:missing, wrong-target and undersized whole-flip evidence refuses before any publication on native and D1": "T",
+    "test:committed overruns and interrupted observations quarantine their calibration without pretending to undo publication": "T",
+    "test:hook": "T",
+    "test:the separate 26165-prompt and 7000-ack scale fixture is refused above a measured envelope": "T"
+  },
+  "packages/myco-server/src/ingest/view-acknowledgements.ts": {
+    "lateLegacyCoverageStatement": "W"
+  },
+  "packages/myco-server/src/ingest/view-projections.ts": {
+    "statement": "W",
+    "viewPlanTransitionStatements": "W",
+    "viewSessionProjectionStatements": "W",
+    "counter": "W",
+    "viewLiveProjectionStatements": "W"
+  },
+  "packages/myco-server/src/ingest/view-work-samples.ts": {
+    "startViewSample": "W",
+    "viewSampleProgress": "W",
+    "publishViewSample": "W",
+    "beginViewSample": "W",
+    "finishViewSample": "W"
+  },
+  "tests/myco-server/view-work-status.test.ts": {
+    "test:published work samples survive queue removal and subtract offered growth without replay credit": "T",
+    "test:checkpoint rollback gives no progress and interrupted observation remains unavailable": "T",
+    "test:status bounds session details and scopes cleanup and findings while propagating read failures": "T"
+  },
+  "tests/myco-server/helpers/view-stores.ts": {
+    "withViewStorePair": "T",
+    "upgradeCandidate": "T"
+  },
+  "packages/myco-server/src/core/injection.ts": {
+    "selectSporesForPrompt": "W",
+    "readSporesForPrompt": "W"
+  },
+  "packages/myco-server/src/ingest/view-writer.ts": {
+    "viewSourceReceipts": "W",
+    "prepareViewRows": "W",
+    "viewRowStatements": "W",
+    "stampVersionStatements": "W"
+  },
+  "tests/myco-server/view-lifecycle.test.ts": {
+    "test:real shared parse, rebuild and atomic flip preserve sequence and continuation ownership on native and D1": "T",
+    "test:a parser bump replaces an older building generation and a newer live generation remains incompatible": "T",
+    "checkpoint": "T",
+    "status": "T",
+    "test:hook": "T",
+    "test:a tail rebuild preserves its frozen parent and start offset with empty continuation across parser generations": "T",
+    "test:acknowledgement feed cursors survive deletion, canonical restore and native vacuum": "T",
+    "test:physical recovery preserves feed coordinates across canonical acknowledgement rowid changes": "T",
+    "sourceCount": "T",
+    "test:conversion pages bound the final flip to 64 acks and late coverage resolves the published stamp in its transaction": "T",
+    "test:live frontier mirrors carry complete chunked continuations and remove superseded chunks on native and D1": "T",
+    "test:version, capture and manifest races preserve the live closure and resume catch-up": "T",
+    "test:real reader response contexts retain selected bodies across an atomic writer flip": "T"
+  },
+  "tests/myco-server/view-acknowledgements.test.ts": {
+    "count": "T",
+    "sources": "T",
+    "unrelatedPrompts": "T",
+    "abandonedCopies": "T",
+    "test:late legacy coverage decrements a newly selected source even when an older run already acknowledged the raw record": "T",
+    "test:the late acknowledgement resolves a concurrent flip inside its own batch and rolls back its counter balance on failure": "T",
+    "test:hook": "T"
+  },
+  "packages/myco-server/src/core/material-restore.ts": {
+    "prepareMaterialRestore": "W"
+  },
+  "packages/myco-server/src/core/material-fact-writer.ts": {
+    "materialEvidenceIntact": "W",
+    "completeMaterialBody": "W",
+    "completeToolBody": "W",
+    "factPlanSnapshot": "W",
+    "prepareFactPublication": "W",
+    "verifiedMaterialBlob": "W"
+  },
+  "packages/myco-server/src/core/context-writes.ts": {
+    "prepareInjectionReceipt": "W",
+    "preparePromptAnswer": "W",
+    "prepareSessionRecord": "W",
+    "prepareContextDelivery": "W"
+  },
+  "packages/myco-server/src/ingest/events.ts": {
+    "planEventWrite": "W"
+  },
+  "packages/myco-server/src/ingest/projections.ts": {
+    "resolvePresentedDates": "W",
+    "prompt": "W",
+    "toolResultReplay": "W",
+    "toolCall": "W",
+    "response": "W",
+    "plan": "W",
+    "attachment": "W"
+  },
+  "tests/myco-server/view-material-boundaries.test.ts": {
+    "test:hook": "T",
+    "snapshot": "T",
+    "binding": "T"
+  },
+  "tests/myco-server/view-frozen-versions.test.ts": {
+    "row": "T",
+    "test:frozen content stays unstamped and reappears with a fresh binding while retired tail stamps remain readable": "T",
+    "frozen": "T",
+    "binding": "T"
+  },
+  "tests/myco-server/view-presession-material.test.ts": {
+    "test:pre-session recall allocates at each write, round-trips its unit and survives later capture and publication": "T",
+    "absent": "T",
+    "test:answer retention deletes current bindings atomically with its bounded answer batch": "T",
+    "snapshot": "T",
+    "test:partial answer retention keeps row and binding targets identical across Projects and sessions": "T"
+  },
+  "tests/myco-server/view-material-context.test.ts": {
+    "test:context delivery, attachments and raw turn/subagent facts publish their canonical admitted material": "T",
+    "test:the additive restore owner preserves same-content versions and allocates for genuinely different admitted content": "T",
+    "binding": "T"
+  },
+  "packages/myco-server/src/core/recall.ts": {
+    "prunePromptAnswers": "H"
+  },
+  "tests/myco-server/view-material-ordering.test.ts": {
+    "test:fresh sequences follow checkpoint ordinal and source offset across material kinds": "T"
+  },
+  "packages/myco-server/src/core/prompt-answer-retention.ts": {
+    "promptAnswerRetentionStatements": "W"
+  },
+  "tests/myco-server/recall.test.ts": {
+    "it:sweeps 30-day diagnostics through the scheduled retention job in indexed target batches of 500": "T",
+    "prepare": "T"
+  },
+  "tests/myco-server/helpers/view-worlds.ts": {
+    "mirrorConsumerWorld": "T",
+    "seedViewConsumerWorld": "T"
+  },
+  "tests/parity/schema-upgrade.test.ts": {
+    "it:keeps required descendants of declared-empty inputs empty and nulls optional composite references": "T",
+    "it:populates valid previous writer inputs and retains the nonempty instance refusal": "T"
+  },
+  "tests/cli/cutover-machine.ts": {
+    "machine": "T"
+  },
+  "tests/cli/cutover-projects.test.ts": {
+    "projectsOn": "T",
+    "it:allows a vault write between planning and lease revalidation, then copies the latest history": "T",
+    "it:refuses a deleted transcript directory claimed by work and personal records": "T",
+    "it:imports mapped transcripts from an absent checkout into its connected replacement": "T"
+  }
+}

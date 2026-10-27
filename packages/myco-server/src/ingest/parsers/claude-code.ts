@@ -223,7 +223,7 @@ export const claudeCodeParser: TranscriptParser = {
           const owner = ownerOf(key);
           if (owner === undefined || owner === uuid) {
             if (uuid !== undefined) claimed.set(key, uuid);
-            await v2Prompt({ id: await claudeRecordIdFor(sessionId, { owner: key }), text, origin: disposition.origin, kind: disposition.kind,
+            await v2Prompt({ id: await claudeRecordIdFor(sessionId, { owner: key }, input), text, origin: disposition.origin, kind: disposition.kind,
               claim: 'owner', key, thread: MAIN_THREAD, record: uuid }, createdAt, offset);
             continue;
           }
@@ -234,7 +234,7 @@ export const claudeCodeParser: TranscriptParser = {
         const label = disposition.as === 'context' ? { kind: 'compact_summary', origin: 'system' as const }
           : disposition.as === 'claimant' && !disposition.opener ? { kind: envelopeLabel(text) ?? 'unrecognized', origin: envelopeLabel(text) === undefined ? 'system' as const : 'agent_dispatch' as const }
           : { kind: disposition.kind, origin: disposition.origin };
-        await v2Prompt({ id: await claudeRecordIdFor(sessionId, { thread, uuid }), text, ...label, claim, key, thread, record: uuid }, createdAt, offset);
+        await v2Prompt({ id: await claudeRecordIdFor(sessionId, { thread, uuid }, input), text, ...label, claim, key, thread, record: uuid }, createdAt, offset);
         continue;
       }
 
@@ -244,7 +244,7 @@ export const claudeCodeParser: TranscriptParser = {
         const shape = promptShape(value, text);
         const key = shape === 'user_prompt' ? str(value.promptId) : str(value.uuid);
         if (text.trim() !== '' && key !== undefined) {
-          promptId = await promptIdFor(sessionId, shape, key);
+          promptId = await promptIdFor(sessionId, shape, key, input);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: shape === 'user_prompt' ? 'user' : 'agent_dispatch', promptKind: shape }, createdAt, offset });
         }
         continue;
@@ -255,10 +255,10 @@ export const claudeCodeParser: TranscriptParser = {
         const text = textOf(value.attachment.prompt);
         const key = str(value.uuid);
         if (text.trim() !== '' && key !== undefined && v2) {
-          await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }), text, origin: 'user', kind: 'queued_command',
+          await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }, input), text, origin: 'user', kind: 'queued_command',
             claim: 'owner', key, thread: str(value.agentId) ?? MAIN_THREAD, record: key }, createdAt, offset);
         } else if (text.trim() !== '' && key !== undefined) {
-          promptId = await promptIdFor(sessionId, 'queued_command', key);
+          promptId = await promptIdFor(sessionId, 'queued_command', key, input);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'queued_command' }, createdAt, offset });
         }
         continue;
@@ -272,9 +272,9 @@ export const claudeCodeParser: TranscriptParser = {
           if (source === undefined) continue;
           const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
           const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: block });
-          const output = textOf(block.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
+          const output = textOf(block.content).slice(0, input.view ? undefined : TOOL_OUTPUT_PREVIEW_CHARS);
           events.push({
-            kind: failed ? 'tool.failure' : 'tool.use', source, legacyId: call.toolCallId,
+            kind: failed ? 'tool.failure' : 'tool.use', source, ...(input.view?{callOffset:call.toolName==='unknown'?undefined:call.offset,outcomeOffset:offset}:{}), legacyId: call.toolCallId,
             payload: {
               toolCallId: call.toolCallId,
               promptId: call.promptId,

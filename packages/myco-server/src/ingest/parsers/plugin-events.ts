@@ -22,7 +22,7 @@ import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-share
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { uuidv5 } from '../../hash.js';
 import {
-  parserContinuation, recordId, recordSource, legacyRecordId, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  promptIdentity, parserContinuation, recordId, recordSource, legacyRecordId, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type Fidelity, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -85,7 +85,7 @@ export function pluginEventsParser(options: {
   return {
     agent,
     fidelity,
-    schemes: ['stamp-or-offset-v1'],
+    schemes: ['stamp-or-offset-v1', 'stamp-or-offset-v2'],
     planTags,
     lineTimeField: 'at',
     async parse(input: ParserInput): Promise<DerivedEvent[]> {
@@ -105,7 +105,7 @@ export function pluginEventsParser(options: {
         if (type === 'prompt') {
           const text = typeof line.text === 'string' ? strip(line.text) : '';
           if (text.trim() === '') continue;
-          const named = await canonicalPromptId(uuidv5, { scheme: 'stamp-or-offset-v1', sessionId: input.sessionId, stamp: str(line.promptId), offset });
+          const named = await promptIdentity(input, { scheme: input.scheme === 'stamp-or-offset-v2' ? 'stamp-or-offset-v2' : 'stamp-or-offset-v1', sessionId: input.sessionId, transcriptId: input.transcriptId, stamp: str(line.promptId), offset });
           promptId = named;
           events.push({
             kind: 'prompt',
@@ -142,7 +142,7 @@ export function pluginEventsParser(options: {
           if (name === undefined) continue;
           const source = recordSource(input, agent, { kind: 'tool-call', record: value, role: 'call' });
           const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, agent), record: value, result: line });
-          const output = typeof line.output === 'string' ? line.output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined;
+          const output = typeof line.output === 'string' ? line.output.slice(0, input.view ? undefined : TOOL_OUTPUT_PREVIEW_CHARS) : undefined;
           events.push({
             kind: failed ? 'tool.failure' : 'tool.use', source,
             legacyId: await legacyRecordId(input, { kind: 'tool-call', source, offset }),

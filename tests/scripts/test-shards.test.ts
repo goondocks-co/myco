@@ -99,6 +99,16 @@ describe('test shard selection', () => {
     expect(() => groupByDuration([1], budget, () => 1, 0)).toThrow('item limit');
   });
 
+  test('caps node shards at eleven minutes of measured work within the job timeout', () => {
+    const weights: Record<string, number> = { first: 220_000, second: 220_000, third: 220_000 };
+    const groups = Object.entries(weights).map(([file, estimatedMs]) => ({ label: file, files: [file], estimatedMs }));
+    const plans = [groups, ...Array.from({ length: 7 }, () => [])];
+    expect(() => assertNodeShardHeadroom(plans, 900_000, weights, { runs: [] })).not.toThrow();
+    const excessive: Record<string, number> = { ...weights, third: weights.third! + 1 };
+    const over = [groups.map(group => ({ ...group, estimatedMs: excessive[group.label]! })), ...plans.slice(1)];
+    expect(() => assertNodeShardHeadroom(over, 900_000, excessive, { runs: [] })).toThrow('with headroom');
+  });
+
   test('retains recorded node process wall time when splitting a file into balancing units', () => {
     for (const [index, sample] of nodeDurationSamples(nodeWorkload).entries()) {
       const elapsed = nodeWorkload.runs[index]!.shards.flatMap(shard => shard.groups).reduce((sum, group) => sum + group.milliseconds, 0);

@@ -1,7 +1,9 @@
+import materialClasses from '../myco-server/fixtures/material-write-classes.json';
+import {materialWriteBoundary,materialWriteMode} from '../helpers/material-write-classification.ts';
 import type { CloudflareBindings, DeferredWork } from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import { DeploymentClock as RawDeploymentClock } from '../../packages/myco-server/src/platform/cloudflare/deployment-clock.ts';
 import { RecoveryProducer as RawRecoveryProducer } from '../../packages/myco-server/src/platform/cloudflare/recovery-producer-object.ts';
-import { statementRecorder,withObservedClock,installReadPreparationBoundary,readPreparationViolations,checkedPreparationOrigin, handledRequestContext as requests, type StatementFrame, type PreparationOrigin } from '../helpers/statement-recorder.ts';
+import { productionViewDml,statementRecorder,withObservedClock,installReadPreparationBoundary,readPreparationViolations,checkedPreparationOrigin, handledRequestContext as requests, type StatementFrame, type PreparationOrigin } from '../helpers/statement-recorder.ts';
 import {LEGACY_ONLY_OPERATIONS} from '../../packages/myco-server/src/read/view-store.ts';
 import {VIEW_READ_OPERATIONS} from '../helpers/view-read-operations.ts';
 import { PARITY_REQUEST_HEADER, PARITY_WORKER_HEADER } from './requests.ts';
@@ -14,6 +16,7 @@ import {cloudflareEmbeddingLaunch} from '../../packages/myco-server/src/platform
 import {createServer} from '../../packages/myco-server/src/pipeline.ts';
 import type {ServerEnv} from '../../packages/myco-server/src/core/adapters.ts';
 
+const materialBoundary=materialWriteBoundary(materialClasses.map(row=>({...row,mode:materialWriteMode(row.mode)})));
 const spans = new AsyncLocalStorage<StatementFrame>();
 let nextSpan=0;
 let embeddingFixture=false;
@@ -51,12 +54,18 @@ function runSpan<T>(operation:string,phase:string,parent:StatementFrame|undefine
  return spans.run(frame,run);
 }
 
+export function withObservedViewWriterDriver<T>(run:()=>T):T{
+ return runSpan('view-writer-driver','view-writer-driver',spans.getStore(),run);
+}
+
 function observedBindings(bindings:CloudflareBindings, fallback:StatementFrame) {
  bindings=fixtureBindings(bindings);
  const recorder=statementRecorder(bindings.MYCO_DB,{accounting:'d1',context:()=>spans.getStore()??fallback});
  let published=0;
  const flush=async()=>{
   await recorder.drain();
+  if(materialBoundary.violations.length)throw new Error('material_write_unclassified');
+  if(productionViewDml.violations.length)throw new Error('production_view_dml: ' + productionViewDml.violations.map(row=>row.sql).join('\n'));
   for(const event of recorder.events.slice(published))console.log(JSON.stringify({kind:'view_read_event',event}));
   published=recorder.events.length;
   for(const statement of recorder.statements)console.log(JSON.stringify({kind:'view_read_statement',...statement}));
@@ -89,6 +98,7 @@ interface Worker {
 export function observedWorker<T extends Worker>(worker: T,origins:readonly Extract<PreparationOrigin,{kind:'exception'}>[]=[]): Omit<T, 'fetch'|'scheduled'> & Worker {
  const options={known:new Set<string>(VIEW_READ_OPERATIONS.map(row=>row.id)),legacy:new Set<string>(LEGACY_ONLY_OPERATIONS),origins:origins.map(checkedPreparationOrigin)};
  installReadPreparationBoundary(statement=>{
+  materialBoundary.check(statement);
   const errors=readPreparationViolations([statement],options);
   if(errors.length)throw new Error(errors.join('\n'));
  });

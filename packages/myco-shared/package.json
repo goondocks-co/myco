@@ -8,6 +8,7 @@
   "exports": {
     "./mcp-protocol": { "import": "./dist/mcp-protocol.js", "types": "./dist/mcp-protocol.d.ts" },
     "./budget-status": { "import": "./dist/budget-status.js", "types": "./dist/budget-status.d.ts" },
+    "./view-status": { "import": "./dist/view-status.js", "types": "./dist/view-status.d.ts" },
     "./report-order": { "import": "./dist/report-order.js", "types": "./dist/report-order.d.ts" },
     "./json": { "import": "./dist/json.js", "types": "./dist/json.d.ts" },
     "./prompt-text": { "import": "./dist/prompt-text.js", "types": "./dist/prompt-text.d.ts" },

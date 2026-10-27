@@ -761,5 +761,145 @@ export const VIEW_READ_OPERATIONS = [
     "operation": "prepareReleasePropagation",
     "template": "0",
     "expressionSha256": "688006c40c72163b12ffee71f00974020dd0c00c02a0ac4dca9d56b7349fc27a"
+  },
+  {
+    "id": "N:injectionPromptHeld:0",
+    "family": null,
+    "operation": "injectionPromptHeld",
+    "template": "0",
+    "expressionSha256": "389412bd1ea7cbea6132bcf2fc43e3fe87176fc1377bfc8dba33ad63810d6279"
+  },
+  {
+    "id": "N:injectionServedIds:0",
+    "family": null,
+    "operation": "injectionServedIds",
+    "template": "0",
+    "expressionSha256": "3fa62c55464c3d134c10b5ade437a864bdfb0e9d361b9329178c02d45dd53f18"
+  },
+  {
+    "id": "N:injectionSessionRecords:0",
+    "family": null,
+    "operation": "injectionSessionRecords",
+    "template": "0",
+    "expressionSha256": "62b9a7d6da444f5efcef9f184f532782d15c2b835ad56f88ac7c96ca39d55d73"
+  },
+  {
+    "id": "N:operatorViewProjectExists:0",
+    "family": null,
+    "operation": "operatorViewProjectExists",
+    "template": "0",
+    "expressionSha256": "c250b2db0b022ca016cebe77cd6987bfbe70684774e3af3d85c16ee2756067ca"
+  },
+  {
+    "id": "N:operatorViewProjects:0",
+    "family": null,
+    "operation": "operatorViewProjects",
+    "template": "0",
+    "expressionSha256": "31a0a4c3c4973e1cf13ee9877d1d425a04841537472bb8fe4268b2fa0d0fbe68"
+  },
+  {
+    "id": "N:preflightBundles:0",
+    "family": null,
+    "operation": "preflightBundles",
+    "template": "0",
+    "expressionSha256": "2e729c8df68b8372ced8c44cb439f9035c8a03d1b6a9929db471596e2ad07c6a"
+  },
+  {
+    "id": "N:preflightClasses:0",
+    "family": null,
+    "operation": "preflightClasses",
+    "template": "0",
+    "expressionSha256": "014f33d22a76cef2477ae25f82fd89c0cac271f96738c6b4933c775f2e504f59"
+  },
+  {
+    "id": "N:preflightCoverage:0",
+    "family": null,
+    "operation": "preflightCoverage",
+    "template": "0",
+    "expressionSha256": "1a32b86752cbab6c52ffd16020d9dd1c9b38f03c25c7e73891be6ea647e51a52"
+  },
+  {
+    "id": "N:preflightCoveragePins:0",
+    "family": null,
+    "operation": "preflightCoveragePins",
+    "template": "0",
+    "expressionSha256": "2ec4a320450f0e6f23beb8995836c42bdcc51ac539e231dac50009a5c1137fd6"
+  },
+  {
+    "id": "N:preflightCoverageSession:0",
+    "family": null,
+    "operation": "preflightCoverageSession",
+    "template": "0",
+    "expressionSha256": "425ba4f5bdbfc89165f937d2f11cd8dd461f6fb14f0012d92dbd26dca893cb01"
+  },
+  {
+    "id": "N:preflightPlans:0",
+    "family": null,
+    "operation": "preflightPlans",
+    "template": "0",
+    "expressionSha256": "3b6a46404e79a93dbc4b92375f0c51a1004326c037bf92c777426f5b7030bf1a"
+  },
+  {
+    "id": "N:preflightRanges:0",
+    "family": null,
+    "operation": "preflightRanges",
+    "template": "0",
+    "expressionSha256": "e1e4de28e3db41bc05faa16d5cfee9825d20e4a3268f35f01a29e1929630067e"
+  },
+  {
+    "id": "N:preflightReceipt:0",
+    "family": null,
+    "operation": "preflightReceipt",
+    "template": "0",
+    "expressionSha256": "854b75c71d716c45117e43eae1b40d51b84299f04f1b81e04ae71639aabfef5f"
+  },
+  {
+    "id": "N:preflightReceiptEntries:0",
+    "family": null,
+    "operation": "preflightReceiptEntries",
+    "template": "0",
+    "expressionSha256": "2ca0055bfc15bce1bd67058bad7d1771d57035f5afa65f40398bebd79b010bf1"
+  },
+  {
+    "id": "N:preflightTranscript:0",
+    "family": null,
+    "operation": "preflightTranscript",
+    "template": "0",
+    "expressionSha256": "89814fa94c776fb7350545774f2fb031f1a096995508936ea840e6841212946b"
+  },
+  {
+    "id": "N:viewMaterialVersionQuery:0",
+    "family": null,
+    "operation": "viewMaterialVersionQuery",
+    "template": "0",
+    "expressionSha256": "2f34cfbb10223cabe7c237181c036d370efed2c9fb44acd0181833a234c00e58"
+  },
+  {
+    "id": "N:viewStatusCleanup:0",
+    "family": null,
+    "operation": "viewStatusCleanup",
+    "template": "0",
+    "expressionSha256": "2cc18bc3d78a977a677b34c5d3ab9a304645310c6ee74d8d0d00610b4282a6ca"
+  },
+  {
+    "id": "N:viewStatusCounts:0",
+    "family": null,
+    "operation": "viewStatusCounts",
+    "template": "0",
+    "expressionSha256": "b7bf3dfc2df3bbca8293763a0944fbcfa3c31044717d035d70e4d11328762132"
+  },
+  {
+    "id": "N:viewStatusDetails:0",
+    "family": null,
+    "operation": "viewStatusDetails",
+    "template": "0",
+    "expressionSha256": "27f41a31fef94ba3bc45af555a518c56bb7d4c2d66e7467d261542431eb1f7a9"
+  },
+  {
+    "id": "N:viewStatusFindings:0",
+    "family": null,
+    "operation": "viewStatusFindings",
+    "template": "0",
+    "expressionSha256": "1b5abd90fb1b4c5c36cfc5d930511fc2daea6e759be580ecb0ed0477cea14302"
   }
 ] as const;

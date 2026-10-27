@@ -3,6 +3,7 @@ import { harnessDeploymentActivity } from './scenarios/harness-deployment-activi
 import { budgetMigrationParity } from './scenarios/budget-migration.ts';
 import { budgetGovernor } from './scenarios/budget-governor.ts';
 import { budgetRestore } from './scenarios/budget-restore.ts';
+import {viewWriter} from './scenarios/view-writer.ts';
 import { learningPause } from './scenarios/learning-pause.ts';
 import {viewReadClosure} from './scenarios/view-read-closure.ts';
 import { viewStoreInert } from './scenarios/view-store-inert.ts';
@@ -21,7 +22,7 @@ import { repositories } from './scenarios/repositories.ts';
 import { repositoryFailure } from './scenarios/repository-failure.ts';
 import { canopy } from './scenarios/canopy.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
-import { runScenario, type ParityScenario, type ParityTarget } from './harness.ts';
+import { runScenario, scenarioCoversTarget, type ParityScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare, stopCloudflareRuntime } from './targets/cloudflare.ts';
 import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
@@ -94,16 +95,22 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [hookPlacementTick, viewReadClosure, harnessDeploymentActivity, budgetMigrationParity,budgetGovernor,budgetRestore,learningPause, viewStoreInert, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, transcriptReread, recordIdentity, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [viewWriter, hookPlacementTick, viewReadClosure, harnessDeploymentActivity, budgetMigrationParity,budgetGovernor,budgetRestore,learningPause, viewStoreInert, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, transcriptReread, recordIdentity, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});
 } else {
   const weights: Record<string, number> = durations.parity;
-  const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
+  const plan = (shard: string | undefined) => selectShard(scenarios, parseShard(shard), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
+  const selected = plan(process.env.MYCO_PARITY_SHARD);
   if (process.env.MYCO_PARITY_PLAN === '1') {
-    console.log(PARITY_PLAN_PREFIX + JSON.stringify(selected.map((scenario) => scenario.name)));
+    const selectors: string[] | undefined = process.env.MYCO_PARITY_PLAN_MATRIX === undefined ? undefined : JSON.parse(process.env.MYCO_PARITY_PLAN_MATRIX);
+    if (selectors !== undefined && (!Array.isArray(selectors) || !selectors.every(value => typeof value === 'string'))) throw new Error('Invalid parity matrix selectors');
+    const names = (shard: string | undefined) => plan(shard).map(scenario => scenario.name);
+    console.log(PARITY_PLAN_PREFIX + JSON.stringify(selectors === undefined ? selected.map(scenario => scenario.name) : {
+      full: names(undefined), shards: selectors.map(shard => ({ shard, scenarios: names(shard) })),
+    }));
     test.skip('parity shard manifest', () => {});
   } else {
     // A self-hosted scenario that queries vectors loads sqlite-vec, which needs an extension-enabled SQLite registered
@@ -113,14 +120,14 @@ if (!process.env.MYCO_PARITY) {
     afterAll(stopCloudflareRuntime);
     try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
-      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true }) },
+      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ viewWriter:scenario?.dedicated?.viewWriter===true,stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true }) },
       { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare(scenario?.dedicated?.cloudflare ?? {}) },
     ];
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
     const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);
     for (const { name, boot } of boots) {
-      const targetShared = shared.filter((scenario) => scenario.only === undefined || scenario.only === name);
-      const targetDedicated = dedicated.filter((scenario) => scenario.only === undefined || scenario.only === name);
+      const targetShared = shared.filter((scenario) => scenarioCoversTarget(scenario, name));
+      const targetDedicated = dedicated.filter((scenario) => scenarioCoversTarget(scenario, name));
       if (targetShared.length > 0) {
         describe(`[${name}]`, () => {
           let target: ParityTarget | null = null;

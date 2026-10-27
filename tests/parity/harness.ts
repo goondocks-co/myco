@@ -51,11 +51,28 @@ export interface ParityTarget {
  */
 export async function runScenario(target: ParityTarget, scenario: ParityScenario, peer?: ParityTarget): Promise<void> {
   try {
-    await withParityRequests(peer === undefined ? [target] : [target, peer], async () => {
+    const observed=[target,...(peer===undefined?[]:[peer])].map(source=>{
+      let prepares=0;
+      return {source,get prepares(){return prepares;},target:{...source,readTrace:async()=>{
+        if(source.readTrace===undefined)throw new Error('parity_store_unobserved: '+source.name+'/'+scenario.name);
+        const trace=await source.readTrace();prepares+=trace.events.filter(event=>event.kind==='prepare').length;return trace;
+      }}};
+    });
+    for(const row of observed)await row.source.readTrace?.();
+    const primary=observed[0]!.target,secondary=observed[1]?.target;
+    await withParityRequests(observed.map(row=>row.target), async () => {
       await target.healthy?.();
       await peer?.healthy?.();
-      await scenario.run(target, peer);
+      await scenario.run(primary, secondary);
+      await target.healthy?.();
+      await peer?.healthy?.();
     });
+    for(const row of observed){
+      if (!scenarioCoversTarget(scenario, row.source.name)) continue;
+      await row.target.readTrace();
+      if(row.prepares===0)throw new Error('parity_store_unobserved: '+row.source.name+'/'+scenario.name);
+      console.log(JSON.stringify({kind:'view_store_scenario_witness',scenario:scenario.name,target:row.source.name,prepares:row.prepares}));
+    }
   } catch (error) {
     const runtime = target.runtime?.();
     if (runtime === undefined) throw error;
@@ -74,6 +91,10 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
   }
 }
 
+export function scenarioCoversTarget(scenario: ParityScenario, target: ParityTarget['name']): boolean {
+  return scenario.only === undefined || scenario.only === target;
+}
+
 export interface ParityScenario {
   name: string;
   run(target: ParityTarget, peer?: ParityTarget): Promise<void>;
@@ -86,7 +107,7 @@ export interface ParityScenario {
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
    * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
    */
-  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

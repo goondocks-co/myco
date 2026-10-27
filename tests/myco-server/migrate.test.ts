@@ -15,7 +15,7 @@ import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { VIEW_SESSION_TABLES } from '@myco-server-worker/db/view-tables.js';
 import { captureViewSession } from './helpers/view-stores.js';
-import { seedViewInstance, seedViewState } from './helpers/view-instances.js';
+import { seedViewInstance, seedViewState, seedViewWriterMetadata } from './helpers/view-instances.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
@@ -118,6 +118,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0102_v102.sql': '2e03935f359586bef3a17f30032e8194b29a13a8aeb4976d884daf12980d7546',
   '0103_v103.sql': 'd33137646ce13bab7b132c078be37c178c016798795091ee94cfb94110169cb7',
   '0104_v104.sql': '2a923b33713136857957ef044810ee748c1bf7d53df0a0c89e0a70444a0eeafa',
+  '0105_v105.sql': '267535594f2664a73451111fbc6d0ae454bab578ae54dac578cbd2b32523d217',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -736,6 +737,7 @@ describe('versioned schema steps', () => {
       await captureViewSession(source.db, 'proj_1', 'grammar-session');
       await seedViewInstance(source.db, { projectId: 'proj_1', sessionId: 'grammar-session', instanceId: 'grammar-view', state: 'live' });
       await seedViewState(source.db, 'proj_1', 'grammar-session', 'grammar-view');
+      await seedViewWriterMetadata(source.db, 'proj_1', 'grammar-session', 'grammar-view');
       for (const table of VIEW_SESSION_TABLES) writerRows.set(table, source.sqlite.query(`SELECT * FROM ${table}`).get() as Record<string, unknown>);
     } finally { source.sqlite.close(); }
     const sqlite = fresh();

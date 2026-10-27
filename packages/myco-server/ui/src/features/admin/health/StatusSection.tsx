@@ -2,7 +2,7 @@ import { QueueWarning } from '../runners/QueueWarning';
 import { Card, HealthDot, StatusChip, ReadState, ReadUnavailable } from '../../../design';
 import type { useStatus } from '../../../hooks/use-status';
 import type { StatusResponse } from '../../../lib/api';
-import { formatCount } from '../../../lib/format';
+import { formatCount,formatBytes } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { useAttention } from '../../../hooks/use-attention';
 import { ago, transcriptStopWords, harnessHealthWords } from '../../today/words';
@@ -10,6 +10,20 @@ import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
+
+const VIEW_STATUS_SESSION_LIMIT=8;
+const sessionViewWords={
+  'legacy-live':'available from the original recording',
+  converting:'being updated',
+  current:'up to date',
+  stale:'waiting for an update',
+  building:'being updated',
+  'catching-up':'catching up',
+  failed:'needs attention',
+  unrebuildable:'cannot be updated',
+  'frozen-tail':'available through the retained recording',
+  incompatible:'needs a compatible server',
+} as const;
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -72,6 +86,7 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
+  const measuredViews=data.views?.states.flatMap(row=>row.work?.state==='measured'?[row.work]:[])??[];
   return (
     <div className="flex flex-col gap-s4">
       <Card className="flex flex-col gap-s3" data-health-schema="">
@@ -84,6 +99,22 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 
+      {data.unavailable?.includes('views')?<ReadUnavailable label="session views" onRetry={onRetry}/>:data.views&&<Card className="flex flex-col gap-s2" data-testid="session-views">
+        <h3 className="t-h3 text-ink">Session views</h3>
+        <p className="t-small text-muted">{Object.entries(data.views.counts).filter(([,count])=>count>0).map(([state,count])=>count.toLocaleString()+' '+sessionViewWords[state as keyof typeof sessionViewWords]).join(' · ')||'No captured sessions.'}</p>
+        {data.views.states.filter(row=>row.bytes_behind>0||row.state==='failed'||row.state==='unrebuildable').slice(0,VIEW_STATUS_SESSION_LIMIT).map(row=><p key={row.project_id+'/'+row.session_id} className="t-small text-ink-2">
+          {projectName(row.project_id)??'Project'} · {row.title??'Untitled session'}: {sessionViewWords[row.state]}
+          {row.bytes_behind>0&&' · '+formatBytes(row.bytes_behind)+' behind'}
+          {row.last_failure&&' · '+row.last_failure}
+          {row.last_refusal&&' · '+row.last_refusal}
+          {row.work?.state==='measured'&&' · '+formatBytes(row.work.netBytesPerSecond)+'/s catching up'}
+          {row.next_attempt_at!==null&&' · tries again at '+new Date(row.next_attempt_at).toLocaleString()}
+        </p>)}
+        {measuredViews.length>0&&<p className="t-small text-muted">Slowest recent update: {formatBytes(Math.min(...measuredViews.map(row=>row.netBytesPerSecond)))}/s across {formatCount(measuredViews.length,'sample')}.</p>}
+        <p className="t-small text-muted">{data.views.throughput.state==='unavailable'?'There is not enough recent data to estimate how quickly sessions can catch up.':
+          data.views.throughput.admit?'Current update capacity can catch up with the backlog.':'Recent samples do not yet show that all sessions can catch up.'}</p>
+        {data.views.details&&!data.views.details.complete&&<p className="t-small text-muted">Showing details for {data.views.states.length.toLocaleString()} of {data.views.details.total.toLocaleString()} sessions.</p>}
+      </Card>}
       <StoppedRecordings projectName={projectName} />
       {data.unavailable?.includes('installedAgents') ? <ReadUnavailable label="installed agents" onRetry={onRetry} /> : harnesses.length > 0 && <div className="flex flex-col gap-s2" data-health-harnesses="">
         <h3 className="t-h3 text-ink">Installed agents</h3>
