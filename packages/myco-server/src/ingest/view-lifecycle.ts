@@ -357,10 +357,11 @@ function readiness(target: ViewWriteTarget, now: number): { sql: string; params:
         OR ${viewTerminalSql('c', 't', 'ls')}))
     AND NOT EXISTS(SELECT 1 FROM plan_promotions WHERE project_id=? AND session_id=? AND state='pending')
     AND EXISTS(SELECT 1 FROM session_views s JOIN view_build_work w ON w.project_id=s.project_id AND w.session_id=s.session_id
-      WHERE s.project_id=? AND s.session_id=? AND (s.legacy<>'converting' OR
-        (w.classification_complete=1 AND w.coverage_complete=1 AND w.receipts_complete=1 AND
-          (SELECT COUNT(*) FROM (SELECT ack_seq FROM view_legacy_ack_feed f WHERE f.project_id=s.project_id AND f.session_id=s.session_id
-            AND f.ack_seq>w.legacy_ack_watermark ORDER BY ack_seq LIMIT 65))<=?)))`,
+      WHERE s.project_id=? AND s.session_id=? AND
+        (SELECT COUNT(*) FROM (SELECT ack_seq FROM view_legacy_ack_feed f WHERE f.project_id=s.project_id AND f.session_id=s.session_id
+          AND f.ack_seq>w.legacy_ack_watermark ORDER BY ack_seq LIMIT 65))<=?)
+    AND NOT EXISTS(SELECT 1 FROM view_instances i JOIN view_instances p ON p.project_id=i.project_id AND p.instance_id=i.parent_instance
+      WHERE i.project_id=? AND i.instance_id=? AND p.state<>'frozen')`,
     params: [
       target.projectId,
       target.sessionId,
@@ -374,6 +375,8 @@ function readiness(target: ViewWriteTarget, now: number): { sql: string; params:
       target.projectId,
       target.sessionId,
       FINAL_CONVERSION_LIMIT,
+      target.projectId,
+      target.instanceId,
     ],
   };
 }
@@ -406,10 +409,10 @@ export async function tryPublishView(
   db = measured.env.db;
   if (await flipCalibrationBlocked(db, envelope))
     return { published: false, reason: 'view_flip_admission_unavailable' };
+  if (!(await viewReady(db, target, now))) return { published: false, reason: 'view_not_ready' };
   const work = await readFlipWork(db, target);
   const count = VIEW_MATERIALS.reduce((sum, material) => sum + work['candidate_' + material.kind + '_rows']!, 0);
   if (!flipWorkFits(work, envelope)) return { published: false, reason: 'view_flip_content_wall_exceeded' };
-  if (!(await viewReady(db, target, now))) return { published: false, reason: 'view_not_ready' };
   const tail = await prepareLegacyCoverageTail(db, target, now);
   if (tail === null) return { published: false, reason: 'view_not_ready' };
   const attempt = crypto.randomUUID(),
