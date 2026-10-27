@@ -171,11 +171,13 @@ it('a view body requires its selected instance proof even when the hidden origin
 
 it('record proofs keep exact-key native and D1 work as unrelated proof history grows',async()=>{
  const planErrors:string[]=[];
- await withViewStores(async(db,target)=>{
-  const blobs=memoryBlobStore();
+ const frozenByTarget=new Map<string,Map<string,{rows:number[];sql:unknown}>>();
+ const body='Complete body from exact stored instance',raw=new TextEncoder().encode(body),key=await sha256Hex(body);
+ for(const history of [400,1200,5000]){
+ const blobs=memoryBlobStore();
+ await withViewStorePair('native-D1',async db=>{
   const issued=await captureViewSession(db,scope.projectId,'session',{blobs});
   const noise=await captureViewSession(db,scope.projectId,'proof-noise',{blobs,idOffset:8000000});
-  const body='Complete body from exact stored instance',raw=new TextEncoder().encode(body),key=await sha256Hex(body);
   const noiseBody='hidden history',noiseBytes=new TextEncoder().encode(noiseBody),noiseKey=await sha256Hex(noiseBody);
   const env={MYCO_DB:db,BUCKET:blobs,SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()};
   expect((await worker.fetch(blobPost(issued.token,key,raw,'text/plain',{[PROJECT_HEADER]:scope.projectId}),env)).status).toBe(200);
@@ -184,10 +186,11 @@ it('record proofs keep exact-key native and D1 work as unrelated proof history g
   await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'tail',state:'live',parent:'parent'},false);
   await publishMirroredSession(db,scope.projectId,'session','tail','parent');
   for(const [kind,id]of kinds)await setViewFieldBody(db,{...scope,sessionId:'session',instanceId:'parent',kind,recordId:uuid(id),key,size:raw.length,proved:true});
-  const frozen=new Map<string,{rows:number[];sql:unknown}>();
-  let previous=0;
-  for(const history of [400,1200,5000]){
-   await appendCostHistory(db,{...scope,sessionId:'proof-noise',tokenId:noise.tokenId,material:COST_MATERIALS[0],from:previous,through:history,blobKey:noiseKey});previous=history;
+  await appendCostHistory(db,{...scope,sessionId:'proof-noise',tokenId:noise.tokenId,material:COST_MATERIALS[0],from:0,through:history,blobKey:noiseKey});
+ },async(native,d1)=>{
+  for(const [db,target]of [[native,'native'],[d1,'D1']]as const){
+   const frozen=frozenByTarget.get(target)??new Map<string,{rows:number[];sql:unknown}>();
+   frozenByTarget.set(target,frozen);
    for(const [kind,id]of [...kinds,['full-plan',50] as const]){
     const observed=statementRecorder(db,{accounting:target==='D1'?'d1':'native'});
     if(kind==='full-plan'){
@@ -210,6 +213,7 @@ it('record proofs keep exact-key native and D1 work as unrelated proof history g
     console.info('VIEW_PROOF_HISTORY',JSON.stringify({target,kind,history,reads:target==='D1'?rows:null,bound:target==='D1'?bound.rows:null,seeks}));
    }
   }
- });
+ },'native');
+ }
  expect(planErrors).toEqual([]);
 },180_000);

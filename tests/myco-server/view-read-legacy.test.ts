@@ -592,7 +592,7 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
     expect(work(current.statements,true),target+' '+row.id).toEqual(work(replay.statements,false));
    }
    console.info(JSON.stringify({kind:'view_read_CI_phase',fixture,target,stage:'complete',milliseconds:performance.now()-started}));
-  });
+  },'native');
   let serial=100000;
   random.mockImplementation(()=>uuid(serial++) as ReturnType<typeof crypto.randomUUID>);
   for(const target of ['native','D1']as const)for(const [seed,read]of [[seedLegacyCIResults,legacyCIResultReads],[seedLegacyCISwitch,legacyCISwitchReads]]as const)await withViewStorePair(target,seed,async(baseline,candidate)=>{
@@ -611,7 +611,7 @@ test('the CI strata preserve frozen statement sequences and replay result rows o
    expect(work(after.statements,true),target+' positive statement results and work').toEqual(work(before.statements,false));
    witness(target,after.statements);
    console.info(JSON.stringify({kind:'view_read_CI_positive',target,fixture:seed.name,stage:'complete'}));
-  });
+  },'native');
   for(const target of ['native','D1']){
    const missing=[...LEGACY_ONLY_OPERATIONS].filter(id=>!witnesses.get(target)?.has(id));
    console.info(JSON.stringify({kind:'view_read_CI_results',target,missing}));

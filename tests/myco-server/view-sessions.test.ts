@@ -2,7 +2,7 @@ import {expect,it} from 'bun:test';
 import {listSessions,listSessionsAcross,listSessionSummaries,listSessionSummariesAcross,sessionCountsFor,createProject} from '@myco-server-worker/read/sessions.js';
 import {activityFeed} from '@myco-server-worker/read/activity.js';
 import {sessionLineage} from '@myco-server-worker/read/lineage.js';
-import {captureViewSession,withViewStores} from './helpers/view-stores.js';
+import {captureViewSession,withViewStores,withViewStorePair} from './helpers/view-stores.js';
 import {mirrorViewSession,publishMirroredSession} from './helpers/view-instances.js';
 import {statementRecorder} from '../helpers/statement-recorder.js';
 import type {RelationalStore} from '@myco-server-worker/core/adapters.js';
@@ -123,12 +123,14 @@ it('legacy text cannot imitate an internal source envelope',async()=>{
 
 
 it('maximum pages retain every Project and lookahead source through publication flips and batched hydration',async()=>{
- await withViewStores(async(db,target)=>{
   const projects=['project',...Array.from({length:63},(_,index)=>'matrix-project-'+index)];
   const sources=[...Array.from({length:201},(_,index)=>({projectId:'project',sessionId:'S-'+String(index).padStart(3,'0')})),
    ...projects.slice(1).map((projectId,index)=>({projectId,sessionId:'Z-'+String(index).padStart(3,'0')}))];
+ await withViewStorePair('native-D1',async db=>{
   for(const projectId of projects.slice(1))await createProject(db,projectId,projectId,1);
   for(const [index,source]of sources.entries())await captureViewSession(db,source.projectId,source.sessionId,{idOffset:(index+1)*1000,promptText:'source '+index});
+ },async(native,d1)=>{
+  for(const [db,target]of [[native,'native'],[d1,'D1']]as const){
   const choose=(store:RelationalStore,across:boolean)=>across
    ?listSessionSummariesAcross(store,{all:false,projectIds:projects},{fidelity:'any',limit:200},2000)
    :listSessionSummaries(store,scope,{fidelity:'any',limit:200},2000);
@@ -175,5 +177,6 @@ it('maximum pages retain every Project and lookahead source through publication 
    expect(next.get(sources[0]!.sessionId),target+' next response').toMatchObject({prompts:0,responses:0,toolCalls:0,plans:0});
    for(const source of sources)await publishMirroredSession(db,source.projectId,source.sessionId,'first-'+source.sessionId,'parent-'+source.sessionId);
   }
- });
+  }
+ },'native');
 },180_000);
