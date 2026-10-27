@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import ts from 'typescript-v6';
 import classes from '../myco-server/fixtures/material-write-classes.json';
-import { materialWriteInventory } from '../helpers/material-write-inventory.js';
+import { materialWriteInventory, materialWriteAnchor, canonicalMaterialWrites } from '../helpers/material-write-inventory.js';
 import {
   materialWriteBoundary,
   materialWriteMode,
@@ -26,8 +26,7 @@ const sources = (root: string): string[] =>
         ? [root + '/' + entry.name]
         : [],
   );
-const anchor = (row: { file: string; owner: string; expression: string; table: string; operation: string }) =>
-  JSON.stringify([row.file, row.owner, row.expression, row.table, row.operation]);
+const anchor = materialWriteAnchor;
 const testNames = (file: string) => {
   const tree = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true),
     names: string[] = [];
@@ -286,4 +285,14 @@ test('unchanged preparation payloads retain any valid gzip representation and re
  expect(next.sha256).not.toBe(previous.sha256);
  expect(gunzipSync(Buffer.from(next.data,'base64')).toString()).toBe(raw+' ');
  expect(()=>preparationSealEnvelope(raw,{...previous,data:gzipSync('forged').toString('base64')})).toThrow('Invalid sealed preparation envelope');
+});
+
+
+test('material catalogues retain identical text under reversed and shuffled enumeration',()=>{
+ const files=sources('packages/myco-server/src');
+ const inventory=files.flatMap(file=>materialWriteInventory(file,readFileSync(file,'utf8')));
+ const text=(rows:typeof inventory)=>JSON.stringify(canonicalMaterialWrites(rows),null,2);
+ expect(text([...inventory].reverse())).toBe(text(inventory));
+ expect(text([...inventory.filter((_,i)=>i%2),...inventory.filter((_,i)=>i%2===0)])).toBe(text(inventory));
+ expect(classes).toEqual(canonicalMaterialWrites(classes));
 });

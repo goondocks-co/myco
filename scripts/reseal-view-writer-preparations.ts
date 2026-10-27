@@ -8,7 +8,7 @@ import { gunzipSync } from 'node:zlib';
 import { preparationOwner, isSqlPreparation, protectedRelations } from '../tests/helpers/statement-recorder.js';
 import { sourceBoundary, type ExceptionClosure, type ParameterCaller } from '../tests/helpers/view-read-contract.js';
 import sources from '../tests/helpers/view-writer-preparation-sources.json';
-import { materialWriteInventory } from '../tests/helpers/material-write-inventory.js';
+import { materialWriteInventory, materialWriteAnchor, canonicalMaterialWrites } from '../tests/helpers/material-write-inventory.js';
 
 const cataloguesOnly=process.argv.includes('--check-catalogues');
 const check=cataloguesOnly||process.argv.includes('--check');
@@ -144,14 +144,13 @@ reads.sort((a, b) => compare(a.id, b.id));
 if (new Set(reads.map((row) => row.id)).size !== reads.length) throw new Error('duplicate writer read operation');
 const classesFile = 'tests/myco-server/fixtures/material-write-classes.json';
 const classifications = JSON.parse(readFileSync(classesFile, 'utf8'));
-const inventory = walk('packages/myco-server/src').flatMap((file) =>
+const inventory = canonicalMaterialWrites(walk('packages/myco-server/src').flatMap((file) =>
   materialWriteInventory(file, readFileSync(file, 'utf8')),
-);
+));
 const reanchored = inventory.map((row) => {
   const exact = classifications.find(
     (held: typeof row) =>
-      JSON.stringify([held.file, held.owner, held.expression, held.table, held.operation]) ===
-      JSON.stringify([row.file, row.owner, row.expression, row.table, row.operation]),
+      materialWriteAnchor(held) === materialWriteAnchor(row),
   );
   if (exact) return exact;
   const candidates = classifications.filter(

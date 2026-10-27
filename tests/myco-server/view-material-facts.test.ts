@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test, spyOn } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import {
   MaterialWriteRetryableError,
@@ -14,14 +14,14 @@ import { contentAssertion } from '@myco-server-worker/core/registered-content.js
 import { setPlanStatus } from '@myco-server-worker/read/plans.js';
 import { withViewStores, captureViewSession } from './helpers/view-stores.js';
 import { memoryBlobStore, uuid, envelope, recordingLimiter } from './helpers/fixtures.js';
-import { withViewWriterDriver } from '../helpers/statement-recorder.js';
+import { withViewWriterDriver, withStatementSpan, observeStatementSpans, statementRecorder, type StatementFrame } from '../helpers/statement-recorder.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { measuredContentEnv, CONTENT_STATEMENT_LIMIT, CONTENT_BLOB_LIMIT } from '@myco-server-worker/core/content-budget.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 
@@ -679,36 +679,59 @@ test('twelve same-identity replies in descending and mixed order all persist wit
   await withViewStores(async (db, store) =>
     withViewWriterDriver(async () => {
       await captureViewSession(db);
-      const now = Date.now(),
-        env = { db, blobs: memoryBlobStore() };
+      const now = Date.now();
       const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, now);
-      for (const [round, order] of [
-        [0, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]],
-        [1, [5, 10, 2, 8, 0, 11, 3, 9, 1, 7, 4, 6]],
-      ] as const) {
-        const results = await Promise.all(
-          order.map((i) =>
-            ingestPublishedMaterialEvent(
-              env,
-              { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now },
-              envelope({
-                eventId: uuid(3000 + round * 100 + i),
-                sessionId: 'session',
-                kind: 'response',
-                createdAt: 500 - round * 100 - i,
-                payload: {
-                  responseId: uuid(3100 + round * 100 + i),
-                  promptId: uuid(20),
-                  text: 'reply ' + round + '/' + i,
-                },
-              }),
-            ),
-          ),
-        );
-        expect(
-          results.every((result) => result.persisted),
-          store,
-        ).toBe(true);
+      const recorded = statementRecorder(db, { accounting: 'native' });
+      const blobs = memoryBlobStore(), env = { db: recorded.db, blobs };
+      const blobCalls = (['head','get','put','delete'] as const).map(method=>spyOn(blobs,method));
+      const invocations: StatementFrame[] = [];
+      const stop = observeStatementSpans(frame=>{
+        if(frame.phase==='contention-response')invocations.push(frame);
+      });
+      const clock = spyOn(Date,'now').mockReturnValue(now);
+      try {
+        for (const [round, order] of [
+          [0, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]],
+          [1, [5, 10, 2, 8, 0, 11, 3, 9, 1, 7, 4, 6]],
+        ] as const) {
+          const results = await Promise.all(
+            order.map((i) => withStatementSpan('view-writer-driver','contention-response',() =>
+              ingestPublishedMaterialEvent(
+                env,
+                { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now },
+                envelope({
+                  eventId: uuid(3000 + round * 100 + i),
+                  sessionId: 'session',
+                  kind: 'response',
+                  createdAt: 500 - round * 100 - i,
+                  payload: {
+                    responseId: uuid(3100 + round * 100 + i),
+                    promptId: uuid(20),
+                    text: 'reply ' + round + '/' + i,
+                  },
+                }),
+              ),
+            )),
+          );
+          expect(
+            results.every((result) => result.persisted),
+            store,
+          ).toBe(true);
+        }
+        expect(invocations).toHaveLength(24);
+        const counts=invocations.map(frame=>recorded.statements.filter(row=>row.spanId===frame.spanId).length);
+        for(const count of counts){
+          expect(count,store).toBeGreaterThan(0);
+          expect(count,store).toBeLessThanOrEqual(CONTENT_STATEMENT_LIMIT);
+        }
+        const totalBlobCalls=blobCalls.reduce((sum,call)=>sum+call.mock.calls.length,0);
+        expect(totalBlobCalls,store).toBe(0);
+        expect(totalBlobCalls,store).toBeLessThanOrEqual(CONTENT_BLOB_LIMIT);
+        console.info(JSON.stringify({kind:'material_contention_bound',store,replies:counts.length,maxStatements:Math.max(...counts),blobCalls:totalBlobCalls}));
+      } finally {
+        clock.mockRestore();
+        stop();
+        blobCalls.forEach(call=>call.mockRestore());
       }
       expect(
         (await db

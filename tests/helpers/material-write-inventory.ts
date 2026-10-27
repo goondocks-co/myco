@@ -21,3 +21,17 @@ export function materialWriteInventory(file: string, source: string) {
   visit(tree);
   return [...new Map(rows.map((row) => [JSON.stringify(row), row])).values()];
 }
+
+
+type MaterialWrite = ReturnType<typeof materialWriteInventory>[number];
+
+export function materialWriteAnchor(row: MaterialWrite): string {
+  return JSON.stringify([row.file, row.owner, row.expression, row.table, row.operation]);
+}
+
+export function canonicalMaterialWrites<T extends MaterialWrite>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const left = materialWriteAnchor(a), right = materialWriteAnchor(b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+}

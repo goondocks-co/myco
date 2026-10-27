@@ -247,5 +247,14 @@
   "tests/parity/schema-upgrade.test.ts": {
     "it:keeps required descendants of declared-empty inputs empty and nulls optional composite references": "T",
     "it:populates valid previous writer inputs and retains the nonempty instance refusal": "T"
+  },
+  "tests/cli/cutover-machine.ts": {
+    "machine": "T"
+  },
+  "tests/cli/cutover-projects.test.ts": {
+    "projectsOn": "T",
+    "it:allows a vault write between planning and lease revalidation, then copies the latest history": "T",
+    "it:refuses a deleted transcript directory claimed by work and personal records": "T",
+    "it:imports mapped transcripts from an absent checkout into its connected replacement": "T"
   }
 }

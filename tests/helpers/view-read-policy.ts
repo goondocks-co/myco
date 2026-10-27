@@ -31,8 +31,18 @@ export function assertPreparationRelationsExtend(sealed:readonly string[],candid
 export function refreshPreparationRelations(sealed:readonly string[],observations:readonly {relations:readonly string[]}[]):string[]{
  return [...new Set([...sealed,...observations.flatMap(row=>row.relations)])].sort();
 }
+// Forwarded preparations retain their module origin; the interceptor admits no protected SQL.
+const EMPTY_LEGACY_INTERCEPTOR=JSON.stringify(['sink-07145','tests/myco-server/recall.test.ts',
+ 'it:records delayed plan-calibration failure and vector timing when spore hydration fails first','sql','T']);
 export function mergePreparationOrigins(base:readonly PhysicalOrigin[],writer:readonly PhysicalOrigin[]):PhysicalOrigin[]{
  const key=(row:PhysicalOrigin)=>JSON.stringify([row.id,row.file,row.owner,row.expression,row.phase]);
+ const originals=new Map(base.map(row=>[key(row),row]));
+ for(const row of writer.filter(row=>!row.id.startsWith('pr5-'))){
+  const held=originals.get(key(row));
+  if(held===undefined)throw new Error('Writer preparation origin changes frozen tuple: '+row.id);
+  if(key(row)===EMPTY_LEGACY_INTERCEPTOR&&row.relations?.length===0)continue;
+  assertPreparationRelationsExtend(held.relations??[],row.relations??[]);
+ }
  const overrides=new Map(writer.map(row=>[key(row),row]));
  return base.map(origin=>overrides.get(key(origin))??origin).concat(writer.filter(row=>row.id.startsWith('pr5-')));
 }

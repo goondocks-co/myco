@@ -1226,7 +1226,7 @@ test('writer preparation refreshes preserve each complete origin tuple',()=>{
  const right={...left,owner:'right',relations:['responses']};
  const refreshed={...right,relations:['plans','responses']};
  expect(mergePreparationOrigins([left,right],[refreshed])).toEqual([left,refreshed]);
- expect(mergePreparationOrigins([left,right],[{...refreshed,phase:'H'}])).toEqual([left,right]);
+ expect(()=>mergePreparationOrigins([left,right],[{...refreshed,phase:'H'}])).toThrow('changes frozen tuple');
 });
 
 test('source capture defers boundary validation without changing its graph',()=>{
@@ -1263,4 +1263,19 @@ test('fixture caller unions are reconstructed without redundant writer origin ke
  expect(extensions.every(row=>row.callerKeys===undefined)).toBe(true);
  const redundant=writer.map(row=>ids.has(row.id)&&row.callerRelations!==undefined?{...row,callerKeys:keys}:row);
  expect(resolvePreparationOrigins(base,redundant)).toEqual(preparationOrigins);
+});
+
+
+test('legacy preparation overrides cannot narrow their base at load and only the exact SQL interceptor may be empty',async()=>{
+ const base=await checkedPreparationOrigins(preparationOriginEnvelope);
+ const writer=await checkedPreparationOrigins(preparationOriginEnvelope.writer.preparationOrigins);
+ const row=writer.find(row=>row.id==='sink-04472')!;
+ expect(row.relations).toContain('embedding_sources');
+ expect(()=>mergePreparationOrigins(base,[{...row,relations:row.relations!.filter(name=>name!=='embedding_sources')}])).toThrow('removes sealed relations');
+ const alias=writer.find(row=>row.id==='sink-07145')!;
+ expect(alias.relations).toEqual([]);
+ expect(()=>mergePreparationOrigins(base,[alias])).not.toThrow();
+ const other=base.find(row=>row.id===alias.id&&row.owner!==alias.owner)!;
+ expect(other).toBeDefined();
+ expect(()=>mergePreparationOrigins(base,[{...other,relations:[]}])).toThrow('removes sealed relations');
 });
