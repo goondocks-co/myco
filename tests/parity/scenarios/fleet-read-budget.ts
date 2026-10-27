@@ -4,6 +4,7 @@ import { MEMBER_ID, lit, type ParityScenario } from '../harness.ts';
 /** Local workerd/D1 counts examined rows for the shipped fleet projection. */
 export const fleetReadBudget: ParityScenario = {
   name: 'runner fleet: D1 rows read stay bounded as member credentials accumulate',
+  only: 'cloudflare',
   dedicated: { cloudflare: { main: '../../tests/parity/fleet-budget/worker-entry.ts' }, timeoutMs: 240_000 },
   async run(target) {
     if (target.name !== 'cloudflare') return;

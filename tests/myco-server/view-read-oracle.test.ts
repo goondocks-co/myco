@@ -2,7 +2,8 @@ import fs from 'node:fs';
 const {appendFileSync}=fs;
 import {createHash} from 'node:crypto';
 import {ViewReadRefusal} from '@myco-server-worker/core/read-refusals.js';
-import {expect,it} from 'bun:test';
+import {expect} from 'bun:test';
+import {writerReadTest as it} from './helpers/view-instances.js';
 import {LEGACY_ONLY_OPERATIONS,withViewReadResponse} from '@myco-server-worker/read/view-store.js';
 import {statementRecorder,type RecordedStatement} from '../helpers/statement-recorder.js';
 import {readTag} from '../helpers/view-read-contract.js';
@@ -16,7 +17,7 @@ const migrated:string[]=VIEW_READ_OPERATIONS.filter(row=>row.family!==null&&!new
 
 it('every migrated operation retains its independent writer-world output in parent, poison and gone worlds',async()=>{
  const differences:string[]=[];
- await withViewStorePair('native-D1',seedViewConsumerWorld,async(first,second)=>{
+ await withViewStorePair('native-D1',db=>seedViewConsumerWorld(db,false),async(first,second)=>{
   for(const [db,target] of [[first,'native'],[second,'D1']] as const){
   const expected=new Map<string,string>();
   const workloads=viewReadWorkloads();
@@ -129,7 +130,7 @@ for(const rows of [0,5,50,500]){
 
 
 it('empty, maximum and split arities preserve both-target rows and hosted planner limits',async()=>{
- await withViewStorePair('native-D1',seedViewConsumerWorld,async(first,second)=>{
+ await withViewStorePair('native-D1',db=>seedViewConsumerWorld(db,false),async(first,second)=>{
   for(const [db,target] of [[first,'native'],[second,'D1']] as const){
   const workloads=viewArityWorkloads(),expected=new Map<string,string>();
   for(const workload of workloads)expected.set(workload.id,bytes(await workload.read(db)));

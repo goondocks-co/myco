@@ -1,10 +1,12 @@
 import { ownedLines, unfinishedCalls, recordId, legacyRecordId, replyChunks, responseBound, REPLY_SEPARATOR,
   type DerivedEvent, type TranscriptParser, type ParserState, type ReplyPart } from './index.js';
 import { LEGACY_RECORD_ID_SCHEME, isReplySource, RecordSourceInvalid } from '@goondocks/myco-shared/record-identity';
+import { MAX_BLOB_BYTES } from '../../constants.js';
 import { utf8 } from '../../hash.js';
 
 /** Retained tool calls above this count become explicit failures. */
 export const MAX_PENDING_CALLS = 32;
+export const MAX_VIEW_PENDING_BYTES = MAX_BLOB_BYTES;
 export const PENDING_CALL_LIMIT_ERROR = 'tool call exceeded the pending-call limit';
 const textBytes = (text: string): number => utf8(JSON.stringify(text)).length - 2;
 
@@ -13,21 +15,24 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
   return {
     ...parser,
     async parse(input) {
+      if(input.view)input.identities??=new Map();
       const state: ParserState = input.state ?? {};
+      if(input.view)for(const call of Object.values(state.pending??{}))if(call.identity)input.identities!.set(call.toolCallId,call.identity);
       if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && state.reply?.parts.some(part => !isReplySource(part.source))) {
         throw new RecordSourceInvalid();
       }
+      const bound = input.view ? { chars: MAX_BLOB_BYTES, bytes: MAX_BLOB_BYTES } : responseBound();
       const events: DerivedEvent[] = [];
       let openPromptId = input.openPromptId;
       // The keys this traversal claims, carried across its lines and never beyond it.
       const claims = new Map<string, string>();
       const transcriptMeta = input.transcriptMeta ?? parser.headerContext?.(input.lines);
       const emitReply = async (parts: readonly ReplyPart[], promptId?: string): Promise<void> => {
-        for (const part of replyChunks(parts)) {
+        for (const part of replyChunks(parts, bound)) {
           if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && !isReplySource(part.source)) throw new RecordSourceInvalid();
           const request = { kind: 'response' as const, offset: part.offset };
           const legacyId = await legacyRecordId(input, request);
-          events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt, source: part.source, legacyId,
+          events.push({ kind: 'response', ...(part.sourceEnd===undefined?{}:{sourceEnd:part.sourceEnd}), offset: part.offset, createdAt: part.createdAt, source: part.source, legacyId,
             payload: { responseId: part.source === undefined ? legacyId : await recordId(input, parser.agent, { ...request, source: part.source }), promptId, text: part.text } });
         }
       };
@@ -37,15 +42,16 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         delete state.reply;
       };
       const appendReply = async (event: DerivedEvent): Promise<void> => {
-        const part = { text: String(event.payload.text), offset: event.offset, createdAt: event.createdAt, source: event.source };
+        const part = { text: String(event.payload.text), offset: event.offset, createdAt: event.createdAt, source: event.source, ...(event.sourceEnd===undefined?{}:{sourceEnd:event.sourceEnd}) };
         // A reply is one prompt's: a line naming another prompt than the reply held starts its own.
         const promptId = typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined;
         if (state.reply !== undefined && state.reply.promptId !== promptId) await flushReply();
-        const bound = responseBound();
+
         const bytes = textBytes(part.text);
         if (state.reply !== undefined && (state.reply.chars + REPLY_SEPARATOR.length + part.text.length > bound.chars
           || state.reply.bytes + textBytes(REPLY_SEPARATOR) + bytes > bound.bytes)) await flushReply();
-        const kept = part.text.length > bound.chars || bytes > bound.bytes ? replyChunks([part])[0] : part;
+        if (input.view && bytes > bound.bytes) throw new Error("view_record_too_large");
+        const kept = part.text.length > bound.chars || bytes > bound.bytes ? replyChunks([part], bound)[0] : part;
         if (kept === undefined) return;
         if (state.reply === undefined) state.reply = { parts: [], promptId, chars: 0, bytes: 0 };
         if (state.reply.parts.length > 0) {
@@ -57,8 +63,13 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         state.reply.bytes += textBytes(kept.text);
       };
       for (const line of ownedLines(input.lines, input.sessionId, parser.continuation)) {
-        const derived = await parser.parse({ ...input, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
+        const derived = await parser.parse({ ...input, now:input.view?line.receivedAt??input.now:input.now, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
         for (const event of derived) {
+          if(input.view)event.sourceEnd??=line.sourceEnd;
+          if(input.view&&(event.kind==='tool.use'||event.kind==='tool.failure')){
+            event.outcomeOffset??=line.offset;
+            if(event.payload.toolName!=='unknown')event.callOffset??=event.offset;
+          }
           if (event.kind === 'prompt' && event.opensTurn !== false && typeof event.payload.promptId === 'string') {
             await flushReply();
             openPromptId = event.payload.promptId;
@@ -68,15 +79,20 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         }
         if (parser.endsTurn?.(line.value) === true) await flushReply();
         const pending = Object.entries(state.pending ?? {});
-        for (const [id, call] of pending.slice(0, Math.max(0, pending.length - MAX_PENDING_CALLS))) {
-          events.push(...unfinishedCalls([[id, call]], 'pending_limit', PENDING_CALL_LIMIT_ERROR));
+        let pendingBytes=input.view?pending.reduce((bytes,[,call])=>bytes+utf8(JSON.stringify(call)).length,0):0;
+        let pendingCount=pending.length;
+        for (const [id, call] of pending) {
+          if(pendingCount<=MAX_PENDING_CALLS&&pendingBytes<=MAX_VIEW_PENDING_BYTES)break;
+          events.push(...unfinishedCalls([[id, call]], 'pending_limit', PENDING_CALL_LIMIT_ERROR,input.view===true));
           delete state.pending![id];
+          pendingCount--;
+          if(input.view)pendingBytes-=utf8(JSON.stringify(call)).length;
         }
       }
       if (input.terminal !== undefined || input.state === undefined) {
         await flushReply();
         if (input.terminal !== 'turn_end') {
-          events.push(...unfinishedCalls(Object.entries(state.pending ?? {}), 'no_result'));
+          events.push(...unfinishedCalls(Object.entries(state.pending ?? {}), 'no_result',undefined,input.view===true));
           state.pending = {};
         }
       }

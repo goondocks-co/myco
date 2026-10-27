@@ -108,10 +108,12 @@ function audit() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
   const manifestPath = path.join(scratch, 'manifest.json');
   const baseEnv = { ...process.env };
-  for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD']) delete baseEnv[key];
+  for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD', 'MYCO_RUNNER_PLAN_FILE', 'MYCO_RUNNER_MATRIX_PLAN_FILE', 'MYCO_PARITY_PLAN_MATRIX']) delete baseEnv[key];
   baseEnv.MYCO_RUNNER_REPORT_DIR = path.join(scratch, 'reports');
 
+  let generations = 0;
   function manifest(command, env, outputPrefix) {
+    generations++;
     fs.rmSync(manifestPath, { force: true });
     const result = spawnSync(command[0], command.slice(1), {
       cwd: root, env: { ...baseEnv, ...env }, encoding: 'utf8', timeout: 60_000,
@@ -127,7 +129,7 @@ function audit() {
 
   function testPlan(env = {}) {
     return manifest(['node', 'scripts/run-bun-tests.mjs'], {
-      MYCO_RUNNER_DRY_RUN: '1', MYCO_RUNNER_PLAN_FILE: manifestPath, ...env,
+      MYCO_RUNNER_DRY_RUN: '1', MYCO_RUNNER_MATRIX_PLAN_FILE: manifestPath, ...env,
     });
   }
 
@@ -144,23 +146,22 @@ function audit() {
   }
 
   try {
-    const full = testPlan();
+    const matrix = testPlan();
+    const full = matrix.full;
     const discovered = fs.readdirSync(path.join(root, 'tests'), { recursive: true })
       .filter((file) => /\.test\.tsx?$/.test(file)).map((file) => `tests/${file.split(path.sep).join('/')}`);
     exactlyOnce(full.flatMap((phase) => phase.files), discovered, 'Full suite');
     const nodePlans = [];
-    const ordinary = workflow.jobs.tests.strategy.matrix.include.flatMap(({ kind, shard }) => {
-      const plan = testPlan({ MYCO_TEST_KIND: kind, MYCO_TEST_SHARD: shard });
+    assert.deepEqual(matrix.ordinary.map(({ kind, shard }) => ({ kind, shard })), workflow.jobs.tests.strategy.matrix.include, 'Runner matrix differs from CI');
+    const ordinary = matrix.ordinary.flatMap(({ kind, shard, phases: plan }) => {
       if (kind === 'node') nodePlans.push(plan);
       console.log(`${kind} ${shard}: estimated ${Math.round(plan.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
       return plan;
     });
     const proofJob = workflow.jobs['view-proof'];
     exactlyOnce(proofJob.strategy.matrix.file, VIEW_PROOF_FILES, 'CI view proof matrix');
-    const proofs = proofJob.strategy.matrix.file.flatMap(file => testPlan({
-      MYCO_TEST_KIND: proofJob.env.MYCO_TEST_KIND,
-      MYCO_TEST_GROUP: proofJob.env.MYCO_TEST_GROUP.replace('${{ matrix.file }}', file),
-    }));
+    assert.deepEqual(matrix.proofs.map(({ file }) => file), proofJob.strategy.matrix.file, 'Runner proof matrix differs from CI');
+    const proofs = matrix.proofs.flatMap(({ phases }) => phases);
     exactlyOnce(proofs.flatMap(phase => phase.files), VIEW_PROOF_FILES, 'CI view proof files');
     const sharded = [...ordinary, ...proofs];
     exactlyOnce(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
@@ -174,14 +175,17 @@ function audit() {
     const shardPhases = sharded.filter((phase) => !phase.label.endsWith('.tsx'));
     assert.deepEqual(shardPhases.sort((a, b) => a.label.localeCompare(b.label)), fullPhases.sort((a, b) => a.label.localeCompare(b.label)), 'Node phase isolation changed');
     const parityShards = workflow.jobs.parity.strategy.matrix.shard;
-    const parityScenarios = parityPlan();
+    const selectors = parityShards.map(index => workflow.jobs.parity.env.MYCO_PARITY_SHARD.replace('${{ matrix.shard }}', String(index)));
+    const parity = parityPlan({ MYCO_PARITY_PLAN_MATRIX: JSON.stringify(selectors) });
+    const parityScenarios = parity.full;
     const parityWeights = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8')).parity;
     for (const name of parityScenarios) {
       assert.ok(Number.isFinite(parityWeights[name]) && parityWeights[name] > 0, `Parity scenario needs an explicit duration weight: ${name}`);
     }
-    exactlyOnce(parityShards.flatMap((index) => parityPlan({
-      MYCO_PARITY_SHARD: workflow.jobs.parity.env.MYCO_PARITY_SHARD.replace('${{ matrix.shard }}', String(index)),
-    })), parityScenarios, 'CI parity shards');
+    assert.deepEqual(parity.shards.map(({ shard }) => shard), selectors, 'Parity matrix differs from CI');
+    exactlyOnce(parity.shards.flatMap(({ scenarios }) => scenarios), parityScenarios, 'CI parity shards');
+    assert.equal(generations, 2, 'Shard auditing must generate each runner plan once');
+    console.log(`Plan generations: ${generations}`);
     exactlyOnce(workflow.jobs.check.needs, Object.keys(workflow.jobs).filter((job) => job !== 'check'), 'Required jobs');
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

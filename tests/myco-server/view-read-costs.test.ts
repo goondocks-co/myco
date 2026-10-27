@@ -1,9 +1,10 @@
-import {expect,it} from 'bun:test';
+import {expect} from 'bun:test';
+import {writerReadTest as it} from './helpers/view-instances.js';
 import {COST_MATERIALS,convertedLegacyHistory,legacyArmPlanViolations,partitionLegacyPlan,captureProbePlan,armPlanViolations,viewSourceArmPlans} from './helpers/view-read-costs.js';
 
-for(const material of COST_MATERIALS.filter(value=>value.table!=='plans'))it(
- 'converted-session '+material.table+' freezes its H_legacy term until PR 8 cleanup',
- ()=>convertedLegacyHistory(material),180_000);
+for(const backend of [false,true])for(const material of COST_MATERIALS.filter(value=>value.table!=='plans'))it(
+ 'converted-session '+material.table+' freezes its H_legacy term until PR 8 cleanup ('+(backend?'writer':'legacy')+')',
+ ()=>convertedLegacyHistory(material),180_000,backend);
 
 it('plan identity excludes only cost estimates and rejects access-plan drift',()=>{
  const baseline=[{id:10,parent:0,notused:0,detail:'SEARCH p USING INDEX idx_prompt_batches_session (project_id=? AND session_id=?)'}];

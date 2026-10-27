@@ -29,6 +29,7 @@ const bounded = (parser: TranscriptParser): TranscriptParser => ({
         : event.kind === 'tool.use' || event.kind === 'tool.failure' ? 'tool-call' : null;
       if (kind !== null) recordSourceDeclaration({ declaration, scheme: input.recordScheme, kind });
     }
+    if (input.view) return events;
     boundPendingInputs(input.state);
     return boundDerivedEvents(events);
   },

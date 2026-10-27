@@ -12,6 +12,7 @@ import legacy from './fixtures/view-read-legacy.json';
 import {legacyExecutionCases,legacyVariants,legacyApplicability,legacyReceiptReferences,legacyReferencedEvents,legacyCIVariants,withFrozenCIOracle,withFrozenOracle,frozenListingReaders,executeListingVariant,executeReadVariant,frozenReadPort,currentReadPort,seedLegacyFixture,seedLegacyPromptArity,seedLegacyCISwitch,legacyCISwitchReads,seedLegacyCIResults,legacyCIResultReads,seedLegacyPublicFixture,legacyBodyBlobs,legacyPublicRequests,legacyPublicServer,type LegacyVariant} from '../helpers/view-read-legacy-fixtures.js';
 import {createProject} from '@myco-server-worker/read/sessions.js';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
+import {SERVER_SCHEMA_VERSION} from '@myco-server-worker/constants.js';
 import type {StatementEvent} from '../helpers/statement-recorder.js';
 import {significantRead,protectedSql,readTag,runtimeBoundary} from '../helpers/view-read-contract.js';
 import {withViewStores,withViewStorePair} from './helpers/view-stores.js';
@@ -657,10 +658,18 @@ test('public HTTP and MCP compositions preserve exact base status content type b
      const frozen=legacy.ci.publicCompositions.requests[index]!;
      expect({status:actual.status,contentType:actual.contentType,method:request.method,url:request.url}).toEqual(frozen);
      expect(eventIdentity(after.events,true),target+' '+request.url+' preparation and execution count').toEqual(eventIdentity(before.events,false));
-     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:activeCatalogueRows(emptyReadRows(rows),tagged?SCHEMA_STEPS.at(-1)!.version:legacy.schema.steps.at(-1)!.version),rowCount,rowsRead,rowsWritten,failed}));
+     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>{
+      const schemaVersion=tagged?SERVER_SCHEMA_VERSION:legacy.schema.steps.at(-1)!.version;
+      const qualified=sql.startsWith('SELECT s.value AS schema_version,')?rows?.map(row=>{
+       if(typeof row!=='object'||row===null||!('schema_version'in row))throw new Error('Missing authentication schema header');
+       expect(row.schema_version).toBe(String(schemaVersion));
+       return {...row,schema_version:'admitted-schema'};
+      }):rows;
+      return {sql:tagged&&readTag(sql)?emptyReadSql(sql):sql,binds,method,rows:activeCatalogueRows(emptyReadRows(qualified),schemaVersion),rowCount,rowsRead,rowsWritten,failed};
+     });
      expect(work(after.statements,true),target+' '+request.url+' statement results').toEqual(work(before.statements,false));
     }
-   });
+   },legacy.schema.steps.at(-1)!.version);
   }
  });}finally{random.mockRestore()}
 },30000);

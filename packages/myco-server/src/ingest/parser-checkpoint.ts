@@ -67,6 +67,23 @@ export function restoreParserCheckpointStatement(db: RelationalStore, row: Recor
     .bind(...columns.map((column) => row[column] ?? null), parent.project_id, parent.transcript_id, parent.parsed_offset, parent.parser_context);
 }
 
+/** Live frontier mirrors retain every chunk named by their parser context. */
+export function mirrorViewParserCheckpointStatements(db:RelationalStore,target:{projectId:string;sessionId:string;instanceId:string},transcriptId?:string):PreparedStatement[]{
+  const selected=`SELECT c.transcript_id FROM view_checkpoints c JOIN session_views s
+    ON s.project_id=c.project_id AND s.session_id=c.session_id AND s.live_instance=c.instance_id
+    JOIN transcripts t ON t.project_id=c.project_id AND t.transcript_id=c.transcript_id
+      AND t.parsed_offset=c.parsed_offset AND t.parser_context IS c.parser_context
+    WHERE c.project_id=? AND c.session_id=? AND c.instance_id=?${transcriptId===undefined?'':' AND c.transcript_id=?'}`;
+  const params=[target.projectId,target.sessionId,target.instanceId,...(transcriptId===undefined?[]:[transcriptId])];
+  return [
+    db.prepare(`DELETE FROM transcript_parser_state_chunks WHERE project_id=? AND transcript_id IN (${selected})`).bind(target.projectId,...params),
+    db.prepare(`INSERT INTO transcript_parser_state_chunks(project_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload)
+      SELECT project_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload FROM view_checkpoint_chunks
+      WHERE project_id=? AND instance_id=? AND transcript_id IN (${selected})`)
+      .bind(target.projectId,target.instanceId,...params),
+  ];
+}
+
 interface TerminalFence extends CheckpointTarget {
   size: number; lastReceivedAt?: number; parserContextJson?: string | null; parserContext?: Record<string, unknown> | null;
 }

@@ -17,7 +17,7 @@
  * rather than two.
  */
 import { utf8, uuidv5 } from '../../hash.js';
-import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme, type PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
 import { canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { TranscriptRole, ToolResultReason } from '@goondocks/myco-shared/member-protocol';
@@ -35,6 +35,8 @@ export type Fidelity = (typeof FIDELITIES)[number];
 
 /** One decoded transcript line and the byte offset it starts at. The offset is the parse cursor's unit and the derived event's identity, so it travels with the line. */
 export interface ParsedLine {
+  receivedAt?:number;
+  sourceEnd?: number;
   value: Record<string, unknown>;
   offset: number;
   /** Fallback time for an undated line whose first byte belongs to an imported segment. */
@@ -42,6 +44,8 @@ export interface ParsedLine {
 }
 
 export interface ParserInput {
+  view?: boolean;
+  identities?: Map<string,readonly string[]>;
   lines: readonly ParsedLine[];
   sessionId: string;
   transcriptId: string;
@@ -91,6 +95,7 @@ export function promptOwners(entries: Iterable<readonly [string, PromptOwner]>):
 }
 
 export interface PendingCall {
+  identity?: readonly string[];
   toolCallId: string;
   toolName: string;
   input: unknown;
@@ -100,7 +105,9 @@ export interface PendingCall {
 }
 
 export interface ParserState {
+  unattributed?:{offset:number;kind:'prompt'}[];
   pending?: Record<string, PendingCall>;
+  findings?: {kind:'key_reuse';recordId:string;offset:number}[];
   reply?: { parts: ReplyPart[]; promptId?: string; chars: number; bytes: number };
   planPosition?: number;
   legacyReplies?: { until: number; remaining?: string; promptId?: string };
@@ -121,9 +128,9 @@ export function withoutPrompts(state: ParserState): void {
 }
 
 /** A declared complete transcript records calls whose results never arrived. */
-export function unfinishedCalls(pending: Iterable<readonly [string, PendingCall]>, reason: Exclude<ToolResultReason, 'reported'>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
+export function unfinishedCalls(pending: Iterable<readonly [string, PendingCall]>, reason: Exclude<ToolResultReason, 'reported'>, errorMessage = 'tool call has no result in the transcript', view=false): DerivedEvent[] {
   return [...pending].map(([key, call]) => ({
-    kind: 'tool.failure', source: { key, block: 0 }, legacyId: call.toolCallId,
+    kind: 'tool.failure', ...(view?{outcomeOrigin:'synthetic' as const}:{}), source: { key, block: 0 }, legacyId: call.toolCallId,
     payload: { toolCallId: call.toolCallId, promptId: call.promptId, toolName: call.toolName, input: call.input,
       success: false, errorMessage, resultReason: reason },
     createdAt: call.createdAt, offset: call.offset,
@@ -135,6 +142,7 @@ export async function callForResult(input: ParserInput, agent: string, source: R
   const sourceId = 'key' in source ? source.key : undefined;
   const held = sourceId === undefined ? undefined : pending.get(sourceId);
   if (sourceId !== undefined) pending.delete(sourceId);
+  if(input.view&&held?.identity)(input.identities??=new Map()).set(held.toolCallId,held.identity);
   return held ?? { toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset: at.offset }), toolName: 'unknown', input: {}, ...at };
 }
 
@@ -164,7 +172,11 @@ type RecordCoordinates = { offset: number } & (
 type RecordFacts = RecordCoordinates & { source: ReplySource };
 /** The registry mints a record after the parser extracts its declared source. */
 export async function recordId(input: ParserInput, agent: string, request: RecordFacts): Promise<string> {
-  return canonicalRecordId(uuidv5, { ...request, scheme: input.recordScheme, sessionId: input.sessionId, transcriptId: input.transcriptId, agent });
+  let parts:readonly string[]|undefined;
+  const id=await canonicalRecordId(uuidv5, { ...request, scheme: input.recordScheme, sessionId: input.sessionId, transcriptId: input.transcriptId, agent },
+    input.view?value=>{parts=value;}:undefined);
+  if(input.view&&parts)(input.identities??=new Map()).set(id,parts);
+  return id;
 }
 
 /** The compatibility identity of the same extracted record. */
@@ -177,6 +189,20 @@ export function parserContinuation(input: ParserInput): {
   pending: Map<string, PendingCall>; position: number; save(position: number): void;
 } {
   const pending = new Map(Object.entries(input.state?.pending ?? {}));
+  if(input.view){
+    const set=pending.set.bind(pending);
+    pending.set=(key,call)=>{
+      const prior=pending.get(key);
+      if(prior){
+        if(JSON.stringify([prior.toolName,prior.input])!==JSON.stringify([call.toolName,call.input])){
+          if(!input.state)throw new Error('view_continuation_absent');
+          (input.state.findings??=[]).push({kind:'key_reuse',recordId:prior.toolCallId,offset:call.offset});
+        }
+        return pending;
+      }
+      return set(key,{...call,identity:input.identities?.get(call.toolCallId)});
+    };
+  }
   return {
     pending, position: input.state?.planPosition ?? 0,
     save(position) {
@@ -189,6 +215,11 @@ export function parserContinuation(input: ParserInput): {
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */
 export interface DerivedEvent {
+  identity?: readonly string[];
+  sourceEnd?: number;
+  outcomeOffset?: number;
+  callOffset?: number;
+  outcomeOrigin?: 'synthetic' | 'reported';
   kind: string;
   payload: Payload;
   createdAt: number;
@@ -257,14 +288,20 @@ export interface TranscriptParser {
  * passed the bare value would derive a different id for the same prompt and the
  * two paths would each write their own row.
  */
-export const promptIdFor = async (sessionId: string, shape: ClaudePromptShape, value: string): Promise<string> =>
-  canonicalPromptId(uuidv5, { scheme: 'claude-v1', sessionId, shape, key: value });
-/** A claude-v2 prompt id: a key's owner, a queued command, or any other kept record by its thread and uuid. */
-export const claudeRecordIdFor = async (sessionId: string, record: ClaudeRecordKey): Promise<string> =>
-  canonicalPromptId(uuidv5, { scheme: 'claude-v2', sessionId, record });
-/** A prompt id a transcript names by its byte position, under its parser's own prompt namespace. */
-export const promptIdAtOffset = async (namespace: OffsetPromptNamespace, sessionId: string, offset: number): Promise<string> =>
-  canonicalPromptId(uuidv5, { scheme: 'offset-v1', namespace, sessionId, offset });
+type IdentityInput=Pick<ParserInput,'view'|'identities'>;
+/** The canonical prompt minter also records the source coordinates on view parses. */
+export async function promptIdentity(input:IdentityInput|undefined,request:PromptIdRequest):Promise<string>{
+  let parts:readonly string[]|undefined;
+  const id=await canonicalPromptId(uuidv5,request,input?.view?value=>{parts=value;}:undefined);
+  if(input?.view)(input.identities??=new Map()).set(id,parts??['stamp',id]);
+  return id;
+}
+export const promptIdFor = async (sessionId:string,shape:ClaudePromptShape,value:string,input?:IdentityInput):Promise<string> =>
+  promptIdentity(input,{scheme:'claude-v1',sessionId,shape,key:value});
+export const claudeRecordIdFor = async (sessionId:string,record:ClaudeRecordKey,input?:IdentityInput):Promise<string> =>
+  promptIdentity(input,{scheme:'claude-v2',sessionId,record});
+export const promptIdAtOffset = async (namespace:OffsetPromptNamespace,sessionId:string,offset:number,view?:Pick<ParserInput,'transcriptId'|'scheme'>&IdentityInput):Promise<string> =>
+  promptIdentity(view,view?.scheme==='offset-v2'?{scheme:'offset-v2',namespace,sessionId,transcriptId:view.transcriptId,offset}:{scheme:'offset-v1',namespace,sessionId,offset});
 /** The instant a line's own time field carries, never ahead of the server's clock; null for a line that carries none. */
 export function datedAt(raw: unknown, now: number): number | null {
   if (typeof raw !== 'string') return null;
@@ -323,6 +360,7 @@ export function ownedLines(lines: readonly ParsedLine[], sessionId: string, cont
 
 /** One assistant message of a turn, with its transcript offset and time. */
 export interface ReplyPart {
+  sourceEnd?: number;
   text: string;
   offset: number;
   createdAt: number;
@@ -402,21 +440,22 @@ export function replyChunks(parts: readonly ReplyPart[], bound: ResponseBound = 
   const sep = { chars: REPLY_SEPARATOR.length, bytes: payloadBytes(REPLY_SEPARATOR) };
   const within = (chars: number, bytes: number): boolean => chars <= bound.chars && bytes <= bound.bytes;
   const chunks: ReplyPart[] = [];
-  let open: { texts: string[]; first: ReplyPart; chars: number; bytes: number } | null = null;
+  let open: { texts: string[]; first: ReplyPart; chars: number; bytes: number; end?:number } | null = null;
   const close = (): void => {
-    if (open !== null) chunks.push({ ...open.first, text: open.texts.join(REPLY_SEPARATOR) });
+    if (open !== null) chunks.push({ ...open.first, ...(open.end===undefined?{}:{sourceEnd:open.end}), text: open.texts.join(REPLY_SEPARATOR) });
     open = null;
   };
   for (const { part, chars, bytes } of pieces) {
     if (open !== null && within(open.chars + sep.chars + chars, open.bytes + sep.bytes + bytes)) {
       open.texts.push(part.text);
+      open.end=part.sourceEnd;
       open.chars += sep.chars + chars;
       open.bytes += sep.bytes + bytes;
       continue;
     }
     close();
     const text = within(chars, bytes) ? part.text : truncated(part.text, bound);
-    open = { texts: [text], first: part, chars: text.length, bytes: payloadBytes(text) };
+    open = { texts: [text], first: part, end:part.sourceEnd, chars: text.length, bytes: payloadBytes(text) };
   }
   close();
   return chunks;

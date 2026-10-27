@@ -33,6 +33,8 @@ export const PROMPT_ID_SCHEMES = {
    */
   'claude-v2': { kinds: ['harness-key'], derivation: 'derived', generation: 1, hookIdentity: 'claude-v1' },
   /** A transcript the Deployment parses by line position: Codex before its turn key, Cursor and Pi. */
+  'offset-v2': { kinds: ['transcript-only'], derivation: 'derived', generation: 1, viewOnly: true },
+  'stamp-or-offset-v2': { kinds: ['stamped'], derivation: 'derived', generation: 1, viewOnly: true },
   'offset-v1': { kinds: ['transcript-only'], derivation: 'derived', generation: 1 },
   /** A plugin-written transcript carrying the hook's stamped id, or its line position where no hook answered: OpenCode and Cline. */
   'stamp-or-offset-v1': { kinds: ['stamped'], derivation: 'derived', generation: 1 },
@@ -49,7 +51,7 @@ export const PROMPT_ID_SCHEMES = {
   /** The hook's own time-ordered id, for an agent whose hooks write its turn rows. */
   'hook-mint-v1': { kinds: ['hook-owned'], derivation: 'minted', generation: 1 },
 } as const satisfies Record<string, {
-  kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted'; generation: number; granularity?: 'turn'; hookIdentity?: string;
+  kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted'; generation: number; granularity?: 'turn'; hookIdentity?: string; viewOnly?: boolean;
 }>;
 export type PromptIdScheme = keyof typeof PROMPT_ID_SCHEMES;
 export const PROMPT_ID_SCHEME_NAMES = Object.keys(PROMPT_ID_SCHEMES) as PromptIdScheme[];
@@ -63,7 +65,7 @@ export const hookScheme = (scheme: PromptIdScheme): PromptIdScheme => {
   return 'hookIdentity' in entry && isPromptIdScheme(entry.hookIdentity) ? entry.hookIdentity : scheme;
 };
 /** The schemes a hook names a prompt under: every scheme that is its own `hookScheme`. */
-export const HOOK_NAMED_SCHEMES: readonly PromptIdScheme[] = PROMPT_ID_SCHEME_NAMES.filter((scheme) => hookScheme(scheme) === scheme);
+export const HOOK_NAMED_SCHEMES: readonly PromptIdScheme[] = PROMPT_ID_SCHEME_NAMES.filter((scheme) => !('viewOnly' in PROMPT_ID_SCHEMES[scheme]) && hookScheme(scheme) === scheme);
 
 /** The schemes a manifest may declare as its agent's current one. */
 export const DECLARABLE_SCHEMES = ['claude-v1', 'claude-v2', 'offset-v1', 'stamp-or-offset-v1', 'codex-turn-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
@@ -97,6 +99,8 @@ export type TurnSubmission = { opener: true } | { order: number } | { offset: nu
 
 /** One derivation request, by scheme. */
 export type PromptIdRequest =
+  | { scheme: 'offset-v2'; namespace: OffsetPromptNamespace; sessionId: string; transcriptId: string; offset: number }
+  | { scheme: 'stamp-or-offset-v2'; sessionId: string; transcriptId: string; stamp?: string; offset: number }
   | { scheme: 'claude-v1'; sessionId: string; shape: ClaudePromptShape; key: string }
   | { scheme: 'claude-v2'; sessionId: string; record: ClaudeRecordKey }
   | { scheme: 'offset-v1'; namespace: OffsetPromptNamespace; sessionId: string; offset: number }

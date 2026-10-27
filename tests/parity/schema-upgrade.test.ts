@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
+import {withViewWriterDriver} from '../helpers/statement-recorder.js';
 import { UpgradeStateMismatchError, assertMigrationMutationDetected, assertUpgradeState, firstObservableOmission, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedPreviousSchema, seedReferencedTables, tableRows } from './schema-upgrade.ts';
 
 const trigger = `CREATE TRIGGER "next trigger" AFTER UPDATE ON "upgrade parent"
@@ -219,4 +220,45 @@ it('v93 changes real seeded transcript rows in the upgrade-parity fixture and pr
       expect(rows()).toEqual(before.map(row => ({ ...row, record_identity_scheme: 'legacy-session-v1' })));
     } finally { db.close(); }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('keeps required descendants of declared-empty inputs empty and nulls optional composite references',()=>{
+ const db=new Database(':memory:');
+ try{
+  db.exec(`PRAGMA foreign_keys=ON;
+   CREATE TABLE parent(project_id TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(project_id,id));
+   CREATE TABLE required_child(project_id TEXT NOT NULL,id TEXT NOT NULL,parent_id TEXT NOT NULL,FOREIGN KEY(project_id,parent_id) REFERENCES parent(project_id,id));
+   CREATE TABLE optional_child(project_id TEXT NOT NULL,id TEXT NOT NULL,parent_id TEXT,FOREIGN KEY(project_id,parent_id) REFERENCES parent(project_id,id))`);
+  seedReferencedTables(db,['ALTER TABLE parent ADD COLUMN label TEXT'],true,new Set(['parent']));
+  expect(db.query('SELECT COUNT(*) AS n FROM parent').get()).toEqual({n:0});
+  expect(db.query('SELECT COUNT(*) AS n FROM required_child').get()).toEqual({n:0});
+  expect(db.query('SELECT parent_id FROM optional_child').all()).toEqual([{parent_id:null}]);
+  expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+ }finally{db.close()}
+});
+
+it('populates valid previous writer inputs and retains the nonempty instance refusal',async()=>{
+ const {SCHEMA_STEPS}=await import('@myco-server-worker/db/schema.js');
+ const {sqliteRelationalStore}=await import('@myco-server-worker/platform/bun/sqlite.js');
+ const {applySchemaSteps}=await import('../myco-server/helpers/migrate.js');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-view-upgrade-seed-'));
+ const file=path.join(root,'previous.sqlite'),step=SCHEMA_STEPS.find(step=>step.version===105)!;
+ const initial=new Database(file);
+ try{await applySchemaSteps(sqliteRelationalStore(initial),SCHEMA_STEPS.filter(row=>row.version<step.version))}finally{initial.close()}
+ try{
+  expect(seedPreviousSchema(file,step.statements,step.version)).toContain('view_instances');
+  const db=new Database(file);
+  try{
+   expect(db.query('SELECT COUNT(*) AS n FROM view_instances').get()).toEqual({n:0});
+   expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+   await applySchemaSteps(sqliteRelationalStore(db),[step]);
+   expect(db.query('SELECT COUNT(*) AS n FROM view_instances').get()).toEqual({n:0});
+   const {createEmptyView}=await import('@myco-server-worker/ingest/view-lifecycle.js');
+   const {captureViewSession}=await import('../myco-server/helpers/view-stores.js');
+   const store=sqliteRelationalStore(db);
+   await captureViewSession(store,'proj_parity','nonempty-control',{idOffset:9000});
+   await withViewWriterDriver(()=>createEmptyView(store,'proj_parity','nonempty-control',2));
+   await expect(applySchemaSteps(sqliteRelationalStore(db),[{version:step.version+1,statements:step.statements.slice(0,2)}])).rejects.toThrow('CHECK constraint failed');
+  }finally{db.close()}
+ }finally{fs.rmSync(root,{recursive:true,force:true})}
 });

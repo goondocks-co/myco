@@ -1,3 +1,5 @@
+import {pruneSelectedPromptAnswers,type ExpiredPromptAnswer} from './prompt-answer-retention.js';
+import {preparePromptAnswer,prepareSessionRecord,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
 /**
  * What a session is served: the plan-intent nudge and the session's ranked
  * items at prompt-submit time, and the Project id and the Deployment's
@@ -45,7 +47,6 @@ import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
 import { promptKeyHash, type DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
-import { deliveredAssignment } from '../ingest/prompt-scheme.js';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -142,12 +143,10 @@ export async function recordSessionInjection(
   kind: string,
   now: number,
   admission: SessionWriteAdmission,
+  commit:ContextCommit=commitContextWrite,
 ): Promise<SessionRecordWrite> {
-  const written = await db
-    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) SELECT ?, ?, ?, ? WHERE ${admission.admission.sql}`)
-    .bind(scope.projectId, sessionId, kind, now, ...admission.admission.params)
-    .run();
-  if (written.meta.changes === 1) return { outcome: 'recorded' };
+  const [written]=await commit(db,prepareSessionRecord(db,scope.projectId,sessionId,kind,now,admission.admission));
+  if (written!.meta.changes === 1) return { outcome: 'recorded' };
   const refusal = await admission.refusal(db);
   return refusal === null ? { outcome: 'repeat' } : { outcome: 'refused', refusal };
 }
@@ -245,19 +244,17 @@ async function recordPromptAnswer(
   selection: InjectionCounts,
   now: number,
   classifyError?: ErrorClassifier,
+  commit:ContextCommit=commitContextWrite,
 ): Promise<PromptContext> {
   const answerId = crypto.randomUUID();
   let unrecorded: ErrorClass;
   try {
-    const written = await db.prepare(`INSERT INTO prompt_context_answers
-      (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, receipt_id, outcome, context_chars, parts, skipped, failures, selection, created_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${admission.admission.sql}`)
-      .bind(identity.projectId, identity.sessionId, answerId, naming.promptId, naming.scopeReason, naming.askProtocol, naming.askedAt, answer.receiptId ?? null,
-        answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
-        JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
-          ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
-        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now, ...admission.admission.params).run();
-    if (written.meta.changes === 1) return { ...answer, answerId };
+    const [written]=await commit(db,preparePromptAnswer(db,{project:identity.projectId,session:identity.sessionId,id:answerId,promptId:naming.promptId,
+      scopeReason:naming.scopeReason,protocol:naming.askProtocol,askedAt:naming.askedAt,receiptId:answer.receiptId??null,
+      outcome:answer.context.length>0?'served':'empty',chars:answer.context.length,
+      parts:answer.parts.map(part=>part.kind==='spores'?{kind:part.kind,sporeCount:part.sporeIds.length,planCount:part.planIds.length}:part),
+      skipped:answer.skipped,failures,selection,now},admission.admission));
+    if (written!.meta.changes === 1) return { ...answer, answerId };
     const refusal = await admission.refusal(db);
     if (refusal !== null) return { context: '', parts: [], skipped: answer.skipped, refusal };
     unrecorded = 'unknown';
@@ -270,10 +267,7 @@ async function recordPromptAnswer(
 
 /** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
 export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  const set = deliveredAssignment(d);
-  return db.prepare(`UPDATE prompt_context_answers SET ${set.sql}
-      WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(...set.params, d.projectId, d.sessionId, d.id, ...gate.params);
+  return prepareContextDelivery(db,'answer',d,gate).statement;
 }
 
 /**
@@ -281,10 +275,7 @@ export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate:
  * reported after that answer is pruned still lands.
  */
 export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Delivery, 'id'> & { record: DeliveredSessionRecord }, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  const set = deliveredAssignment(d);
-  return db.prepare(`UPDATE session_injections SET ${set.sql}
-      WHERE project_id = ? AND session_id = ? AND kind = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(...set.params, d.projectId, d.sessionId, d.record, ...gate.params);
+  return prepareContextDelivery(db,'session-record',{...d,id:d.record},gate).statement;
 }
 
 /**
@@ -292,23 +283,22 @@ export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Del
  * names only the answer reaches the nudge's record, while that answer is held.
  */
 export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  const set = deliveredAssignment(d);
-  return db.prepare(`UPDATE session_injections SET ${set.sql}
-      WHERE project_id = ? AND session_id = ? AND kind = 'plan-nudge' AND delivered_at IS NULL
-        AND EXISTS (SELECT 1 FROM prompt_context_answers a, json_each(a.parts)
-                     WHERE a.project_id = ? AND a.session_id = ? AND a.id = ? AND json_extract(json_each.value, '$.kind') = 'plan-nudge')
-        AND ${gate.sql}`)
-    .bind(...set.params, d.projectId, d.sessionId, d.projectId, d.sessionId, d.id, ...gate.params);
+  return prepareContextDelivery(db,'session-record',{...d,id:'plan-nudge'},gate,d.id).statement;
 }
 
-export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
-  SELECT a.rowid FROM projects p CROSS JOIN prompt_context_answers a
-  WHERE a.project_id = p.project_id AND a.created_at < ? LIMIT ?)`;
+export const PROMPT_ANSWER_RETENTION_SQL = `SELECT a.project_id,a.session_id,a.id
+  FROM projects p CROSS JOIN prompt_context_answers a
+  WHERE a.project_id=p.project_id AND a.created_at<? LIMIT ?`;
 
 /** Deletes at most one batch of prompt answer diagnostics older than the cutoff across the Deployment's Projects. */
 export async function prunePromptAnswers(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
-  const result = await db.prepare(PROMPT_ANSWER_RETENTION_SQL).bind(cutoffMs, limit).run();
-  return result.meta.changes;
+  const targets = (
+    await db
+      .prepare(PROMPT_ANSWER_RETENTION_SQL)
+      .bind(cutoffMs, limit)
+      .all<ExpiredPromptAnswer>()
+  ).results;
+  return pruneSelectedPromptAnswers(db, targets, cutoffMs);
 }
 
 export interface RecallSessionBlock {
@@ -374,12 +364,13 @@ export async function composePromptContext(
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
+  commit:ContextCommit=commitContextWrite,
 ): Promise<PromptContext> {
   const naming: AskNaming = { promptId: input.promptId ?? null, scopeReason: input.scopeReason ?? null, askProtocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null };
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
   let receiptId: string | undefined;
-  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
+  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError,commit);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -392,7 +383,7 @@ export async function composePromptContext(
       prompt: input.text,
       now: input.now,
       admission: input.admission,
-    }, resolveSemantic, timings).catch((error: unknown) => {
+    }, resolveSemantic, timings,commit).catch((error: unknown) => {
       if (error instanceof InjectionFailure) counts = error.counts;
       throw error;
     });
@@ -409,7 +400,7 @@ export async function composePromptContext(
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
     else {
-      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission);
+      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission,commit);
       if (nudge.outcome === 'recorded') return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
       skipped.push(nudge.outcome === 'repeat' ? 'plan-nudge:repeat' : 'plan-nudge:unwritable');
     }
@@ -425,7 +416,7 @@ export async function composePromptContext(
     // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it; so too the nudge's record.
     ...(receiptId === undefined || !kept.some((c) => c.part.kind === 'spores') ? {} : { receiptId }),
     ...(kept.some((c) => c.part.kind === 'plan-nudge') ? { sessionRecord: 'plan-nudge' as const } : {}),
-  }, failures, counts, input.now, classifyError);
+  }, failures, counts, input.now, classifyError,commit);
 }
 
 /**
@@ -474,6 +465,7 @@ export async function composeSessionContext(
    * recorded carries the session's write admission.
    */
   opts: ({ preview: true } | { preview?: false; admission: SessionWriteAdmission }) & { classifyError?: ErrorClassifier },
+  commit:ContextCommit=commitContextWrite,
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -506,7 +498,7 @@ export async function composeSessionContext(
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
   if (opts.preview !== true) {
-    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission);
+    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission,commit);
     if (record.outcome === 'refused') return { context: '', parts: [], skipped, kind: recordKind, refusal: record.refusal };
     if (record.outcome === 'repeat') return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }

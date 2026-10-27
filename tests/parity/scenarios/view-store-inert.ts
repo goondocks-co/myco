@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario } from '../harness.ts';
 import { selectOwner } from './backup-restore.ts';
+import { VIEW_SESSION_TABLES, VIEW_GLOBAL_TABLES } from '@myco-server-worker/db/view-tables.js';
 
 /** Capturing and reading facts creates no parser instance state. */
 export const viewStoreInert: ParityScenario = {
@@ -33,8 +34,8 @@ export const viewStoreInert: ParityScenario = {
     expect(JSON.parse(detail)).toMatchObject({ prompt: { promptId: prompt, text: 'inertcanary' }, responses: [{ responseId: response, text: 'unchanged reply' }] });
     expect(await read('/turns')).toBe(page);
     expect(await read(`/turns/${prompt}`)).toBe(detail);
-    const newTables = await target.sql("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'view_*' OR name IN ('session_views','fact_classes','plan_promotions')) AND name NOT GLOB '*_fts*'");
-    expect(newTables).toHaveLength(14);
+    const newTables = await target.sql("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'view_*' OR name IN ('session_views','fact_classes','plan_promotions','learning_sessions','material_versions')) AND name NOT GLOB '*_fts*'");
+    expect(newTables.map(row=>row.name).sort()).toEqual([...VIEW_SESSION_TABLES,...VIEW_GLOBAL_TABLES].sort());
     for (const { name } of newTables) expect(await target.sql(`SELECT COUNT(*) AS n FROM ${name}`)).toEqual([{ n: 0 }]);
     const owner = { ...target.ownerHeaders(), 'content-type': 'application/json', origin: target.url };
     const created = await fetch(`${target.url}/api/backups`, { method: 'POST', headers: owner, body: '{}' });

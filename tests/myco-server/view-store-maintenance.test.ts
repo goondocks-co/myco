@@ -6,6 +6,8 @@ import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js'
 import { captureViewSession, withViewStores } from './helpers/view-stores.js';
 import { clearViewInstances, INSTANCE_STATES, seedViewInstance, seedViewState } from './helpers/view-instances.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
+import { VIEW_SESSION_TABLES, VIEW_GLOBAL_TABLES } from '@myco-server-worker/db/view-tables.js';
+import { seedViewWriterMetadata } from './helpers/view-instances.js';
 
 const PROJECT = 'project';
 const SESSION = 'session';
@@ -35,9 +37,11 @@ it('tombstones every instance and journals its blob candidates atomically on nat
     for (const state of INSTANCE_STATES) keys.push(...await seedViewInstance(db, { projectId: PROJECT, sessionId: SESSION, instanceId: state, state }));
     keys.push(...await seedViewInstance(db, { projectId: PROJECT, sessionId: SESSION, instanceId: 'tail', state: 'live', parent: 'frozen' }));
     await seedViewState(db, PROJECT, SESSION, 'tail', 'frozen');
+    await seedViewWriterMetadata(db, PROJECT, SESSION, 'tail');
     await seedViewInstance(db, { projectId: 'other', sessionId: SESSION, instanceId: 'live', state: 'live' });
-    const tables = (await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'view_%' OR name IN ('session_views','fact_classes','plan_promotions')) AND name NOT LIKE '%_fts%'")
-      .all<{ name: string }>()).results.map(row => row.name);
+    const tables = (await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'view_%' OR name IN ('session_views','fact_classes','plan_promotions','learning_sessions','material_versions')) AND name NOT LIKE '%_fts%'")
+      .all<{ name: string }>()).results.map(row => row.name).filter(name => !(VIEW_GLOBAL_TABLES as readonly string[]).includes(name));
+    expect(tables.slice().sort()).toEqual([...VIEW_SESSION_TABLES].sort());
     for (const table of tables) expect(DERIVED_TABLES as readonly string[]).toContain(table);
     let batches = 0;
     const rollback = { ...db, batch: (statements: Parameters<typeof db.batch>[0]) => db.batch(++batches === 2
@@ -64,6 +68,7 @@ it('backup and restore carry durable metadata and exclude all regenerable instan
     await captureViewSession(db);
     await seedViewInstance(db, { projectId: PROJECT, sessionId: SESSION, instanceId: 'live', state: 'live' });
     await seedViewState(db, PROJECT, SESSION, 'live');
+    await seedViewWriterMetadata(db, PROJECT, SESSION, 'live');
     const newTables = (await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name LIKE 'view_%' OR name IN ('session_views','fact_classes','plan_promotions'))")
       .all<{ name: string }>()).results.map(row => row.name);
     for (const table of newTables) {

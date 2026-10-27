@@ -8,6 +8,7 @@ import { format } from 'node:util';
 import { SaxesParser } from 'saxes';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
+const MAX_NODE_MEASURED_MS = 11 * 60_000;
 
 export function nodeGroupBudget(timeoutMs) {
   return timeoutMs * MAX_GROUP_JOB_SHARE;
@@ -65,10 +66,10 @@ export function mergeNodeDurationWeights(weights, workload) {
   return merged;
 }
 
-/** Reserve one equal share of the job budget for runner and setup variance. */
+/** Bound measured shard work and reserve one job share for runner and setup variance. */
 export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   const groupBudget = nodeGroupBudget(timeoutMs);
-  const shardBudget = timeoutMs - timeoutMs / plans.length;
+  const shardBudget = Math.min(timeoutMs - timeoutMs / plans.length, MAX_NODE_MEASURED_MS);
   const recorded = recordedNodeDurations(workload);
   for (const file of plans.flatMap(plan => plan.flatMap(group => group.files))) {
     assert.ok(Number.isFinite(weights[file]) && weights[file] > 0, `Node file needs an explicit duration weight: ${file}; add "${file}": <ms> to scripts/test-durations.json, using its measured npm test time.`);

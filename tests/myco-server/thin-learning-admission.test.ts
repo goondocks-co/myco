@@ -12,6 +12,7 @@ import { fingerprintFile } from '@myco/server/recovery-bundle.js';
 import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
 import { PRIVATE_RECOVERY_COPY_REQUIRED, withPrivateRecoveryCopy, type PrivateRecoveryCopy } from '@myco-server-worker/platform/bun/private-recovery-copy.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import {SERVER_SCHEMA_VERSION} from '@myco-server-worker/constants.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { THIN_LEARNING_UPGRADE_REMEDY, THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY, THIN_LEARNING_RUNS_TABLE_SQL, thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learning-admission.js';
 
@@ -62,7 +63,7 @@ for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pendin
         run = db.query("SELECT * FROM agent_runs WHERE id='held'").get();
       } finally { db.close(); }
       if (from >= 102 && status === 'completed') {
-        expect(migrateOnly(file)).toBe(104-from);
+        expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-from);
         return;
       }
       expect(() => migrateOnly(file)).toThrow(from < 102 ? THIN_LEARNING_STEPPING_STONE_REQUIRED : 'thin_learning_not_drained');
@@ -81,7 +82,7 @@ for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pendin
           for (const step of SCHEMA_STEPS.filter(step => step.version > from && step.version <= 103)) for (const sql of step.statements) stepping.exec(sql);
         } finally { stepping.close(); }
       }
-      expect(migrateOnly(file)).toBe(from < 102 ? 1 : 104-from);
+      expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-(from < 102 ? 103 : from));
       expect(migrateOnly(file)).toBe(0);
     } finally { report.mockRestore(); fs.rmSync(root, {recursive:true,force:true}); }
   });
@@ -173,7 +174,7 @@ it('aborts the native migration without stamping or changing held work and conve
       expect(held.query("SELECT name FROM sqlite_master WHERE name='_v104_guard_thin_learning'").get()).toBeNull();
       held.exec("UPDATE agent_runs SET status='completed' WHERE id='held'");
     } finally { held.close(); }
-    expect(migrateOnly(file)).toBe(1);
+    expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-103);
     expect(migrateOnly(file)).toBe(0);
   } finally { fs.rmSync(root, { recursive: true }); }
 });
@@ -203,7 +204,7 @@ for (const from of [41,101]) for (const status of ['queued','pending','running']
         expect(held.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toBeNull();
         held.exec("UPDATE agent_runs SET status='completed' WHERE id='held'");
       } finally {held.close();}
-      expect(migrateOnly(copy.databasePath,undefined,copy)).toBe(104-from);
+      expect(migrateOnly(copy.databasePath,undefined,copy)).toBe(SERVER_SCHEMA_VERSION-from);
     });
     expect(report.mock.calls).toEqual([[THIN_LEARNING_UPGRADE_REMEDY]]);
     expect(await fingerprintFile(source)).toEqual(fingerprint);

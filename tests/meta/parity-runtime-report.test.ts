@@ -14,6 +14,7 @@ const target = (runtime?: ParityTarget['runtime']): ParityTarget => ({
   grantHeaders: () => ({}),
   clockWake: async () => {},
   sql: async () => [],
+  readTrace:async()=>({events:[{kind:'prepare',statementId:'fixture',sql:'SELECT 1',binds:[],operation:'fixture',phase:'test'}],statements:[],spans:[],constructors:[]}),
   ...(runtime === undefined ? {} : { runtime }),
   stop: async () => {},
 });
@@ -57,4 +58,22 @@ it('passes a live runtime\'s failure through untouched, and a target that report
 
   // A scenario that passes stays passing.
   await runScenario(live, { name: 'a scenario that holds', run: async () => {} });
+});
+
+it('refuses a passing scenario when its physical store observer is absent or silent',async()=>{
+ const silent={...target(),readTrace:async()=>({events:[],statements:[],spans:[],constructors:[]})};
+ const scenario={name:'observer witness',run:async()=>{}};
+ await expect(runScenario(silent,scenario)).rejects.toThrow('parity_store_unobserved: cloudflare/observer witness');
+ const missing={...target(),readTrace:undefined};
+ await expect(runScenario(missing,scenario)).rejects.toThrow('parity_store_unobserved');
+});
+
+it('requires observed preparations on every declared target and never counts boot-only work',async()=>{
+ const empty={...target(),readTrace:async()=>({events:[],statements:[],spans:[],constructors:[]})};
+ const scenario:ParityScenario={name:'declared target control',only:'cloudflare',run:async()=>{}};
+ await expect(runScenario(empty,scenario)).rejects.toThrow('parity_store_unobserved');
+ await expect(runScenario({...empty,name:'selfhosted'},scenario)).resolves.toBeUndefined();
+ let reads=0;
+ const bootOnly={...empty,readTrace:async()=>++reads===1?(await target().readTrace!()):({events:[],statements:[],spans:[],constructors:[]})};
+ await expect(runScenario(bootOnly,scenario)).rejects.toThrow('parity_store_unobserved');
 });

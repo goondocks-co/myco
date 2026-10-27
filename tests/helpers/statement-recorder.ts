@@ -131,7 +131,59 @@ export function withPreparedRead<T>(origin:PreparationOrigin,sql:string,run:()=>
   return retainPreparedRead(value,execution);
  });
 }
+/** Independent operations start outside another statement's preparation and caller scopes. */
+export function withIndependentReadPreparation<T>(run:()=>T):T{
+ return executions.exit(()=>preparations.exit(()=>callers.exit(run)));
+}
 export function withPreparationCaller<T>(keys:readonly string[],run:()=>T):T{return callers.run([...(callers.getStore()??[]),...keys],run);}
+const observedStores=new WeakMap<object,'native'|'d1'>();
+const observedFiles=new Map<string,Set<'native'|'d1'>>();
+const observedFileScope=new AsyncLocalStorage<string>();
+export function withObservedReadFile<Args extends unknown[],R>(file:string,run:(...args:Args)=>R):(...args:Args)=>R{
+ const wrapped=function(this:unknown,...args:Args):R{return observedFileScope.run(file,()=>run.apply(this,args));};
+ Object.defineProperty(wrapped,'length',{value:run.length});return wrapped;
+}
+export function noteObservedReadFile(target:'native'|'d1',source=observedFileScope.getStore()):void{
+ if(source===undefined)return;
+ const targets=observedFiles.get(source)??new Set<'native'|'d1'>();targets.add(target);observedFiles.set(source,targets);
+}
+export function markObservedReadStore<T extends object>(store:T,target:'native'|'d1'):T{observedStores.set(store,target);return store;}
+export function forwardObservedReadStore<T extends object>(store:T,observed:object):T{
+ const target=observedStores.get(observed);
+ if(target===undefined)throw new Error('view_store_observer_missing');
+ return markObservedReadStore(store,target);
+}
+export function assertObservedReadStore<T extends object>(store:T,file:string):T{
+ const target=observedStores.get(store);
+ if(target===undefined)throw new Error('view_store_unobserved: '+file);
+ noteObservedReadFile(target,file);noteObservedReadFile(target);
+ return store;
+}
+export async function assertObservedReadStorePromise<T extends object>(store:Promise<T>,file:string):Promise<T>{return assertObservedReadStore(await store,file);}
+function observedFactoryResult(value:unknown,file:string):object{
+ if(typeof value!=='object'||value===null)throw new Error('view_store_unobserved: '+file);
+ return assertObservedReadStore(value,file);
+}
+/** Factory calls admit their actual result while optional calls retain skipped receivers. */
+export function observedReadFactory(factory:unknown,file:string,asynchronous:boolean):unknown{
+ if(typeof factory!=='function')return factory;
+ return function(this:unknown,...args:unknown[]):unknown{
+  const value=Reflect.apply(factory,this,args);
+  return asynchronous?Promise.resolve(value).then(value=>observedFactoryResult(value,file)):observedFactoryResult(value,file);
+ };
+}
+/** Method factories preserve their original receiver and optional member access. */
+export function observedReadFactoryReceiver(receiver:unknown,file:string,method:string,asynchronous:boolean):unknown{
+ if(receiver===undefined||receiver===null)return receiver;
+ const source=Object(receiver);
+ return new Proxy({},{get(_target,key){
+  const selected=Reflect.get(source,key,receiver);if(key!==method)return selected;
+  const wrapped=observedReadFactory(selected,file,asynchronous);
+  return typeof wrapped==='function'?wrapped.bind(receiver):wrapped;
+ }});
+}
+
+export function observedReadStoreFiles(){return new Map([...observedFiles].map(([file,targets])=>[file,new Set(targets)]));}
 let preparationBoundary:((statement:StatementEvent)=>void)|undefined;
 export function installReadPreparationBoundary(check:(statement:StatementEvent)=>void):void{preparationBoundary=check;}
 export function withReadPreparation<T>(origin:PreparationOrigin,run:()=>T):T{
@@ -163,6 +215,55 @@ export function preparationSourcePaths(repository:string){
   const contains=/^[A-Za-z]:/.test(root)?normalized.toLowerCase().startsWith(prefix.toLowerCase()):normalized.startsWith(prefix);
   return contains?normalized.slice(prefix.length):normalized;
  }};
+}
+
+/** Every native, local D1 and operator factory result must carry the installed observer. */
+export function instrumentObservedStores(compiler:typeof ts,source:string,file:string,recorder:string):string{
+ if(file==='tests/setup/view-read-preload.ts'||file==='tests/helpers/statement-recorder.ts')return source;
+ const tree=compiler.createSourceFile(file,source,compiler.ScriptTarget.Latest,true),names=new Set(['sqliteRelationalStore','d1OperatorStore']);
+ for(const node of tree.statements)if(compiler.isImportDeclaration(node)&&node.importClause?.namedBindings&&compiler.isNamedImports(node.importClause.namedBindings)){
+  for(const item of node.importClause.namedBindings.elements)if(names.has(item.propertyName?.text??item.name.text))names.add(item.name.text);
+ }
+ const edits:{start:number;end:number;head:string;tail:string}[]=[];
+ const visit=(node:ts.Node):void=>{
+  if(compiler.isCallExpression(node)){
+   const name=compiler.isIdentifier(node.expression)?node.expression.text:compiler.isPropertyAccessExpression(node.expression)?node.expression.name.text:'';
+   if(names.has(name)||name==='getD1Database'){
+    const member=compiler.isPropertyAccessExpression(node.expression),receiver=member?node.expression.expression:node.expression;
+    edits.push({start:receiver.getStart(tree),end:receiver.getEnd(),head:member?'__viewObservedReceiver(':'__viewObservedFactory(',tail:','+JSON.stringify(file)+(member?','+JSON.stringify(name):'')+','+(name==='getD1Database')+')'});
+   }
+  }
+  compiler.forEachChild(node,visit);
+ };visit(tree);
+ if(edits.length===0)return source;
+ const positions=[...new Set(edits.flatMap(edit=>[edit.start,edit.end]))].sort((a,b)=>a-b);
+ let output='',at=0;
+ for(const position of positions){
+  output+=source.slice(at,position)+edits.filter(edit=>edit.end===position).sort((a,b)=>b.start-a.start).map(edit=>edit.tail).join('')+edits.filter(edit=>edit.start===position).sort((a,b)=>b.end-a.end).map(edit=>edit.head).join('');at=position;
+ }
+ return 'import {observedReadFactory as __viewObservedFactory,observedReadFactoryReceiver as __viewObservedReceiver} from '+JSON.stringify(recorder)+';\n'+output+source.slice(at);
+}
+
+/** Test callbacks retain their file identity across asynchronous fixture factories and reads. */
+export function instrumentObservedReadFiles(compiler:typeof ts,source:string,file:string,recorder:string):string{
+ if(!file.startsWith('tests/')||!file.endsWith('.test.ts')&&!file.endsWith('.test.tsx'))return source;
+ const tree=compiler.createSourceFile(file,source,compiler.ScriptTarget.Latest,true),edits:{at:number;text:string}[]=[];
+ const visit=(node:ts.Node):void=>{
+  if(compiler.isCallExpression(node)){
+   const name=node.expression.getText(tree),hook=/^(?:beforeAll|beforeEach|afterAll|afterEach)$/.test(name);
+   if(hook||/^(?:test|it)(?:[.(]|$)/.test(name)){
+    const callback=node.arguments[hook?0:1];
+    if(callback&&(compiler.isArrowFunction(callback)||compiler.isFunctionExpression(callback)||compiler.isIdentifier(callback))){
+     edits.push({at:callback.getStart(tree),text:'__viewObservedFile('+JSON.stringify(file)+','},{at:callback.getEnd(),text:')'});
+    }
+   }
+  }
+  compiler.forEachChild(node,visit);
+ };visit(tree);
+ if(edits.length===0)return source;
+ let output=source;
+ for(const edit of edits.sort((a,b)=>b.at-a.at))output=output.slice(0,edit.at)+edit.text+output.slice(edit.at);
+ return 'import {withObservedReadFile as __viewObservedFile} from '+JSON.stringify(recorder)+';\n'+output;
 }
 
 /** Separates regular-expression execution from SQL preparation. */
@@ -302,6 +403,48 @@ export interface StatementEvent extends StatementFrame {
   failed?: true;
 }
 
+const promptAnswerBindingDelete = `DELETE FROM material_versions WHERE (project_id,session_id,kind,identity) IN (
+  SELECT v.project_id,v.session_id,v.kind,v.identity FROM (SELECT a.project_id,a.session_id,a.id
+    FROM json_each(?) j CROSS JOIN prompt_context_answers a
+    WHERE a.project_id=json_extract(j.value,'$.project_id')
+      AND a.session_id=json_extract(j.value,'$.session_id')
+      AND a.id=json_extract(j.value,'$.id') AND a.created_at<?) a
+  JOIN material_versions v ON v.project_id=a.project_id AND v.session_id=a.session_id
+    AND v.kind='answer' AND v.owner='fact' AND v.record_id=a.id)`;
+
+export function viewDmlBoundary(){
+  const violations:StatementEvent[]=[];
+  const check=(event:StatementEvent):void=>{
+    const tokens=sqlTokens(event.sql);
+    if(tokens[0]?.toUpperCase()==='EXPLAIN')return;
+    const origin=event.origin;
+    if(origin?.kind==='exception'&&['H','P'].includes(origin.phase)
+      &&tokens[0]?.toUpperCase()==='CREATE'&&tokens.slice(1,4).some(token=>token.toUpperCase()==='TRIGGER'))return;
+    const protectedTable=(table:string)=>{const name=table.replace(/^quoted:/,'').toLowerCase();return name.startsWith('view_')||['session_views','learning_sessions','material_versions'].includes(name);};
+    const relation=(at:number)=>tokens[at+1]==='.'?tokens[at+2]??'':tokens[at]??'';
+    const writes=tokens.flatMap((token,i)=>{
+      if(token.toUpperCase()==='UPDATE')return [relation(tokens[i+1]?.toUpperCase()==='OR'?i+3:i+1)];
+      if(token.toUpperCase()==='INTO'||token.toUpperCase()==='FROM'&&tokens[i-1]?.toUpperCase()==='DELETE')return [relation(i+1)];
+      return [];
+    }).filter(protectedTable);
+    if(writes.length===0)return;
+    const physical=origin?.kind==='exception'&&(origin.phase==='H'||origin.phase==='T'
+      ||origin.phase==='W'&&origin.file==='packages/myco-server/src/core/prompt-answer-retention.ts'
+        &&origin.owner==='promptAnswerRetentionStatements'&&event.sql===promptAnswerBindingDelete
+      ||origin.phase==='P'&&origin.file==='packages/myco-server/src/core/tombstones.ts'&&/^DELETE\s+FROM\b/i.test(event.sql.trim())
+      ||origin.phase==='P'&&origin.file==='packages/myco/src/server/sql-dump.ts'&&origin.owner==='runOneStatement'
+        &&/^INSERT INTO "(view_(?:prompts|responses|plans)_fts)"\("\1"\) VALUES\('rebuild'\);?$/i.test(event.sql.trim()));
+    if(event.operation==='view-writer-driver'||physical)return;
+    violations.push(event);
+    throw new Error('production_view_dml: '+writes.join(','));
+  };
+  return {check,violations};
+}
+export const productionViewDml=viewDmlBoundary();
+export function withViewWriterDriver<T>(run:()=>T):T{
+  return withStatementSpan('view-writer-driver','view-writer-driver',run);
+}
+
 function accounting(result: unknown, entry: RecordedStatement,captureRows=false): void {
   const envelope=typeof result==='object'&&result!==null&&'results'in result&&Array.isArray(result.results)?result.results:undefined;
   const rows=entry.method==='first'?(envelope===undefined?(result===null?[]:[result]):envelope.slice(0,1)):envelope??[];
@@ -426,6 +569,7 @@ export function statementRecorder(db: RelationalStore, options: {
       const event: StatementEvent={...current,kind:'prepare',statementId,sql,binds:[]};
       emitEvent(event);
       try {
+        productionViewDml.check(event);
         preparationBoundary?.(event);
         options.prepared?.(event);
         return observe({statement:db.prepare(sql),sql,binds:[],statementId,frame:current});
@@ -482,7 +626,7 @@ export const MATERIAL_RELATIONS = [
 ] as const;
 const materialRelations = new Set<string>(MATERIAL_RELATIONS);
 
-function sqlTokens(sql:string):string[] {
+export function sqlTokens(sql:string):string[] {
  const tokens:string[]=[];
  for(let i=0;i<sql.length;) {
   if(/\s/.test(sql[i]!)){i++;continue;}
@@ -544,7 +688,7 @@ function sqlRelations(sql:string):readonly string[]{
  relationCache.set(sql,relations);
  return relations;
 }
-const protectedRelation=(name:string):boolean=>materialRelations.has(name)||/^(?:session_views|view_(?:visible|instances|prompts|responses|tool_calls|plans|content_proofs|findings|checkpoints|checkpoint_chunks|key_owners)(?:_fts)?)$/.test(name);
+const protectedRelation=(name:string):boolean=>materialRelations.has(name)||/^(?:session_views|learning_sessions|material_versions|view_\w+)$/.test(name);
 export function protectedRelations(sql:string):readonly string[]{return [...new Set(sqlRelations(sql).filter(protectedRelation))].sort();}
 export function protectedSql(sql: string): boolean {
  return sqlRelations(sql).some(protectedRelation);
@@ -721,6 +865,7 @@ export function withPhysicalPreparation<T>(origin:PreparationOrigin,sql:string,m
  const statementId='physical-'+String(++physicalSequence);
  const emit=(event:StatementEvent)=>{for(const observe of physicalObservers)observe({kind:'event',value:event});};
  const prepared:StatementEvent={...frame,kind:'prepare',statementId,sql,binds:[]};
+ productionViewDml.check(prepared);
  emit(prepared);
  const execute=<R>(kind:RecordedStatement['method'],binds:readonly unknown[],run:()=>R):R=>{
   const bind:StatementEvent={...frame,kind:'bind',statementId,sql,binds};emit(bind);

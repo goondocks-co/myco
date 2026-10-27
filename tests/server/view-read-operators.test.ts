@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {Database} from 'bun:sqlite';
 import {localUnplacedContextRecords,cloudflareUnplacedContextRecords} from '@myco/server/hook-placement-status.js';
+import {withLocalDiagnosticStore} from '@myco/server/hook-placement-status.js';
+import {viewPreflight,viewStatusLine} from '@myco/server/view-status.js';
 import {resolveLocalPaths} from '@myco/server/local.js';
 import {LocalVolume} from '@myco/server/local-volume.js';
 import {writeDeploymentRecord,type CloudflareFetch} from '@myco/server/cloudflare.js';
@@ -44,6 +46,19 @@ async function assertStatusTrace(){
 test('native hook status uses the recorded M21 operation under volume ownership',()=>writerSource(async({paths})=>{
  expect(await withStatementSpan('operator.native-hook-status','operator',()=>localUnplacedContextRecords(paths))).toBe(1);
  await assertStatusTrace();
+}),30000);
+test('operator view diagnostics share the read-only lifecycle and bounded preflight',()=>writerSource(async({paths})=>{
+ const line=await viewStatusLine(run=>withLocalDiagnosticStore(paths,run));
+ expect(line).toContain('Session views:');expect(line).toContain('legacy-live');
+ expect(line).toContain('rebuild speed unavailable');expect(line).toContain('coverage not carried unavailable');
+ const page=await withLocalDiagnosticStore(paths,db=>viewPreflight(db,'project',null));
+ expect(page.project).toBe('project');expect(page.complete).toBe(false);expect(page.nextCursor).not.toBeNull();
+ const trace=await factoryReadTrace();
+ for(const operation of ['N:operatorViewProjects:0','N:operatorViewProjectExists:0']){
+  const reads=trace.statements.filter(row=>readTag(row.sql)?.operation===operation);
+  expect(reads).toHaveLength(1);expect(reads[0]?.origin?.kind).toBe('module');
+ }
+ expect(await viewStatusLine(async()=>{throw new Error('diagnostic store unavailable');})).toContain('unavailable — diagnostic store unavailable');
 }),30000);
 test('D1 hook status uses the actual operator adapter and recorded M21 operation',()=>writerSource(async({root,sqlite})=>{
  const mycoHome=path.join(root,'hosted');

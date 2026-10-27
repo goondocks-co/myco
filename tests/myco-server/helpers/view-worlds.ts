@@ -1,3 +1,5 @@
+import {PARSER_VERSION} from '@myco-server-worker/ingest/parse.js';
+import {ingestEvent} from '@myco-server-worker/ingest/events.js';
 import type {RelationalStore} from '@myco-server-worker/core/adapters.js';
 import {listSessionActivity} from '@myco-server-worker/read/session-activity.js';
 import {sessionLineage} from '@myco-server-worker/read/lineage.js';
@@ -5,9 +7,9 @@ import {listUnplacedHookRecords,countUnplacedContextRecords} from '@myco-server-
 import {sessionTurnContexts,turnDetail,toolUsage} from '@myco-server-worker/read/turns.js';
 import {injectionForPrompt} from '@myco-server-worker/core/injection.js';
 import {receiptPlans} from '@myco-server-worker/read/view-store.js';
-import {mirrorViewSession,publishMirroredSession} from './view-instances.js';
+import {mirrorViewSession,publishMirroredSession,rebuildWriterMirror,writerReadBackend} from './view-instances.js';
 import {seedLegacyCIResults} from '../../helpers/view-read-legacy-fixtures.js';
-import {uuid} from './fixtures.js';
+import {envelope,uuid} from './fixtures.js';
 import * as turns from '@myco-server-worker/read/turns.js';
 import * as children from '@myco-server-worker/read/children.js';
 import * as sessions from '@myco-server-worker/read/sessions.js';
@@ -78,13 +80,22 @@ export function viewReadWorkloads():ViewReadWorkload[]{
  return result;
 }
 
-export async function seedViewConsumerWorld(db:RelationalStore):Promise<void>{
- await seedLegacyCIResults(db);
+export async function seedViewConsumerWorld(db:RelationalStore,initializeWriter=true):Promise<void>{
+ const {ctx}=await seedLegacyCIResults(db);
+ if(writerReadBackend()){
+  const prompt=await db.prepare("SELECT prompt_id,text,created_at FROM prompt_batches WHERE project_id=? AND session_id=? AND text IS NOT NULL AND origin='user' ORDER BY created_at,prompt_id LIMIT 1").bind(worldScope.projectId,'session').first<{prompt_id:string;text:string;created_at:number}>();
+  if(!prompt)throw new Error('Independent consumer fixture has no user prompt');
+  const result=await ingestEvent(db,{...ctx,now:600},envelope({eventId:uuid(0),sessionId:'session',kind:'prompt',createdAt:prompt.created_at,payload:{promptId:prompt.prompt_id,text:prompt.text,origin:'user',promptKind:'user_prompt'}}));
+  if(!result.persisted)throw new Error('Independent prompt input refused '+JSON.stringify(result));
+ }
+ if(initializeWriter&&writerReadBackend())await mirrorConsumerWorld(db);
 }
 
 export async function mirrorConsumerWorld(db:RelationalStore):Promise<void>{
  const sessions=(await db.prepare('SELECT session_id FROM sessions WHERE project_id=?').bind(worldScope.projectId).all<{session_id:string}>()).results;
  for(const {session_id:sessionId}of sessions){
+  const current=await db.prepare('SELECT i.parser_version FROM session_views s JOIN view_instances i ON i.project_id=s.project_id AND i.instance_id=s.live_instance WHERE s.project_id=? AND s.session_id=?').bind(worldScope.projectId,sessionId).first<{parser_version:number}>();
+  if(writerReadBackend()&&current!==null){if(sessionId==='session'||current.parser_version!==PARSER_VERSION)await rebuildWriterMirror(db,worldScope.projectId,sessionId);continue;}
   const parent='world-parent-'+sessionId,tail='world-tail-'+sessionId;
   await mirrorViewSession(db,{...worldScope,sessionId,instanceId:parent,state:'frozen'});
   await mirrorViewSession(db,{...worldScope,sessionId,instanceId:tail,state:'live',parent},false);

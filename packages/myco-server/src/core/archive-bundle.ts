@@ -5,7 +5,7 @@ import { bundleHeld } from './blob-references.js';
 import { readStoredObject } from './stored-object.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
-  type DerivedContentSource, type VerifiedContent } from './registered-content.js';
+  type ContentPublicationGuard, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { sourceBytes, measureSource, type ContentRow } from './event-content.js';
 import { recordBlobCandidates,releaseBlobs } from './object-release.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
@@ -241,7 +241,7 @@ export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle
 }
 
 type BundleEnv=Pick<ContentStore,'db'|'blobs'>;
-interface Loaded { header:Header; bytes:Uint8Array<ArrayBuffer>; start:number }
+interface Loaded { evidence?:ContentPublicationGuard[];header:Header; bytes:Uint8Array<ArrayBuffer>; start:number }
 type BundleRecord={project_id:string;session_id:string;token_id:string;event_id:string;envelope_hash:string;
   archive_key:string;receipt_key:string;digest:string;size:number;version:number;entry_count:number};
 type Registration={generation:string|null;size:number};
@@ -295,13 +295,19 @@ async function loadBundle(env:BundleEnv,projectId:string,bundleId:number):Promis
   if(!row) throw new Error('event_content_reference_invalid');
   const source:DerivedContentSource={projectId,sessionId:row.session_id,tokenId:row.token_id,eventId:row.event_id,
     envelopeHash:row.envelope_hash,sourceKind:'bundle',resourceId:row.archive_key};
+  const evidence:ContentPublicationGuard[]=[];
   for(const [key,generation,size,kind,id] of [[row.archive_key,row.generation,row.size,'bundle',row.archive_key],
     [row.receipt_key,row.receipt_generation,row.receipt_size,'receipt','bundle:'+row.archive_key]] as const){
     const proof=verifiedContentSql({...source,sourceKind:kind,resourceId:id},{key,generation,size,digest:key});
     if(!(await env.db.prepare(`SELECT 1 AS ok WHERE ${proof.sql}`).bind(...proof.params).first())) throw new Error('event_content_reference_invalid');
+    evidence.push(proof);
   }
-  return parseBundleObjects(env.blobs,row,{generation:row.generation,size:row.size},
+  evidence.push({sql:`EXISTS(SELECT 1 FROM archive_bundles WHERE project_id=? AND id=? AND archive_key=? AND receipt_key=?
+    AND session_id=? AND token_id=? AND event_id=? AND envelope_hash=? AND digest=? AND size=? AND version=? AND entry_count=?)`,
+    params:[projectId,bundleId,row.archive_key,row.receipt_key,row.session_id,row.token_id,row.event_id,row.envelope_hash,row.digest,row.size,row.version,row.entry_count]});
+  const loaded=await parseBundleObjects(env.blobs,row,{generation:row.generation,size:row.size},
     {generation:row.receipt_generation,size:row.receipt_size});
+  return {...loaded,evidence};
 }
 
 async function readEntry(loaded:Loaded,identity:BundleEntryIdentity):Promise<string>{
@@ -339,10 +345,12 @@ export async function verifyBundleArtifact(env:BundleEnv,row:BundleRecord,proofs
 }
 
 /** Resolves and verifies exact bytes and immutable source identity for one compact locator. */
-export async function readBundleEntry(env:BundleEnv,identity:BundleEntryIdentity & {bundleId:number}):Promise<string>{
+export async function readBundleEntry(env:BundleEnv,identity:BundleEntryIdentity & {bundleId:number},evidence?:ContentPublicationGuard[]):Promise<string>{
   const cache=requestCaches.get(env);const key=identity.projectId+':'+identity.bundleId;
   let pending=cache?.get(key);if(!pending){pending=loadBundle(env,identity.projectId,identity.bundleId);cache?.set(key,pending);}
-  return readEntry(await pending,identity);
+  const loaded=await pending;
+  if(evidence)evidence.push(...(loaded.evidence??[]));
+  return readEntry(loaded,identity);
 }
 
 type PreparationRecord={preparation_id:string;project_id:string;archive_key:string;receipt_key:string|null;expires_at:number};

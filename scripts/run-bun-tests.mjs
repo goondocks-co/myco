@@ -1549,20 +1549,37 @@ const candidates = [
   ...(built.dom === null ? [] : testFiles(built.dom).map((file) => ({
     label: file, args: [file], isolate: true, kind: 'dom',
   }))),
-].filter(phase => testKind === 'all' || phase.kind === testKind);
-const selected = selectGroup(
-  selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args))),
-  groupLabel,
+];
+const selectPhases = (kind, selection, label) => selectGroup(
+  selectShard(candidates.filter(phase => kind === 'all' || phase.kind === kind), selection, (phase) => estimate(sourceFiles(phase.args))),
+  label,
 );
+const selected = selectPhases(testKind, shard, groupLabel);
 const nonDomPhases = selected.filter((phase) => phase.kind !== 'dom');
 const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
 const dom = selectedDomFiles.length > 0
   ? [...built.dom.filter((arg) => !testFiles([arg]).length), ...selectedDomFiles]
   : null;
-const manifest = selected.map((phase) => ({ label: phase.label, files: sourceFiles(phase.args), estimatedMs: estimate(sourceFiles(phase.args)) }));
+const phaseManifest = phases => phases.map((phase) => ({ label: phase.label, files: sourceFiles(phase.args), estimatedMs: estimate(sourceFiles(phase.args)) }));
+const manifest = phaseManifest(selected);
 console.log(`[run-bun-tests] ${testKind} shard ${shard.index}/${shard.count}: ${selected.length} groups, estimated ${Math.round(manifest.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
 if (process.env.MYCO_RUNNER_PLAN_FILE) {
   fs.writeFileSync(process.env.MYCO_RUNNER_PLAN_FILE, JSON.stringify(manifest, null, 2) + '\n');
+}
+
+if (process.env.MYCO_RUNNER_MATRIX_PLAN_FILE) {
+  if (process.env.MYCO_RUNNER_DRY_RUN !== '1') throw new Error('Matrix plans require dry-run mode');
+  const proof = workflow.jobs['view-proof'];
+  const matrix = {
+    full: phaseManifest(selectPhases('all', { index: 1, count: 1 })),
+    ordinary: workflow.jobs.tests.strategy.matrix.include.map(({ kind, shard }) => ({
+      kind, shard, phases: phaseManifest(selectPhases(kind, parseShard(shard))),
+    })),
+    proofs: proof.strategy.matrix.file.map(file => ({
+      file, phases: phaseManifest(selectPhases(proof.env.MYCO_TEST_KIND, { index: 1, count: 1 }, proof.env.MYCO_TEST_GROUP.replace('${{ matrix.file }}', file))),
+    })),
+  };
+  fs.writeFileSync(process.env.MYCO_RUNNER_MATRIX_PLAN_FILE, JSON.stringify(matrix) + '\n');
 }
 
 // Audit the computed phase plan without executing. Lets a reviewer (or a CI

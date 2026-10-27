@@ -1,4 +1,5 @@
-import {expect,it} from 'bun:test';
+import {expect} from 'bun:test';
+import {writerReadTest as it} from './helpers/view-instances.js';
 import {withViewReadResponse,turns_readTurnBodies} from '@myco-server-worker/read/view-store.js';
 import {listTurns} from '@myco-server-worker/read/turns.js';
 import {statementRecorder} from '../helpers/statement-recorder.js';
@@ -15,7 +16,7 @@ for(const axis of ['C','P','K','G'] as const)it('intrinsic '+axis+' freezes per-
  for(const size of levels){
   let selected:string[]=[],tokenId='';
   await withViewStorePair('native-D1',async db=>{
-  await seedViewConsumerWorld(db);
+  await seedViewConsumerWorld(db,false);
   const issued=await captureViewSession(db,'project','session',{idOffset:12000000});
   tokenId=issued.tokenId;
   if(axis==='C')for(let index=0;index<size;index++)await captureViewSession(db,'project','candidate-'+index,{idOffset:13000000+index*100});
@@ -23,6 +24,7 @@ for(const axis of ['C','P','K','G'] as const)it('intrinsic '+axis+' freezes per-
    const ids=await appendCostHistory(db,{projectId:'project',sessionId:'session',tokenId:issued.tokenId,material,from:0,through:axis==='P'?32:size,idBase:14000000});
    if(material.table==='prompt_batches')selected=ids;
   }
+  await mirrorConsumerWorld(db);
   },async(first,second)=>{
   for(const [db,target]of [[first,'native'],[second,'D1']] as const){
   const workloads=axis==='P'?[

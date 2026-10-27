@@ -2,7 +2,7 @@ import {expect} from 'bun:test';
 import {sessionCounts} from '@myco-server-worker/read/sessions.js';
 import {statementRecorder,type RecordedStatement} from '../../helpers/statement-recorder.js';
 import {withViewStorePair,captureViewSession} from './view-stores.js';
-import {mirrorViewSession,publishMirroredSession,appendViewCostHistory,keepSurvivingFacts} from './view-instances.js';
+import {mirrorViewSession,publishMirroredSession,appendViewCostHistory,keepSurvivingFacts,writerReadPromptId,writerReadBackend} from './view-instances.js';
 import { LEGACY_ONLY_OPERATIONS, legacyProjection } from '@myco-server-worker/read/view-store.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { planEventWrite, type EventWrite } from '@myco-server-worker/ingest/events.js';
@@ -10,6 +10,8 @@ import { TRANSCRIPT_PRODUCER } from '@myco-server-worker/ingest/parse.js';
 import { envelope, uuid } from './fixtures.js';
 import { armPlanViolations, readTag, significantRead, type PlanRow } from '../../helpers/view-read-contract.js';
 export { armPlanViolations } from '../../helpers/view-read-contract.js';
+
+const captureCostSession=async(db:RelationalStore,project='project',sessionId='session',options:Parameters<typeof captureViewSession>[3]={})=>captureViewSession(db,project,sessionId,{...options,...(writerReadBackend()?{promptId:await writerReadPromptId(sessionId)}:{})});
 
 const legacyOnly = new Set<string>(LEGACY_ONLY_OPERATIONS);
 
@@ -274,7 +276,7 @@ export async function convertedLegacyHistory(material:CostMaterial):Promise<void
   let wholeRelative:number|undefined;
   const native=new Map<number,Awaited<ReturnType<typeof countWork>>>();
   for(const history of histories)await withViewStorePair('native-D1',async db=>{
-    const issued=await captureViewSession(db,'project',session,{parsedMaterial:true});
+    const issued=await captureCostSession(db,'project',session,{parsedMaterial:true});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',state:'live'});
     await appendCostHistory(db,{...scope,sessionId:session,tokenId:issued.tokenId,material,from:0,through:history});
   },async(first,second)=>{
@@ -297,8 +299,12 @@ export async function convertedLegacyHistory(material:CostMaterial):Promise<void
       const bound=bounds.get(arm.material.table)!;
       expect(coefficient).toBe(bound.coefficient);
       withinLegacyBound(bound,history,read,prior);
-      if(material.table==='prompt_batches'&&arm.material===material)expect(bound).toMatchObject({coefficient:2,intercept:10});
-      console.info('VIEW_B4B_ARM',JSON.stringify({table:arm.material.table,growingTable:material.table,history,target,rowsRead:read,legacyRowsRead:prior,bound,plan,
+      if(material.table==='prompt_batches'&&arm.material===material){
+        const intercept=writerReadBackend()?11:10;
+        expect(bound).toMatchObject({coefficient:2,intercept});
+        if(writerReadBackend())expect(read-2*history).toBe(intercept);
+      }
+      console.info('VIEW_B4B_ARM',JSON.stringify({backend:writerReadBackend()?'writer':'legacy',excess:read-coefficient*history,table:arm.material.table,growingTable:material.table,history,target,rowsRead:read,legacyRowsRead:prior,bound,plan,
         phase:'converted sessions until PR 8 cleanup'}));
       if(history===1200&&arm.material===material){
         const marker=new RegExp('FROM main\\.'+material.table+' f(?: INDEXED BY [a-z_]+)?\\n    WHERE ');
@@ -347,9 +353,9 @@ async function viewSideHistory(world:{axis:'hidden legacy G'|'surviving-fact R';
     {projectId:'other',sessionId:session,instanceId:'other-project'},
   ];
   await withViewStorePair('native-D1',async db=>{
-    const issued=await captureViewSession(db,'project',session,{parsedMaterial:true});
-    await captureViewSession(db,'project','nuisance',{idOffset:8000000});
-    await captureViewSession(db,'other',session);
+    const issued=await captureCostSession(db,'project',session,{parsedMaterial:true});
+    await captureCostSession(db,'project','nuisance',{idOffset:8000000});
+    await captureCostSession(db,'other',session);
     await mirrorViewSession(db,{...sources[0]!,state:'frozen'});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',parent:'parent',state:'live'});
     for(const source of sources.slice(1))await mirrorViewSession(db,{...source,state:'retired'});
@@ -418,11 +424,11 @@ async function viewSideHistory(world:{axis:'hidden legacy G'|'surviving-fact R';
 export async function foreignLegacyHistory():Promise<void>{
   const native=new Map<number,Awaited<ReturnType<typeof countWork>>>(),bounds=new Map<string,number>();
   for(const history of histories)await withViewStorePair('native-D1',async db=>{
-    await captureViewSession(db,'project',session,{parsedMaterial:true});
+    await captureCostSession(db,'project',session,{parsedMaterial:true});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',state:'live'});
     await publishMirroredSession(db,scope.projectId,session,'live');
     for(const source of [{projectId:'project',sessionId:'nuisance',idOffset:8000000},{projectId:'other',sessionId:session,idOffset:0}]){
-      const issued=await captureViewSession(db,source.projectId,source.sessionId,{idOffset:source.idOffset,parsedMaterial:true});
+      const issued=await captureCostSession(db,source.projectId,source.sessionId,{idOffset:source.idOffset,parsedMaterial:true});
       await mirrorViewSession(db,{...source,instanceId:'foreign-live',state:'live'});
       for(const material of COST_MATERIALS)await appendCostHistory(db,{...source,tokenId:issued.tokenId,material,idBase:2000000,from:0,through:history/8});
       await publishMirroredSession(db,source.projectId,source.sessionId,'foreign-live');

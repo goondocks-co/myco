@@ -203,14 +203,16 @@ export interface DeliveredNaming {
  * prompt named under a scheme the session's prompts are not named by is recorded as `scheme`, never as an id that
  * names nothing.
  */
-export function deliveredAssignment(d: DeliveredNaming): { sql: string; params: unknown[] } {
-  if (d.promptId === null || d.scheme === undefined || d.scheme === null) {
-    return { sql: 'delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?', params: [d.at, d.promptId, d.scopeReason] };
-  }
-  const shared = schemeSharedParams(d.projectId, d.sessionId, d.scheme);
-  return {
-    sql: `delivered_at = ?, delivered_prompt_id = CASE WHEN ${SCHEME_SHARED_SQL} THEN ? END,
-      delivered_scope_reason = CASE WHEN ${SCHEME_SHARED_SQL} THEN NULL ELSE 'scheme' END`,
-    params: [d.at, ...shared, d.promptId, ...shared],
-  };
+export function deliveredFields(d:DeliveredNaming):{column:string;sql:string;params:unknown[]}[]{
+  const scope=d.promptId===null||d.scheme===undefined||d.scheme===null?null:schemeSharedParams(d.projectId,d.sessionId,d.scheme);
+  return [
+    {column:'delivered_at',sql:'?',params:[d.at]},
+    {column:'delivered_prompt_id',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN ? END`,params:scope===null?[d.promptId]:[...scope,d.promptId]},
+    {column:'delivered_scope_reason',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN NULL ELSE 'scheme' END`,params:scope===null?[d.scopeReason]:scope},
+  ];
+}
+
+export function deliveredAssignment(d:DeliveredNaming):{sql:string;params:unknown[]}{
+  const fields=deliveredFields(d);
+  return {sql:fields.map(field=>field.column+' = '+field.sql).join(', '),params:fields.flatMap(field=>field.params)};
 }

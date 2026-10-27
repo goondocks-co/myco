@@ -1,4 +1,5 @@
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import {viewWriterEndpoint} from '../view-writer/endpoint.ts';
 import {primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ import { receiptSnapshotEndpoint } from '../receipt-snapshots/endpoint.ts';
 import {statementRecorder,observeStatementSpans,withStatementSpan,type StatementFrame} from '../../helpers/statement-recorder.js';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; embeddingFixture?:boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; embeddingFixture?:boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -56,12 +57,12 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
     GITHUB_CLIENT_ID: 'parity-client',
     GITHUB_CLIENT_SECRET: 'parity-secret',
   };
-  const started = options.stopRace === true || options.receiptSnapshots === true ? await (async () => {
+  const started = options.stopRace === true || options.receiptSnapshots === true || options.viewWriter===true ? await (async () => {
     const handler = await createBunHandler(serverOptions);
     const race = stopRaceFixture();
     if (options.stopRace === true) handler.env.db = race.wrap(handler.env.db);
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, development: false,
-      fetch: async (request) => options.receiptSnapshots === true
+      fetch: async (request) => options.viewWriter===true ? await viewWriterEndpoint(request,handler.env)??handler.fetch(request) : options.receiptSnapshots === true
         ? await receiptSnapshotEndpoint(request, handler.env.db) ?? handler.fetch(request)
         : await race.endpoint(request) ?? handler.fetch(request),
       error: () => new Response(null, { status: 503 }),

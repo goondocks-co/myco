@@ -10,6 +10,9 @@ export {protectedSql,MATERIAL_RELATIONS} from './statement-recorder.js';
 const ids = new Set<string>(VIEW_READ_OPERATIONS.map(operation=>operation.id));
 import {preparationOrigins,preparationSourcePins} from './view-read-policy.js';
 const legacyOperations=new Set<string>(LEGACY_ONLY_OPERATIONS);
+const SQL_KEY_PROJECTION='$keys';
+const projectionField=(name:string):string=>name.startsWith('$')?'$'+name:name;
+const projectedName=(name:string):string=>name.startsWith('$$')?name.slice(1):name;
 const observedDurableClasses=new Set(['DeploymentClock','RecoveryProducer']);
 export function durableObservationViolations(classes:readonly string[]):string[]{
  return [...classes.filter(name=>!observedDurableClasses.has(name)).map(name=>'unclassified Durable Object '+name),...[...observedDurableClasses].filter(name=>classes.filter(value=>value===name).length!==1).map(name=>'requires one observed '+name)];
@@ -87,7 +90,7 @@ export function sourceBoundary(
   sources: ReadonlyMap<string, string>,
   exceptions: readonly StatementException[] = [],
   foundations: readonly FoundationImport[] = [],
-  options: {importsOnly?:boolean;metrics?:SourceScanMetrics;captureDependencies?:(exception:StatementException,dependencies:NonNullable<StatementException['dependencies']>)=>void;capturePreparation?:(site:{file:string;owner:string;expression:string},relations:readonly string[])=>void;closures?:readonly ExceptionClosure[];callers?:readonly ParameterCaller[];captureClosure?:(closure:ExceptionClosure)=>void;captureCaller?:(caller:ParameterCaller)=>void;captureNonSql?:(site:{file:string;owner:string;expression:string})=>void} = {},
+  options: {validateBoundaries?:boolean;importsOnly?:boolean;metrics?:SourceScanMetrics;captureDependencies?:(exception:StatementException,dependencies:NonNullable<StatementException['dependencies']>)=>void;capturePreparation?:(site:{file:string;owner:string;expression:string},relations:readonly string[])=>void;closures?:readonly ExceptionClosure[];callers?:readonly ParameterCaller[];captureClosure?:(closure:ExceptionClosure)=>void;captureCaller?:(caller:ParameterCaller)=>void;captureNonSql?:(site:{file:string;owner:string;expression:string})=>void} = {},
 ): string[] {
   const metrics=options.metrics??{parses:0,importEdges:0,taintNodes:0};
   sources = new Map([...sources].map(([name,text])=>[name.replace(/\\/g,'/'),text] as const).sort(([left],[right])=>left<right?-1:left>right?1:0));
@@ -391,7 +394,9 @@ export function sourceBoundary(
         if(node.dotDotDotToken){unresolved.add(node.getSourceFile().fileName+':variadic SQL parameter '+node.name.getText());return;}
         const fn=node.parent,call=fn.parent;
         if((ts.isArrowFunction(fn)||ts.isFunctionExpression(fn))&&ts.isCallExpression(call)&&ts.isPropertyAccessExpression(call.expression)&&['map','flatMap','filter','some','every','find','forEach','reduce','replace','replaceAll'].includes(call.expression.name.text)){
-          follow(call.expression.expression,environment,path,invocation);return;
+          const method=call.expression.name.text,index=fn.parameters.indexOf(node);
+          if(['map','flatMap','filter','some','every','find','forEach'].includes(method)&&index===1&&checker.getResolvedSignature(call)?.declaration?.getSourceFile().fileName.startsWith('node_modules/typescript-v6/lib/')){pin(fn,'<array index>');asControl(call.expression.expression,environment);return;}
+          follow(call.expression.expression,environment,['map','flatMap','filter','some','every','find','forEach'].includes(call.expression.name.text)?['*',...path]:path,invocation);return;
         }
         if((ts.isArrowFunction(fn)||ts.isFunctionExpression(fn))&&ts.isCallExpression(call)){
           const declaration=checker.getResolvedSignature(call)?.declaration,index=call.arguments.indexOf(fn),callback=declaration?.parameters[index];
@@ -408,11 +413,11 @@ export function sourceBoundary(
       }
       if(ts.isBindingElement(node)){
         const names:string[]=[];let at:ts.Node=node;
-        while(ts.isBindingElement(at)){names.unshift(ts.isArrayBindingPattern(at.parent)?String(at.parent.elements.indexOf(at)):at.propertyName?.getText()??at.name.getText());at=at.parent.parent;}
+        while(ts.isBindingElement(at)){names.unshift(ts.isArrayBindingPattern(at.parent)?String(at.parent.elements.indexOf(at)):projectionField(at.propertyName&&ts.isStringLiteralLike(at.propertyName)?at.propertyName.text:at.propertyName?.getText()??at.name.getText()));at=at.parent.parent;}
         pin(node,node.name.getText());follow(at,environment,[...names,...path],invocation);return;
       }
       if(ts.isVariableDeclaration(node)){
-        const held=activeVariables.get(node)??new Set<string>(),identity=JSON.stringify([path,controls>0]);if(held.has(identity)||controls>0&&held.size)return;if(held.size){unresolved.add(node.getSourceFile().fileName+':cyclic SQL projection '+node.name.getText());return;}held.add(identity);activeVariables.set(node,held);
+        const held=activeVariables.get(node)??new Set<string>(),identity=JSON.stringify([path,controls>0]);if(held.has(identity)||controls>0&&held.size||[...held].some(value=>{const [selected,control]=JSON.parse(value);return control===(controls>0)&&selected.length<path.length&&selected.every((part:string,index:number)=>part===path[index]);}))return;if(held.size){unresolved.add(node.getSourceFile().fileName+':cyclic SQL projection '+node.name.getText());return;}held.add(identity);activeVariables.set(node,held);
         try{
         pin(node,node.name.getText());
         if(ts.isVariableDeclarationList(node.parent)&&(ts.isForOfStatement(node.parent.parent)||ts.isForInStatement(node.parent.parent))){follow(node.parent.parent.expression,environment,['*',...path],invocation);return;}
@@ -423,7 +428,7 @@ export function sourceBoundary(
         }finally{held.delete(identity);}
       }
       if(ts.isPropertyAccessExpression(node)||ts.isElementAccessExpression(node)){
-        const field=ts.isPropertyAccessExpression(node)?node.name.text:ts.isStringLiteralLike(node.argumentExpression)||ts.isNumericLiteral(node.argumentExpression)?node.argumentExpression.text:'*';
+        const field=ts.isPropertyAccessExpression(node)?projectionField(node.name.text):ts.isStringLiteralLike(node.argumentExpression)||ts.isNumericLiteral(node.argumentExpression)?projectionField(node.argumentExpression.text):'*';
         if(field==='*'&&ts.isElementAccessExpression(node))asControl(node.argumentExpression,environment);
         if(field==='length'){asControl(node.expression,environment);return;}
         let symbol=checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node)?node.name:node.argumentExpression);if(symbol&&(symbol.flags&ts.SymbolFlags.Alias))symbol=checker.getAliasedSymbol(symbol);
@@ -431,12 +436,15 @@ export function sourceBoundary(
         if(declaration&&(ts.isMethodDeclaration(declaration)||ts.isGetAccessorDeclaration(declaration)||ts.isPropertyDeclaration(declaration))){follow(declaration,environment,path,invocation);return;}
         follow(node.expression,environment,[field,...path],invocation);return;
       }
+      if(ts.isObjectLiteralExpression(node)&&path[0]===SQL_KEY_PROJECTION){
+        pin(node,'<object keys>');for(const property of node.properties)if(ts.isSpreadAssignment(property))follow(property.expression,environment,path,invocation);else if(property.name&&ts.isComputedPropertyName(property.name))follow(property.name.expression,environment,path.slice(1),invocation);return;
+      }
       if(ts.isObjectLiteralExpression(node)&&path.length){
         pin(node,'<object>');let found=false;
         for(const property of node.properties){
           if(ts.isSpreadAssignment(property)){follow(property.expression,environment,path,invocation);found=true;continue;}
           const name=property.name&&(ts.isIdentifier(property.name)||ts.isStringLiteralLike(property.name)||ts.isNumericLiteral(property.name))?property.name.text:undefined;
-          if(name===path[0]||path[0]==='*'){follow(property,environment,path.slice(1),invocation);found=true;}
+          if(name!==undefined&&projectionField(name)===path[0]||path[0]==='*'){follow(property,environment,path.slice(1),invocation);found=true;}
         }
         if(!found)pin(node,'<absent member '+path.join('.')+'>');return;
       }
@@ -478,7 +486,22 @@ export function sourceBoundary(
       if(ts.isShorthandPropertyAssignment(node)){pin(node,node.name.text);const symbol=checker.getShorthandAssignmentValueSymbol(node),declaration=symbol?.valueDeclaration;if(declaration)follow(declaration,environment,path,invocation);else unresolved.add(node.getSourceFile().fileName+':shorthand '+node.name.text);return;}
       if(ts.isPropertyDeclaration(node)){pin(node,node.name.getText());if(node.initializer)follow(node.initializer,environment,path,invocation);else unresolved.add(node.getSourceFile().fileName+':field '+node.name.getText());return;}
       if(ts.isCallExpression(node)){
+        if(path[0]===SQL_KEY_PROJECTION&&ts.isPropertyAccessExpression(node.expression)&&node.expression.name.text==='first'&&checker.getResolvedSignature(node)?.declaration?.getSourceFile().fileName==='packages/myco-server/src/core/adapters.ts'){
+          let prepared=node.expression.expression;
+          while(ts.isCallExpression(prepared)&&ts.isPropertyAccessExpression(prepared.expression)&&prepared.expression.name.text==='bind')prepared=prepared.expression.expression;
+          if(ts.isCallExpression(prepared)&&ts.isPropertyAccessExpression(prepared.expression)&&prepared.expression.name.text==='prepare'&&prepared.arguments[0]&&checker.getResolvedSignature(prepared)?.declaration?.getSourceFile().fileName==='packages/myco-server/src/core/adapters.ts'){
+            pin(checker.getResolvedSignature(node)!.declaration!,'<row keys>');follow(prepared.arguments[0],environment);return;
+          }
+        }
         if(ts.isCallExpression(node.expression)){unresolved.add(node.getSourceFile().fileName+':returned callable '+node.expression.getText());return;}
+        const objectMethod=ts.isPropertyAccessExpression(node.expression)&&ts.isIdentifier(node.expression.expression)&&node.expression.expression.text==='Object'&&(!declarationOf(node.expression.expression)||declarationOf(node.expression.expression)!.getSourceFile().fileName.startsWith('node_modules/typescript-v6/lib/'))?node.expression.name.text:undefined;
+        if(objectMethod==='fromEntries'&&node.arguments[0]&&path.length){
+          follow(node.expression,environment);follow(node.arguments[0],environment,['*',path[0]===SQL_KEY_PROJECTION?'0':'1',...path.slice(1)]);return;
+        }
+        if(objectMethod==='entries'&&node.arguments[0]&&(path[0]==='*'||/^\d+$/.test(path[0]??''))&&['0','1'].includes(path[1]??'')){
+          follow(node.expression,environment);follow(node.arguments[0],environment,path[1]==='0'?[SQL_KEY_PROJECTION,...path.slice(2)]:['*',...path.slice(2)]);return;
+        }
+        if(objectMethod==='keys'&&node.arguments[0]){follow(node.expression,environment);follow(node.arguments[0],environment,[SQL_KEY_PROJECTION]);return;}
         let root:ts.Expression=node.expression;while(ts.isPropertyAccessExpression(root))root=root.expression;
         if(ts.isIdentifier(root)&&builtinDeclarations.has(root.text)&&(!declarationOf(root)||declarationOf(root)!.getSourceFile().fileName.startsWith('node_modules/typescript-v6/lib/'))){
           let guarded=false;
@@ -497,9 +520,9 @@ export function sourceBoundary(
           if(['map','flatMap','forEach','some','every'].includes(method))asControl(node.expression.expression,environment);else follow(node.expression.expression,environment,path);
           const callback=node.arguments[0],declaration=callback&&ts.isIdentifier(callback)?declarationOf(callback):undefined;
           if(method==='map'&&node.arguments.length===1&&declaration&&(ts.isFunctionDeclaration(declaration)||ts.isFunctionExpression(declaration)||ts.isArrowFunction(declaration))&&declaration.parameters.length===1&&checker.getResolvedSignature(node)?.declaration?.getSourceFile().fileName.startsWith('node_modules/typescript-v6/lib/')){
-            const bound=new Map(environment);bound.set(declaration.parameters[0]!,{node:node.expression.expression,environment,path:[]});follow(declaration,bound,path);return;
+            const bound=new Map(environment);bound.set(declaration.parameters[0]!,{node:node.expression.expression,environment,path:['*']});follow(declaration,bound,path[0]==='*'||/^\d+$/.test(path[0]??'')?path.slice(1):path);return;
           }
-          for(const argument of node.arguments)if(['filter','find','some','every','slice'].includes(method))asControl(argument,environment);else follow(argument,environment,path);return;
+          for(const argument of node.arguments)if(['filter','find','some','every','slice'].includes(method))asControl(argument,environment);else follow(argument,environment,method==='map'||method==='flatMap'?path[0]==='*'||/^\d+$/.test(path[0]??'')?path.slice(1):path:path);return;
         }
         follow(node.expression,environment,path,{call:node,environment});return;
       }
@@ -530,12 +553,12 @@ export function sourceBoundary(
         unresolved.add(node.getSourceFile().fileName+':import '+node.name.text);return;
       }
       if(ts.isNamespaceImport(node)){
-        const source=node.parent.parent,target=path[0]&&ts.isImportDeclaration(source)&&ts.isStringLiteral(source.moduleSpecifier)&&exported(moduleFile(node.getSourceFile().fileName,source.moduleSpecifier.text),path[0]);
+        const source=node.parent.parent,target=path[0]&&ts.isImportDeclaration(source)&&ts.isStringLiteral(source.moduleSpecifier)&&exported(moduleFile(node.getSourceFile().fileName,source.moduleSpecifier.text),projectedName(path[0]));
         if(target){follow(target.node,environment,path.slice(1),invocation);return;}
         unresolved.add(node.getSourceFile().fileName+':namespace '+node.name.text);return;
       }
       if(ts.isClassDeclaration(node)){
-        pin(node,node.name?.text??'<class>');const members=path.length?node.members.filter(member=>member.name?.getText()===path[0]):node.members;
+        pin(node,node.name?.text??'<class>');const members=path.length?node.members.filter(member=>member.name&&projectionField(ts.isStringLiteralLike(member.name)?member.name.text:member.name.getText())===path[0]):node.members;
         if(!members.length)unresolved.add(node.getSourceFile().fileName+':class member '+path[0]);
         for(const member of members)if(ts.isMethodDeclaration(member)||ts.isGetAccessorDeclaration(member)||ts.isPropertyDeclaration(member))follow(member,environment,path.slice(1),invocation);return;
       }
@@ -551,7 +574,11 @@ export function sourceBoundary(
       if(ts.isPrefixUnaryExpression(node)||ts.isPostfixUnaryExpression(node)){asControl(node.operand,environment);return;}
       if(ts.isTypeOfExpression(node)||ts.isVoidExpression(node)||ts.isDeleteExpression(node)){asControl(node.expression,environment);return;}
       if(ts.isNewExpression(node)&&ts.isIdentifier(node.expression)&&['Map','Set','Array','RegExp','String','Number','TextEncoder','Uint8Array','ArrayBuffer','WeakMap','WeakSet','Float32Array','Float64Array','Int8Array','Uint16Array','Int16Array','Uint32Array','Int32Array','Date'].includes(node.expression.text)&&(!declarationOf(node.expression)||declarationOf(node.expression)!.getSourceFile().fileName.startsWith('node_modules/typescript-v6/lib/'))){
-        follow(node.expression,environment);const projection=['get','keys','values','entries'].includes(path[0]??'')?path.slice(1):path;for(const argument of node.arguments??[])follow(argument,environment,projection,invocation);return;
+        follow(node.expression,environment);
+        const member=path[0],map=node.expression.text==='Map';
+        const projection=map&&['get','values'].includes(member??'')?['*','1',...path.slice(1)]:map&&member==='keys'?['*','0',...path.slice(1)]:['get','keys','values','entries'].includes(member??'')?path.slice(1):path;
+        if(map&&member==='get'&&invocation)for(const argument of invocation.call.arguments)asControl(argument,invocation.environment);
+        for(const argument of node.arguments??[])follow(argument,environment,projection,invocation);return;
       }
       if(controls&&ts.isNewExpression(node)&&ts.isIdentifier(node.expression)){const imported=checker.getSymbolAtLocation(node.expression)?.declarations?.find(ts.isImportSpecifier);if(imported){pin(imported.parent.parent.parent,node.expression.text);for(const argument of node.arguments??[])asControl(argument,environment);return;}}
       unresolved.add(node.getSourceFile().fileName+':unsupported '+ts.SyntaxKind[node.kind]);
@@ -570,7 +597,7 @@ export function sourceBoundary(
   const catalogInputs=(parameters:readonly SinkParameter[])=>parameters.filter(parameter=>{
     for(const fn of sinkDeclarations.get(JSON.stringify([parameter.file,parameter.owner,parameter.index]))??[]){
       if(!ts.isFunctionLike(fn)&&!ts.isMethodSignature(fn))continue;const argument=fn.parameters[parameter.index];if(!argument)continue;let type=checker.getTypeAtLocation(argument);
-      for(const field of parameter.path){const member=type.getProperty(field);if(!member)break;if(['prepare','batch'].includes(field)&&member.declarations?.some(value=>value.getSourceFile().fileName==='packages/myco-server/src/core/adapters.ts'))return false;type=checker.getTypeOfSymbolAtLocation(member,argument);}
+      for(const field of parameter.path){const member=type.getProperty(projectedName(field));if(!member)break;if(['prepare','batch'].includes(field)&&member.declarations?.some(value=>value.getSourceFile().fileName==='packages/myco-server/src/core/adapters.ts'))return false;type=checker.getTypeOfSymbolAtLocation(member,argument);}
     }
     return true;
   });
@@ -583,7 +610,7 @@ export function sourceBoundary(
   const allowedImport=(owner:string,importer:string,name:string):boolean=>foundations.some(item=>item.owner===owner && item.importer===importer && item.imports.includes(name));
   for (const [file, tree] of files) {
     const own = file.endsWith('/read/view-store.ts') || file === 'read/view-store.ts';
-    if(own){
+    if(own&&options.validateBoundaries!==false){
       const symbol=checker.getSymbolAtLocation(tree);
       for(const entry of symbol?checker.getExportsOfModule(symbol):[]){
         const target=(entry.flags&ts.SymbolFlags.Alias)?checker.getAliasedSymbol(entry):entry;
@@ -614,7 +641,7 @@ export function sourceBoundary(
 
       ts.forEachChild(node,authority);
     };
-    authority(tree);
+    if(options.validateBoundaries!==false)authority(tree);
     const visit = (node: ts.Node): void => {
       if(!options.importsOnly&&ts.isCallExpression(node))calls.push(node);
       if(!options.importsOnly&&ts.isCallExpression(node)&&ts.isPropertyAccessExpression(node.expression)&&['prepare','query','exec'].includes(node.expression.name.text)&&node.arguments[0]&&!preparation(node,tree))options.captureNonSql?.({file,owner:preparationOwner(ts,node,tree),expression:node.arguments[0].getText(tree)});
@@ -651,7 +678,7 @@ export function sourceBoundary(
           if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(reached))errors.push(file+'#'+owner+': SQL exception dependencies differ');
         }
       }
-      if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (options.validateBoundaries!==false && ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings) && ts.isStringLiteral(node.moduleSpecifier)) {
         for (const binding of node.importClause.namedBindings.elements) {
           const name = binding.propertyName?.text ?? binding.name.text, targetFile = moduleFile(file, node.moduleSpecifier.text);
           const target = exported(targetFile, name);
@@ -660,19 +687,19 @@ export function sourceBoundary(
           }
         }
       }
-      if(ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      if(options.validateBoundaries!==false && ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
         const targetFile=moduleFile(file,node.moduleSpecifier.text);
         for(const binding of node.exportClause.elements) {
           const name=binding.propertyName?.text??binding.name.text;
           if(bearing(targetFile,name)&&!allowedImport(targetFile,file,name))errors.push(file+': SQL-bearing re-export '+name);
         }
       }
-      if(ts.isExportDeclaration(node) && !node.exportClause && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      if(options.validateBoundaries!==false && ts.isExportDeclaration(node) && !node.exportClause && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
         const targetFile=moduleFile(file,node.moduleSpecifier.text);
         const symbol=checker.getSymbolAtLocation(files.get(targetFile)??node.moduleSpecifier);
         if(symbol&&checker.getExportsOfModule(symbol).some(item=>bearing(targetFile,item.name)&&!allowedImport(targetFile,file,item.name)))errors.push(file+': SQL-bearing star re-export');
       }
-      if(ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamespaceImport(node.importClause.namedBindings) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if(options.validateBoundaries!==false && ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamespaceImport(node.importClause.namedBindings) && ts.isStringLiteral(node.moduleSpecifier)) {
         const targetFile=moduleFile(file,node.moduleSpecifier.text);
         const names=new Set<string>(foundations.filter(item=>item.owner===targetFile).flatMap(item=>item.imports));
         for(const statement of files.get(targetFile)?.statements??[]) {
@@ -696,7 +723,7 @@ export function sourceBoundary(
       if(ts.isParenthesizedExpression(node)||ts.isAsExpression(node)||ts.isTypeAssertionExpression(node)||ts.isSatisfiesExpression(node)||ts.isNonNullExpression(node)){follow(node.expression,path);return;}
       if(ts.isIdentifier(node)){const declaration=declarationOf(node);if(declaration&&declaration!==node){if(declaration.parent&&ts.isVariableDeclaration(declaration.parent)&&declaration.parent.initializer===declaration)pin(declaration.parent,node.text);follow(declaration,path);}return;}
       if(ts.isVariableDeclaration(node)&&node.initializer){pin(node,node.name.getText());follow(node.initializer,path);return;}
-      if(ts.isPropertyAccessExpression(node)||ts.isElementAccessExpression(node)){const field=ts.isPropertyAccessExpression(node)?node.name.text:ts.isStringLiteralLike(node.argumentExpression)||ts.isNumericLiteral(node.argumentExpression)?node.argumentExpression.text:'*';follow(node.expression,[field,...path]);return;}
+      if(ts.isPropertyAccessExpression(node)||ts.isElementAccessExpression(node)){const field=ts.isPropertyAccessExpression(node)?projectionField(node.name.text):ts.isStringLiteralLike(node.argumentExpression)||ts.isNumericLiteral(node.argumentExpression)?projectionField(node.argumentExpression.text):'*';follow(node.expression,[field,...path]);return;}
       if(ts.isObjectLiteralExpression(node)){storage=true;if(!path.length)container=true;objects.push(node);pin(node,'<dispatch>');for(const member of node.properties){const name=member.name&&(ts.isIdentifier(member.name)||ts.isStringLiteralLike(member.name)||ts.isNumericLiteral(member.name))?member.name.text:undefined;if(!path.length||path[0]==='*'||name===path[0])follow(member,path.slice(1));}return;}
       if(ts.isPropertyAssignment(node)){follow(node.initializer,path);return;}
       if(ts.isShorthandPropertyAssignment(node)){const declaration=checker.getShorthandAssignmentValueSymbol(node)?.valueDeclaration;if(declaration)follow(declaration,path);return;}
@@ -763,7 +790,7 @@ export function sourceBoundary(
       admittedCallbacks.add(argument);
     }
   }
-  if(!options.importsOnly){
+  if(!options.importsOnly&&options.validateBoundaries!==false){
     const sinks=new Set<ts.Node>();
     for(const sink of sinkParameters.values())for(const declaration of sinkDeclarations.get(JSON.stringify([sink.file,sink.owner,sink.index]))??[])sinks.add(declaration);
     const storageCalls=callHints.filter(({targets})=>targets.storage&&targets.declarations.some(node=>sinks.has(node)&&(!targets.container||!contractImplementations.has(node)))),resolvedStorage=new Set(storageCalls.flatMap(({targets})=>targets.declarations)),objects=new Set(storageCalls.flatMap(({targets})=>targets.objects));
