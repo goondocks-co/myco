@@ -169,8 +169,8 @@ async function requestViewRebuildOnce(
       .prepare(
         `INSERT INTO view_build_work(project_id,session_id,instance_id,tier,recent_until,session_created_at,started_at)
       SELECT ?,?,?,CASE WHEN COALESCE(MAX(t.last_received_at),0)>? THEN 0 ELSE CASE WHEN ? IS NULL THEN 1 ELSE 2 END END,
-      COALESCE(MAX(t.last_received_at),0)+?,s.started_at,? FROM sessions s LEFT JOIN transcripts t
-      ON t.project_id=s.project_id AND t.session_id=s.session_id WHERE s.project_id=? AND s.session_id=? GROUP BY s.started_at`,
+      COALESCE(MAX(t.last_received_at),0)+?,COALESCE(s.started_at,s.first_received_at),? FROM sessions s LEFT JOIN transcripts t
+      ON t.project_id=s.project_id AND t.session_id=s.session_id WHERE s.project_id=? AND s.session_id=? GROUP BY s.started_at,s.first_received_at`,
       )
       .bind(project, session, instance, now - VIEW_RECENT_MS, live, VIEW_RECENT_MS, now, project, session),
     ...manifestStatements(db, project, session, instance),

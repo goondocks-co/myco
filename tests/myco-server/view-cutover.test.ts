@@ -2,6 +2,9 @@ import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { parseTranscripts, PARSER_VERSION } from '@myco-server-worker/ingest/parse.js';
 import { runViewCutoverWake, readViewCutover, VIEW_CUTOVER_PAUSE_BYTES } from '@myco-server-worker/ingest/view-cutover.js';
+import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '@myco-server-worker/core/content-budget.js';
+import { changePlanStatus } from '@myco-server-worker/core/plans.js';
+import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { VIEW_BUILD_LEASE_MS } from '@myco-server-worker/ingest/view-build-queue.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
 import { beforeViewWriteBatch } from './helpers/view-instances.js';
@@ -14,13 +17,13 @@ let seq = 0;
 const id = () => uuid(900_000 + ++seq);
 
 /** Claude Code lines: one prompt, its tool call with a result of `output` characters, and a reply. */
-function turn(session: string, prompt: string, output: number): string {
+function turn(session: string, prompt: string, output: number, reply = 'Reading.'): string {
   const promptId = id(),
     tool = 'toolu_' + id().slice(-12),
     at = new Date(Date.UTC(2026, 9, 1, 10, 0, ++seq)).toISOString();
   return [
     { type: 'user', promptId, message: { content: prompt }, uuid: id(), timestamp: at, sessionId: session },
-    { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading.' }, { type: 'tool_use', id: tool, name: 'Read', input: { file_path: '/repo/a.ts' } }] }, uuid: id(), timestamp: at, sessionId: session },
+    { type: 'assistant', message: { content: [{ type: 'text', text: reply }, { type: 'tool_use', id: tool, name: 'Read', input: { file_path: '/repo/a.ts' } }] }, uuid: id(), timestamp: at, sessionId: session },
     { type: 'user', promptId, message: { content: [{ type: 'tool_result', tool_use_id: tool, content: 'r'.repeat(output) }] }, uuid: id(), timestamp: at, sessionId: session },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'Done: ' + prompt }] }, uuid: id(), timestamp: at, sessionId: session },
   ].map((line) => JSON.stringify(line) + '\n').join('');
@@ -89,7 +92,8 @@ test('a killed wake resumes from its checkpoints after the lease and capture dur
       await drain(session.env, now + VIEW_BUILD_LEASE_MS + 1);
       expect(await n(db.prepare(`SELECT COUNT(*) n FROM view_prompts p JOIN view_visible v ON v.project_id=p.project_id
         AND v.instance_id=p.instance_id WHERE v.session_id='cut-r'`))).toBe(3);
-      expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(session.transcript))).toBe(session.size + bytes(appended));
+      expect(await n(db.prepare(`SELECT c.parsed_offset n FROM view_checkpoints c JOIN view_visible v ON v.project_id=c.project_id
+        AND v.instance_id=c.instance_id WHERE c.transcript_id=?`).bind(session.transcript))).toBe(session.size + bytes(appended));
     }),
   );
 }, 120000);
@@ -140,3 +144,85 @@ test('the batch pauses building at the headroom limit and keeps waiting without 
     }),
   );
 }, 120000);
+
+test('a published session keeps the legacy cursor, so legacy rows stay complete while the view extends', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const session = await legacySession(db, blobs, 'cut-l', at, [turn('cut-l', 'opening', 100)]);
+      await drain(session.env, now);
+      const appended = Array.from({ length: 6 }, (_, i) => turn('cut-l', 'appended' + i, 100)).join('');
+      await captureViewTranscript(db, blobs, 'cut-l', session.transcript, appended, at, session.size, 'claude-code');
+      await drain(session.env, now);
+      for (let pass = 0; pass < 20 && (await parseTranscripts(session.env, now)).more; pass++);
+      expect(await n(db.prepare(`SELECT COUNT(*) n FROM prompt_batches WHERE text LIKE 'appended%'`))).toBe(6);
+      expect(await n(db.prepare(`SELECT COUNT(*) n FROM view_prompts p JOIN view_visible v ON v.project_id=p.project_id
+        AND v.instance_id=p.instance_id WHERE p.text LIKE 'appended%'`))).toBe(6);
+    }),
+  );
+}, 120000);
+
+test('a tail after a lost segment keeps the complete record that opens the next retained segment', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const first = turn('cut-g', 'before', 100), lost = turn('cut-g', 'lost', 100), kept = turn('cut-g', 'kept', 100);
+      const session = await legacySession(db, blobs, 'cut-g', at, [first]);
+      await captureViewTranscript(db, blobs, 'cut-g', session.transcript, lost, at, session.size, 'claude-code');
+      await captureViewTranscript(db, blobs, 'cut-g', session.transcript, kept, at, session.size + bytes(lost), 'claude-code');
+      await db.prepare(`DELETE FROM transcript_segments WHERE transcript_id=? AND base_offset=?`).bind(session.transcript, session.size).run();
+      await drain(session.env, now);
+      expect((await db.prepare(`SELECT p.text FROM view_prompts p JOIN view_visible v ON v.project_id=p.project_id
+        AND v.instance_id=p.instance_id WHERE v.role='live'`).all<{ text: string }>()).results.map((row) => row.text)).toEqual(['kept']);
+    }),
+  );
+}, 120000);
+
+test('a status edit of a published parser plan promotes it to a fact and applies the edit', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const session = await legacySession(db, blobs, 'cut-p', at, [turn('cut-p', 'plan it', 100, '<ultraplan># Plan\nDo work.</ultraplan>')]);
+      await drain(session.env, now);
+      const key = (await db.prepare(`SELECT p.plan_key FROM view_plans p JOIN view_visible v ON v.project_id=p.project_id
+        AND v.instance_id=p.instance_id`).first<{ plan_key: string }>())!.plan_key;
+      const row = await changePlanStatus({ db, blobs }, { projectId: 'project' }, key, 'completed', 'member', now);
+      expect({ status: row?.status, content: row?.content }).toEqual({ status: 'completed', content: '# Plan\nDo work.' });
+      expect(await n(db.prepare(`SELECT COUNT(*) n FROM fact_classes WHERE table_name='plans' AND record_id=? AND class='promoted'`).bind(key))).toBe(1);
+    }),
+  );
+}, 120000);
+
+test('a long build leaves the shared wake its housekeeping admission', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      await captureViewSession(db, 'project', 'cut-b', { idOffset: 7000 });
+      const text = Array.from({ length: 1500 }, (_, i) => turn('cut-b', 'long' + i, 100)).join('');
+      const env = await captureViewTranscript(db, blobs, 'cut-b', 'tx_' + 'b'.repeat(32), text, at, 0, 'claude-code');
+      for (let wake = 0; wake < 3; wake++) {
+        const outer = measuredContentEnv(env, { statements: 800, blobCalls: 240, wallMs: 15000 });
+        await runViewCutoverWake(outer.env as unknown as ServerEnv, now);
+        const left = remainingInvocationBudget(outer.env.db)!;
+        expect(left.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
+        expect(left.blobCalls).toBeGreaterThanOrEqual(CONTENT_BLOB_LIMIT);
+      }
+    }),
+  );
+}, 120000);
+
+test('unfinished cutover work keeps the Deployment at idle until the batch completes or pauses', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const session = await legacySession(db, blobs, 'cut-w', at, [turn('cut-w', 'awake', 100)]);
+      const held = async () => (await engineAssertions(session.env, now)).some((a) => a.name === 'view-cutover:pending' && a.maxDepth === 'idle');
+      expect(await held()).toBe(true);
+      await runViewCutoverWake(session.env, now, async () => VIEW_CUTOVER_PAUSE_BYTES);
+      expect(await held()).toBe(false);
+      await drain(session.env, now);
+      expect(await held()).toBe(false);
+    }),
+  );
+}, 120000);
+

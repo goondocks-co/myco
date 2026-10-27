@@ -552,6 +552,23 @@
     "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
   },
   {
+    "file": "packages/myco-server/src/ingest/view-plan-promotion.ts",
+    "owner": "promoteViewPlan",
+    "expression": "`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,origin_path,\n        created_at,updated_at,token_id,received_at,prompt_id,source)\n      SELECT json_extract(value,'$.project_id'),json_extract(value,'$.plan_key'),json_extract(value,'$.session_id'),json_extract(value,'$.event_id'),\n        json_extract(value,'$.machine_id'),json_extract(value,'$.title'),json_extract(value,'$.content'),json_extract(value,'$.content_hash'),\n        json_extract(value,'$.status'),json_extract(value,'$.origin_path'),json_extract(value,'$.created_at'),json_extract(value,'$.updated_at'),\n        json_extract(value,'$.token_id'),json_extract(value,'$.received_at'),json_extract(value,'$.prompt_id'),json_extract(value,'$.source')\n      FROM json_each(?)`",
+    "table": "plans",
+    "operation": "INSERT",
+    "mode": "legacy",
+    "targets": [
+      "plans"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/view-cutover.test.ts",
+      "test": "a status edit of a published parser plan promotes it to a fact and applies the edit"
+    },
+    "fields": "Promotion admits the visible view plan as an authoritative plan row with its complete body and fixed columns; like legacy projection writes it carries no material version."
+  },
+  {
     "file": "packages/myco-server/src/ingest/view-writer.ts",
     "owner": "stampVersionStatements",
     "expression": "`UPDATE ${table.table} SET material_seq=(\n    SELECT v.material_seq FROM view_publication_material v WHERE v.project_id=? AND v.session_id=? AND v.attempt_id=? AND v.kind=? AND v.identity=${table.table}.canonical_identity)\n    WHERE project_id=? AND instance_id=? AND EXISTS(SELECT 1 FROM view_instances i WHERE i.project_id=${table.table}.project_id\n      AND i.instance_id=${table.table}.instance_id AND i.base<>'frozen')${rows === undefined ? '' : ` AND ${table.id} IN(SELECT value FROM json_each(?))`}`",

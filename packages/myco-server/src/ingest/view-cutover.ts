@@ -42,21 +42,22 @@ export async function databaseBytes(db: RelationalStore): Promise<number | null>
   return typeof size === 'number' && Number.isFinite(size) ? size : null;
 }
 
-/** One page of the parser-row backfill; the insert and update triggers classify every later row. */
-export async function classifyLegacyPage(db: RelationalStore, now: number): Promise<boolean> {
+/** One page of the parser-row backfill, with the rows it classified; the triggers classify every later row. */
+export async function classifyLegacyPage(db: RelationalStore, now: number): Promise<{ more: boolean; classified: number }> {
   const state = await cutoverState(db, now);
-  if (state.classify_stage >= LEGACY_CLASS_TABLES.length) return false;
+  if (state.classify_stage >= LEGACY_CLASS_TABLES.length) return { more: false, classified: 0 };
   const { table, id } = LEGACY_CLASS_TABLES[state.classify_stage]!;
   const bound = await db
     .prepare(`SELECT rowid r FROM ${table} WHERE rowid>? ORDER BY rowid LIMIT 1 OFFSET ?`)
     .bind(state.classify_after, CLASSIFY_PAGE_ROWS - 1)
     .first<{ r: number }>();
   const last = state.classify_stage + 1 === LEGACY_CLASS_TABLES.length && bound === null;
-  await db.batch([
-    ...contentAssertion(db, `EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND classify_stage=? AND classify_after=?)`, [
-      state.classify_stage,
-      state.classify_after,
-    ]),
+  const assertion = contentAssertion(db, `EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND classify_stage=? AND classify_after=?)`, [
+    state.classify_stage,
+    state.classify_after,
+  ]);
+  const results = await db.batch([
+    ...assertion,
     db
       .prepare(
         `INSERT OR IGNORE INTO fact_classes(project_id,table_name,record_id,session_id,class,classified_at)
@@ -75,7 +76,7 @@ export async function classifyLegacyPage(db: RelationalStore, now: number): Prom
         now,
       ),
   ]);
-  return !last;
+  return { more: !last, classified: results[assertion.length]?.meta.changes ?? 0 };
 }
 
 const heldSource = `SELECT base_offset b,base_offset+length e FROM transcript_segments WHERE project_id=t.project_id AND transcript_id=t.transcript_id
@@ -191,9 +192,10 @@ export async function runViewCutoverWake(env: ServerEnv, now: number, readBytes 
     .run();
   let changed = 0;
   let classifying = true;
-  for (let page = 0; classifying && page < CLASSIFY_PAGES_PER_WAKE; page++) {
-    classifying = await classifyLegacyPage(db, now);
-    changed++;
+  for (let pass = 0; classifying && pass < CLASSIFY_PAGES_PER_WAKE; pass++) {
+    const page = await classifyLegacyPage(db, now);
+    classifying = page.more;
+    changed += page.classified;
   }
   const state = await cutoverState(db, now);
   const classified = state.classified_at !== null;
@@ -208,6 +210,7 @@ export async function runViewCutoverWake(env: ServerEnv, now: number, readBytes 
     envelope: productionFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial'),
     cutover: true,
     buildPaused: paused || !classified,
+    mirrorFrontier: false,
   });
   changed += report.changed + report.published;
   const pending = await db

@@ -95,6 +95,7 @@ export function liveFrontierMirrorStatements(
   target: ViewWriteTarget,
   transcriptId?: string,
 ): PreparedStatement[] {
+  if (target.mirrorFrontier === false) return [];
   return [
     db
       .prepare(

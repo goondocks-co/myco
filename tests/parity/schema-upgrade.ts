@@ -18,6 +18,8 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   agent_run_steps: { kind: 'read', outcome: 'ok' },
   session_views: { legacy: 'live' },
   plan_promotions: { state: 'pending' },
+  fact_classes: { table_name: 'prompt_batches', class: 'legacy' },
+  view_instances: { base: 'full', state: 'live' },
 };
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -199,7 +201,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
     const optionalParents = new Set<number>();
     for (const fk of fks) {
       if (optionalParents.has(fk.id)) continue;
-      if (seedTable(fk.table, visiting) === 'empty') {
+      if (fk.table === table || seedTable(fk.table, visiting) === 'empty') {
         const optional = fks.find(part => part.id === fk.id && !values.has(part.from)
           && columns.some(column => column.name === part.from && !column.notnull && !column.pk));
         if (optional === undefined) { visiting.delete(table); return 'empty'; }

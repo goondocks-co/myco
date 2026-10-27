@@ -15,6 +15,16 @@ export const FROZEN_COPY_PAGE_ROWS = 32;
 export const FROZEN_IDENTITY_SCHEME = 'frozen-v1';
 const LOST_CONTEXT = '{"mycoParserViewCheckpoint":1,"mycoParserMeta":null,"mycoParserState":{}}';
 
+/** A retained segment's leading line is a record when it is one complete JSON object, not the tail of a lost one. */
+function completeRecord(line: Uint8Array): boolean {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line));
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 /** The first valid line boundary at or after the legacy frontier, among the bytes still held. */
 async function tailStart(
   env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -33,7 +43,9 @@ async function tailStart(
   for (const segment of segments) {
     const bytes = await segmentBytes(env, segment.object_key, 0);
     const newline = bytes?.indexOf(0x0a) ?? -1;
-    if (newline >= 0) return Math.min(transcript.size, segment.base_offset + newline + 1);
+    if (newline < 0) continue;
+    if (completeRecord(bytes!.subarray(0, newline))) return segment.base_offset;
+    return Math.min(transcript.size, segment.base_offset + newline + 1);
   }
   return transcript.size;
 }
@@ -85,8 +97,8 @@ export async function startFrozenTail(
       .prepare(
         `INSERT INTO view_build_work(project_id,session_id,instance_id,tier,recent_until,session_created_at,started_at)
       SELECT ?,?,?,CASE WHEN COALESCE(MAX(t.last_received_at),0)>? THEN 0 ELSE 1 END,
-      COALESCE(MAX(t.last_received_at),0)+?,s.started_at,? FROM sessions s LEFT JOIN transcripts t
-      ON t.project_id=s.project_id AND t.session_id=s.session_id WHERE s.project_id=? AND s.session_id=? GROUP BY s.started_at`,
+      COALESCE(MAX(t.last_received_at),0)+?,COALESCE(s.started_at,s.first_received_at),? FROM sessions s LEFT JOIN transcripts t
+      ON t.project_id=s.project_id AND t.session_id=s.session_id WHERE s.project_id=? AND s.session_id=? GROUP BY s.started_at,s.first_received_at`,
       )
       .bind(project, session, tail, now - VIEW_RECENT_MS, VIEW_RECENT_MS, now, project, session),
     ...manifestStatements(db, project, session, tail),

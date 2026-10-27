@@ -25,6 +25,6 @@ it('a title-only save retains an administrator status written after its read', a
     expect(updated.ok && { title: updated.row.title, status: updated.row.status }).toEqual({ title: 'New', status: 'completed' });
     const explicit = await savePlan(f.serverEnv, member, scope, { id: created.row.planKey, sessionId: 's', status: 'in_progress' }, 201);
     expect(explicit.ok && explicit.row.status).toBe('in_progress');
-    expect((await changePlanStatus(db, scope, created.row.planKey, 'completed', 'admin', 202))?.status).toBe('completed');
+    expect((await changePlanStatus({ ...f.serverEnv, db }, scope, created.row.planKey, 'completed', 'admin', 202))?.status).toBe('completed');
   } finally { f.sqlite.close(); }
 });

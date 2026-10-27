@@ -48,29 +48,6 @@ it('record and session lookups retain their saved bytes after the frozen origina
   });
 }, 60_000);
 
-it('canonical status changes refuse view-only plans and leave every fact and instance byte unchanged', async () => {
-  await withViewStores(async (db, target) => {
-    await captureViewSession(db);
-    await mirrorViewSession(db, { ...scope, sessionId: 'session', instanceId: 'live', state: 'live' });
-    await publishMirroredSession(db, scope.projectId, 'session', 'live');
-    const recorded = statementRecorder(db, { accounting: target === 'D1' ? 'd1' : 'native' });
-    const snapshot = async () => JSON.stringify(await Promise.all([
-      db.prepare('SELECT * FROM plans WHERE project_id=?').bind(scope.projectId).all(),
-      db.prepare('SELECT * FROM view_plans WHERE project_id=?').bind(scope.projectId).all(),
-      db.prepare('SELECT * FROM embedding_versions WHERE project_id=?').bind(scope.projectId).all(),
-    ]).then(results => results.map(result => result.results)));
-    for (const gone of [false, true]) {
-      if (gone) await db.prepare('DELETE FROM plans WHERE project_id=?').bind(scope.projectId).run();
-      const before = await snapshot();
-      recorded.reset();
-      await expect(changePlanStatus(recorded.db, scope, uuid(50), 'completed', 'member', 2)).rejects.toMatchObject({ code: 'view_plan_requires_promotion' });
-      await recorded.drain();
-      expect(await snapshot(), target + ' gone=' + gone).toBe(before);
-      expect(recorded.statements.filter(row => /UPDATE plans/.test(row.sql)).every(row => (row.changes ?? 0) === 0)).toBe(true);
-    }
-  });
-}, 60_000);
-
 it('canonical status changes preserve unknown, same-status and fact outcomes and the frozen empty-world statement sequence', async () => {
   await withFrozenCIOracle(async oracle => {
     const port = frozenReadPort(oracle);
@@ -80,7 +57,7 @@ it('canonical status changes preserve unknown, same-status and fact outcomes and
         const after = statementRecorder(candidate, { accounting: target === 'D1' ? 'd1' : 'native', captureRows: true });
         await port('plans', 'setPlanStatus', [frozenStatusStore(before.db), scope, key, status, 'member', 2]);
         const expected = await port('plans', 'getPlan', [oracle.replayStore(before.db), scope, key]);
-        expect<unknown>(await changePlanStatus(after.db, scope, key, status, 'member', 2), target + ' ' + key + '/' + status).toEqual(expected);
+        expect<unknown>(await changePlanStatus({ db: after.db, blobs: memoryBlobStore() }, scope, key, status, 'member', 2), target + ' ' + key + '/' + status).toEqual(expected);
         await before.drain(); await after.drain();
         const work = (recorder: typeof before) => recorder.statements.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,changes}) =>
           ({sql:emptyReadSql(sql),binds,method,rows:emptyReadRows(rows),rowCount,rowsRead,rowsWritten,changes}));
@@ -110,7 +87,7 @@ it('fact-only status primitive retains the frozen result and complete empty-worl
   });
 }, 60_000);
 
-it('cold status-only MCP preserves its frozen empty-world statements and refuses published plans by name', async () => {
+it('cold status-only MCP preserves its frozen empty-world statements and promotes a published view plan before its edit', async () => {
   const request = (token:string,key:string,status:string) => new Request('https://s/mcp', {
     method:'POST',headers:memberHeaders(token,{[PROJECT_HEADER]:'project','content-type':'application/json',accept:'application/json, text/event-stream'}),
     body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'myco_plans',arguments:{project:'project',op:'save',id:key,session_id:'session',status}}}),
@@ -137,10 +114,9 @@ it('cold status-only MCP preserves its frozen empty-world statements and refuses
     const {token}=await captureViewSession(db);
     await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'live',state:'live'});
     await publishMirroredSession(db,scope.projectId,'session','live');
-    const before=await getPlan(db,scope,uuid(50));
     const response=await legacyPublicServer(db)(request(token,uuid(50),'completed'));
-    expect(await response.text(),target+' promotion refusal').toContain('view_plan_requires_promotion');
-    expect(await getPlan(db,scope,uuid(50)),target+' unchanged selected plan').toEqual(before);
+    expect(await response.text(),target+' promoted edit').not.toContain('view_plan_requires_promotion');
+    expect((await getPlan(db,scope,uuid(50)))?.status,target+' edited plan').toBe('completed');
   });
 },60_000);
 
