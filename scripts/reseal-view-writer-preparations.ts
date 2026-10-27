@@ -1,5 +1,5 @@
 import legacy from '../tests/myco-server/fixtures/view-read-legacy.json';
-import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports} from '../tests/helpers/view-read-policy.js';
+import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins} from '../tests/helpers/view-read-policy.js';
 import ts from 'typescript-v6';
 import {sealViewReadSource} from './view-read-seal.js';
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
@@ -10,6 +10,9 @@ import { sourceBoundary, type ExceptionClosure, type ParameterCaller } from '../
 import sources from '../tests/helpers/view-writer-preparation-sources.json';
 import { materialWriteInventory } from '../tests/helpers/material-write-inventory.js';
 
+const cataloguesOnly=process.argv.includes('--check-catalogues');
+const check=cataloguesOnly||process.argv.includes('--check');
+if(cataloguesOnly&&process.argv.includes('--observations'))throw new Error('Catalogue checks cannot refresh observations');
 const fixture = 'tests/myco-server/fixtures/view-read-preparations.json';
 const catalogue = 'tests/helpers/view-read-operations.ts';
 const data = JSON.parse(readFileSync(fixture, 'utf8'));
@@ -60,9 +63,14 @@ const closures:ExceptionClosure[]=[], callers:ParameterCaller[]=[];
 const relations=new Map<string,readonly string[]>(), nonSql=new Set<string>();
 const siteKey=(site:{file:string;owner:string;expression:string})=>JSON.stringify([site.file,site.owner,site.expression]);
 const exceptions=[...preparationSourceExceptions.filter((row:{id:string})=>!row.id.startsWith('pr5-')),...additions.map(([id,file,owner,expression,phase])=>({...data.writer.sourceExceptions.find((row:{id:string})=>row.id===id),id,file,owner,expression,phase}))].map(row=>structuredClone(row));
-const errors=sourceBoundary(inputSources,exceptions,preparationFoundationImports,{validateBoundaries:false,captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),captureDependencies:(row,dependencies)=>{row.dependencies=dependencies;},capturePreparation:(site,found)=>relations.set(siteKey(site),found),captureNonSql:site=>nonSql.add(siteKey(site))});
+const errors=cataloguesOnly?[]:sourceBoundary(inputSources,exceptions,preparationFoundationImports,{validateBoundaries:false,captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),captureDependencies:(row,dependencies)=>{row.dependencies=dependencies;},capturePreparation:(site,found)=>relations.set(siteKey(site),found),captureNonSql:site=>nonSql.add(siteKey(site))});
 const unexpected=errors.filter(error=>error.startsWith('packages/')&&!/SQL closure differs|missing frozen SQL closure|SQL exception dependencies differ|unpinned SQL sink argument|SQL sink argument dependencies differ|unpinned open SQL callback|open SQL callback dependencies differ/.test(error));
 if(unexpected.length)throw new Error('SQL source boundary refuses reseal:\n'+unexpected.join('\n'));
+
+if(cataloguesOnly){
+ closures.push(...preparationSourcePins.closures);callers.push(...preparationSourcePins.callers);
+ for(const row of rows)if(!previousByTuple.has(originTuple(row))&&!base.some(held=>originTuple(held)===originTuple(row)))throw new Error('Fresh source derivation required: '+row[0]);
+}
 
 const observationsAt=process.argv.indexOf('--observations');
 const observations: {origin:{id:string;file:string;owner:string;expression:string;phase:string};callers:string[];relations:string[]}[] = observationsAt<0?[]:readFileSync(process.argv[observationsAt+1]!, 'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));
@@ -97,6 +105,7 @@ for(const row of rows){
 data.writer.sourceExceptions=exceptions.filter(row=>JSON.stringify(row)!==JSON.stringify(legacy.sourceExceptions.find(held=>held.id===row.id)));
 data.writer.foundationImports=data.writer.foundationImports.filter((row:unknown)=>!legacy.foundationImports.some(held=>JSON.stringify(held)===JSON.stringify(row)));
 
+for(const row of rows)if(data.extensions.some((extension:{ids:string[]})=>extension.ids.includes(row[0]))&&row[6]?.callerRelations)delete row[6].callerKeys;
 const encoded = JSON.stringify(rows.filter(row=>row[0].startsWith('pr5-')||JSON.stringify(row)!==JSON.stringify(baseByTuple.get(originTuple(row)))));
 data.writer.preparationOrigins = {
   encoding: 'gzip-base64-json',
@@ -169,13 +178,13 @@ const outputs = [
   [classesFile, JSON.stringify(reanchored, null, 2) + '\n'],
 ];
 for (const [file, text] of outputs) {
-  if (process.argv.includes('--check')) {
+  if (check) {
     const held=readFileSync(file!, 'utf8');
     if (file===fixture?JSON.stringify(JSON.parse(held))!==JSON.stringify(data):held!==text) throw new Error('Stale generated preparation catalogue: ' + file);
   } else writeFileSync(file!, text!);
 }
 console.log(
-  JSON.stringify({ origins: additions.length, reads: reads.length, check: process.argv.includes('--check') }),
+  JSON.stringify({ origins: additions.length, reads: reads.length, check, cataloguesOnly }),
 );
 
-await sealViewReadSource({sources:inputSources,exceptions,closures,callers},true,process.argv.includes('--check'));
+if(!cataloguesOnly)await sealViewReadSource({sources:inputSources,exceptions,closures,callers},true,check);

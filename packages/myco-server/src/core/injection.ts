@@ -1,6 +1,5 @@
-import { injectedPromptRecord, withViewReadResponse } from '../read/view-store.js';
+import { injectedPromptRecord, withViewReadResponse, injectionServedIds, injectionSessionRecords, injectionPromptHeld } from '../read/view-store.js';
 import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
-import {injectionServedIds,injectionSessionRecords,injectionPromptHeld} from '../read/view-store.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.

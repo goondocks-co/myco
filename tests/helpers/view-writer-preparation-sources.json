@@ -234,7 +234,7 @@
     "test:fresh sequences follow checkpoint ordinal and source offset across material kinds": "T"
   },
   "packages/myco-server/src/core/prompt-answer-retention.ts": {
-    "promptAnswerRetentionStatements": "H"
+    "promptAnswerRetentionStatements": "W"
   },
   "tests/myco-server/recall.test.ts": {
     "it:sweeps 30-day diagnostics through the scheduled retention job in indexed target batches of 500": "T",
@@ -243,5 +243,9 @@
   "tests/myco-server/helpers/view-worlds.ts": {
     "mirrorConsumerWorld": "T",
     "seedViewConsumerWorld": "T"
+  },
+  "tests/parity/schema-upgrade.test.ts": {
+    "it:keeps required descendants of declared-empty inputs empty and nulls optional composite references": "T",
+    "it:populates valid previous writer inputs and retains the nonempty instance refusal": "T"
   }
 }

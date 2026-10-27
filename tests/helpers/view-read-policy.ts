@@ -7,7 +7,16 @@ import { checkedPreparationOrigins, checkedPreparationSource } from './statement
 
 export const preparationOriginPolicyUrl = new URL('../myco-server/fixtures/view-read-preparations.json', import.meta.url);
 export const preparationOriginEnvelope = policy;
-export const preparationSourceExceptions = [...legacy.sourceExceptions.filter(row=>!policy.writer.sourceExceptions.some(held=>held.id===row.id)),...policy.writer.sourceExceptions];
+export function mergeSourceExceptions<T extends {id:string;dependencies?:unknown}>(frozen:readonly T[],writer:readonly T[]):T[]{
+ const stable=(row:T)=>JSON.stringify(Object.entries(row).filter(([key])=>key!=='dependencies').sort(([a],[b])=>a.localeCompare(b)));
+ const original=new Map(frozen.map(row=>[row.id,row]));
+ for(const row of writer){
+  const held=original.get(row.id);
+  if(held&&stable(held)!==stable(row))throw new Error('Writer source exception may override dependencies only: '+row.id);
+ }
+ return [...frozen.filter(row=>!writer.some(held=>held.id===row.id)),...writer];
+}
+export const preparationSourceExceptions = mergeSourceExceptions(legacy.sourceExceptions,policy.writer.sourceExceptions);
 export const preparationFoundationImports = [...legacy.foundationImports,...policy.writer.foundationImports.filter(row=>!legacy.foundationImports.some(held=>JSON.stringify(held)===JSON.stringify(row)))];
 export const preparationSourcePins = await checkedPreparationSource(policy.sourceClosureProgram);
 const fixtureIds=new Set(policy.extensions.flatMap(entry=>entry.ids));
@@ -21,11 +30,14 @@ export function mergePreparationOrigins(base:readonly PhysicalOrigin[],writer:re
  const overrides=new Map(writer.map(row=>[key(row),row]));
  return base.map(origin=>overrides.get(key(origin))??origin).concat(writer.filter(row=>row.id.startsWith('pr5-')));
 }
-export const preparationOrigins = mergePreparationOrigins(await checkedPreparationOrigins(policy),writerOrigins).map(origin=>{
+export function resolvePreparationOrigins(base:readonly PhysicalOrigin[],writer:readonly PhysicalOrigin[]){
+ return mergePreparationOrigins(base,writer).map(origin=>{
  if(origin.id.startsWith('H:'))return {...origin,relations:[...new Set(SCHEMA_STEPS.flatMap(step=>step.statements.flatMap(protectedRelations)))].sort()};
  if(policy.replayOnly.includes(origin.id))return {...origin,relations:[],...(origin.callerRelations===undefined?{}:{callerRelations:origin.callerRelations.map(context=>({...context,relations:[]}))})};
  return fixtureIds.has(origin.id)&&origin.callerRelations!==undefined?{...origin,callerKeys:fixtureCallerKeys}:origin;
 });
+}
+export const preparationOrigins=resolvePreparationOrigins(await checkedPreparationOrigins(policy),writerOrigins);
 
 /** The candidate source inventory includes tracked and unignored new files. */
 export function preparationSourceInventory(root:string):string[]{

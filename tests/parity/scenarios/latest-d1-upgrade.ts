@@ -15,6 +15,10 @@ export const latestD1Upgrade: ParityScenario = {
   only: 'cloudflare',
   dedicated: { cloudflare: { latestSchemaUpgrade: true }, timeoutMs: 240_000 },
   async run(target) {
+    const version=SCHEMA_STEPS.at(-1)!.version;
+    const status=await fetch(`${target.url}/api/status`,{headers:target.ownerHeaders()});
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({schema:{expected:version,found:version,matches:true}});
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
     for (const [table, column] of [

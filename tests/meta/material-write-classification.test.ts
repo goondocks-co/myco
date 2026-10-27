@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import {classifySourceSealChange} from '../../scripts/view-read-seal.js';
+import {mergeSourceExceptions} from '../helpers/view-read-policy.js';
+import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import { readFileSync, readdirSync } from 'node:fs';
 import ts from 'typescript-v6';
 import classes from '../myco-server/fixtures/material-write-classes.json';
@@ -195,14 +198,15 @@ test('the production generic restore retains its frozen statement without materi
   expect(source).not.toContain('material_integer_invalid');
 });
 
-test('the tracked writer reseal generator reproduces its catalogues without mutating them', () => {
+test('the tracked writer reseal generator reproduces its catalogues from the sealed graph without mutating them', async () => {
   const files=['tests/myco-server/fixtures/view-read-preparations.json','tests/helpers/view-read-operations.ts','tests/myco-server/fixtures/material-write-classes.json'];
   const before=files.map(file=>readFileSync(file));
-  const result=Bun.spawnSync([process.execPath, 'scripts/reseal-view-writer-preparations.ts', '--check'], {
+  const child=Bun.spawn([process.execPath, 'scripts/reseal-view-writer-preparations.ts', '--check-catalogues'], {
     env: process.env, stdout: 'pipe', stderr: 'pipe',
   });
-  expect(new TextDecoder().decode(result.stderr)).toBe('');
-  expect(result.exitCode).toBe(0);
+  const [stderr,,exitCode]=await Promise.all([new Response(child.stderr).text(),new Response(child.stdout).text(),child.exited]);
+  expect(stderr).toBe('');
+  expect(exitCode).toBe(0);
   expect(files.map(file=>readFileSync(file))).toEqual(before);
 });
 
@@ -215,4 +219,23 @@ test('module material writes require their declared operation and target',()=>{
  expect(()=>boundary.check(event)).not.toThrow();
  expect(()=>boundary.check({...event,origin:{kind:'exception',id:'forged',phase:'W',file:row.file,owner:row.owner,expression:row.expression}})).toThrow('material_write_unclassified');
  for(const sql of ['/*vs:M01:turns_listTurns:0*/UPDATE plans SET status=?','/*vs:M10:plans_planInSession:0*/UPDATE events SET payload=?','UPDATE plans SET status=?'])expect(()=>boundary.check({...event,sql})).toThrow('material_write_unclassified');
+});
+
+
+test('an added production SQL tuple requires a named class',()=>{
+ const row={file:'packages/myco-server/src/core/unclassified.ts',owner:'write',expression:'sql',parameters:[],dependencies:[],unresolved:[]};
+ expect(()=>classifySourceSealChange({tupleId:'unclassified',change:'added'},row,[])).toThrow('Classify tuple');
+ for(const [file,owner] of [['packages/myco-server/src/ingest/parse.ts','parseOnce'],['packages/myco-server/src/core/backup.ts','restoreArtifact']]){
+  expect(()=>classifySourceSealChange({tupleId:'unclassified-under-known-owner',change:'added'},{...row,file,owner},[])).toThrow('Classify tuple');
+ }
+});
+
+test('writer source exceptions may change only frozen dependency fingerprints',()=>{
+ const held=legacy.sourceExceptions.find(row=>row.dependencies?.length)!;
+ const row={...held,dependencies:[]};
+ expect(mergeSourceExceptions([held],[row])).toEqual([row]);
+ for(const key of ['phase','expression','file','owner','callers'] as const){
+  const changed={...row,[key]:key==='callers'?['forged']:String(row[key as keyof typeof row])+'-forged'};
+  expect(()=>mergeSourceExceptions([held],[changed])).toThrow('dependencies only');
+ }
 });

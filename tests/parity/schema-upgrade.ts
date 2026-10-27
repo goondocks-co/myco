@@ -9,12 +9,15 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 }
 
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
+const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'] };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
   prompt_context_answers: { outcome: 'served' },
   legacy_worker_audit: { action: 'forgotten' },
   agent_run_attempts: { owner_kind: 'runner' },
   agent_run_steps: { kind: 'read', outcome: 'ok' },
+  session_views: { legacy: 'live' },
+  plan_promotions: { state: 'pending' },
 };
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -182,18 +185,28 @@ export async function firstObservableOmission(statements: readonly string[], att
   throw new Error('no statement of the latest step changes the seeded fixture; seed data it touches');
 }
 
-export function seedReferencedTables(db: Database, statements: readonly string[], includeDescendants = true): string[] {
-  const seedTable = (table: string, visiting: Set<string>): void => {
+export function seedReferencedTables(db: Database, statements: readonly string[], includeDescendants = true, emptyTables: ReadonlySet<string> = new Set()): string[] {
+  const seedTable = (table: string, visiting: Set<string>): 'empty' | void => {
+    if (emptyTables.has(table)) return 'empty';
     if (table.includes('\0')) throw new Error(`unsupported D1 upgrade fixture table ${table}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return;
     if ((db.query(`SELECT COUNT(*) AS count FROM ${sqlIdentifier(table)}`).get() as { count: number }).count > 0) return;
     if (visiting.has(table)) throw new Error(`unsupported D1 upgrade fixture FK cycle at ${table}`);
     visiting.add(table);
     const columns = db.query(`PRAGMA table_info(${sqlIdentifier(table)})`).all() as Array<{ name: string; type: string; notnull: number; dflt_value: unknown; pk: number }>;
-    const fks = db.query(`PRAGMA foreign_key_list(${sqlIdentifier(table)})`).all() as Array<{ table: string; from: string; to: string }>;
-    const values = new Map<string, string | number>(Object.entries(UPGRADE_VALUES[table] ?? {}));
+    const fks = db.query(`PRAGMA foreign_key_list(${sqlIdentifier(table)})`).all() as Array<{ id: number; table: string; from: string; to: string }>;
+    const values = new Map<string, string | number | null>(Object.entries(UPGRADE_VALUES[table] ?? {}));
+    const optionalParents = new Set<number>();
     for (const fk of fks) {
-      seedTable(fk.table, visiting);
+      if (optionalParents.has(fk.id)) continue;
+      if (seedTable(fk.table, visiting) === 'empty') {
+        const optional = fks.find(part => part.id === fk.id && !values.has(part.from)
+          && columns.some(column => column.name === part.from && !column.notnull && !column.pk));
+        if (optional === undefined) { visiting.delete(table); return 'empty'; }
+        values.set(optional.from, null);
+        optionalParents.add(fk.id);
+        continue;
+      }
       const parent = db.query(`SELECT * FROM ${sqlIdentifier(fk.table)} LIMIT 1`).get() as Record<string, string | number> | null;
       if (parent === null) throw new Error(`unsupported D1 upgrade fixture missing FK parent ${fk.table}`);
       const parentKey = fk.to || (db.query(`PRAGMA table_info(${sqlIdentifier(fk.table)})`).all() as Array<{ name: string; pk: number }>).find((column) => column.pk > 0)?.name;
@@ -251,7 +264,7 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, first_received_at, last_received_at, token_id)
         VALUES ('proj_parity', 'upgrade_transcript_read', 'upgrade_session', 'upgrade_machine', 'codex', 10, 10, 5, 1, 1, 'upgrade_token'),
                ('proj_parity', 'upgrade_transcript_unread', 'upgrade_session', 'upgrade_machine', 'codex', 10, 0, 0, 1, 1, 'upgrade_token');`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
+    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION, new Set(EMPTY_UPGRADE_INPUTS[version] ?? []))])];
   } finally { db.close(); }
 }
 

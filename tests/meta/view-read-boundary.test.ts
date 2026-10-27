@@ -1,5 +1,5 @@
 import {LEGACY_ONLY_OPERATIONS} from '@myco-server-worker/read/view-store.js';
-import {mergePreparationOrigins,preparationOrigins,preparationOriginEnvelope,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins,preparationSourceInventory} from '../helpers/view-read-policy.js';
+import {resolvePreparationOrigins,mergePreparationOrigins,preparationOrigins,preparationOriginEnvelope,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins,preparationSourceInventory} from '../helpers/view-read-policy.js';
 import { createHash } from 'node:crypto';
 import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
@@ -1049,15 +1049,15 @@ const FACT_STATUS_CALLERS = [
  'tests/myco-server/dashboard-conversation-honesty.test.ts#it:gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation',
 ] as const;
 
-function planStatusCallerViolations(sources: ReadonlyMap<string,string>): string[] {
- return planStatusCallers(sources).flatMap(row=>row.escape||!['packages/myco-server/src/core/plans.ts#changePlanStatus',...FACT_STATUS_CALLERS].includes(row.file+'#'+row.owner)
+function planStatusCallerViolations(sources: ReadonlyMap<string,string>,calls=planStatusCallers(sources)): string[] {
+ return calls.flatMap(row=>row.escape||!['packages/myco-server/src/core/plans.ts#changePlanStatus',...FACT_STATUS_CALLERS].includes(row.file+'#'+row.owner)
   ?[row.file+':'+row.line+' status primitive bypass '+row.owner]:[]);
 }
 
 test('status primitive has one editorial caller and explicitly fact-only fixture callers',()=>{
  const sources=new Map(['packages/myco-server/src','packages/myco/src','tests'].flatMap(sourceFiles).map(file=>[file,readFileSync(file,'utf8')]));
- expect(planStatusCallerViolations(sources)).toEqual([]);
  const calls=planStatusCallers(sources);
+ expect(planStatusCallerViolations(sources,calls)).toEqual([]);
  expect([...new Set(calls.map(row=>row.file+'#'+row.owner))].sort()).toEqual(['packages/myco-server/src/core/plans.ts#changePlanStatus',...FACT_STATUS_CALLERS].sort());
 });
 
@@ -1083,17 +1083,22 @@ test('the live source seal equals the complete derivation and accounts for every
  const files=preparationSourceInventory(process.cwd());
  const sources=new Map(files.map(file=>[file,readFileSync(file,'utf8')]));
  const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[],dependencyDiffs:unknown[]=[];
+ const derivedDependencies=new Map<string,StatementException['dependencies']>();
  const exceptions=preparationSourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
  sourceBoundary(sources,exceptions,preparationFoundationImports,{
   closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),
-  captureDependencies:(exception,dependencies)=>{if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id);},
+  captureDependencies:(exception,dependencies)=>{derivedDependencies.set(exception.id,dependencies);if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id);},
  });
  expect(dependencyDiffs).toHaveLength(0);
+ const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
+ const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
+ expect(repinned).toHaveLength(16);
+ for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
- expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/view-read-seal.ts').toEqual([]);
+ expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);
  const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
  const changed=sourceSealChanges(historical,derived);
- const classes=new Set(['durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
+ const classes=new Set(['backup and restore SQL','embedding view schema SQL','capture delivery and replay proof SQL','parser presented-date finalization','durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
  const accounted=preparationOriginEnvelope.sourceClosureChanges;
  expect(accounted.map(({reason,...row})=>row).sort((a,b)=>a.tupleId.localeCompare(b.tupleId))).toEqual([...changed].sort((a,b)=>a.tupleId.localeCompare(b.tupleId)));
  expect(accounted.every(row=>classes.has(row.reason))).toBe(true);
@@ -1245,4 +1250,17 @@ test('source capture defers boundary validation without changing its graph',()=>
   expect(checked.errors.some(value=>value.includes(error))).toBe(true);
   expect(sourceBoundary(sources,[tuple],[],captured).some(value=>value.includes(error))).toBe(true);
  }
+});
+
+
+test('fixture caller unions are reconstructed without redundant writer origin keys',async()=>{
+ const base=await checkedPreparationOrigins(preparationOriginEnvelope);
+ const writer=await checkedPreparationOrigins(preparationOriginEnvelope.writer.preparationOrigins);
+ const ids=new Set(preparationOriginEnvelope.extensions.flatMap(row=>row.ids));
+ const keys=preparationSourcePins.callers.map(row=>row.key).sort();
+ const extensions=writer.filter(row=>ids.has(row.id)&&row.callerRelations!==undefined);
+ expect(extensions.length).toBeGreaterThan(0);
+ expect(extensions.every(row=>row.callerKeys===undefined)).toBe(true);
+ const redundant=writer.map(row=>ids.has(row.id)&&row.callerRelations!==undefined?{...row,callerKeys:keys}:row);
+ expect(resolvePreparationOrigins(base,redundant)).toEqual(preparationOrigins);
 });

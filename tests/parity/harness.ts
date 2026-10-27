@@ -68,6 +68,7 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
       await peer?.healthy?.();
     });
     for(const row of observed){
+      if (!scenarioCoversTarget(scenario, row.source.name)) continue;
       await row.target.readTrace();
       if(row.prepares===0)throw new Error('parity_store_unobserved: '+row.source.name+'/'+scenario.name);
       console.log(JSON.stringify({kind:'view_store_scenario_witness',scenario:scenario.name,target:row.source.name,prepares:row.prepares}));
@@ -88,6 +89,10 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
     if (runtime.tail !== '') throw new Error(`${raised}\nruntime output:\n${runtime.tail}`, { cause: error });
     throw error;
   }
+}
+
+export function scenarioCoversTarget(scenario: ParityScenario, target: ParityTarget['name']): boolean {
+  return scenario.only === undefined || scenario.only === target;
 }
 
 export interface ParityScenario {

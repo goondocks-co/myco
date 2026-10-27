@@ -22,7 +22,7 @@ import { repositories } from './scenarios/repositories.ts';
 import { repositoryFailure } from './scenarios/repository-failure.ts';
 import { canopy } from './scenarios/canopy.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
-import { runScenario, type ParityScenario, type ParityTarget } from './harness.ts';
+import { runScenario, scenarioCoversTarget, type ParityScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare, stopCloudflareRuntime } from './targets/cloudflare.ts';
 import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
@@ -120,8 +120,8 @@ if (!process.env.MYCO_PARITY) {
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
     const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);
     for (const { name, boot } of boots) {
-      const targetShared = shared.filter((scenario) => scenario.only === undefined || scenario.only === name);
-      const targetDedicated = dedicated.filter((scenario) => scenario.only === undefined || scenario.only === name);
+      const targetShared = shared.filter((scenario) => scenarioCoversTarget(scenario, name));
+      const targetDedicated = dedicated.filter((scenario) => scenarioCoversTarget(scenario, name));
       if (targetShared.length > 0) {
         describe(`[${name}]`, () => {
           let target: ParityTarget | null = null;

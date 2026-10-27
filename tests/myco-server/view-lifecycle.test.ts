@@ -354,12 +354,14 @@ test('a tail rebuild preserves its frozen parent and start offset with empty con
         .prepare(`SELECT * FROM view_checkpoints WHERE project_id=? AND instance_id=? AND transcript_id=?`)
         .bind('project', build, tx)
         .first<{
+          parser_version: number;
           start_offset: number;
           parsed_offset: number;
           parser_context: string;
           open_prompt_id: string | null;
           lost_context: number;
         }>();
+      expect(checkpoint?.parser_version, name).toBe(PARSER_VERSION);
       expect(checkpoint?.start_offset).toBe(start);
       expect(checkpoint?.parsed_offset).toBe(start);
       expect(checkpoint?.open_prompt_id).toBeNull();

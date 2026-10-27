@@ -241,13 +241,22 @@ describe('Health', () => {
       throughput:{state:'unavailable',reason:'no measured rebuild sample'},preflight:{state:'available',scope:'owner'}}})}));
     mount();
     const views=await screen.findByTestId('session-views');
-    expect(views.textContent).toContain('1 stale');
-    expect(views.textContent).toContain('Myco · Parser work: stale · 4.0 KB behind');
-    expect(views.textContent).toContain('next attempt');
-    expect(views.textContent).toContain('Hosted rebuild projection is unavailable.');
-    expect(views.textContent).toContain('3 retired views');expect(views.textContent).toContain('4 findings');
-    expect(views.textContent).toContain('Unplaced records: unavailable. Coverage not carried: unavailable.');
+    expect(views.textContent).toContain('1 waiting for an update');
+    expect(views.textContent).toContain('Myco · Parser work: waiting for an update · 4.0 KB behind');
+    expect(views.textContent).toContain('tries again at');
+    expect(views.textContent).toContain('There is not enough recent data to estimate how quickly sessions can catch up.');
+    expect(views.textContent).not.toMatch(/net measured|convergence limit|binding constraint|Coverage not carried/);
     expect(views.textContent).not.toContain('private-session-id');
+  });
+
+  it('describes insufficient catch-up capacity without claiming that recordings are falling behind',async()=>{
+    server(routes({'/api/status':()=>Response.json({...STATUS,views:{
+      counts:{current:1},states:[],throughput:{state:'measured',admit:false,binding_constraint:'drain_time'},
+    }})}));
+    mount();
+    const views=await screen.findByTestId('session-views');
+    expect(views.textContent).toContain('Recent samples do not yet show that all sessions can catch up.');
+    expect(views.textContent).not.toContain('falling behind');
   });
 
   it('shows the search index’s upkeep over the last day in one line', async () => {
