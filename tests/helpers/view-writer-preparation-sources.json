@@ -82,7 +82,8 @@
     "test:twelve same-identity replies in descending and mixed order all persist within bounded contention admission": "T",
     "test:exhausted material contention admission is typed and retryable without partial capture": "T",
     "test:material retries continue after four separately committed canonical tag changes": "T",
-    "batch": "T"
+    "batch": "T",
+    "test:material wall exhaustion is typed and retryable without an event or partial capture": "T"
   },
   "packages/myco-server/src/core/material-versions.ts": {
     "readFactVersion": "W",

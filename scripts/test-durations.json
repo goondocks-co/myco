@@ -5,7 +5,7 @@
     "CI 6: pinned Bun 1.4.0 darwin-arm64 with vendored SQLite through npm test. Native-seeded withViewStorePair worlds retain every reader, bound and assertion; local record-proof history 50356.26ms to 5125.11ms, maximum-page sessions 32677.35ms to 20692.27ms, and CI strata replay 25552.54ms to 19470.31ms. Sweep covers all 23 PR test files and 308 recorded JUnit cases from runs 40436321826 and 40439590607; three remaining D1 seeders converted, M21 already converted, two source-analysis checks have no D1 seeding. CI file weights remain unchanged until new Linux measurements; no deadline, world size, bound or assertion reduced. No new test file or parity scenario.",
     "CI 5: pinned Bun 1.4.0 darwin-arm64 with vendored SQLite through npm test. M21 source-closure flip test profiled at 27017.01ms locally before native seeding (D1 fixture seed 18027.19ms, D1 queries/flip 205.63ms), then 8330.88ms after withViewStorePair native seeding. Full view-source-closure file passed 9 tests / 149 assertions in 23192ms driver wall. All 18 target/mode/scope outputs and query/flip assertion bytes match. Earlier Linux run 40439590607 reached the default 60009ms per-test deadline; no deadline changed. Retain the 110000ms CI file weight until a new Linux measurement exists; no new test file or parity scenario.",
     "CI 4: PR 1960 run 40436321826 per-file Linux JUnit totals, rounded up to seconds and bounded by earlier recorded CI process-wall floors, for all 23 test files added or changed by this PR. Other file weights are unchanged. Original three proof files are absent from this input and retain earlier measured CI weights conservatively; seven proof files now run in the required view-proof matrix. No timeout, assertion or bound changed.",
-    "CI 3: pinned Bun 1.4.0 npm driver measured matched local proof bodies: costs 160955\u219211495ms, oracle 145831\u219246155ms, intrinsic 143681\u219252212ms; world sizes, assertion chains and detection controls unchanged. New CI-plan cases measured through npm test: test-shards.test.ts 13274ms body, check-test-shards.test.ts 39144ms body. Updated plan-file weights conservatively project these bodies plus 2000ms startup by the observed Linux/local ratio; runner-guard floor uses CI JUnit 204549ms. No new parity scenario or test file; no deadline or assertion reduced.",
+    "CI 3: pinned Bun 1.4.0 npm driver measured matched local proof bodies: costs 160955→11495ms, oracle 145831→46155ms, intrinsic 143681→52212ms; world sizes, assertion chains and detection controls unchanged. New CI-plan cases measured through npm test: test-shards.test.ts 13274ms body, check-test-shards.test.ts 39144ms body. Updated plan-file weights conservatively project these bodies plus 2000ms startup by the observed Linux/local ratio; runner-guard floor uses CI JUnit 204549ms. No new parity scenario or test file; no deadline or assertion reduced.",
     "CI 3: PR 1960 run 40429126897 JUnit file totals rounded up and never below existing recorded weights. Canceled view files use the maximum measured Linux/local ratio 3.3269 against CI 2 driver-wall allocations (or the retained local weight where no allocation exists), pending completed CI reports. Proof weights retain pre-optimization CI measurements conservatively.",
     "local: #1924 PR 4b.1b CI 2 addendum, pinned Bun 1.4.0 darwin-arm64 and vendored SQLite 3.53.0 through npm test. Search regression and expanded exact-replay/sink-origin controls passed 2 cases / 133 assertions in 3196 ms runner. The three requested selfhosted parity scenarios passed in 2.22 s Bun wall; no additional parity scenario ran. Reintroducing the blanket EXPLAIN throw failed the named origin-control test in 2097 ms and restored exact bytes. Existing boundary 70000 ms and legacy 52000 ms weights retain their measured allowance; no new test file or parity scenario, deadline, shard count, group limit or assertion reduction.",
     "local: #1924 PR 4b.1b correction 1, pinned Bun 1.4.0 darwin-arm64 and vendored SQLite 3.53.0 through npm test. All 14 B owners passed 88 tests: behavior 348647 ms, cost 162483 ms, oracle 147158 ms and legacy 42976 ms command wall. Added correlated-parent output control 3103.04 ms and accepted-loss tail 1115.48 ms; owning file bodies 9325.90 ms / 3366.39 ms. Existing 10000 ms / 5000 ms weights gain twice the new bodies rounded to 17000 ms / 8000 ms. Recorded-plan origin control 938.23 ms and M10-only comparator 0.10 ms retain legacy 52000 ms. Full meta plus strict oracle/records/legacy/shard focus passed in 524138 ms with a trailing source comment and exact restoration; boundary summed bodies 42980.8 ms and the final standalone command 43823 ms. Boundary weight recalibrated from 80000 ms to 70000 ms after removing whole-file pins; this retains the prior contended 53719 ms sample and has no recorded CI floor. The added behavior weights otherwise crossed the six-shard 750000 ms allowance by 56 ms. No new test file or parity scenario, no deadline or assertion changes.",
@@ -147,6 +147,7 @@
     "tests/capture/diagnostics/logger-message-hygiene.test.ts": 222,
     "tests/cli/args.test.ts": 972,
     "tests/cli/confirm.test.ts": 938,
+    "tests/cli/cutover-projects.test.ts": 88811,
     "tests/cli/cutover.test.ts": 157413,
     "tests/cli/daemon-guard.test.ts": 2819,
     "tests/cli/device-login.test.ts": 3566,
@@ -924,6 +925,7 @@
     "tests/service/task-proof.test.ts": 229,
     "tests/service/windows-native-ci-contract.test.ts": 1256,
     "tests/setup/agent-set.test.ts": 8027,
+    "tests/setup/create-sigkill-resume.test.ts": 165421,
     "tests/setup/fixtures.test.ts": 2581,
     "tests/setup/github-signin.test.ts": 5502,
     "tests/setup/infer-role.test.ts": 5412,
@@ -1005,9 +1007,7 @@
     "tests/utils/lock-file-identity.test.ts": 4872,
     "tests/utils/order-stamp.test.ts": 13,
     "tests/utils/repository-name.test.ts": 482,
-    "tests/utils/windows-atomic-replace.test.ts": 12,
-    "tests/setup/create-sigkill-resume.test.ts": 165421,
-    "tests/cli/cutover-projects.test.ts": 88811
+    "tests/utils/windows-atomic-replace.test.ts": 12
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

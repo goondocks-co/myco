@@ -21,7 +21,7 @@ import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { measuredContentEnv, CONTENT_STATEMENT_LIMIT, CONTENT_BLOB_LIMIT } from '@myco-server-worker/core/content-budget.js';
+import { measuredContentEnv, CONTENT_STATEMENT_LIMIT, CONTENT_BLOB_LIMIT, CONTENT_WALL_MS } from '@myco-server-worker/core/content-budget.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 
@@ -772,6 +772,52 @@ test('exhausted material contention admission is typed and retryable without par
           .bind('project', uuid(3500))
           .first(),
       ).toBeNull();
+    }),
+  );
+}, 120000);
+
+test('material wall exhaustion is typed and retryable without an event or partial capture', async () => {
+  await withViewStores(async (db, store) =>
+    withViewWriterDriver(async () => {
+      await captureViewSession(db);
+      const now = Date.now();
+      const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, now);
+      let time = now;
+      let completedStatements = 0;
+      const recorded = statementRecorder(db, {
+        accounting: 'native',
+        after: () => {
+          if (++completedStatements === 1) time = now + CONTENT_WALL_MS + 1;
+        },
+      });
+      const clock = spyOn(Date, 'now').mockImplementation(() => time);
+      try {
+        const error = await ingestPublishedMaterialEvent(
+          { db: recorded.db, blobs: memoryBlobStore() },
+          { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now },
+          envelope({
+            eventId: uuid(3600),
+            sessionId: 'session',
+            kind: 'response',
+            createdAt: 100,
+            payload: { responseId: uuid(3601), promptId: uuid(20), text: 'past deadline' },
+          }),
+        ).catch((error: unknown) => error);
+        expect(completedStatements, store).toBeGreaterThan(0);
+        expect(error, store).toBeInstanceOf(MaterialWriteRetryableError);
+        expect(error, store).toMatchObject({ code: 'material_write_retryable', retryable: true });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(
+        await db.prepare(`SELECT
+          (SELECT COUNT(*) FROM events WHERE project_id=? AND event_id=?) AS events,
+          (SELECT COUNT(*) FROM responses WHERE project_id=? AND response_id=?) AS responses,
+          (SELECT COUNT(*) FROM material_versions WHERE project_id=? AND session_id=? AND kind='response' AND record_id=?) AS versions`)
+          .bind('project', uuid(3600), 'project', uuid(3601), 'project', 'session', uuid(3601))
+          .first(),
+        store,
+      ).toEqual({ events: 0, responses: 0, versions: 0 });
     }),
   );
 }, 120000);
