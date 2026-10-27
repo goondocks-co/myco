@@ -306,7 +306,8 @@
     "assignedCards": "W",
     "completeLearning": "W",
     "readLearningStatus": "W",
-    "dispatchedBeforeResume": "W"
+    "dispatchedBeforeResume": "W",
+    "sessionPublishedStatements": "W"
   },
   "packages/myco-server/src/core/turn-cards.ts": {
     "cardStatements": "W",
@@ -326,6 +327,8 @@
     "ready": "T",
     "it:cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice": "T",
     "it:closes an all-mechanical session without a run and orders sessions newest first": "T",
-    "it:initializes from a cold start through its assertion and carries learned cards to an equal rebuild": "T"
+    "it:initializes from a cold start through its assertion and carries learned cards to an equal rebuild": "T",
+    "it:initializes from a cold start through its assertion": "T",
+    "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T"
   }
 }

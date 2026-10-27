@@ -1,8 +1,9 @@
 /**
  * Stage one of learning: one card per turn, written as turns complete.
  *
- * A turn falls due when its session's next top-level prompt arrives or when it has been quiet (`schema-v106`). Due
- * turns are read through the read module, so a published session and a legacy one are trimmed alike. Code settles
+ * A turn falls due when its session's next top-level prompt arrives, when it has been quiet (`schema-v106`), or when a
+ * publication gives one of its records a newer material version (`sessionPublishedStatements`). Due turns are read
+ * through the read module: a published session from its view's records, a session with no transcript from its facts. Code settles
  * what it can with no model call: a turn whose trimmed input hashes equal to a carded turn of its session reuses that
  * card and its coverage, and a turn the declared triage rules match is carded `none`. The rest go to one cheap run per
  * batch, up to the per-run input budget, and that run writes one card per turn.
@@ -113,32 +114,28 @@ export interface CardRecord {
 }
 
 /**
- * Write one turn's card in a batch guarded on the turn being unchanged after its read. The turn's records take a
- * contiguous block of the session's material sequence, and an unchanged input keeps the card's coverage.
+ * Write one turn's card in a batch guarded on the turn being unchanged after its read. The card's material range is
+ * the current material versions of the records behind it, and an unchanged input keeps its coverage.
  */
 export function cardStatements(
   db: RelationalStore, projectId: string, sessionId: string, record: CardRecord,
   card: { text: string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null },
   now: number,
 ): PreparedStatement[] {
-  const n = record.trimmed.records.length;
-  const key = [projectId, sessionId, record.turnKey];
+  const records = JSON.stringify(record.trimmed.records);
+  const range = (fn: 'MIN' | 'MAX') => `(SELECT ${fn}(v.material_seq) FROM json_each(?) r JOIN material_versions v ON v.project_id = ? AND v.session_id = ?
+    AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]'))`;
   return [
     db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL, claimed_until = NULL,
-        first_seq = (SELECT next_seq FROM learning_sessions WHERE project_id = ? AND session_id = ?),
-        last_seq = (SELECT next_seq + ? - 1 FROM learning_sessions WHERE project_id = ? AND session_id = ?),
+        first_seq = ${range('MIN')}, last_seq = ${range('MAX')},
         records = ?, input_chars = ?, raw_chars = ?, card = ?, signal = ?, signal_reason = ?, shared_with = ?,
         covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ? THEN covered ELSE 0 END,
         input_hash = ?, run_id = ?, model = ?, carded_at = ?
       WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
-      .bind(projectId, sessionId, n, projectId, sessionId,
-        JSON.stringify(record.trimmed.records), record.trimmed.text.length, record.trimmed.rawChars, card.text, card.signal, card.reason, card.sharedWith,
+      .bind(records, projectId, sessionId, records, projectId, sessionId,
+        records, record.trimmed.text.length, record.trimmed.rawChars, card.text, card.signal, card.reason, card.sharedWith,
         card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0, record.inputHash,
-        record.inputHash, card.runId, card.model, now, ...key, record.changes),
-    db.prepare(`UPDATE learning_sessions SET next_seq = next_seq + ?, max_seq = next_seq + ? - 1
-      WHERE project_id = ? AND session_id = ? AND EXISTS (SELECT 1 FROM turn_cards c WHERE c.project_id = ? AND c.session_id = ?
-        AND c.turn_key = ? AND c.carded_at = ? AND c.first_seq = learning_sessions.next_seq)`)
-      .bind(n, n, projectId, sessionId, ...key, now),
+        record.inputHash, card.runId, card.model, now, projectId, sessionId, record.turnKey, record.changes),
   ];
 }
 

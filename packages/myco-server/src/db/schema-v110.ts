@@ -29,7 +29,7 @@ export const V110_STATEMENTS: readonly string[] = [
     'failures INTEGER NOT NULL DEFAULT 0',
     'skipped_by_owner INTEGER NOT NULL DEFAULT 0',
     'handoff TEXT CHECK (handoff IS NULL OR length(CAST(handoff AS BLOB)) <= 4096)',
-    'positions TEXT',
+    'carded_seq INTEGER NOT NULL DEFAULT 0',
     'last_completed_at INTEGER',
     'last_completed_reason TEXT',
   ].map((column) => `ALTER TABLE learning_sessions ADD COLUMN ${column}`),

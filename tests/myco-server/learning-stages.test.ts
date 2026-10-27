@@ -10,11 +10,12 @@ import { settleTurns, writeRunCards, readTurn, type CardFields } from '@myco-ser
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import {
   learningInit, learningInitPending, learningHead, buildLearningAssignment, assignedCards, completeLearning,
-  carryLearnedCardsStatements, readLearningStatus, learningStatusLine,
+  sessionPublishedStatements, readLearningStatus, learningStatusLine,
 } from '@myco-server-worker/core/learning-sessions.js';
-import { buildCardInput, buildLearningInput } from '@myco-server-worker/core/learning-stages.js';
+import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { withViewStores } from './helpers/view-stores.js';
+import { seedViewInstance } from './helpers/view-instances.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -161,7 +162,7 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
   });
 });
 
-it('initializes from a cold start through its assertion and carries learned cards to an equal rebuild', async () => {
+it('initializes from a cold start through its assertion', async () => {
   const f = sqliteEnv();
   try {
     const db = f.db;
@@ -172,14 +173,45 @@ it('initializes from a cold start through its assertion and carries learned card
     expect((await engineAssertions(f.serverEnv, NOW)).map(a => a.name)).toContain('learning:init');
     expect(await learningInit({ db }, NOW)).toEqual({ changed: 1, more: false });
     expect((await engineAssertions(f.serverEnv, NOW)).map(a => a.name)).not.toContain('learning:init');
-    await cardAll(db, 'session', NOW + HOUR, 'proj_1');
-    await db.prepare(`UPDATE turn_cards SET covered = 1`).run();
-    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,state,input_hash,card,signal,covered,created_at,carded_at)
-      SELECT project_id,session_id,'rebuilt','carded',input_hash,card,signal,0,created_at,carded_at FROM turn_cards`).run();
-    await db.batch(carryLearnedCardsStatements(db, 'proj_1', 'session', NOW + 2 * HOUR));
-    expect(await db.prepare(`SELECT covered FROM turn_cards WHERE turn_key='rebuilt'`).first()).toEqual({ covered: 1 });
-    expect(await buildLearningInput(db, 'proj_1', 'session')).toBeNull();
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM turn_cards WHERE state = 'pending'`).first()).toEqual({ n: 1 });
   } finally { f.sqlite.close(); }
+});
+
+it('holds a transcript session until publication, then cards its published view records and re-checks only changed ones', async () => {
+  await withViewStores(async (db) => {
+    await capture(db, 'legacy', [{ id: uuid(61), text: 'legacy prompt', at: 10, replies: ['legacy reply'] }]);
+    await db.prepare(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,first_received_at,last_received_at,token_id)
+      VALUES('project','t','legacy','m','claude-code',1,1,1,'token')`).run();
+    await ready(db);
+    expect(await db.prepare(`SELECT init_state, eligible_at FROM learning_sessions WHERE session_id='legacy'`).first())
+      .toEqual({ init_state: 'awaiting_publication', eligible_at: null });
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM turn_cards WHERE session_id='legacy'`).first()).toEqual({ n: 0 });
+    expect(await learningHolds(db, 'project', 'legacy')).toBe(true);
+
+    await seedViewInstance(db, { projectId: 'project', sessionId: 'legacy', instanceId: 'live', state: 'live' });
+    await db.batch([
+      ...['view_prompts', 'view_responses', 'view_tool_calls', 'view_plans'].map(table =>
+        db.prepare(`UPDATE ${table} SET source_transcript_id='transcript', source_offset=0, source_end=1 WHERE instance_id='live'`)),
+      db.prepare(`INSERT INTO view_visible(project_id,instance_id,session_id,role,precedence) VALUES('project','live','legacy','live',0)`),
+      db.prepare(`INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('project','legacy','live','published',1)`),
+      ...sessionPublishedStatements(db, 'project', 'legacy', NOW),
+    ]);
+    while ((await learningInit({ db }, NOW)).more);
+    await cardAll(db, 'legacy', NOW + HOUR);
+    const view = await db.prepare(`SELECT records, card FROM turn_cards WHERE session_id='legacy' AND turn_key='prompt'`).first<{ records: string; card: string }>();
+    expect(JSON.parse(view!.records)).toEqual([['prompt', 'prompt'], ['response', 'response'], ['tool', 'tool'], ['plan', uuid(50)]]);
+    expect(view!.card).toContain('viewcanary');
+
+    await db.batch([
+      db.prepare(`INSERT INTO material_versions(project_id,session_id,kind,identity,record_id,content_hash,hash_scheme,owner,material_seq)
+        VALUES('project','legacy','response','["response","response"]','response','h','view-content-v1','view',5)`),
+      db.prepare(`UPDATE learning_sessions SET max_seq = 5, next_seq = 6 WHERE session_id = 'legacy'`),
+      ...sessionPublishedStatements(db, 'project', 'legacy', NOW + 2 * HOUR),
+    ]);
+    while ((await learningInit({ db }, NOW + 2 * HOUR)).more);
+    expect(await settleTurns({ db }, 'project', 'legacy', NOW + 2 * HOUR)).toMatchObject({ reused: 1, ruled: 0, forModel: [] });
+    expect(await db.prepare(`SELECT state, last_seq FROM turn_cards WHERE session_id='legacy' AND turn_key='prompt'`).first()).toEqual({ state: 'carded', last_seq: 5 });
+  });
 });
 
 it('triages only mechanical turns by rule', () => {

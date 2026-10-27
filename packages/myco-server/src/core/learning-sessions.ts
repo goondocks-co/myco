@@ -26,7 +26,7 @@ export { LEARNING_TOOL };
  * How initialization treats a session with a transcript that #1924 has not published yet: learned now through the
  * read module, or held until its first publication.
  */
-export const LEGACY_LIVE_POLICY: 'learn_now' | 'awaiting_publication' = 'learn_now';
+export const LEGACY_LIVE_POLICY: 'learn_now' | 'awaiting_publication' = 'awaiting_publication';
 
 export const INIT_DONE_KEY = 'learning.init.done';
 const INIT_CURSOR_KEY = 'learning.init.cursor';
@@ -62,7 +62,8 @@ export function sessionProgressStatements(db: RelationalStore, projectId: string
     db.prepare(`UPDATE learning_sessions SET learned_seq = max_seq, last_completed_at = ?,
         last_completed_reason = CASE WHEN last_completed_at = ? AND last_completed_reason = 'completed' THEN 'completed' ELSE 'no_signal' END
       WHERE project_id = ? AND session_id = ? AND init_state = 'ready' AND pending_cards = 0 AND due_cards = 0
-        AND learned_seq < max_seq`).bind(now, now, ...key),
+        AND EXISTS (SELECT 1 FROM turn_cards c WHERE c.project_id = learning_sessions.project_id AND c.session_id = learning_sessions.session_id
+          AND c.state = 'carded' AND c.carded_at > COALESCE(learning_sessions.last_completed_at, -1))`).bind(now, now, ...key),
   ];
 }
 
@@ -98,16 +99,20 @@ export function initStateFor(sessionClass: SessionClass): 'ready' | 'awaiting_pu
   return sessionClass === 'legacy_live' && LEGACY_LIVE_POLICY === 'awaiting_publication' ? 'awaiting_publication' : 'ready';
 }
 
-/** Make one session ready: every turn it holds becomes due for its card, in its own pages. */
+/**
+ * Make one session ready: each turn it holds without a card row becomes due for its card. Turns are read newest first
+ * and the walk stops at the first page that adds none, so a session made ready again reads only its new turns.
+ */
 async function readySession(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<void> {
   const scope: ReadScope = { projectId };
   let cursor: string | undefined;
   do {
-    const page = await listTurns(db, scope, sessionId, { origins: PROMPT_ORIGINS, limit: TURN_PAGE, ...(cursor === undefined ? {} : { cursor }) });
-    if (page.rows.length > 0)
-      await db.prepare(`INSERT OR IGNORE INTO turn_cards (project_id, session_id, turn_key, due_at, created_at)
+    const page = await listTurns(db, scope, sessionId, { origins: PROMPT_ORIGINS, limit: TURN_PAGE, order: 'DESC', ...(cursor === undefined ? {} : { cursor }) });
+    if (page.rows.length === 0) break;
+    const added = await db.prepare(`INSERT OR IGNORE INTO turn_cards (project_id, session_id, turn_key, due_at, created_at)
         SELECT ?, ?, json_extract(value, '$.id'), json_extract(value, '$.at') + ?, json_extract(value, '$.at') FROM json_each(?)`)
-        .bind(projectId, sessionId, TURN_QUIET_MS, JSON.stringify(page.rows.map((row) => ({ id: row.promptId, at: row.createdAt })))).run();
+      .bind(projectId, sessionId, TURN_QUIET_MS, JSON.stringify(page.rows.map((row) => ({ id: row.promptId, at: row.createdAt })))).run();
+    if ((added.meta.changes ?? 0) === 0) break;
     cursor = page.cursor ?? undefined;
   } while (cursor !== undefined);
   await db.batch([
@@ -159,24 +164,21 @@ export async function learningInit(env: Pick<ServerEnv, 'db'>, now: number): Pro
   return { changed: page.length, more: page.length === INIT_PAGE };
 }
 
-/** A held session becomes pending again at its first publication, so initialization reads its published view. */
-export function sessionPublishedStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET init_state = 'pending' WHERE project_id = ? AND session_id = ? AND init_state = 'awaiting_publication'`)
-    .bind(projectId, sessionId);
-}
-
 /**
- * The carry rule: a turn whose trimmed input hashes equal to a covered card of its session is covered too. A rebuild
- * that leaves what a turn says unchanged is therefore never learned twice, whatever ids or byte ranges its records
- * carry now; a turn the rebuild reads differently is learned again.
+ * What a publication of the session's views adds to its batch. A session held for publication, or one already ready,
+ * becomes pending, so initialization enqueues the turns it holds now; a carded turn any of whose records has a newer
+ * material version than the cards reflect becomes due again, and an unchanged trimmed input then reuses its card.
  */
-export function carryLearnedCardsStatements(db: RelationalStore, projectId: string, sessionId: string, now: number): PreparedStatement[] {
+export function sessionPublishedStatements(db: RelationalStore, projectId: string, sessionId: string, now: number): PreparedStatement[] {
   return [
-    db.prepare(`UPDATE turn_cards SET covered = 1 WHERE project_id = ? AND session_id = ? AND state = 'carded' AND covered = 0
-      AND EXISTS (SELECT 1 FROM turn_cards prior INDEXED BY idx_turn_cards_hash WHERE prior.project_id = turn_cards.project_id
-        AND prior.session_id = turn_cards.session_id AND prior.input_hash = turn_cards.input_hash AND prior.covered = 1)`)
-      .bind(projectId, sessionId),
-    ...sessionProgressStatements(db, projectId, sessionId, now),
+    db.prepare(`UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = ?
+      WHERE project_id = ? AND session_id = ? AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
+        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
+          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
+        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = turn_cards.project_id AND l.session_id = turn_cards.session_id))`)
+      .bind(now, projectId, sessionId),
+    db.prepare(`UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
+      WHERE project_id = ? AND session_id = ? AND init_state IN ('awaiting_publication', 'ready')`).bind(projectId, sessionId),
   ];
 }
 
@@ -242,7 +244,7 @@ export async function assignedCards(db: RelationalStore, projectId: string, sess
 /**
  * Complete a slice in one guarded batch: the progress revision must be the one assigned, and every prompt the slice
  * covers must have been served to this run. The cards whose input is unchanged are covered, their prompts are
- * acknowledged, the handoff is kept, and each transcript's parse position is recorded.
+ * acknowledged, and the handoff is kept.
  */
 export async function completeLearning(
   db: RelationalStore, projectId: string, sessionId: string, runId: string, assignment: LearningAssignment, handoff: string, now: number,
@@ -259,11 +261,10 @@ export async function completeLearning(
   const result = await commitAttributedWrite(db, { projectId },
     db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = ?, last_completed_at = ?, last_completed_reason = 'completed',
         failures = 0, eligible_at = NULL,
-        positions = (SELECT json_group_object(transcript_id, parsed_offset) FROM transcripts WHERE project_id = ? AND session_id = ?),
         learned_seq = MAX(learned_seq, COALESCE((SELECT MAX(c.last_seq) FROM turn_cards c WHERE c.project_id = ? AND c.session_id = ?
           AND c.turn_key IN (SELECT value FROM json_each(?))), learned_seq))
       WHERE project_id = ? AND session_id = ? AND revision = ?`)
-      .bind(handoff, now, projectId, sessionId, projectId, sessionId, turns, projectId, sessionId, assignment.expectedRevision),
+      .bind(handoff, now, projectId, sessionId, turns, projectId, sessionId, assignment.expectedRevision),
     { runId, toolName: LEARNING_TOOL, op: 'complete', recordedAt: now, detail: { session_id: sessionId, cards: cards.length } },
     [
       db.prepare(`UPDATE turn_cards SET covered = 1 WHERE project_id = ? AND session_id = ? AND turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(?))
