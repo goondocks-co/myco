@@ -7,7 +7,7 @@ import {LEGACY_ONLY_OPERATIONS,withViewReadResponse} from '@myco-server-worker/r
 import {statementRecorder,type RecordedStatement} from '../helpers/statement-recorder.js';
 import {readTag} from '../helpers/view-read-contract.js';
 import {VIEW_READ_OPERATIONS} from '../helpers/view-read-operations.js';
-import {withViewStores} from './helpers/view-stores.js';
+import {withViewStorePair} from './helpers/view-stores.js';
 import {mirrorConsumerWorld,mutateOriginalWorld,seedViewConsumerWorld,viewReadWorkloads,viewArityWorkloads} from './helpers/view-worlds.js';
 import {appendViewCostHistory} from './helpers/view-instances.js';
 
@@ -16,8 +16,8 @@ const migrated:string[]=VIEW_READ_OPERATIONS.filter(row=>row.family!==null&&!new
 
 it('every migrated operation retains its independent writer-world output in parent, poison and gone worlds',async()=>{
  const differences:string[]=[];
- await withViewStores(async(db,target)=>{
-  await seedViewConsumerWorld(db);
+ await withViewStorePair('native-D1',seedViewConsumerWorld,async(first,second)=>{
+  for(const [db,target] of [[first,'native'],[second,'D1']] as const){
   const expected=new Map<string,string>();
   const workloads=viewReadWorkloads();
   for(const workload of workloads)expected.set(workload.id,bytes(await workload.read(db)));
@@ -63,14 +63,17 @@ it('every migrated operation retains its independent writer-world output in pare
    }
    expect([...covered].sort(),target+'/'+world+' operation inventory').toEqual(migrated);
   }
- });
+  }
+ },'native');
  expect(differences,'all independent public values and physical source plans').toEqual([]);
 },120_000);
 
 it('actual consumer templates freeze view-history work before larger hidden-instance histories',async()=>{
  const native=new Map<string,{sql:string;bindCount:number;method:RecordedStatement['method']}[]>();
- await withViewStores(async(db,target)=>{
+ await withViewStorePair('native-D1',async db=>{
   await seedViewConsumerWorld(db);await mirrorConsumerWorld(db);await mutateOriginalWorld(db,'gone');
+ },async(first,second)=>{
+  for(const [db,target] of [[first,'native'],[second,'D1']] as const){
   const frozen=new Map<string,{bytes:string;reads:(number|null)[];queries:{sql:string;binds:readonly unknown[];method:RecordedStatement['method']}[]}>();
   const workloads=viewReadWorkloads();
   let previous=0;
@@ -97,7 +100,8 @@ it('actual consumer templates freeze view-history work before larger hidden-inst
     console.info('VIEW_TEMPLATE_HISTORY',JSON.stringify({target,history,workload:workload.id,reads,bound:bound.reads,accounting:target==='D1'?'actual D1 rows_read':'native statement trace; no rows_read attribution'}));
    }
   }
- });
+  }
+ },'native');
 },180_000);
 
 import {COST_MATERIALS,convertedLegacyHistory,hiddenLegacyHistory,survivingFactHistory,SURVIVING_FACT_READ_COEFFICIENT,HIDDEN_LEGACY_READ_COEFFICIENT,type CorpusReadBound} from './helpers/view-read-costs.js';
@@ -125,8 +129,8 @@ for(const rows of [0,5,50,500]){
 
 
 it('empty, maximum and split arities preserve both-target rows and hosted planner limits',async()=>{
- await withViewStores(async(db,target)=>{
-  await seedViewConsumerWorld(db);
+ await withViewStorePair('native-D1',seedViewConsumerWorld,async(first,second)=>{
+  for(const [db,target] of [[first,'native'],[second,'D1']] as const){
   const workloads=viewArityWorkloads(),expected=new Map<string,string>();
   for(const workload of workloads)expected.set(workload.id,bytes(await workload.read(db)));
   await mirrorConsumerWorld(db);
@@ -145,7 +149,8 @@ it('empty, maximum and split arities preserve both-target rows and hosted planne
     }
    }
   }
- });
+  }
+ },'native');
 },180_000);
 
 import {readStatementLimits,jsonDriverOrderViolations,explainReadPlan,viewSourceArmPlans,isolatedViewSources} from './helpers/view-read-costs.js';

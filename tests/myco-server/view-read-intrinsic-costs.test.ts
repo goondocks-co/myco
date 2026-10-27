@@ -68,7 +68,7 @@ for(const axis of ['C','P','K','G'] as const)it('intrinsic '+axis+' freezes per-
    console.info('VIEW_INTRINSIC_COST',JSON.stringify({axis,size,workload:workload.id,target,reads,bounds:frozen,probes,T:0,FTS:'no protected FTS reader in these operations',phase:axis==='G'?'converted sessions until PR 8 cleanup':'current effective corpus'}));
   }
   }
- });
+ },'native');
  }
 },180_000);
 

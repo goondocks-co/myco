@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
-import { groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
+import { groupByDuration, parseShard, selectGroup, selectShard, VIEW_PROOF_FILES } from './test-shards.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -736,11 +736,11 @@ function expandTargets(targets) {
   };
 }
 
-/**
- * Returns node-env phases plus optional DOM args. Whole-suite node runs are
- * split by isolation boundary; explicit target and integration runs stay in
- * one isolated node phase.
- */
+function viewProofPhase(file, options) {
+  return { label: `view proof ${file}`, args: [...options, file], isolate: true, kind: 'view-proof' };
+}
+
+/** Return isolated proof files, node isolation groups and optional DOM arguments. */
 function buildArgs() {
   const { options, targets } = parseForwardedArgs(forwardedArgs);
   const tsxFiles = relativeUnique(findTsxTests(path.join(REPO, 'tests')));
@@ -756,10 +756,12 @@ function buildArgs() {
     const nonDomTargets = [...expanded.nonDom, ...expanded.passthrough];
     const soloTargets = nonDomTargets.filter((file) => fileRequiresSoloNodeProcess(file));
     const soloTargetSet = new Set(soloTargets);
-    const isolatedTargets = nonDomTargets.filter((file) => !soloTargetSet.has(file));
+    const proofTargets = nonDomTargets.filter(file => VIEW_PROOF_FILES.includes(file));
+    const isolatedTargets = nonDomTargets.filter((file) => !soloTargetSet.has(file) && !VIEW_PROOF_FILES.includes(file));
     return {
       nonDomPhases: [
         ...soloTargets.map((file) => soloNodePhaseForFile(file, options)),
+        ...proofTargets.map(file => viewProofPhase(file, options)),
         ...(isolatedTargets.length > 0 ? [{
           label: 'node env',
           args: [...options, ...isolatedTargets, "--path-ignore-patterns=**/*.test.tsx"],
@@ -772,9 +774,11 @@ function buildArgs() {
 
   if (profile !== 'integration') {
     const allTests = relativeUnique(findTests(path.join(REPO, 'tests')));
-    const nonDomFiles = allTests
+    const nodeFiles = allTests
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file));
+    const proofFiles = nodeFiles.filter(file => VIEW_PROOF_FILES.includes(file));
+    const nonDomFiles = nodeFiles.filter(file => !VIEW_PROOF_FILES.includes(file));
     const soloFiles = relativeUnique([
       ...SOLO_NODE_FILES,
       ...nonDomFiles.filter(fileRequiresSoloNodeProcess),
@@ -810,6 +814,7 @@ function buildArgs() {
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, sharedFiles, options),
         ...soloFiles.map((file) => soloNodePhaseForFile(file, options)),
         ...buildIsolatedNodePhases(isolatedTargets, options),
+        ...proofFiles.map(file => viewProofPhase(file, options)),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
     };
@@ -934,13 +939,13 @@ fs.writeFileSync(path.join(RUN_REPORT_DIR, REPORT_OWNER_FILE), JSON.stringify({ 
 runReportDir = RUN_REPORT_DIR;
 pruneRunReports(REPORT_DIR, RUN_REPORT_DIR);
 function reportPath(label) {
-  return path.join(RUN_REPORT_DIR, `${label.replace(/\s+/g, '-')}.junit.xml`);
+  return path.join(RUN_REPORT_DIR, `${bundleSlug(label)}.junit.xml`);
 }
 function logPath(label) {
-  return path.join(RUN_REPORT_DIR, `${label.replace(/\s+/g, '-')}.log`);
+  return path.join(RUN_REPORT_DIR, `${bundleSlug(label)}.log`);
 }
 function hangPath(label) {
-  return path.join(RUN_REPORT_DIR, `${label.replace(/[\s/]+/g, '-')}.hang.txt`);
+  return path.join(RUN_REPORT_DIR, `${bundleSlug(label)}.hang.txt`);
 }
 
 // Groups killed at their wall-clock budget, in run order.
@@ -1519,7 +1524,7 @@ function stripDuplicateReact() {
 }
 
 const testKind = process.env.MYCO_TEST_KIND ?? 'all';
-if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
+if (!['all', 'node', 'dom', 'view-proof'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
 const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const groupLabel = process.env.MYCO_TEST_GROUP;
 delete process.env.MYCO_TEST_GROUP;
@@ -1540,16 +1545,16 @@ const groupFiles = (args) => args
 const estimate = (files) => Math.max(1, files.reduce((sum, file) => sum + (durations.files[file] ?? DEFAULT_FILE_DURATION_MS), 0));
 const built = buildArgs();
 const candidates = [
-  ...(testKind === 'dom' ? [] : built.nonDomPhases.map((phase) => ({ ...phase, kind: 'node' }))),
-  ...(testKind === 'node' || built.dom === null ? [] : testFiles(built.dom).map((file) => ({
+  ...built.nonDomPhases.map((phase) => ({ ...phase, kind: phase.kind ?? 'node' })),
+  ...(built.dom === null ? [] : testFiles(built.dom).map((file) => ({
     label: file, args: [file], isolate: true, kind: 'dom',
   }))),
-];
+].filter(phase => testKind === 'all' || phase.kind === testKind);
 const selected = selectGroup(
   selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args))),
   groupLabel,
 );
-const nonDomPhases = selected.filter((phase) => phase.kind === 'node');
+const nonDomPhases = selected.filter((phase) => phase.kind !== 'dom');
 const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
 const dom = selectedDomFiles.length > 0
   ? [...built.dom.filter((arg) => !testFiles([arg]).length), ...selectedDomFiles]

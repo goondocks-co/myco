@@ -1,10 +1,28 @@
 import { expect, it } from 'bun:test';
 import { parse } from 'yaml';
-import { assertJobHeadroom, auditJobHeadroom } from '../../scripts/check-test-shards.mjs';
+import { assertJobHeadroom, auditJobHeadroom, auditViewProofJob } from '../../scripts/check-test-shards.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+it('requires the complete view proof matrix, its execution and measured headroom', () => {
+  const workflow = () => parse(fs.readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const durations = JSON.parse(fs.readFileSync('scripts/test-durations.json', 'utf8'));
+  const original = workflow();
+  const proofs = original.jobs['view-proof'].strategy.matrix.file.map((file: string) => ({ label: file, estimatedMs: durations.files[file] }));
+  expect(() => auditViewProofJob(original, durations, proofs)).not.toThrow();
+  const missing = workflow(); missing.jobs['view-proof'].strategy.matrix.file.pop();
+  expect(() => auditViewProofJob(missing, durations, proofs)).toThrow('every proof file');
+  const optional = workflow(); optional.jobs.check.needs = optional.jobs.check.needs.filter((name: string) => name !== 'view-proof');
+  expect(() => auditViewProofJob(optional, durations, proofs)).toThrow('must be required');
+  const skipped = workflow(); skipped.jobs['view-proof'].if = 'false';
+  expect(() => auditViewProofJob(skipped, durations, proofs)).toThrow('must always run');
+  const inert = workflow(); inert.jobs['view-proof'].steps.find((step: {run?: string}) => step.run === 'npm test').if = 'false';
+  expect(() => auditViewProofJob(inert, durations, proofs)).toThrow('unconditionally');
+  const short = workflow(); short.jobs['view-proof']['timeout-minutes'] = 10;
+  expect(() => auditViewProofJob(short, durations, proofs)).toThrow('50%');
+});
 
 it('audits every shard through the runner without writing a parity manifest outside its root', () => {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'shard-audit-reports-'));

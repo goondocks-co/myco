@@ -52,11 +52,11 @@ export async function captureViewSession(db: RelationalStore, projectId = 'proje
 }
 
 /** Independent copies retain the canonical ids and revisions minted by the fixture's writers. */
-export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(db:RelationalStore)=>Promise<unknown>,run:(baseline:RelationalStore,candidate:RelationalStore)=>Promise<void>):Promise<void>{
+export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(db:RelationalStore)=>Promise<unknown>,run:(baseline:RelationalStore,candidate:RelationalStore)=>Promise<void>,seedTarget:'native'|'D1'='D1'):Promise<void>{
  const initialize=async(db:RelationalStore)=>{
   for(const step of SCHEMA_STEPS)await db.batch(step.statements.map(sql=>db.prepare(sql)));
   await createProject(db,'project','project',1);await createProject(db,'other','other',1);
-  await seed(db);
+  if(target==='native'||seedTarget==='D1')await seed(db);
  };
  if(target==='native'){
   const source=new Database(':memory:');let candidate:Database|undefined;
@@ -71,18 +71,26 @@ export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(d
  }
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-view-pair-'));
  const boot=(persist:string)=>new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-01',d1Databases:{DB:'00000000-0000-4000-8000-000000000001'},resourcePersistencePath:persist}));
+ const physicalFile=(persist:string)=>{
+  const directory=path.join(persist,'d1','miniflare-D1DatabaseObject');
+  const files=fs.readdirSync(directory).filter(file=>/^[a-f0-9]{64}\.sqlite$/.test(file));
+  if(files.length!==1)throw new Error('Writer fixture requires one physical D1 database');
+  return path.join(directory,files[0]!);
+ };
  let source:InstanceType<typeof Miniflare>|undefined,baseline:InstanceType<typeof Miniflare>|undefined,candidate:InstanceType<typeof Miniflare>|undefined,nativeClone:Database|undefined;
  try{
   const original=path.join(root,'source');source=boot(original);
   await initialize(await source.getD1Database('DB'));
   await source.dispose();source=undefined;
+  if(seedTarget==='native'){
+   const writer=new Database(physicalFile(original));
+   try{writer.exec('PRAGMA foreign_keys=ON');await seed(sqliteRelationalStore(writer));}
+   finally{writer.close();}
+  }
   const first=path.join(root,'baseline'),second=path.join(root,'candidate');
   fs.cpSync(original,first,{recursive:true});fs.cpSync(original,second,{recursive:true});
   if(target==='native-D1'){
-   const d1=path.join(original,'d1','miniflare-D1DatabaseObject');
-   const files=fs.readdirSync(d1).filter(file=>/^[a-f0-9]{64}\.sqlite$/.test(file));
-   if(files.length!==1)throw new Error('Writer fixture requires one physical D1 database');
-   nativeClone=new Database(path.join(first,'d1','miniflare-D1DatabaseObject',files[0]!));
+   nativeClone=new Database(physicalFile(first));
    nativeClone.exec('PRAGMA foreign_keys=ON');candidate=boot(second);
    await run(sqliteRelationalStore(nativeClone),await candidate.getD1Database('DB'));
   }else{

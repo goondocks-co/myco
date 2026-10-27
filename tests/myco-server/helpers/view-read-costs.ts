@@ -1,7 +1,7 @@
 import {expect} from 'bun:test';
 import {sessionCounts} from '@myco-server-worker/read/sessions.js';
 import {statementRecorder,type RecordedStatement} from '../../helpers/statement-recorder.js';
-import {withViewStores,captureViewSession} from './view-stores.js';
+import {withViewStorePair,captureViewSession} from './view-stores.js';
 import {mirrorViewSession,publishMirroredSession,appendViewCostHistory,keepSurvivingFacts} from './view-instances.js';
 import { LEGACY_ONLY_OPERATIONS, legacyProjection } from '@myco-server-worker/read/view-store.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -273,10 +273,12 @@ export async function convertedLegacyHistory(material:CostMaterial):Promise<void
   const bounds=new Map<string,FrozenBound>();
   let wholeRelative:number|undefined;
   const native=new Map<number,Awaited<ReturnType<typeof countWork>>>();
-  for(const history of histories)await withViewStores(async(db,target)=>{
+  for(const history of histories)await withViewStorePair('native-D1',async db=>{
     const issued=await captureViewSession(db,'project',session,{parsedMaterial:true});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',state:'live'});
     await appendCostHistory(db,{...scope,sessionId:session,tokenId:issued.tokenId,material,from:0,through:history});
+  },async(first,second)=>{
+   for(const [db,target] of [[first,'native'],[second,'D1']] as const){
     const legacy=await countWork(db,target);
     expect(legacy.result).toEqual({...counts,[material.key]:history+1});
     await publishMirroredSession(db,scope.projectId,session,'live');
@@ -321,7 +323,8 @@ export async function convertedLegacyHistory(material:CostMaterial):Promise<void
       expect(read).toBeLessThanOrEqual(2*prior+wholeRelative!);
       console.info('VIEW_B4B_OPERATION',JSON.stringify({table:material.table,history,rowsRead:read,legacyRowsRead:prior,relative:wholeRelative}));
     }
-  });
+   }
+  },'native');
 }
 
 export interface CorpusReadBound {coefficient:number;intercept:number}
@@ -338,15 +341,15 @@ async function viewSideHistory(world:{axis:'hidden legacy G'|'surviving-fact R';
   const {rows}=world;
   const factsOnly=world.axis==='surviving-fact R';
   const native=new Map<number,Awaited<ReturnType<typeof countWork>>>();
-  await withViewStores(async(db,target)=>{
+  const sources=[
+    {...scope,sessionId:session,instanceId:'parent'},
+    {...scope,sessionId:'nuisance',instanceId:'other-session'},
+    {projectId:'other',sessionId:session,instanceId:'other-project'},
+  ];
+  await withViewStorePair('native-D1',async db=>{
     const issued=await captureViewSession(db,'project',session,{parsedMaterial:true});
     await captureViewSession(db,'project','nuisance',{idOffset:8000000});
     await captureViewSession(db,'other',session);
-    const sources=[
-      {...scope,sessionId:session,instanceId:'parent'},
-      {...scope,sessionId:'nuisance',instanceId:'other-session'},
-      {projectId:'other',sessionId:session,instanceId:'other-project'},
-    ];
     await mirrorViewSession(db,{...sources[0]!,state:'frozen'});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',parent:'parent',state:'live'});
     for(const source of sources.slice(1))await mirrorViewSession(db,{...source,state:'retired'});
@@ -356,6 +359,8 @@ async function viewSideHistory(world:{axis:'hidden legacy G'|'surviving-fact R';
     }
     await publishMirroredSession(db,scope.projectId,session,'live','parent');
     if(factsOnly)await keepSurvivingFacts(db,scope.projectId,session);
+  },async(first,second)=>{
+   for(const [db,target] of [[first,'native'],[second,'D1']] as const){
     const visible=1+(factsOnly?rows:0);
     const expected={...counts,prompts:visible,responses:visible,toolCalls:visible,plans:visible};
     const bound=new Map<string,number>();
@@ -406,12 +411,13 @@ async function viewSideHistory(world:{axis:'hidden legacy G'|'surviving-fact R';
         expect(read,'whole-operation zero view-H coefficient').toBeLessThanOrEqual(operationBound!);
       }
     }
-  });
+   }
+  },'native');
 }
 
 export async function foreignLegacyHistory():Promise<void>{
   const native=new Map<number,Awaited<ReturnType<typeof countWork>>>(),bounds=new Map<string,number>();
-  for(const history of histories)await withViewStores(async(db,target)=>{
+  for(const history of histories)await withViewStorePair('native-D1',async db=>{
     await captureViewSession(db,'project',session,{parsedMaterial:true});
     await mirrorViewSession(db,{...scope,sessionId:session,instanceId:'live',state:'live'});
     await publishMirroredSession(db,scope.projectId,session,'live');
@@ -421,6 +427,8 @@ export async function foreignLegacyHistory():Promise<void>{
       for(const material of COST_MATERIALS)await appendCostHistory(db,{...source,tokenId:issued.tokenId,material,idBase:2000000,from:0,through:history/8});
       await publishMirroredSession(db,source.projectId,source.sessionId,'foreign-live');
     }
+  },async(first,second)=>{
+   for(const [db,target] of [[first,'native'],[second,'D1']] as const){
     const work=await countWork(db,target);
     expect(work.result).toEqual(counts);
     if(target==='native')native.set(history,work);
@@ -445,7 +453,8 @@ export async function foreignLegacyHistory():Promise<void>{
         }
       }
     }
-  });
+   }
+  },'native');
 }
 
 /** Catalogue comparisons align only each program's declared schema stamp. */
