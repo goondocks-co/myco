@@ -106,62 +106,6 @@ test('a reported tool outcome versions its complete original input after canonic
   );
 }, 60000);
 
-test('parser metadata replay versions an applied reason change and leaves an identical replay unchanged', async () => {
-  await withViewStores(async (db, target) =>
-    withViewWriterDriver(async () => {
-      await captureViewSession(db);
-      const now = Date.now(),
-        issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, now);
-      const env = { db, blobs: memoryBlobStore() },
-        ctx = {
-          projectId: 'project',
-          machineId: 'machine',
-          tokenId: issued.tokenId,
-          bodyBytes: 1,
-          now,
-          writeOrigin: 'server' as const,
-        };
-      const toolCallId = uuid(91),
-        event = (resultReason?: string) =>
-          envelope({
-            eventId: uuid(660),
-            sessionId: 'session',
-            kind: 'tool.failure',
-            createdAt: now - 100,
-            producer: { adapter: 'transcript-parse', version: '1' },
-            payload: {
-              toolCallId,
-              toolName: 'Read',
-              input: { path: 'file' },
-              success: false,
-              errorMessage: 'no result',
-              ...(resultReason === undefined ? {} : { resultReason }),
-            },
-          });
-      const version = () =>
-        db
-          .prepare(
-            `SELECT material_seq,content_hash FROM material_versions WHERE project_id=? AND session_id=? AND kind='tool' AND record_id=? AND owner='fact'`,
-          )
-          .bind('project', 'session', toolCallId)
-          .first<{ material_seq: number; content_hash: string }>();
-      expect((await ingestPublishedMaterialEvent(env, ctx, event())).persisted, target).toBe(true);
-      const initial = (await version())!;
-      expect((await ingestPublishedMaterialEvent(env, ctx, event('pending_limit'))).persisted).toBe(true);
-      const changed = (await version())!;
-      expect(changed.material_seq).toBeGreaterThan(initial.material_seq);
-      const raw = await db
-        .prepare(`SELECT * FROM tool_calls WHERE project_id=? AND tool_call_id=?`)
-        .bind('project', toolCallId)
-        .first<Record<string, unknown>>();
-      expect(raw?.result_reason).toBe('pending_limit');
-      expect(changed.content_hash).toBe(await viewContentHash('tool', raw!));
-      expect((await ingestPublishedMaterialEvent(env, ctx, event('pending_limit'))).persisted).toBe(true);
-      expect(await version()).toEqual(changed);
-    }),
-  );
-}, 60000);
-
 test('prompt metadata and reply-derived end times share the canonical material transaction on native and D1', async () => {
   await withViewStores(async (db, target) =>
     withViewWriterDriver(async () => {

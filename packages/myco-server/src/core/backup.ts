@@ -104,7 +104,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
-  'backup_restore_progress', 'recovery_forget_commands',
+  'backup_restore_progress', 'recovery_forget_commands', 'cutover_progress',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots',

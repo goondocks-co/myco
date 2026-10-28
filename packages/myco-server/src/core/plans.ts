@@ -16,7 +16,9 @@ import { ingestEvent,type IngestContext,type IngestResult } from '../ingest/even
 import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
 import { editablePlan, withViewReadResponse } from '../read/view-store.js';
 import type { ReadScope } from '../read/scope.js';
-import type { RelationalStore, ServerEnv } from './adapters.js';
+import { promoteViewPlan } from '../ingest/view-plan-promotion.js';
+import { ViewReadRefusal } from './read-refusals.js';
+import type { ServerEnv } from './adapters.js';
 
 /** What the `plan` events the tool emits say produced them. */
 export const MCP_PRODUCER = { adapter: 'mcp', version: String(SERVER_PROTOCOL) } as const;
@@ -63,7 +65,13 @@ export function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unkno
 
   const planKey = await planKeyFor(scope.projectId, input);
   if (planKey === null) return { ok: false, error: 'source_path or plan_key is required when creating a new plan' };
-  const existing = await editablePlan(env.db, scope, planKey);
+  let existing: ProjectPlanRow | null;
+  try {
+    existing = await editablePlan(env.db, scope, planKey);
+  } catch (error) {
+    if (error instanceof ViewReadRefusal && error.code === 'view_plan_requires_promotion') return { ok: false, code: error.code, error: error.message };
+    throw error;
+  }
   if (input.id !== undefined && existing === null) return { ok: false, error: 'Plan not found' };
 
   const text = input.content ?? existing?.content ?? null;
@@ -100,9 +108,17 @@ export function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unkno
 export const savePlan=createPlanSave((env,ctx,body)=>ingestEvent(env.db,ctx,body));
 
 /** Sets a plan's status as an administrative edit by a member and answers the row as it stands; null when no such plan sits in the scope. */
-export async function changePlanStatus(db: RelationalStore, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {
-  return withViewReadResponse(db, () => nowMs, async bound => {
-    await setPlanStatus(bound, scope, planKey, status, by, nowMs);
-    return editablePlan(bound, scope, planKey);
-  });
+export async function changePlanStatus(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {
+  for (let promoted = false; ; promoted = true) {
+    try {
+      return await withViewReadResponse(env.db, () => nowMs, async bound => {
+        await setPlanStatus(bound, scope, planKey, status, by, nowMs);
+        return editablePlan(bound, scope, planKey);
+      });
+    } catch (error) {
+      // An edit that meets a view plan promotes it to a fact and runs once more against the fact.
+      if (promoted || !(error instanceof ViewReadRefusal) || error.code !== 'view_plan_requires_promotion'
+        || !(await promoteViewPlan(env, scope, planKey, nowMs))) throw error;
+    }
+  }
 }

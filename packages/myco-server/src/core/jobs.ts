@@ -107,7 +107,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'transcript-parse',
     runsThrough: 'idle',
-    converges: 'every held transcript has been read into its rows, terminal calls and turns are closed, and older parser cursors are replayed or name unavailable source bytes; a transcript nothing can parse names its failure',
+    converges: 'every held transcript has been read into its rows, terminal calls and turns are closed, and older parser cursors are replayed or name unavailable source bytes; a transcript nothing can parse names its failure; every parser row is classified, and every session with a parser-read transcript has a published view built from its bytes, or a frozen derivation and tail where bytes were lost, unless the database is near its size limit',
   },
   {
     name: 'session-titling',
