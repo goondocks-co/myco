@@ -1317,6 +1317,54 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
   ).bind(...excluded).first<ClaimCandidate>();
 }
 
+/** A task name as an SQL literal: catalogue task names only, quoted. */
+const taskLiteral = (task: string): string => `'${task.replaceAll("'", "''")}'`;
+
+/**
+ * Whether `task` passes every dispatch limit against the load the statement reads, as `heldBy` decides it
+ * (`core/limits.ts`). The limits are the settings the claim's settings guard fences, so a probe carrying this term
+ * evaluates live capacity inside the write.
+ */
+export function limitPassesSql(task: string, limits: DispatchLimits, now: number): string {
+  const bound = (value: number | null) => value === null ? null : Math.floor(value);
+  const t = taskLiteral(task);
+  const terms = [
+    bound(limits.fleet) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.fleet)}`,
+    bound(limits.concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.concurrent_runs)}`,
+    bound(limits.task_concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ${t}) < ${bound(limits.task_concurrent_runs)}`,
+    bound(limits.task_runs_per_hour) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE task = ${t} AND started_at IS NOT NULL AND started_at >= ${Math.floor(now - 3_600_000)}) < ${bound(limits.task_runs_per_hour)}`,
+  ].filter((term): term is string => term !== null);
+  return terms.length === 0 ? '1' : `(${terms.join(' AND ')})`;
+}
+
+/** A pulled run the claim creates: its identity, single-flight subject, built input and its stage's reassertion. */
+export interface PulledCandidate {
+  projectId: string;
+  id: string;
+  task: string;
+  subject: string;
+  input: ClaimedInput;
+  /** The selection the stage reasserts inside the write: level, head and fairness. */
+  reassertion: { sql: string; params: unknown[] };
+}
+
+/**
+ * The pulled form's admission: the queued form's limits, project gates, money, learning fence and settings guard,
+ * evaluated over the row the INSERT would write, plus single flight on the subject and the stage's reassertion.
+ */
+export function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
+  const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
+  return {
+    sql: `EXISTS (SELECT 1 FROM (SELECT ? AS project_id, ? AS id, ? AS task, 'automatic' AS origin) agent_runs
+      WHERE NOT EXISTS (SELECT 1 FROM agent_runs existing WHERE existing.project_id = ? AND existing.id = ?)
+        AND NOT EXISTS (SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
+          WHERE flight.task = ? AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject = ?)
+        AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}) AND (${pull.reassertion.sql}))`,
+    params: [pull.projectId, pull.id, pull.task, pull.projectId, pull.id, pull.task, pull.subject,
+      ...admissionParams({ projectId: pull.projectId }, pull.task, pull.id, admission), ...money.params, ...(admission.settingsGuard?.params ?? []), ...pull.reassertion.params],
+  };
+}
+
 /** The queued row and all launch limits required by both credential minting and claim. */
 export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
   const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
@@ -1336,7 +1384,7 @@ export function workerClaimPredicate(candidate: ClaimCandidate, admission: Write
  * The attempt the claim starts is recorded in the same batch, and only where the
  * claim landed (`core/run-steps.ts`).
  */
-export { claimWorkerRun as claimQueuedRun } from './worker-claim.js';
+export { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 
 /** The claim admission and the runner gate as one condition, for the statements a claim's batch must land together. */
 export function workerClaimAdmission(candidate: ClaimCandidate, admission: WriteAdmission, worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
@@ -1445,20 +1493,25 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
   return results.map(({ leasedBy, leasedRunnerId, leasedRunnerCredentialId, ...row }) => ({ ...row, owner: leaseOwnerOf({ leasedBy, leasedRunnerId, leasedRunnerCredentialId }) }));
 }
 
-/** Settle an expired attempt under its exact owner, attempt identity and persisted learning policy. */
+/** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
+export const LEASE_LAPSED = 'lease_lapsed';
+
+/** Settle an expired attempt under its exact owner, attempt identity and persisted learning policy; paused learning and subject runs end instead of requeuing. */
 export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, attemptId: string | null, now: number): Promise<boolean> {
   const named = owner === null ? 'leased_by IS NULL AND leased_runner_id IS NULL'
     : owner.kind === 'member' ? 'leased_by = ? AND leased_runner_id IS NULL' : 'leased_by IS NULL AND leased_runner_id = ? AND leased_runner_credential_id = ?';
   const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
   const paused = pausedLearningSql('task');
+  const ends = `(${paused} OR subject IS NOT NULL)`;
   const result = await db.prepare(
-    `UPDATE agent_runs SET status = CASE WHEN ${paused} THEN 'failed' ELSE 'queued' END,
-        completed_at = CASE WHEN ${paused} THEN ? ELSE completed_at END,
-        error_code = CASE WHEN ${paused} THEN '${LEARNING_PAUSED}' ELSE error_code END,
-        error = CASE WHEN ${paused} THEN 'Learning is paused until whole-session reading ships' ELSE error END,
-        dispatched_by = CASE WHEN ${paused} THEN dispatched_by ELSE NULL END,
-        started_at = CASE WHEN ${paused} THEN started_at ELSE NULL END,
-        held_by = CASE WHEN ${paused} THEN NULL ELSE 'worker' END,
+    `UPDATE agent_runs SET status = CASE WHEN ${ends} THEN 'failed' ELSE 'queued' END,
+        completed_at = CASE WHEN ${ends} THEN ? ELSE completed_at END,
+        error_code = CASE WHEN ${paused} THEN '${LEARNING_PAUSED}' WHEN ${ends} THEN '${LEASE_LAPSED}' ELSE error_code END,
+        error = CASE WHEN ${paused} THEN 'Learning is paused until whole-session reading ships'
+          WHEN ${ends} THEN 'The lease lapsed; the work stays due and is pulled again' ELSE error END,
+        dispatched_by = CASE WHEN ${ends} THEN dispatched_by ELSE NULL END,
+        started_at = CASE WHEN ${ends} THEN started_at ELSE NULL END,
+        held_by = CASE WHEN ${ends} THEN NULL ELSE 'worker' END,
         leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
       WHERE project_id = ? AND id = ? AND status = 'running' AND ${named}
         AND dispatched_by IS ? AND lease_expires_at <= ?`,

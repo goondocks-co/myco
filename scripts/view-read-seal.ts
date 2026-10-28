@@ -60,6 +60,7 @@ export function classifySourceSealChange(
   f.endsWith('/core/attention-state.ts')||f.endsWith('/read/meta.ts')?'bounded refusal/status metadata':
   f.endsWith('/server/sql-dump.ts')?'SQL identifier dependency fingerprint':
   f.endsWith('/thin-learning-admission.test.ts')||deps.some(p=>/\/(?:db\/thin-learning-admission|db\/schema-v104)\.ts$/.test(p.file))?'schema 104 admission projection':
+  /\/core\/(?:pulled-stages|worker-claim|run-budget|runs|harness)\.ts$/.test(f)&&change.change==='added'?'pull-at-claim claim capability':
   f.startsWith('tests/')&&(f.includes('view-')||f.endsWith('/statement-recorder.ts'))?'focused view fixtures':
   f.startsWith('packages/myco-server/src/read/')||deps.some(p=>/\/(?:read\/(?:processed|prompts|search|turns|extraction-coverage|embedding|sessions|session-activity|children|kpis)|core\/(?:release-provenance|search-index))\.ts$/.test(p.file))?'module-owned read preparation':
   change.change==='added'&&f.startsWith('tests/')?'writer-shaped fixture instrumentation':

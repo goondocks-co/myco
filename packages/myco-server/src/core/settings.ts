@@ -758,6 +758,9 @@ function projectWorkSql(project: string, admission = ''): string {
     WHERE capability_project.project_id = ${project} AND capability_project.archived_at IS NULL ${admission})`;
 }
 
+/** A live Project's admission to intelligence work, for the Project the SQL expression `project` names. */
+export const projectAcceptsWorkSql = (project: string): string => projectWorkSql(project);
+
 /** A live Project's admission to intelligence work, bound as: Project. */
 export const PROJECT_WORK_SQL = projectWorkSql('?');
 

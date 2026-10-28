@@ -238,6 +238,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: 'Activation requires a valid pause boundary and drained thin extraction dispatches.' },
   { step: 104, sql: 'DROP TABLE _v104_guard_thin_learning',
     reason: 'The temporary admission guard is released after validation.' },
+  { step: 109, sql: 'ALTER TABLE agent_runs ADD COLUMN subject TEXT',
+    reason: 'Runs retain the single-flight subject a pulled or subject-bearing claim writes.' },
 ];
 const IDENTIFIER = '(?:[a-zA-Z_][a-zA-Z_0-9]*|"[^"]+"|`[^`]+`|\\[[^\\]]+\\])';
 const QUALIFIED_IDENTIFIER = `(?:${IDENTIFIER}\\s*\\.\\s*)?${IDENTIFIER}`;

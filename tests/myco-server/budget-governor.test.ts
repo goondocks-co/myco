@@ -17,6 +17,10 @@ import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-ru
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
+import { PULLED_STAGES, installPulledStages, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
+import { expireLeases } from '@myco-server-worker/core/harness.js';
+import type { WorkerPrincipal } from '@myco-server-worker/core/worker-lease.js';
+import { PULL_FIXTURE_TABLE, testPulledStage } from '../helpers/pulled-test-stage.js';
 
 it('governs across Projects atomically and lets manual work spend past the budget',async()=>{
   const f=await budgetFixture();
@@ -340,5 +344,223 @@ it('returns no admitted head for an unaffordable forecast while affordable and m
     expect(await poll(f.now+2)).toMatchObject({claimed:true,run:{id:'affordable'}});
     f.queue('manual','manual','proj_1','title-summary',f.now+3);
     expect(await poll(f.now+4)).toMatchObject({claimed:true,run:{id:'manual'}});
+  }finally{f.sqlite.close();}
+});
+
+async function pullFixture(install=true) {
+  const f=await budgetFixture();
+  await f.setting(20);
+  f.sqlite.run(PULL_FIXTURE_TABLE);
+  for(const project of ['proj_1','proj_2'])f.sqlite.run("INSERT INTO project_capabilities VALUES (?,'canopy',1,1,'fixture')",[project]);
+  for(const id of ['rn_a','rn_b','rn_c']) {
+    f.sqlite.run('INSERT INTO runners(id,name,created_at) VALUES(?,?,?)',[id,id,f.now]);
+    f.sqlite.run('INSERT INTO runner_credentials(id,runner_id,token_hash,epoch,issued_at,expires_at,lineage_root) VALUES(?,?,?,1,?,?,?)',[`rc_${id}`,id,`hash-${id}`,f.now,f.now+3_600_000,`rc_${id}`]);
+  }
+  const hooks:{during?:(item:PulledItem)=>Promise<void>|void}={};
+  const restore=install?installPulledStages([testPulledStage(1,'title-summary',item=>hooks.during?.(item)),testPulledStage(2,'canopy-map',item=>hooks.during?.(item))]):()=>{};
+  const env=f.serverEnv;
+  const close=f.sqlite.close.bind(f.sqlite);
+  f.sqlite.close=(...args:Parameters<typeof close>)=>{restore();close(...args);};
+  const item=(projectId:string,id:string,level:1|2,dueAt=f.now)=>f.sqlite.run('INSERT INTO pull_fixture_items VALUES(?,?,?,?,?)',[projectId,id,level,level===1?'title-summary':'canopy-map',dueAt]);
+  const runner=(id='rn_a'):WorkerPrincipal=>({kind:'runner',runnerId:id,credentialId:`rc_${id}`,machineId:null});
+  const poll=(id='rn_a',at=f.now,harnesses=[offeredHarness('claude-code')])=>claimNextRun(env,{principal:runner(id),harnesses,capabilities:[...capabilitiesRequiredBy('canopy-map')],now:at});
+  const pulled=()=>f.sqlite.query('SELECT project_id AS projectId,subject,status FROM agent_runs WHERE subject IS NOT NULL ORDER BY started_at,rowid').all();
+  const liveRun=(id:string,task:string)=>f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,origin) VALUES('proj_1',?,'myco-agent',?,'running',?,'automatic')`,[id,task,f.now]);
+  const limit=async(value:number|null)=>{if(!(await settingsWriter(f.db).setLeaf('agent.limits.task_concurrent_runs',value,'mem_worker',f.now)).applied)throw new Error('limit refused');};
+  /** A refused pulled write leaves no usable credential and no attempt beyond the runs that exist. */
+  const nothingStray=()=>{
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM member_credentials WHERE member_id='mem_harness' AND revoked_at IS NULL AND id NOT IN (SELECT dispatched_by FROM agent_runs WHERE dispatched_by IS NOT NULL)").get()).toEqual({n:0});
+    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_run_attempts WHERE NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id=agent_run_attempts.project_id AND r.id=agent_run_attempts.run_id)').get()).toEqual({n:0});
+  };
+  return {...f,env,hooks,item,poll,pulled,liveRun,limit,nothingStray};
+}
+
+it('pulls nothing in production and claims queued rows exactly as before',async()=>{
+  const f=await pullFixture(false);
+  try {
+    expect(PULLED_STAGES).toEqual([]);
+    f.item('proj_1','due',1);
+    f.queue('title','automatic','proj_1','title-summary',f.now);
+    const poll=(at:number)=>claimNextRun(f.serverEnv,{principal:f.principal,harnesses:[offeredHarness('claude-code')],now:at});
+    expect(await poll(f.now)).toMatchObject({claimed:true,run:{id:'title'}});
+    expect(await claimNextRun(f.serverEnv,{principal:{kind:'runner',runnerId:'rn_b',credentialId:'rc_rn_b',machineId:null},harnesses:[offeredHarness('claude-code')],now:f.now})).toEqual({claimed:false,reason:'no_work'});
+    expect(f.pulled()).toEqual([]);
+  }finally{f.sqlite.close();}
+});
+
+it('claims admitted queued rows first, then the higher level before an older lower one, and queues nothing ahead',async()=>{
+  const f=await pullFixture();
+  try {
+    f.item('proj_1','older-low',2,f.now-1000);f.item('proj_1','newer-high',1,f.now);
+    expect(f.pulled()).toEqual([]);
+    f.queue('title','automatic','proj_2','title-summary',f.now);
+    expect(await f.poll('rn_a')).toMatchObject({claimed:true,run:{id:'title'}});
+    expect(await f.poll('rn_b')).toMatchObject({claimed:true,run:{task:'title-summary',projectId:'proj_1'}});
+    expect(await f.poll('rn_c')).toMatchObject({claimed:true,run:{task:'canopy-map'}});
+    expect(f.pulled()).toEqual([{projectId:'proj_1',subject:'fixture:newer-high',status:'running'},{projectId:'proj_1',subject:'fixture:older-low',status:'running'}]);
+    expect(f.sqlite.query("SELECT origin,estimate_usd IS NOT NULL AS priced FROM agent_runs r JOIN agent_run_attempts a ON a.run_id=r.id AND a.attempt_id=r.dispatched_by WHERE r.subject='fixture:newer-high'").get()).toEqual({origin:'automatic',priced:1});
+  }finally{f.sqlite.close();}
+});
+
+it('pulls for the least automatically spent Project and breaks ties by Project id',async()=>{
+  for(const [spent,expected] of [[[0,0],'proj_1'],[[5,1],'proj_2']] as const) {
+    const f=await pullFixture();
+    try {
+      f.history('spent-1',spent[0],'automatic',f.now,0.1,'title-summary',false,'proj_1');
+      f.history('spent-2',spent[1],'automatic',f.now,0.1,'title-summary',false,'proj_2');
+      f.history('manual-2',9,'manual',f.now,0.1,'title-summary',false,'proj_2');
+      f.item('proj_1','a',1);f.item('proj_2','b',1);
+      expect(await f.poll()).toMatchObject({claimed:true,run:{projectId:expected}});
+    }finally{f.sqlite.close();}
+  }
+});
+
+it('admits nothing pulled when the top level head does not fit, even with cheaper lower work',async()=>{
+  const f=await pullFixture();
+  try {
+    await f.setting(1);
+    const {selected}=await selectWorkerExecution(f.serverEnv,'title-summary',[offeredHarness('claude-code')],await claimSettings(f.serverEnv),f.principal);
+    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('title-summary',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    f.item('proj_1','expensive',1);f.item('proj_2','cheap',2);
+    await guardedStateStatement(f.db,{projectId:'proj_2'},'myco-agent',estimateKey('canopy-map',selected!.harness,{...selected!.profile,tier:'default'}),JSON.stringify({estimate:0.1}),f.now,{sql:'1',params:[]}).run();
+    expect(await f.poll()).toEqual({claimed:false,reason:'no_work'});
+    expect(f.pulled()).toEqual([]);
+    f.nothingStray();
+  }finally{f.sqlite.close();}
+});
+
+it('falls through a top level this worker cannot run now, by task limit or by profile',async()=>{
+  const f=await pullFixture();
+  try {
+    await f.limit(1);f.liveRun('busy-title','title-summary');
+    f.item('proj_1','held-high',1);f.item('proj_1','free-low',2);
+    expect(await f.poll('rn_a')).toMatchObject({claimed:true,run:{task:'canopy-map'}});
+    await f.limit(null);
+    f.item('proj_2','free-low-2',2);
+    expect(await settingsWriter(f.db).setLeaf('agent.effort_map.claude-code.low','high','mem_worker',f.now)).toEqual({applied:true});
+    const mediumOnly=[{...offeredHarness('claude-code'),profile:{model:'flag' as const,efforts:['medium']}}];
+    expect(await f.poll('rn_b',f.now,mediumOnly)).toMatchObject({claimed:true,run:{task:'canopy-map',projectId:'proj_2'}});
+    expect(f.pulled()).toHaveLength(2);
+  }finally{f.sqlite.close();}
+});
+
+it('reasserts level and capacity inside the write when they change during input preparation',async()=>{
+  const freed=await pullFixture();
+  try {
+    await freed.limit(1);freed.liveRun('busy-title','title-summary');
+    freed.item('proj_1','high',1);freed.item('proj_1','low',2);
+    freed.hooks.during=item=>{if(item.key==='low')freed.sqlite.run("UPDATE agent_runs SET status='completed' WHERE id='busy-title'");};
+    expect(await freed.poll()).toMatchObject({claimed:true,run:{task:'title-summary'}});
+    expect(freed.pulled()).toEqual([{projectId:'proj_1',subject:'fixture:high',status:'running'}]);
+    freed.nothingStray();
+  }finally{freed.sqlite.close();}
+  const consumed=await pullFixture();
+  try {
+    await consumed.limit(1);consumed.item('proj_1','low',2);
+    consumed.hooks.during=()=>{consumed.item('proj_1','high',1);consumed.liveRun('filled-title','title-summary');};
+    expect(await consumed.poll()).toMatchObject({claimed:true,run:{task:'canopy-map'}});
+  }finally{consumed.sqlite.close();}
+  const arriving=await pullFixture();
+  try {
+    arriving.item('proj_1','low',2);
+    arriving.hooks.during=item=>{if(item.key==='low')arriving.item('proj_2','high',1);};
+    expect(await arriving.poll()).toMatchObject({claimed:true,run:{task:'title-summary',projectId:'proj_2'}});
+    expect(arriving.pulled()).toHaveLength(1);
+    arriving.nothingStray();
+  }finally{arriving.sqlite.close();}
+  const spent=await pullFixture();
+  try {
+    spent.item('proj_1','tied-first',1);spent.item('proj_2','tied-second',1);
+    spent.hooks.during=item=>{if(item.key==='tied-first')spent.history('spent-during',5,'automatic',spent.now,0.1,'title-summary',false,'proj_1');};
+    expect(await spent.poll()).toMatchObject({claimed:true,run:{projectId:'proj_2'}});
+    spent.nothingStray();
+  }finally{spent.sqlite.close();}
+});
+
+it('writes nothing when the head, the Project, the runner or the settings change during preparation',async()=>{
+  for(const change of ['head','project','runner','budget'] as const) {
+    const f=await pullFixture();
+    try {
+      f.item('proj_1','only',1);
+      f.hooks.during=()=>{
+        if(change==='head')f.sqlite.run("DELETE FROM pull_fixture_items WHERE item_id='only'");
+        if(change==='project')f.sqlite.run("UPDATE projects SET archived_at=1 WHERE project_id='proj_1'");
+        if(change==='runner')f.sqlite.run("UPDATE runners SET state='paused' WHERE id='rn_a'");
+        if(change==='budget')f.history('spent-during',20,'automatic',f.now,0.1,'title-summary',false,'proj_2');
+      };
+      expect(await f.poll()).toEqual({claimed:false,reason:change==='runner'?'paused':'no_work'});
+      expect(f.pulled()).toEqual([]);
+      f.nothingStray();
+    }finally{f.sqlite.close();}
+  }
+  const f=await pullFixture();
+  try {
+    f.item('proj_1','only',1);
+    let changed=false;
+    f.hooks.during=async()=>{if(!changed){changed=true;await settingsWriter(f.db).setLeaf('agent.reasoning_map.claude-code.low','claude-fixture-low','mem_worker',f.now);}};
+    expect(await f.poll()).toMatchObject({claimed:true,run:{profile:{model:'claude-fixture-low'}}});
+    expect(f.pulled()).toHaveLength(1);
+    f.nothingStray();
+  }finally{f.sqlite.close();}
+});
+
+it('creates one run when concurrent polls race for a subject, a runner or the last dollar',async()=>{
+  const race=async(f:Awaited<ReturnType<typeof pullFixture>>,runners:readonly string[])=>{
+    let arrived=0,release!:()=>void;
+    const together=new Promise<void>(resolve=>{release=resolve;});
+    f.hooks.during=async()=>{if(++arrived===runners.length)release();await together;};
+    return Promise.all(runners.map(id=>f.poll(id)));
+  };
+  const subject=await pullFixture();
+  try {
+    subject.item('proj_1','same',1);
+    expect((await race(subject,['rn_a','rn_b'])).filter(outcome=>outcome.claimed)).toHaveLength(1);
+    expect(subject.pulled()).toHaveLength(1);subject.nothingStray();
+  }finally{subject.sqlite.close();}
+  const runner=await pullFixture();
+  try {
+    runner.item('proj_1','first',1);runner.item('proj_2','second',1);
+    expect((await race(runner,['rn_a','rn_a'])).filter(outcome=>outcome.claimed)).toHaveLength(1);
+    expect(runner.sqlite.query('SELECT COUNT(*) AS n FROM agent_run_attempts').get()).toEqual(runner.sqlite.query('SELECT COUNT(*) AS n FROM agent_runs WHERE dispatched_by IS NOT NULL').get());
+    runner.nothingStray();
+  }finally{runner.sqlite.close();}
+  const money=await pullFixture();
+  try {
+    await money.setting(1);
+    money.history('spent-1',0.5,'automatic',money.now,0.1,'title-summary',false,'proj_1');
+    money.history('spent-2',0.35,'automatic',money.now,0.1,'title-summary',false,'proj_2');
+    money.item('proj_1','a',1);money.item('proj_2','b',1);money.item('proj_2','c',1,money.now+1);
+    const outcomes=await race(money,['rn_a','rn_b']);
+    expect(outcomes.filter(outcome=>outcome.claimed)).toHaveLength(1);
+    expect(money.pulled()).toEqual([{projectId:'proj_2',subject:'fixture:b',status:'running'}]);
+    money.nothingStray();
+  }finally{money.sqlite.close();}
+});
+
+it('ends a pulled run whose lease lapses instead of requeuing it, and pulls the work again',async()=>{
+  const f=await pullFixture();
+  try {
+    f.item('proj_1','lapsing',1);
+    const first=await f.poll();
+    if(!first.claimed)throw new Error('pull refused');
+    expect(await expireLeases(f.env,first.run.leaseExpiresAt)).toBe(1);
+    expect(f.sqlite.query('SELECT status,error_code,queued_at FROM agent_runs WHERE id=?').get(first.run.id)).toEqual({status:'failed',error_code:'lease_lapsed',queued_at:null});
+    const again=await f.poll('rn_a',first.run.leaseExpiresAt+1);
+    expect(again).toMatchObject({claimed:true,run:{task:'title-summary'}});
+    expect(f.pulled()).toEqual([{projectId:'proj_1',subject:'fixture:lapsing',status:'failed'},{projectId:'proj_1',subject:'fixture:lapsing',status:'running'}]);
+    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_run_attempts WHERE run_id=?').get(first.run.id)).toEqual({n:1});
+  }finally{f.sqlite.close();}
+});
+
+it('pulls affordable work past a queued head that never fits the budget',async()=>{
+  const f=await pullFixture();
+  try {
+    await f.setting(1);
+    const {selected}=await selectWorkerExecution(f.serverEnv,'canopy-map',[offeredHarness('claude-code')],await claimSettings(f.serverEnv),f.principal);
+    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('canopy-map',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    f.queue('unaffordable','automatic','proj_1','canopy-map',f.now);
+    f.item('proj_2','affordable',1);
+    expect(await f.poll()).toMatchObject({claimed:true,run:{projectId:'proj_2',task:'title-summary'}});
+    expect(f.sqlite.query("SELECT status,held_by FROM agent_runs WHERE id='unaffordable'").get()).toEqual({status:'queued',held_by:'budget'});
   }finally{f.sqlite.close();}
 });
