@@ -25,12 +25,17 @@ export function unverifiedRowSql(row: string): string {
 
 export const CLASSIFIED_AT_SQL = `CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)`;
 
+/** A class row is written only beside its session's row and in place of no other class, so the write cannot fail the material write that fired it. */
+const classifiable = (table: ClassTable, id: string): string =>
+  ` AND EXISTS(SELECT 1 FROM sessions s WHERE s.project_id=r.project_id AND s.session_id=r.session_id)
+      AND NOT EXISTS(SELECT 1 FROM fact_classes f WHERE f.project_id=r.project_id AND f.table_name='${table}' AND f.record_id=r.${id})`;
+
 /** One row's legacy class follows its current state: removed, then written again when it still qualifies. */
-function reclassify(table: ClassTable, id: string, project: string, record: string): string {
+function reclassify(table: ClassTable, id: string, project: string, record: string, guarded: boolean): string {
   return `DELETE FROM fact_classes WHERE project_id=${project} AND table_name='${table}' AND record_id=${record} AND class='legacy';
     INSERT OR IGNORE INTO fact_classes(project_id,table_name,record_id,session_id,class,classified_at)
       SELECT r.project_id,'${table}',r.${id},r.session_id,'legacy',${CLASSIFIED_AT_SQL} FROM ${table} r
-      WHERE r.project_id=${project} AND r.${id}=${record} AND ${legacyRowSql(table, 'r')};`;
+      WHERE r.project_id=${project} AND r.${id}=${record} AND ${legacyRowSql(table, 'r')}${guarded ? classifiable(table, id) : ''};`;
 }
 
 const updatedColumns: Record<ClassTable, string> = {
@@ -48,21 +53,28 @@ const planUnpublished = (project: string, key: string): string =>
   `NOT EXISTS(SELECT 1 FROM plans p JOIN session_views sv ON sv.project_id=p.project_id AND sv.session_id=p.session_id
     WHERE p.project_id=${project} AND p.plan_key=${key} AND sv.legacy IN ('published','cleaning','gone'))`;
 
-/** Cutover progress, every parser row classified at insert, and unpublished rows reclassified on any change to their class evidence. */
+/** Every parser row classified at insert, and unpublished rows reclassified on any change to their class evidence. */
+export function legacyClassTriggers(guarded: boolean): string[] {
+  return [
+    ...LEGACY_CLASS_TABLES.flatMap(({ table, id }) => [
+      `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_class_insert AFTER INSERT ON ${table}
+    BEGIN ${reclassify(table, id, 'NEW.project_id', 'NEW.' + id, guarded)} END`,
+      `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_class_update AFTER UPDATE OF ${updatedColumns[table]} ON ${table}
+    WHEN ${unpublished('NEW.project_id', 'NEW.session_id')} BEGIN ${reclassify(table, id, 'NEW.project_id', 'NEW.' + id, guarded)} END`,
+    ]),
+    `CREATE TRIGGER IF NOT EXISTS tags_plan_legacy_class_insert AFTER INSERT ON tags
+    WHEN NEW.entity_kind='plan' AND ${planUnpublished('NEW.project_id', 'NEW.entity_id')} BEGIN ${reclassify('plans', 'plan_key', 'NEW.project_id', 'NEW.entity_id', guarded)} END`,
+    `CREATE TRIGGER IF NOT EXISTS tags_plan_legacy_class_delete AFTER DELETE ON tags
+    WHEN OLD.entity_kind='plan' AND ${planUnpublished('OLD.project_id', 'OLD.entity_id')} BEGIN ${reclassify('plans', 'plan_key', 'OLD.project_id', 'OLD.entity_id', guarded)} END`,
+  ];
+}
+
+/** Cutover progress and the legacy classification triggers. */
 export const V106_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS cutover_progress (id INTEGER PRIMARY KEY CHECK(id=1),
     classify_stage INTEGER NOT NULL DEFAULT 0 CHECK(classify_stage BETWEEN 0 AND ${LEGACY_CLASS_TABLES.length}),
     classify_after INTEGER NOT NULL DEFAULT 0,classified_at INTEGER,sweep_after INTEGER NOT NULL DEFAULT 0,swept_at INTEGER,
     paused_reason TEXT CHECK(paused_reason IS NULL OR paused_reason='d1_headroom'),database_bytes INTEGER,observed_at INTEGER,
     updated_at INTEGER NOT NULL)`,
-  ...LEGACY_CLASS_TABLES.flatMap(({ table, id }) => [
-    `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_class_insert AFTER INSERT ON ${table}
-    BEGIN ${reclassify(table, id, 'NEW.project_id', 'NEW.' + id)} END`,
-    `CREATE TRIGGER IF NOT EXISTS ${table}_legacy_class_update AFTER UPDATE OF ${updatedColumns[table]} ON ${table}
-    WHEN ${unpublished('NEW.project_id', 'NEW.session_id')} BEGIN ${reclassify(table, id, 'NEW.project_id', 'NEW.' + id)} END`,
-  ]),
-  `CREATE TRIGGER IF NOT EXISTS tags_plan_legacy_class_insert AFTER INSERT ON tags
-    WHEN NEW.entity_kind='plan' AND ${planUnpublished('NEW.project_id', 'NEW.entity_id')} BEGIN ${reclassify('plans', 'plan_key', 'NEW.project_id', 'NEW.entity_id')} END`,
-  `CREATE TRIGGER IF NOT EXISTS tags_plan_legacy_class_delete AFTER DELETE ON tags
-    WHEN OLD.entity_kind='plan' AND ${planUnpublished('OLD.project_id', 'OLD.entity_id')} BEGIN ${reclassify('plans', 'plan_key', 'OLD.project_id', 'OLD.entity_id')} END`,
+  ...legacyClassTriggers(false),
 ];
