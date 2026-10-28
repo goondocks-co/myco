@@ -2,7 +2,7 @@ import { SHA256 } from '@stablelib/sha256';
 import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
 import { blobObjectKey } from './blob-objects.js';
 import { consumeUploadAuthority, recordBlobCandidates, releaseBlobs } from './object-release.js';
-import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
+import { BLOB_RESERVATION_TTL_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { credentialLive } from '../ingest/live-credential.js';
 import { measuredContentEnv } from './content-budget.js';
@@ -34,11 +34,14 @@ const sourceLive = (source: DerivedContentSource) => {
       AND state IN ('live','building')) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
     params:[source.projectId,source.sessionId,source.eventId,source.projectId,source.sessionId]};
   const credential = source.memberTokenId === undefined ? { sql: '1', params: [] } : credentialLive(source.memberTokenId);
+  // A server source may re-derive the transcript parser's own earlier event for its session; the replay gate decides whether it lands.
+  const rederived = source.memberTokenId === undefined ? ` AND NOT (producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}' AND session_id=?)` : '';
   return {
   sql: `(${credential.sql}) AND EXISTS (SELECT 1 FROM projects WHERE project_id=?)
     AND NOT EXISTS (SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)
-    AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND envelope_hash<>?)`,
-  params: [...credential.params, source.projectId, source.projectId, source.sessionId, source.projectId, source.eventId, source.envelopeHash],
+    AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND envelope_hash<>?${rederived})`,
+  params: [...credential.params, source.projectId, source.projectId, source.sessionId, source.projectId, source.eventId, source.envelopeHash,
+    ...(source.memberTokenId === undefined ? [source.sessionId] : [])],
 }; };
 
 /** A failed assertion aborts the entire publication or clear transaction. */
