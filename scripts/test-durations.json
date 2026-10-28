@@ -137,7 +137,8 @@
     "local/projected: #1924 cutover PR1 view-cutover.test.ts, pinned Bun1.4.0 native and local D1: 4 cases in about 7000ms locally; weight projects 3.5x for Linux and rounds up to 25000ms.",
     "local: vault evolution 2.0 PR 4, pinned Bun 1.4.0. budget-governor.test.ts gained the pulled-claim cases and a local D1 queued-backlog read bound: complete 31-case file 3.32s in JUnit locally (was 838ms recorded), weighted 3500ms. New dedicated parity scenario \"pull at claim\" measured 24.68s for both targets together including both boots; weighted 60000ms for CI boot cost, below the 150000ms recorded for the comparable budget-governor dedicated scenario.",
     "local: vault PR 7 two-stage learning, pinned Bun1.4.0; tests/myco-server/learning-stages.test.ts measured 11250ms in JUnit for 7 cases on native and Miniflare D1, including the pulled-claim flow and the review-round cases, weighted 14000ms for CI startup. No parity scenario added.",
-    "ci: #1924 cutover PR2/PR3 main run 40686456558 attempt 1 JUnit file-root testsuite time: tests/myco-server/view-cutover.test.ts measured 153237ms for 18 cases on Linux, weighted 154000ms (was 25000ms projected from 4 cases)."
+    "ci: #1924 cutover PR2/PR3 main run 40686456558 attempt 1 JUnit file-root testsuite time: tests/myco-server/view-cutover.test.ts measured 153237ms for 18 cases on Linux, weighted 154000ms (was 25000ms projected from 4 cases).",
+    "ci/projected: #1924 flip observation lease; tests/myco-server/view-flip-admission.test.ts measured 29874ms in main CI run 40686456558 and gains a lease-recovery case measured 1617ms locally (file 12170ms locally); weighted 34000ms."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -791,7 +792,7 @@
     "tests/myco-server/view-activity.test.ts": 72749,
     "tests/myco-server/view-attention.test.ts": 8008,
     "tests/myco-server/view-bundle-references.test.ts": 5697,
-    "tests/myco-server/view-flip-admission.test.ts": 18257,
+    "tests/myco-server/view-flip-admission.test.ts": 34000,
     "tests/myco-server/view-frozen-versions.test.ts": 3041,
     "tests/myco-server/view-injection.test.ts": 25987,
     "tests/myco-server/view-lifecycle.test.ts": 34000,

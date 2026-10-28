@@ -235,23 +235,41 @@ export function flipWorkGuard(
   );
 }
 
-export async function flipCalibrationBlocked(db: RelationalStore, envelope: FlipEnvelope): Promise<boolean> {
+/** How long an unfinished or overrun observation holds its calibration before the next flip may observe again. */
+export const FLIP_OBSERVATION_LEASE_MS = 2 * 60_000;
+
+/** A calibration is held while an observation begun within the lease is unfinished or overran its wall. */
+export async function flipCalibrationBlocked(db: RelationalStore, envelope: FlipEnvelope, now: number): Promise<boolean> {
   const m = envelope.measurement!;
   const row = await db
-    .prepare(`SELECT blocked,measurement FROM view_flip_calibrations WHERE store=? AND profile=? AND source_digest=?`)
-    .bind(m.store, m.profile, m.sourceDigest)
-    .first<{ blocked: number; measurement: string }>();
-  return row !== null && (row.blocked === 1 || row.measurement !== JSON.stringify(m));
+    .prepare(
+      `SELECT 1 held FROM view_flip_calibrations WHERE store=? AND profile=? AND source_digest=? AND blocked=1 AND observed_at>?`,
+    )
+    .bind(m.store, m.profile, m.sourceDigest, now - FLIP_OBSERVATION_LEASE_MS)
+    .first<{ held: number }>();
+  return row !== null;
 }
 
-/** An unfinished observation blocks reuse until its completed transaction measurement is recorded. */
+/**
+ * One observation at a time holds the calibration from `now`. A hold older than the lease is released, and a changed
+ * measurement starts its record afresh, before the next flip claims it.
+ */
 export function beginFlipObservation(
   db: RelationalStore,
   envelope: FlipEnvelope,
   attempt: string,
+  now: number,
 ): PreparedStatement[] {
   const m = envelope.measurement!;
   return [
+    db
+      .prepare(
+        `UPDATE view_flip_calibrations SET blocked=0,measurement=?,source=?,
+      maximum_wall_ms=CASE WHEN measurement IS ? THEN maximum_wall_ms ELSE 0 END,
+      last_observation=CASE WHEN measurement IS ? THEN last_observation END
+      WHERE store=? AND profile=? AND source_digest=? AND (blocked=0 OR observed_at<=?)`,
+      )
+      .bind(JSON.stringify(m), m.source, JSON.stringify(m), JSON.stringify(m), m.store, m.profile, m.sourceDigest, now - FLIP_OBSERVATION_LEASE_MS),
     ...contentAssertion(
       db,
       `NOT EXISTS(SELECT 1 FROM view_flip_calibrations WHERE store=? AND profile=? AND source_digest=? AND (blocked=1 OR measurement IS NOT ?))`,
@@ -260,9 +278,9 @@ export function beginFlipObservation(
     db
       .prepare(
         `INSERT INTO view_flip_calibrations(store,profile,source_digest,source,observed_at,attempt_id,measurement,blocked,maximum_wall_ms)
-      VALUES(?,?,?,?,?,?,?,1,0) ON CONFLICT(store,profile,source_digest) DO UPDATE SET attempt_id=excluded.attempt_id,blocked=1`,
+      VALUES(?,?,?,?,?,?,?,1,0) ON CONFLICT(store,profile,source_digest) DO UPDATE SET attempt_id=excluded.attempt_id,blocked=1,observed_at=excluded.observed_at`,
       )
-      .bind(m.store, m.profile, m.sourceDigest, m.source, m.observedAt, attempt, JSON.stringify(m)),
+      .bind(m.store, m.profile, m.sourceDigest, m.source, now, attempt, JSON.stringify(m)),
   ];
 }
 

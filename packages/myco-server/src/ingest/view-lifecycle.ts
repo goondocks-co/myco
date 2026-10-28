@@ -408,7 +408,7 @@ export async function tryPublishView(
       { ...limits, enforceWall: true, wallMs: Math.min(limits.wallMs, CONTENT_WALL_MS) },
     );
   db = measured.env.db;
-  if (await flipCalibrationBlocked(db, envelope))
+  if (await flipCalibrationBlocked(db, envelope, now))
     return { published: false, reason: 'view_flip_admission_unavailable' };
   if (!(await viewReady(db, target, now))) return { published: false, reason: 'view_not_ready' };
   const work = await readFlipWork(db, target);
@@ -423,7 +423,7 @@ export async function tryPublishView(
     ...contentAssertion(db, ready.sql, ready.params),
     ...flipWorkGuard(db, target, envelope),
     ...flipContentGuard(db, target),
-    ...beginFlipObservation(db, envelope, attempt),
+    ...beginFlipObservation(db, envelope, attempt, now),
     ...viewPlanTransitionStatements(db, target),
     ...tail.statements,
     ...publicationVersionStatements(
@@ -493,7 +493,7 @@ export async function tryPublishView(
       .first<{ n: number; watermark: number | null }>();
     if (latest?.watermark !== tail.watermark) return { published: false, reason: 'view_not_ready' };
     if ((latest?.n ?? 0) > FINAL_CONVERSION_LIMIT) return { published: false, reason: 'view_not_ready' };
-    if (await flipCalibrationBlocked(db, envelope))
+    if (await flipCalibrationBlocked(db, envelope, now))
       return { published: false, reason: 'view_flip_admission_unavailable' };
     if (!flipWorkFits(await readFlipWork(db, target), envelope, false))
       return { published: false, reason: 'view_flip_content_wall_exceeded' };
