@@ -16,8 +16,12 @@ import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-run.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
-import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
-import { PULLED_STAGES, installPulledStages, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
+import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
+import { PULLED_STAGES, installPulledStages, queuedAdmissibleSql, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
+import { withViewStores } from './helpers/view-stores.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
+import { measuredStore } from './helpers/read-budget.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import type { WorkerPrincipal } from '@myco-server-worker/core/worker-lease.js';
 import { PULL_FIXTURE_TABLE, testPulledStage } from '../helpers/pulled-test-stage.js';
@@ -483,6 +487,24 @@ it('reasserts level and capacity inside the write when they change during input 
     expect(queued.pulled()).toEqual([]);
     queued.nothingStray();
   }finally{queued.sqlite.close();}
+  await withViewStores(async(db,target)=>{
+    if(target!=='D1')return;
+    await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)").run();
+    await completeBudgetMigration(db,Date.now());
+    await db.prepare(`INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('project','myco-agent','canopy-map','{"estimate":1000000}',1)`).run();
+    const measured=measuredStore(db as Parameters<typeof measuredStore>[0]);
+    const admissible=`SELECT ${queuedAdmissibleSql(BUDGET_WORKER_TASKS.map(task=>({task,estimateKey:task})),NO_LIMITS,Date.now())} AS admissible`;
+    const reads=async(backlog:number)=>{
+      await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,origin) SELECT 'project','held-${backlog}-'||key,'myco-agent','canopy-map','queued',key,'automatic' FROM json_each(?)`)
+        .bind(JSON.stringify(Array(backlog).fill(0))).run();
+      measured.reset();
+      expect(await measured.db.prepare(admissible).first()).toEqual({admissible:0});
+      return measured.reads();
+    };
+    // A held queued backlog costs the head seeks alone, whatever its length.
+    const one=await reads(1);
+    expect(await reads(999)).toBe(one);
+  });
 });
 
 it('writes nothing when the head, the Project, the runner or the settings change during preparation',async()=>{

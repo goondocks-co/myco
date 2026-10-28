@@ -13,6 +13,7 @@ import { readSpendRows, spendRowsSql } from './run-budget.js';
 import { BUDGET_WINDOW_MS, seedForStage } from './budget-policy.js';
 import { ESTIMATE_AGENT } from './budget-estimates.js';
 import { pausedLearningSql } from './learning-pause.js';
+import { queueHeadSeek } from './queue-heads.js';
 import { capabilityOnSql, effectiveBudgetSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 
@@ -95,20 +96,20 @@ export function pulledReassertion(stage: PulledStage, item: PulledItem, compatib
 export interface ServedQueue { task: string; estimateKey: string }
 
 /**
- * Whether queued work the worker can execute is admissible now, as the claim's queue selection admits it: the head of
- * its task and origin, the task passing its limits, its Project accepting the work, outside the learning fence, and an
- * automatic head fitting the budget at its Project's estimate. A pulled write refuses while this holds.
+ * Whether queued work the worker can execute is admissible now, as the claim's queue selection admits it: each task's
+ * manual and automatic heads, found by the same indexed seek, with the task passing its limits, the head's Project
+ * accepting the work, outside the learning fence, and an automatic head fitting the budget at its Project's estimate.
+ * A pulled write refuses while this holds. It reads at most two queue rows per task, whatever the backlog.
  */
 export function queuedAdmissibleSql(queues: readonly ServedQueue[], limits: DispatchLimits, now: number): string {
   const literal = (text: string) => `'${text.replaceAll("'", "''")}'`;
   const spent = `(SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql(String(Math.floor(now - BUDGET_WINDOW_MS)))}))`;
-  const heads = queues.map(({ task, estimateKey }) => `EXISTS (SELECT 1 FROM agent_runs q INDEXED BY idx_agent_runs_queue_head
-      WHERE q.status = 'queued' AND q.dispatched_by IS NULL AND q.task = ${literal(task)}
-        AND NOT EXISTS (SELECT 1 FROM agent_runs h INDEXED BY idx_agent_runs_queue_head WHERE h.status = 'queued' AND h.dispatched_by IS NULL
-          AND h.task = q.task AND h.origin = q.origin AND (h.queued_at < q.queued_at OR (h.queued_at = q.queued_at AND h.id < q.id)))
-        AND ${limitPassesSql(task, limits, now)} AND ${acceptsSql('q.project_id', task)} AND NOT ${pausedLearningSql('q.task')}
-        AND (q.origin = 'manual' OR ${spent} + COALESCE((SELECT json_extract(s.value, '$.estimate') FROM agent_state s
-          WHERE s.project_id = q.project_id AND s.agent_id = ${literal(ESTIMATE_AGENT)} AND s.key = ${literal(estimateKey)}), ${seedForStage(task)}) <= ${effectiveBudgetSql()}))`);
+  const heads = queues.flatMap(({ task, estimateKey }) => (['manual', 'automatic'] as const).map((origin) => {
+    const fits = origin === 'manual' ? '' : ` AND ${spent} + COALESCE((SELECT json_extract(s.value, '$.estimate') FROM agent_state s
+          WHERE s.project_id = q.project_id AND s.agent_id = ${literal(ESTIMATE_AGENT)} AND s.key = ${literal(estimateKey)}), ${seedForStage(task)}) <= ${effectiveBudgetSql()}`;
+    return `EXISTS (SELECT 1 FROM (${queueHeadSeek('project_id, task', literal(task), literal(origin))}) q
+      WHERE ${limitPassesSql(task, limits, now)} AND ${acceptsSql('q.project_id', task)} AND NOT ${pausedLearningSql('q.task')}${fits})`;
+  }));
   return heads.length === 0 ? '0' : `(${heads.join(' OR ')})`;
 }
 
