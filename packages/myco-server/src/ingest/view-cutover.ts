@@ -8,7 +8,6 @@ import { PARSER_VERSION, parseTranscripts, pendingTranscripts, recentLegacyWork 
 import { requestViewRebuild } from './view-lifecycle.js';
 import { runViewParseJob } from './view-run.js';
 import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET, VIEW_RECENT_MS } from './view-build-queue.js';
-import { cutoverPending } from './view-cutover-pending.js';
 import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
 
@@ -197,6 +196,21 @@ async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): 
   }).env;
 }
 
+/**
+ * The batch holds a backlog: more sessions it can build now than one sweep page queues, and no headroom pause. Sessions
+ * captured on a converted Deployment arrive fewer at a time.
+ */
+export async function cutoverBacklog(db: RelationalStore): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT NOT EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND paused_reason IS NOT NULL)
+      AND (SELECT COUNT(*) FROM (SELECT 1 FROM view_build_work WHERE state IN ('ready','building','yielded') LIMIT ?))>? backlog`,
+    )
+    .bind(SWEEP_SESSIONS_PER_WAKE + 1, SWEEP_SESSIONS_PER_WAKE)
+    .first<{ backlog: number }>();
+  return row?.backlog === 1;
+}
+
 /** One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. */
 export async function runViewCutoverWake(
   wake: ServerEnv,
@@ -252,8 +266,8 @@ export async function runViewCutoverWake(
 /**
  * The transcript-parse job. The batch runs before the legacy pass, which keeps its own wall. On a full wake the batch
  * reads within the wake's content wall, which the jobs after it share; a wake that only drains gives it its own wall.
- * While the batch is pending, the legacy pass reads only recently received transcripts and its backlog waits for the
- * batch. A batch failure is reported once the legacy pass has run.
+ * While the batch holds a backlog, the legacy pass reads only recently received transcripts and its own backlog waits
+ * for the batch. A batch failure is reported once the legacy pass has run.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -261,7 +275,7 @@ export async function runTranscriptParseWake(
   _state?: unknown,
   context?: { drainOnly: boolean },
 ): Promise<{ changed: number; more: boolean }> {
-  const recentSince = (await cutoverPending(env.db)) ? now - VIEW_RECENT_MS : undefined;
+  const recentSince = (await cutoverBacklog(env.db)) ? now - VIEW_RECENT_MS : undefined;
   const views = await runViewCutoverWake(env, now, databaseBytes, {
     legacySince: recentSince,
     ownWall: context?.drainOnly === true,

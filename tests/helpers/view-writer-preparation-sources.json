@@ -264,7 +264,8 @@
     "classifyLegacyPage": "W",
     "sweepViewCutover": "W",
     "readViewCutover": "W",
-    "runViewCutoverWake": "W"
+    "runViewCutoverWake": "W",
+    "cutoverBacklog": "W"
   },
   "packages/myco-server/src/ingest/view-frozen.ts": {
     "tailStart": "W",
@@ -282,7 +283,7 @@
     "test:a status edit of a published parser plan promotes it to a fact and applies the edit": "T",
     "test:a long build leaves the shared wake its housekeeping admission": "T",
     "test:a legacy backlog that outlasts the wake content wall still leaves the batch building": "T",
-    "test:a pending batch publishes an old session the legacy pass never read, while legacy serves only recent transcripts": "T",
+    "test:a batch backlog publishes old sessions the legacy pass never read, while legacy serves only recent transcripts": "T",
     "parsed": "T",
     "test:a draining wake builds several sessions under its own wall after the wake content wall has passed": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
