@@ -23,8 +23,10 @@ const ROW_READ_LIMIT = 64;
 const CORPUS_SIZES = [1_000, 10_000] as const;
 const ACTIVE_COUNTER_INDEX_REPLACE_WRITES = 2;
 const ACTIVE_COUNTER_INDEX_UPDATE_WRITES = 1;
+/** A session's first prompt after learning resumed queues the session for learning initialization: one row. */
+const LEARNING_QUEUE_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES,
+  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14,
   'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
 } as const;

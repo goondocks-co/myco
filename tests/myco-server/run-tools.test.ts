@@ -171,7 +171,7 @@ describe('the run surface and the member surface do not overlap', () => {
     const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
 
     const forRun = await list(harness.token);
-    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores']);
+    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores']);
     expect((await list(member.token)).filter((n) => RUN_TOOLS.includes(n as never))).toEqual([]);
 
     const res = await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env);

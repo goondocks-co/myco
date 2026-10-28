@@ -32,6 +32,8 @@ import { handleRunMap } from './tools/run-map.js';
 import { handleRunPrompts } from './tools/run-prompts.js';
 import { handleRunSessions } from './tools/run-sessions.js';
 import { handleRunSpores } from './tools/run-spores.js';
+import { handleRunCards } from './tools/run-cards.js';
+import { handleRunLearning } from './tools/run-learning.js';
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
 const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({ handler, authorization: toolPolicy('run', action, ['run']) });
@@ -42,6 +44,8 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   myco_run_sessions: { defaultOp: 'list', ops: { list: runOperation(handleRunSessions, 'read'), material: runOperation(handleRunSessions, 'read'), title: runOperation(handleRunSessions, 'execute') } },
   myco_run_prompts: { defaultOp: NO_OP, ops: { mark_processed: runOperation(handleRunPrompts, 'execute') } },
   myco_run_map: { defaultOp: 'get', ops: { get: runOperation(handleRunMap, 'read'), write: runOperation(handleRunMap, 'execute') } },
+  myco_run_cards: { defaultOp: 'material', ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') } },
+  myco_run_learning: { defaultOp: 'material', ops: { material: runOperation(handleRunLearning, 'read'), get: runOperation(handleRunLearning, 'read'), complete: runOperation(handleRunLearning, 'execute') } },
 };
 
 export { ALWAYS_ALLOWED, isRunCall, RUN_PROJECT_DESCRIPTION, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget };

@@ -17,7 +17,7 @@ import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-ru
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
-import { PULLED_STAGES, installPulledStages, queuedAdmissibleSql, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
+import { installPulledStages, queuedAdmissibleSql, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
 import { withViewStores } from './helpers/view-stores.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
@@ -379,10 +379,9 @@ async function pullFixture(install=true) {
   return {...f,env,hooks,item,poll,pulled,liveRun,limit,nothingStray};
 }
 
-it('pulls nothing in production and claims queued rows exactly as before',async()=>{
+it('pulls nothing in production while learning is off and claims queued rows exactly as before',async()=>{
   const f=await pullFixture(false);
   try {
-    expect(PULLED_STAGES).toEqual([]);
     f.item('proj_1','due',1);
     f.queue('title','automatic','proj_1','title-summary',f.now);
     const poll=(at:number)=>claimNextRun(f.serverEnv,{principal:f.principal,harnesses:[offeredHarness('claude-code')],now:at});

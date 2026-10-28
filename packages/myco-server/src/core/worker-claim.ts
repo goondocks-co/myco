@@ -14,6 +14,7 @@ import { recordPricedAttempt as recordAttemptStatement } from './attempt-account
 import { estimateForClaim } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { capabilityOf } from './worker-selection.js';
+import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 
 /** What a claim takes: a queued row it moves to `running`, or a pulled item it creates the running row for. */
 export type ClaimForm = { kind: 'queued'; candidate: ClaimCandidate } | { kind: 'pulled'; pull: PulledCandidate };
@@ -54,17 +55,21 @@ export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: Cl
   const contact = claim.worker.kind === 'member'
     ? await workerContactStatement(db, { credentialId: claim.worker.tokenId, machineId: claim.worker.machineId, reason: 'claimed', now: claim.now }, lease)
     : runnerContactStatement(db, { runnerId: claim.worker.runnerId, reason: 'claimed', now: claim.now }, lease, claim.worker);
+  // A queued row whose built input names a subject takes it at its claim, with single flight on it.
+  const subject = form.kind === 'queued' ? claim.input?.subject ?? null : null;
   const profileColumns = [claim.profile.tier, claim.profile.model, JSON.stringify({ requested: claim.profile, harness: claim.harness })];
   const claimStatement = form.kind === 'queued' ? db.prepare(
     `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
             lease_expires_at = ?, harness = ?, held_by = NULL,
-            reasoning_level = ?, model = ?, execution_overrides = ?
+            reasoning_level = ?, model = ?, execution_overrides = ?, subject = COALESCE(?, subject)
       WHERE project_id = ? AND id = ? AND ${authority.sql} AND ${gate.sql}
+        AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
+          WHERE flight.task = agent_runs.task AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject = ? AND flight.id != agent_runs.id))
       RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
   ).bind(
     claim.now, dispatchedBy, owner.leasedBy, owner.runnerId, owner.runnerCredentialId, claim.leaseExpiresAt, claim.harness,
-    ...profileColumns, candidate.projectId, candidate.id, ...authority.params, ...gate.params,
+    ...profileColumns, subject, candidate.projectId, candidate.id, ...authority.params, ...gate.params, subject, subject,
   ) : db.prepare(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject, dispatch_spec, started_at, dispatched_by,
         leased_by, leased_runner_id, leased_runner_credential_id, lease_expires_at, harness, reasoning_level, model, execution_overrides)
@@ -78,6 +83,7 @@ export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: Cl
   );
   const results = await db.batch([...setup, claimStatement, recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, dispatchedBy, claim.worker, claim.now, admission.budget),
     ...(claim.input === undefined ? [] : [claimedInputStatement(db, { projectId: candidate.projectId }, candidate.id, dispatchedBy, claim.input)]),
+    ...(form.kind === 'pulled' ? form.pull.claimed?.(dispatchedBy) ?? [] : []),
     ...(contact === null ? [] : [contact]),
     ...(claim.worker.kind === 'runner' ? [db.prepare(`UPDATE runners SET last_assigned_at = ? WHERE id = ?
       AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND leased_runner_id = runners.id AND dispatched_by = ?)`)

@@ -80,16 +80,14 @@ function harness(settings: Record<string, unknown> = {}, opts: { slow?: boolean 
 const memberCap = (perDay: number) => ({ 'agent.tasks': { [TASK]: { schedule: { memberRunsPerDay: perDay } } } });
 
 describe('a member starting a task', () => {
-  it('returns the learning pause before a spent member allowance and records no run', async () => {
+  it('holds a member to the learning allowance at the task level and records no run', async () => {
     const h = harness({ 'agent.tasks': { 'extract-curate': { memberRunsPerDay: 0 } } });
     h.entered('spent-learning', 'extract-curate', Date.now());
     const before = h.runs();
-    for (const start of [h.asMember, h.asAdmin]) {
-      expect(await start({ task: 'extract-curate', projectId: 'proj_1' })).toMatchObject({
-        status: 400, body: { error: 'not_landed', message: 'Learning resumes with whole-session reading' },
-      });
-      expect(h.runs()).toEqual(before);
-    }
+    expect(await h.asMember({ task: 'extract-curate', projectId: 'proj_1' })).toMatchObject({
+      status: 429, body: { error: 'daily_limit', perDay: 0, resetsAt: null },
+    });
+    expect(h.runs()).toEqual(before);
   });
 
   it('queues the run and records who started it, which the run list names', async () => {

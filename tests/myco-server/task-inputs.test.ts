@@ -22,7 +22,7 @@ import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, un
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { buildSeedingInput, SEEDING_CHECKOUT_DIR, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { EXTRACTION_TASK, OUTCOME_TASKS, UNLANDED_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -55,6 +55,10 @@ async function rig() {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [sessionId, NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, ?, 'add a retry to the runner', 'user', ?, ?, ?, 'tok_1', ?)`, [sessionId, `p_${sessionId}`, `e_${sessionId}`, `h_${sessionId}`, NOW - 5000, NOW - 5000, NOW - 5000]);
   };
+  // Session s1 has one carded turn learning has not covered.
+  e.sqlite.run(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES ('proj_1', 's1')`);
+  e.sqlite.run(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, records, input_hash, card, signal, created_at, carded_at)
+    VALUES ('proj_1', 's1', 'p_s1', 'carded', '[["prompt","p_s1"]]', 'h_s1', 'asked: add a retry', 'low', ?, ?)`, [NOW, NOW]);
   return { e, queued, row, credentials, claim, endedSession };
 }
 
@@ -178,7 +182,7 @@ describe('every instruction the Deployment builds', () => {
   });
 
   it('is built for exactly the three outcomes', () => {
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].filter(task => !UNLANDED_TASKS.includes(task)).sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
   });
 });
 

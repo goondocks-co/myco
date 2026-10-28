@@ -6,7 +6,7 @@
  * queued head selects the best due item for its worker and creates the run row through the claim capability's pulled
  * form, whose write reasserts the selection (`core/worker-claim.ts`).
  */
-import type { RelationalStore, ServerEnv } from './adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import type { DispatchLimits } from './limits.js';
 import { limitPassesSql, type ClaimedInput } from './runs.js';
 import { readSpendRows, spendRowsSql } from './run-budget.js';
@@ -16,6 +16,7 @@ import { pausedLearningSql } from './learning-pause.js';
 import { queueHeadSeek } from './queue-heads.js';
 import { capabilityOnSql, effectiveBudgetSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
+import { LEARNING_STAGES } from './learning-stages.js';
 
 export interface SqlTerm { sql: string; params: unknown[] }
 
@@ -34,10 +35,12 @@ export interface PulledStage {
   stillHead(item: PulledItem, now: number): SqlTerm;
   /** The run's input for the item, or null when it offers nothing to do. */
   build(env: ServerEnv, item: PulledItem, now: number): Promise<ClaimedInput | null>;
+  /** What the claim's batch adds for the item; each statement holds its own condition on the run row the batch wrote. */
+  claimed?(db: RelationalStore, item: PulledItem, input: ClaimedInput, run: { runId: string; dispatchedBy: string }, now: number): PreparedStatement[];
 }
 
-/** The production registry: no stage is registered, so no claim pulls. */
-export const PULLED_STAGES: readonly PulledStage[] = [];
+/** The production registry: the two learning stages, turn cards and session learning, each fresh and history. */
+export const PULLED_STAGES: readonly PulledStage[] = LEARNING_STAGES;
 
 let installed: readonly PulledStage[] = PULLED_STAGES;
 

@@ -453,6 +453,8 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
 it('reasserts the learning hold when a prompt fact arrives after segment selection', async () => {
   const f=await heldSegment(Buffer.byteLength('retained source bytes'));
   try {
+    // The pause window, before whole-session learning resumes, when the hold reads unread facts.
+    f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
     seedCredential(f.sqlite,{id:'token',machineId:'m',expiresAt:NOW+86_400_000});
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     f.sqlite.run("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('proj_1','published','s-held',1,'full','live',1)");
@@ -481,6 +483,8 @@ it('reasserts the learning hold when a prompt fact arrives after segment selecti
 it('advances and wraps past learning-held transcript pages before revisiting released source', async () => {
   const f=await heldSegment(Buffer.byteLength('retained source bytes'));
   try {
+    // The pause window, before whole-session learning resumes, when the hold reads unread facts.
+    f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     for(let index=0;index<21;index++) {
       const session=`s-copy-${index}`,transcript=`tx-copy-${index}`,event=`e-copy-${index}`;

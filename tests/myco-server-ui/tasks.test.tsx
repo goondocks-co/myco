@@ -194,7 +194,7 @@ describe('starting a task from the Tasks view', () => {
   const startable = TASK_DESCRIPTIONS.filter((task) => task.startable);
 
   it('offers Run now on every task a person may start by hand, and on no other', async () => {
-    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'vault-seed']);
+    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
     for (const path of [`/p/${P}/work/tasks`, '/work/tasks']) for (const member of [false, true]) {
       server(TASK_DESCRIPTIONS, { member });
       mount(path);
@@ -276,10 +276,11 @@ it('shows the server-owned learning pause message as a final refusal', () => {
     .toEqual({words:'Learning resumes with whole-session reading',capability:null,final:true});
 });
 
-it('shows paused learning without offering a new run', async () => {
+it('offers a hand start of learning and none of its card stage', async () => {
   server(TASK_DESCRIPTIONS);
   mount(`/p/${P}/work/tasks`);
   const card=await screen.findByRole('heading',{name:'Learn from sessions'}).then(node=>node.closest('article')!);
-  expect(card.textContent).toContain('Learning resumes with whole-session reading');
-  expect(within(card).queryByRole('button',{name:'Run now: Learn from sessions'})).toBeNull();
+  expect(within(card).getByRole('button',{name:'Run now: Learn from sessions'})).toBeTruthy();
+  const cards=await screen.findByRole('heading',{name:'Card session turns'}).then(node=>node.closest('article')!);
+  expect(within(cards).queryByRole('button',{name:'Run now: Card session turns'})).toBeNull();
 });

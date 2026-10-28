@@ -4,6 +4,8 @@ const CALL_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   myco_run_spores: { list: 'Listed spores', get: 'Read a spore' },
   myco_run_sessions: { list: 'Listed sessions', material: 'Read session material', title: 'Wrote a session title and summary' },
   myco_run_prompts: { mark_processed: 'Marked a prompt as read' },
+  myco_run_cards: { material: 'Read turns to card', write: 'Wrote turn cards' },
+  myco_run_learning: { material: 'Read session cards', get: 'Read a raw turn', complete: 'Completed a learning slice' },
   myco_spores: { save: 'Saved a spore', supersede: 'Replaced a spore', obsolete: 'Retired a spore', consolidate: 'Combined spores' },
   myco_search: { '*': 'Searched Myco' },
 };

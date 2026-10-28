@@ -7,6 +7,7 @@ import { queueHeads } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { learningPaused, LEARNING_PAUSED } from './learning-pause.js';
+import { NOTHING_DUE } from './learning-sessions.js';
 import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
@@ -1029,6 +1030,7 @@ export async function claimNextRun(
   if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
   if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
   const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
+  if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: INPUT_UNCHANGED });
@@ -1131,8 +1133,10 @@ async function pullAtClaim(
     if (!(await automaticFits(env.db, price.estimate, worker.now))) return null;
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
-    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: `run_${crypto.randomUUID()}`, task: stage.task, subject: item.subject, input,
-      reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params } }, {
+    const runId = `run_${crypto.randomUUID()}`;
+    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
+      reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params },
+      ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
       settingsGuard: { sql: policy.sql, params: policy.params },
     });
@@ -1145,7 +1149,7 @@ async function pullAtClaim(
     return {
       claimed: true,
       run: {
-        ...claimed.row, instruction: input.instruction, instructions: null, harness: chosen.harness, profile,
+        ...claimed.row, instruction: input.instruction, instructions: input.instructions ?? null, harness: chosen.harness, profile,
         runToken: claimed.issued.token, attemptId: claimed.issued.tokenId, credentialEnv: chosen.credentialEnv,
         leaseExpiresAt: worker.now + WORKER_LEASE_MS, timeoutSeconds: runTimeoutForTask(stage.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
       },

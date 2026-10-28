@@ -31,7 +31,8 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   const [error, setError] = useState<string | null>(null);
   const words = CAPABILITY_WORDS[capability] ?? { label: capability, note: undefined };
   const id = `capability-${capability}`;
-  const capabilityTasks = tasks?.filter((task) => task.capability === capability) ?? [];
+  // The tasks a person can run under this capability; a stage another task pulls, like turn cards for learning, is part of it.
+  const capabilityTasks = tasks?.filter((task) => task.capability === capability && task.startable) ?? [];
   const repositoryTasks = capabilityTasks.filter((task) => REPOSITORY_TASKS.includes(task.task));
   const independentTasks = capabilityTasks.filter((task) => !REPOSITORY_TASKS.includes(task.task));
   const readsRepository = repositoryTasks.length > 0;

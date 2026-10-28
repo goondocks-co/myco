@@ -70,6 +70,34 @@ const LISTED: readonly Exception[] = [
 const EXCEPTIONS: readonly Exception[] = [
   ...LISTED,
   ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({ ...exception, step: 108 })),
+  ...['idx_learning_eligible', 'idx_learning_eligible_all', 'idx_learning_completed', 'idx_learning_init_pending'].map((object) => ({
+    step: 110,
+    object,
+    table: 'learning_sessions',
+    reason: 'Learning progress columns are indexed where their claim, status and initialization reads seek them.',
+  })),
+  ...[
+    ['prompt_batches_learning_session', 'prompt_batches'],
+    ['prompt_batches_turn_card_open', 'prompt_batches'],
+    ['prompt_batches_turn_card_insert', 'prompt_batches'],
+    ['prompt_batches_turn_card_update', 'prompt_batches'],
+    ['responses_turn_card_insert', 'responses'],
+    ['tool_calls_turn_card_insert', 'tool_calls'],
+    ['tool_calls_turn_card_update', 'tool_calls'],
+    ['plans_turn_card_insert', 'plans'],
+    ['plans_turn_card_update', 'plans'],
+  ].map(([object, table]) => ({
+    step: 110,
+    object: object!,
+    table: table!,
+    reason: 'A record written into a turn makes that turn due for its card in the same statement.',
+  })),
+  ...['session_views_learning_insert', 'session_views_learning_update'].map((object) => ({
+    step: 110,
+    object,
+    table: 'session_views',
+    reason: 'A session becomes due for learning in the batch that publishes its views.',
+  })),
 ];
 interface StatementException {
   step: number;
@@ -122,6 +150,28 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     sql: 'ALTER TABLE view_checkpoints ADD COLUMN ' + column,
     reason: 'Empty checkpoints carry the complete live frontier.',
   })),
+  ...[
+    'learned_seq INTEGER NOT NULL DEFAULT 0',
+    "init_state TEXT NOT NULL DEFAULT 'pending' CHECK (init_state IN ('pending','awaiting_publication','ready'))",
+    'eligible_at INTEGER',
+    'pending_cards INTEGER NOT NULL DEFAULT 0',
+    'due_cards INTEGER NOT NULL DEFAULT 0',
+    'failures INTEGER NOT NULL DEFAULT 0',
+    'skipped_by_owner INTEGER NOT NULL DEFAULT 0',
+    'handoff TEXT CHECK (handoff IS NULL OR length(CAST(handoff AS BLOB)) <= 4096)',
+    'carded_seq INTEGER NOT NULL DEFAULT 0',
+    'last_completed_at INTEGER',
+    'last_completed_reason TEXT',
+  ].map((column) => ({
+    step: 110,
+    sql: 'ALTER TABLE learning_sessions ADD COLUMN ' + column,
+    reason: 'Each session carries its learning progress, eligibility and last completion.',
+  })),
+  {
+    step: 110,
+    sql: `INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('learning_resumed_at', CAST(unixepoch() * 1000 AS TEXT))`,
+    reason: 'The Deployment records when whole-session learning resumed.',
+  },
   {
     step: 101,
     sql: 'ALTER TABLE spores ADD COLUMN revision INTEGER NOT NULL DEFAULT 0',

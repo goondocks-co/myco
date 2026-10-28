@@ -264,7 +264,7 @@ describe('tool parity', () => {
     const extraction = runAllowlist(TASK_TOOLS['extract-curate'], { dryRun: false });
     expect([...extraction.entries()].map(([tool, ops]) => [tool, [...ops].sort()]).sort())
       .toEqual([
-        ['myco_run', ['report', 'state_get', 'state_set']], ['myco_run_prompts', ['mark_processed']],
+        ['myco_run', ['report', 'state_get', 'state_set']], ['myco_run_learning', ['complete', 'get', 'material']], ['myco_run_prompts', ['mark_processed']],
         ['myco_run_sessions', ['list']], ['myco_run_spores', ['get', 'list']],
         ['myco_search', [NO_OP]], ['myco_spores', ['consolidate', 'obsolete', 'save', 'supersede']],
       ]);

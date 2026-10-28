@@ -17,7 +17,7 @@ export const DERIVED_TABLES = [
   ...VIEW_SESSION_TABLES,
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
   'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts', 'prompt_key_owners',
-  'prompt_batches', 'extraction_acks', 'session_artifacts', 'events',
+  'prompt_batches', 'extraction_acks', 'turn_cards', 'learning_init_queue', 'session_artifacts', 'events',
 ] as const;
 
 /**
