@@ -426,8 +426,8 @@ test('a batch backlog builds several sessions side by side within the wake allow
 test('a backlog every publication refuses waits for the next full wake instead of chaining', async () => {
   await withViewStores(async (db, target) => {
     const native = target === 'native';
-    // An observation left unfinished blocks every publication under its calibration.
-    await db.batch(beginFlipObservation(db, productionFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial'), 'interrupted'));
+    // An observation left unfinished blocks every publication under its calibration while its lease holds.
+    await db.batch(beginFlipObservation(db, productionFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial'), 'interrupted', Date.now()));
     await withViewWriterDriver(async () => {
       const blobs = memoryBlobStore(), now = Date.now();
       let env: ServerEnv | undefined;

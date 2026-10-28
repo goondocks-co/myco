@@ -2,7 +2,14 @@ import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ViewWriteTarget } from '@myco-server-worker/ingest/view-guard.js';
 import { createEmptyView, requestViewRebuild, tryPublishView } from '@myco-server-worker/ingest/view-lifecycle.js';
-import { readFlipWork, flipWorkSql, type FlipEnvelope } from '@myco-server-worker/ingest/view-flip-work.js';
+import {
+  readFlipWork,
+  flipWorkSql,
+  beginFlipObservation,
+  flipCalibrationBlocked,
+  FLIP_OBSERVATION_LEASE_MS,
+  type FlipEnvelope,
+} from '@myco-server-worker/ingest/view-flip-work.js';
 import {
   claimViewBuild,
   SERIAL_VIEW_BUDGET,
@@ -190,6 +197,43 @@ test('committed overruns and interrupted observations quarantine their calibrati
         published: false,
         reason: 'view_flip_admission_unavailable',
       });
+    }),
+  );
+}, 120000);
+
+test('an interrupted observation expires after its lease, publication resumes, and a changed measurement re-observes', async () => {
+  await withViewStores(async (db, store) =>
+    withViewWriterDriver(async () => {
+      const { target, now, env } = await ready(db),
+        envelope = fixtureFlipEnvelope(store);
+      const rebuild = async (at: number) => {
+        await requestViewRebuild(db, 'project', 'session', at);
+        const next = (await claimViewBuild(db, 'project', 'session', SERIAL_VIEW_BUDGET, at))!;
+        await parseInstance(env, next, at, { calls: 500, deadline: Date.now() + 10000, clock: Date.now, completeFile: true });
+        return next;
+      };
+      const interrupted = beforeViewWriteBatch(
+        db,
+        (sql) => sql.includes('last_observation=?'),
+        async () => {
+          throw new Error('interrupted observation');
+        },
+        true,
+      );
+      await expect(tryPublishView(interrupted, target, now, envelope)).rejects.toThrow('interrupted observation');
+      const held = await rebuild(now + 1);
+      expect(await tryPublishView(db, held, now + 1, envelope)).toEqual({
+        published: false,
+        reason: 'view_flip_admission_unavailable',
+      });
+      const later = now + FLIP_OBSERVATION_LEASE_MS + 1;
+      expect(await flipCalibrationBlocked(db, envelope, later)).toBe(false);
+      expect((await tryPublishView(db, await rebuild(later), later, envelope)).published, store).toBe(true);
+      const changed = { ...envelope, measurement: { ...envelope.measurement!, observedAt: envelope.measurement!.observedAt + 1 } };
+      expect((await tryPublishView(db, await rebuild(later + 1), later + 1, changed)).published, store).toBe(true);
+      await db.batch(beginFlipObservation(db, changed, 'first', later + 2));
+      await expect(db.batch(beginFlipObservation(db, changed, 'second', later + 2))).rejects.toThrow();
+      expect(await flipCalibrationBlocked(db, changed, later + 2)).toBe(true);
     }),
   );
 }, 120000);
