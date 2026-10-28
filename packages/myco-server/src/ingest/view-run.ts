@@ -51,6 +51,8 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
   });
   const db = measured.env.db,
     calls = () => measured.usage.roundTrips + measured.usage.blobCalls;
+  /** Releasing a claim and recording its sample stay admitted once this job's own wall or call budget has run out. */
+  const closing = env.db;
   const stale = (
     await db
       .prepare(
@@ -188,13 +190,13 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     } catch (error) {
       if (!exhausted(error)) throw error;
     } finally {
-      const held = await db
+      const held = await closing
         .prepare(`SELECT state,lease_token FROM view_instances WHERE project_id=? AND instance_id=?`)
         .bind(target.projectId, target.instanceId)
         .first<{ state: string; lease_token: string | null }>();
       if (held?.state === 'building' && held.lease_token === target.leaseToken) {
-        await yieldViewBuild(db, target, Math.max(0, clock() - targetStart), now);
-        await releaseViewBuild(db, target, now);
+        await yieldViewBuild(closing, target, Math.max(0, clock() - targetStart), now);
+        await releaseViewBuild(closing, target, now);
       }
       if (token !== null)
         samples.push({
@@ -233,7 +235,7 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
   const ends = [...samples.slice(1).map((sample) => sample.base), { ...measured.usage }];
   for (const [index, sample] of samples.entries())
     await finishViewSample(
-      db,
+      closing,
       sample.target,
       sample.token,
       {

@@ -7,7 +7,7 @@ import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { engineAssertions, WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '@myco-server-worker/core/tick.js';
-import { VIEW_BUILD_LEASE_MS } from '@myco-server-worker/ingest/view-build-queue.js';
+import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET } from '@myco-server-worker/ingest/view-build-queue.js';
 import { requestViewRebuild } from '@myco-server-worker/ingest/view-lifecycle.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
@@ -312,6 +312,32 @@ test('a draining wake builds several sessions under its own wall after the wake 
         setSystemTime();
       }
       expect((await readViewCutover(db)).built).toBeGreaterThan(1);
+    }),
+  );
+}, 120000);
+
+test('a build that outlasts its wall releases its claim, so the next wake builds at once', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now();
+      await captureViewSession(db, 'project', 'cut-x', { idOffset: 9800 });
+      const text = Array.from({ length: 40 }, (_, i) => turn('cut-x', 'walled' + i, 100)).join('');
+      const env = await captureViewTranscript(db, blobs, 'cut-x', 'tx_' + 'e'.repeat(32), text, now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+      await requestViewRebuild(db, 'project', 'cut-x', now);
+      const held = new Bun.CryptoHasher('sha256').update(text).digest('hex');
+      const slow: typeof blobs = { ...blobs, get: async (key, options) => {
+        if (key.includes(held)) setSystemTime(new Date(Date.now() + SERIAL_VIEW_BUDGET.wallMs + 1000));
+        return blobs.get(key, options);
+      } };
+      try {
+        setSystemTime(new Date(now));
+        await runViewCutoverWake({ ...env, blobs: slow }, now);
+      } finally {
+        setSystemTime();
+      }
+      expect((await readViewCutover(db)).built).toBe(0);
+      await runViewCutoverWake(env, now);
+      expect((await readViewCutover(db)).built).toBe(1);
     }),
   );
 }, 120000);
