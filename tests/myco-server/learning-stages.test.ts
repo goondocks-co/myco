@@ -341,6 +341,9 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(material.turns.map(turn => turn.turn_key)).toEqual([uuid(1), uuid(2), uuid(3), uuid(4)]);
     expect(await call(cards.run.runToken, 'myco_run_cards', { op: 'write', cards: material.turns.map(turn => ({ turns: [turn.turn_key], ...fakeCard(turn.input) })) }))
       .toMatchObject({ written: 4 });
+    const ran = await db.prepare(`SELECT model FROM agent_runs WHERE id = ?`).bind(cards.run.id).first<{ model: string | null }>();
+    expect(ran?.model).toBeTruthy();
+    expect((await db.prepare(`SELECT DISTINCT model FROM turn_cards WHERE state = 'carded' AND run_id = ?`).bind(cards.run.id).all()).results).toEqual([{ model: ran!.model }]);
     await call(cards.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
     expect(await endLeasedRun(env, { principal, now: at + 2 }, { projectId: 'project', runId: cards.run.id, attemptId: cards.run.attemptId, status: 'completed' }))
       .toEqual({ ended: true, status: 'completed' });

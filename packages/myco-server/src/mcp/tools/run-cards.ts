@@ -29,8 +29,9 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
   if (input.op === 'write') {
     const writes = parseCardWrites(input.cards, new Set(held.assignment.turns.map((turn) => turn.turnKey)));
     if (typeof writes === 'string') return failure(writes);
+    const used = await db.prepare('SELECT model FROM agent_runs WHERE project_id = ? AND id = ?').bind(ctx.projectId, run.runId).first<{ model: string | null }>();
     const result = await writeRunCards(ctx.env, ctx.projectId, held.sessionId, held.assignment.turns, writes,
-      { runId: run.runId, model: null }, ctx.now);
+      { runId: run.runId, model: used?.model ?? null }, ctx.now);
     await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId),
       { runId: run.runId, toolName: CARD_TOOL, op: 'write', recordedAt: ctx.now, detail: { written: result.written } });
     return { written: result.written, changed_since_served: result.changed };
