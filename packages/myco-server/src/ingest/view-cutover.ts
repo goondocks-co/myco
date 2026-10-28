@@ -255,6 +255,7 @@ export async function runViewCutoverWake(
     inFlight: options.inFlight,
   });
   changed += report.changed + report.published;
+  const progressed = changed > 0 || report.advanced > 0;
   const pending = await db
     .prepare(
       `SELECT EXISTS(SELECT 1 FROM view_build_work WHERE state<>'waiting')
@@ -262,15 +263,17 @@ export async function runViewCutoverWake(
       OR EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND swept_at IS NULL) pending`,
     )
     .first<{ pending: number }>();
-  return { changed, more: !paused && (!classified || pending?.pending === 1) };
+  return { changed, more: !paused && (!classified || pending?.pending === 1), progressed };
 }
 
 /**
  * The transcript-parse job. The batch runs before the legacy pass, which keeps its own wall. On a full wake the batch
  * reads within the wake's content wall, which the jobs after it share; a wake that only drains gives it its own wall.
- * While the batch holds a backlog, it builds `CUTOVER_SESSIONS_IN_FLIGHT` sessions side by side and asks for the next
- * wake at `BACKLOG_CHAINED_WAKE_MS`; the legacy pass reads only recently received transcripts and its own backlog waits
- * for the batch. A batch failure is reported once the legacy pass has run.
+ * While the batch holds a backlog, it builds `CUTOVER_SESSIONS_IN_FLIGHT` sessions side by side and, after a wake that
+ * moved it on, asks for the next wake at `BACKLOG_CHAINED_WAKE_MS`; the legacy pass then reads only recently received
+ * transcripts and its own backlog waits for the batch. A backlog that moved nowhere (every session refused publication,
+ * say) takes no wake of its own: it waits for the next full wake, and the legacy pass serves every lane. A batch failure
+ * is reported once the legacy pass has run.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -288,12 +291,13 @@ export async function runTranscriptParseWake(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
   );
-  const legacy = await parseTranscripts(env, now, { recentSince });
+  const yielding = 'error' in views || views.report.progressed;
+  const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
   if ('error' in views) throw views.error;
   return {
     ...legacy,
     changed: legacy.changed + views.report.changed,
-    more: legacy.more || views.report.more,
-    ...(backlog && views.report.more ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
+    more: legacy.more || (views.report.more && (views.report.progressed || !backlog)),
+    ...(backlog && views.report.more && views.report.progressed ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
   };
 }

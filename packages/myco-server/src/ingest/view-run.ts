@@ -76,7 +76,9 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     .bind(PARSER_VERSION, ...viewTerminalParams(now))
     .first<{ project_id: string; session_id: string; live_instance: string; fence: number }>();
   let changed = 0,
-    published = 0;
+    published = 0,
+    /** Passes that moved a cursor, whether or not they derived anything. */
+    advanced = 0;
   if (live) {
     const target: ViewWriteTarget = {
       projectId: live.project_id,
@@ -93,10 +95,11 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
       clock,
     });
     changed += report?.derived ?? 0;
+    if (report?.nextOffset != null) advanced++;
   }
   const inFlight = options.cutover ? Math.max(1, options.inFlight ?? 1) : 1,
-    /** What each session in flight keeps back to release its claim and record its sample. */
-    closingStatements = 40 * inFlight;
+    /** What the sessions in flight keep back to release their claims and record their samples: about twelve each. */
+    closingStatements = 40 + 12 * (inFlight - 1);
   const share = live === null ? 2 : 4,
     startCalls = calls(),
     startStatements = measured.usage.statements,
@@ -203,14 +206,24 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
           clock,
         });
         changed += report?.derived ?? 0;
+        if (report?.nextOffset != null) advanced++;
         // A pass that stopped short of the held bytes leaves more to read; publication waits for one that reached them.
         if (report !== null && report.failure === null && report.unread > 0) continue;
+        // A flip's observation, once begun, is finished outside the lanes' shared admission: one left unfinished blocks
+        // every later publication under that calibration.
         const flip = await publishing(() =>
-          tryPublishView(building.env.db, target, now, {
-            ...options.envelope,
-            store: env.platform.name === 'bun' ? 'native' : 'remote',
-            profile: options.profile.slots === 2 ? 'parallel' : 'serial',
-          }),
+          tryPublishView(
+            building.env.db,
+            target,
+            now,
+            {
+              ...options.envelope,
+              store: env.platform.name === 'bun' ? 'native' : 'remote',
+              profile: options.profile.slots === 2 ? 'parallel' : 'serial',
+            },
+            undefined,
+            env.db,
+          ),
         );
         if (flip.published) {
           published++;
@@ -309,5 +322,5 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
       ),
     );
   }
-  return { changed, published, usage: measured.usage, wallMs: clock() - started };
+  return { changed, published, advanced, usage: measured.usage, wallMs: clock() - started };
 }
