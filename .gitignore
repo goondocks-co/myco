@@ -50,3 +50,6 @@ docs/node_modules/
 
 # Built by packages/myco/scripts/gen-worker-bundle.ts (#1160); the binary carries it, git does not.
 packages/myco/src/worker-bundle.generated.ts
+
+# Bun compile scratch binaries (#1954)
+*.bun-build
