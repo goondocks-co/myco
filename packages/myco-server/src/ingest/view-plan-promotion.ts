@@ -65,18 +65,6 @@ export async function promoteViewPlan(
         )
       : String(plan.content ?? '');
   const tags = JSON.parse(String(plan.tags_json ?? '[]')) as string[];
-  await db.batch([
-    db
-      .prepare(
-        `DELETE FROM tags WHERE project_id=? AND entity_kind='plan' AND entity_id=? AND tag NOT IN(SELECT value FROM json_each(?))`,
-      )
-      .bind(scope.projectId, key, JSON.stringify(tags)),
-    ...tags.map((tag) =>
-      db
-        .prepare(`INSERT OR IGNORE INTO tags(project_id,entity_kind,entity_id,tag) VALUES(?,'plan',?,?)`)
-        .bind(scope.projectId, key, tag),
-    ),
-  ]);
   const columns = {
     project_id: scope.projectId,
     plan_key: key,
@@ -104,6 +92,14 @@ export async function promoteViewPlan(
     AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
       [scope.projectId, plan.instance_id, scope.projectId, key, scope.projectId, plan.session_id],
     ),
+    db
+      .prepare(
+        `DELETE FROM tags WHERE project_id=? AND entity_kind='plan' AND entity_id=? AND tag NOT IN(SELECT value FROM json_each(?))`,
+      )
+      .bind(scope.projectId, key, JSON.stringify(tags)),
+    db
+      .prepare(`INSERT OR IGNORE INTO tags(project_id,entity_kind,entity_id,tag) SELECT ?,'plan',?,value FROM json_each(?)`)
+      .bind(scope.projectId, key, JSON.stringify(tags)),
     db
       .prepare(
         `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,origin_path,
