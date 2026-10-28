@@ -342,6 +342,30 @@ test('a build that outlasts its wall releases its claim, so the next wake builds
   );
 }, 120000);
 
+test('a build spends one read round trip per window and prepares the window bodies side by side', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now();
+      await captureViewSession(db, 'project', 'cut-y', { idOffset: 9900 });
+      const text = Array.from({ length: 240 }, (_, i) => turn('cut-y', 'bodies' + i, i % 6 ? 100 : 5000 + i)).join('');
+      const env = await captureViewTranscript(db, blobs, 'cut-y', 'tx_' + 'f'.repeat(32), text, now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+      await requestViewRebuild(db, 'project', 'cut-y', now);
+      let flight = 0, overlap = 0;
+      const timed: typeof blobs = { ...blobs, put: async (key, value, options) => {
+        overlap = Math.max(overlap, ++flight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        try { return await blobs.put(key, value, options); } finally { flight--; }
+      } };
+      const outer = measuredContentEnv({ ...env, blobs: timed }, { statements: 100_000, blobCalls: 100_000 });
+      for (let wake = 0; wake < 40 && (await readViewCutover(db)).built === 0; wake++) await runViewCutoverWake(outer.env as unknown as ServerEnv, now);
+      expect((await readViewCutover(db)).built).toBe(1);
+      // Seven 64 KB windows: reading each window's rows one table at a time spends over 320 round trips.
+      expect(outer.usage.roundTrips).toBeLessThan(290);
+      expect(overlap).toBeGreaterThan(1);
+    }),
+  );
+}, 120000);
+
 test('unfinished cutover work keeps the Deployment at idle until the batch completes or pauses', async () => {
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {
