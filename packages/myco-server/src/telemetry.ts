@@ -43,15 +43,19 @@ export function classify(err: unknown, platform?: ErrorClassifier): ErrorClass {
 
 const IDENTIFIER = '[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?';
 const CONSTRAINT_FAILURE = new RegExp(`\\b(UNIQUE|NOT NULL|CHECK|FOREIGN KEY|PRIMARY KEY) constraint failed(?:: (${IDENTIFIER}(?:, ${IDENTIFIER})*)(?=$|:))?`);
+const CHECK_FAILURE = /\bCHECK constraint failed: ([^:]{1,200})(?=$|:)/;
 
 /**
- * The failed constraint's kind and, when the message names them as a bare list, the
- * schema identifiers it names: 'UNIQUE: t.a, t.b' or 'FOREIGN KEY'. Identifiers only,
- * never exception text; a list followed by anything other than the message's end or a
- * colon is dropped, so an expression or value never passes.
+ * The failed constraint's kind and what the message names of the schema: 'UNIQUE: t.a, t.b',
+ * 'FOREIGN KEY', or for a CHECK its expression, 'CHECK: role IN (...)'. A CHECK expression is the
+ * schema's own DDL text, never row data. Nothing past the message's next colon is kept, a CHECK
+ * expression over 200 characters is dropped, and any other list followed by more text is dropped.
  */
 export function constraintDetail(err: unknown): string | undefined {
-  const match = CONSTRAINT_FAILURE.exec(err instanceof Error ? err.message : String(err));
+  const message = err instanceof Error ? err.message : String(err);
+  const check = CHECK_FAILURE.exec(message);
+  if (check !== null) return `CHECK: ${check[1]!.trim()}`;
+  const match = CONSTRAINT_FAILURE.exec(message);
   if (match === null) return undefined;
   return match[2] !== undefined && match[2].length <= 200 ? `${match[1]}: ${match[2]}` : match[1];
 }

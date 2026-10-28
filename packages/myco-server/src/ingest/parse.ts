@@ -28,7 +28,7 @@
 import type { JobBudget, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { Fragment } from './projections.js';
 import type { JobOutcome } from '../core/jobs-run.js';
-import { emit, type Classifier } from '../telemetry.js';
+import { classify, constraintDetail, emit, type Classifier } from '../telemetry.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { allEventProofs, eventProof, envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
@@ -401,7 +401,7 @@ function lineKind(line: ParsedLine | undefined): string {
 }
 
 /** Stop this transcript where it stands and keep its recorded rows. */
-async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier }, diagnostic: ParseDiagnostic = { branch: classifier === 'parse' ? 'no_progress' : classifier, offset: target.parsedOffset, lineKind: 'unknown' }): Promise<void> {
+async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier } | { constraint_detail: string }, diagnostic: ParseDiagnostic = { branch: classifier === 'parse' ? 'no_progress' : classifier, offset: target.parsedOffset, lineKind: 'unknown' }): Promise<void> {
   if(target.persistence)return target.persistence.stop(classifier,now);
   const statement = db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ?, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserFailure', json(?)) WHERE project_id = ? AND transcript_id = ?`)
@@ -1432,7 +1432,15 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
     // Side by side only while their segment bytes fit the budget, so full segments are read one at a time.
     const reports = await withinBytes(targets, passBytes, TRANSCRIPT_PARSE_CONCURRENT_BYTES, async (target) => {
       options.passes?.started(target.transcriptId, passBytes(target));
-      try { return await parseOnce(env, target, now, { calls: each, deadline: passDeadline, clock,statementBudget }); } finally { options.passes?.ended(target.transcriptId); }
+      try { return await parseOnce(env, target, now, { calls: each, deadline: passDeadline, clock,statementBudget }); }
+      catch (error) {
+        // A write the store refuses on a constraint stops this transcript alone; every other transcript keeps parsing.
+        if (classify(error) !== 'constraint') throw error;
+        await stop(env.db, target, 'parse', now, { constraint_detail: constraintDetail(error) ?? 'unknown' },
+          { branch: 'event_not_stored', offset: target.parsedOffset, lineKind: 'unknown' });
+        return { derived: 0, calls: 2, nextOffset: null, failure: 'parse' as const };
+      }
+      finally { options.passes?.ended(target.transcriptId); }
     });
     for (const report of reports) {
       spent += report.calls;

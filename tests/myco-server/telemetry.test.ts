@@ -14,11 +14,13 @@ describe('telemetry', () => {
     expect(failureTelemetry(hostile, classifyCloudflareError)).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
     expect(failureTelemetry('Bearer secret')).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
   });
-  it('names a failed constraint by its kind and schema identifiers only', () => {
+  it('names a failed constraint by its kind and schema text only', () => {
     expect(constraintDetail(new Error('D1_ERROR: UNIQUE constraint failed: fact_classes.project_id, fact_classes.table_name, fact_classes.record_id: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_PRIMARYKEY)')))
       .toBe('UNIQUE: fact_classes.project_id, fact_classes.table_name, fact_classes.record_id');
     expect(constraintDetail(new Error('FOREIGN KEY constraint failed'))).toBe('FOREIGN KEY');
-    expect(constraintDetail(new Error("CHECK constraint failed: token <> 'SECRET-123'"))).toBe('CHECK');
+    expect(constraintDetail(new Error("D1_ERROR: CHECK constraint failed: role IN ('live','parent'): SQLITE_CONSTRAINT"))).toBe("CHECK: role IN ('live','parent')");
+    expect(constraintDetail(new Error('CHECK constraint failed: ' + 'x'.repeat(201)))).toBe('CHECK');
+    expect(constraintDetail(new Error("UNIQUE constraint failed: users.email = 'SECRET-123'"))).toBe('UNIQUE');
     expect(constraintDetail(new Error('disk I/O error'))).toBeUndefined();
   });
   it('classifies without echoing the message', () => {
