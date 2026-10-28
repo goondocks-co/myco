@@ -148,4 +148,20 @@ describe('hook placement', () => {
     expect((await listUnplacedHookRecords(f.db, scope, 's')).rows.map(row => row.id).sort()).toEqual(['cortex:agent', 'plan-nudge', 'recent']);
     expect(await countUnplacedContextRecords(f.db, scope, 's', now)).toBe(1);
   });
+
+  it('counts a Deployment-wide status window in statements under the hosted 100 KB limit at 1,500 sessions', async () => {
+    const f = fixture();
+    const sessions = Array.from({ length: 1500 }, (_, index) => 'deployment-session-' + String(index).padStart(4, '0'));
+    for (const session of sessions) {
+      f.sqlite.run(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1',?,'t',1,1)`, [session]);
+      f.sqlite.run(`INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,created_at,delivered_at,delivered_prompt_id)
+        VALUES ('proj_1',?,'receipt','absent','hash','[]',1,2,'absent')`, [session]);
+      f.sqlite.run(`INSERT INTO prompt_context_answers(project_id,session_id,id,prompt_id,outcome,context_chars,parts,skipped,failures,selection,created_at,delivered_at,delivered_prompt_id)
+        VALUES ('proj_1',?,'answer','absent','served',0,'[]','[]','[]','{}',1,2,'absent')`, [session]);
+    }
+    let longest = 0;
+    const measured = { prepare: (sql: string) => { longest = Math.max(longest, sql.length); return f.db.prepare(sql); }, batch: f.db.batch.bind(f.db) };
+    expect(await countUnplacedContextRecords(measured, undefined, undefined, 100)).toBe(3000);
+    expect(longest).toBeLessThan(100_000);
+  }, 30_000);
 });
