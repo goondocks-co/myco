@@ -1,4 +1,4 @@
-import type { ServerEnv, JobBudget } from '../core/adapters.js';
+import type { ServerEnv, JobBudget, RelationalStore } from '../core/adapters.js';
 import {
   measuredContentEnv,
   remainingInvocationBudget,
@@ -141,6 +141,15 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
   };
   const exhausted = (error: unknown) =>
     error instanceof Error && /^content_(?:statement|blob|call|wall)_budget_exhausted$/.test(error.message);
+  /** Releasing a claim and recording its sample run in this job's admission, or in the enclosing one once this job's own has run out. */
+  const settle = async <T>(work: (store: RelationalStore) => Promise<T>): Promise<T> => {
+    try {
+      return await work(db);
+    } catch (error) {
+      if (!exhausted(error)) throw error;
+      return work(env.db);
+    }
+  };
   const samples: {
     target: ViewWriteTarget;
     token: string;
@@ -172,6 +181,8 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
           clock,
         });
         changed += report?.derived ?? 0;
+        // A pass that stopped short of the held bytes leaves more to read; publication waits for one that reached them.
+        if (report !== null && report.failure === null && report.unread > 0) continue;
         const flip = await tryPublishView(lane.env.db, target, now, {
           ...options.envelope,
           store: env.platform.name === 'bun' ? 'native' : 'remote',
@@ -188,13 +199,15 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     } catch (error) {
       if (!exhausted(error)) throw error;
     } finally {
-      const held = await db
-        .prepare(`SELECT state,lease_token FROM view_instances WHERE project_id=? AND instance_id=?`)
-        .bind(target.projectId, target.instanceId)
-        .first<{ state: string; lease_token: string | null }>();
+      const held = await settle((store) =>
+        store
+          .prepare(`SELECT state,lease_token FROM view_instances WHERE project_id=? AND instance_id=?`)
+          .bind(target.projectId, target.instanceId)
+          .first<{ state: string; lease_token: string | null }>(),
+      );
       if (held?.state === 'building' && held.lease_token === target.leaseToken) {
-        await yieldViewBuild(db, target, Math.max(0, clock() - targetStart), now);
-        await releaseViewBuild(db, target, now);
+        await settle((store) => yieldViewBuild(store, target, Math.max(0, clock() - targetStart), now));
+        await settle((store) => releaseViewBuild(store, target, now));
       }
       if (token !== null)
         samples.push({
@@ -232,18 +245,20 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
   }
   const ends = [...samples.slice(1).map((sample) => sample.base), { ...measured.usage }];
   for (const [index, sample] of samples.entries())
-    await finishViewSample(
-      db,
-      sample.target,
-      sample.token,
-      {
-        statements: ends[index]!.statements - sample.base.statements,
-        roundTrips: ends[index]!.roundTrips - sample.base.roundTrips,
-        blobCalls: ends[index]!.blobCalls - sample.base.blobCalls,
-      },
-      performance.now() - sample.started,
-      sample.serviceMs,
-      sample.refusal,
+    await settle((store) =>
+      finishViewSample(
+        store,
+        sample.target,
+        sample.token,
+        {
+          statements: ends[index]!.statements - sample.base.statements,
+          roundTrips: ends[index]!.roundTrips - sample.base.roundTrips,
+          blobCalls: ends[index]!.blobCalls - sample.base.blobCalls,
+        },
+        performance.now() - sample.started,
+        sample.serviceMs,
+        sample.refusal,
+      ),
     );
   return { changed, published, usage: measured.usage, wallMs: clock() - started };
 }

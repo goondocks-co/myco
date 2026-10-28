@@ -40,11 +40,7 @@ export async function parseViewOnce(
 ) {
   const measured = measuredContentEnv(env, { ...remainingContentBudget(env.db), enforceWall: true }),
     db = measured.env.db;
-  await db.batch([
-    ...viewWriteGuard(db, target, now),
-    ...manifestStatements(db, target.projectId, target.sessionId, target.instanceId),
-  ]);
-  const row = await db
+  const checkpointRead = db
     .prepare(
       `SELECT t.*,c.transcript_id checkpoint_id,c.parsed_offset checkpoint_offset,c.parser_context checkpoint_context,
     c.open_prompt_id checkpoint_prompt,c.parse_segment_lines checkpoint_lines,c.ordinal,c.lost_context checkpoint_lost,c.fidelity checkpoint_fidelity,s.ended_at session_end,s.machine_id session_machine,s.working_since,s.last_turn_end_at
@@ -53,8 +49,14 @@ export async function parseViewOnce(
     WHERE c.project_id=? AND c.instance_id=? AND (c.parse_error IS NULL OR c.parse_error='awaiting_bytes' AND t.size>COALESCE(c.parse_awaited_size,-1))
       AND (c.parsed_offset<t.size OR ${viewTerminalSql('c', 't', 's')}) ORDER BY c.ordinal LIMIT 1`,
     )
-    .bind(target.projectId, target.instanceId, ...viewTerminalParams(now, limits.completeFile))
-    .first<Record<string, unknown>>();
+    .bind(target.projectId, target.instanceId, ...viewTerminalParams(now, limits.completeFile));
+  // The guard, the manifest and the next checkpoint's read travel in one round trip.
+  const opened = await db.batch([
+    ...viewWriteGuard(db, target, now),
+    ...manifestStatements(db, target.projectId, target.sessionId, target.instanceId),
+    checkpointRead,
+  ]);
+  const row = (opened.at(-1)?.results[0] as Record<string, unknown> | undefined) ?? null;
   if (row === null) return null;
   const context =
     typeof row.checkpoint_context === 'string' ? (JSON.parse(row.checkpoint_context) as Record<string, unknown>) : null;
@@ -245,7 +247,8 @@ export async function parseViewOnce(
   };
   if (offset === parseTarget.size && !limits.completeFile && context?.mycoParserUnfinished !== 1) return null;
   try {
-    return await parseOnce(measured.env, parseTarget, now, limits);
+    const report = await parseOnce(measured.env, parseTarget, now, limits);
+    return { ...report, unread: report.nextOffset === null ? 0 : Math.max(0, parseTarget.size - report.nextOffset) };
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     const failure = error.message.startsWith('view_record_refused:')
@@ -253,6 +256,6 @@ export async function parseViewOnce(
       : VIEW_PARSE_FAILURES[error.message];
     if (failure === undefined) throw error;
     await updateError(failure);
-    return { derived: 0, calls: measured.usage.roundTrips + measured.usage.blobCalls, nextOffset: null, failure };
+    return { derived: 0, calls: measured.usage.roundTrips + measured.usage.blobCalls, nextOffset: null, failure, unread: 0 };
   }
 }
