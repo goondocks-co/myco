@@ -10,6 +10,11 @@ export const VIEW_RECENT_MS = 86_400_000;
 export const VIEW_FAILURE_BACKOFF = [3_600_000, 21_600_000, 86_400_000] as const;
 export const SERIAL_VIEW_BUDGET = { slots: 1, calls: 500, wallMs: 15_000 } as const;
 export const PARALLEL_VIEW_BUDGET = { slots: 2, calls: 2000, wallMs: 15_000 } as const;
+/**
+ * Sessions the cutover batch builds side by side in one wake while it holds a backlog, each under its own claim. They
+ * share the job's admission; an invocation holds at most six outgoing connections, to the database and object store alike.
+ */
+export const CUTOVER_SESSIONS_IN_FLIGHT = 4;
 export interface ViewProfile {
   slots: number;
   calls: number;

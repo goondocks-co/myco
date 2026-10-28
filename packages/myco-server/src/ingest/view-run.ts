@@ -34,6 +34,8 @@ export interface ViewRunOptions {
   mirrorFrontier?: boolean;
   /** The build lane reads under its own wall rather than the enclosing wake's content wall. */
   ownWall?: boolean;
+  /** Sessions a cutover run builds side by side, each under its own claim; one when absent. */
+  inFlight?: number;
 }
 
 /** View work shares the invocation's measured live, build and import admission. */
@@ -74,7 +76,9 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     .bind(PARSER_VERSION, ...viewTerminalParams(now))
     .first<{ project_id: string; session_id: string; live_instance: string; fence: number }>();
   let changed = 0,
-    published = 0;
+    published = 0,
+    /** Passes that moved a cursor, whether or not they derived anything. */
+    advanced = 0;
   if (live) {
     const target: ViewWriteTarget = {
       projectId: live.project_id,
@@ -91,7 +95,11 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
       clock,
     });
     changed += report?.derived ?? 0;
+    if (report?.nextOffset != null) advanced++;
   }
+  const inFlight = options.cutover ? Math.max(1, options.inFlight ?? 1) : 1,
+    /** What the sessions in flight keep back to release their claims and record their samples: about twelve each. */
+    closingStatements = 40 + 12 * (inFlight - 1);
   const share = live === null ? 2 : 4,
     startCalls = calls(),
     startStatements = measured.usage.statements,
@@ -105,7 +113,7 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
           Math.min(
             WAKE_JOB_STATEMENT_LIMIT - measured.usage.statements,
             invocation === null ? Infinity : invocation.statements - CONTENT_WAKE_JOB_RESERVE,
-          ) - 40,
+          ) - closingStatements,
         ),
         wall: Math.max(0, deadline - clock()),
       }
@@ -137,57 +145,86 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     clock() < buildDeadline;
   const admitted = () => {
     const left = remainingInvocationBudget(db);
-    return !left || left.statements >= 40 + (options.cutover ? CONTENT_WAKE_JOB_RESERVE : 0);
+    return !left || left.statements >= closingStatements + (options.cutover ? CONTENT_WAKE_JOB_RESERVE : 0);
   };
   const exhausted = (error: unknown) =>
     error instanceof Error && /^content_(?:statement|blob|call|wall)_budget_exhausted$/.test(error.message);
   /** Releasing a claim and recording its sample run in this job's admission, or in the enclosing one once this job's own has run out. */
-  const settle = async <T>(work: (store: RelationalStore) => Promise<T>): Promise<T> => {
+  const settle = async <T>(admitted: RelationalStore, work: (store: RelationalStore) => Promise<T>): Promise<T> => {
     try {
-      return await work(db);
+      return await work(admitted);
     } catch (error) {
       if (!exhausted(error)) throw error;
       return work(env.db);
     }
   };
+  /** Runs `work` once every earlier call through the same turn has settled. */
+  const oneAtATime = () => {
+    let held: Promise<unknown> = Promise.resolve();
+    return <T>(work: () => Promise<T>): Promise<T> => {
+      const turn = held.then(work);
+      held = turn.catch(() => undefined);
+      return turn;
+    };
+  };
+  // A publication holds the store's flip observation from its first batch to its last, so sessions built side by side
+  // publish one at a time.
+  const publishing = oneAtATime(),
+    claiming = oneAtATime();
   const samples: {
     target: ViewWriteTarget;
     token: string;
-    base: ContentUsage;
+    usage: ContentUsage[];
     started: number;
     serviceMs: number;
     refusal: string | null;
   }[] = [];
-  /** Builds one claimed session until it publishes or the lane's admission ends; answers whether it published. */
+  /**
+   * Builds one claimed session until it publishes or the lane's admission ends; answers whether it published. Its own
+   * calls are counted apart, so sessions built side by side each keep their own sample.
+   */
   const serve = async (target: ViewWriteTarget, first: boolean): Promise<boolean> => {
-    const base = first ? { statements: 0, roundTrips: 0, blobCalls: 0 } : { ...measured.usage },
-      targetStart = clock(),
-      actualBuildStarted = performance.now();
+    const targetStart = clock(),
+      actualBuildStarted = performance.now(),
+      held = measuredContentEnv(measured.env),
+      building = measuredContentEnv(lane.env);
     let token: string | null = null,
       refusal: string | null = null,
       done = false;
     try {
       token = await beginViewSample(
-        db,
+        held.env.db,
         target,
         env.platform.name === 'bun' ? 'native' : 'remote',
         options.profile.slots === 2 ? 'parallel' : 'serial',
         now,
       );
       while (within() && admitted()) {
-        const report = await parseViewOnce(lane.env, target, now, {
+        const report = await parseViewOnce(building.env, target, now, {
           calls: budget.calls - (calls() - startCalls),
           deadline: buildDeadline,
           clock,
         });
         changed += report?.derived ?? 0;
+        if (report?.nextOffset != null) advanced++;
         // A pass that stopped short of the held bytes leaves more to read; publication waits for one that reached them.
         if (report !== null && report.failure === null && report.unread > 0) continue;
-        const flip = await tryPublishView(lane.env.db, target, now, {
-          ...options.envelope,
-          store: env.platform.name === 'bun' ? 'native' : 'remote',
-          profile: options.profile.slots === 2 ? 'parallel' : 'serial',
-        });
+        // A flip's observation, once begun, is finished outside the lanes' shared admission: one left unfinished blocks
+        // every later publication under that calibration.
+        const flip = await publishing(() =>
+          tryPublishView(
+            building.env.db,
+            target,
+            now,
+            {
+              ...options.envelope,
+              store: env.platform.name === 'bun' ? 'native' : 'remote',
+              profile: options.profile.slots === 2 ? 'parallel' : 'serial',
+            },
+            undefined,
+            env.db,
+          ),
+        );
         if (flip.published) {
           published++;
           done = true;
@@ -199,21 +236,21 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     } catch (error) {
       if (!exhausted(error)) throw error;
     } finally {
-      const held = await settle((store) =>
+      const lease = await settle(held.env.db, (store) =>
         store
           .prepare(`SELECT state,lease_token FROM view_instances WHERE project_id=? AND instance_id=?`)
           .bind(target.projectId, target.instanceId)
           .first<{ state: string; lease_token: string | null }>(),
       );
-      if (held?.state === 'building' && held.lease_token === target.leaseToken) {
-        await settle((store) => yieldViewBuild(store, target, Math.max(0, clock() - targetStart), now));
-        await settle((store) => releaseViewBuild(store, target, now));
+      if (lease?.state === 'building' && lease.lease_token === target.leaseToken) {
+        await settle(held.env.db, (store) => yieldViewBuild(store, target, Math.max(0, clock() - targetStart), now));
+        await settle(held.env.db, (store) => releaseViewBuild(store, target, now));
       }
       if (token !== null)
         samples.push({
           target,
           token,
-          base,
+          usage: [held.usage, building.usage],
           started: first ? actualStarted : actualBuildStarted,
           serviceMs: performance.now() - actualBuildStarted,
           refusal,
@@ -221,20 +258,34 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     }
     return done;
   };
-  // The batch takes the next session once one publishes; any other run builds one session.
-  for (let first = true; !options.buildPaused && (first || options.cutover) && within() && admitted(); first = false) {
-    let target: ViewWriteTarget | null = null;
-    try {
-      const selected = await selectViewBuild(lane.env.db, now);
-      const claimed = selected
-        ? await claimViewBuild(lane.env.db, selected.project_id, selected.session_id, options.profile, now)
-        : null;
-      target = claimed ? { ...claimed, mirrorFrontier: options.mirrorFrontier } : null;
-    } catch (error) {
-      if (first || !exhausted(error)) throw error;
+  const claimProfile = { ...options.profile, slots: Math.max(options.profile.slots, inFlight) };
+  let first = true;
+  /** One selection and claim at a time: a session is offered to the next lane only once the last claim has landed. */
+  const claimNext = (): Promise<{ target: ViewWriteTarget | null; first: boolean }> =>
+    claiming(async () => {
+      const opening = first;
+      first = false;
+      try {
+        const selected = await selectViewBuild(lane.env.db, now);
+        const claimed = selected
+          ? await claimViewBuild(lane.env.db, selected.project_id, selected.session_id, claimProfile, now)
+          : null;
+        return { target: claimed ? { ...claimed, mirrorFrontier: options.mirrorFrontier } : null, first: opening };
+      } catch (error) {
+        if (opening || !exhausted(error)) throw error;
+        return { target: null, first: opening };
+      }
+    });
+  // A cutover lane takes the next session once one publishes; any other run builds one session.
+  const buildLane = async () => {
+    while (!options.buildPaused && (first || options.cutover) && within() && admitted()) {
+      const next = await claimNext();
+      if (next.target === null || !(await serve(next.target, next.first))) return;
     }
-    if (target === null || !(await serve(target, first))) break;
-  }
+  };
+  const lanes = await Promise.allSettled(Array.from({ length: inFlight }, buildLane));
+  const failed = lanes.find((settled) => settled.status === 'rejected');
+  if (failed) throw failed.reason;
   const remaining = Math.max(0, options.profile.calls - calls() - 10);
   if (options.importWork && remaining > 0 && clock() < deadline) {
     const report = await options.importWork(measured.env, {
@@ -243,22 +294,33 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     });
     changed += report.changed;
   }
-  const ends = [...samples.slice(1).map((sample) => sample.base), { ...measured.usage }];
-  for (const [index, sample] of samples.entries())
-    await settle((store) =>
+  // Each sample holds its session's own calls; the first also holds the run's calls outside every session.
+  const sum = (usages: ContentUsage[]) => ({
+    statements: usages.reduce((total, usage) => total + usage.statements, 0),
+    roundTrips: usages.reduce((total, usage) => total + usage.roundTrips, 0),
+    blobCalls: usages.reduce((total, usage) => total + usage.blobCalls, 0),
+  });
+  const owned = sum(samples.flatMap((sample) => sample.usage)),
+    shared = { ...measured.usage };
+  for (const [index, sample] of samples.entries()) {
+    const own = sum(sample.usage);
+    await settle(db, (store) =>
       finishViewSample(
         store,
         sample.target,
         sample.token,
-        {
-          statements: ends[index]!.statements - sample.base.statements,
-          roundTrips: ends[index]!.roundTrips - sample.base.roundTrips,
-          blobCalls: ends[index]!.blobCalls - sample.base.blobCalls,
-        },
+        index === 0
+          ? {
+              statements: own.statements + shared.statements - owned.statements,
+              roundTrips: own.roundTrips + shared.roundTrips - owned.roundTrips,
+              blobCalls: own.blobCalls + shared.blobCalls - owned.blobCalls,
+            }
+          : own,
         performance.now() - sample.started,
         sample.serviceMs,
         sample.refusal,
       ),
     );
-  return { changed, published, usage: measured.usage, wallMs: clock() - started };
+  }
+  return { changed, published, advanced, usage: measured.usage, wallMs: clock() - started };
 }
