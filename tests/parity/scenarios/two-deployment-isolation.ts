@@ -130,12 +130,12 @@ async function seedAuthorities(target: ParityTarget): Promise<Authorities> {
   const runTools = await request(target, 'POST', '/mcp', runHeaders, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
   expect(runTools.status).toBe(200);
   const runRead = await request(target, 'POST', '/mcp', runHeaders, JSON.stringify({
-    jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'myco_run', arguments: { op: 'state_get', key: 'isolation' } },
+    jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'myco_run_spores', arguments: { op: 'list' } },
   }));
   expect(runRead.status).toBe(200);
-  const runResult = await runRead.json() as { error?: unknown; result?: { structuredContent?: { result?: { key?: string; value?: string | null } } } };
+  const runResult = await runRead.json() as { error?: unknown; result?: { structuredContent?: { result?: { spores?: unknown[] } } } };
   expect(runResult.error).toBeUndefined();
-  expect(runResult.result?.structuredContent?.result).toMatchObject({ key: 'isolation', value: null });
+  expect(runResult.result?.structuredContent?.result).toMatchObject({ spores: expect.any(Array) });
   return { grantKey, runToken };
 }
 

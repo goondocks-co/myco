@@ -79,7 +79,8 @@ test('real shared parse, rebuild and atomic flip preserve sequence and continuat
           completeFile: true,
         }),
       ).not.toBeNull();
-      expect((await db.prepare(`SELECT COUNT(*) n FROM learning_sessions`).first<{ n: number }>())?.n).toBe(0);
+      // A captured prompt opens the session's learning row; nothing is allocated before publication.
+      expect((await db.prepare(`SELECT COUNT(*) n FROM learning_sessions WHERE max_seq > 0`).first<{ n: number }>())?.n).toBe(0);
       expect(
         (
           await db
@@ -848,7 +849,7 @@ test('version, capture and manifest races preserve the live closure and resume c
             .first<{ live_instance: string }>()
         )?.live_instance,
       ).toBe(live);
-      expect((await db.prepare('SELECT COUNT(*) n FROM learning_sessions').first<{ n: number }>())?.n).toBe(0);
+      expect((await db.prepare('SELECT COUNT(*) n FROM learning_sessions WHERE max_seq > 0').first<{ n: number }>())?.n).toBe(0);
       await parseViewOnce(env, target, now + 1, { calls: 500, deadline: Date.now() + 10000, clock: Date.now });
       const added = beforeViewFlip(db, async () => {
         await captureViewTranscript(

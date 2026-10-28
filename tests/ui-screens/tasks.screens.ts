@@ -85,10 +85,9 @@ for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATR
       for (const task of registry.tasks) {
         await expect(page.locator(`article[data-task="${task.task}"] [data-run-now]`)).toHaveCount(task.startable ? 1 : 0);
       }
-      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'vault-seed']);
-      const learning = registry.tasks.find((task) => task.task === 'extract-curate')!;
-      expect(learning.startable).toBe(false);
-      expect(learning.availabilityNote).toBe('Learning resumes with whole-session reading');
+      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+      expect(registry.tasks.find((task) => task.task === 'extract-curate')!.availabilityNote).toBeNull();
+      expect(registry.tasks.find((task) => task.task === 'turn-cards')!.startable).toBe(false);
       const map = registry.tasks.find((task) => task.task === 'canopy-map')!;
       await page.getByRole('button', { name: `Run now: ${map.name}` }).click();
       const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });

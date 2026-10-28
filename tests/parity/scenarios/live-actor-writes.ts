@@ -39,13 +39,13 @@ export const liveActorWrites: ParityScenario = {
     }
     expect((await request(target, '/api/settings/agent.reasoning_map.claude-code.default', 'PUT', admin, { value: 'claude-opus-5' })).status).toBe(200);
     expect((await request(target, '/api/secrets/anthropic', 'PUT', admin, { value: 'synthetic-subscription' })).status).toBe(200);
-    const pausedAsk = { task: 'extract-curate', projectId: target.projectId, fresh: true };
-    const beforePaused = await target.sql('SELECT * FROM agent_runs');
-    const memberPaused = await request(target, '/api/harness/dispatch', 'POST', member, pausedAsk);
-    expect({ status: memberPaused.status, body: await memberPaused.json() }).toEqual({ status: 403, body: { error: 'fresh_needs_admin' } });
-    const adminPaused = await request(target, '/api/harness/dispatch', 'POST', admin, pausedAsk);
-    expect({ status: adminPaused.status, body: await adminPaused.json() }).toEqual({ status: 400, body: { error: 'not_landed', message: 'Learning resumes with whole-session reading' } });
-    expect(await target.sql('SELECT * FROM agent_runs')).toEqual(beforePaused);
+    const learningAsk = { task: 'extract-curate', projectId: target.projectId, fresh: true };
+    const beforeLearning = await target.sql('SELECT * FROM agent_runs');
+    const memberLearning = await request(target, '/api/harness/dispatch', 'POST', member, learningAsk);
+    expect({ status: memberLearning.status, body: await memberLearning.json() }).toEqual({ status: 403, body: { error: 'fresh_needs_admin' } });
+    expect(await target.sql('SELECT * FROM agent_runs')).toEqual(beforeLearning);
+    const adminLearning = await request(target, '/api/harness/dispatch', 'POST', admin, learningAsk);
+    expect({ status: adminLearning.status, body: await adminLearning.json() }).toMatchObject({ status: 200, body: { queued: true, task: 'extract-curate' } });
     const cases = [
       { path: '/api/harness/dispatch', method: 'POST', body: { task: 'embedding-reconcile', projectId: target.projectId, fresh: true, timeoutSeconds: 123 }, write: 'INSERT INTO agent_runs', table: 'agent_runs', where: "task = 'embedding-reconcile'" },
       { path: '/api/settings/agent.scheduled_tasks_enabled', method: 'PUT', body: { value: true }, write: 'INSERT INTO deployment_settings', table: 'deployment_settings', where: "leaf = 'agent.scheduled_tasks_enabled'" },

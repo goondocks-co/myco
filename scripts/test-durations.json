@@ -1049,7 +1049,7 @@
     "harness deployment activity: scoped silence, legacy exclusion and replacement": 60000,
     "hook placement then wake: retention excludes fresh context answers": 60000,
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
-    "learning pause: dispatch refuses and queued stragglers cannot acquire attempts": 100000,
+    "learning pause: queued stragglers cannot acquire attempts, and resumed learning queues a hand start": 100000,
     "legacy spores: later vault retirement converges and replays once": 60000,
     "live actor writes: settings and dispatch refuse demotion at the native and D1 commit": 200000,
     "machine settings: set on the dashboard, answered to that machine alone, and cached per Deployment": 15000,

@@ -5,6 +5,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
+import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { settleTurns, writeRunCards, readTurn, type CardFields } from '@myco-server-worker/core/turn-cards.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
@@ -148,6 +149,10 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     expect(await db.prepare(`SELECT state, covered FROM turn_cards WHERE turn_key = ?`).bind(uuid(1)).first()).toEqual({ state: 'carded', covered: 1 });
     expect(await buildLearningAssignment(db, 'project', 'session')).toBeNull();
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
+
+    // Deleting the session deletes its cards, which copy its words.
+    await tombstoneSession({ db }, { projectId: 'project' }, 'session', 'member', NOW + 2 * HOUR);
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM turn_cards WHERE session_id = 'session'`).first()).toEqual({ n: 0 });
   });
 });
 
