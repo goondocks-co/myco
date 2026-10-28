@@ -248,9 +248,10 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'grant-expiry': grantExpiry,
   'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
+  // The batch's reads are bounded by the wake's content wall, so it runs before the legacy pass, which keeps its own wall.
   'transcript-parse': async (env, now) => {
-    const legacy = await parseTranscripts(env, now);
     const views = await runViewCutoverWake(env, now);
+    const legacy = await parseTranscripts(env, now);
     return { ...legacy, changed: legacy.changed + views.changed, more: legacy.more || views.more };
   },
   'session-titling': titleReadySessions,
