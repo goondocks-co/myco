@@ -397,10 +397,11 @@ export async function tryPublishView(
   now: number,
   envelope: FlipEnvelope,
   clock = () => performance.now(),
+  /** Where the flip's observation is finished; it is never refused by the admission `db` carries. */
+  observationDb = db,
 ): Promise<FlipResult> {
   if (!flipMeasurementAvailable(envelope)) return { published: false, reason: 'view_flip_admission_unavailable' };
-  const observationDb = db,
-    started = clock(),
+  const started = clock(),
     limits = remainingContentBudget(db),
     measured = measuredContentEnv(
       { db },
