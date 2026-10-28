@@ -532,6 +532,29 @@ describe('repair lane priority', () => {
     expect(receipt.persisted).toBe(true);
   };
 
+  it('stops a transcript whose write the store refuses on a CHECK alone and parses the next one', async () => {
+    const r = await rig(body(1));
+    const other = 'tx_cccccccccccccccccccccccccccccccc';
+    await append(r, other, 'healthy-session', body(2), NOW);
+    let current = '', refused = 0;
+    const db = new Proxy(r.serverEnv.db, { get(store, key) {
+      const value = Reflect.get(store, key);
+      if (key !== 'batch') return typeof value === 'function' ? value.bind(store) : value;
+      return async (statements: PreparedStatement[]) => {
+        if (current === TRANSCRIPT && refused++ === 0) throw new Error("D1_ERROR: CHECK constraint failed: claim IN ('owner'): SQLITE_CONSTRAINT");
+        return store.batch(statements);
+      };
+    } });
+    await parseTranscripts({ ...r.serverEnv, db }, NOW + 1, { budget: { calls: 24, wallMs: 10_000 }, clock: () => 0,
+      passes: { started: (id) => { current = id; }, ended: () => { current = ''; } } });
+    expect(refused).toBeGreaterThan(0);
+    expect(r.sqlite.query(`SELECT transcript_id, parsed_offset = size AS done, parse_error, json_extract(parser_context, '$.mycoParserFailure.branch') AS branch
+      FROM transcripts ORDER BY transcript_id`).all()).toEqual([
+      { transcript_id: TRANSCRIPT, done: 0, parse_error: 'parse', branch: 'event_not_stored' },
+      { transcript_id: other, done: 1, parse_error: null, branch: null },
+    ]);
+  });
+
   it('does not prepare an oversized tool when its checkpoint cannot fit the statement budget', async () => {
     const pending = line({ type: 'user', promptId: uuid(85_000), message: { content: 'pending tools' } })
       + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({
