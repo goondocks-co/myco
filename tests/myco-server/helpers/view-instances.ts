@@ -75,17 +75,20 @@ export function beforeViewWriteBatch(db:RelationalStore,selectedSql:(sql:string)
 
 /** Capture arriving before checkpoint selection belongs to the pass's selected size. */
 export function beforeViewCheckpointRead(db:RelationalStore,before:()=>Promise<void>):RelationalStore{
- const held=new WeakMap<PreparedStatement,PreparedStatement>();
+ const held=new WeakMap<PreparedStatement,PreparedStatement>(),reads=new WeakSet<PreparedStatement>();
  const wrap=(raw:PreparedStatement,selected:boolean):PreparedStatement=>{
   const statement:PreparedStatement={
    bind:(...values)=>wrap(raw.bind(...values),selected),
    first:async<T>()=>{if(selected)await withIndependentReadPreparation(before);return raw.first<T>();},
    all:<T>()=>raw.all<T>(),run:()=>raw.run(),
   };
-  held.set(statement,raw);return statement;
+  held.set(statement,raw);if(selected)reads.add(statement);return statement;
  };
  return {prepare:sql=>wrap(db.prepare(sql),sql.includes('c.transcript_id checkpoint_id')),
-  batch:statements=>db.batch(statements.map(statement=>{const raw=held.get(statement);if(!raw)throw new Error('fixture statement belongs to another store');return raw;}))};
+  batch:async statements=>{
+   if(statements.some(statement=>reads.has(statement)))await withIndependentReadPreparation(before);
+   return db.batch(statements.map(statement=>{const raw=held.get(statement);if(!raw)throw new Error('fixture statement belongs to another store');return raw;}));
+  }};
 }
 export interface SyntheticInstance {
   projectId: string;

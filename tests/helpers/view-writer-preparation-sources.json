@@ -147,7 +147,7 @@
     "readSporesForPrompt": "W"
   },
   "packages/myco-server/src/ingest/view-writer.ts": {
-    "viewSourceReceipts": "W",
+    "receiptRead": "W",
     "prepareViewRows": "W",
     "viewRowStatements": "W",
     "stampVersionStatements": "W"

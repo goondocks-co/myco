@@ -49,6 +49,26 @@ export const materialTable = (kind: ViewKind) => MATERIALS[kind];
 const nullable = (value: unknown) => (value === undefined ? null : value);
 const text = (value: unknown) => (typeof value === 'string' ? value : JSON.stringify(value ?? {}));
 
+/** The receipt-time read for source offsets a cache does not hold yet. */
+function receiptRead(db: RelationalStore, project: string, transcript: string, missing: readonly number[]): PreparedStatement {
+  return db
+    .prepare(
+      `SELECT j.value offset,COALESCE(
+    (SELECT s.received_at FROM transcript_segments s WHERE s.project_id=? AND s.transcript_id=? AND s.base_offset<=j.value AND s.base_offset+s.length>j.value ORDER BY s.base_offset DESC LIMIT 1),
+    (SELECT r.received_at FROM raw_archive_refs r WHERE r.project_id=? AND r.transcript_id=? AND r.source_kind='transcript' AND r.disposition='archived'
+      AND r.base_offset<=j.value AND r.base_offset+r.length>j.value ORDER BY r.base_offset DESC LIMIT 1)) received_at FROM json_each(?) j`,
+    )
+    .bind(project, transcript, project, transcript, JSON.stringify(missing));
+}
+
+function heldReceipts(rows: readonly { offset: number; received_at: number | null }[], cache: Map<number, number>) {
+  for (const row of rows) {
+    if (row.received_at === null) throw new Error('view_source_receipt_absent');
+    cache.set(row.offset, row.received_at);
+  }
+  return cache;
+}
+
 /** Original receipt times bound each source record independently of the rebuild clock. */
 export async function viewSourceReceipts(
   db: RelationalStore,
@@ -59,22 +79,8 @@ export async function viewSourceReceipts(
 ): Promise<Map<number, number>> {
   const missing = [...new Set(offsets)].filter((offset) => !cache.has(offset));
   if (!missing.length) return cache;
-  const rows = (
-    await db
-      .prepare(
-        `SELECT j.value offset,COALESCE(
-    (SELECT s.received_at FROM transcript_segments s WHERE s.project_id=? AND s.transcript_id=? AND s.base_offset<=j.value AND s.base_offset+s.length>j.value ORDER BY s.base_offset DESC LIMIT 1),
-    (SELECT r.received_at FROM raw_archive_refs r WHERE r.project_id=? AND r.transcript_id=? AND r.source_kind='transcript' AND r.disposition='archived'
-      AND r.base_offset<=j.value AND r.base_offset+r.length>j.value ORDER BY r.base_offset DESC LIMIT 1)) received_at FROM json_each(?) j`,
-      )
-      .bind(project, transcript, project, transcript, JSON.stringify(missing))
-      .all<{ offset: number; received_at: number | null }>()
-  ).results;
-  for (const row of rows) {
-    if (row.received_at === null) throw new Error('view_source_receipt_absent');
-    cache.set(row.offset, row.received_at);
-  }
-  return cache;
+  const rows = (await receiptRead(db, project, transcript, missing).all<{ offset: number; received_at: number | null }>()).results;
+  return heldReceipts(rows, cache);
 }
 
 const payloadBodies: Readonly<Record<string, readonly string[]>> = {
@@ -149,39 +155,20 @@ export async function prepareViewRows(
         bodyCandidates.set(key, { key, size });
       }
     }
-  const reusable = bodyCandidates.size
-    ? (
-        await env.db
-          .prepare(
-            `SELECT p.key,p.generation,p.size,p.digest FROM json_each(?) j
-    CROSS JOIN blobs b JOIN registered_content_proofs p ON p.project_id=b.project_id AND p.key=b.key AND p.generation IS b.generation
-    WHERE b.project_id=? AND b.key=json_extract(j.value,'$.key') AND b.size=json_extract(j.value,'$.size')
-      AND p.source_kind='view' AND p.source_id=? AND p.event_id=? AND p.envelope_hash=? AND p.digest=p.key AND p.size=b.size AND p.durable=1`,
-          )
-          .bind(
-            JSON.stringify([...bodyCandidates.values()]),
-            target.projectId,
-            target.instanceId,
-            target.instanceId,
-            target.instanceId,
-          )
-          .all<VerifiedContent>()
-      ).results
-    : [];
-  const preparedBodies = new Map(reusable.map((body) => [body.key, body]));
-  const bodyProofs: (VerifiedContent & { kind: string; id: string })[] = [];
-  const fullRows = new Map<string, Record<string, unknown>>();
-  const rows = new Map<string, ViewRow>(),
-    proofs: PreparedStatement[] = [];
-  const received = await viewSourceReceipts(
-    env.db,
-    target.projectId,
-    range.transcriptId,
-    events.map((event) => event.offset),
-    range.receipts,
-  );
-  const priorRows = new Map<string, Record<string, unknown>>();
-  for (const kind of kinds) {
+  const promptIds = [
+    ...new Set(
+      events.flatMap((event) =>
+        event.kind === 'response' && typeof event.payload.promptId === 'string'
+          ? [event.payload.promptId]
+          : event.kind === 'prompt'
+            ? [String(event.payload.promptId)]
+            : [],
+      ),
+    ),
+  ];
+  const received = range.receipts ?? new Map<number, number>();
+  const unreceived = [...new Set(events.map((event) => event.offset))].filter((offset) => !received.has(offset));
+  const priorReads = kinds.flatMap((kind) => {
     const table = materialTable(kind);
     const ids = events
       .filter((event) =>
@@ -196,18 +183,68 @@ export async function prepareViewRows(
           .filter((event) => event.kind === 'response' && typeof event.payload.promptId === 'string')
           .map((event) => String(event.payload.promptId)),
       );
-    if (ids.length === 0) continue;
-    const held = (
-      await env.db
-        .prepare(
-          `SELECT r.* FROM json_each(?) j CROSS JOIN ${table.table} r
+    if (ids.length === 0) return [];
+    return [
+      {
+        kind,
+        read: env.db
+          .prepare(
+            `SELECT r.* FROM json_each(?) j CROSS JOIN ${table.table} r
       WHERE r.project_id=? AND r.instance_id=? AND r.${table.id}=j.value`,
-        )
-        .bind(JSON.stringify(ids), target.projectId, target.instanceId)
-        .all<Record<string, unknown>>()
-    ).results;
-    for (const row of held) priorRows.set(kind + ':' + String(row[table.id]), row);
-  }
+          )
+          .bind(JSON.stringify(ids), target.projectId, target.instanceId),
+      },
+    ];
+  });
+  // The window's independent reads travel together: one round trip, whatever the number of kinds.
+  const reads = [
+    ...(bodyCandidates.size
+      ? [
+          env.db
+            .prepare(
+              `SELECT p.key,p.generation,p.size,p.digest FROM json_each(?) j
+    CROSS JOIN blobs b JOIN registered_content_proofs p ON p.project_id=b.project_id AND p.key=b.key AND p.generation IS b.generation
+    WHERE b.project_id=? AND b.key=json_extract(j.value,'$.key') AND b.size=json_extract(j.value,'$.size')
+      AND p.source_kind='view' AND p.source_id=? AND p.event_id=? AND p.envelope_hash=? AND p.digest=p.key AND p.size=b.size AND p.durable=1`,
+            )
+            .bind(
+              JSON.stringify([...bodyCandidates.values()]),
+              target.projectId,
+              target.instanceId,
+              target.instanceId,
+              target.instanceId,
+            ),
+        ]
+      : []),
+    ...(unreceived.length ? [receiptRead(env.db, target.projectId, range.transcriptId, unreceived)] : []),
+    ...priorReads.map((prior) => prior.read),
+    ...(promptIds.length
+      ? [
+          env.db
+            .prepare(
+              `SELECT j.value prompt_id,MIN(r.created_at) ended_at FROM json_each(?) j LEFT JOIN view_responses r
+      ON r.project_id=? AND r.instance_id=? AND r.prompt_id=j.value
+        AND EXISTS(SELECT 1 FROM transcripts t JOIN sessions s ON s.project_id=t.project_id AND s.session_id=t.session_id
+          WHERE t.project_id=r.project_id AND t.transcript_id=r.source_transcript_id AND t.machine_id IS s.machine_id) GROUP BY j.value`,
+            )
+            .bind(JSON.stringify(promptIds), target.projectId, target.instanceId),
+        ]
+      : []),
+  ];
+  const results = reads.length ? (await env.db.batch(reads)).map((result) => result.results) : [];
+  let read = 0;
+  const reusable = (bodyCandidates.size ? results[read++] : []) as VerifiedContent[];
+  if (unreceived.length) heldReceipts(results[read++] as { offset: number; received_at: number | null }[], received);
+  const priorRows = new Map<string, Record<string, unknown>>();
+  for (const prior of priorReads)
+    for (const row of results[read++] as Record<string, unknown>[])
+      priorRows.set(prior.kind + ':' + String(row[materialTable(prior.kind).id]), row);
+  const promptEnds = (promptIds.length ? results[read++] : []) as { prompt_id: string; ended_at: number | null }[];
+  const preparedBodies = new Map(reusable.map((body) => [body.key, Promise.resolve(body)]));
+  const bodyProofs: (VerifiedContent & { kind: string; id: string })[] = [];
+  const fullRows = new Map<string, Record<string, unknown>>();
+  const rows = new Map<string, ViewRow>(),
+    proofs: PreparedStatement[] = [];
   const resources = [...priorRows].flatMap(([key, row]) => {
     const kind = key.slice(0, key.indexOf(':')) as ViewKind;
     return bodyFields[kind].flatMap(([field, blobField, proofKind]) =>
@@ -274,185 +311,197 @@ export async function prepareViewRows(
     }
     return full;
   };
-  for (const event of events) {
-    const kind: ViewKind | undefined =
-      event.kind === 'prompt'
-        ? 'prompt'
-        : event.kind === 'response'
-          ? 'response'
-          : event.kind === 'plan'
-            ? 'plan'
-            : event.kind === 'tool.use' || event.kind === 'tool.failure'
-              ? 'tool'
-              : undefined;
-    if (kind === undefined) throw new Error('view_record_kind_unsupported');
-    const p = event.payload,
-      table = materialTable(kind),
-      id = String(p[kind === 'tool' ? 'toolCallId' : kind === 'plan' ? 'planKey' : kind + 'Id']);
-    if (id === 'undefined') throw new Error('view_record_identity_absent');
-    const sourceKey =
-      typeof p.sourceKey === 'string' ? p.sourceKey : event.source && 'key' in event.source ? event.source.key : null;
-    if (event.identity === undefined) throw new Error('view_record_identity_absent');
-    const identity = JSON.stringify([kind, id, ...event.identity]);
-    const key = kind + ':' + id;
-    const receipt = received.get(event.offset);
-    if (receipt === null || receipt === undefined) throw new Error('view_source_receipt_absent');
-    const stored = priorRows.get(key);
-    const previous = rows.get(key);
-    if (previous && previous.identity !== identity) throw new Error('identity_collision');
-    if (stored?.canonical_identity && stored.canonical_identity !== identity) throw new Error('identity_collision');
-    const old = previous ? { ...fullRows.get(key) } : stored ? await hydrate(kind, id, stored) : undefined;
-    let values: Record<string, unknown> = {
-      [table.id]: id,
-      prompt_id: p.promptId ?? null,
-      created_at: event.createdAt,
-      updated_at: event.createdAt,
-      received_at: receipt,
-      source_transcript_id: range.transcriptId,
-      source_offset: event.offset,
-      source_end: event.sourceEnd ?? range.end,
-      source_key: sourceKey,
-      source_thread: p.sourceThread ?? (event.source && 'thread' in event.source ? event.source.thread : null) ?? null,
-      source_record:
-        p.sourceRecord ?? (kind !== 'prompt' && event.source && 'key' in event.source ? event.source.key : null),
-    };
-    if (kind === 'prompt')
-      Object.assign(values, {
-        text: p.text ?? null,
-        blob_key: p.blob ?? null,
-        parent_prompt_id: p.parentPromptId ?? null,
-        thread_id: p.threadId ?? null,
-        thread_label: p.threadLabel ?? null,
-        origin: p.origin ?? 'user',
-        prompt_kind: p.promptKind ?? null,
-        prompt_key_hash: p.promptKeyHash ?? null,
-        claim: p.claim ?? null,
-      });
-    if (kind === 'response') Object.assign(values, { text: p.text ?? null, blob_key: p.blob ?? null });
-    if (kind === 'plan')
-      Object.assign(values, {
-        title: p.title ?? null,
-        content: p.content ?? null,
-        blob_key: p.blob ?? null,
-        status: p.status ?? 'active',
-        origin_path: p.originPath ?? null,
-        source: p.source ?? 'tag',
-        tags: p.tags ?? [],
-        tags_json: JSON.stringify(p.tags ?? []),
-        source_tag: p.tags instanceof Array ? (p.tags[0] ?? null) : null,
-        source_coordinate: JSON.stringify(event.coordinate ?? []),
-      });
-    if (kind === 'tool') {
-      const coordinate: OutcomeSource = {
-        ordinal: range.ordinal,
-        offset: event.outcomeOffset ?? event.offset,
-        origin: event.outcomeOrigin ?? 'reported',
+  // A window's bodies are prepared side by side; each is complete before the window answers.
+  const pendingProofs: Promise<VerifiedContent & { kind: string; id: string }>[] = [];
+  try {
+    for (const event of events) {
+      const kind: ViewKind | undefined =
+        event.kind === 'prompt'
+          ? 'prompt'
+          : event.kind === 'response'
+            ? 'response'
+            : event.kind === 'plan'
+              ? 'plan'
+              : event.kind === 'tool.use' || event.kind === 'tool.failure'
+                ? 'tool'
+                : undefined;
+      if (kind === undefined) throw new Error('view_record_kind_unsupported');
+      const p = event.payload,
+        table = materialTable(kind),
+        id = String(p[kind === 'tool' ? 'toolCallId' : kind === 'plan' ? 'planKey' : kind + 'Id']);
+      if (id === 'undefined') throw new Error('view_record_identity_absent');
+      const sourceKey =
+        typeof p.sourceKey === 'string' ? p.sourceKey : event.source && 'key' in event.source ? event.source.key : null;
+      if (event.identity === undefined) throw new Error('view_record_identity_absent');
+      const identity = JSON.stringify([kind, id, ...event.identity]);
+      const key = kind + ':' + id;
+      const receipt = received.get(event.offset);
+      if (receipt === null || receipt === undefined) throw new Error('view_source_receipt_absent');
+      const stored = priorRows.get(key);
+      const previous = rows.get(key);
+      if (previous && previous.identity !== identity) throw new Error('identity_collision');
+      if (stored?.canonical_identity && stored.canonical_identity !== identity) throw new Error('identity_collision');
+      const old = previous ? { ...fullRows.get(key) } : stored ? await hydrate(kind, id, stored) : undefined;
+      let values: Record<string, unknown> = {
+        [table.id]: id,
+        prompt_id: p.promptId ?? null,
+        created_at: event.createdAt,
+        updated_at: event.createdAt,
+        received_at: receipt,
+        source_transcript_id: range.transcriptId,
+        source_offset: event.offset,
+        source_end: event.sourceEnd ?? range.end,
+        source_key: sourceKey,
+        source_thread: p.sourceThread ?? (event.source && 'thread' in event.source ? event.source.thread : null) ?? null,
+        source_record:
+          p.sourceRecord ?? (kind !== 'prompt' && event.source && 'key' in event.source ? event.source.key : null),
       };
-      const incoming = {
-        values: {
+      if (kind === 'prompt')
+        Object.assign(values, {
+          text: p.text ?? null,
+          blob_key: p.blob ?? null,
+          parent_prompt_id: p.parentPromptId ?? null,
+          thread_id: p.threadId ?? null,
+          thread_label: p.threadLabel ?? null,
+          origin: p.origin ?? 'user',
+          prompt_kind: p.promptKind ?? null,
+          prompt_key_hash: p.promptKeyHash ?? null,
+          claim: p.claim ?? null,
+        });
+      if (kind === 'response') Object.assign(values, { text: p.text ?? null, blob_key: p.blob ?? null });
+      if (kind === 'plan')
+        Object.assign(values, {
+          title: p.title ?? null,
+          content: p.content ?? null,
+          blob_key: p.blob ?? null,
+          status: p.status ?? 'active',
+          origin_path: p.originPath ?? null,
+          source: p.source ?? 'tag',
+          tags: p.tags ?? [],
+          tags_json: JSON.stringify(p.tags ?? []),
+          source_tag: p.tags instanceof Array ? (p.tags[0] ?? null) : null,
+          source_coordinate: JSON.stringify(event.coordinate ?? []),
+        });
+      if (kind === 'tool') {
+        const coordinate: OutcomeSource = {
+          ordinal: range.ordinal,
+          offset: event.outcomeOffset ?? event.offset,
+          origin: event.outcomeOrigin ?? 'reported',
+        };
+        const incoming = {
+          values: {
+            ...values,
+            tool_name: p.toolName ?? 'unknown',
+            input: text(p.input),
+            input_bytes: new TextEncoder().encode(text(p.input)).length,
+            myco_tool: p.mycoTool ?? null,
+            myco_op: p.mycoOp ?? null,
+            files_affected: JSON.stringify(p.filesAffected ?? filesNamedByToolInput(p.input)),
+            canopy_injection_tokens: p.canopyInjectionTokens ?? null,
+            success: p.success === false || event.kind === 'tool.failure' ? 0 : 1,
+            output_preview: p.output ?? null,
+            error_message: p.errorMessage ?? null,
+            result_reason: p.resultReason ?? null,
+            duration_ms: p.durationMs ?? null,
+          },
+          call:
+            typeof p.toolName === 'string' && p.toolName !== 'unknown'
+              ? { ...coordinate, offset: event.callOffset ?? event.offset }
+              : null,
+          outcome: coordinate,
+        };
+        const prior = old
+          ? {
+              values: old,
+              call: typeof old.call_source === 'string' ? (JSON.parse(old.call_source) as OutcomeSource) : null,
+              outcome:
+                typeof old.outcome_source === 'string' ? (JSON.parse(old.outcome_source) as OutcomeSource) : coordinate,
+            }
+          : null;
+        const merged = assembleToolOutcome(prior, incoming);
+        values = {
           ...values,
-          tool_name: p.toolName ?? 'unknown',
-          input: text(p.input),
-          input_bytes: new TextEncoder().encode(text(p.input)).length,
-          myco_tool: p.mycoTool ?? null,
-          myco_op: p.mycoOp ?? null,
-          files_affected: JSON.stringify(p.filesAffected ?? filesNamedByToolInput(p.input)),
-          canopy_injection_tokens: p.canopyInjectionTokens ?? null,
-          success: p.success === false || event.kind === 'tool.failure' ? 0 : 1,
-          output_preview: p.output ?? null,
-          error_message: p.errorMessage ?? null,
-          result_reason: p.resultReason ?? null,
-          duration_ms: p.durationMs ?? null,
-        },
-        call:
-          typeof p.toolName === 'string' && p.toolName !== 'unknown'
-            ? { ...coordinate, offset: event.callOffset ?? event.offset }
-            : null,
-        outcome: coordinate,
-      };
-      const prior = old
-        ? {
-            values: old,
-            call: typeof old.call_source === 'string' ? (JSON.parse(old.call_source) as OutcomeSource) : null,
-            outcome:
-              typeof old.outcome_source === 'string' ? (JSON.parse(old.outcome_source) as OutcomeSource) : coordinate,
-          }
-        : null;
-      const merged = assembleToolOutcome(prior, incoming);
-      values = {
-        ...values,
-        ...merged.values,
-        call_source: JSON.stringify(merged.call),
-        outcome_source: JSON.stringify(merged.outcome),
-      };
-    }
-    if (
-      kind === 'tool' &&
-      old &&
-      typeof old.call_source === 'string' &&
-      p.toolName !== 'unknown' &&
-      ((await materialBodyDigest('tool', old, 'input')) !==
-        (await materialBodyDigest('tool', { input: text(p.input) }, 'input')) ||
-        old.tool_name !== p.toolName)
-    ) {
-      proofs.push(
-        env.db
-          .prepare(
-            `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
-        VALUES(?,?,?,'key_reuse',?,0)`,
-          )
-          .bind(target.projectId, target.instanceId, target.sessionId, id),
-      );
-    }
-    const hash = await viewContentHash(kind, values);
-    if (old && kind !== 'tool' && (previous?.hash ?? old.view_content_hash) !== hash) {
-      proofs.push(
-        env.db
-          .prepare(
-            `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
-        VALUES(?,?,?,'key_reuse',?,0)`,
-          )
-          .bind(target.projectId, target.instanceId, target.sessionId, id),
-      );
-      continue;
-    }
-    if (old && kind !== 'tool') continue;
-    if (range.lostContext && kind !== 'prompt' && values.prompt_id === null)
-      proofs.push(
-        env.db
-          .prepare(
-            `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
-      VALUES(?,?,?,'unattributed',?,0)`,
-          )
-          .bind(target.projectId, target.instanceId, target.sessionId, id),
-      );
-    fullRows.set(key, { ...values });
-    const bodyField = kind === 'plan' ? 'content' : kind === 'tool' ? 'input' : 'text';
-    values.content_hash = await materialBodyDigest(kind, values, bodyField);
-    for (const [field, blobField, proofKind] of bodyFields[kind]) {
-      if (typeof values[blobField] === 'string') continue;
-      const full = values[field!];
-      if (typeof full !== 'string' || new TextEncoder().encode(full).length <= inlineBodyBytes(field!)) continue;
-      const digest = await sha256Hex(full);
-      let body = preparedBodies.get(digest);
-      if (!body) {
-        body = await prepareDerivedContent(env, source, full, now, viewWritePredicate(target, now));
-        preparedBodies.set(digest, body);
+          ...merged.values,
+          call_source: JSON.stringify(merged.call),
+          outcome_source: JSON.stringify(merged.outcome),
+        };
       }
-      bodyProofs.push({ ...body, kind: proofKind, id });
-      values[blobField!] = body.key;
-      values[field!] = utf8Preview(full, inlineBodyBytes(field!)).preview;
+      if (
+        kind === 'tool' &&
+        old &&
+        typeof old.call_source === 'string' &&
+        p.toolName !== 'unknown' &&
+        ((await materialBodyDigest('tool', old, 'input')) !==
+          (await materialBodyDigest('tool', { input: text(p.input) }, 'input')) ||
+          old.tool_name !== p.toolName)
+      ) {
+        proofs.push(
+          env.db
+            .prepare(
+              `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
+          VALUES(?,?,?,'key_reuse',?,0)`,
+            )
+            .bind(target.projectId, target.instanceId, target.sessionId, id),
+        );
+      }
+      const hash = await viewContentHash(kind, values);
+      if (old && kind !== 'tool' && (previous?.hash ?? old.view_content_hash) !== hash) {
+        proofs.push(
+          env.db
+            .prepare(
+              `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
+          VALUES(?,?,?,'key_reuse',?,0)`,
+            )
+            .bind(target.projectId, target.instanceId, target.sessionId, id),
+        );
+        continue;
+      }
+      if (old && kind !== 'tool') continue;
+      if (range.lostContext && kind !== 'prompt' && values.prompt_id === null)
+        proofs.push(
+          env.db
+            .prepare(
+              `INSERT OR IGNORE INTO view_findings(project_id,instance_id,session_id,kind,record_id,n)
+        VALUES(?,?,?,'unattributed',?,0)`,
+            )
+            .bind(target.projectId, target.instanceId, target.sessionId, id),
+        );
+      fullRows.set(key, { ...values });
+      const bodyField = kind === 'plan' ? 'content' : kind === 'tool' ? 'input' : 'text';
+      values.content_hash = await materialBodyDigest(kind, values, bodyField);
+      for (const [field, blobField, proofKind] of bodyFields[kind]) {
+        if (typeof values[blobField] === 'string') continue;
+        const full = values[field!];
+        if (typeof full !== 'string' || new TextEncoder().encode(full).length <= inlineBodyBytes(field!)) continue;
+        const digest = await sha256Hex(full);
+        let body = preparedBodies.get(digest);
+        if (!body) {
+          body = prepareDerivedContent(env, source, full, now, viewWritePredicate(target, now));
+          preparedBodies.set(digest, body);
+        }
+        const row = values;
+        const proof = body.then((held) => {
+          row[blobField!] = held.key;
+          return { ...held, kind: proofKind, id };
+        });
+        proof.catch(() => undefined);
+        pendingProofs.push(proof);
+        values[field!] = utf8Preview(full, inlineBodyBytes(field!)).preview;
+      }
+      rows.set(key, {
+        kind,
+        identity,
+        recordId: id,
+        hash,
+        values,
+        expectedHash:
+          previous?.expectedHash ?? (typeof stored?.view_content_hash === 'string' ? stored.view_content_hash : null),
+      });
     }
-    rows.set(key, {
-      kind,
-      identity,
-      recordId: id,
-      hash,
-      values,
-      expectedHash:
-        previous?.expectedHash ?? (typeof stored?.view_content_hash === 'string' ? stored.view_content_hash : null),
-    });
+  } finally {
+    await Promise.allSettled(pendingProofs);
   }
+  bodyProofs.push(...(await Promise.all(pendingProofs)));
   if (bodyProofs.length) {
     const input = JSON.stringify(bodyProofs);
     proofs.push(
@@ -475,29 +524,8 @@ export async function prepareViewRows(
         .bind(target.projectId, target.instanceId, target.sessionId, now, input),
     );
   }
-  const promptIds = [
-    ...new Set(
-      events.flatMap((event) =>
-        event.kind === 'response' && typeof event.payload.promptId === 'string'
-          ? [event.payload.promptId]
-          : event.kind === 'prompt'
-            ? [String(event.payload.promptId)]
-            : [],
-      ),
-    ),
-  ];
   if (promptIds.length) {
-    const held = (
-      await env.db
-        .prepare(
-          `SELECT j.value prompt_id,MIN(r.created_at) ended_at FROM json_each(?) j LEFT JOIN view_responses r
-      ON r.project_id=? AND r.instance_id=? AND r.prompt_id=j.value
-        AND EXISTS(SELECT 1 FROM transcripts t JOIN sessions s ON s.project_id=t.project_id AND s.session_id=t.session_id
-          WHERE t.project_id=r.project_id AND t.transcript_id=r.source_transcript_id AND t.machine_id IS s.machine_id) GROUP BY j.value`,
-        )
-        .bind(JSON.stringify(promptIds), target.projectId, target.instanceId)
-        .all<{ prompt_id: string; ended_at: number | null }>()
-    ).results;
+    const held = promptEnds;
     const earliest = new Map(held.map((row) => [row.prompt_id, row.ended_at]));
     for (const row of rows.values())
       if (

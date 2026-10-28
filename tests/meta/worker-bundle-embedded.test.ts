@@ -21,8 +21,8 @@ import { BUNDLED_WORKER, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.gen
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** Detects unexpected bundle growth; the platform script-size limit is separate. */
-const SIZE_CEILING_BYTES = 1_950_000;
+/** Detects unexpected bundle growth; Cloudflare's own Worker size limit is 64 MiB uncompressed. */
+const SIZE_CEILING_BYTES = 1_951_000;
 
 const decoded = (): string => Buffer.from(BUNDLED_WORKER, 'base64').toString('utf-8');
 
