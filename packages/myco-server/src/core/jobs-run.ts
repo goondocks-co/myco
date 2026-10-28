@@ -3,7 +3,7 @@ import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS } from './budget-policy.js';
 import { dailyBudget,effectiveBudgetSql } from './settings.js';
 import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
-import { runViewCutoverWake } from '../ingest/view-cutover.js';
+import { runTranscriptParseWake } from '../ingest/view-cutover.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 /**
@@ -29,7 +29,6 @@ import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
 import { jobDispatchesAt } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
-import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
 import { drainObjectReleases } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
@@ -248,14 +247,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'grant-expiry': grantExpiry,
   'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
-  // The batch's reads are bounded by the wake's content wall, so it runs before the legacy pass, which keeps its own wall.
-  // A batch failure is reported once the legacy pass has run.
-  'transcript-parse': async (env, now) => {
-    const views = await runViewCutoverWake(env, now).then((report) => ({ report }), (error: unknown) => ({ error }));
-    const legacy = await parseTranscripts(env, now);
-    if ('error' in views) throw views.error;
-    return { ...legacy, changed: legacy.changed + views.report.changed, more: legacy.more || views.report.more };
-  },
+  'transcript-parse': runTranscriptParseWake,
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,

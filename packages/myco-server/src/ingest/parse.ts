@@ -312,6 +312,12 @@ const LANE_ORDER: Record<Lane, { where: string; order: string }> = {
   repair: { where: `imported_at IS NULL AND (${REPAIR_WORK})`, order: LAST_SERVICE_ORDER },
 };
 
+/** A lane's transcripts; with `from`, only those last received at or after that instant. */
+function laneWhere(lane: Lane, from?: number): string {
+  if (from === undefined) return LANE_ORDER[lane].where;
+  if (!Number.isSafeInteger(from)) throw new Error('The transcript clock must be an integer instant');
+  return `${LANE_ORDER[lane].where} AND last_received_at >= ${from}`;
+}
 
 /** A transcript whose session is deleted, for a statement over `transcripts`: its bytes are never read. */
 const TOMBSTONED = `EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = transcripts.project_id AND t.session_id = transcripts.session_id)`;
@@ -320,7 +326,7 @@ const TOMBSTONED = `EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_i
  * The selection of the next `limit` transcripts in `lane`, bound to the parser version, each with the segments a pass
  * reads past its cursor: one statement and one round trip, which a gate reads the plan of.
  */
-export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): string {
+export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now(), from?: number): string {
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
       FROM (${segmentSource('transcripts.project_id','transcripts.transcript_id','transcripts.parsed_offset')}
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
@@ -328,8 +334,8 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
                  ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
                  (${segments}) AS segments
-            FROM (SELECT * FROM transcripts WHERE (${PENDING_TRANSCRIPTS}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}
-              UNION ALL SELECT * FROM transcripts WHERE (${terminalWorkSql(now)}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}) AS transcripts
+            FROM (SELECT * FROM transcripts WHERE (${PENDING_TRANSCRIPTS}) AND ${laneWhere(lane, from)} AND NOT ${TOMBSTONED}
+              UNION ALL SELECT * FROM transcripts WHERE (${terminalWorkSql(now)}) AND ${laneWhere(lane, from)} AND NOT ${TOMBSTONED}) AS transcripts
            ORDER BY ${LANE_ORDER[lane].order} LIMIT ${limit}`;
 }
 
@@ -337,6 +343,15 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
 async function nextTargets(db: RelationalStore, lane: Lane, limit: number, now: number): Promise<ParseTarget[]> {
   const { results } = await db
     .prepare(laneSelectionSql(lane, limit, now))
+    .bind(PARSER_VERSION)
+    .all<Record<string, unknown>>();
+  return results.map(targetOf);
+}
+
+/** The next `limit` live transcripts last received at or after `from`, in the live lane's order. */
+async function nextRecentTargets(db: RelationalStore, limit: number, now: number, from: number): Promise<ParseTarget[]> {
+  const { results } = await db
+    .prepare(laneSelectionSql('live', limit, now, from))
     .bind(PARSER_VERSION)
     .all<Record<string, unknown>>();
   return results.map(targetOf);
@@ -1343,6 +1358,8 @@ export interface ParseJobOptions {
   clock?: () => number;
   /** Told as each pass starts, with the segment bytes it is counted at, and as it ends: a test's view of what is held at once. */
   passes?: { started(transcriptId: string, bytes: number): void; ended(transcriptId: string): void };
+  /** Only the live lane runs, over transcripts last received at or after this instant; the backlog waits. */
+  recentSince?: number;
 }
 
 /**
@@ -1395,8 +1412,9 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   const liveShare = Math.max(1, Math.floor(budget.calls / 2));
   const liveDeadline = deadline - Math.ceil(budget.wallMs / 2);
   const repairShare = Math.max(1, Math.floor(budget.calls / 4));
-  const done: Record<Lane, boolean> = { live: false, imported: false, repair: false };
-  let spent = budget.calls >= 2 && clock() < deadline && (parserStatements === null || parserStatements > PARSER_CHECKPOINT_HEADROOM)
+  const recent = options.recentSince !== undefined;
+  const done: Record<Lane, boolean> = { live: false, imported: recent, repair: recent };
+  let spent = !recent && budget.calls >= 2 && clock() < deadline && (parserStatements === null || parserStatements > PARSER_CHECKPOINT_HEADROOM)
     ? await prepareParserRepairs(env.db) : 0;
   let liveSpent = 0;
   let derived = 0;
@@ -1406,7 +1424,9 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
       : !done.repair ? 'repair' : !done.imported ? 'imported' : null;
     if (lane === null) break;
     // Imported transcripts are read several at a time: each call waits on a round trip, not on the store.
-    const targets = await nextTargets(env.db, lane, lane === 'imported' && invocation === null ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
+    const targets = lane === 'live' && options.recentSince !== undefined
+      ? await nextRecentTargets(env.db, 1, now, options.recentSince)
+      : await nextTargets(env.db, lane, lane === 'imported' && invocation === null ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
     spent += 1;
     if (lane === 'live') liveSpent += 1;
     if (targets.length === 0) {
@@ -1454,6 +1474,15 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   }
   const more = (await pendingTranscripts(env.db, now)).transcripts > 0;
   return { changed: derived, more };
+}
+
+/** Whether a live-lane pass is waiting over a transcript last received at or after `from`. */
+export async function recentLegacyWork(db: RelationalStore, now: number, from: number): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT EXISTS(SELECT 1 FROM transcripts WHERE ((${pendingWorkSql(now)})) AND ${laneWhere('live', from)} AND NOT ${TOMBSTONED}) waiting`)
+    .bind(PARSER_VERSION)
+    .first<{ waiting: number }>();
+  return row?.waiting === 1;
 }
 
 /**
