@@ -232,7 +232,7 @@ test('a long build leaves the shared wake its housekeeping admission', async () 
 test('a legacy backlog that outlasts the wake content wall still leaves the batch building', async () => {
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {
-      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 60_000;
       const built = await legacySession(db, blobs, 'cut-l', at, [turn('cut-l', 'built', 100)]);
       await captureViewSession(db, 'project', 'cut-m', { idOffset: 8000 });
       const backlog = 'tx_' + 'c'.repeat(32), text = Array.from({ length: 400 }, (_, i) => turn('cut-m', 'slow' + i, 100)).join('');
@@ -255,6 +255,37 @@ test('a legacy backlog that outlasts the wake content wall still leaves the batc
       }
       expect((await readViewCutover(db)).built).toBeGreaterThan(0);
       expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(backlog))).toBeGreaterThan(0);
+    }),
+  );
+}, 120000);
+
+test('a pending batch publishes an old session the legacy pass never read, while legacy serves only recent transcripts', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now();
+      const parsed = (transcript: string) => n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(transcript));
+      const capture = async (session: string, transcript: string, at: number, prompt: string) => {
+        await captureViewSession(db, 'project', session, { idOffset: 9000 + seq++ * 100 });
+        const text = turn(session, prompt, 100);
+        return { env: await captureViewTranscript(db, blobs, session, transcript, text, at, 0, 'claude-code') as unknown as ServerEnv, size: bytes(text) };
+      };
+      const old = await capture('cut-o', 'tx_' + 'd'.repeat(32), now - 3 * DAY, 'backlog');
+      const recent = await capture('cut-r', 'tx_' + 'e'.repeat(32), now - 60_000, 'current');
+      const wake = async () => {
+        const outer = measuredContentEnv(old.env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active');
+      };
+      for (let pass = 0; (await readViewCutover(db)).remaining > 0; pass++) {
+        expect(pass).toBeLessThan(30);
+        await wake();
+        expect(await parsed('tx_' + 'd'.repeat(32))).toBe(0);
+      }
+      expect(await readViewCutover(db)).toMatchObject({ built: 2, remaining: 0, frozenTails: 0 });
+      expect(await parsed('tx_' + 'e'.repeat(32))).toBe(recent.size);
+      for (let pass = 0; (await parsed('tx_' + 'd'.repeat(32))) < old.size; pass++) {
+        expect(pass).toBeLessThan(10);
+        await wake();
+      }
     }),
   );
 }, 120000);

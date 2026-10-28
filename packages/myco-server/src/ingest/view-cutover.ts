@@ -4,10 +4,11 @@ import { contentAssertion } from '../core/registered-content.js';
 import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '../core/content-budget.js';
 import { LEGACY_CLASS_TABLES, legacyRowSql, unverifiedRowSql, CLASSIFIED_AT_SQL } from '../db/schema-v106.js';
 import { PARSERS } from './parsers/registry.js';
-import { PARSER_VERSION, pendingTranscripts } from './parse.js';
+import { PARSER_VERSION, parseTranscripts, pendingTranscripts, recentLegacyWork } from './parse.js';
 import { requestViewRebuild } from './view-lifecycle.js';
 import { runViewParseJob } from './view-run.js';
-import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET } from './view-build-queue.js';
+import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET, VIEW_RECENT_MS } from './view-build-queue.js';
+import { cutoverPending } from './view-cutover-pending.js';
 import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
 
@@ -179,10 +180,17 @@ export async function readViewCutover(db: RelationalStore): Promise<ViewCutoverS
   };
 }
 
-/** While legacy transcripts wait, the batch takes half of what a bounded wake leaves its parsers; the legacy pass takes the rest. */
-async function cutoverShare(env: ServerEnv, now: number): Promise<ServerEnv> {
+/**
+ * While legacy transcripts wait, the batch takes half of what a bounded wake leaves its parsers; the legacy pass takes the
+ * rest. With `legacySince`, only transcripts last received at or after that instant count as waiting.
+ */
+async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): Promise<ServerEnv> {
   const held = remainingInvocationBudget(env.db);
-  if (held === null || (await pendingTranscripts(env.db, now)).transcripts === 0) return env;
+  if (held === null) return env;
+  const waiting = legacySince === undefined
+    ? (await pendingTranscripts(env.db, now)).transcripts > 0
+    : await recentLegacyWork(env.db, now, legacySince);
+  if (!waiting) return env;
   return measuredContentEnv(env, {
     statements: CONTENT_WAKE_JOB_RESERVE + Math.floor(Math.max(0, held.statements - 2 * CONTENT_WAKE_JOB_RESERVE) / 2),
     blobCalls: CONTENT_BLOB_LIMIT + Math.floor(Math.max(0, held.blobCalls - 2 * CONTENT_BLOB_LIMIT) / 2),
@@ -190,8 +198,8 @@ async function cutoverShare(env: ServerEnv, now: number): Promise<ServerEnv> {
 }
 
 /** One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. */
-export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes = databaseBytes) {
-  const env = await cutoverShare(wake, now);
+export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes = databaseBytes, legacySince?: number) {
+  const env = await cutoverShare(wake, now, legacySince);
   const db = env.db;
   const bytes = await readBytes(db);
   const paused = bytes !== null && bytes >= VIEW_CUTOVER_PAUSE_BYTES;
@@ -233,4 +241,20 @@ export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes
     )
     .first<{ pending: number }>();
   return { changed, more: !paused && (!classified || pending?.pending === 1) };
+}
+
+/**
+ * The transcript-parse job. The batch's reads are bounded by the wake's content wall, so it runs before the legacy pass,
+ * which keeps its own wall. While the batch is pending, the legacy pass reads only recently received transcripts and its
+ * backlog waits for the batch. A batch failure is reported once the legacy pass has run.
+ */
+export async function runTranscriptParseWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean }> {
+  const recentSince = (await cutoverPending(env.db)) ? now - VIEW_RECENT_MS : undefined;
+  const views = await runViewCutoverWake(env, now, databaseBytes, recentSince).then(
+    (report) => ({ report }),
+    (error: unknown) => ({ error }),
+  );
+  const legacy = await parseTranscripts(env, now, { recentSince });
+  if ('error' in views) throw views.error;
+  return { ...legacy, changed: legacy.changed + views.report.changed, more: legacy.more || views.report.more };
 }
