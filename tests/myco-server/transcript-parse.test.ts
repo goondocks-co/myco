@@ -532,6 +532,27 @@ describe('repair lane priority', () => {
     expect(receipt.persisted).toBe(true);
   };
 
+  it('rereads an oversized tool input whose event is held under an earlier envelope', async () => {
+    const at = (n: number) => new Date(NOW - 60_000 + n * 1000).toISOString();
+    const r = await rig(line({ type: 'user', promptId: uuid(86_000), message: { content: 'read it' }, timestamp: at(0) })
+      + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_reread', name: 'Read', input: { path: 'r'.repeat(260_000) } }] }, timestamp: at(1) })
+      + line({ type: 'user', promptId: uuid(86_000), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_reread', content: 'ok' }] }, timestamp: at(2) })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'read' }] }, timestamp: at(3) }));
+    const wakes = async (from: number) => {
+      for (let wake = 0; wake < 4; wake++) await parseTranscripts(r.serverEnv, from + wake, { budget: { calls: 24, wallMs: 10_000 }, clock: () => 0 });
+    };
+    await wakes(NOW);
+    const parsedTo = (r.sqlite.query('SELECT parsed_offset FROM transcripts').get() as { parsed_offset: number }).parsed_offset;
+    // The held tool event as an earlier derivation wrote it, and that derivation's stop at the reread.
+    r.sqlite.run(`UPDATE events SET envelope_hash = ? WHERE kind = 'tool.use'`, ['0'.repeat(64)]);
+    await rereadTranscripts(r.serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
+    r.sqlite.run(`UPDATE transcripts SET parse_error = 'parse', parser_context = json_set(parser_context, '$.mycoParserFailure', json(?))`,
+      [JSON.stringify({ branch: 'event_not_stored', offset: 0, lineKind: 'unknown', generation: PARSE_STOP_GENERATION - 1 })]);
+    await wakes(NOW + 10);
+    expect(r.sqlite.query(`SELECT parsed_offset, parse_error FROM transcripts`).get()).toEqual({ parsed_offset: parsedTo, parse_error: null });
+    expect(r.sqlite.query(`SELECT success, input_bundle_id IS NOT NULL AS bundled FROM tool_calls`).get()).toEqual({ success: 1, bundled: 1 });
+  });
+
   it('stops a transcript whose write the store refuses on a CHECK alone and parses the next one', async () => {
     const r = await rig(body(1));
     const other = 'tx_cccccccccccccccccccccccccccccccc';

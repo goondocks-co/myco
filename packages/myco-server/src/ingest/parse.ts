@@ -118,7 +118,7 @@ export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 export { PARSER_VERSION } from '../constants.js';
 
 /** Bump when only stop conditions change; older failures resume from their cursor, leaving intact recordings alone. */
-export const PARSE_STOP_GENERATION = 1;
+export const PARSE_STOP_GENERATION = 2;
 
 /** An unanswered live turn closes after ten minutes without new transcript bytes. */
 export const TRANSCRIPT_IDLE_MS = 600_000;

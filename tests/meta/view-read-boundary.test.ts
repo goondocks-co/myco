@@ -1092,7 +1092,7 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(dependencyDiffs).toHaveLength(0);
  const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
  const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
- expect(repinned).toHaveLength(16);
+ expect(repinned).toHaveLength(17);
  for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);
