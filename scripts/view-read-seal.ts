@@ -70,6 +70,7 @@ export function classifySourceSealChange(
   f.endsWith('/read/plans.ts')&&o==='setPlanStatus'?'moved plan-status SQL':
   f.endsWith('/core/injection.ts')?'renamed injection composition':
   f.endsWith('/core/write-guard-store.ts')?'opaque-context decorator':
+  f.endsWith('/ingest/parse.ts')&&['nextTargets','nextRecentTargets','parseTranscripts','recentLegacyWork'].includes(o)?'legacy lane selection bounded by the batch':
   f.endsWith('/core/attention-state.ts')||f.endsWith('/read/meta.ts')?'bounded refusal/status metadata':
   f.endsWith('/server/sql-dump.ts')?'SQL identifier dependency fingerprint':
   f.endsWith('/thin-learning-admission.test.ts')||deps.some(p=>/\/(?:db\/thin-learning-admission|db\/schema-v104)\.ts$/.test(p.file))?'schema 104 admission projection':
