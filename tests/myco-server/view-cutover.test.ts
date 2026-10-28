@@ -4,6 +4,7 @@ import { parseTranscripts, PARSER_VERSION } from '@myco-server-worker/ingest/par
 import { runViewCutoverWake, readViewCutover, VIEW_CUTOVER_PAUSE_BYTES } from '@myco-server-worker/ingest/view-cutover.js';
 import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '@myco-server-worker/core/content-budget.js';
 import { changePlanStatus } from '@myco-server-worker/core/plans.js';
+import { processedBody } from '@myco-server-worker/read/processed.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { VIEW_BUILD_LEASE_MS } from '@myco-server-worker/ingest/view-build-queue.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
@@ -193,6 +194,21 @@ test('a status edit of a published parser plan promotes it to a fact and applies
   );
 }, 120000);
 
+test('promoting over a legacy plan row keeps the complete view body beyond the legacy bound', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const body = '# Plan\n' + 'x'.repeat(400_000);
+      const session = await legacySession(db, blobs, 'cut-q', at, [turn('cut-q', 'long plan', 100, '<ultraplan>' + body + '</ultraplan>')]);
+      await drain(session.env, now);
+      const key = (await db.prepare(`SELECT p.plan_key FROM plans p JOIN fact_classes f ON f.project_id=p.project_id
+        AND f.table_name='plans' AND f.record_id=p.plan_key AND f.class='legacy'`).first<{ plan_key: string }>())!.plan_key;
+      expect((await changePlanStatus({ db, blobs }, { projectId: 'project' }, key, 'completed', 'member', now))?.status).toBe('completed');
+      expect(await processedBody({ db, blobs }, { projectId: 'project' }, 'plan', key)).toBe(body);
+    }),
+  );
+}, 120000);
+
 test('a long build leaves the shared wake its housekeeping admission', async () => {
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {
@@ -225,4 +241,3 @@ test('unfinished cutover work keeps the Deployment at idle until the batch compl
     }),
   );
 }, 120000);
-

@@ -5,7 +5,7 @@ import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
 import { releaseViewReadSources } from '../read/view-store.js';
 
-/** A visible view plan becomes an authoritative fact with its complete body before an edit applies to it. */
+/** A visible view plan becomes the authoritative plan row with its complete body, replacing any legacy row, before an edit applies to it. */
 export async function promoteViewPlan(
   env: Pick<ServerEnv, 'db' | 'blobs'>,
   scope: ReadScope,
@@ -55,11 +55,6 @@ export async function promoteViewPlan(
         plan.source_record,
       ),
   ];
-  if (plan.fact_held === 1) {
-    await db.batch(promoted(null));
-    releaseViewReadSources(db);
-    return true;
-  }
   const content =
     typeof plan.blob_key === 'string'
       ? await readVerifiedContentText(
@@ -70,13 +65,18 @@ export async function promoteViewPlan(
         )
       : String(plan.content ?? '');
   const tags = JSON.parse(String(plan.tags_json ?? '[]')) as string[];
-  await db.batch(
-    tags.map((tag) =>
+  await db.batch([
+    db
+      .prepare(
+        `DELETE FROM tags WHERE project_id=? AND entity_kind='plan' AND entity_id=? AND tag NOT IN(SELECT value FROM json_each(?))`,
+      )
+      .bind(scope.projectId, key, JSON.stringify(tags)),
+    ...tags.map((tag) =>
       db
         .prepare(`INSERT OR IGNORE INTO tags(project_id,entity_kind,entity_id,tag) VALUES(?,'plan',?,?)`)
         .bind(scope.projectId, key, tag),
     ),
-  );
+  ]);
   const columns = {
     project_id: scope.projectId,
     plan_key: key,
@@ -99,7 +99,8 @@ export async function promoteViewPlan(
     ...contentAssertion(
       db,
       `EXISTS(SELECT 1 FROM view_visible WHERE project_id=? AND instance_id=?)
-    AND NOT EXISTS(SELECT 1 FROM plans WHERE project_id=? AND plan_key=?)
+    AND NOT EXISTS(SELECT 1 FROM plans p WHERE p.project_id=? AND p.plan_key=? AND NOT EXISTS(SELECT 1 FROM fact_classes f
+      WHERE f.project_id=p.project_id AND f.table_name='plans' AND f.record_id=p.plan_key AND f.class='legacy'))
     AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
       [scope.projectId, plan.instance_id, scope.projectId, key, scope.projectId, plan.session_id],
     ),
@@ -111,7 +112,11 @@ export async function promoteViewPlan(
         json_extract(value,'$.machine_id'),json_extract(value,'$.title'),json_extract(value,'$.content'),json_extract(value,'$.content_hash'),
         json_extract(value,'$.status'),json_extract(value,'$.origin_path'),json_extract(value,'$.created_at'),json_extract(value,'$.updated_at'),
         json_extract(value,'$.token_id'),json_extract(value,'$.received_at'),json_extract(value,'$.prompt_id'),json_extract(value,'$.source')
-      FROM json_each(?)`,
+      FROM json_each(?) WHERE 1
+      ON CONFLICT(project_id,plan_key) DO UPDATE SET session_id=excluded.session_id,event_id=excluded.event_id,machine_id=excluded.machine_id,
+        title=excluded.title,content=excluded.content,blob_key=NULL,content_hash=excluded.content_hash,status=excluded.status,
+        origin_path=excluded.origin_path,created_at=excluded.created_at,updated_at=excluded.updated_at,token_id=excluded.token_id,
+        received_at=excluded.received_at,prompt_id=excluded.prompt_id,source=excluded.source,updated_by=NULL`,
       )
       .bind(JSON.stringify([columns])),
     ...promoted(plan.instance_id),
