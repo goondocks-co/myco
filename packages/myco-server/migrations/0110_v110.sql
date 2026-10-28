@@ -117,10 +117,19 @@ CREATE TRIGGER IF NOT EXISTS session_views_learning_insert
     AFTER INSERT ON session_views
     WHEN NEW.live_instance IS NOT NULL BEGIN
     UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = NEW.updated_at
-      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
-        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
-          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
-        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id));
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND turn_key IN (
+        SELECT COALESCE((SELECT p.parent_prompt_id FROM view_prompts p WHERE p.project_id = NEW.project_id
+            AND p.instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND p.prompt_id = changed.prompt_id LIMIT 1), changed.prompt_id)
+        FROM (SELECT prompt_id FROM view_prompts
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_responses
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_tool_calls
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_plans
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id)) changed);
     UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND init_state IN ('awaiting_publication', 'ready'); END;
 
@@ -128,10 +137,19 @@ CREATE TRIGGER IF NOT EXISTS session_views_learning_update
     AFTER UPDATE OF live_instance ON session_views
     WHEN NEW.live_instance IS NOT NULL AND NEW.live_instance IS NOT OLD.live_instance BEGIN
     UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = NEW.updated_at
-      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
-        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
-          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
-        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id));
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND turn_key IN (
+        SELECT COALESCE((SELECT p.parent_prompt_id FROM view_prompts p WHERE p.project_id = NEW.project_id
+            AND p.instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND p.prompt_id = changed.prompt_id LIMIT 1), changed.prompt_id)
+        FROM (SELECT prompt_id FROM view_prompts
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_responses
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_tool_calls
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) UNION ALL SELECT prompt_id FROM view_plans
+        WHERE project_id = NEW.project_id AND instance_id IN (SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL) AND material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id)) changed);
     UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND init_state IN ('awaiting_publication', 'ready'); END;
 

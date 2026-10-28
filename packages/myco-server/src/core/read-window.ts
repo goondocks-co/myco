@@ -44,15 +44,21 @@ export const TURN_INPUT_BUDGETS = {
   promptChars: 8_000,
   /** The agent's replies in the turn, verbatim, together. */
   replyChars: 6_000,
-  /** One tool call's arguments. */
+  /** One routine tool call's arguments. */
   toolArgChars: 300,
+  /** One shell command, or a failed call's arguments, verbatim. */
+  commandChars: 2_000,
+  /** One failed call's error message, verbatim. */
+  errorChars: 4_000,
   /** The head and the tail of one tool result's held preview. */
   resultHeadChars: 400,
   resultTailChars: 400,
   /** Error lines kept from one tool result beyond its head and tail. */
   resultErrorLines: 12,
-  /** Tool calls listed in full; the rest are counted by name. */
-  toolCalls: 60,
+  /** Every failed call and every command, across the whole turn, before any routine material: the declared ceiling. */
+  exceptionChars: 40_000,
+  /** Routine successful calls and their results together; the ones past it are counted by name. */
+  routineChars: 16_000,
 } as const;
 
 /** The trimmed input one card run reads across the turns it cards. */

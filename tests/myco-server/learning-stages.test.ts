@@ -15,7 +15,7 @@ import {
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { withViewStores } from './helpers/view-stores.js';
-import { seedViewInstance } from './helpers/view-instances.js';
+import { beforeViewWriteBatch, seedViewInstance } from './helpers/view-instances.js';
 import { envelope, memberHeaders, memoryBlobStore, recordingDeferred, recordingLimiter, sqliteEnv, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -216,6 +216,7 @@ it('holds a transcript session until publication, then cards its published view 
     await db.batch([
       db.prepare(`INSERT INTO material_versions(project_id,session_id,kind,identity,record_id,content_hash,hash_scheme,owner,material_seq)
         VALUES('project','legacy','response','["response","response"]','response','h','view-content-v1','view',5)`),
+      db.prepare(`UPDATE view_responses SET material_seq = 5 WHERE instance_id = 'live' AND response_id = 'response'`),
       db.prepare(`UPDATE learning_sessions SET max_seq = 5, next_seq = 6 WHERE session_id = 'legacy'`),
       // The session publishes again.
       db.prepare(`UPDATE session_views SET live_instance = NULL WHERE session_id = 'legacy'`),
@@ -224,16 +225,61 @@ it('holds a transcript session until publication, then cards its published view 
     while ((await learningInit({ db }, NOW + 2 * HOUR)).more);
     expect(await settleTurns({ db }, 'project', 'legacy', NOW + 2 * HOUR)).toMatchObject({ reused: 1, ruled: 0, forModel: [] });
     expect(await db.prepare(`SELECT state, last_seq FROM turn_cards WHERE session_id='legacy' AND turn_key='prompt'`).first()).toEqual({ state: 'carded', last_seq: 5 });
+
+    // A record new to an already-carded turn, published later, makes that turn due and reaches its card input.
+    await db.batch([
+      db.prepare(`INSERT INTO view_tool_calls(project_id,instance_id,session_id,tool_call_id,prompt_id,tool_name,input,success,error_message,created_at,received_at,source_transcript_id,source_offset,source_end,material_seq)
+        VALUES('project','live','legacy','tool2','prompt','Bash','{"command":"myco server repair --keep-capture"}',0,'EXACT_LATE_GOTCHA: capture lease refused',2,2,'transcript',0,1,6)`),
+      db.prepare(`UPDATE learning_sessions SET max_seq = 6, next_seq = 7 WHERE session_id = 'legacy'`),
+      db.prepare(`UPDATE session_views SET live_instance = NULL WHERE session_id = 'legacy'`),
+      db.prepare(`UPDATE session_views SET live_instance = 'live', updated_at = ? WHERE session_id = 'legacy'`).bind(NOW + 3 * HOUR),
+    ]);
+    expect(await db.prepare(`SELECT state FROM turn_cards WHERE session_id='legacy' AND turn_key='prompt'`).first()).toEqual({ state: 'pending' });
+    const changed = await settleTurns({ db }, 'project', 'legacy', NOW + 3 * HOUR);
+    expect(changed.forModel.map(turn => turn.turnKey)).toEqual(['prompt']);
+    expect(changed.forModel[0]!.trimmed.text).toContain('EXACT_LATE_GOTCHA: capture lease refused');
+    expect(await learningHolds(db, 'project', 'legacy')).toBe(true);
   });
 });
 
 it('triages only mechanical turns by rule', () => {
   const turn = (over: Partial<Parameters<typeof triageTurn>[0]>) => ({ turnKey: 't', origin: 'user', prompt: 'continue', steering: [], replies: [], tools: [], plans: [], ...over });
   expect(triageTurn(turn({}))).toBe('no_human_text');
+  expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\n<task-notification><status>done</status></task-notification>' }))).toBe('no_human_text');
+  expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\nPin bun to 1.4.0 in .bun-version' }))).toBeNull();
+  expect(triageTurn(turn({ prompt: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3.' }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'continue', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"npm test"}', output: 'boom', success: false, errorMessage: 'exit 1' }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && sleep 30"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && git push"}', output: '', success: true, errorMessage: null }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'continue', steering: [{ promptId: 's', text: 'no, stop' }] }))).toBeNull();
+
+  // Every failure and command is kept verbatim however late in the turn, and a changed one changes the input.
+  const routine = Array.from({ length: 200 }, (_, i) => ({ toolCallId: `r${i}`, toolName: 'Read', input: `{"file_path":"src/f${i}.ts"}`, output: 'x'.repeat(500), success: true, errorMessage: null }));
+  const late = (error: string) => trimTurn(turn({ prompt: 'repair capture', tools: [...routine,
+    { toolCallId: 'late', toolName: 'Bash', input: '{"command":"myco server repair --keep-capture"}', output: '', success: false, errorMessage: error }] })).text;
+  expect(late('EXACT_GOTCHA_AT_201')).toContain('myco server repair --keep-capture');
+  expect(late('EXACT_GOTCHA_AT_201')).toContain('EXACT_GOTCHA_AT_201');
+  expect(late('EXACT_GOTCHA_AT_201')).toContain('TOOLS NOT LISTED: Read×');
+  expect(late('EXACT_GOTCHA_AT_201')).not.toBe(late('another error'));
+});
+
+it('sends human requests and a turn whose failure comes after a hundred calls to the model, verbatim', async () => {
+  await withViewStores(async (db) => {
+    await capture(db, 'human', [
+      { id: uuid(70), text: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3; never retry a refused credential.', at: 10, replies: ['Set jobs.maxRetries to 3 and skipped refused credentials.'] },
+      { id: uuid(71), text: 'Repair capture', at: 20, tools: [
+        ...Array.from({ length: 120 }, (_, i) => ({ name: 'Read', input: { file_path: `src/f${i}.ts` }, output: 'ok' })),
+        { name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_GOTCHA_AT_121: capture lease refused' },
+      ] },
+    ]);
+    await ready(db);
+    const input = (await buildCardInput({ db }, 'project', 'human', NOW + HOUR))!;
+    const turns = (input.context as { assignment: { turns: { turnKey: string }[] } }).assignment.turns.map(t => t.turnKey);
+    expect(turns).toEqual([uuid(70), uuid(71)]);
+    const trimmed = trimTurn((await readTurn(db, { projectId: 'project' }, 'human', uuid(71)))!).text;
+    expect(trimmed).toContain('EXACT_GOTCHA_AT_121: capture lease refused');
+    expect(trimmed).toContain('myco server repair --keep-capture');
+  });
 });
 
 it('pulls cards, then learning, at claim within the budget, and the learned spore cites its session', async () => {
@@ -275,6 +321,13 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await poll(at)).toMatchObject({ claimed: false });
     expect(await db.prepare(`SELECT last_completed_reason AS reason FROM learning_sessions WHERE session_id = 'quiet'`).first()).toEqual({ reason: 'no_signal' });
     expect(await runs()).toEqual([{ task: 'turn-cards', subject: null, status: 'completed' }]);
+
+    // The switch turned off after selection refuses the claim's write: no run, no priced attempt.
+    env.db = beforeViewWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'), async () => { await learning(false); }, true);
+    expect(await poll(at + 1)).toMatchObject({ claimed: false });
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM agent_run_attempts WHERE run_id <> 'spent'`).first()).toEqual({ n: 0 });
+    env.db = db;
+    await learning(true);
 
     const cards = await poll(at + 1);
     if (!cards.claimed) throw new Error(`no card run: ${cards.reason}`);

@@ -108,7 +108,7 @@ function learningStage(level: number, fresh: boolean): PulledStage {
       return row === null ? null : { projectId, subject: learningSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
     stillHead: (item) => ({
-      sql: `EXISTS (SELECT 1 FROM learning_sessions WHERE project_id = ? AND session_id = ? AND eligible_at = ?)`,
+      sql: `EXISTS (SELECT 1 FROM learning_sessions WHERE project_id = ? AND session_id = ? AND eligible_at = ?) AND ${learningEnabledSql()}`,
       params: [item.projectId, item.key, item.observed],
     }),
     build: (env, item) => buildLearningInput(env.db, item.projectId, item.key),
@@ -132,7 +132,7 @@ function cardStage(level: number, fresh: boolean): PulledStage {
       return row === null ? null : { projectId, subject: cardSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
     stillHead: (item, now) => ({
-      sql: `EXISTS (SELECT 1 FROM turn_cards WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at <= ${Math.floor(now)})`,
+      sql: `EXISTS (SELECT 1 FROM turn_cards WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at <= ${Math.floor(now)}) AND ${learningEnabledSql()}`,
       params: [item.projectId, item.key],
     }),
     build: (env, item, now) => buildCardInput(env, item.projectId, item.key, now),

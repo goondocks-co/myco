@@ -34,13 +34,25 @@ export function claimCardsStatement(db: RelationalStore, projectId: string, sess
 }
 const TOOL_PAGE = 100;
 
+/** Every tool call recorded under one prompt, page by page. */
+async function promptTools(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string) {
+  const rows = [];
+  let cursor: string | undefined;
+  do {
+    const page = await listToolCalls(db, scope, sessionId, { promptId, limit: TOOL_PAGE, ...(cursor === undefined ? {} : { cursor }) });
+    rows.push(...page.rows);
+    cursor = page.cursor ?? undefined;
+  } while (cursor !== undefined);
+  return rows;
+}
+
 /** One turn read through the read module, or null when no prompt of that key sits in the session. */
 export async function readTurn(db: RelationalStore, scope: ReadScope, sessionId: string, turnKey: string): Promise<TurnInput | null> {
   const detail = await turnDetail(db, scope, sessionId, turnKey);
   if (detail === null) return null;
   const promptIds = [turnKey, ...detail.children.map((child) => child.prompt.promptId)];
-  const tools = (await Promise.all(promptIds.map((promptId) => listToolCalls(db, scope, sessionId, { promptId, limit: TOOL_PAGE }))))
-    .flatMap((page) => page.rows)
+  const tools = (await Promise.all(promptIds.map((promptId) => promptTools(db, scope, sessionId, promptId))))
+    .flat()
     .sort((a, b) => a.createdAt - b.createdAt || a.toolCallId.localeCompare(b.toolCallId));
   const replies = [...detail.responses, ...detail.children.flatMap((child) => child.responses)]
     .sort((a, b) => a.createdAt - b.createdAt);

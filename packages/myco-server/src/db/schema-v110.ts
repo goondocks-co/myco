@@ -16,17 +16,23 @@ function turnChangedTrigger(table: string, operation: 'INSERT' | 'UPDATE', colum
 
 /**
  * A session's publication makes it pending for initialization, which enqueues the turns it holds now, and makes due
- * again each carded turn one of whose records has a newer material version than the cards reflect.
+ * again each carded turn holding a published record, new or changed, whose material version is newer than the cards
+ * reflect. A record's turn is its prompt, or that prompt's parent.
  */
 function publishedTrigger(operation: 'INSERT' | 'UPDATE'): string {
+  const instances = `(SELECT NEW.live_instance UNION ALL SELECT parent_instance FROM view_instances
+    WHERE project_id = NEW.project_id AND instance_id = NEW.live_instance AND parent_instance IS NOT NULL)`;
+  const carded = `(SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id)`;
+  const newer = (table: string) => `SELECT prompt_id FROM ${table}
+        WHERE project_id = NEW.project_id AND instance_id IN ${instances} AND material_seq > ${carded}`;
   return `CREATE TRIGGER IF NOT EXISTS session_views_learning_${operation.toLowerCase()}
     AFTER ${operation === 'INSERT' ? 'INSERT' : 'UPDATE OF live_instance'} ON session_views
     WHEN NEW.live_instance IS NOT NULL${operation === 'UPDATE' ? ' AND NEW.live_instance IS NOT OLD.live_instance' : ''} BEGIN
     UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = NEW.updated_at
-      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
-        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
-          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
-        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id));
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND turn_key IN (
+        SELECT COALESCE((SELECT p.parent_prompt_id FROM view_prompts p WHERE p.project_id = NEW.project_id
+            AND p.instance_id IN ${instances} AND p.prompt_id = changed.prompt_id LIMIT 1), changed.prompt_id)
+        FROM (${['view_prompts', 'view_responses', 'view_tool_calls', 'view_plans'].map(newer).join(' UNION ALL ')}) changed);
     UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND init_state IN ('awaiting_publication', 'ready'); END`;
 }

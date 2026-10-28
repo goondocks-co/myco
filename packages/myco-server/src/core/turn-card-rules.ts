@@ -2,9 +2,10 @@
  * A turn's trimmed card input and its rule triage, both built by code with no model call.
  *
  * A turn is one top-level prompt and everything recorded under it: its replies, tool calls and plans, and the
- * steering prompts that name it as their parent. The trimmed input keeps every human word, the agent's replies within
- * a budget, each tool call as its name and trimmed arguments, and each result as the head and tail of its held preview
- * plus its error lines. No blob is read and no file body is carried.
+ * steering prompts that name it as their parent. The trimmed input keeps every human word and the agent's replies within
+ * a budget. Every failed call and every command anywhere in the turn is kept verbatim first, up to a declared ceiling;
+ * routine calls and their results, as the head and tail of the held preview plus its error lines, fill a routine
+ * budget, and the rest are counted by name. No blob is read and no file body is carried.
  */
 import { TURN_INPUT_BUDGETS as B } from './read-window.js';
 
@@ -47,6 +48,33 @@ function trimResult(output: string): string {
   return [head, errors.length === 0 ? '[…]' : `[… error lines:]\n${errors.join('\n')}\n[…]`, tail].join('\n');
 }
 
+const SHELL_TOOLS = new Set(['Bash', 'shell', 'exec_command']);
+
+/** The command a shell tool ran, or null for any other tool. */
+function commandOf(tool: TurnToolInput): string | null {
+  if (!SHELL_TOOLS.has(tool.toolName)) return null;
+  try {
+    const parsed = JSON.parse(tool.input ?? '') as { command?: unknown; cmd?: unknown };
+    return String(parsed.command ?? parsed.cmd ?? '');
+  } catch { return tool.input ?? ''; }
+}
+
+const failed = (tool: TurnToolInput): boolean => !tool.success || tool.errorMessage !== null;
+
+/**
+ * One tool call's lines, split by what the turn must carry. A failed call keeps its arguments, its error and its
+ * result's head, tail and error lines; a command keeps its command line. These are kept across the whole turn first.
+ * A routine call's line and any successful result are kept while the routine budget lasts.
+ */
+function toolLines(tool: TurnToolInput): { kept: string[]; routine: string[] } {
+  const command = commandOf(tool);
+  const args = command ?? (tool.input ?? '').replace(/\s+/g, ' ');
+  const line = `TOOL ${tool.toolName} ${clip(args, command !== null || failed(tool) ? B.commandChars : B.toolArgChars)}${failed(tool) ? ' [FAILED]' : ''}`;
+  const result = tool.output !== null && tool.output !== '' ? [`  result:\n${trimResult(tool.output)}`] : [];
+  if (failed(tool)) return { kept: [line, ...(tool.errorMessage === null ? [] : [`  error: ${clip(tool.errorMessage, B.errorChars)}`]), ...result], routine: [] };
+  return command !== null ? { kept: [line], routine: result } : { kept: [], routine: [line, ...result] };
+}
+
 /** The turn as one card run reads it. */
 export function trimTurn(turn: TurnInput): TrimmedTurn {
   const lines = [`## Turn ${turn.turnKey}`, `PROMPT (${turn.origin}):`, clip(turn.prompt, B.promptChars)];
@@ -57,18 +85,19 @@ export function trimTurn(turn: TurnInput): TrimmedTurn {
     lines.push('REPLY:', clip(reply.text, replyRoom));
     replyRoom -= reply.text.length;
   }
-  const listed = turn.tools.slice(0, B.toolCalls);
-  for (const tool of listed) {
-    lines.push(`TOOL ${tool.toolName} ${clip((tool.input ?? '').replace(/\s+/g, ' '), B.toolArgChars)}${tool.success ? '' : ' [FAILED]'}`);
-    if (tool.errorMessage !== null) lines.push(`  error: ${tool.errorMessage}`);
-    if (tool.output !== null && tool.output !== '') lines.push(`  result:\n${trimResult(tool.output)}`);
+  const size = (part: readonly string[]) => part.reduce((n, l) => n + l.length + 1, 0);
+  const parts = turn.tools.map((tool) => ({ tool, ...toolLines(tool) }));
+  let keptRoom = B.exceptionChars;
+  let routineRoom = B.routineChars;
+  const counted = new Map<string, number>();
+  for (const part of parts) {
+    const kept = part.kept.length > 0 && size(part.kept) <= keptRoom;
+    if (kept) { keptRoom -= size(part.kept); lines.push(...part.kept); }
+    const routine = (kept || part.kept.length === 0) && part.routine.length > 0 && size(part.routine) <= routineRoom;
+    if (routine) { routineRoom -= size(part.routine); lines.push(...part.routine); }
+    if (!kept && !routine) counted.set(part.tool.toolName, (counted.get(part.tool.toolName) ?? 0) + 1);
   }
-  const rest = turn.tools.slice(B.toolCalls);
-  if (rest.length > 0) {
-    const counts = new Map<string, number>();
-    for (const tool of rest) counts.set(tool.toolName, (counts.get(tool.toolName) ?? 0) + 1);
-    lines.push(`TOOLS NOT LISTED: ${[...counts].map(([name, n]) => `${name}×${n}`).join(', ')}`);
-  }
+  if (counted.size > 0) lines.push(`TOOLS NOT LISTED: ${[...counted].map(([name, n]) => `${name}×${n}`).join(', ')}`);
   for (const plan of turn.plans) lines.push(`PLAN ${plan.title ?? plan.planKey} (${plan.status})`);
   const rawChars = turn.prompt.length + turn.steering.reduce((n, s) => n + s.text.length, 0)
     + turn.replies.reduce((n, r) => n + r.text.length, 0)
@@ -88,12 +117,16 @@ export function trimTurn(turn: TurnInput): TrimmedTurn {
   };
 }
 
-/** Prompt text that carries no human writing. */
-const MECHANICAL_PROMPT = [
-  /^\s*<(task-notification|system-reminder|local-command-stdout|command-message|bash-notification)[\s>]/i,
-  /^\s*(continue|go on|go ahead|proceed|keep going|resume|next|ok|okay|yes|y)\s*[.!]?\s*$/i,
-  /^\s*\[?(background|scheduled|wake[- ]?up|tick|heartbeat)\b/i,
-];
+/** A harness notification envelope, whole. */
+const ENVELOPE = /<(task-notification|system-reminder|local-command-stdout|local-command-stderr|command-message|command-name|command-args|bash-notification)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi;
+/** A bare go-ahead. */
+const GO_AHEAD = /^(continue|go on|go ahead|proceed|keep going|resume|next|ok|okay|yes|y)\s*[.!]?$/i;
+
+/** Prompt text with no human writing: nothing is left once its notification envelopes are removed but a go-ahead. */
+function noHumanText(prompt: string): boolean {
+  const left = prompt.replace(ENVELOPE, '').trim();
+  return left === '' || GO_AHEAD.test(left);
+}
 /** Tools that only poll, wait or read status. */
 const POLLING_TOOLS = new Set(['TaskOutput', 'BashOutput', 'Monitor', 'ScheduleWakeup', 'ReadNotifications', 'TaskList', 'TaskGet', 'ListAgents', 'CronList', 'TodoWrite', 'TodoRead']);
 const POLLING_COMMAND = /^\s*(sleep\b|gh (run (watch|view|list)|pr (checks|view|status)|api\b.*\/(runs|checks|status))|git (status|log|fetch|branch)\b|ls\b|ps\b|tail\b|wc\b|date\b|uptime\b|df\b|herdr\b.*\b(status|list|read)\b|routr\b.*\b(status|usage)\b)/;
@@ -102,12 +135,8 @@ const POLLING_TEXT_CHARS = 280;
 
 function polling(tool: TurnToolInput): boolean {
   if (POLLING_TOOLS.has(tool.toolName)) return true;
-  if (tool.toolName !== 'Bash' && tool.toolName !== 'shell' && tool.toolName !== 'exec_command') return false;
-  const command = (() => {
-    try { const parsed = JSON.parse(tool.input ?? '') as { command?: unknown; cmd?: unknown }; return String(parsed.command ?? parsed.cmd ?? ''); }
-    catch { return tool.input ?? ''; }
-  })();
-  return command.split(/&&|;|\|\|/).every((part) => POLLING_COMMAND.test(part));
+  const command = commandOf(tool);
+  return command !== null && command.split(/&&|;|\|\|/).every((part) => POLLING_COMMAND.test(part));
 }
 
 /**
@@ -117,8 +146,7 @@ function polling(tool: TurnToolInput): boolean {
 export const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
   {
     name: 'no_human_text',
-    matches: (turn) => turn.origin === 'system' || turn.origin === 'hook_injected'
-      || MECHANICAL_PROMPT.some((pattern) => pattern.test(turn.prompt)),
+    matches: (turn) => turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt),
   },
   {
     name: 'polling_only',
@@ -128,6 +156,6 @@ export const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) =
 
 /** The rule that marks this turn `none`, or null when the turn needs a card from the model. */
 export function triageTurn(turn: TurnInput): string | null {
-  if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some((tool) => !tool.success || tool.errorMessage !== null)) return null;
+  if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some(failed)) return null;
   return TRIAGE_RULES.find((rule) => rule.matches(turn))?.name ?? null;
 }
