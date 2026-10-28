@@ -412,11 +412,22 @@ function effectiveStatement(db: sessions_import_RelationalStore, operation: View
 }
 
 
+/** Characters of owner terms an unbounded aggregate names inline per reference, literals included. */
+const INLINE_OWNER_CHARS=4096;
+
 class ScalarSources {
   readonly known:readonly SessionSources[];
+  /** An `unbounded` aggregate past the inline budget matches its owners as one set built once per statement. */
+  readonly bound:boolean;
+  /** Legacy-only owners are named as literals; any other known set is matched through the bound manifest. */
+  readonly inline:boolean;
   readonly values:unknown[]=[];
   private saved:string|undefined;
-  constructor(readonly read:ResponseRead){this.known=[...read.context.values()];}
+  constructor(readonly read:ResponseRead,unbounded=false){
+    this.known=[...read.context.values()];
+    this.bound=unbounded&&this.known.reduce((chars,source)=>chars+sqlText(source.projectId).length+sqlText(source.sessionId).length+64,0)>INLINE_OWNER_CHARS;
+    this.inline=!this.bound&&this.known.every(source=>source.mode==='legacy');
+  }
   manifest():string{
     if(this.saved===undefined){
       this.saved='__myco_sources_parameter_'+this.values.length+'__';
@@ -424,6 +435,13 @@ class ScalarSources {
         mode:source.mode,capture:this.read.captures.get(sourceKey(source.projectId,source.sessionId))??null}))));
     }
     return this.saved;
+  }
+  /** Whether the manifest holds this owner, in `mode` when given. */
+  member(project:string,session:string,mode?:'legacy'|'published'):string{
+    const manifest=this.manifest();
+    if(this.bound)return `(${project},${session}) IN (SELECT json_extract(value,'$.projectId'),json_extract(value,'$.sessionId') FROM json_each(${manifest})${mode===undefined?'':` WHERE json_extract(value,'$.mode')='${mode}'`})`;
+    return `EXISTS (SELECT 1 FROM json_each(${manifest}) j WHERE json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session}
+      ${mode===undefined?'':`AND json_extract(j.value,'$.mode')='${mode}'`})`;
   }
 }
 
@@ -456,14 +474,15 @@ function sourceOwnerDisjunction(terms:readonly string[]):string{
  return groups.join(' OR ');
 }
 
-/** Aggregate owners retain absent sources as well as published closures. */
+/** Aggregate owners retain absent sources as well as published closures; a bound owner keeps the closure its response holds. */
 function aggregateOwnerCapture(sources:ScalarSources,project:string,session:string):string{
  const point=`(SELECT ${sourceCaptureColumns()} FROM session_views sv WHERE sv.project_id=${project} AND sv.session_id=${session})`;
  if(sources.known.length===0)return point;
- if(sources.known.every(source=>source.mode==='legacy')){
+ if(sources.inline){
   const held=sourceOwnerDisjunction(sources.known.map(source=>`(${project}=${sqlText(source.projectId)} AND ${session}=${sqlText(source.sessionId)})`));
   return `(CASE WHEN ${held} THEN NULL ELSE ${point} END)`;
  }
+ if(sources.bound)return `(CASE WHEN ${sources.member(project,session)} THEN NULL ELSE ${point} END)`;
  const manifest=sources.manifest();
  const match=`json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session}`;
  return `(CASE WHEN EXISTS(SELECT 1 FROM json_each(${manifest}) j WHERE ${match})
@@ -471,20 +490,17 @@ function aggregateOwnerCapture(sources:ScalarSources,project:string,session:stri
 }
 
 /** A correlated scalar captures its own session before choosing effective material. */
-function correlatedScalar(context: ResponseRead | ScalarSources, project: string, session: string, legacy: string, tables: readonly MaterialTable[], packed = false): string {
-  const read=context instanceof ScalarSources?context.read:context;
-  const known = context instanceof ScalarSources?context.known:[...read.context.values()];
+function correlatedScalar(context: ScalarSources, project: string, session: string, legacy: string, tables: readonly MaterialTable[], packed = false): string {
+  const known = context.known;
   const key = (source: SessionSources): string => `${project} = ${sqlText(source.projectId)} AND ${session} = ${sqlText(source.sessionId)}`;
   const published = known.filter(source=>source.mode==='published');
-  const saved = known.map(source=>({projectId:source.projectId,sessionId:source.sessionId,mode:source.mode,capture:read.captures.get(sourceKey(source.projectId,source.sessionId))}));
-  const manifest=published.length===0?null:context instanceof ScalarSources?context.manifest():sqlText(JSON.stringify(saved));
+  const manifest=context.inline?null:context.manifest();
   const member=(mode:'legacy'|'published'|'all'):string=>manifest===null?sourceOwnerDisjunction(known.filter(source=>mode==='all'||source.mode===mode).map(source=>'('+key(source)+')')):
-    `EXISTS (SELECT 1 FROM json_each(${manifest}) j WHERE json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session}
-      ${mode==='all'?'':`AND json_extract(j.value,'$.mode')='${mode}'`})`;
+    context.member(project,session,mode==='all'?undefined:mode);
   const capture = `SELECT ${sourceCaptureColumns()} AS value FROM session_views sv WHERE sv.project_id = ${project} AND sv.session_id = ${session}
     ${known.length===0?'':`AND NOT (${member('all')})`}
     ${manifest===null?'':`UNION ALL SELECT json_extract(j.value,'$.capture') FROM json_each(${manifest}) j
-      WHERE json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session} AND json_extract(j.value,'$.capture') IS NOT NULL`}`;
+      WHERE ${context.bound?member('all')+' AND ':''}json_extract(j.value,'$.projectId')=${project} AND json_extract(j.value,'$.sessionId')=${session} AND json_extract(j.value,'$.capture') IS NOT NULL`}`;
   const ctes = tables.map(table => {
     const m = MATERIAL_READS[table];
     const columns = m.columns.split(',');
@@ -1125,7 +1141,7 @@ async function hook_placement_countUnplacedContextRecords(db: hook_placement_imp
   let total=0;
   for(const source of hook_placement_DELIVERY_RECORD_SOURCES){
    total+=await read.capture(async()=>{
-    const scalars=new ScalarSources(read);
+    const scalars=new ScalarSources(read,true);
     const hint=hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.hint});
     const prompt='unplacedPrompt' in source?hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.unplacedPrompt}):null;
     const captures=aggregateOwnerCapture(scalars,'r.project_id','r.session_id');
@@ -1442,7 +1458,7 @@ const sessions_LABEL_MAX_CHARS = 80;
 const sessions_legacyFirstPromptSql = (alias: string): string => `(SELECT substr(pb.text, 1, ${sessions_FIRST_PROMPT_CHARS}) FROM prompt_batches pb
        WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
        ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
-const sessions_firstPromptSql = (alias: string, read?: ResponseRead | ScalarSources, packed = true): string => {
+const sessions_firstPromptSql = (alias: string, read?: ScalarSources, packed = true): string => {
   const legacy = sessions_legacyFirstPromptSql(alias);
   return read === undefined ? legacy : correlatedScalar(read, alias + '.project_id', alias + '.session_id', legacy, ['prompt_batches'], packed);
 };
