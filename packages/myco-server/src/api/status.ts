@@ -19,6 +19,7 @@ import { isAdmin } from '../auth/roles.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { provisionedHarnessHealth } from '../core/harness-health.js';
 import { readViewStatus } from '../read/view-status.js';
+import { readViewCutover } from '../ingest/view-cutover.js';
 import { readViewPreflightPage,decodeViewPreflightCursor,encodeViewPreflightCursor,type PreflightCursor } from '../core/view-preflight.js';
 import { memberSubject,authorize } from '../auth/authorization.js';
 import { badRequest,notFound,resolveProjectScope } from './scope.js';
@@ -101,9 +102,11 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     if(projects===undefined)throw new Error('Project visibility unavailable');
     return readViewStatus(env.db,projects.map(project=>project.projectId),ctx.now);
   });
+  const viewCutover=await readFact('viewCutover',()=>readViewCutover(env.db));
   return ok({
     budget,
     views:views??null,
+    viewCutover:viewCutover??null,
     schema: schemaCheck(metadata?.version ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,

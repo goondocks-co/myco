@@ -1,5 +1,5 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-export const SERVER_SCHEMA_VERSION = 105;
+export const SERVER_SCHEMA_VERSION = 106;
 /** State keys owned by the Deployment and read-only to run tools. */
 export const SERVER_STATE_PREFIX = 'server.';
 

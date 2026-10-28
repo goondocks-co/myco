@@ -245,10 +245,10 @@ export interface ParseTarget {
 }
 
 /** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and the time its event carries. */
-interface SegmentRow { base_offset: number; length: number; blob_key: string; object_key: string | null; created_at: number }
+export interface SegmentRow { base_offset: number; length: number; blob_key: string; object_key: string | null; created_at: number }
 
 /** Both hot and archived segments provide the parser's exact registered object and original creation time. */
-const segmentSource = (project: string, transcript: string, after: string): string => {
+export const segmentSource = (project: string, transcript: string, after: string): string => {
   const [hotAfter,coldAfter] = after === '?' ? ['?3','?6'] : [after,after];
   const [hotProject,coldProject] = project === '?' ? ['?1','?4'] : [project,project];
   const [hotTranscript,coldTranscript] = transcript === '?' ? ['?2','?5'] : [transcript,transcript];
@@ -543,7 +543,7 @@ function finalRecord(bytes: Uint8Array, offset: number): { line: ParsedLine | nu
 }
 
 /** The bytes of one segment from `from` on, by the stored object its registered blob names, or null when nothing registers or stores them. */
-async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, objectKey: string | null, from: number): Promise<Uint8Array | null> {
+export async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, objectKey: string | null, from: number): Promise<Uint8Array | null> {
   if (objectKey === null) return null;
   const held = await env.blobs.get(objectKey, from > 0 ? { range: { offset: from } } : undefined);
   if (held === null) return null;

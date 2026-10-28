@@ -1,6 +1,7 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { operatorViewProjectExists, operatorViewProjects } from '@myco-server-worker/read/view-store.js';
 import { readViewStatus } from '@myco-server-worker/read/view-status.js';
+import { readViewCutover } from '@myco-server-worker/ingest/view-cutover.js';
 import {
   readViewPreflightPage,
   decodeViewPreflightCursor,
@@ -28,6 +29,7 @@ export async function viewStatusLine(
         projects.map((row) => row.project_id),
         Date.now(),
       );
+      const cutover = await readViewCutover(db);
       const counts = Object.entries(status.counts)
         .filter(([, count]) => count > 0)
         .map(([state, count]) => `${count} ${state}`);
@@ -54,7 +56,19 @@ export async function viewStatusLine(
         status.findings.reduce((sum, row) => sum + row.count, 0) +
         ' findings' +
         '; unplaced unavailable; coverage not carried unavailable' +
-        (status.details.complete ? '' : '; showing ' + status.states.length + '/' + status.details.total + ' sessions')
+        (status.details.complete ? '' : '; showing ' + status.states.length + '/' + status.details.total + ' sessions') +
+        '\n  View batch: ' +
+        (cutover.classified ? 'classified' : 'classifying legacy rows') +
+        '; ' +
+        cutover.built +
+        ' built, ' +
+        cutover.remaining +
+        ' remaining, ' +
+        cutover.frozenTails +
+        ' frozen tails' +
+        (cutover.frozenCopying ? ' (' + cutover.frozenCopying + ' copying)' : '') +
+        (cutover.databaseBytes === null ? '' : '; database ' + (cutover.databaseBytes / 1e9).toFixed(2) + ' GB') +
+        (cutover.paused === 'd1_headroom' ? '; paused: database near its size limit' : '')
       );
     });
   } catch (error) {

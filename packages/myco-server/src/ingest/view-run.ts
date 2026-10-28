@@ -1,5 +1,10 @@
 import type { ServerEnv, JobBudget } from '../core/adapters.js';
-import { measuredContentEnv, remainingInvocationBudget } from '../core/content-budget.js';
+import {
+  measuredContentEnv,
+  remainingInvocationBudget,
+  CONTENT_WAKE_JOB_RESERVE,
+  CONTENT_BLOB_LIMIT,
+} from '../core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '../core/tick.js';
 import { viewTerminalSql, viewTerminalParams } from './view-terminal.js';
 import { PARSER_VERSION } from './parse.js';
@@ -20,6 +25,12 @@ export interface ViewRunOptions {
   envelope: FlipEnvelope;
   clock?: () => number;
   importWork?: (env: ServerEnv, budget: JobBudget) => Promise<{ changed: number; more: boolean }>;
+  /** The build lane takes everything the live lane leaves in this wake. */
+  cutover?: boolean;
+  /** Only published sessions are extended; no build or rebuild request runs. */
+  buildPaused?: boolean;
+  /** False while the legacy parser owns the transcript frontier. */
+  mirrorFrontier?: boolean;
 }
 
 /** View work shares the invocation's measured live, build and import admission. */
@@ -49,7 +60,7 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
       .bind(PARSER_VERSION, PARSER_VERSION, now)
       .all<{ project_id: string; session_id: string }>()
   ).results;
-  for (const row of stale) await requestViewRebuild(db, row.project_id, row.session_id, now);
+  if (!options.buildPaused) for (const row of stale) await requestViewRebuild(db, row.project_id, row.session_id, now);
   const live = await db
     .prepare(
       `SELECT s.project_id,s.session_id,s.live_instance,s.fence FROM session_views s JOIN view_instances i
@@ -69,6 +80,7 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
       liveInstance: live.live_instance,
       fence: live.fence,
       leaseToken: null,
+      mirrorFrontier: options.mirrorFrontier,
     };
     const report = await parseViewOnce(measured.env, target, now, {
       calls: Math.floor(options.profile.calls / 2),
@@ -81,22 +93,44 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
     startCalls = calls(),
     startStatements = measured.usage.statements,
     buildStart = clock();
-  const budget = {
-    calls: Math.floor(options.profile.calls / share),
-    statements: Math.floor(WAKE_JOB_STATEMENT_LIMIT / share),
-    wall: Math.floor(options.profile.wallMs / share),
-  };
+  const invocation = remainingInvocationBudget(db);
+  const budget = options.cutover
+    ? {
+        calls: Math.max(0, options.profile.calls - calls() - 10),
+        statements: Math.max(
+          0,
+          Math.min(
+            WAKE_JOB_STATEMENT_LIMIT - measured.usage.statements,
+            invocation === null ? Infinity : invocation.statements - CONTENT_WAKE_JOB_RESERVE,
+          ) - 40,
+        ),
+        wall: Math.max(0, deadline - clock()),
+      }
+    : {
+        calls: Math.floor(options.profile.calls / share),
+        statements: Math.floor(WAKE_JOB_STATEMENT_LIMIT / share),
+        wall: Math.floor(options.profile.wallMs / share),
+      };
   const lane = measuredContentEnv(measured.env, {
     statements: budget.statements,
-    blobCalls: Math.floor(WAKE_JOB_BLOB_LIMIT / share),
+    blobCalls: options.cutover
+      ? Math.max(
+          0,
+          Math.min(
+            WAKE_JOB_BLOB_LIMIT - measured.usage.blobCalls,
+            invocation === null ? Infinity : invocation.blobCalls - CONTENT_BLOB_LIMIT,
+          ),
+        )
+      : Math.floor(WAKE_JOB_BLOB_LIMIT / share),
     enforceWall: true,
     wallMs: budget.wall,
     calls: budget.calls,
   });
-  const selected = await selectViewBuild(lane.env.db, now);
-  const target = selected
+  const selected = options.buildPaused ? null : await selectViewBuild(lane.env.db, now);
+  const claimed = selected
     ? await claimViewBuild(lane.env.db, selected.project_id, selected.session_id, options.profile, now)
     : null;
+  const target = claimed ? { ...claimed, mirrorFrontier: options.mirrorFrontier } : null;
   const actualBuildStarted = performance.now();
   let sampleToken: string | null = null,
     refusal: string | null = null,
@@ -116,7 +150,7 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
         clock() < Math.min(deadline, buildStart + budget.wall)
       ) {
         const left = remainingInvocationBudget(db);
-        if (left && left.statements < 40) break;
+        if (left && left.statements < 40 + (options.cutover ? CONTENT_WAKE_JOB_RESERVE : 0)) break;
         const report = await parseViewOnce(lane.env, target, now, {
           calls: budget.calls - (calls() - startCalls),
           deadline: Math.min(deadline, buildStart + budget.wall),

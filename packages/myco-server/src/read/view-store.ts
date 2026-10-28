@@ -226,6 +226,15 @@ function responseRead(db: sessions_import_RelationalStore): ResponseRead {
   return new ResponseRead(db);
 }
 
+/** A write that changes which source a response selects releases the sources that response captured. */
+export function releaseViewReadSources(db: sessions_import_RelationalStore): void {
+  const held = RELATIONAL_CONTEXT in db ? db[RELATIONAL_CONTEXT] : undefined;
+  if (!(held instanceof ResponseRead)) return;
+  held.context = new Map();
+  held.selected.clear();
+  held.captures.clear();
+}
+
 /** One request owns its captured closures; the bound store is never retained on the environment. */
 export function withViewReadResponse<T>(db: sessions_import_RelationalStore, clock: () => number, read: (db: sessions_import_RelationalStore) => Promise<T>): Promise<T> {
   const held = RELATIONAL_CONTEXT in db ? db[RELATIONAL_CONTEXT] : undefined;

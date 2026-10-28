@@ -14,6 +14,9 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/runs.ts#guardedStateStatement': [
     { tables: ['agent_state'], order: 'unverified' },
   ],
+  'ingest/view-plan-promotion.ts#promoteViewPlan': [
+    { tables: ['plans'], order: 'unverified' },
+  ],
   'ingest/view-flip-work.ts#beginFlipObservation': [
     { tables: ['view_flip_calibrations'], order: 'unverified' },
   ],

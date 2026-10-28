@@ -11,6 +11,16 @@ interface Exception {
   reason: string;
 }
 const EXCEPTIONS: readonly Exception[] = [
+  {step:106,object:'prompt_batches_legacy_class_insert',table:'prompt_batches',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
+  {step:106,object:'prompt_batches_legacy_class_update',table:'prompt_batches',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
+  {step:106,object:'responses_legacy_class_insert',table:'responses',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
+  {step:106,object:'responses_legacy_class_update',table:'responses',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
+  {step:106,object:'tool_calls_legacy_class_insert',table:'tool_calls',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
+  {step:106,object:'tool_calls_legacy_class_update',table:'tool_calls',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
+  {step:106,object:'plans_legacy_class_insert',table:'plans',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
+  {step:106,object:'plans_legacy_class_update',table:'plans',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
+  {step:106,object:'tags_plan_legacy_class_insert',table:'tags',reason:'A tag edit is plan edit evidence and reclassifies the plan.'},
+  {step:106,object:'tags_plan_legacy_class_delete',table:'tags',reason:'A tag removal is plan edit evidence and reclassifies the plan.'},
   {step:103,object:'agent_attempt_settled_insert',table:'agent_run_attempts',reason:'New known costs receive Deployment-local settlement order.'},
   {step:103,object:'agent_attempt_settled_update',table:'agent_run_attempts',reason:'Newly known costs receive Deployment-local settlement order.'},
   {step:103,object:'agent_attempt_settlement_fixed',table:'agent_run_attempts',reason:'Settlement order remains stable for incremental estimate seeks.'},

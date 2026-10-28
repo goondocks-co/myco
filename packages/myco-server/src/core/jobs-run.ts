@@ -2,6 +2,7 @@ import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS } from './budget-policy.js';
 import { dailyBudget,effectiveBudgetSql } from './settings.js';
 import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
+import { runViewCutoverWake } from '../ingest/view-cutover.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 /**
@@ -245,7 +246,11 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'grant-expiry': grantExpiry,
   'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
-  'transcript-parse': (env, now) => parseTranscripts(env, now),
+  'transcript-parse': async (env, now) => {
+    const legacy = await parseTranscripts(env, now);
+    const views = await runViewCutoverWake(env, now);
+    return { ...legacy, changed: legacy.changed + views.changed, more: legacy.more || views.more };
+  },
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,

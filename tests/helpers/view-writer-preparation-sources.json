@@ -71,7 +71,6 @@
     "beforeBatch": "T",
     "version": "T",
     "test:a reported tool outcome versions its complete original input after canonical bundle adoption on native and D1": "T",
-    "test:parser metadata replay versions an applied reason change and leaves an identical replay unchanged": "T",
     "test:prompt metadata and reply-derived end times share the canonical material transaction on native and D1": "T",
     "binding": "T",
     "test:published fact status versions its canonical postimage and retries only changed evidence on native and D1": "T",
@@ -257,5 +256,38 @@
     "it:allows a vault write between planning and lease revalidation, then copies the latest history": "T",
     "it:refuses a deleted transcript directory claimed by work and personal records": "T",
     "it:imports mapped transcripts from an absent checkout into its connected replacement": "T"
+  },
+  "packages/myco-server/src/ingest/view-cutover.ts": {
+    "cutoverState": "W",
+    "databaseBytes": "W",
+    "classifyLegacyPage": "W",
+    "sweepViewCutover": "W",
+    "readViewCutover": "W",
+    "runViewCutoverWake": "W"
+  },
+  "packages/myco-server/src/ingest/view-frozen.ts": {
+    "tailStart": "W",
+    "startFrozenTail": "W",
+    "copyFrozenPage": "W"
+  },
+  "tests/myco-server/view-cutover.test.ts": {
+    "test:the batch classifies parser rows, builds and publishes every session, and caps inline tool output on both stores": "T",
+    "test:a killed wake resumes from its checkpoints after the lease and capture during the build lands before the flip": "T",
+    "test:a session that lost bytes keeps its legacy derivation frozen and publishes a tail from the frontier": "T",
+    "test:the batch pauses building at the headroom limit and keeps waiting without chaining": "T",
+    "texts": "T",
+    "test:a published session keeps the legacy cursor, so legacy rows stay complete while the view extends": "T",
+    "test:a tail after a lost segment keeps the complete record that opens the next retained segment": "T",
+    "test:a status edit of a published parser plan promotes it to a fact and applies the edit": "T",
+    "test:a long build leaves the shared wake its housekeeping admission": "T",
+    "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
+    "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T"
+  },
+  "packages/myco-server/src/ingest/view-plan-promotion.ts": {
+    "promoteViewPlan": "W",
+    "promoted": "W"
+  },
+  "packages/myco-server/src/ingest/view-cutover-pending.ts": {
+    "cutoverPending": "W"
   }
 }

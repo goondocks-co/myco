@@ -272,7 +272,7 @@ export async function handleSetPlanStatus(env: ServerEnv, ctx: OwnerContext): Pr
   try { body = await ctx.request.json(); } catch { return badRequest('status is required'); }
   const status = typeof body === 'object' && body !== null ? (body as { status?: unknown }).status : undefined;
   if (typeof status !== 'string' || !WRITABLE_PLAN_STATUSES.has(status)) return badRequest(PLAN_STATUS_MESSAGE);
-  const row = await changePlanStatus(env.db, scope, planKey, status, ctx.member.id, ctx.now);
+  const row = await changePlanStatus(env, scope, planKey, status, ctx.member.id, ctx.now);
   return row === null ? notFound() : ok({ plan: row });
 }
 

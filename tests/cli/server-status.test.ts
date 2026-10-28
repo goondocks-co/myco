@@ -452,7 +452,7 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(text).toContain(failureMessage);
       expect(text).not.toContain('Nothing changed');
       const admissionReads = calls.filter(({args}) => args.includes('execute') && args[args.indexOf('--command')+1] === THIN_LEARNING_ADMISSION_SQL);
-      expect(admissionReads).toHaveLength(2);
+      expect(admissionReads).toHaveLength(before<THIN_LEARNING_REMOVAL_VERSION?2:1);
       expect(count('d1 execute') - admissionReads.length).toBe(4);
       expect(count('deploy ')).toBe(0);
       expect(readDeploymentRecord()).toMatchObject({ release: '2.0.0-alpha.1', versionId: RECORDED,

@@ -33,6 +33,10 @@ import type { DerivedEvent, ParserState } from './parsers/index.js';
 import { viewSampleProgress } from './view-work-samples.js';
 
 export const VIEW_INLINE_BODY_BYTES = 16_384;
+/** A tool output keeps the catalogue's preview inline; the complete output is a verified blob. */
+export const VIEW_TOOL_OUTPUT_INLINE_BYTES = 4_096;
+const inlineBodyBytes = (field: string): number =>
+  field === 'output' || field === 'output_preview' ? VIEW_TOOL_OUTPUT_INLINE_BYTES : VIEW_INLINE_BODY_BYTES;
 const kinds = VIEW_MATERIALS.map((material) => material.kind);
 export type { ViewKind } from '../core/material-content.js';
 export { viewContentHash } from '../core/material-content.js';
@@ -140,7 +144,7 @@ export async function prepareViewRows(
       if (value === undefined || value === null) continue;
       const body = typeof value === 'string' ? value : JSON.stringify(value),
         size = new TextEncoder().encode(body).length;
-      if (size > VIEW_INLINE_BODY_BYTES) {
+      if (size > inlineBodyBytes(field)) {
         const key = await sha256Hex(body);
         bodyCandidates.set(key, { key, size });
       }
@@ -428,7 +432,7 @@ export async function prepareViewRows(
     for (const [field, blobField, proofKind] of bodyFields[kind]) {
       if (typeof values[blobField] === 'string') continue;
       const full = values[field!];
-      if (typeof full !== 'string' || new TextEncoder().encode(full).length <= VIEW_INLINE_BODY_BYTES) continue;
+      if (typeof full !== 'string' || new TextEncoder().encode(full).length <= inlineBodyBytes(field!)) continue;
       const digest = await sha256Hex(full);
       let body = preparedBodies.get(digest);
       if (!body) {
@@ -437,7 +441,7 @@ export async function prepareViewRows(
       }
       bodyProofs.push({ ...body, kind: proofKind, id });
       values[blobField!] = body.key;
-      values[field!] = utf8Preview(full, VIEW_INLINE_BODY_BYTES).preview;
+      values[field!] = utf8Preview(full, inlineBodyBytes(field!)).preview;
     }
     rows.set(key, {
       kind,

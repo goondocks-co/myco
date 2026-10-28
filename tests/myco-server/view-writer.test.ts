@@ -193,7 +193,7 @@ test('full tool input survives checkpoint, pending flush, repeated keys and repo
       expect(row.success).toBe(1);
       expect(row.material_seq).toBeNull();
       expect(new TextEncoder().encode(row.input).length).toBeLessThanOrEqual(16_384);
-      expect(new TextEncoder().encode(row.output_preview).length).toBeLessThanOrEqual(16_384);
+      expect(new TextEncoder().encode(row.output_preview).length).toBeLessThanOrEqual(4_096);
       expect(JSON.stringify(input).startsWith(row.input)).toBe(true);
       expect(output.startsWith(row.output_preview)).toBe(true);
       for (const [key, expected] of [

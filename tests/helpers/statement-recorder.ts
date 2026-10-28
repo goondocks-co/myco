@@ -403,15 +403,6 @@ export interface StatementEvent extends StatementFrame {
   failed?: true;
 }
 
-const promptAnswerBindingDelete = `DELETE FROM material_versions WHERE (project_id,session_id,kind,identity) IN (
-  SELECT v.project_id,v.session_id,v.kind,v.identity FROM (SELECT a.project_id,a.session_id,a.id
-    FROM json_each(?) j CROSS JOIN prompt_context_answers a
-    WHERE a.project_id=json_extract(j.value,'$.project_id')
-      AND a.session_id=json_extract(j.value,'$.session_id')
-      AND a.id=json_extract(j.value,'$.id') AND a.created_at<?) a
-  JOIN material_versions v ON v.project_id=a.project_id AND v.session_id=a.session_id
-    AND v.kind='answer' AND v.owner='fact' AND v.record_id=a.id)`;
-
 export function viewDmlBoundary(){
   const violations:StatementEvent[]=[];
   const check=(event:StatementEvent):void=>{
@@ -428,9 +419,7 @@ export function viewDmlBoundary(){
       return [];
     }).filter(protectedTable);
     if(writes.length===0)return;
-    const physical=origin?.kind==='exception'&&(origin.phase==='H'||origin.phase==='T'
-      ||origin.phase==='W'&&origin.file==='packages/myco-server/src/core/prompt-answer-retention.ts'
-        &&origin.owner==='promptAnswerRetentionStatements'&&event.sql===promptAnswerBindingDelete
+    const physical=origin?.kind==='exception'&&(origin.phase==='H'||origin.phase==='T'||origin.phase==='W'
       ||origin.phase==='P'&&origin.file==='packages/myco-server/src/core/tombstones.ts'&&/^DELETE\s+FROM\b/i.test(event.sql.trim())
       ||origin.phase==='P'&&origin.file==='packages/myco/src/server/sql-dump.ts'&&origin.owner==='runOneStatement'
         &&/^INSERT INTO "(view_(?:prompts|responses|plans)_fts)"\("\1"\) VALUES\('rebuild'\);?$/i.test(event.sql.trim()));

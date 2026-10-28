@@ -9,6 +9,8 @@ export interface ViewWriteTarget {
   fence: number;
   liveInstance: string | null;
   leaseToken: string | null;
+  /** False while the legacy parser still owns the transcript frontier and its continuation. */
+  mirrorFrontier?: boolean;
 }
 
 /** All instance mutations share the same version, destination and ownership admission. */

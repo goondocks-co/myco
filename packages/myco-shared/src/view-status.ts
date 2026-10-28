@@ -60,3 +60,14 @@ export interface SessionViewStatus {
     | { state: 'measured'; admit: boolean; net?: number; days?: number | null; binding_constraint: string };
   preflight: { state: 'available'; scope: 'owner' };
 }
+/** The Deployment-wide batch that builds every session's view once. */
+export interface ViewCutoverStatus {
+  classified: boolean;
+  swept: boolean;
+  built: number;
+  remaining: number;
+  frozenTails: number;
+  frozenCopying: number;
+  paused: string | null;
+  databaseBytes: number | null;
+}
