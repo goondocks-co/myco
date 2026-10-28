@@ -281,7 +281,8 @@
     "test:a status edit of a published parser plan promotes it to a fact and applies the edit": "T",
     "test:a long build leaves the shared wake its housekeeping admission": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
-    "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T"
+    "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
+    "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T"
   },
   "packages/myco-server/src/ingest/view-plan-promotion.ts": {
     "promoteViewPlan": "W",

@@ -7,6 +7,7 @@ import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { VIEW_BUILD_LEASE_MS } from '@myco-server-worker/ingest/view-build-queue.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
 import { beforeViewWriteBatch } from './helpers/view-instances.js';
 import { memoryBlobStore, uuid } from './helpers/fixtures.js';
@@ -240,4 +241,20 @@ test('unfinished cutover work keeps the Deployment at idle until the batch compl
       expect(await held()).toBe(false);
     }),
   );
+}, 120000);
+
+test('a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class', async () => {
+  await withViewStores(async (db) => {
+    const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+    const lines = turn('cut-u', 'resumed', 100).split(/(?<=\n)/), head = lines.slice(0, 2).join('');
+    const session = await legacySession(db, blobs, 'cut-u', at, [head]);
+    for (const step of SCHEMA_STEPS.filter((step) => step.version > 105)) await db.batch(step.statements.map((sql) => db.prepare(sql)));
+    await db.prepare(`INSERT INTO fact_classes(project_id,table_name,record_id,session_id,class,classified_at)
+      SELECT project_id,'tool_calls',tool_call_id,session_id,'unverified',? FROM tool_calls`).bind(now).run();
+    await captureViewTranscript(db, blobs, 'cut-u', session.transcript, lines.slice(2).join(''), at, bytes(head), 'claude-code');
+    for (let pass = 0; pass < 20 && (await parseTranscripts(session.env, at + DAY)).more; pass++);
+    expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(session.transcript))).toBe(bytes(lines.join('')));
+    expect((await db.prepare(`SELECT DISTINCT table_name,class FROM fact_classes WHERE table_name IN ('prompt_batches','tool_calls')`).all()).results)
+      .toEqual([{ table_name: 'tool_calls', class: 'unverified' }]);
+  }, 105);
 }, 120000);

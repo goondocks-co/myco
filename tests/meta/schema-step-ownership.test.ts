@@ -10,7 +10,7 @@ interface Exception {
   table: string;
   reason: string;
 }
-const EXCEPTIONS: readonly Exception[] = [
+const LISTED: readonly Exception[] = [
   {step:106,object:'prompt_batches_legacy_class_insert',table:'prompt_batches',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
   {step:106,object:'prompt_batches_legacy_class_update',table:'prompt_batches',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
   {step:106,object:'responses_legacy_class_insert',table:'responses',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
@@ -67,12 +67,21 @@ const EXCEPTIONS: readonly Exception[] = [
     reason: 'Source-range acknowledgement indexes prompt storage of at most one row per captured prompt.',
   },
 ];
+const EXCEPTIONS: readonly Exception[] = [
+  ...LISTED,
+  ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({ ...exception, step: 108 })),
+];
 interface StatementException {
   step: number;
   sql: string;
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({
+    step: 108,
+    sql: 'DROP TRIGGER IF EXISTS ' + exception.object,
+    reason: 'The step replaces the trigger it drops.',
+  })),
   {
     step: 105,
     sql: 'INSERT INTO _v105_empty SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM view_instances) THEN 1 ELSE 0 END',

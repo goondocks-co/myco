@@ -20,6 +20,9 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   plan_promotions: { state: 'pending' },
   fact_classes: { table_name: 'prompt_batches', class: 'legacy' },
   view_instances: { base: 'full', state: 'live' },
+  view_visible: { role: 'live' },
+  view_content_proofs: { kind: 'prompt' },
+  view_findings: { kind: 'key_reuse' },
 };
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;

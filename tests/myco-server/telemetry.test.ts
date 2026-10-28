@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { classifyCloudflareError, classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
-import { classify, emit, failureTelemetry, SchemaMismatchError } from '@myco-server-worker/telemetry.js';
+import { classify, constraintDetail, emit, failureTelemetry, SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 
 describe('telemetry', () => {
   it('names admission failures with only fixed categories and allowlisted error names', () => {
@@ -13,6 +13,13 @@ describe('telemetry', () => {
     hostile.name = 'Bearer secret';
     expect(failureTelemetry(hostile, classifyCloudflareError)).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
     expect(failureTelemetry('Bearer secret')).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
+  });
+  it('names a failed constraint by its kind and schema identifiers only', () => {
+    expect(constraintDetail(new Error('D1_ERROR: UNIQUE constraint failed: fact_classes.project_id, fact_classes.table_name, fact_classes.record_id: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_PRIMARYKEY)')))
+      .toBe('UNIQUE: fact_classes.project_id, fact_classes.table_name, fact_classes.record_id');
+    expect(constraintDetail(new Error('FOREIGN KEY constraint failed'))).toBe('FOREIGN KEY');
+    expect(constraintDetail(new Error("CHECK constraint failed: token <> 'SECRET-123'"))).toBe('CHECK');
+    expect(constraintDetail(new Error('disk I/O error'))).toBeUndefined();
   });
   it('classifies without echoing the message', () => {
     let captured = '';

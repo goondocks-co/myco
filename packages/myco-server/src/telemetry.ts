@@ -41,6 +41,21 @@ export function classify(err: unknown, platform?: ErrorClassifier): ErrorClass {
   return platform?.(message) ?? 'unknown';
 }
 
+const IDENTIFIER = '[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?';
+const CONSTRAINT_FAILURE = new RegExp(`\\b(UNIQUE|NOT NULL|CHECK|FOREIGN KEY|PRIMARY KEY) constraint failed(?:: (${IDENTIFIER}(?:, ${IDENTIFIER})*)(?=$|:))?`);
+
+/**
+ * The failed constraint's kind and, when the message names them as a bare list, the
+ * schema identifiers it names: 'UNIQUE: t.a, t.b' or 'FOREIGN KEY'. Identifiers only,
+ * never exception text; a list followed by anything other than the message's end or a
+ * colon is dropped, so an expression or value never passes.
+ */
+export function constraintDetail(err: unknown): string | undefined {
+  const match = CONSTRAINT_FAILURE.exec(err instanceof Error ? err.message : String(err));
+  if (match === null) return undefined;
+  return match[2] !== undefined && match[2].length <= 200 ? `${match[1]}: ${match[2]}` : match[1];
+}
+
 const SAFE_ERROR_NAMES = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'TimeoutError', 'DataCloneError', 'Stalled']);
 
 /** Error telemetry carries only an allowlisted name and a classifier, never exception text. */
