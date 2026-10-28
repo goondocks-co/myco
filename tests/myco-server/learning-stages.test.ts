@@ -10,18 +10,29 @@ import { settleTurns, writeRunCards, readTurn, type CardFields } from '@myco-ser
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import {
   learningInit, learningInitPending, learningHead, buildLearningAssignment, assignedCards, completeLearning,
-  sessionPublishedStatements, readLearningStatus, learningStatusLine,
+  readLearningStatus, learningStatusLine,
 } from '@myco-server-worker/core/learning-sessions.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { withViewStores } from './helpers/view-stores.js';
 import { seedViewInstance } from './helpers/view-instances.js';
-import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { envelope, memberHeaders, memoryBlobStore, recordingDeferred, recordingLimiter, sqliteEnv, uuid } from './helpers/fixtures.js';
+import worker from '@myco-server-worker/entry/cloudflare.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { claimNextRun, dispatchTask, endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
+import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { legacyWorker } from './helpers/worker-principal.js';
+import { offeredHarness } from './helpers/offered-harness.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')";
-const resume = `INSERT INTO schema_meta(key,value) VALUES('learning_resumed_at','${NOW}')`;
 
 interface Turn {
   id: string; text: string; at: number; origin?: string; parent?: string;
@@ -74,7 +85,6 @@ async function cardAll(db: RelationalStore, sessionId: string, now: number, proj
 
 async function ready(db: RelationalStore) {
   await db.prepare(enable).run();
-  await db.prepare(resume).run();
   while ((await learningInit({ db }, NOW)).more);
 }
 
@@ -166,10 +176,12 @@ it('initializes from a cold start through its assertion', async () => {
   const f = sqliteEnv();
   try {
     const db = f.db;
+    // History captured during the pause, before learning resumes.
+    await db.prepare(`DELETE FROM schema_meta WHERE key = 'learning_resumed_at'`).run();
     await capture(db, 'session', [{ id: uuid(41), text: 'Pin bun', at: 10, replies: ['Pinned 1.4.0 in .bun-version.'] }], 'proj_1');
     await db.prepare(enable).run();
     expect(await learningInitPending(db)).toBe(false);
-    await db.prepare(resume).run();
+    await db.prepare(`INSERT INTO schema_meta(key,value) VALUES('learning_resumed_at','${NOW}')`).run();
     expect((await engineAssertions(f.serverEnv, NOW)).map(a => a.name)).toContain('learning:init');
     expect(await learningInit({ db }, NOW)).toEqual({ changed: 1, more: false });
     expect((await engineAssertions(f.serverEnv, NOW)).map(a => a.name)).not.toContain('learning:init');
@@ -193,8 +205,7 @@ it('holds a transcript session until publication, then cards its published view 
       ...['view_prompts', 'view_responses', 'view_tool_calls', 'view_plans'].map(table =>
         db.prepare(`UPDATE ${table} SET source_transcript_id='transcript', source_offset=0, source_end=1 WHERE instance_id='live'`)),
       db.prepare(`INSERT INTO view_visible(project_id,instance_id,session_id,role,precedence) VALUES('project','live','legacy','live',0)`),
-      db.prepare(`INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('project','legacy','live','published',1)`),
-      ...sessionPublishedStatements(db, 'project', 'legacy', NOW),
+      db.prepare(`INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('project','legacy','live','published',?)`).bind(NOW),
     ]);
     while ((await learningInit({ db }, NOW)).more);
     await cardAll(db, 'legacy', NOW + HOUR);
@@ -206,7 +217,9 @@ it('holds a transcript session until publication, then cards its published view 
       db.prepare(`INSERT INTO material_versions(project_id,session_id,kind,identity,record_id,content_hash,hash_scheme,owner,material_seq)
         VALUES('project','legacy','response','["response","response"]','response','h','view-content-v1','view',5)`),
       db.prepare(`UPDATE learning_sessions SET max_seq = 5, next_seq = 6 WHERE session_id = 'legacy'`),
-      ...sessionPublishedStatements(db, 'project', 'legacy', NOW + 2 * HOUR),
+      // The session publishes again.
+      db.prepare(`UPDATE session_views SET live_instance = NULL WHERE session_id = 'legacy'`),
+      db.prepare(`UPDATE session_views SET live_instance = 'live', updated_at = ? WHERE session_id = 'legacy'`).bind(NOW + 2 * HOUR),
     ]);
     while ((await learningInit({ db }, NOW + 2 * HOUR)).more);
     expect(await settleTurns({ db }, 'project', 'legacy', NOW + 2 * HOUR)).toMatchObject({ reused: 1, ruled: 0, forModel: [] });
@@ -221,4 +234,83 @@ it('triages only mechanical turns by rule', () => {
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && sleep 30"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && git push"}', output: '', success: true, errorMessage: null }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'continue', steering: [{ promptId: 's', text: 'no, stop' }] }))).toBeNull();
+});
+
+it('pulls cards, then learning, at claim within the budget, and the learned spore cites its session', async () => {
+  await withViewStores(async (db) => {
+    const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+    const env = serverEnvFromBindings(bindings as never, recordingDeferred());
+    await capture(db, 'session', GOTCHAS);
+    await capture(db, 'quiet', [{ id: uuid(20), text: '<task-notification>done</task-notification>', at: 100, replies: ['Noted.'] }]);
+    await ready(db);
+    await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
+    await db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)`).run();
+    await completeBudgetMigration(db, NOW);
+    await ensureMember(db, 'mem_worker', NOW, 'admin');
+    const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
+    const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+    const call = async (token: string, name: string, input: Record<string, unknown>) => {
+      const res = await worker.fetch(new Request('https://myco.test/mcp', { method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: 'project' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) }), bindings as never);
+      const body = await res.json() as { result?: { content?: { text?: string }[] } };
+      return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+    };
+    const runs = async () => (await db.prepare(`SELECT task, subject, status FROM agent_runs ORDER BY started_at, id`).all()).results;
+
+    // A day's automatic spend past the budget pulls nothing.
+    await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,started_at,completed_at,cost_usd) VALUES('project','spent','myco-agent','turn-cards','completed','automatic',?,?,25)`).bind(NOW, NOW).run();
+    await db.prepare(`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,estimate_usd,cost_usd,cost_source) VALUES('project','spent','spent','w',?,1,25,'actual')`).bind(NOW).run();
+    expect(await poll(NOW + 1)).toMatchObject({ claimed: false });
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM turn_cards WHERE state = 'carded'`).first()).toEqual({ n: 0 });
+
+    // Past the window, nothing is pulled while the Deployment's learning switch is off.
+    const at = NOW + DAY + 1;
+    const learning = (on: boolean) => db.prepare(`UPDATE deployment_settings SET value = ? WHERE leaf = 'agent.scheduled_tasks_enabled'`).bind(String(on)).run();
+    await learning(false);
+    expect(await poll(at)).toMatchObject({ claimed: false });
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM turn_cards WHERE state = 'carded'`).first()).toEqual({ n: 0 });
+    await learning(true);
+
+    // The quiet session's only turn is carded `none` by code and closes without a run.
+    expect(await poll(at)).toMatchObject({ claimed: false });
+    expect(await db.prepare(`SELECT last_completed_reason AS reason FROM learning_sessions WHERE session_id = 'quiet'`).first()).toEqual({ reason: 'no_signal' });
+    expect(await runs()).toEqual([{ task: 'turn-cards', subject: null, status: 'completed' }]);
+
+    const cards = await poll(at + 1);
+    if (!cards.claimed) throw new Error(`no card run: ${cards.reason}`);
+    expect(cards.run).toMatchObject({ task: 'turn-cards', profile: { tier: 'low' } });
+    const material = await call(cards.run.runToken, 'myco_run_cards', { op: 'material' }) as { turns: { turn_key: string; input: string }[] };
+    expect(material.turns.map(turn => turn.turn_key)).toEqual([uuid(1), uuid(2), uuid(3), uuid(4)]);
+    expect(await call(cards.run.runToken, 'myco_run_cards', { op: 'write', cards: material.turns.map(turn => ({ turns: [turn.turn_key], ...fakeCard(turn.input) })) }))
+      .toMatchObject({ written: 4 });
+    await call(cards.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
+    expect(await endLeasedRun(env, { principal, now: at + 2 }, { projectId: 'project', runId: cards.run.id, attemptId: cards.run.attemptId, status: 'completed' }))
+      .toEqual({ ended: true, status: 'completed' });
+
+    const learn = await poll(at + 3);
+    if (!learn.claimed) throw new Error(`no learning run: ${learn.reason}`);
+    expect(learn.run).toMatchObject({ task: 'extract-curate', instructions: EXTRACTION_RULES });
+    // The claim takes the session out of the eligible set until it completes or the claim is presumed lost.
+    expect(await db.prepare(`SELECT failures, eligible_at > ? AS later FROM learning_sessions WHERE session_id = 'session'`).bind(at + 3).first()).toEqual({ failures: 1, later: 1 });
+    const slice = await call(learn.run.runToken, 'myco_run_learning', { op: 'material' }) as { session_id: string; cards: { card: string }[] };
+    expect(slice.session_id).toBe('session');
+    expect(slice.cards[0]!.card).toContain("error: Cannot find module '@myco-server-worker/core/x.js' from 'tests/a.test.ts'");
+    expect(await call(learn.run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', session_id: 'session', content: 'Tests need the pinned Bun: PATH=$HOME/tools/bun-1.4.0:$PATH npm test.' }))
+      .toMatchObject({ id: expect.any(String) });
+    expect(await call(learn.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'nothing open' })).toEqual({ completed: true, covered: 4 });
+    await call(learn.run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'learned', audit: RUN_AUDIT });
+    expect(await endLeasedRun(env, { principal, now: at + 4 }, { projectId: 'project', runId: learn.run.id, attemptId: learn.run.attemptId, status: 'completed' }))
+      .toEqual({ ended: true, status: 'completed' });
+    expect(await db.prepare(`SELECT session_id FROM spores WHERE content LIKE 'Tests need the pinned Bun%'`).first()).toEqual({ session_id: 'session' });
+    expect(await learningHolds(db, 'project', 'session')).toBe(false);
+    expect((await runs()).slice(1)).toEqual([
+      { task: 'turn-cards', subject: 'cards:session', status: 'completed' }, { task: 'extract-curate', subject: 'session:session', status: 'completed' },
+    ]);
+
+    // With nothing left to learn, a hand start ends as nothing due.
+    expect(await dispatchTask(env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker' }, at + 5)).toMatchObject({ dispatched: true, queued: true });
+    expect(await poll(at + 6)).toMatchObject({ claimed: false });
+    expect(await db.prepare(`SELECT status, run_context FROM agent_runs WHERE task = 'extract-curate' AND origin = 'manual'`).first())
+      .toEqual({ status: 'skipped', run_context: '{"reason":"nothing_due"}' });
+  });
 });

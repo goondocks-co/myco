@@ -1,4 +1,4 @@
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
+import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { queuePrePauseExtraction, claimPrePauseExtraction } from './helpers/held-extraction.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -103,7 +103,14 @@ async function rig() {
   /** The worker's own report that the harness ended its turn. */
   const workerEnds = (runId: string, status: 'completed' | 'failed', now: number, error?: string) =>
     endLeasedRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), now }, { projectId: 'proj_1', runId, status, ...(error === undefined ? {} : { error }) });
-  return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome };
+  /** A session with one carded turn learning has not covered, eligible now. */
+  const learningDue = (sessionId: string, promptId: string) => {
+    e.sqlite.run(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES ('proj_1', ?)`, [sessionId]);
+    e.sqlite.run(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, records, input_hash, card, signal, created_at, carded_at)
+      VALUES ('proj_1', ?, ?, 'carded', ?, 'h', 'asked: why the claim retries', 'high', ?, ?)`, [sessionId, promptId, JSON.stringify([['prompt', promptId]]), NOW, NOW]);
+    e.sqlite.run(`UPDATE learning_sessions SET init_state = 'ready', due_cards = 1, eligible_at = ? WHERE project_id = 'proj_1' AND session_id = ?`, [NOW - 1, sessionId]);
+  };
+  return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome, learningDue };
 }
 
 describe('a titling run a worker claimed', () => {
@@ -130,6 +137,7 @@ describe('a titling run a worker claimed', () => {
 describe('the context a claimed run carries', () => {
   it('is the one the dispatch decided: the task\'s budget and the hash the server filed it under', async () => {
     const r = await rig();
+    r.learningDue('s9', 'p9');
     r.e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
        VALUES ('proj_1', 'run_x', 'myco-agent', ?, 'queued', ?, 'worker', ?, ?, 'read the prompts')`,
@@ -229,12 +237,13 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.verifyOutcome(run.id)).toMatchObject({ outcome: 'skip', title: 'A title an earlier run wrote' });
   });
 
-  it('holds an extraction pass to the prompt it marked read: a report alone fails, a mark under its own credential completes', async () => {
+  it('holds a learning pass to the slice it completed: a report alone fails, its own completion completes', async () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's3', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     r.e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's3', 'p3', 'e3', 'why does the runner retry the claim twice', 'user', 'h3', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
     r.e.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at) VALUES ('proj_1', 'resp3', 's3', 'p3', 'e3r', 'The lease renewal re-claims it; wrap only the claim call.', 'hr3', ?, 'tok_1', ?)`, [NOW - 4000, NOW - 4000]);
+    r.learningDue('s3', 'p3');
     const asked = await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
     expect(asked).toMatchObject({ dispatched: true, queued: true });
     r.e.sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(NOW + 1)]);
@@ -243,10 +252,10 @@ describe('what a worker reporting `completed` actually closes', () => {
     if (!claimed.claimed) return;
     const run = claimed.run;
     expect(run.task).toBe(EXTRACTION_TASK);
-    expect(run.instructions).toBeNull();
+    expect(run.instructions).toBe(EXTRACTION_RULES);
     expect(r.e.sqlite.query('SELECT queued_at AS queuedAt FROM agent_runs WHERE id = ?').get(run.id)).toEqual({ queuedAt: NOW });
 
-    const [served] = await recordServedPrompts(r.e.db, {projectId:'proj_1'}, run.id, [{promptId:'p3',sessionId:'s3',createdAt:NOW-5000,endedAt:NOW}], NOW);
+    expect(await r.asRun(run.runToken, 'myco_run_learning', { op: 'material' })).toMatchObject({ session_id: 's3', cards: [{ turn_key: 'p3' }] });
 
     // The report alone is the model's word; the run owed the mark.
     expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: EXTRACTION_REPORT_ACTION, summary: 'read one prompt', details: '{"prompts":1,"created":0}' })).toMatchObject({ recorded: true });
@@ -262,13 +271,13 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', agent_line: 'y'.repeat(AGENT_LINE_MAX_CHARS + 1) })).toMatchObject({ ok: false });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM spores WHERE author = ?`).get(run.id)).toEqual({ n: 1 });
 
-    // Another run's mark in the same Project is not this run's work.
+    // Another run's completion in the same Project is not this run's work.
     r.e.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_other', 'myco-agent', ?, 'completed', ?)`, [EXTRACTION_TASK, NOW - 100]);
-    r.e.sqlite.run(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at) VALUES ('proj_1', 'run_other', NULL, 'run_write', 'myco_run_prompts', 'written', NULL, '{"op":"mark_processed"}', ?)`, [NOW - 100]);
+    r.e.sqlite.run(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at) VALUES ('proj_1', 'run_other', NULL, 'run_write', 'myco_run_learning', 'written', NULL, '{"op":"complete"}', ?)`, [NOW - 100]);
     expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
 
-    // The mark is the landed write the close rule reads, and the cursor moves.
-    expect(await r.asRun(run.runToken, 'myco_run_prompts', { op: 'mark_processed', served_id: served!.servedId })).toEqual({ prompt_id: 'p3', served_id: served!.servedId, marked: true });
+    // The completion is the landed write the close rule reads, and it acknowledges the slice's prompts.
+    expect(await r.asRun(run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: 1 });
     expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks WHERE run_id=?').get(run.id)).toEqual({n:1});
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
@@ -326,19 +335,21 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.workerEnds(b.run.id, 'completed', NOW + 5)).toEqual({ ended: true, status: 'failed' });
   });
 
-  it('refuses managed rules writes through the extraction run surface', async () => {
+  it('refuses managed rules and state writes through the learning run surface, whose handoff carries what a slice leaves', async () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
+    r.learningDue('s9', 'p9');
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
     const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     if (!claimed.claimed) throw new Error('not claimed');
     expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'agents_block', block: 'Generated rule' })).toEqual({ failed: 'Unknown tool: myco_run' });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_state WHERE key = 'agents_block'`).get()).toEqual({ n: 0 });
-    expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'state_set', key: 'cursor_note', value: 'fine' })).toEqual({ key: 'cursor_note', applied: true });
+    expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'state_set', key: 'cursor_note', value: 'fine' })).toEqual({ failed: 'Unknown tool: myco_run' });
   });
 
   it('refuses extraction skip while retaining marked-write completion', async () => {
     const r = await rig();
+    r.learningDue('s9', 'p9');
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', {serverUrl:ORIGIN,actor:'mem_worker'}, NOW);
     const claimed = await claimNextRun(r.e.serverEnv, {principal:legacyWorker(r.workerToken,'m1'),harnesses:OFFERED,capabilities:WORKER_CAPABILITIES,now:NOW+1});
     if (!claimed.claimed) throw new Error('held extraction fixture was not claimed');

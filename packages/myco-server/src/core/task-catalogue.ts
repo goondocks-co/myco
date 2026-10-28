@@ -53,7 +53,7 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
 };
 
 /** Tasks whose required worker capability is not available for dispatch. */
-export const UNLANDED_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK];
+export const UNLANDED_TASKS: readonly string[] = [];
 export const LEARNING_PAUSE_MESSAGE = 'Learning resumes with whole-session reading';
 
 /** The declared reason a retained task is unavailable on this Deployment. */
@@ -131,6 +131,8 @@ export function runTimeoutForTask(task: string): number | null {
  * spores, and a second pass over an already-seeded Project is a person's call.
  */
 export const MANUAL_ONLY_TASKS: readonly string[] = [SEEDING_TASK];
+/** Tasks only a claim pulls: they have no hand start, so the Deployment builds them no queued input. */
+export const PULLED_ONLY_TASKS: readonly string[] = [CARD_TASK];
 
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {

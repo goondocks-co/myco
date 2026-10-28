@@ -15,9 +15,27 @@ function turnChangedTrigger(table: string, operation: 'INSERT' | 'UPDATE', colum
 }
 
 /**
+ * A session's publication makes it pending for initialization, which enqueues the turns it holds now, and makes due
+ * again each carded turn one of whose records has a newer material version than the cards reflect.
+ */
+function publishedTrigger(operation: 'INSERT' | 'UPDATE'): string {
+  return `CREATE TRIGGER IF NOT EXISTS session_views_learning_${operation.toLowerCase()}
+    AFTER ${operation === 'INSERT' ? 'INSERT' : 'UPDATE OF live_instance'} ON session_views
+    WHEN NEW.live_instance IS NOT NULL${operation === 'UPDATE' ? ' AND NEW.live_instance IS NOT OLD.live_instance' : ''} BEGIN
+    UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = NEW.updated_at
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
+        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
+          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
+        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id));
+    UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND init_state IN ('awaiting_publication', 'ready'); END`;
+}
+
+/**
  * Two-stage learning: a session's learning progress, and one card per turn. A top-level prompt opens a turn; the
  * previous turn of its session is due for carding at once, and an open turn falls due after it has been quiet. A
  * record written into a carded turn makes that card due again.
+ * The step resumes learning: `learning_resumed_at` lifts the pause fence.
  */
 export const V110_STATEMENTS: readonly string[] = [
   ...[
@@ -41,7 +59,7 @@ export const V110_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_learning_init_pending ON learning_sessions (project_id, session_id) WHERE init_state <> 'ready'`,
   `CREATE TABLE IF NOT EXISTS turn_cards (${project}, session_id TEXT NOT NULL, turn_key TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','carded')), changes INTEGER NOT NULL DEFAULT 0,
-    due_at INTEGER, claimed_until INTEGER,
+    due_at INTEGER,
     first_seq INTEGER, last_seq INTEGER, records TEXT,
     input_hash TEXT, input_chars INTEGER, raw_chars INTEGER,
     card TEXT, signal TEXT CHECK (signal IS NULL OR signal IN ('none','low','high')), signal_reason TEXT,
@@ -76,4 +94,7 @@ export const V110_STATEMENTS: readonly string[] = [
     UPDATE learning_sessions SET pending_cards = pending_cards + CASE WHEN NEW.state = 'pending' THEN 1 ELSE -1 END,
       eligible_at = CASE WHEN NEW.state = 'pending' THEN NULL ELSE eligible_at END
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END`,
+  publishedTrigger('INSERT'),
+  publishedTrigger('UPDATE'),
+  `INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('learning_resumed_at', CAST(unixepoch() * 1000 AS TEXT))`,
 ];

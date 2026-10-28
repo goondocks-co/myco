@@ -60,9 +60,9 @@ it('keeps the old clock disabled across migration while preserving the owner tas
       .toEqual({'extract-curate':{memberRunsPerDay:7},'title-summary':{reasoningLevel:'high'}});
     expect(await learningHolds(f.db,'proj_1','fresh')).toBe(true);
     await runScheduledTasks(f.serverEnv,'idle',NOW+8,'https://fixture.test');
-    expect(await dispatchTask(f.serverEnv,'extract-curate','proj_1',{serverUrl:'https://fixture.test',actor:'operator'},NOW+9))
-      .toMatchObject({dispatched:false,refusal:'not_landed'});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE task='extract-curate'").get()).toEqual({n:0});
+    expect(await dispatchTask(f.serverEnv,'extract-curate','proj_1',{serverUrl:'https://fixture.test',actor:'operator'},NOW+9))
+      .toMatchObject({dispatched:true,queued:true});
   } finally {f.sqlite.close();}
 });
 

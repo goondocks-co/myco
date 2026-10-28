@@ -3,7 +3,9 @@ import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
+import { CARD_TASK, EXTRACTION_TASK, PULLED_ONLY_TASKS, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
+import { TURN_CARD_PROMPT } from '@myco-server-worker/core/turn-card-prompt.js';
 import { RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
@@ -39,7 +41,8 @@ describe('task description registry gates', () => {
           expect(task.budget?.timeoutSeconds).toBeGreaterThan(0);
         }
         expect(task.done.length).toBeGreaterThan(0);
-        if (Object.hasOwn(TASK_TIERS, task.task) && task.availabilityNote !== 'Learning resumes with whole-session reading') expect(task.promptTemplate?.length).toBeGreaterThan(0);
+        // A learning run's prompt names its slice, so learning discloses only its standing rules.
+        if (Object.hasOwn(TASK_TIERS, task.task) && task.task !== EXTRACTION_TASK) expect(task.promptTemplate?.length).toBeGreaterThan(0);
       }
     } finally { f.sqlite.close(); }
   });
@@ -56,7 +59,8 @@ describe('task description registry gates', () => {
         expect(task.budget).toEqual(RUNTIME_SERVED_TASKS.includes(task.task) ? null : { timeoutSeconds: runTimeoutForTask(task.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, readWindow: readWindowFor(task.task) });
         const allow = runAllowlist(TASK_TOOLS[task.task], { dryRun: false });
         expect(task.tools).toEqual(RUNTIME_SERVED_TASKS.includes(task.task) ? [] : [...new Set([...allow].flatMap(([tool, ops]) => [...ops].map((op) => callWords(tool, op))))]);
-        if (task.task === 'extract-curate') expect(task).toMatchObject({ startable: false, availabilityNote: 'Learning resumes with whole-session reading' });
+        if (task.task === 'extract-curate') expect(task).toMatchObject({ startable: true, availabilityNote: null, standingRules: EXTRACTION_RULES });
+        else if (task.task === CARD_TASK) expect(task).toMatchObject({ startable: false, promptTemplate: TURN_CARD_PROMPT });
         else if (TASK_SCHEDULE[task.task] != null) expect(task.triggers).toContain(`At most ${TASK_SCHEDULE[task.task]!.maxRunsPerDay} runs in a day.`);
       }
     } finally { f.sqlite.close(); }
@@ -67,7 +71,7 @@ describe('task description registry gates', () => {
     try {
       f.sqlite.run(`INSERT INTO project_repositories (project_id, url, branch, revision, updated_at, updated_by) VALUES ('proj_1', ?, ?, 'test', 1, 'test')`, ['{{repository.url}}', '{{repository.branch}}']);
       const tasks = await read(f);
-      for (const task of tasks.filter((task) => task.promptTemplate !== null)) {
+      for (const task of tasks.filter((task) => task.promptTemplate !== null && !PULLED_ONLY_TASKS.includes(task.task))) {
         const params = task.task === 'title-summary' ? { session_id: '{{session.id}}', mode: 'claim' } : undefined;
         const built = await buildTaskInput(f.serverEnv, task.task, 'proj_1', 1, { params });
         expect(built !== null && !built.unchanged).toBe(true);

@@ -1,8 +1,8 @@
 /**
  * Stage one of learning: one card per turn, written as turns complete.
  *
- * A turn falls due when its session's next top-level prompt arrives, when it has been quiet (`schema-v106`), or when a
- * publication gives one of its records a newer material version (`sessionPublishedStatements`). Due turns are read
+ * A turn falls due when its session's next top-level prompt arrives, when it has been quiet (`schema-v110`), or when a
+ * publication gives one of its records a newer material version (`schema-v110`). Due turns are read
  * through the read module: a published session from its view's records, a session with no transcript from its facts. Code settles
  * what it can with no model call: a turn whose trimmed input hashes equal to a carded turn of its session reuses that
  * card and its coverage, and a turn the declared triage rules match is carded `none`. The rest go to one cheap run per
@@ -21,6 +21,17 @@ export { CARD_TASK } from './task-catalogue.js';
 
 /** Due turns one settling pass reads before it stops. */
 const SETTLE_TURNS = 200;
+/** How long a claimed card run keeps its turns out of the due set before they are offered again. */
+export const CARD_RETRY_MS = 3_600_000;
+
+/** The statement a claim of a card run adds to its batch: its turns leave the due set until the claim is presumed lost. */
+export function claimCardsStatement(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
+  run: { runId: string; dispatchedBy: string }): PreparedStatement {
+  return db.prepare(`UPDATE turn_cards SET due_at = ? WHERE project_id = ? AND session_id = ? AND state = 'pending'
+      AND turn_key IN (SELECT value FROM json_each(?))
+      AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = turn_cards.project_id AND r.id = ? AND r.dispatched_by = ?)`)
+    .bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy);
+}
 const TOOL_PAGE = 100;
 
 /** One turn read through the read module, or null when no prompt of that key sits in the session. */
@@ -126,7 +137,7 @@ export function cardStatements(
   const range = (fn: 'MIN' | 'MAX') => `(SELECT ${fn}(v.material_seq) FROM json_each(?) r JOIN material_versions v ON v.project_id = ? AND v.session_id = ?
     AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]'))`;
   return [
-    db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL, claimed_until = NULL,
+    db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL,
         first_seq = ${range('MIN')}, last_seq = ${range('MAX')},
         records = ?, input_chars = ?, raw_chars = ?, card = ?, signal = ?, signal_reason = ?, shared_with = ?,
         covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ? THEN covered ELSE 0 END,

@@ -93,6 +93,12 @@ const EXCEPTIONS: readonly Exception[] = [
     table: table!,
     reason: 'A record written into a turn makes that turn due for its card in the same statement.',
   })),
+  ...['session_views_learning_insert', 'session_views_learning_update'].map((object) => ({
+    step: 110,
+    object,
+    table: 'session_views',
+    reason: 'A session becomes due for learning in the batch that publishes its views.',
+  })),
 ];
 interface StatementException {
   step: number;
@@ -162,6 +168,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     sql: 'ALTER TABLE learning_sessions ADD COLUMN ' + column,
     reason: 'Each session carries its learning progress, eligibility and last completion.',
   })),
+  {
+    step: 110,
+    sql: `INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('learning_resumed_at', CAST(unixepoch() * 1000 AS TEXT))`,
+    reason: 'The Deployment records when whole-session learning resumed.',
+  },
   {
     step: 101,
     sql: 'ALTER TABLE spores ADD COLUMN revision INTEGER NOT NULL DEFAULT 0',

@@ -1346,6 +1346,8 @@ export interface PulledCandidate {
   input: ClaimedInput;
   /** The selection the stage reasserts inside the write: level, head and fairness. */
   reassertion: { sql: string; params: unknown[] };
+  /** What the stage adds to the claim's batch, given the attempt the batch mints. */
+  claimed?: (dispatchedBy: string) => PreparedStatement[];
 }
 
 /**
@@ -1427,7 +1429,7 @@ export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, r
 }
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
-export interface ClaimedInput { instruction: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec; context?: Readonly<Record<string, unknown>> }
+export interface ClaimedInput { instruction: string; instructions?: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec; context?: Readonly<Record<string, unknown>>; subject?: string }
 
 export function claimedInputStatement(
   db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string, input: ClaimedInput,

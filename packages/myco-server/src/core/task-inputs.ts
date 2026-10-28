@@ -19,7 +19,9 @@ import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
 import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
-import { MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_RULES } from './extraction-rules.js';
+import { buildHandStartLearning } from './learning-stages.js';
 import { buildTitlingInput, titlingPrompt } from './titling-input.js';
 
 /** What one build answers: the run's prompt, the standing rules for its instructions file, the hash of the material behind it, and what that material counted. */
@@ -32,6 +34,8 @@ export interface TaskInput {
   repository?: RepositoryCheckoutSpec;
   /** Fields the claim writes into the run's context: what the run's own tools read its assignment from. */
   context?: Readonly<Record<string, unknown>>;
+  /** The single-flight subject a queued row takes at its claim. */
+  subject?: string;
 }
 
 /** What a caller asks of one build beyond the Project and the instant. */
@@ -68,6 +72,11 @@ export interface TaskInputBuilder {
 }
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
+  [EXTRACTION_TASK]: {
+    build: (env, projectId, now, options) => buildHandStartLearning(env, projectId, now, options.params ?? {}),
+    // The prompt names one slice of one session, so only the standing rules have a fixed text.
+    template: () => ({ promptTemplate: null, standingRules: EXTRACTION_RULES, templateVariants: [] }),
+  },
   [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId), template: () => ({ promptTemplate: seedingPrompt(TEMPLATE_REPOSITORY), standingRules: SEEDING_RULES, templateVariants: [] }) },
   [TITLING_TASK]: {
     build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),

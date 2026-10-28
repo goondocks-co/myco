@@ -298,22 +298,20 @@
     "initializeSession": "W",
     "learningInitPending": "W",
     "learningInit": "W",
-    "sessionPublishedStatement": "W",
-    "carryLearnedCardsStatements": "W",
     "learningHead": "W",
     "buildLearningAssignment": "W",
     "claimLearningStatement": "W",
     "assignedCards": "W",
     "completeLearning": "W",
     "readLearningStatus": "W",
-    "dispatchedBeforeResume": "W",
-    "sessionPublishedStatements": "W"
+    "dispatchedBeforeResume": "W"
   },
   "packages/myco-server/src/core/turn-cards.ts": {
     "cardStatements": "W",
     "dueTurns": "W",
     "settleTurns": "W",
-    "cardsWrittenStatement": "W"
+    "cardsWrittenStatement": "W",
+    "claimCardsStatement": "W"
   },
   "packages/myco-server/src/core/learning-stages.ts": {
     "learningStage": "W",
@@ -327,8 +325,32 @@
     "ready": "T",
     "it:cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice": "T",
     "it:closes an all-mechanical session without a run and orders sessions newest first": "T",
-    "it:initializes from a cold start through its assertion and carries learned cards to an equal rebuild": "T",
     "it:initializes from a cold start through its assertion": "T",
-    "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T"
+    "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T",
+    "it:pulls cards, then learning, at claim within the budget, and the learned spore cites its session": "T",
+    "runs": "T",
+    "learning": "T"
+  },
+  "packages/myco-server/src/core/pulled-stages.ts": {
+    "selectPulled": "W",
+    "queuedAdmissible": "W"
+  },
+  "packages/myco-server/src/core/worker-claim.ts": {
+    "claimWorkerRun": "W"
+  },
+  "packages/myco-server/src/auth/tokens.ts": {
+    "memberTokenInsert": "W",
+    "revokeCredentialStatement": "W",
+    "revokeLineageStatement": "W",
+    "revokeMachineCredentialsAsMember": "W",
+    "revokeCredentialOfMemberStatement": "W",
+    "revokeCredentialsOfMember": "W",
+    "refreshMemberToken": "W",
+    "lineageInactive": "W",
+    "activateSuccessor": "W",
+    "authenticateServerMemberToken": "W",
+    "detectLineageReplay": "W",
+    "revokedForReplay": "W",
+    "releasedRunCredential": "W"
   }
 }

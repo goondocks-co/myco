@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { admissionForTask, CARD_TASK, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, CARD_TASK, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, PULLED_ONLY_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
@@ -131,7 +131,7 @@ describe('the four run outcomes', () => {
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task)).sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
     expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
   });
 

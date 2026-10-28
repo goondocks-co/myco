@@ -8,7 +8,7 @@
  */
 import { TURN_INPUT_BUDGETS as B } from './read-window.js';
 
-export { TURN_QUIET_MS } from '../db/schema-v106.js';
+export { TURN_QUIET_MS } from '../db/schema-v110.js';
 
 export interface TurnToolInput {
   toolCallId: string;

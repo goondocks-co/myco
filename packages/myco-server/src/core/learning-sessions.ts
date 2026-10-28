@@ -20,6 +20,7 @@ import { TURN_QUIET_MS } from './turn-card-rules.js';
 import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/view-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
+import { learningEnabledSql } from './settings.js';
 export { LEARNING_TOOL };
 
 /**
@@ -40,6 +41,8 @@ export const LEARNING_CLAIM_MS = 900_000;
 /** Backoff after repeated claims that never completed: 1 h, 6 h, then each 24 h. */
 export const LEARNING_BACKOFF_MS = [3_600_000, 21_600_000, 86_400_000] as const;
 export const HANDOFF_MAX_BYTES = 4096;
+/** The skip a hand start of learning ends with when no session has a due card. */
+export const NOTHING_DUE = 'nothing_due';
 
 const RESUMED = `EXISTS (SELECT 1 FROM schema_meta WHERE key = '${LEARNING_RESUMED_AT}')`;
 const UNCOVERED = (project: string, session: string) => `(SELECT COUNT(*) FROM turn_cards c INDEXED BY idx_turn_cards_uncovered
@@ -131,9 +134,9 @@ async function initializeSession(db: RelationalStore, projectId: string, session
     .bind(state, projectId, sessionId).run();
 }
 
-/** Whether initialization still has sessions to classify: the walk is unfinished, or a session waits pending. */
+/** Whether initialization still has sessions to classify while learning is on: the walk is unfinished, or a session waits pending. */
 export async function learningInitPending(db: RelationalStore): Promise<boolean> {
-  const row = await db.prepare(`SELECT ${RESUMED} AND (NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ?)
+  const row = await db.prepare(`SELECT ${RESUMED} AND ${learningEnabledSql()} AND (NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ?)
       OR EXISTS (SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'pending')) AS pending`)
     .bind(INIT_DONE_KEY).first<{ pending: number }>();
   return row!.pending === 1;
@@ -162,24 +165,6 @@ export async function learningInit(env: Pick<ServerEnv, 'db'>, now: number): Pro
   await db.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)`)
     .bind(...(page.length < INIT_PAGE ? [INIT_DONE_KEY, String(now)] : [INIT_CURSOR_KEY, JSON.stringify([last!.at, last!.projectId, last!.sessionId])])).run();
   return { changed: page.length, more: page.length === INIT_PAGE };
-}
-
-/**
- * What a publication of the session's views adds to its batch. A session held for publication, or one already ready,
- * becomes pending, so initialization enqueues the turns it holds now; a carded turn any of whose records has a newer
- * material version than the cards reflect becomes due again, and an unchanged trimmed input then reuses its card.
- */
-export function sessionPublishedStatements(db: RelationalStore, projectId: string, sessionId: string, now: number): PreparedStatement[] {
-  return [
-    db.prepare(`UPDATE turn_cards SET state = 'pending', changes = changes + 1, due_at = ?
-      WHERE project_id = ? AND session_id = ? AND state = 'carded' AND EXISTS (SELECT 1 FROM json_each(turn_cards.records) r
-        JOIN material_versions v ON v.project_id = turn_cards.project_id AND v.session_id = turn_cards.session_id
-          AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]')
-        WHERE v.material_seq > (SELECT l.carded_seq FROM learning_sessions l WHERE l.project_id = turn_cards.project_id AND l.session_id = turn_cards.session_id))`)
-      .bind(now, projectId, sessionId),
-    db.prepare(`UPDATE learning_sessions SET carded_seq = max_seq, init_state = 'pending'
-      WHERE project_id = ? AND session_id = ? AND init_state IN ('awaiting_publication', 'ready')`).bind(projectId, sessionId),
-  ];
 }
 
 /** One learning slice: the session, the cards it reads, and the progress revision its completion is guarded by. */
@@ -219,11 +204,13 @@ export async function buildLearningAssignment(db: RelationalStore, projectId: st
 }
 
 /** The statement a claim of a slice adds to its batch: the session leaves the eligible set until the claim is presumed lost. */
-export function claimLearningStatement(db: RelationalStore, projectId: string, sessionId: string, now: number): PreparedStatement {
+export function claimLearningStatement(db: RelationalStore, projectId: string, sessionId: string, now: number,
+  run: { runId: string; dispatchedBy: string }): PreparedStatement {
   return db.prepare(`UPDATE learning_sessions SET failures = failures + 1,
       eligible_at = ? + CASE WHEN failures = 0 THEN 0 WHEN failures = 1 THEN ? WHEN failures = 2 THEN ? ELSE ? END
-    WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL`)
-    .bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId);
+    WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL
+      AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
+    .bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy);
 }
 
 export interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }

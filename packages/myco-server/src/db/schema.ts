@@ -3,7 +3,7 @@ import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTra
 import { PROCESSED_FIELDS, processedReferenceSql } from '../core/processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
-import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
+import { MEMBER_TOKEN_TTL_MS } from '../constants.js';
 import { V19_STATEMENTS } from './schema-v19.js';
 import { embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE, V20_STATEMENTS } from './schema-v20.js';
 import { PROVEN_EMBEDDING_SOURCES } from './embedding-sources.js';

@@ -136,7 +136,7 @@
     "local/projected: CI2/addendum on pinned Bun1.4.0 and SQLite3.53.0; all46 failed files run serially in capture and normal modes, ci2-normal-results.json and ci2-normal-summary.json. New actual partial-observation CLI control is measured separately from the unchanged30000ms cheap catalogue contract; the complete CLI alternate-gzip check measured14412ms and was read-only. Changed-file case sums plus2000ms startup projected at3.5x, rounded up to1000ms, retaining older floors: {\"tests/meta/material-write-classification.test.ts\": {\"localCaseMs\": 18436.9, \"previousMs\": 61000, \"weightMs\": 72000}, \"tests/myco-server/thin-learning-admission.test.ts\": {\"localCaseMs\": 14331.94, \"previousMs\": 35000, \"weightMs\": 58000}}. Existing CI-measured five view-proof weights remain unchanged. No new test file or parity scenario; deadlines and assertions were not weakened.",
     "local/projected: #1924 cutover PR1 view-cutover.test.ts, pinned Bun1.4.0 native and local D1: 4 cases in about 7000ms locally; weight projects 3.5x for Linux and rounds up to 25000ms.",
     "local: vault evolution 2.0 PR 4, pinned Bun 1.4.0. budget-governor.test.ts gained the pulled-claim cases and a local D1 queued-backlog read bound: complete 31-case file 3.32s in JUnit locally (was 838ms recorded), weighted 3500ms. New dedicated parity scenario \"pull at claim\" measured 24.68s for both targets together including both boots; weighted 60000ms for CI boot cost, below the 150000ms recorded for the comparable budget-governor dedicated scenario.",
-    "local: vault PR 7 two-stage learning, pinned Bun1.4.0; tests/myco-server/learning-stages.test.ts measured 7040ms for 5 cases on native and Miniflare D1, weighted 9000ms for CI startup. No parity scenario added."
+    "local: vault PR 7 two-stage learning, pinned Bun1.4.0; tests/myco-server/learning-stages.test.ts measured 8358ms in JUnit for 6 cases on native and Miniflare D1, including the pulled-claim flow, weighted 11000ms for CI startup. No parity scenario added."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -1014,7 +1014,7 @@
     "tests/utils/repository-name.test.ts": 482,
     "tests/utils/windows-atomic-replace.test.ts": 12,
     "tests/myco-server/view-cutover.test.ts": 25000,
-    "tests/myco-server/learning-stages.test.ts": 9000
+    "tests/myco-server/learning-stages.test.ts": 11000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
