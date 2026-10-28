@@ -9,7 +9,7 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 }
 
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
-const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'] };
+const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'], 107: ['view_prompts'] };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
   prompt_context_answers: { outcome: 'served' },

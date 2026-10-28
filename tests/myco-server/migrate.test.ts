@@ -120,6 +120,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0104_v104.sql': '2a923b33713136857957ef044810ee748c1bf7d53df0a0c89e0a70444a0eeafa',
   '0105_v105.sql': '267535594f2664a73451111fbc6d0ae454bab578ae54dac578cbd2b32523d217',
   '0106_v106.sql': '6a1ae57733a69cea25cfb2c212648502b88b80759273df922f97d2c1b7866740',
+  '0107_v107.sql': 'baf72d227e20a9f4632af5b50c76323cd30ff8e7c4b2a10d064b04df9e503a89',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -845,4 +846,28 @@ it('schema 101 only adds default-zero spore revisions and a stable dispatch boun
     expect(await applySchemaSteps(db, SCHEMA_STEPS.filter(step => step.version === 101))).toEqual([]);
     expect(sqlite.query("SELECT value FROM schema_meta WHERE key='guard_enabled_at'").get()).toEqual(stamp);
   } finally { sqlite.close(); }
+});
+
+it('schema 107 installs the source-range path on empty and populated prompt storage on native and emitted D1 migrations', async () => {
+  const range = "SELECT sql FROM sqlite_master WHERE name='idx_view_prompts_source_range'";
+  for (const target of ['native', 'd1'] as const) for (const populated of [false, true]) {
+    const db = new Database(':memory:');
+    try {
+      const previous = SCHEMA_STEPS.filter(step => step.version <= 106);
+      if (target === 'native') await applySchemaSteps(sqliteD1(db), previous);
+      else for (const file of renderMigrationFiles().filter(file => file.name < '0107')) db.exec(file.sql);
+      if (populated) db.run(`INSERT INTO view_prompts(project_id,instance_id,session_id,prompt_id,origin,content_hash,created_at,updated_at,received_at)
+        VALUES ('proj_range','inst','sess','prompt','live','h',1,1,1)`);
+      const apply = target === 'native'
+        ? () => applySchemaSteps(sqliteD1(db), SCHEMA_STEPS.filter(step => step.version === 107))
+        : async () => {
+          // Bun's multi-statement exec reports only the last statement's error, so each emitted statement runs alone.
+          const statements = readFileSync(join(MIGRATIONS, '0107_v107.sql'), 'utf8').split(/;\n/).map(sql => sql.replace(/^(?:\s*--[^\n]*\n)*/, '').trim()).filter(Boolean);
+          db.transaction(() => { for (const sql of statements) db.run(sql); })();
+        };
+      await apply();
+      expect({ target, version: version(db), index: db.query(range).get() }).toEqual({ target, version: '107',
+        index: { sql: 'CREATE INDEX idx_view_prompts_source_range ON view_prompts(project_id,instance_id,source_transcript_id,source_offset,source_end,prompt_id)' } });
+    } finally { db.close(); }
+  }
 });

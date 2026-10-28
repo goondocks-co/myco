@@ -60,6 +60,12 @@ const EXCEPTIONS: readonly Exception[] = [
     table: 'view_prompts',
     reason: 'Coverage counterpart admission indexes empty material storage.',
   },
+  {
+    step: 107,
+    object: 'idx_view_prompts_source_range',
+    table: 'view_prompts',
+    reason: 'Source-range acknowledgement indexes prompt storage of at most one row per captured prompt.',
+  },
 ];
 interface StatementException {
   step: number;
