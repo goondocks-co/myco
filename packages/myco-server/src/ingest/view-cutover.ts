@@ -1,9 +1,10 @@
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { ViewCutoverStatus } from '@goondocks/myco-shared/view-status';
 import { contentAssertion } from '../core/registered-content.js';
+import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '../core/content-budget.js';
 import { LEGACY_CLASS_TABLES, legacyRowSql, unverifiedRowSql, CLASSIFIED_AT_SQL } from '../db/schema-v106.js';
 import { PARSERS } from './parsers/registry.js';
-import { PARSER_VERSION } from './parse.js';
+import { PARSER_VERSION, pendingTranscripts } from './parse.js';
 import { requestViewRebuild } from './view-lifecycle.js';
 import { runViewParseJob } from './view-run.js';
 import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET } from './view-build-queue.js';
@@ -178,8 +179,19 @@ export async function readViewCutover(db: RelationalStore): Promise<ViewCutoverS
   };
 }
 
+/** While legacy transcripts wait, the batch takes half of what a bounded wake leaves its parsers; the legacy pass takes the rest. */
+async function cutoverShare(env: ServerEnv, now: number): Promise<ServerEnv> {
+  const held = remainingInvocationBudget(env.db);
+  if (held === null || (await pendingTranscripts(env.db, now)).transcripts === 0) return env;
+  return measuredContentEnv(env, {
+    statements: CONTENT_WAKE_JOB_RESERVE + Math.floor(Math.max(0, held.statements - 2 * CONTENT_WAKE_JOB_RESERVE) / 2),
+    blobCalls: CONTENT_BLOB_LIMIT + Math.floor(Math.max(0, held.blobCalls - 2 * CONTENT_BLOB_LIMIT) / 2),
+  }).env;
+}
+
 /** One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. */
-export async function runViewCutoverWake(env: ServerEnv, now: number, readBytes = databaseBytes) {
+export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes = databaseBytes) {
+  const env = await cutoverShare(wake, now);
   const db = env.db;
   const bytes = await readBytes(db);
   const paused = bytes !== null && bytes >= VIEW_CUTOVER_PAUSE_BYTES;

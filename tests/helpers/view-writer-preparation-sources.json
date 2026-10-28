@@ -280,6 +280,7 @@
     "test:a tail after a lost segment keeps the complete record that opens the next retained segment": "T",
     "test:a status edit of a published parser plan promotes it to a fact and applies the edit": "T",
     "test:a long build leaves the shared wake its housekeeping admission": "T",
+    "test:a legacy backlog that outlasts the wake content wall still leaves the batch building": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
     "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
     "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T"

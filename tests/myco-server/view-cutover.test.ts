@@ -1,11 +1,12 @@
-import { expect, test } from 'bun:test';
+import { expect, setSystemTime, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { parseTranscripts, PARSER_VERSION } from '@myco-server-worker/ingest/parse.js';
 import { runViewCutoverWake, readViewCutover, VIEW_CUTOVER_PAUSE_BYTES } from '@myco-server-worker/ingest/view-cutover.js';
-import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '@myco-server-worker/core/content-budget.js';
+import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT, CONTENT_WALL_MS } from '@myco-server-worker/core/content-budget.js';
+import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
-import { engineAssertions } from '@myco-server-worker/core/tick.js';
+import { engineAssertions, WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '@myco-server-worker/core/tick.js';
 import { VIEW_BUILD_LEASE_MS } from '@myco-server-worker/ingest/view-build-queue.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
@@ -224,6 +225,36 @@ test('a long build leaves the shared wake its housekeeping admission', async () 
         expect(left.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
         expect(left.blobCalls).toBeGreaterThanOrEqual(CONTENT_BLOB_LIMIT);
       }
+    }),
+  );
+}, 120000);
+
+test('a legacy backlog that outlasts the wake content wall still leaves the batch building', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
+      const built = await legacySession(db, blobs, 'cut-l', at, [turn('cut-l', 'built', 100)]);
+      await captureViewSession(db, 'project', 'cut-m', { idOffset: 8000 });
+      const backlog = 'tx_' + 'c'.repeat(32), text = Array.from({ length: 400 }, (_, i) => turn('cut-m', 'slow' + i, 100)).join('');
+      await captureViewTranscript(db, blobs, 'cut-m', backlog, text, at, 0, 'claude-code');
+      // Reading the backlog spends more than the wake's content wall.
+      const held = new Bun.CryptoHasher('sha256').update(text).digest('hex');
+      const slow: typeof blobs = { ...blobs, get: async (key, options) => {
+        if (key.includes(held)) setSystemTime(new Date(Date.now() + CONTENT_WALL_MS + 1000));
+        return blobs.get(key, options);
+      } };
+      try {
+        for (let wake = 0; wake < 4; wake++) {
+          setSystemTime(new Date(now));
+          const outer = measuredContentEnv({ ...built.env, blobs: slow }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+          await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active');
+          expect(remainingInvocationBudget(outer.env.db)!.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
+        }
+      } finally {
+        setSystemTime();
+      }
+      expect((await readViewCutover(db)).built).toBeGreaterThan(0);
+      expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(backlog))).toBeGreaterThan(0);
     }),
   );
 }, 120000);
