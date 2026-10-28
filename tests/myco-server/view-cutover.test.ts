@@ -272,7 +272,7 @@ test('a batch backlog publishes old sessions the legacy pass never read, while l
         await requestViewRebuild(db, 'project', session, now);
         return { env, transcript, size: bytes(text) };
       };
-      const old = [];
+      const old: Awaited<ReturnType<typeof capture>>[] = [];
       for (let i = 0; i < 10; i++) old.push(await capture('cut-o' + i, now - 3 * DAY));
       const recent = await capture('cut-r', now - 60_000);
       const wake = async () => {
