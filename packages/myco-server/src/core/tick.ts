@@ -26,7 +26,7 @@ import { hasQueuedRun, hasRunInsideBound } from './runs.js';
 import { drainQueue } from './harness.js';
 import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
-import { classify, emit } from '../telemetry.js';
+import { classify, constraintDetail, emit } from '../telemetry.js';
 import { pendingSearchBlobs } from './search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
@@ -136,7 +136,8 @@ async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: rea
       reports.push({ name, changed, failed: null, more, ...(typeof answered !== 'number' && answered.continueAfterMs !== undefined ? { continueAfterMs: answered.continueAfterMs } : {}) });
     } catch (err) {
       const failed = classify(err, env.platform?.classifyError);
-      emit({ kind: 'job_failed', job: name, state, error_class: failed });
+      const detail = failed === 'constraint' ? constraintDetail(err) : undefined;
+      emit({ kind: 'job_failed', job: name, state, error_class: failed, ...(detail === undefined ? {} : { constraint_detail: detail }) });
       reports.push({ name, changed: 0, failed, more: false });
     }
   }
