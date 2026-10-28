@@ -1,7 +1,8 @@
-import { estimateForClaim } from './budget-estimates.js';
+import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHeld } from './run-budget.js';
-import { pulledStages, PULL_RESELECTIONS, selectPulled, type PulledStage } from './pulled-stages.js';
+import { BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, type PulledStage, type ServedQueue } from './pulled-stages.js';
 import { queueHeads } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
@@ -999,6 +1000,7 @@ export async function claimNextRun(
   if (candidate === null || chosen === null) {
     // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
     const pulled = activation.active ? await pullAtClaim(env, worker, excluded) : null;
+    if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
     if (pulled !== null) return pulled;
   }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : limitHeld&&refusedHeads.size===0?'at_limit':'no_work' };
@@ -1096,7 +1098,7 @@ async function pullAtClaim(
   env: ServerEnv,
   worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; now: number },
   excluded: readonly string[],
-): Promise<ClaimOutcome | null> {
+): Promise<ClaimOutcome | 'queued' | null> {
   const stages: readonly PulledStage[] = pulledStages();
   if (stages.length === 0) return null;
   for (let attempt = 0; attempt < PULL_RESELECTIONS; attempt += 1) {
@@ -1109,7 +1111,13 @@ async function pullAtClaim(
       if (selected !== null) executions.set(task, selected);
     }
     const compatible = stages.filter((stage) => executions.has(stage.task));
+    const queues: ServedQueue[] = [];
+    for (const task of BUDGET_WORKER_TASKS.filter((task) => !excluded.includes(task))) {
+      const { selected } = await selectWorkerExecution(env, task, worker.harnesses, settings, worker.principal);
+      if (selected !== null) queues.push({ task, estimateKey: estimateKey(task, selected.harness, selected.profile) });
+    }
     const limits = await readDispatchLimits(env);
+    const queued = queuedAdmissibleSql(queues, limits, worker.now);
     const eligible: PulledStage[] = [];
     for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);
     const selection = await selectPulled(env.db, eligible, compatible, limits, worker.now);
@@ -1123,12 +1131,14 @@ async function pullAtClaim(
     if (!(await automaticFits(env.db, price.estimate, worker.now))) return null;
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
-    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: `run_${crypto.randomUUID()}`, task: stage.task, subject: item.subject, input, reassertion: selection.reassertion }, {
+    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: `run_${crypto.randomUUID()}`, task: stage.task, subject: item.subject, input,
+      reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params } }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
       settingsGuard: { sql: policy.sql, params: policy.params },
     });
     if (claimed === null) {
       if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
+      if (await queuedAdmissible(env.db, queued)) return 'queued';
       continue;
     }
     emit({ kind: 'worker_claimed', runId: claimed.row.id, task: claimed.row.task, projectId: claimed.row.projectId, harness: chosen.harness, ...workerTelemetry(worker.principal) });

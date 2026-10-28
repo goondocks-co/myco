@@ -475,6 +475,14 @@ it('reasserts level and capacity inside the write when they change during input 
     expect(await spent.poll()).toMatchObject({claimed:true,run:{projectId:'proj_2'}});
     spent.nothingStray();
   }finally{spent.sqlite.close();}
+  const queued=await pullFixture();
+  try {
+    queued.item('proj_1','only',1);
+    queued.hooks.during=()=>{queued.queue('queued-during','manual','proj_2','title-summary',queued.now);};
+    expect(await queued.poll()).toMatchObject({claimed:true,run:{id:'queued-during'}});
+    expect(queued.pulled()).toEqual([]);
+    queued.nothingStray();
+  }finally{queued.sqlite.close();}
 });
 
 it('writes nothing when the head, the Project, the runner or the settings change during preparation',async()=>{
