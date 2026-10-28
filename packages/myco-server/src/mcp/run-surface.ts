@@ -32,7 +32,8 @@ import { handleRunMap } from './tools/run-map.js';
 import { handleRunPrompts } from './tools/run-prompts.js';
 import { handleRunSessions } from './tools/run-sessions.js';
 import { handleRunSpores } from './tools/run-spores.js';
-import { handleRunCards, handleRunLearning } from './tools/run-learning.js';
+import { handleRunCards } from './tools/run-cards.js';
+import { handleRunLearning } from './tools/run-learning.js';
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
 const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({ handler, authorization: toolPolicy('run', action, ['run']) });

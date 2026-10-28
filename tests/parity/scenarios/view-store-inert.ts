@@ -36,8 +36,7 @@ export const viewStoreInert: ParityScenario = {
     expect(await read(`/turns/${prompt}`)).toBe(detail);
     const newTables = await target.sql("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'view_*' OR name IN ('session_views','fact_classes','plan_promotions','learning_sessions','material_versions')) AND name NOT GLOB '*_fts*'");
     expect(newTables.map(row=>row.name).sort()).toEqual([...VIEW_SESSION_TABLES,...VIEW_GLOBAL_TABLES].sort());
-    // A captured prompt opens the session's learning row; nothing is allocated in it, and every other table stays empty.
-    for (const { name } of newTables) expect(await target.sql(`SELECT COUNT(*) AS n FROM ${name}${name === 'learning_sessions' ? ' WHERE max_seq > 0' : ''}`)).toEqual([{ n: 0 }]);
+    for (const { name } of newTables) expect(await target.sql(`SELECT COUNT(*) AS n FROM ${name}`)).toEqual([{ n: 0 }]);
     const owner = { ...target.ownerHeaders(), 'content-type': 'application/json', origin: target.url };
     const created = await fetch(`${target.url}/api/backups`, { method: 'POST', headers: owner, body: '{}' });
     expect(created.status).toBe(200);

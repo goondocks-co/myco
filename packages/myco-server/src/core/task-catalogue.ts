@@ -86,7 +86,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['vault_canopy_map', 'vault_report'],
   'embedding-reconcile': [],
   [EXTRACTION_TASK]: [
-    'vault_learning', 'vault_mark_processed', 'vault_spores', 'vault_spore',
+    'vault_learning', 'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
   [CARD_TASK]: ['vault_turn_cards', 'vault_report'],

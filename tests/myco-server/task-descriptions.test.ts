@@ -41,8 +41,7 @@ describe('task description registry gates', () => {
           expect(task.budget?.timeoutSeconds).toBeGreaterThan(0);
         }
         expect(task.done.length).toBeGreaterThan(0);
-        // A learning run's prompt names its slice, so learning discloses only its standing rules.
-        if (Object.hasOwn(TASK_TIERS, task.task) && task.task !== EXTRACTION_TASK) expect(task.promptTemplate?.length).toBeGreaterThan(0);
+        if (Object.hasOwn(TASK_TIERS, task.task)) expect(task.promptTemplate?.length).toBeGreaterThan(0);
       }
     } finally { f.sqlite.close(); }
   });
@@ -71,7 +70,8 @@ describe('task description registry gates', () => {
     try {
       f.sqlite.run(`INSERT INTO project_repositories (project_id, url, branch, revision, updated_at, updated_by) VALUES ('proj_1', ?, ?, 'test', 1, 'test')`, ['{{repository.url}}', '{{repository.branch}}']);
       const tasks = await read(f);
-      for (const task of tasks.filter((task) => task.promptTemplate !== null && !PULLED_ONLY_TASKS.includes(task.task))) {
+      // Learning's prompt names one slice of one session, and the card prompt is pulled only; neither is built here.
+      for (const task of tasks.filter((task) => task.promptTemplate !== null && task.task !== EXTRACTION_TASK && !PULLED_ONLY_TASKS.includes(task.task))) {
         const params = task.task === 'title-summary' ? { session_id: '{{session.id}}', mode: 'claim' } : undefined;
         const built = await buildTaskInput(f.serverEnv, task.task, 'proj_1', 1, { params });
         expect(built !== null && !built.unchanged).toBe(true);

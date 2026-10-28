@@ -21,7 +21,7 @@ import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
 import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
 import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { EXTRACTION_RULES } from './extraction-rules.js';
-import { buildHandStartLearning } from './learning-stages.js';
+import { buildHandStartLearning, learningPrompt } from './learning-stages.js';
 import { buildTitlingInput, titlingPrompt } from './titling-input.js';
 
 /** What one build answers: the run's prompt, the standing rules for its instructions file, the hash of the material behind it, and what that material counted. */
@@ -74,8 +74,7 @@ export interface TaskInputBuilder {
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [EXTRACTION_TASK]: {
     build: (env, projectId, now, options) => buildHandStartLearning(env, projectId, now, options.params ?? {}),
-    // The prompt names one slice of one session, so only the standing rules have a fixed text.
-    template: () => ({ promptTemplate: null, standingRules: EXTRACTION_RULES, templateVariants: [] }),
+    template: () => ({ promptTemplate: learningPrompt('{{session.id}}', { cards: '{{slice.cards}}', more: false, handoff: null }), standingRules: EXTRACTION_RULES, templateVariants: [] }),
   },
   [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId), template: () => ({ promptTemplate: seedingPrompt(TEMPLATE_REPOSITORY), standingRules: SEEDING_RULES, templateVariants: [] }) },
   [TITLING_TASK]: {

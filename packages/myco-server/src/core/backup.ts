@@ -98,7 +98,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...VIEW_REGENERABLE_TABLES,
   ...VIEW_DURABLE_TABLES,
   'search_blob_queue', 'search_blob_chunks',
-  'session_read_facts', 'project_session_counts',
+  'session_read_facts', 'project_session_counts', 'learning_init_queue',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks'].map(table => `${table}_fts`), ...VIEW_FTS_TABLES]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
@@ -236,7 +236,11 @@ function portableRow(table: string, row: Record<string, unknown>): Record<string
 export async function createBackup(
   db: RelationalStore, blobs: BlobStore, opts: { producer: string; now: number },
 ): Promise<BackupIndexRow> {
-  const snapshot = await relationalSnapshot(db, ['schema_meta', ...BACKUP_TABLES], MAX_BACKUP_BYTES).catch((error: unknown) => {
+  // A store at an older schema carries the tables its schema holds; its header names that schema.
+  const held = await db.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (SELECT value FROM json_each(?))`)
+    .bind(JSON.stringify(BACKUP_TABLES)).all<{ name: string }>();
+  const present = new Set(held.results.map((row) => row.name));
+  const snapshot = await relationalSnapshot(db, ['schema_meta', ...BACKUP_TABLES.filter((table) => present.has(table))], MAX_BACKUP_BYTES).catch((error: unknown) => {
     if (error instanceof RelationalSnapshotTooLargeError) throw new BackupTooLargeError(error.bytes);
     throw error;
   });
@@ -251,7 +255,7 @@ export async function createBackup(
   let bytes = 0;
   for (const table of BACKUP_TABLES) {
     counts[table] = 0;
-    for (const columns of snapshot.get(table)!) {
+    for (const columns of snapshot.get(table) ?? []) {
       const line = JSON.stringify({ t: table, r: portableRow(table, columns) });
       bytes = assertBackupSize(`${line}\n`, bytes);
       lines.push(line);

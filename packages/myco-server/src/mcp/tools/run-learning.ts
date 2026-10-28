@@ -1,52 +1,23 @@
 /**
- * `myco_run_cards` and `myco_run_learning`: the two learning stages' own material and writes.
+ * `myco_run_learning`: session learning's own material and completion.
  *
- * Neither takes a session argument. The session and the assignment are the ones the claim wrote into the run's
- * context, so a run reads and writes exactly its assignment. A card run reads its turns' trimmed inputs and
- * writes one card per turn; a learning run reads its slice's cards, may open the raw turn behind a high-signal card,
- * and completes the slice.
+ * It takes no session argument. The session and the slice are the ones the claim wrote into the run's context, so a
+ * run reads and completes exactly its assignment: it reads its slice's cards, may open the raw turn behind a
+ * high-signal card, and completes the slice.
  */
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
-import { commitAttributedWrite } from '../../core/runs.js';
 import { recordServedPrompts } from '../../core/served-material.js';
 import { RAW_TURN_CHARS } from '../../core/read-window.js';
-import { cardRecord, cardsWrittenStatement, parseCardWrites, readTurn, writeRunCards } from '../../core/turn-cards.js';
+import { readTurn } from '../../core/turn-cards.js';
 import { assignedCards, completeLearning, HANDOFF_MAX_BYTES, type LearningAssignment } from '../../core/learning-sessions.js';
-import type { CardAssignment } from '../../core/learning-stages.js';
-import { CARD_TOOL, LEARNING_TOOL } from '../../core/tool-catalogue.js';
+import { LEARNING_TOOL } from '../../core/tool-catalogue.js';
 
-function assignmentOf<T extends { kind: string }>(runContext: string | null, kind: T['kind']): { sessionId: string; assignment: T } | null {
+export function assignmentOf<T extends { kind: string }>(runContext: string | null, kind: T['kind']): { sessionId: string; assignment: T } | null {
   try {
     const context = JSON.parse(runContext ?? 'null') as { session_id?: unknown; assignment?: T } | null;
     return typeof context?.session_id === 'string' && context.assignment?.kind === kind ? { sessionId: context.session_id, assignment: context.assignment } : null;
   } catch { return null; }
-}
-
-export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promise<unknown> {
-  const run = runOf(ctx, CARD_TOOL);
-  const held = assignmentOf<CardAssignment>(run.runContext, 'cards');
-  if (held === null) return failure('this run carries no card assignment');
-  const { db } = ctx.env;
-  const scope = { projectId: ctx.projectId };
-  if (input.op === 'material') {
-    const turns = [];
-    for (const turn of held.assignment.turns) {
-      const record = await cardRecord(db, scope, held.sessionId, turn);
-      if (record !== null) turns.push({ turn_key: turn.turnKey, input: record.trimmed.text });
-    }
-    return { session_id: held.sessionId, turns };
-  }
-  if (input.op === 'write') {
-    const writes = parseCardWrites(input.cards, new Set(held.assignment.turns.map((turn) => turn.turnKey)));
-    if (typeof writes === 'string') return failure(writes);
-    const result = await writeRunCards(ctx.env, ctx.projectId, held.sessionId, held.assignment.turns, writes,
-      { runId: run.runId, model: null }, ctx.now);
-    await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId),
-      { runId: run.runId, toolName: CARD_TOOL, op: 'write', recordedAt: ctx.now, detail: { written: result.written } });
-    return { written: result.written, changed_since_served: result.changed };
-  }
-  return failure('unknown card operation');
 }
 
 function rawTurnText(turn: NonNullable<Awaited<ReturnType<typeof readTurn>>>): string {

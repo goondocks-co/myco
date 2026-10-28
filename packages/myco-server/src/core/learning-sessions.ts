@@ -134,36 +134,48 @@ async function initializeSession(db: RelationalStore, projectId: string, session
     .bind(state, projectId, sessionId).run();
 }
 
-/** Whether initialization still has sessions to classify while learning is on: the walk is unfinished, or a session waits pending. */
+/**
+ * Whether initialization still has sessions to classify while learning is on: the walk is unfinished, a session whose
+ * first prompt arrived after learning resumed waits in the queue, or a session waits pending.
+ */
 export async function learningInitPending(db: RelationalStore): Promise<boolean> {
   const row = await db.prepare(`SELECT ${RESUMED} AND ${learningEnabledSql()} AND (NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ?)
+      OR EXISTS (SELECT 1 FROM learning_init_queue)
       OR EXISTS (SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'pending')) AS pending`)
     .bind(INIT_DONE_KEY).first<{ pending: number }>();
   return row!.pending === 1;
 }
 
 /**
- * One bounded initialization pass: sessions captured after learning resumed and waiting pending first, then the walk
- * over every session newest first, one page per call, its cursor committed with the page.
+ * One bounded initialization pass: queued sessions first, then sessions waiting pending, then the walk over every
+ * session, each Project's newest first, one page per call, its cursor committed with the page.
  */
 export async function learningInit(env: Pick<ServerEnv, 'db'>, now: number): Promise<{ changed: number; more: boolean }> {
   const { db } = env;
   if (!(await learningInitPending(db))) return { changed: 0, more: false };
+  const { results: queued } = await db.prepare(`SELECT project_id AS projectId, session_id AS sessionId FROM learning_init_queue LIMIT ?`)
+    .bind(INIT_PAGE).all<{ projectId: string; sessionId: string }>();
+  for (const row of queued) {
+    await initializeSession(db, row.projectId, row.sessionId, now);
+    await db.prepare(`DELETE FROM learning_init_queue WHERE project_id = ? AND session_id = ?`).bind(row.projectId, row.sessionId).run();
+  }
+  if (queued.length > 0) return { changed: queued.length, more: true };
   const { results: pending } = await db.prepare(`SELECT project_id AS projectId, session_id AS sessionId FROM learning_sessions
     INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'pending' LIMIT ?`).bind(INIT_PAGE).all<{ projectId: string; sessionId: string }>();
   for (const row of pending) await initializeSession(db, row.projectId, row.sessionId, now);
   if (pending.length > 0) return { changed: pending.length, more: true };
   const cursorRow = await db.prepare(`SELECT value FROM schema_meta WHERE key = ?`).bind(INIT_CURSOR_KEY).first<{ value: string }>();
-  const cursor = cursorRow === null ? null : JSON.parse(cursorRow.value) as [number, string, string];
+  const cursor = cursorRow === null ? null : JSON.parse(cursorRow.value) as [string, number, string];
   const { results: page } = await db.prepare(`SELECT project_id AS projectId, session_id AS sessionId, last_received_at AS at
-    FROM session_read_facts INDEXED BY idx_learning_init_walk WHERE has_session = 1 AND tombstoned = 0
-      ${cursor === null ? '' : 'AND (last_received_at, project_id, session_id) < (?, ?, ?)'}
-    ORDER BY last_received_at DESC, project_id DESC, session_id DESC LIMIT ?`)
-    .bind(...(cursor ?? []), INIT_PAGE).all<{ projectId: string; sessionId: string; at: number }>();
+    FROM session_read_facts INDEXED BY idx_session_read_activity WHERE has_session = 1 AND tombstoned = 0
+      ${cursor === null ? '' : 'AND (project_id > ? OR project_id = ? AND (last_received_at < ? OR last_received_at = ? AND session_id < ?))'}
+    ORDER BY project_id, last_received_at DESC, session_id DESC LIMIT ?`)
+    .bind(...(cursor === null ? [] : [cursor[0], cursor[0], cursor[1], cursor[1], cursor[2]]), INIT_PAGE)
+    .all<{ projectId: string; sessionId: string; at: number }>();
   for (const row of page) await initializeSession(db, row.projectId, row.sessionId, now);
   const last = page.at(-1);
   await db.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)`)
-    .bind(...(page.length < INIT_PAGE ? [INIT_DONE_KEY, String(now)] : [INIT_CURSOR_KEY, JSON.stringify([last!.at, last!.projectId, last!.sessionId])])).run();
+    .bind(...(page.length < INIT_PAGE ? [INIT_DONE_KEY, String(now)] : [INIT_CURSOR_KEY, JSON.stringify([last!.projectId, last!.at, last!.sessionId])])).run();
   return { changed: page.length, more: page.length === INIT_PAGE };
 }
 

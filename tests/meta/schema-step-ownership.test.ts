@@ -76,7 +76,6 @@ const EXCEPTIONS: readonly Exception[] = [
     table: 'learning_sessions',
     reason: 'Learning progress columns are indexed where their claim, status and initialization reads seek them.',
   })),
-  { step: 110, object: 'idx_learning_init_walk', table: 'session_read_facts', reason: 'Learning initialization walks sessions newest first in bounded pages.' },
   ...[
     ['prompt_batches_learning_session', 'prompt_batches'],
     ['prompt_batches_turn_card_open', 'prompt_batches'],

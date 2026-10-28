@@ -26,9 +26,6 @@ CREATE INDEX IF NOT EXISTS idx_learning_eligible ON learning_sessions (project_i
 
 CREATE INDEX IF NOT EXISTS idx_learning_eligible_all ON learning_sessions (eligible_at);
 
-CREATE INDEX IF NOT EXISTS idx_learning_init_walk ON session_read_facts (last_received_at DESC, project_id DESC, session_id DESC)
-    WHERE has_session = 1 AND tombstoned = 0;
-
 CREATE INDEX IF NOT EXISTS idx_learning_completed ON learning_sessions (last_completed_at) WHERE last_completed_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_learning_init_pending ON learning_sessions (project_id, session_id) WHERE init_state <> 'ready';
@@ -51,9 +48,12 @@ CREATE INDEX IF NOT EXISTS idx_turn_cards_uncovered ON turn_cards (project_id, s
 
 CREATE INDEX IF NOT EXISTS idx_turn_cards_hash ON turn_cards (project_id, session_id, input_hash);
 
+CREATE TABLE IF NOT EXISTS learning_init_queue (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), session_id TEXT NOT NULL, PRIMARY KEY (project_id, session_id));
+
 CREATE TRIGGER IF NOT EXISTS prompt_batches_learning_session AFTER INSERT ON prompt_batches
-    WHEN EXISTS (SELECT 1 FROM schema_meta WHERE key = 'learning_resumed_at') BEGIN
-    INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES (NEW.project_id, NEW.session_id); END;
+    WHEN EXISTS (SELECT 1 FROM schema_meta WHERE key = 'learning_resumed_at') AND NOT EXISTS (SELECT 1 FROM learning_sessions l
+      WHERE l.project_id = NEW.project_id AND l.session_id = NEW.session_id) BEGIN
+    INSERT OR IGNORE INTO learning_init_queue (project_id, session_id) VALUES (NEW.project_id, NEW.session_id); END;
 
 CREATE TRIGGER IF NOT EXISTS prompt_batches_turn_card_open AFTER INSERT ON prompt_batches
     WHEN NEW.parent_prompt_id IS NULL AND EXISTS (SELECT 1 FROM learning_sessions l

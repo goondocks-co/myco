@@ -335,7 +335,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await r.workerEnds(b.run.id, 'completed', NOW + 5)).toEqual({ ended: true, status: 'failed' });
   });
 
-  it('refuses managed rules and state writes through the learning run surface, whose handoff carries what a slice leaves', async () => {
+  it('refuses managed rules writes through the extraction run surface', async () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     r.learningDue('s9', 'p9');
@@ -344,7 +344,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     if (!claimed.claimed) throw new Error('not claimed');
     expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'agents_block', block: 'Generated rule' })).toEqual({ failed: 'Unknown tool: myco_run' });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_state WHERE key = 'agents_block'`).get()).toEqual({ n: 0 });
-    expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'state_set', key: 'cursor_note', value: 'fine' })).toEqual({ failed: 'Unknown tool: myco_run' });
+    expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'state_set', key: 'cursor_note', value: 'fine' })).toEqual({ key: 'cursor_note', applied: true });
   });
 
   it('refuses extraction skip while retaining marked-write completion', async () => {

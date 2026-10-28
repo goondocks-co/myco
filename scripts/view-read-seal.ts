@@ -40,6 +40,8 @@ const namedTupleClasses=new Map<string,string>([
  ["1c735d3c6c95b0a6ba2b0d71422f52d06b8908eb76417c03459257c738498a91","backup and restore SQL"],
  ["7fcc18b719dbd2b56376da820587c21dd8a77fcc5e76176803f4aee171baeac0","parser presented-date finalization"],
  ["2b2f07ba4549d9fbcfe7d5cd2ff1321995301a132de6782c5d3e29fe0bb941fb","backup and restore SQL"],
+ ["1eba31304a820f8ec1b3733f7169059c078477e20347683db2465443856b92e4","backup and restore SQL"],
+ ["366d50dad81f544a3ed07cd748fccba8c7051f79fc9a22d91dbd347126a1c1c2","backup and restore SQL"],
  ["72c07c8c9148967cc0819f8cca4f5b745e8a312cb1aba37796f7365cc22af426","backup and restore SQL"],
  ["aab50585d0cdce45099a68c1fa47a850030871e954c606a9f6fc88876d8d5046","backup and restore SQL"],
  ["9868e0b76cbd8767aca2bdda363ee74b6ef1c9043906ec484c5ac2a5221e0b57","backup and restore SQL"],

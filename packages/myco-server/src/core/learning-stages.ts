@@ -30,14 +30,14 @@ const notInFlight = (task: string, subject: (session: string) => string, session
   FROM agent_runs r INDEXED BY idx_agent_runs_task_live WHERE r.task = '${task}' AND r.${IN_FLIGHT_RUN_STATUSES}
     AND r.subject = '${subject('')}' || ${session})`;
 
-/** The ask a session-learning run receives for one slice. */
-export function learningPrompt(sessionId: string, assignment: LearningAssignment): string {
+/** The ask a session-learning run receives for one slice: its session, its card count, whether more follow, and the handoff. */
+export function learningPrompt(sessionId: string, slice: { cards: string; more: boolean; handoff: string | null }): string {
   return [
     'Learn durable knowledge from one slice of one coding session. You read the session through its turn cards, never its raw records.',
     '',
     `Target session: ${sessionId}`,
-    `This slice: ${assignment.turns.length} cards${assignment.more ? '; later slices of this session follow, so leave the handoff for them' : '; it is the last slice the session has now'}.`,
-    ...(assignment.handoff === null ? [] : ['', '## Handoff from the previous slice', '', assignment.handoff]),
+    `This slice: ${slice.cards} cards${slice.more ? '; later slices of this session follow, so leave the handoff for them' : '; it is the last slice the session has now'}.`,
+    ...(slice.handoff === null ? [] : ['', '## Handoff from the previous slice', '', slice.handoff]),
     '',
     '## Steps',
     '',
@@ -58,7 +58,7 @@ export async function buildLearningInput(db: RelationalStore, projectId: string,
   const assignment = await buildLearningAssignment(db, projectId, sessionId);
   if (assignment === null) return null;
   return {
-    instruction: learningPrompt(sessionId, assignment), instructions: EXTRACTION_RULES,
+    instruction: learningPrompt(sessionId, { cards: String(assignment.turns.length), more: assignment.more, handoff: assignment.handoff }), instructions: EXTRACTION_RULES,
     inputHash: await inputHashOf([sessionId, assignment]),
     counts: { cards: assignment.turns.length, more: assignment.more },
     context: { session_id: sessionId, assignment },
