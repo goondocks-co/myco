@@ -290,6 +290,29 @@ test('a pending batch publishes an old session the legacy pass never read, while
   );
 }, 120000);
 
+test('a draining wake builds several sessions under its own wall after the wake content wall has passed', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now();
+      let env: ServerEnv | undefined;
+      for (const name of ['cut-s1', 'cut-s2', 'cut-s3', 'cut-s4', 'cut-s5']) {
+        await captureViewSession(db, 'project', name, { idOffset: 9500 + seq++ * 100 });
+        env = await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), turn(name, 'small', 100), now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+      }
+      try {
+        setSystemTime(new Date(now));
+        const outer = measuredContentEnv(env!, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        setSystemTime(new Date(now + CONTENT_WALL_MS + 1));
+        await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly: true });
+        expect(remainingInvocationBudget(outer.env.db)!.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
+      } finally {
+        setSystemTime();
+      }
+      expect((await readViewCutover(db)).built).toBeGreaterThan(1);
+    }),
+  );
+}, 120000);
+
 test('unfinished cutover work keeps the Deployment at idle until the batch completes or pauses', async () => {
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {

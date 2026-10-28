@@ -198,8 +198,13 @@ async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): 
 }
 
 /** One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. */
-export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes = databaseBytes, legacySince?: number) {
-  const env = await cutoverShare(wake, now, legacySince);
+export async function runViewCutoverWake(
+  wake: ServerEnv,
+  now: number,
+  readBytes = databaseBytes,
+  options: { legacySince?: number; ownWall?: boolean } = {},
+) {
+  const env = await cutoverShare(wake, now, options.legacySince);
   const db = env.db;
   const bytes = await readBytes(db);
   const paused = bytes !== null && bytes >= VIEW_CUTOVER_PAUSE_BYTES;
@@ -231,6 +236,7 @@ export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes
     cutover: true,
     buildPaused: paused || !classified,
     mirrorFrontier: false,
+    ownWall: options.ownWall === true,
   });
   changed += report.changed + report.published;
   const pending = await db
@@ -244,13 +250,22 @@ export async function runViewCutoverWake(wake: ServerEnv, now: number, readBytes
 }
 
 /**
- * The transcript-parse job. The batch's reads are bounded by the wake's content wall, so it runs before the legacy pass,
- * which keeps its own wall. While the batch is pending, the legacy pass reads only recently received transcripts and its
- * backlog waits for the batch. A batch failure is reported once the legacy pass has run.
+ * The transcript-parse job. The batch runs before the legacy pass, which keeps its own wall. On a full wake the batch
+ * reads within the wake's content wall, which the jobs after it share; a wake that only drains gives it its own wall.
+ * While the batch is pending, the legacy pass reads only recently received transcripts and its backlog waits for the
+ * batch. A batch failure is reported once the legacy pass has run.
  */
-export async function runTranscriptParseWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean }> {
+export async function runTranscriptParseWake(
+  env: ServerEnv,
+  now: number,
+  _state?: unknown,
+  context?: { drainOnly: boolean },
+): Promise<{ changed: number; more: boolean }> {
   const recentSince = (await cutoverPending(env.db)) ? now - VIEW_RECENT_MS : undefined;
-  const views = await runViewCutoverWake(env, now, databaseBytes, recentSince).then(
+  const views = await runViewCutoverWake(env, now, databaseBytes, {
+    legacySince: recentSince,
+    ownWall: context?.drainOnly === true,
+  }).then(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
   );

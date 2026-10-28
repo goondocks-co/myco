@@ -44,7 +44,7 @@ export function remainingContentBudget(db: RelationalStore): { statements: numbe
 /** Counts actual operations and refuses a new operation before it exceeds its admission. */
 export function measuredContentEnv<T extends { db: RelationalStore; blobs?: BlobStore }>(
   env: T,
-  limits?: { statements: number; blobCalls: number; wallMs?: number; calls?: number; enforceWall?: boolean },
+  limits?: { statements: number; blobCalls: number; wallMs?: number; calls?: number; enforceWall?: boolean; ownWall?: boolean },
 ): {
   env: T;
   usage: ContentUsage;
@@ -101,8 +101,9 @@ export function measuredContentEnv<T extends { db: RelationalStore; blobs?: Blob
       );
     },
   };
+  // An own wall replaces the enclosing owners' deadlines; their statement and blob admission still holds.
   scopes.set(db, [
-    ...(scopes.get(env.db) ?? []),
+    ...(scopes.get(env.db) ?? []).map((scope) => (limits?.ownWall === true ? { ...scope, deadline: Number.POSITIVE_INFINITY } : scope)),
     ...(limits ? [{ usage, statements: limits.statements, blobCalls: limits.blobCalls, deadline }] : []),
   ]);
   const original = env.blobs;

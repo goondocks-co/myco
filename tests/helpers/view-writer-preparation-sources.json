@@ -54,7 +54,8 @@
     "failViewBuild": "W"
   },
   "packages/myco-server/src/ingest/view-run.ts": {
-    "runViewParseJob": "W"
+    "runViewParseJob": "W",
+    "serve": "W"
   },
   "tests/myco-server/view-material-versions.test.ts": {
     "test:published sequences serialize, carry only current identity/hash, and roll back together on native and D1": "T",
@@ -283,6 +284,7 @@
     "test:a legacy backlog that outlasts the wake content wall still leaves the batch building": "T",
     "test:a pending batch publishes an old session the legacy pass never read, while legacy serves only recent transcripts": "T",
     "parsed": "T",
+    "test:a draining wake builds several sessions under its own wall after the wake content wall has passed": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
     "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
     "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T"
