@@ -39,6 +39,13 @@ export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: s
   };
 }
 
+/** Whether an automatic item of this estimate fits the budget now; a governor that is not active admits it. */
+export async function automaticFits(db: RelationalStore, estimate: number, now: number): Promise<boolean> {
+  if (!(await budgetActivation(db)).active) return true;
+  const predicate = budgetClaimPredicate({ active: true, estimate, profileJson: '' }, now);
+  return (await db.prepare(`SELECT 1 AS fits FROM (SELECT 'automatic' AS origin) WHERE ${predicate.sql}`).bind(...predicate.params).first()) !== null;
+}
+
 export async function budgetHeld(db: RelationalStore, projectId: string, runId: string, estimate: number, now: number): Promise<boolean> {
   const active = await budgetActivation(db);
   if (!active.active) return false;

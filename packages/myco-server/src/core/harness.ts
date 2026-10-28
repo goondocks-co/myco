@@ -1,6 +1,8 @@
-import { estimateForClaim } from './budget-estimates.js';
+import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
-import { budgetHeld } from './run-budget.js';
+import { automaticFits, budgetHeld } from './run-budget.js';
+import { BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, type PulledStage, type ServedQueue } from './pulled-stages.js';
 import { queueHeads } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
@@ -46,7 +48,7 @@ import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { workerClaimAdmission, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, settleLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { workerClaimAdmission, claimQueuedRun, claimPulledRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, settleLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential } from './provider-credentials.js';
@@ -995,6 +997,12 @@ export async function claimNextRun(
     excluded.push(candidate.task);
     candidate = await next();
   }
+  if (candidate === null || chosen === null) {
+    // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
+    const pulled = activation.active ? await pullAtClaim(env, worker, excluded) : null;
+    if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
+    if (pulled !== null) return pulled;
+  }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : limitHeld&&refusedHeads.size===0?'at_limit':'no_work' };
   const { harness, credentialEnv } = chosen;
   // What the claiming machine's harness listed the requested model as resolving to, so the run's model is judged against it.
@@ -1079,6 +1087,71 @@ export async function claimNextRun(
       timeoutSeconds: runTimeoutForTask(row.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
     },
   };
+}
+
+/**
+ * Create the best due pulled run for this worker, or answer null when none is admitted. The selection is reasserted
+ * inside the claim's write; a refused write reselects against fresh settings, at most `PULL_RESELECTIONS` times.
+ * When the selected head does not fit the budget nothing is pulled: cheaper work never overtakes it.
+ */
+async function pullAtClaim(
+  env: ServerEnv,
+  worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; now: number },
+  excluded: readonly string[],
+): Promise<ClaimOutcome | 'queued' | null> {
+  const stages: readonly PulledStage[] = pulledStages();
+  if (stages.length === 0) return null;
+  for (let attempt = 0; attempt < PULL_RESELECTIONS; attempt += 1) {
+    const policy = await observedSettingsGuard(env.db, [...CLAIM_SETTING_LEAVES, ...Object.values(LIMIT_LEAVES)], true);
+    const settings = await claimSettings({ ...env, db: policy.view });
+    const executions = new Map<string, SelectedExecution>();
+    for (const task of new Set(stages.map((stage) => stage.task))) {
+      if (excluded.includes(task)) continue;
+      const { selected } = await selectWorkerExecution(env, task, worker.harnesses, settings, worker.principal);
+      if (selected !== null) executions.set(task, selected);
+    }
+    const compatible = stages.filter((stage) => executions.has(stage.task));
+    const queues: ServedQueue[] = [];
+    for (const task of BUDGET_WORKER_TASKS.filter((task) => !excluded.includes(task))) {
+      const { selected } = await selectWorkerExecution(env, task, worker.harnesses, settings, worker.principal);
+      if (selected !== null) queues.push({ task, estimateKey: estimateKey(task, selected.harness, selected.profile) });
+    }
+    const limits = await readDispatchLimits(env);
+    const queued = queuedAdmissibleSql(queues, limits, worker.now);
+    const eligible: PulledStage[] = [];
+    for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);
+    const selection = await selectPulled(env.db, eligible, compatible, limits, worker.now);
+    if (selection === null) return null;
+    const { stage, item } = selection;
+    const chosen = executions.get(stage.task)!;
+    const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
+    const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
+    const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
+    const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, profile);
+    if (!(await automaticFits(env.db, price.estimate, worker.now))) return null;
+    const input = await stage.build(env, item, worker.now);
+    if (input === null) return null;
+    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: `run_${crypto.randomUUID()}`, task: stage.task, subject: item.subject, input,
+      reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params } }, {
+      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
+      settingsGuard: { sql: policy.sql, params: policy.params },
+    });
+    if (claimed === null) {
+      if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
+      if (await queuedAdmissible(env.db, queued)) return 'queued';
+      continue;
+    }
+    emit({ kind: 'worker_claimed', runId: claimed.row.id, task: claimed.row.task, projectId: claimed.row.projectId, harness: chosen.harness, ...workerTelemetry(worker.principal) });
+    return {
+      claimed: true,
+      run: {
+        ...claimed.row, instruction: input.instruction, instructions: null, harness: chosen.harness, profile,
+        runToken: claimed.issued.token, attemptId: claimed.issued.tokenId, credentialEnv: chosen.credentialEnv,
+        leaseExpiresAt: worker.now + WORKER_LEASE_MS, timeoutSeconds: runTimeoutForTask(stage.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+      },
+    };
+  }
+  return null;
 }
 
 /** Extend a lease this worker still holds, on the attempt it names when it names one. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
