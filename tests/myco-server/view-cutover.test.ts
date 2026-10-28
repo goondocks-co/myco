@@ -6,8 +6,8 @@ import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
-import { engineAssertions, WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '@myco-server-worker/core/tick.js';
-import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET } from '@myco-server-worker/ingest/view-build-queue.js';
+import { engineAssertions, WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT, BACKLOG_CHAINED_WAKE_MS } from '@myco-server-worker/core/tick.js';
+import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET, CUTOVER_SESSIONS_IN_FLIGHT } from '@myco-server-worker/ingest/view-build-queue.js';
 import { requestViewRebuild } from '@myco-server-worker/ingest/view-lifecycle.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
@@ -367,6 +367,48 @@ test('a build spends one read round trip per window and prepares the window bodi
       expect((await readViewCutover(db)).built).toBe(1);
       // Seven 64 KB windows: reading each window's rows one table at a time spends over 320 round trips.
       expect(outer.usage.roundTrips).toBeLessThan(290);
+    }),
+  );
+}, 120000);
+
+test('a batch backlog builds several sessions side by side within the wake allowance, never one session twice', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), held: string[] = [];
+      let env: ServerEnv | undefined;
+      for (let i = 0; i < 12; i++) {
+        const name = 'cut-c' + i, text = Array.from({ length: 30 }, (_, t) => turn(name, 'side' + t, 300)).join('');
+        await captureViewSession(db, 'project', name, { idOffset: 10_000 + i * 100 });
+        env = await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), text, now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+        held.push(new Bun.CryptoHasher('sha256').update(text).digest('hex'));
+        await requestViewRebuild(db, 'project', name, now);
+      }
+      const reading = new Map<string, number>();
+      let widest = 0, doubled = 0;
+      const timed: typeof blobs = { ...blobs, get: async (key, options) => {
+        const session = held.find((hash) => key.includes(hash));
+        if (session === undefined) return blobs.get(key, options);
+        reading.set(session, (reading.get(session) ?? 0) + 1);
+        if (reading.get(session)! > 1) doubled++;
+        widest = Math.max(widest, reading.size);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return await blobs.get(key, options);
+        } finally {
+          if (reading.get(session) === 1) reading.delete(session);
+          else reading.set(session, reading.get(session)! - 1);
+        }
+      } };
+      for (let wake = 0; wake < 60 && (await readViewCutover(db)).built < 12; wake++) {
+        const outer = measuredContentEnv({ ...env!, blobs: timed }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        const report = await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly: true }) as { more: boolean; continueAfterMs?: number };
+        expect(remainingInvocationBudget(outer.env.db)!.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
+        if (wake === 0) expect(report.continueAfterMs).toBe(BACKLOG_CHAINED_WAKE_MS);
+      }
+      expect((await readViewCutover(db)).built).toBe(12);
+      expect(widest).toBeGreaterThan(1);
+      expect(widest).toBeLessThanOrEqual(CUTOVER_SESSIONS_IN_FLIGHT);
+      expect(doubled).toBe(0);
     }),
   );
 }, 120000);

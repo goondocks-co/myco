@@ -48,7 +48,7 @@ export interface JobReport {
   failed: string | null;
   /** Whether the job left work another pass would take, which chains the next wake. */
   more: boolean;
-  /** A job may pace its continuation more slowly than the default drain cadence. */
+  /** A job may pace its continuation away from the default drain cadence, never sooner than `BACKLOG_CHAINED_WAKE_MS`. */
   continueAfterMs?: number;
 }
 
@@ -57,6 +57,8 @@ export interface JobReport {
  * back-to-back passes, each bounded by its own budget, rather than one pass per cadence.
  */
 export const CHAINED_WAKE_MS = 2_000;
+/** The soonest continuation a job may ask for: a backlog that fills each wake's allowance drains in near back-to-back wakes. */
+export const BACKLOG_CHAINED_WAKE_MS = 250;
 export const WAKE_JOB_STATEMENT_LIMIT = 800;
 export const WAKE_JOB_BLOB_LIMIT = 240;
 const ARCHIVE_JOBS = new Set(['storage-content-cleanup', 'transcript-retention']);
@@ -198,7 +200,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
 function continuedJobs(now: number, reports: readonly JobReport[], retained: readonly string[] = [], previous: Record<string, number> = {}) {
   const drainAt = Object.fromEntries([
     ...retained.map((name) => [name, previous[name] ?? now]),
-    ...reports.filter((job) => job.more).map((job) => [job.name, now + Math.max(CHAINED_WAKE_MS, job.continueAfterMs ?? CHAINED_WAKE_MS)]),
+    ...reports.filter((job) => job.more).map((job) => [job.name, now + Math.max(BACKLOG_CHAINED_WAKE_MS, job.continueAfterMs ?? CHAINED_WAKE_MS)]),
   ]);
   return { draining: Object.keys(drainAt), drainAt };
 }
