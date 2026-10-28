@@ -383,8 +383,9 @@ test('a batch backlog builds several sessions side by side within the wake allow
         held.push(new Bun.CryptoHasher('sha256').update(text).digest('hex'));
         await requestViewRebuild(db, 'project', name, now);
       }
+      // A segment read waits until another session's read starts; one that none joins goes ahead after a second.
       const reading = new Map<string, number>();
-      let widest = 0, doubled = 0;
+      let widest = 0, doubled = 0, waiting: (() => void)[] = [];
       const timed: typeof blobs = { ...blobs, get: async (key, options) => {
         const session = held.find((hash) => key.includes(hash));
         if (session === undefined) return blobs.get(key, options);
@@ -392,7 +393,11 @@ test('a batch backlog builds several sessions side by side within the wake allow
         if (reading.get(session)! > 1) doubled++;
         widest = Math.max(widest, reading.size);
         try {
-          await new Promise((resolve) => setTimeout(resolve, 40));
+          if (waiting.length) for (const release of waiting.splice(0)) release();
+          else await new Promise<void>((resolve) => {
+            waiting.push(resolve);
+            setTimeout(() => { waiting = waiting.filter((other) => other !== resolve); resolve(); }, 1000);
+          });
           return await blobs.get(key, options);
         } finally {
           if (reading.get(session) === 1) reading.delete(session);
