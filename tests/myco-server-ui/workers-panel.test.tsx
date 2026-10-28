@@ -59,6 +59,7 @@ describe('a machine running Myco’s work, in words', () => {
     const busy = worker({ busy: { runId: 'run_1', projectId: 'proj_ffffffffffffffffffffffffffffffff', task: null, leaseExpiresAt: NOW + 30_000 } });
     expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running a task · due to check in within 30s');
     expect(taskWords('something-new')).toBe('a task');
+    expect(taskWords('turn-cards')).toBe('learning turn cards');
   });
 
   it('says a machine has not been heard from lately without claiming it stopped', () => {

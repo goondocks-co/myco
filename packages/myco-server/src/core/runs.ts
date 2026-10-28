@@ -589,6 +589,8 @@ export interface RunRow {
   resumeStatus: string | null;
   resumeAttempts: number;
   dryRun: number;
+  /** The model the run's claim named, or null. */
+  model: string | null;
   dispatchedBy: string | null;
   /** When the worker holding this run stops holding it, or null for a run no worker claimed. */
   leaseExpiresAt: number | null;
@@ -597,7 +599,7 @@ export interface RunRow {
 const RUN_COLUMNS = `id, harness, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
-    dry_run AS dryRun, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
+    dry_run AS dryRun, model, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
 
 const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`;
 

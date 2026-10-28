@@ -37,7 +37,7 @@ async function fixture() {
     expect(await recordDispatch(f.db, { projectId }, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null,
       model: null, runContext: null, dispatchedBy: null, startedAt })).toBe(true);
     const ctx: ToolContext = { env, projectId, now, principal: { kind: 'run', runId, task: 'extract-curate', agentId: 'coverage',
-      sessionId: null, runContext: null, tokenId: 'capture', allow: runAllowlist(TASK_TOOLS['extract-curate']!, { dryRun: false }), window: readWindowFor('extract-curate') } };
+      sessionId: null, runContext: null, model: null, tokenId: 'capture', allow: runAllowlist(TASK_TOOLS['extract-curate']!, { dryRun: false }), window: readWindowFor('extract-curate') } };
     return { id: runId, ctx, call: (input: Parameters<typeof handleRunPrompts>[0]) => handleRunPrompts(input, ctx),
       serve: (rows: Parameters<typeof recordServedPrompts>[3], instanceId: string | null = null) => recordServedPrompts(f.db, { projectId }, runId, rows, now, instanceId) };
   };

@@ -81,11 +81,19 @@ export function StatusSection({ status, now, projectName }: StatusSectionProps) 
   );
 }
 
+/** The rebuild of existing session views in one line, or null once nothing is left to rebuild. */
+function rebuildWords(cutover: StatusResponse['viewCutover']): string | null {
+  if (cutover == null || cutover.remaining === 0) return null;
+  const total = cutover.built + cutover.remaining;
+  return `Rebuilding session views: ${cutover.built.toLocaleString()} of ${total.toLocaleString()} sessions${cutover.paused === 'd1_headroom' ? ', paused: database near its size limit' : ''}`;
+}
+
 function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse; now: number; projectName: StatusSectionProps['projectName']; onRetry: () => void }) {
   const harnesses = data.harnesses ?? [];
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
+  const cutover=rebuildWords(data.viewCutover);
   const measuredViews=data.views?.states.flatMap(row=>row.work?.state==='measured'?[row.work]:[])??[];
   return (
     <div className="flex flex-col gap-s4">
@@ -96,6 +104,7 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         </p>
         {data.unavailable?.includes('schema') && <ReadUnavailable label="the database version" onRetry={onRetry} />}
         {data.unavailable?.includes('transcriptBacklog') && <ReadUnavailable label="transcripts waiting to be processed" onRetry={onRetry} />}
+        {cutover !== null && <p className="t-small text-muted" data-testid="view-rebuild">{cutover}</p>}
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 

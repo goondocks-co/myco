@@ -58,6 +58,8 @@ export interface RunPrincipal {
   sessionId: string | null;
   /** The context the dispatch recorded, as stored; the run tools parse what they need from it and never take it from arguments. */
   runContext: string | null;
+  /** The model the run's claim named, or null. */
+  model: string | null;
   tokenId: string;
   allow: RunAllowlist;
   /** The current attempt's start, resolved when the credential is admitted. */
@@ -105,7 +107,7 @@ export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
     projectId: ctx.projectId,
     principal: {
       kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),
-      runContext: run.runContext, tokenId: ctx.tokenId,
+      runContext: run.runContext, model: run.model, tokenId: ctx.tokenId,
       attempt: run.resumedAt ?? run.startedAt ?? 0,
       allow: runAllowlist(taskTools(run.task), { dryRun: run.dryRun === 1 }),
       window: readWindowFor(run.task),

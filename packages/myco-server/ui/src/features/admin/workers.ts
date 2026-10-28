@@ -44,6 +44,7 @@ const TASK_WORDS: Readonly<Record<string, string>> = {
   'canopy-map': 'a code map update',
   'embedding-reconcile': 'a search index update',
   'vault-seed': 'seeding',
+  'turn-cards': 'learning turn cards',
 };
 
 /** A task in words: "learning", "titling", else "a task". */

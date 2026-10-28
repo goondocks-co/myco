@@ -103,7 +103,7 @@ describe('recording what a run read', () => {
     ];
     for (const principal of principals) noteRunReads({ ...at, principal }, ['sess_1']);
     expect(e.deferred.pending).toHaveLength(0);
-    const run = { kind: 'run', runId: 'run_t', task: TITLING, agentId: 'myco-agent', sessionId: 'sess_1', runContext: null, tokenId: harness.tokenId, allow: new Map(), window: readWindowFor(TITLING) } as const;
+    const run = { kind: 'run', runId: 'run_t', task: TITLING, agentId: 'myco-agent', sessionId: 'sess_1', runContext: null, model: null, tokenId: harness.tokenId, allow: new Map(), window: readWindowFor(TITLING) } as const;
     noteRunReads({ ...at, principal: run }, ['sess_1']);
     noteRunReads({ ...at, principal: run }, []);
     expect(e.deferred.pending).toHaveLength(1);

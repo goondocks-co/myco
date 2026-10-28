@@ -249,6 +249,19 @@ describe('Health', () => {
     expect(views.textContent).not.toContain('private-session-id');
   });
 
+  it('shows rebuild progress while sessions remain, and says when the database is near its limit', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, viewCutover: { classified: true, swept: false, built: 1200, remaining: 3400, frozenTails: 0, frozenCopying: 0, paused: 'd1_headroom', databaseBytes: 9e9 } }) }));
+    mount();
+    expect((await screen.findByTestId('view-rebuild')).textContent).toBe('Rebuilding session views: 1,200 of 4,600 sessions, paused: database near its size limit');
+  });
+
+  it('hides rebuild progress once no session remains', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, viewCutover: { classified: true, swept: true, built: 9, remaining: 0, frozenTails: 0, frozenCopying: 0, paused: null, databaseBytes: null } }) }));
+    mount();
+    await screen.findByTestId('transcript-backlog');
+    expect(screen.queryByTestId('view-rebuild')).toBeNull();
+  });
+
   it('describes insufficient catch-up capacity without claiming that recordings are falling behind',async()=>{
     server(routes({'/api/status':()=>Response.json({...STATUS,views:{
       counts:{current:1},states:[],throughput:{state:'measured',admit:false,binding_constraint:'drain_time'},
