@@ -107,7 +107,7 @@ export interface ParityScenario {
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
    * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
    */
-  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; pulledStage?: boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

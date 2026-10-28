@@ -338,14 +338,16 @@ it('GATE: interrupted recovery imports and migration resumes record a bookmark b
   await fixture({}, async ({ root, home, state, calls }) => {
     const databasePath = path.join(root, 'source.sqlite');
     const source = new Database(databasePath);
-    for (const step of SCHEMA_STEPS.filter((step) => step.version < SERVER_SCHEMA_VERSION)) source.exec(step.statements.join(';\n'));
+    // The source predates the session-view tables (step 105), so the resumed migration applies every later step.
+    const sourceVersion = 104;
+    for (const step of SCHEMA_STEPS.filter((step) => step.version <= sourceVersion)) source.exec(step.statements.join(';\n'));
     source.exec("INSERT INTO schema_meta VALUES('fixture_note','preserved')");
     source.close();
     const destination = path.join(root, 'replacement.sqlite');
     const journal = path.join(root, 'recovery.json');
     const record = readDeploymentRecord(home)!;
     const initial = JSON.parse(fs.readFileSync(state, 'utf8'));
-    const saveState = (extra: Record<string, unknown>) => fs.writeFileSync(state, JSON.stringify({ ...initial, destination, ...extra }));
+    const saveState = (extra: Record<string, unknown>) => fs.writeFileSync(state, JSON.stringify({ ...initial, destination, schema: String(sourceVersion), ...extra }));
     const restore = (failPersistence = false) => restoreCloudflareDatabase({
       accountId: ACCOUNT, mycoHome: home, configDir: path.join(home, 'server/cloudflare/deploy'), configFile: 'wrangler.deploy.toml',
       databaseName: record.databaseName, databasePath, sourceFingerprint: 'a'.repeat(64),
