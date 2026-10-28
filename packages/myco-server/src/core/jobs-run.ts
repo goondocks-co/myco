@@ -1,3 +1,4 @@
+import { learningInit } from './learning-sessions.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS } from './budget-policy.js';
 import { dailyBudget,effectiveBudgetSql } from './settings.js';
@@ -231,6 +232,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
+  'learning-init': (env, now) => learningInit(env, now),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
     return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });

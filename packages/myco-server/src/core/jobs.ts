@@ -25,7 +25,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { declared } from './declared.js';
 import type { PowerState } from './power.js';
 import { POWER_STATE_DEPTH } from './power.js';
-import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 
 export interface ServerJob {
   name: string;
@@ -78,6 +78,7 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  { name: 'learning-init', runsThrough: 'sleep', converges: 'every session is classified for learning once, newest first, in bounded pages with its cursor committed per page; a ready session has a card due for each turn it holds, and one held for publication waits until its first publication' },
   { name: 'estimate-refresh', runsThrough: 'sleep', converges: 'each priced stage and execution profile has its own recent cost and exposure sample' },
   { name: 'raw-provenance-backfill', runsThrough: 'sleep', converges: 'every historical raw reference and processed field has immutable provenance, through bounded checkpointed pages' },
   {
@@ -247,6 +248,7 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
   'embedding-reconcile': null,
   [EXTRACTION_TASK]: null,
+  [CARD_TASK]: null,
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,
 };

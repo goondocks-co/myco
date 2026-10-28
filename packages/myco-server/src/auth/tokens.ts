@@ -1,6 +1,6 @@
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
-import { HARNESS_MEMBER_ID, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
+import { HARNESS_MEMBER_ID, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
@@ -9,7 +9,7 @@ import type { DashboardMember } from './identity-link.js';
 import { authorize, credentialResource, machineResource, memberSubject, memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
-export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export { MEMBER_TOKEN_TTL_MS };
 /** The tail of a token's life in which a refresh is admitted: the last quarter of the TTL. */
 export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
 /** How long after its issue (the lineage's last refresh, or the join) a lapsed token may still refresh. Longer than the TTL, so it never bounds a live token. */

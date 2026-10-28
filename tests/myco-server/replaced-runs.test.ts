@@ -125,13 +125,13 @@ describe('the run that stands in for a replaced one', () => {
     expect(f.specOf((result as { runId: string }).runId).actor).toBe(actor ?? '');
   });
 
-  it('refuses an extraction successor while learning is paused', async () => {
+  it('queues a learning successor once learning has resumed', async () => {
     const f = await fixture();
     await dispatched(f, 'run_a', 'extract-curate', { timeoutSeconds: 900, fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
-    expect(outcome).toEqual({ requeued: false, reason: 'refused' });
-    expect(f.rows()).toHaveLength(1);
+    expect(outcome).toMatchObject({ requeued: true, queued: true });
+    expect(f.rows()).toHaveLength(2);
   });
 
   it('stops at the day\'s cap on re-queues of one task, and the cap is a named number', async () => {

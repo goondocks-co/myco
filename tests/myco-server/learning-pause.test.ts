@@ -6,20 +6,21 @@ import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken, mintInsert, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
-import { claimNextRun, expireLeases, renewLease, dispatchTask, endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { claimNextRun, expireLeases, renewLease, endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { claimQueuedRun, nextClaimable, workerClaimAdmission, NO_LIMITS } from '@myco-server-worker/core/runs.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { PROFILE_HARNESSES } from '@goondocks/myco-shared/execution-profile';
-import { LEARNING_PAUSE_MESSAGE } from '@myco-server-worker/core/task-catalogue.js';
-import { dispatchRefusalMessage } from '@myco-server-worker/core/harness.js';
 
 const NOW = 1_800_000_000_000;
 const OFFERS = [offeredHarness('claude-code')];
+const PROFILE = { tier: 'default' as const, model: PROFILE_HARNESSES['claude-code'].models.default!, effort: null, sources: { tier: 'task' as const, model: 'default' as const } };
 
 async function fixture(options: Parameters<typeof sqliteEnv>[0] = {}) {
   const f = sqliteEnv({ workerLogin: true, ...options });
+  // The window between the pause and whole-session learning: paused, not yet resumed.
+  f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
   await ensureMember(f.db, HARNESS_MEMBER_ID, NOW, 'member');
   await ensureMember(f.db, 'mem_worker', NOW, 'admin');
   const token = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'machine' }, NOW);
@@ -29,16 +30,20 @@ async function fixture(options: Parameters<typeof sqliteEnv>[0] = {}) {
     `INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,instruction,dispatch_spec,run_context)
      VALUES('proj_1',?,'myco-agent',?,'queued',?,'legacy input',?,'{"timeoutSeconds":900}')`,
     [id, task, NOW, JSON.stringify({ serverUrl: 'https://example.test', params: { session_id: 'session', mode: 'claim' } })]);
-  return { ...f, principal, queue, worker: { principal, harnesses: OFFERS, now: NOW + 1 } };
+  // An extraction claimed before the pause carried its stored thin input, so it is claimed through the capability itself.
+  const claimThin = async () => {
+    const claimed = await claimQueuedRun(f.serverEnv, (await nextClaimable(f.db, []))!, {
+      worker: principal, harness: 'claude-code', now: NOW + 1, leaseExpiresAt: NOW + 1 + WORKER_LEASE_MS, profile: PROFILE,
+    });
+    return claimed === null ? { claimed: false as const } : { claimed: true as const, run: { attemptId: claimed.issued.tokenId } };
+  };
+  return { ...f, principal, queue, claimThin, worker: { principal, harnesses: OFFERS, now: NOW + 1 } };
 }
 
-it('refuses clock and hand learning without creating a run', async () => {
+it('never schedules learning on the clock', async () => {
   const f = await fixture();
   try {
     expect(TASK_SCHEDULE['extract-curate']).toBeNull();
-    expect(await dispatchTask(f.serverEnv, 'extract-curate', 'proj_1', { serverUrl: 'https://example.test', actor: 'owner' }, NOW))
-      .toMatchObject({ dispatched: false, refusal: 'not_landed' });
-    expect(dispatchRefusalMessage('not_landed', 'extract-curate')).toBe(LEARNING_PAUSE_MESSAGE);
     await runScheduledTasks(f.serverEnv, 'idle', NOW, 'https://example.test');
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE task='extract-curate'").get()).toEqual({ n: 0 });
   } finally { f.sqlite.close(); }
@@ -66,10 +71,9 @@ it('fences a prepared claim before queued cleanup and permits the low-level clai
     const candidate = (await nextClaimable(f.db, []))!;
     const admission = { limits: NO_LIMITS, now: NOW + 1 };
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
-    const profile = { tier: 'default' as const, model: PROFILE_HARNESSES['claude-code'].models.default!, effort: null, sources: { tier: 'task' as const, model: 'default' as const } };
     const claim = () => claimQueuedRun(f.serverEnv, candidate, {
       worker: f.principal, harness: 'claude-code', now: NOW + 1,
-      leaseExpiresAt: NOW + WORKER_LEASE_MS, profile,
+      leaseExpiresAt: NOW + WORKER_LEASE_MS, profile: PROFILE,
     });
     expect(await claim()).toBeNull();
     expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='race'").get()).toEqual({ status: 'queued' });
@@ -90,7 +94,7 @@ it('fails a paused lapsed extraction exactly once and retains its original attem
   try {
     f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_paused_at'");
     f.queue('held');
-    const claimed = await claimNextRun(f.serverEnv, f.worker);
+    const claimed = await f.claimThin();
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) throw new Error('pre-pause fixture did not claim');
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
@@ -125,7 +129,7 @@ it('leaves a replaced attempt and both credentials untouched when the lapse snap
   try {
     f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_paused_at'");
     f.queue('replaced');
-    const claim = await claimNextRun(f.serverEnv, f.worker);
+    const claim = await f.claimThin();
     if (!claim.claimed) throw new Error('the pre-pause extraction did not acquire its lease');
     replacementId = (await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW + 2)).tokenId;
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
@@ -146,7 +150,7 @@ it('allows an extraction already under lease to report and complete during the p
   try {
     f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_paused_at'");
     f.queue('finishing');
-    const claim=await claimNextRun(f.serverEnv,f.worker);
+    const claim=await f.claimThin();
     if(!claim.claimed) throw new Error('the pre-pause extraction did not acquire its lease');
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
     await recordRunWrite(f.db,{projectId:'proj_1'},{runId:'finishing',toolName:'myco_run_prompts',op:'mark_processed',recordedAt:NOW+1,detail:{served_id:'fixture-served'}});

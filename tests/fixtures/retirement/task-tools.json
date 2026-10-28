@@ -6,6 +6,7 @@
   "embedding-reconcile": [],
   "extract-curate": [
     "vault_unprocessed",
+    "vault_learning",
     "vault_mark_processed",
     "vault_sessions",
     "vault_spores",
@@ -31,5 +32,9 @@
     "vault_session_summary_material",
     "vault_unprocessed",
     "vault_update_session"
+  ],
+  "turn-cards": [
+    "vault_turn_cards",
+    "vault_report"
   ]
 }

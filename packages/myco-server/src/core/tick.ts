@@ -1,3 +1,4 @@
+import { learningInitPending } from './learning-sessions.js';
 import { estimateRefreshDue } from './budget-estimates.js';
 import { cutoverPending } from '../ingest/view-cutover-pending.js';
 import { storageCleanupPending } from './storage-cleanup.js';
@@ -160,6 +161,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const [inside, queued,budgetQueued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db,'other'),hasQueuedRun(env.db,'budget')]);
   const assertions: PowerAssertion[] = [];
   if (await estimateRefreshDue(env.db,now)) assertions.push({name:'estimate:due',maxDepth:'sleep'});
+  if (await learningInitPending(env.db)) assertions.push({ name: 'learning:init', maxDepth: 'sleep' });
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });

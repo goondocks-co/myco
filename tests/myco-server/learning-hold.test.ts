@@ -11,10 +11,13 @@ import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 
 const NOW = 1_800_000_000_000;
 const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')";
+/** The pause window, before whole-session learning resumes, when the hold reads unread facts and unpublished transcripts. */
+const paused = "DELETE FROM schema_meta WHERE key='learning_resumed_at'";
 
 it('releases acknowledged facts while retaining the same prompt identity in another Project',async()=>{
   const f=sqliteEnv();
   try {
+    f.sqlite.run(paused);
     await captureViewSession(f.db,'proj_1','shared-session');
     await captureViewSession(f.db,'proj_2','shared-session');
     f.sqlite.run(enable);
@@ -33,6 +36,7 @@ it('releases acknowledged facts while retaining the same prompt identity in anot
 
 it('retains unread facts without imposing session settlement and applies owner switches on both stores', async () => {
   await withViewStores(async db => {
+    await db.prepare(paused).run();
     await captureViewSession(db);
     await db.prepare(enable).run();
     expect(await learningHolds(db, 'project', 'session')).toBe(true);
@@ -61,6 +65,7 @@ it('retains unread facts without imposing session settlement and applies owner s
 it('advances past learning-held inline sessions and revisits them after release', async () => {
   const f = sqliteEnv();
   try {
+    f.sqlite.run(paused);
     await captureViewSession(f.db, 'proj_1', 'held');
     f.sqlite.run(enable);
     f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','unheld','m','token',1,1)");
@@ -79,6 +84,7 @@ it('advances past learning-held inline sessions and revisits them after release'
 it('refuses inline archival when an admitted prompt lands after selection, without changing selected source', async () => {
   const f = sqliteEnv();
   try {
+    f.sqlite.run(paused);
     await captureViewSession(f.db, 'proj_1', 'race');
     f.sqlite.run(enable);
     f.sqlite.run("UPDATE prompt_batches SET processed=1 WHERE session_id='race'");

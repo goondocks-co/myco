@@ -201,8 +201,8 @@ test.describe('Myco’s work', () => {
       try {
         await page.getByRole('button', { name: 'Run a task' }).click();
         const menu = page.getByRole('menu');
-        await expect(menu.getByRole('menuitem')).toHaveCount(2);
-        await expect(menu.getByRole('menuitem', { name: /Learn from new sessions now/ })).toHaveCount(0);
+        await expect(menu.getByRole('menuitem')).toHaveCount(3);
+        await expect(menu.getByRole('menuitem', { name: /Learn from new sessions now/ })).toHaveCount(1);
         // One way to start the map: the menu. The map's card carries no button of its own.
         await expect(card(page, 'map').getByRole('button', { name: 'Update now' })).toHaveCount(0);
         await expectAxeClean(page, ['[role="menu"]']);

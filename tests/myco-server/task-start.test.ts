@@ -179,7 +179,7 @@ describe('previewing a task started by hand', () => {
     const answer = await r.send('GET', '/api/tasks');
     const tasks = (answer.body as { tasks: Array<{ task: string; startable: boolean; triggers: string[] }> }).tasks;
     expect(tasks.map((task) => task.task).sort()).toEqual([...RETAINED_TASKS].sort());
-    expect(tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'vault-seed']);
+    expect(tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
     for (const task of tasks) expect(task.triggers.includes('When a person chooses Run a task.')).toBe(task.startable);
   });
 });

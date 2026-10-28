@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { admissionForTask, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { admissionForTask, CARD_TASK, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, PULLED_ONLY_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
@@ -24,6 +24,9 @@ const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
 /** Canopy's two tasks belong to the map task's own issue and are gated there. */
 const OWNED_ELSEWHERE = new Set(['canopy-describe', 'harness-health']);
+
+/** The learning stages close on their own write and accept no skip: a stage run is only created with work to do. */
+const STAGE_TASKS = [EXTRACTION_TASK, CARD_TASK];
 
 describe('the task catalogue', () => {
   it('names a gate for every task the ledger keeps, and none it does not', () => {
@@ -128,8 +131,8 @@ describe('the four run outcomes', () => {
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task)).sort());
-    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
+    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
   });
 
   it('each close on a rule that names an artifact the server can see, and accept a skip only where the server reads to agree with it', () => {
@@ -140,7 +143,7 @@ describe('the four run outcomes', () => {
     for (const task of OUTCOME_TASKS.filter((t) => t !== MAP_TASK)) {
       const rule = RUN_CLOSE_RULES[task];
       expect({ task, artifact: typeof rule?.artifact, skip: rule?.reports.includes(RUN_SKIP_ACTION), skipHolds: typeof rule?.skipHolds })
-        .toEqual({ task, artifact: 'function', skip: task !== EXTRACTION_TASK, skipHolds: task === EXTRACTION_TASK ? 'undefined' : 'function' });
+        .toEqual({ task, artifact: 'function', skip: !STAGE_TASKS.includes(task), skipHolds: STAGE_TASKS.includes(task) ? 'undefined' : 'function' });
     }
     // A rule that accepts the skip reads the server's own answer for it; no rule reads one for a skip it does not accept.
     for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {

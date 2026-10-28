@@ -93,7 +93,9 @@ it('keeps the destination pause and preferences when portable artifacts restore 
   const source=sqliteEnv();
   const target=sqliteEnv();
   try {
-    source.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_resumed_at','2')");
+    source.sqlite.run("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('learning_resumed_at','2')");
+    // The destination is in the pause window, before whole-session learning resumes.
+    target.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
     source.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks','{\"extract-curate\":{\"memberRunsPerDay\":7}}',1,'source-owner')");
     target.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks','{\"extract-curate\":{\"memberRunsPerDay\":9}}',1,'target-owner')");
     source.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)");

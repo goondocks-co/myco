@@ -225,7 +225,7 @@ describe('task execution profiles', () => {
 
   it('declares exactly the worker outcomes and no high default', () => {
     const tiers = (catalogue as unknown as { TASK_TIERS?: Record<string, string> }).TASK_TIERS;
-    expect(tiers).toEqual({ 'title-summary': 'low', 'extract-curate': 'default', 'canopy-map': 'default', 'vault-seed': 'default' });
+    expect(tiers).toEqual({ 'title-summary': 'low', 'extract-curate': 'default', 'turn-cards': 'low', 'canopy-map': 'default', 'vault-seed': 'default' });
     expect(Object.keys(tiers ?? {}).sort()).toEqual([...catalogue.OUTCOME_TASKS].sort());
   });
 

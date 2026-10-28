@@ -300,6 +300,7 @@ describe('running a task by hand', () => {
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
     await waitFor(() => expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Learn from new sessions nowLast ran today at 14:00',
       'Update the code map nowLast ran today at 12:30',
       `Learn from the project’s code${TASK_DESCRIPTIONS.find((task) => task.task === 'vault-seed')!.description}`,
     ]));
@@ -397,8 +398,9 @@ describe('running a task by hand', () => {
     mount(`/p/${P}/work`);
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
-    await waitFor(() => expect(within(menu).getAllByRole('menuitem')[0]!.textContent).toBe('Update the code map nowThe code map is switched off for this project.'));
-    fireEvent.click(within(menu).getAllByRole('menuitem')[0]!);
+    const mapItem = await within(menu).findByRole('menuitem', { name: /Update the code map now/ });
+    await waitFor(() => expect(mapItem.textContent).toBe('Update the code map nowThe code map is switched off for this project.'));
+    fireEvent.click(mapItem);
     dialog = await screen.findByRole('dialog');
     const offLine = dialog.querySelector('[data-capability-off]') as HTMLElement;
     expect(offLine.textContent).toBe('The code map is switched off for this project.An admin can turn it on in the project’s settings.');

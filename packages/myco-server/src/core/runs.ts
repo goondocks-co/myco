@@ -1346,6 +1346,8 @@ export interface PulledCandidate {
   input: ClaimedInput;
   /** The selection the stage reasserts inside the write: level, head and fairness. */
   reassertion: { sql: string; params: unknown[] };
+  /** What the stage adds to the claim's batch, given the attempt the batch mints. */
+  claimed?: (dispatchedBy: string) => PreparedStatement[];
 }
 
 /**
@@ -1427,14 +1429,14 @@ export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, r
 }
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
-export interface ClaimedInput { instruction: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec }
+export interface ClaimedInput { instruction: string; instructions?: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec; context?: Readonly<Record<string, unknown>>; subject?: string }
 
 export function claimedInputStatement(
   db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string, input: ClaimedInput,
 ): PreparedStatement {
   return db.prepare(
     `UPDATE agent_runs SET instruction = ?, run_context = json_patch(COALESCE(run_context, '{}'), ?) WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?`,
-  ).bind(input.instruction, JSON.stringify({ input_hash: input.inputHash, counts: input.counts, checkout: input.repository ?? null }), scope.projectId, runId, dispatchedBy);
+  ).bind(input.instruction, JSON.stringify({ ...input.context, input_hash: input.inputHash, counts: input.counts, checkout: input.repository ?? null }), scope.projectId, runId, dispatchedBy);
 }
 
 /** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */

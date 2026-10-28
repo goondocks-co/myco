@@ -15,7 +15,8 @@ import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { TURN_CARD_PROMPT } from '../core/turn-card-prompt.js';
 import { EXTRACTION_RULES } from '../core/extraction-rules.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
 import { runAllowlist } from '../mcp/run-allowlist.js';
@@ -42,13 +43,14 @@ export interface TaskDescription {
 }
 
 /** Whether a person may start the task by hand from Run a task: every worker-served task but titling, which a person asks for one session at a time. */
-export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK && !UNLANDED_TASKS.includes(task);
+export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK && !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task);
 
 /** The launch builder owns its template; runtime tasks carry no server-built prompt. */
 export function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
   const builder = inputBuilderFor(task);
   if (builder !== null) return builder.template(patterns);
   if (UNLANDED_TASKS.includes(task)) return { promptTemplate: null, standingRules: task === EXTRACTION_TASK ? EXTRACTION_RULES : null, templateVariants: [] };
+  if (task === CARD_TASK) return { promptTemplate: TURN_CARD_PROMPT, standingRules: null, templateVariants: [] };
   if (!RUNTIME_SERVED_TASKS.includes(task)) throw new Error(`No task template for ${task}`);
   return { promptTemplate: null, standingRules: null, templateVariants: [] };
 }
@@ -142,7 +144,8 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
         ...(schedule.runWhenCold === true ? [] : [`Waits if the project has been quiet for more than ${leaves.coldThresholdDays} days.`])]),
     ];
     if (task === TITLING_TASK) triggers.push('After a session ends and its material is ready.', 'When a person asks for a fresh session title.', ...scheduleWords(scheduleFor(task, TITLING_BACKFILL_SCHEDULE, leaves.overrides), leaves.enabled).map((line) => `Untitled past sessions: ${line}`));
-    else if (startableByHand(task)) triggers.push('When a person chooses Run a task.');
+    else if (task === CARD_TASK) triggers.push('After a turn of a session finishes, while learning is on.');
+    else if (startableByHand(task)) triggers.push(...(task === EXTRACTION_TASK ? ['After a session’s turns are carded, while learning is on.'] : []), 'When a person chooses Run a task.');
     else if (task === 'embedding-reconcile') {
       const job = SERVER_JOBS.find((job) => job.name === task);
       if (job === undefined) throw new Error(`No upkeep job for ${task}`);

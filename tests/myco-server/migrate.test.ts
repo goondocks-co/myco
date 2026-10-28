@@ -123,6 +123,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0107_v107.sql': 'baf72d227e20a9f4632af5b50c76323cd30ff8e7c4b2a10d064b04df9e503a89',
   '0108_v108.sql': '3e765561e232a9080f8399896669626909343e6e298268b59659dc9e0447ff1f',
   '0109_v109.sql': '5205f6e214876498cdf2423be30831ff9c9984894ea32967d09c762f5993e539',
+  '0110_v110.sql': '6c7f344d5df92707160fb473b8973e28f17bdaeaa049e64e04c8609192872a14',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -787,6 +788,7 @@ describe('versioned schema steps', () => {
           : t === 'injection_served_items' && c.name === 'kind' ? "'plan'"
           : t === 'session_artifacts' && c.name === 'kind' ? "'pr'" : t === 'session_artifacts' && c.name === 'url' ? "'https://x'"
           : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
+          : t === 'turn_cards' && c.name === 'state' ? "'pending'" : t === 'turn_cards' && c.name === 'signal' ? "'none'"
           : c.name === 'scope_reason' || c.name.startsWith('delivered_') || c.name === 'claim' ? 'NULL' : c.name === 'ask_protocol' ? "'v1'"
           : t === 'archive_bundles' && (c.name === 'version' || c.name === 'entry_count') ? '1' : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
@@ -806,6 +808,7 @@ describe('versioned schema steps', () => {
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
       'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
+      'learning_init_queue', 'turn_cards',
       ...VIEW_SESSION_TABLES,
     ].sort());
   });

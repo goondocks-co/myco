@@ -21,10 +21,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LEDGER_ENABLED_AT } from '@myco-server-worker/db/schema-v95.js';
 import { GUARD_ENABLED_AT } from '@myco-server-worker/db/schema-v101.js';
-import { LEARNING_PAUSED_AT } from '@myco-server-worker/core/learning-pause.js';
+import { LEARNING_PAUSED_AT, LEARNING_RESUMED_AT } from '@myco-server-worker/core/learning-pause.js';
 import { DEPLOYMENT_ID_KEY, migrateAndSeed, seededSqlite } from './helpers/d1.js';
 
-const MIGRATION_TIMESTAMPS = [LEDGER_ENABLED_AT, GUARD_ENABLED_AT, LEARNING_PAUSED_AT];
+const MIGRATION_TIMESTAMPS = [LEDGER_ENABLED_AT, GUARD_ENABLED_AT, LEARNING_PAUSED_AT, LEARNING_RESUMED_AT];
 
 function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, unknown[]> } {
   const schema = sqlite.query(`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`).all();

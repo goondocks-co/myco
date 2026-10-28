@@ -38,6 +38,40 @@ const SWEEP: ReadWindow = {
   sessionLabelChars: RUN_SESSION_LABEL_CHARS,
 };
 
+/** What one turn's trimmed card input may carry, by part: built by code, never by a model, and never a file body. */
+export const TURN_INPUT_BUDGETS = {
+  /** The prompt and every steering prompt are carried whole up to this many characters each. */
+  promptChars: 8_000,
+  /** The agent's replies in the turn, verbatim, together. */
+  replyChars: 6_000,
+  /** One routine tool call's arguments. */
+  toolArgChars: 300,
+  /** One shell command, or a failed call's arguments, verbatim. */
+  commandChars: 2_000,
+  /** One failed call's error message, verbatim. */
+  errorChars: 4_000,
+  /** The head and the tail of one tool result's held preview. */
+  resultHeadChars: 400,
+  resultTailChars: 400,
+  /** Error lines kept from one tool result beyond its head and tail. */
+  resultErrorLines: 12,
+  /** Every failed call and every command, across the whole turn, before any routine material: the declared ceiling. */
+  exceptionChars: 40_000,
+  /** Routine successful calls and their results together; the ones past it are counted by name. */
+  routineChars: 16_000,
+} as const;
+
+/** The trimmed input one card run reads across the turns it cards. */
+export const CARD_RUN_INPUT_CHARS = 60_000;
+/** The ceiling of one card: a routine turn writes a few lines, a turn with a gotcha writes what it needs up to here. */
+export const CARD_MAX_CHARS = 12_000;
+/** The cards one learning slice reads; a longer session is learned in several slices. */
+export const LEARNING_SLICE_CHARS = 240_000;
+/** One raw turn a learning run opens for a high-signal card. */
+export const RAW_TURN_CHARS = 40_000;
+/** Raw turns one learning run may open. */
+export const RAW_TURN_OPENS = 4;
+
 /** The window a run of this task reads inside. */
 export function readWindowFor(_task: string | null): ReadWindow {
   return SWEEP;

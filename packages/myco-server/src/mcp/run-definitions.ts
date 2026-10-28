@@ -109,6 +109,35 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       required: ['op'],
     },
   },
+  {
+    name: 'myco_run_cards',
+    description: 'The turns this card run was assigned: read their trimmed inputs, then write one card per turn.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['material', 'write'], description: 'material: the assigned turns, each with its turn_key and trimmed input. write: the cards, once.' },
+        cards: { type: 'array', description: 'For write: [{ turns: [turn_key…], signal: "none"|"low"|"high", card: { asked, done, outcome, decisions, rejected, errors, corrections, files, commands, open_questions } }]. Every served turn_key appears in exactly one card.' },
+        [PROJECT_PIVOT]: project,
+      },
+      required: ['op'],
+    },
+  },
+  {
+    name: 'myco_run_learning',
+    description: 'The slice of one session this learning run was assigned: its turn cards, the raw turn behind a high-signal card, and the completion that marks the slice learned.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['material', 'get', 'complete'], description: 'material: the slice\'s cards and the previous slice\'s handoff. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next.' },
+        turn_key: { type: 'string', description: 'For get: the card whose raw turn to read.' },
+        handoff: { type: 'string', description: 'For complete: at most 4 KB for the next slice of this session.' },
+        [PROJECT_PIVOT]: project,
+      },
+      required: ['op'],
+    },
+  },
 ];
 
 /** One run-only definition by name, or undefined. */

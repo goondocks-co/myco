@@ -79,7 +79,7 @@ it('returns task names without prompts, rules or settings', async () => {
 });
 
 it('pins close-rule product and skip wording and all scheduled condition labels', () => {
-  const products: Record<string, string> = { 'canopy-map': 'code map', 'title-summary': 'title', 'extract-curate': 'prompt', 'vault-seed': 'spore' };
+  const products: Record<string, string> = { 'canopy-map': 'code map', 'title-summary': 'title', 'extract-curate': 'prompt', 'turn-cards': 'turn cards', 'vault-seed': 'spore' };
   for (const [task, rule] of Object.entries(RUN_CLOSE_RULES)) {
     if (rule.skipHolds !== undefined) expect(rule.description.join(' ')).toMatch(/skip/);
     if (rule.artifact !== undefined) expect(rule.description.join(' ')).toContain(products[task]!);

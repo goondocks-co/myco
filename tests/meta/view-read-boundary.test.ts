@@ -222,7 +222,7 @@ describe('view read runtime boundary controls', () => {
 
   test('an admitted exception origin cannot add a protected relation through an SQL fragment',async()=>{
     const origins=preparationOrigins,origin=origins.find(row=>row.id==='maintenance-learning-hold')!;
-    expect(origin.relations).toEqual(['session_views']);
+    expect(origin.relations).toEqual(['learning_sessions','session_views']);
     const statement={sql:'SELECT 1 FROM session_views',operation:'probe',phase:origin.phase,statementId:'hold',exceptionId:origin.id,origin};
     const options={known:new Set<string>(),legacy:new Set<string>(),origins};
     expect(readPreparationViolations([statement],options)).toEqual([]);
@@ -1092,7 +1092,7 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(dependencyDiffs).toHaveLength(0);
  const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
  const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
- expect(repinned).toHaveLength(17);
+ expect(repinned).toHaveLength(18);
  for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);
