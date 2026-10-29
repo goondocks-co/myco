@@ -31,7 +31,11 @@ export type FlipResult =
   | { published: true; rows: number; wallMs: number; overrun: boolean }
   | {
       published: false;
-      reason: 'view_not_ready' | 'view_flip_content_wall_exceeded' | 'view_flip_admission_unavailable';
+      reason:
+        | 'view_not_ready'
+        | 'view_flip_content_wall_exceeded'
+        | 'view_flip_admission_unavailable'
+        | 'view_flip_budget_exhausted';
     };
 
 /** An empty initial instance is admitted only before any session transcript exists. */
@@ -471,12 +475,15 @@ export async function tryPublishView(
       .bind(target.projectId, target.sessionId),
     ...finishVersionStatements(db, target.projectId, target.sessionId, attempt),
   ];
+  const statements = writes.length + measured.usage.statements + 1;
   if (
-    writes.length + measured.usage.statements + 1 > Math.min(limits.statements, envelope.measurement!.statements) ||
+    statements > envelope.measurement!.statements ||
     measured.usage.roundTrips + 2 > envelope.measurement!.roundTrips ||
     clock() - started > CONTENT_WALL_MS
   )
     return { published: false, reason: 'view_flip_content_wall_exceeded' };
+  // A flip within the envelope that this invocation's remaining statements cannot hold fits a fresh allowance.
+  if (statements > limits.statements) return { published: false, reason: 'view_flip_budget_exhausted' };
   let result;
   try {
     result = await db.batch(writes);

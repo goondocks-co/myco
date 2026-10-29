@@ -171,7 +171,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const backlog = await pendingTranscripts(env.db, now);
   if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
   if (backlog.imported.transcripts > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
-  if (await cutoverPending(env.db)) assertions.push({ name: 'view-cutover:pending', maxDepth: 'idle' });
+  if (await cutoverPending(env.db, now)) assertions.push({ name: 'view-cutover:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
   else if (await embeddingSweepPending(env, now)) assertions.push({ name: EMBEDDING_SWEEP_ASSERTION, maxDepth: 'sleep' });
   // Requested work that waits keeps the Deployment awake until it runs.

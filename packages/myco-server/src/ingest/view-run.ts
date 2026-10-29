@@ -233,11 +233,13 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
         }
         refusal = flip.reason === 'view_not_ready' ? null : flip.reason;
         // A built session whose flip exceeds the content wall is refused alike on every attempt: it waits out the
-        // failure backoff instead of holding a lane.
+        // failure backoff instead of holding a lane. One this invocation cannot hold stays buildable for the next wake.
         if (flip.reason === 'view_flip_content_wall_exceeded') {
           await failViewBuild(building.env.db, target, flip.reason, now);
+          changed++;
           break;
         }
+        if (flip.reason === 'view_flip_budget_exhausted') break;
         if (report === null || report.failure !== null) break;
       }
     } catch (error) {

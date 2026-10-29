@@ -484,13 +484,36 @@ test('a tail every publication refuses waits for the next full wake, which hands
   });
 }, 120000);
 
-test('a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane', async () => {
+test('a fitting flip this wake cannot hold stays buildable and publishes on the next wake', async () => {
+  await withViewStores(async (db, target) =>
+    withViewWriterDriver(async () => {
+      const native = target === 'native', blobs = memoryBlobStore(), now = Date.now();
+      await captureViewSession(db, 'project', 'cut-s', { idOffset: 14_000 });
+      const env = await captureViewTranscript(db, blobs, 'cut-s', 'tx_' + 'e'.repeat(32), turn('cut-s', 'short', 100), now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+      await requestViewRebuild(db, 'project', 'cut-s', now);
+      const envelope = productionFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial');
+      const run = (statements: number, flip = envelope) => runViewParseJob(measuredContentEnv(env, { statements, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS }).env, now, {
+        profile: native ? PARALLEL_VIEW_BUDGET : SERIAL_VIEW_BUDGET, envelope: flip, cutover: true, mirrorFrontier: false,
+      });
+      // Built while publication is unavailable, then offered a flip with fewer statements left than it needs.
+      await run(WAKE_JOB_STATEMENT_LIMIT, { ...envelope, measurement: null });
+      expect((await run(240)).published).toBe(0);
+      const row = await db.prepare(`SELECT w.state,s.last_failure FROM view_build_work w JOIN session_views s USING(project_id,session_id) WHERE w.session_id='cut-s'`).first<{ state: string; last_failure: string | null }>();
+      expect(row?.state).not.toBe('waiting');
+      expect(row?.last_failure).toBeNull();
+      expect((await run(WAKE_JOB_STATEMENT_LIMIT)).published).toBe(1);
+    }),
+  );
+}, 120000);
+
+test('a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane, then retries when due', async () => {
   await withViewStores(async (db, target) =>
     withViewWriterDriver(async () => {
       const native = target === 'native', blobs = memoryBlobStore(), now = Date.now();
       await captureViewSession(db, 'project', 'cut-p', { idOffset: 13_000 });
       const env = await captureViewTranscript(db, blobs, 'cut-p', 'tx_' + 'd'.repeat(32), turn('cut-p', 'walled', 100), now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
       await requestViewRebuild(db, 'project', 'cut-p', now);
+      await db.prepare(`INSERT INTO cutover_progress(id,updated_at,classified_at,swept_at) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET classified_at=excluded.classified_at,swept_at=excluded.swept_at`).bind(now, now, now).run();
       const fixture = fixtureFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial');
       const envelope = { ...fixture, measurement: { ...fixture.measurement!, workload: { ...fixture.measurement!.workload, candidate_prompt_rows: 0 } } };
       const state = () => db.prepare(`SELECT state,next_attempt_at FROM view_build_work WHERE session_id='cut-p'`).first<{ state: string; next_attempt_at: number | null }>();
@@ -499,6 +522,12 @@ test('a built session whose flip exceeds the content wall waits out its backoff 
       expect(await state()).toEqual({ state: 'waiting', next_attempt_at: now + VIEW_FAILURE_BACKOFF[0] });
       expect(await db.prepare(`SELECT last_failure FROM session_views WHERE session_id='cut-p'`).first()).toEqual({ last_failure: 'view_flip_content_wall_exceeded' });
       expect((await readViewCutover(db)).built).toBe(0);
+      const due = now + VIEW_FAILURE_BACKOFF[0], held = async (at: number) => (await engineAssertions(env, at)).some((a) => a.name === 'view-cutover:pending' && a.maxDepth === 'idle');
+      expect(await held(due - 1)).toBe(false);
+      expect(await held(due)).toBe(true);
+      const outer = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+      await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, due, 'idle', { drainOnly: false });
+      expect((await readViewCutover(db)).built).toBe(1);
     }),
   );
 }, 120000);

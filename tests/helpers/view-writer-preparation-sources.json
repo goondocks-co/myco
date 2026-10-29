@@ -290,7 +290,8 @@
     "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
     "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T",
     "test:a tail of one ready session and yielded sessions below a sweep page builds them side by side": "T",
-    "test:a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane": "T",
+    "test:a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane, then retries when due": "T",
+    "test:a fitting flip this wake cannot hold stays buildable and publishes on the next wake": "T",
     "state": "T"
   },
   "packages/myco-server/src/ingest/view-plan-promotion.ts": {

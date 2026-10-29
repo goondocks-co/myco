@@ -197,13 +197,14 @@ async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): 
   }).env;
 }
 
-/** The batch holds a backlog: any session it can build now, and no headroom pause. */
-export async function cutoverBacklog(db: RelationalStore): Promise<boolean> {
+/** The batch holds a backlog: more sessions it can build now than a wake's `lanes` take, and no headroom pause. */
+export async function cutoverBacklog(db: RelationalStore, lanes: number): Promise<boolean> {
   const row = await db
     .prepare(
       `SELECT NOT EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND paused_reason IS NOT NULL)
-      AND EXISTS(SELECT 1 FROM view_build_work WHERE state IN ('ready','building','yielded')) backlog`,
+      AND (SELECT COUNT(*) FROM (SELECT 1 FROM view_build_work WHERE state IN ('ready','building','yielded') LIMIT ?))>? backlog`,
     )
+    .bind(lanes + 1, lanes)
     .first<{ backlog: number }>();
   return row?.backlog === 1;
 }
@@ -257,10 +258,11 @@ export async function runViewCutoverWake(
   const progressed = changed > 0 || report.advanced > 0 || moved;
   const pending = await db
     .prepare(
-      `SELECT EXISTS(SELECT 1 FROM view_build_work WHERE state<>'waiting')
+      `SELECT EXISTS(SELECT 1 FROM view_build_work WHERE state<>'waiting' OR next_attempt_at<=?)
       OR EXISTS(SELECT 1 FROM view_instances WHERE base='frozen' AND state='building')
       OR EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND swept_at IS NULL) pending`,
     )
+    .bind(now)
     .first<{ pending: number }>();
   return { changed, more: !paused && (!classified || pending?.pending === 1), progressed };
 }
@@ -268,12 +270,13 @@ export async function runViewCutoverWake(
 /**
  * The transcript-parse job. The batch runs before the legacy pass, which keeps its own wall. On a full wake the batch
  * builds one session within the wake's content wall, which the jobs after it share; a wake that only drains gives it
- * its own wall, under which it builds `CUTOVER_SESSIONS_IN_FLIGHT` sessions side by side. While the batch holds a
- * backlog, the legacy pass reads only recently received transcripts once the batch has moved on; its own backlog waits
- * for the batch. The batch asks for the next wake at `BACKLOG_CHAINED_WAKE_MS` after a wake that moved it on, and after
- * a full wake whatever it did, so it always gets one draining wake under its own wall. A draining wake that moved nothing
- * (every session refused publication, say) asks for no wake: the batch waits for the next full wake, and the legacy pass
- * serves every lane. A batch failure is reported once the legacy pass has run.
+ * its own wall, under which it builds `CUTOVER_SESSIONS_IN_FLIGHT` sessions side by side. While the batch holds more
+ * sessions than the wake's lanes take, the legacy pass reads only recently received transcripts once the batch has moved
+ * on; its own backlog waits for the batch. With no more sessions than lanes, the batch shares the wake with every legacy
+ * lane. The batch asks for the next wake at `BACKLOG_CHAINED_WAKE_MS` after a wake that moved it on, and after a full
+ * wake whatever it did, so it always gets one draining wake under its own wall. A draining wake that moved nothing (every
+ * session refused publication, say) asks for no wake: the batch waits for the next full wake, and the legacy pass serves
+ * every lane. A batch failure is reported once the legacy pass has run.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -281,13 +284,14 @@ export async function runTranscriptParseWake(
   _state?: unknown,
   context?: { drainOnly: boolean },
 ): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
-  const backlog = await cutoverBacklog(env.db),
-    recentSince = backlog ? now - VIEW_RECENT_MS : undefined,
-    draining = context?.drainOnly === true;
+  const draining = context?.drainOnly === true,
+    lanes = draining ? CUTOVER_SESSIONS_IN_FLIGHT : 1,
+    backlog = await cutoverBacklog(env.db, lanes),
+    recentSince = backlog ? now - VIEW_RECENT_MS : undefined;
   const views = await runViewCutoverWake(env, now, databaseBytes, {
     legacySince: recentSince,
     ownWall: draining,
-    inFlight: draining ? CUTOVER_SESSIONS_IN_FLIGHT : 1,
+    inFlight: lanes,
   }).then(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
