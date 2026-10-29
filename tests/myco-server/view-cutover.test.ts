@@ -7,7 +7,8 @@ import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { engineAssertions, WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT, BACKLOG_CHAINED_WAKE_MS } from '@myco-server-worker/core/tick.js';
-import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET, CUTOVER_SESSIONS_IN_FLIGHT } from '@myco-server-worker/ingest/view-build-queue.js';
+import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET, CUTOVER_SESSIONS_IN_FLIGHT, VIEW_FAILURE_BACKOFF } from '@myco-server-worker/ingest/view-build-queue.js';
+import { runViewParseJob } from '@myco-server-worker/ingest/view-run.js';
 import { productionFlipEnvelope } from '@myco-server-worker/ingest/view-flip-calibration.js';
 import { beginFlipObservation } from '@myco-server-worker/ingest/view-flip-work.js';
 import { requestViewRebuild } from '@myco-server-worker/ingest/view-lifecycle.js';
@@ -16,6 +17,7 @@ import { withViewStores, captureViewSession, captureViewTranscript } from './hel
 import { beforeViewWriteBatch } from './helpers/view-instances.js';
 import { memoryBlobStore, uuid } from './helpers/fixtures.js';
 import { withViewWriterDriver } from '../helpers/statement-recorder.js';
+import { fixtureFlipEnvelope } from '../helpers/view-flip-envelope.js';
 
 const DAY = 86_400_000;
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -53,6 +55,37 @@ async function drain(env: ServerEnv, now: number, wakes = 40) {
 }
 
 const n = async (statement: PreparedStatement) => Number((await statement.first<{ n: number }>())?.n);
+
+/**
+ * Counts the sessions whose transcripts are read at once. The first read waits until another session's read starts; if
+ * none joins, it goes ahead after two seconds.
+ */
+function sideBySide(blobs: ReturnType<typeof memoryBlobStore>, held: string[]) {
+  const reading = new Map<string, number>();
+  let widest = 0, doubled = 0, waiting: (() => void)[] = [], holding = true;
+  const timed: typeof blobs = { ...blobs, get: async (key, options) => {
+    const session = held.find((hash) => key.includes(hash));
+    if (session === undefined) return blobs.get(key, options);
+    reading.set(session, (reading.get(session) ?? 0) + 1);
+    if (reading.get(session)! > 1) doubled++;
+    widest = Math.max(widest, reading.size);
+    try {
+      if (waiting.length) for (const release of waiting.splice(0)) release();
+      else if (holding) {
+        holding = false;
+        await new Promise<void>((resolve) => {
+          waiting.push(resolve);
+          setTimeout(() => { waiting = waiting.filter((other) => other !== resolve); resolve(); }, 2000);
+        });
+      }
+      return await blobs.get(key, options);
+    } finally {
+      if (reading.get(session) === 1) reading.delete(session);
+      else reading.set(session, reading.get(session)! - 1);
+    }
+  } };
+  return { blobs: timed, widest: () => widest, doubled: () => doubled };
+}
 
 test('the batch classifies parser rows, builds and publishes every session, and caps inline tool output on both stores', async () => {
   await withViewStores(async (db) =>
@@ -385,45 +418,44 @@ test('a batch backlog builds several sessions side by side within the wake allow
         held.push(new Bun.CryptoHasher('sha256').update(text).digest('hex'));
         await requestViewRebuild(db, 'project', name, now);
       }
-      // The first segment read waits until another session's read starts; if none joins, it goes ahead after two seconds.
-      const reading = new Map<string, number>();
-      let widest = 0, doubled = 0, waiting: (() => void)[] = [], holding = true;
-      const timed: typeof blobs = { ...blobs, get: async (key, options) => {
-        const session = held.find((hash) => key.includes(hash));
-        if (session === undefined) return blobs.get(key, options);
-        reading.set(session, (reading.get(session) ?? 0) + 1);
-        if (reading.get(session)! > 1) doubled++;
-        widest = Math.max(widest, reading.size);
-        try {
-          if (waiting.length) for (const release of waiting.splice(0)) release();
-          else if (holding) {
-            holding = false;
-            await new Promise<void>((resolve) => {
-              waiting.push(resolve);
-              setTimeout(() => { waiting = waiting.filter((other) => other !== resolve); resolve(); }, 2000);
-            });
-          }
-          return await blobs.get(key, options);
-        } finally {
-          if (reading.get(session) === 1) reading.delete(session);
-          else reading.set(session, reading.get(session)! - 1);
-        }
-      } };
+      const probe = sideBySide(blobs, held);
       for (let wake = 0; wake < 60 && (await readViewCutover(db)).built < 12; wake++) {
-        const outer = measuredContentEnv({ ...env!, blobs: timed }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        const outer = measuredContentEnv({ ...env!, blobs: probe.blobs }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
         const report = await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly: true }) as { more: boolean; continueAfterMs?: number };
         expect(remainingInvocationBudget(outer.env.db)!.statements).toBeGreaterThanOrEqual(CONTENT_WAKE_JOB_RESERVE);
         if (wake === 0) expect(report.continueAfterMs).toBe(BACKLOG_CHAINED_WAKE_MS);
       }
       expect((await readViewCutover(db)).built).toBe(12);
-      expect(widest).toBeGreaterThan(1);
-      expect(widest).toBeLessThanOrEqual(CUTOVER_SESSIONS_IN_FLIGHT);
-      expect(doubled).toBe(0);
+      expect(probe.widest()).toBeGreaterThan(1);
+      expect(probe.widest()).toBeLessThanOrEqual(CUTOVER_SESSIONS_IN_FLIGHT);
+      expect(probe.doubled()).toBe(0);
     }),
   );
 }, 120000);
 
-test('a backlog every publication refuses waits for the next full wake instead of chaining', async () => {
+test('a tail of one ready session and yielded sessions below a sweep page builds them side by side', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now(), held: string[] = [];
+      let env: ServerEnv | undefined;
+      for (let i = 0; i < 5; i++) {
+        const name = 'cut-t' + i, text = Array.from({ length: 30 }, (_, t) => turn(name, 'tail' + t, 300)).join('');
+        await captureViewSession(db, 'project', name, { idOffset: 12_000 + i * 100 });
+        env = await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), text, now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+        held.push(new Bun.CryptoHasher('sha256').update(text).digest('hex'));
+        await requestViewRebuild(db, 'project', name, now);
+      }
+      await db.prepare(`UPDATE view_build_work SET state='yielded',last_service_at=? WHERE session_id<>'cut-t0'`).bind(now - DAY).run();
+      const probe = sideBySide(blobs, held);
+      const outer = measuredContentEnv({ ...env!, blobs: probe.blobs }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+      await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly: true });
+      expect(probe.widest()).toBeGreaterThan(1);
+      expect(probe.doubled()).toBe(0);
+    }),
+  );
+}, 120000);
+
+test('a tail every publication refuses waits for the next full wake, which hands it one draining wake', async () => {
   await withViewStores(async (db, target) => {
     const native = target === 'native';
     // An observation left unfinished blocks every publication under its calibration while its lease holds.
@@ -431,22 +463,44 @@ test('a backlog every publication refuses waits for the next full wake instead o
     await withViewWriterDriver(async () => {
       const blobs = memoryBlobStore(), now = Date.now();
       let env: ServerEnv | undefined;
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 3; i++) {
         const name = 'cut-r' + i;
         await captureViewSession(db, 'project', name, { idOffset: 11_000 + i * 100 });
         env = await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), turn(name, 'refused', 100), now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
         await requestViewRebuild(db, 'project', name, now);
       }
       let report: { more: boolean; continueAfterMs?: number } = { more: true };
-      for (let wake = 0; wake < 12 && report.more; wake++) {
+      const wake = async (drainOnly: boolean) => {
         const outer = measuredContentEnv(env!, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
-        report = await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly: true }) as typeof report;
-      }
+        return await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active', { drainOnly }) as typeof report;
+      };
+      for (let pass = 0; pass < 12 && report.more; pass++) report = await wake(true);
       expect(report.more).toBe(false);
       expect(report.continueAfterMs).toBeUndefined();
+      expect(await wake(false)).toMatchObject({ more: true, continueAfterMs: BACKLOG_CHAINED_WAKE_MS });
+      expect((await wake(true)).more).toBe(false);
       expect((await readViewCutover(db)).built).toBe(0);
     });
   });
+}, 120000);
+
+test('a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane', async () => {
+  await withViewStores(async (db, target) =>
+    withViewWriterDriver(async () => {
+      const native = target === 'native', blobs = memoryBlobStore(), now = Date.now();
+      await captureViewSession(db, 'project', 'cut-p', { idOffset: 13_000 });
+      const env = await captureViewTranscript(db, blobs, 'cut-p', 'tx_' + 'd'.repeat(32), turn('cut-p', 'walled', 100), now - 3 * DAY, 0, 'claude-code') as unknown as ServerEnv;
+      await requestViewRebuild(db, 'project', 'cut-p', now);
+      const fixture = fixtureFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial');
+      const envelope = { ...fixture, measurement: { ...fixture.measurement!, workload: { ...fixture.measurement!.workload, candidate_prompt_rows: 0 } } };
+      const state = () => db.prepare(`SELECT state,next_attempt_at FROM view_build_work WHERE session_id='cut-p'`).first<{ state: string; next_attempt_at: number | null }>();
+      for (let wake = 0; wake < 6 && (await state())?.state === 'ready'; wake++)
+        await runViewParseJob(env, now, { profile: native ? PARALLEL_VIEW_BUDGET : SERIAL_VIEW_BUDGET, envelope, cutover: true, mirrorFrontier: false });
+      expect(await state()).toEqual({ state: 'waiting', next_attempt_at: now + VIEW_FAILURE_BACKOFF[0] });
+      expect(await db.prepare(`SELECT last_failure FROM session_views WHERE session_id='cut-p'`).first()).toEqual({ last_failure: 'view_flip_content_wall_exceeded' });
+      expect((await readViewCutover(db)).built).toBe(0);
+    }),
+  );
 }, 120000);
 
 test('unfinished cutover work keeps the Deployment at idle until the batch completes or pauses', async () => {

@@ -14,6 +14,7 @@ import {
   selectViewBuild,
   yieldViewBuild,
   releaseViewBuild,
+  failViewBuild,
   type ViewProfile,
 } from './view-build-queue.js';
 import { requestViewRebuild, tryPublishView, type FlipEnvelope } from './view-lifecycle.js';
@@ -231,6 +232,12 @@ export async function runViewParseJob(env: ServerEnv, now: number, options: View
           break;
         }
         refusal = flip.reason === 'view_not_ready' ? null : flip.reason;
+        // A built session whose flip exceeds the content wall is refused alike on every attempt: it waits out the
+        // failure backoff instead of holding a lane.
+        if (flip.reason === 'view_flip_content_wall_exceeded') {
+          await failViewBuild(building.env.db, target, flip.reason, now);
+          break;
+        }
         if (report === null || report.failure !== null) break;
       }
     } catch (error) {

@@ -288,7 +288,10 @@
     "test:a draining wake builds several sessions under its own wall after the wake content wall has passed": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
     "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
-    "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T"
+    "test:a parse resuming mid-turn on rows written before the upgrade lands beside a parser row that already holds a class": "T",
+    "test:a tail of one ready session and yielded sessions below a sweep page builds them side by side": "T",
+    "test:a built session whose flip exceeds the content wall waits out its backoff instead of holding a lane": "T",
+    "state": "T"
   },
   "packages/myco-server/src/ingest/view-plan-promotion.ts": {
     "promoteViewPlan": "W",
