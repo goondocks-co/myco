@@ -369,10 +369,35 @@
     "commitStatements": "W",
     "releaseHolders": "W",
     "commit": "W",
-    "register": "W"
+    "register": "W",
+    "frontier": "W"
   },
   "packages/myco-server/src/content/document-reader.ts": {
     "readDirectory": "W",
     "readPage": "W"
+  },
+  "packages/myco-server/src/ingest/document-batch.ts": {
+    "directoryStatements": "W",
+    "resolve": "W",
+    "statements": "W",
+    "commit": "W",
+    "releaseHolders": "W",
+    "publicationStatement": "W"
+  },
+  "packages/myco-server/src/ingest/document-conversion.ts": {
+    "convertDocuments": "W",
+    "convertPage": "W",
+    "adopt": "W",
+    "inlineContinuation": "W",
+    "hydrated": "W",
+    "finishReport": "W",
+    "conversionStatements": "W"
+  },
+  "tests/myco-server/document-conversion.test.ts": {
+    "effectiveIds": "T",
+    "documentIds": "T",
+    "predate": "T",
+    "test:a published-view session converts with the ids its readers see and resumes from the view frontier": "T",
+    "test:a hook-only session converts its legacy rows with their ids, reporting the records no turn holds": "T"
   }
 }
