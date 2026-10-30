@@ -29,6 +29,9 @@ import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
+import { runTick } from '@myco-server-worker/core/tick.js';
+import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
@@ -373,5 +376,32 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await poll(at + 6)).toMatchObject({ claimed: false });
     expect(await db.prepare(`SELECT status, run_context FROM agent_runs WHERE task = 'extract-curate' AND origin = 'manual'`).first())
       .toEqual({ status: 'skipped', run_context: '{"reason":"nothing_due"}' });
+  });
+});
+
+it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore();
+    const bindings = { MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+    const env = serverEnvFromBindings(bindings as never, recordingDeferred());
+    await capture(db, 'session', GOTCHAS);
+    await ready(db);
+    await publishDocuments(env, NOW, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const documents = new Set((await db.prepare(`SELECT ${registeredObjectKeySql('c.project_id', 'c.blob_key')} k FROM session_chunks c`)
+      .all<{ k: string }>()).results.map((row) => row.k));
+    expect(documents.size, name).toBeGreaterThan(0);
+    await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
+    await db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)`).run();
+    await completeBudgetMigration(db, NOW);
+    await ensureMember(db, 'mem_worker', NOW, 'admin');
+    const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
+    await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,started_at,completed_at,cost_usd) VALUES('project','spent','myco-agent','turn-cards','completed','automatic',?,?,25)`).bind(NOW, NOW).run();
+    await db.prepare(`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,estimate_usd,cost_usd,cost_source) VALUES('project','spent','spent','w',?,1,25,'actual')`).bind(NOW).run();
+    blobs.gets.length = 0;
+    for (let poll = 0; poll < 50; poll += 1)
+      expect(await claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 + poll }), name)
+        .toMatchObject({ claimed: false });
+    for (let tick = 0; tick < 5; tick += 1) await runTick(env, NOW + 100 + tick);
+    expect(blobs.gets.filter((read) => documents.has(read.key)), name).toEqual([]);
   });
 });

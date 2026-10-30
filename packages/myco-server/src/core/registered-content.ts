@@ -14,7 +14,7 @@ export interface DerivedContentSource {
   eventId: string;
   tokenId: string;
   envelopeHash: string;
-  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle' | 'view';
+  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle' | 'view' | 'document';
   resourceId?: string;
   memberTokenId?: string;
 }

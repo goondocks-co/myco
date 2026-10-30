@@ -646,7 +646,7 @@ export interface PassLimits {
   statementBudget?: number;
 }
 
-function terminalRule(target: ParseTarget, now: number, limits: PassLimits): ParserInput['terminal'] {
+export function terminalRule(target: ParseTarget, now: number, limits: PassLimits): ParserInput['terminal'] {
   if (limits.completeFile || target.imported) return 'complete_file';
   if (target.sessionEndedAt != null && target.sessionEndedAt <= now - SESSION_END_SETTLE_MS
     && (target.lastReceivedAt ?? now) <= now - SESSION_END_SETTLE_MS) return 'session_end';

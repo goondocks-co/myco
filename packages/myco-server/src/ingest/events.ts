@@ -32,6 +32,7 @@ import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom 
 import { prepareArchiveBundle, discardArchiveBundle } from '../core/archive-bundle.js';
 import { toolInputPreview } from '../core/tool-input.js';
 import { materialFields, materialMerge, type PreparedMaterialEffect } from './material-mutation.js';
+import { DOCUMENT_EVENT_KINDS } from '../db/document-tables.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -505,6 +506,24 @@ export async function planEventWrite(
             )
             .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce),
         ];
+  // A member's content event is queued for its session's document; a session first seen here is published from it.
+  const documentQueue =
+    charged && DOCUMENT_EVENT_KINDS.includes(e.kind)
+      ? [
+          db
+            .prepare(
+              `INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, updated_at)
+      SELECT ?, ?, 'live', 1, ? WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
+            )
+            .bind(ctx.projectId, e.sessionId, ctx.now, ctx.projectId, e.eventId, write.nonce),
+          db
+            .prepare(
+              `INSERT OR IGNORE INTO publish_queue (project_id, session_id, event_id, queued_at)
+      SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
+            )
+            .bind(ctx.projectId, e.sessionId, e.eventId, ctx.now, ctx.projectId, e.eventId, write.nonce),
+        ]
+      : [];
   const replayWrites = replayGate ? plan.replay!.project(replayGate) : [];
   const delivery = deliveryStatements(db, write, e, p);
   const materialEffects = [
@@ -519,6 +538,7 @@ export async function planEventWrite(
     ...turnEnd,
     ...turnStart,
     ...liveCapture,
+    ...documentQueue,
     ...delivery.statements,
   ];
   const statements: PreparedStatement[] = [

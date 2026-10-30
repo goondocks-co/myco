@@ -68,6 +68,9 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_learning_eligible_all', 'a learning pull asks whether any Project has a session due before it reads per-Project heads'],
   ['idx_learning_completed', 'the learning status line reads the most recent completion across the Deployment'],
   ['idx_turn_cards_due_all', 'a card pull asks whether any Project has a turn due before it reads per-Project heads, and status counts them'],
+  ['idx_session_documents_due', 'the publisher takes the sessions whose documents are due across the Deployment, oldest first'],
+  ['idx_publish_queue_at', 'the publisher takes the sessions with queued member events across the Deployment, oldest first'],
+  ['idx_retired_objects_at', 'superseded document objects retire after their grace across the Deployment, oldest first'],
   ['idx_device_requests_candidate', 'a runner registration admits each client-generated candidate once across the Deployment, before any runner exists'],
 ]);
 
