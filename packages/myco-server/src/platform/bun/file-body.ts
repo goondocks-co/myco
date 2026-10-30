@@ -1,5 +1,5 @@
 /** An explicit reader preserves file-range bounds through Response consumption. */
-export function fileBody(file: string, offset: number): ReadableStream<Uint8Array> {
+export function fileBody(file: string, offset: number, length?: number): ReadableStream<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancelled = false;
   return new ReadableStream<Uint8Array>({
@@ -7,7 +7,7 @@ export function fileBody(file: string, offset: number): ReadableStream<Uint8Arra
       if (cancelled) return;
       if (reader === undefined) {
         const source = Bun.file(file);
-        reader = (offset > 0 ? source.slice(offset) : source).stream().getReader();
+        reader = (length !== undefined ? source.slice(offset, offset + length) : offset > 0 ? source.slice(offset) : source).stream().getReader();
       }
       const active = reader;
       let chunk: Awaited<ReturnType<typeof active.read>>;

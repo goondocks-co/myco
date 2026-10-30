@@ -2,6 +2,7 @@ import { assertThinLearningDrained, THIN_LEARNING_REMOVAL_VERSION } from '../db/
 import { estimateInvalidationStatements } from './budget-estimates.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { VIEW_FACT_TABLES, VIEW_FTS_TABLES, VIEW_REGENERABLE_TABLES, VIEW_DURABLE_TABLES } from '../db/view-tables.js';
+import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -97,6 +98,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...VIEW_REGENERABLE_TABLES,
   ...VIEW_DURABLE_TABLES,
+  ...DOCUMENT_SESSION_TABLES,
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts', 'learning_init_queue',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
