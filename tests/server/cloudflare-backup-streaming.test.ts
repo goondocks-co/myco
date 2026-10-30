@@ -59,7 +59,8 @@ async function measureExports(fixtures: ExportFixture[]): Promise<number[]> {
       measuredKiB = Math.max(measuredKiB, rss);
       if (process.platform === 'linux') {
         const status = fs.readFileSync(`/proc/${child.pid}/status`, 'utf8');
-        if (/^State:\s+Z/m.test(status)) return;
+        // A process that has released its address space (exiting, or a zombie) reports no memory lines.
+        if (!/^VmRSS:/m.test(status)) return;
         const field = (name: string): number => {
           const value = new RegExp(`^${name}:\\s+(\\d+) kB$`, 'm').exec(status);
           if (value === null) throw new Error(`Linux memory sample has no ${name}`);
