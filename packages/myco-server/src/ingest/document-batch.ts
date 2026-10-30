@@ -59,6 +59,9 @@ export interface BatchDocument {
   token_id: string;
 }
 
+/** The statements a caller runs before and after the shared catalog statements of a commit. */
+export interface Commit { before: PreparedStatement[]; after: PreparedStatement[] }
+
 /** One chunk version a batch writes, with its source and the directory row it supersedes. */
 export interface ChunkVersion { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
 
@@ -67,6 +70,8 @@ export const preview = (text: unknown): string | null =>
 
 /** The canonical plan a plan appearance belongs to. */
 const planKeyOf = (record: DocRecord): string => (typeof record.plan_key === 'string' ? record.plan_key : record.id);
+/** Parent links `resolve` follows from a prompt to its turn. */
+const ANCESTRY_DEPTH = 8;
 
 /** The turn a document's records describe, as the card rules read it; a plan appears as its latest appearance. */
 function turnInput(turnKey: string, records: readonly DocRecord[]): TurnInput | null {
@@ -139,19 +144,56 @@ export class DocumentBatch {
     this.calls += this.writer.reads - reads;
   }
 
-  /** Reads the turn of every prompt these records name that this batch has not resolved yet. */
-  private async resolve(records: readonly DocRecord[]): Promise<void> {
+  /**
+   * Prompts not yet placed, each with its parent or null for a turn's own prompt, among the given ids; an id it does not
+   * return is not in the session.
+   */
+  ancestry: ((ids: readonly string[]) => Promise<ReadonlyMap<string, string | null>>) | null = null;
+
+  /** Reads the turn keys `session_prompts` holds for these prompts. */
+  private async held(ids: readonly string[]): Promise<void> {
+    const held = (await this.db.prepare(`SELECT prompt_id,turn_key FROM session_prompts WHERE project_id=? AND session_id=? AND generation=?
+      AND prompt_id IN (SELECT value FROM json_each(?))`).bind(this.projectId, this.sessionId, this.doc.generation, JSON.stringify(ids))
+      .all<{ prompt_id: string; turn_key: string | null }>()).results;
+    this.calls += 1;
+    for (const row of held) this.turns.set(row.prompt_id, row.turn_key);
+    for (const id of ids) this.resolved.add(id);
+  }
+
+  /**
+   * Reads the turn of every prompt these records name that this batch has not resolved yet. A prompt not placed yet
+   * takes its turn through `ancestry`: the turn of its nearest placed ancestor, or the ancestor with no parent.
+   */
+  async resolve(records: readonly DocRecord[]): Promise<void> {
     const wanted = [...new Set(records.flatMap((record) => {
       const id = record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
       return typeof id === 'string' && !this.resolved.has(id) && !this.turns.has(id) ? [id] : [];
     }))];
     if (wanted.length === 0) return;
-    const held = (await this.db.prepare(`SELECT prompt_id,turn_key FROM session_prompts WHERE project_id=? AND session_id=? AND generation=?
-      AND prompt_id IN (SELECT value FROM json_each(?))`).bind(this.projectId, this.sessionId, this.doc.generation, JSON.stringify(wanted))
-      .all<{ prompt_id: string; turn_key: string | null }>()).results;
-    this.calls += 1;
-    for (const row of held) this.turns.set(row.prompt_id, row.turn_key);
-    for (const id of wanted) this.resolved.add(id);
+    await this.held(wanted);
+    const parents = new Map<string, string | null>();
+    let pending = wanted.filter((id) => !this.turns.has(id));
+    for (let depth = 0; this.ancestry !== null && pending.length > 0 && depth < ANCESTRY_DEPTH; depth += 1) {
+      const found = await this.ancestry(pending);
+      this.calls += 1;
+      const next = new Set<string>();
+      for (const id of pending) {
+        if (!found.has(id)) continue;
+        const parent = found.get(id)!;
+        parents.set(id, parent);
+        if (parent !== null && !this.turns.has(parent) && !parents.has(parent)) next.add(parent);
+      }
+      if (next.size === 0) break;
+      await this.held([...next]);
+      pending = [...next].filter((id) => !this.turns.has(id));
+    }
+    const turnOf = (id: string, depth: number): string | null => {
+      if (this.turns.has(id)) return this.turns.get(id)!;
+      if (!parents.has(id) || depth > ANCESTRY_DEPTH) return null;
+      const parent = parents.get(id)!;
+      return parent === null ? id : turnOf(parent, depth + 1);
+    };
+    for (const id of parents.keys()) this.turns.set(id, turnOf(id, 0));
   }
 
   /** The owner of a record: its prompt's turn, or the session for a record no turn holds. */
@@ -179,14 +221,16 @@ export class DocumentBatch {
     }
   }
 
-  /** Places records in order, counting what each adds to the session's catalog. */
-  async place(records: readonly DocRecord[], harness: string | null): Promise<void> {
+  /** Places records in order, counting what each adds to the session's catalog. Returns each record as placed, null when unchanged. */
+  async place(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
     await this.resolve(records);
     this.assignPrompts(records);
     const reads = this.writer.reads;
+    const out: (DocRecord | null)[] = [];
     for (const record of records) {
       const owner = this.ownerOf(record);
       const placed = await this.writer.upsert(record, owner);
+      out.push(placed.outcome === 'unchanged' ? null : placed.record);
       if (placed.outcome === 'unchanged') continue;
       this.records += 1;
       this.lastRecordAt = Math.max(this.lastRecordAt ?? 0, record.created_at);
@@ -225,6 +269,7 @@ export class DocumentBatch {
       }
     }
     this.calls += this.writer.reads - reads;
+    return out;
   }
 
   /** The summary and card input hash of every turn this batch changed, read from its pages. */
@@ -361,7 +406,7 @@ export class DocumentBatch {
    * commit runs the caller's statements around the shared catalog statements, and a failed pass releases its holders.
    */
   async commit(write: boolean, chunkState: 'building' | 'live', now: number, guard: (version: ChunkVersion) => ContentPublicationGuard,
-    statements: (versions: readonly ChunkVersion[]) => { before: PreparedStatement[]; after: PreparedStatement[] }): Promise<number> {
+    statements: (versions: readonly ChunkVersion[]) => Commit | Promise<Commit>): Promise<number> {
     const layout = write ? this.writer.layout() : null;
     const settled = write ? await this.settledTurns() : [];
     const encoded = layout === null ? [] : await this.encode(layout);
@@ -380,7 +425,7 @@ export class DocumentBatch {
         }, now, guard(version));
         this.calls += 4;
       }
-      const own = statements(versions);
+      const own = await statements(versions);
       await this.db.batch([...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after]);
     } catch (error) {
       if (holders.length > 0) await releaseHolders(this.db, holders, now);

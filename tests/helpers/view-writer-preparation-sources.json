@@ -365,7 +365,7 @@
     "retireSupersededObjects": "W",
     "hydratedPayload": "W",
     "run": "W",
-    "resolve": "W",
+    "held": "W",
     "commitStatements": "W",
     "releaseHolders": "W",
     "commit": "W",
@@ -378,7 +378,7 @@
   },
   "packages/myco-server/src/ingest/document-batch.ts": {
     "directoryStatements": "W",
-    "resolve": "W",
+    "held": "W",
     "statements": "W",
     "commit": "W",
     "releaseHolders": "W",
@@ -398,6 +398,8 @@
     "documentIds": "T",
     "predate": "T",
     "test:a published-view session converts with the ids its readers see and resumes from the view frontier": "T",
-    "test:a hook-only session converts its legacy rows with their ids, reporting the records no turn holds": "T"
+    "test:a hook-only session converts its legacy rows with their ids, reporting the records no turn holds": "T",
+    "test:a frozen-tail session exports its frozen rows, places steering under a view parent and promotes its view-only plans": "T",
+    "test:tool inputs read from bundles and stored objects convert across fresh wake budgets": "T"
   }
 }
