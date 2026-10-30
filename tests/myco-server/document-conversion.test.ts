@@ -128,11 +128,33 @@ test('a frozen-tail session exports its frozen rows, places steering under a vie
         VALUES('project','tail','session','view-only-plan','Visible plan','retained plan body','hash','active',1,1,1)`),
       db.prepare(`UPDATE prompt_batches SET parent_prompt_id='view-parent' WHERE session_id='session'`),
     ]);
+    // Two view plans hold their bodies in stored objects: one larger than a D1 value, one whose object is gone.
+    const stored = await Promise.all([['large-plan', 'l'.repeat(2_100_000)], ['missing-plan', 'missing body']].map(async ([plan, text]) => {
+      const key = await sha256Hex(text!), generation = crypto.randomUUID();
+      if (plan === 'large-plan') await blobs.put(blobObjectKey('project', key, generation), new Blob([text!]).stream());
+      return { p: plan, k: key, g: generation, n: text!.length };
+    }));
+    await db.batch([
+      db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+        SELECT 'project',json_extract(value,'$.k'),json_extract(value,'$.n'),'text/plain',(SELECT token_id FROM events LIMIT 1),1,json_extract(value,'$.g') FROM json_each(?)`)
+        .bind(JSON.stringify(stored)),
+      db.prepare(`INSERT INTO view_plans(project_id,instance_id,session_id,plan_key,title,content,blob_key,content_hash,status,created_at,updated_at,received_at)
+        SELECT 'project','tail','session',json_extract(value,'$.p'),'Stored plan','preview',json_extract(value,'$.k'),json_extract(value,'$.k'),'active',1,1,1 FROM json_each(?)`)
+        .bind(JSON.stringify(stored)),
+      db.prepare(`INSERT INTO view_content_proofs(project_id,instance_id,session_id,kind,record_id,blob_key,digest,size,verified_at)
+        SELECT 'project','tail','session','plan',json_extract(value,'$.p'),json_extract(value,'$.k'),json_extract(value,'$.k'),json_extract(value,'$.n'),1 FROM json_each(?)`)
+        .bind(JSON.stringify(stored)),
+    ]);
     await convertDocuments({ db, blobs }, 2, limits());
     expect((await db.prepare(`SELECT state FROM session_documents WHERE session_id='session'`).first())?.state, name).toBe('live');
     expect((await documentIds({ db, blobs }, 'session')).prompt, name).toContain('parent-only');
     expect(await db.prepare(`SELECT turn_key FROM session_prompts WHERE parent_hint='view-parent'`).first(), name).toEqual({ turn_key: 'view-parent' });
     expect(await db.prepare(`SELECT content FROM plans WHERE plan_key='view-only-plan'`).first(), name).toEqual({ content: 'retained plan body' });
+    // A large body stays in its object, which the canonical plan adopts; a body that cannot be read leaves its plan unpromoted.
+    expect(await db.prepare(`SELECT p.content,p.blob_key,EXISTS(SELECT 1 FROM processed_resources r WHERE r.kind='plan' AND r.resource_id=p.plan_key
+      AND r.blob_key=p.blob_key) proven FROM plans p WHERE p.plan_key='large-plan'`).first(), name).toEqual({ content: 'preview', blob_key: stored[0]!.k, proven: 1 });
+    const report = JSON.parse((await db.prepare(`SELECT build FROM session_documents WHERE session_id='session'`).first<{ build: string }>())!.build).report;
+    expect(report.classes['plan_not_promoted:body_unreadable'], name).toBe(1);
   }));
 });
 

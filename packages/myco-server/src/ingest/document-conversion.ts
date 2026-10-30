@@ -11,7 +11,8 @@
  *   reply, plan and tool input bodies are read back whole, one row at a time; a tool's full output is not. A page ends
  *   before a row the wake's remaining budget could not read and commit, so a fresh wake always advances. Every page
  *   commits its chunks as `building`, with the build cursor, in one guarded batch.
- * - **Promote.** A published session's view plans that no canonical plan row holds are promoted to one, with their body.
+ * - **Promote.** A published session's view plans that no canonical plan row holds are promoted to one, with their body;
+ *   a plan whose stored body cannot be read stays unpromoted and is reported by class.
  * - **Flip.** One batch makes generation 1 live, writes the adopted frontiers for the publisher to resume from, and
  *   leaves the conversion report in `session_documents.build`.
  */
@@ -257,8 +258,13 @@ export async function convertPage(env: Pick<ServerEnv, 'db' | 'blobs'>, projectI
     if (keys.length === 0) build = { ...build, step: build.step + 1, after: null };
     for (const [index, { plan_key: key }] of keys.entries()) {
       if (!more(index, 0)) break;
-      if (await promoteViewPlan(env, { projectId }, key, now)) build.report.promoted += 1;
-      else count(build.report.classes, 'plan_not_promoted');
+      try {
+        if (await promoteViewPlan(env, { projectId }, key, now)) build.report.promoted += 1;
+        else count(build.report.classes, 'plan_not_promoted');
+      } catch (error) {
+        if (!unreadable(error)) throw error;
+        count(build.report.classes, 'plan_not_promoted:body_unreadable');
+      }
       batch.calls += 3;
       build = { ...build, after: [0, key] };
     }

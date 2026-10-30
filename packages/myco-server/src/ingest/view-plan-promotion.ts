@@ -1,11 +1,15 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { blobObjectKey } from '../core/blob-objects.js';
-import { contentAssertion, readVerifiedContentText } from '../core/registered-content.js';
+import { contentAssertion, verifyContentObject } from '../core/registered-content.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
 import { releaseViewReadSources } from '../read/view-store.js';
 
-/** A visible view plan becomes the authoritative plan row with its complete body, replacing any legacy row, before an edit applies to it. */
+/**
+ * A visible view plan becomes the authoritative plan row with its complete body, replacing any legacy row, before an edit
+ * applies to it. A body the view holds in a stored object stays there: the plan row keeps the view's preview and adopts
+ * the verified object as its body, with the processed proof readers require.
+ */
 export async function promoteViewPlan(
   env: Pick<ServerEnv, 'db' | 'blobs'>,
   scope: ReadScope,
@@ -55,15 +59,10 @@ export async function promoteViewPlan(
         plan.source_record,
       ),
   ];
-  const content =
-    typeof plan.blob_key === 'string'
-      ? await readVerifiedContentText(
-          env,
-          blobObjectKey(scope.projectId, plan.blob_key, (plan.generation as string | null) ?? null),
-          Number(plan.body_size),
-          plan.blob_key,
-        )
-      : String(plan.content ?? '');
+  const blobKey = typeof plan.blob_key === 'string' ? plan.blob_key : null;
+  if (blobKey !== null)
+    await verifyContentObject(env, blobObjectKey(scope.projectId, blobKey, (plan.generation as string | null) ?? null), Number(plan.body_size), blobKey);
+  const content = String(plan.content ?? '');
   const tags = JSON.parse(String(plan.tags_json ?? '[]')) as string[];
   const columns = {
     project_id: scope.projectId,
@@ -73,7 +72,8 @@ export async function promoteViewPlan(
     machine_id: plan.machine_id ?? plan.session_machine,
     title: plan.title,
     content,
-    content_hash: await sha256Hex(content),
+    blob_key: blobKey,
+    content_hash: blobKey ?? (await sha256Hex(content)),
     status: plan.status,
     origin_path: plan.origin_path,
     created_at: plan.created_at,
@@ -102,19 +102,23 @@ export async function promoteViewPlan(
       .bind(scope.projectId, key, JSON.stringify(tags)),
     db
       .prepare(
-        `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,origin_path,
+        `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,
         created_at,updated_at,token_id,received_at,prompt_id,source)
       SELECT json_extract(value,'$.project_id'),json_extract(value,'$.plan_key'),json_extract(value,'$.session_id'),json_extract(value,'$.event_id'),
-        json_extract(value,'$.machine_id'),json_extract(value,'$.title'),json_extract(value,'$.content'),json_extract(value,'$.content_hash'),
+        json_extract(value,'$.machine_id'),json_extract(value,'$.title'),json_extract(value,'$.content'),json_extract(value,'$.blob_key'),json_extract(value,'$.content_hash'),
         json_extract(value,'$.status'),json_extract(value,'$.origin_path'),json_extract(value,'$.created_at'),json_extract(value,'$.updated_at'),
         json_extract(value,'$.token_id'),json_extract(value,'$.received_at'),json_extract(value,'$.prompt_id'),json_extract(value,'$.source')
       FROM json_each(?) WHERE 1
       ON CONFLICT(project_id,plan_key) DO UPDATE SET session_id=excluded.session_id,event_id=excluded.event_id,machine_id=excluded.machine_id,
-        title=excluded.title,content=excluded.content,blob_key=NULL,content_hash=excluded.content_hash,status=excluded.status,
+        title=excluded.title,content=excluded.content,blob_key=excluded.blob_key,content_hash=excluded.content_hash,status=excluded.status,
         origin_path=excluded.origin_path,created_at=excluded.created_at,updated_at=excluded.updated_at,token_id=excluded.token_id,
         received_at=excluded.received_at,prompt_id=excluded.prompt_id,source=excluded.source,updated_by=NULL`,
       )
       .bind(JSON.stringify([columns])),
+    ...(blobKey === null ? [] : [db.prepare(`INSERT INTO processed_resources(project_id,kind,resource_id,blob_key,source_token_id,event_id)
+      SELECT ?,'plan',?,?,?,? WHERE EXISTS(SELECT 1 FROM view_content_proofs c JOIN blobs b ON b.project_id=c.project_id AND b.key=c.blob_key
+        AND b.size=c.size WHERE c.project_id=? AND c.instance_id=? AND c.kind='plan' AND c.record_id=? AND c.blob_key=?) ON CONFLICT DO NOTHING`)
+      .bind(scope.projectId, key, blobKey, columns.token_id, columns.event_id, scope.projectId, plan.instance_id, key, blobKey)]),
     ...promoted(plan.instance_id),
   ]);
   releaseViewReadSources(db);
