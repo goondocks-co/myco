@@ -19,6 +19,8 @@ import type { ContentStore, PreparedStatement, RelationalStore, ServerEnv } from
 import { contentAssertion, prepareDerivedStream, readVerifiedContentText, type DerivedContentSource } from '../core/registered-content.js';
 import { registeredBlobsGuard, releaseBlobs } from '../core/object-release.js';
 import { blobObjectKey } from '../core/blob-objects.js';
+import { bundleContentEnv } from '../core/archive-bundle.js';
+import { eventContent } from '../core/event-content.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
 import { trimTurn, type TurnInput } from '../core/turn-card-rules.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
@@ -86,7 +88,10 @@ interface TranscriptRow {
   reply_unfinished: number | null; reply_latest_at: number | null; prompt_scheme: string | null; record_scheme: string | null;
   state: string | null; failure: string | null; awaited_size: number | null;
 }
-interface QueuedRow { event_id: string; rank: number; queued_created_at: number; kind: string; payload: string; created_at: number; received_at: number }
+interface QueuedRow {
+  event_id: string; rank: number; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
+  received_at: number;
+}
 /** One chunk version a pass writes, with its source and the directory row it supersedes. */
 interface ChunkVersion { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
 interface Holder { p: string; s: string; k: string; i: string }
@@ -179,9 +184,14 @@ function spilledInput(text: string): unknown {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-/** A queued event's payload with a spilled body read back into the field it stands for. */
+/**
+ * A queued event's payload, with a spilled body read back into the field it stands for. Only an inline payload is
+ * read from its row; any other is read through the verified event content reader, an archived one from its bundle.
+ */
 async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
-  const payload = JSON.parse(row.payload) as Record<string, unknown>;
+  const body = row.payload_format === 'inline' ? row.payload : await eventContent(env, projectId, row.event_id);
+  if (body === null) throw new Error('document_event_body_missing');
+  const payload = JSON.parse(body) as Record<string, unknown>;
   const field = SPILLED_FIELD[row.kind];
   if (field === undefined || typeof payload.blob !== 'string') return payload;
   const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
@@ -272,7 +282,7 @@ class SessionPublication {
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
         .bind(this.projectId, this.sessionId),
-      db.prepare(`SELECT q.event_id,q.rank,q.created_at queued_created_at,e.kind,e.payload,e.created_at,e.received_at
+      db.prepare(`SELECT q.event_id,q.rank,q.created_at queued_created_at,e.kind,e.payload,e.payload_format,e.created_at,e.received_at
         FROM (SELECT rank,created_at,event_id FROM publish_queue WHERE project_id=?1 AND session_id=?2
           ORDER BY rank,created_at,event_id LIMIT ${PUBLISH_QUEUE_PER_PASS}) q
         JOIN events e ON e.project_id=?1 AND e.event_id=q.event_id ORDER BY q.rank,q.created_at,q.event_id`)
@@ -391,9 +401,10 @@ class SessionPublication {
   private async publishQueued(rows: readonly QueuedRow[]): Promise<void> {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
     const records: DocRecord[] = [];
+    const content = bundleContentEnv(this.env);
     for (const row of rows) {
       if (this.spent()) { this.more = true; break; }
-      const payload = await hydratedPayload(this.env, this.projectId, row);
+      const payload = await hydratedPayload(content, this.projectId, row);
       const record = documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at });
       if (record !== null) records.push(record);
       this.consumed.push({ r: row.rank, c: row.queued_created_at, e: row.event_id });

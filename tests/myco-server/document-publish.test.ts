@@ -4,6 +4,13 @@ import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/i
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { prepareArchive } from '@myco-server-worker/core/event-content.js';
+import { bundleArchiveStatements } from '@myco-server-worker/core/archive-bundle.js';
+import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
+import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
+import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
 import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 
@@ -146,5 +153,39 @@ test('a lost commit acknowledgement keeps the live version, and a version whose 
     expect(await one(db, `SELECT COUNT(*) n FROM registered_content_proofs p WHERE p.source_kind='document'
       AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.source_id=p.source_id)`), name).toEqual({ n: 0 });
     expect(await one(db, `SELECT COUNT(*) n FROM retired_objects`), name).toEqual({ n: 0 });
+  });
+});
+
+test('a restored session whose prompt was archived publishes the prompt read from its bundle', async () => {
+  const artifacts = new Map<string, { rows: { t: string; r: Record<string, unknown> }[]; blobs: ReturnType<typeof memoryBlobStore> }>();
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore();
+    await captureViewSession(db, 'project', 'archived', { blobs });
+    const row = await cleanupCandidate(db, { project_id: 'project', resource_id: uuid(2), resource_kind: 'event' }, true);
+    await db.batch(bundleArchiveStatements(db, (await prepareArchive({ db, blobs }, 'event', row!, Date.now())).bundle));
+    const rows: { t: string; r: Record<string, unknown> }[] = [];
+    for (const t of ['members', 'member_credentials', 'sessions', 'blobs', 'archive_bundles', 'registered_content_proofs', 'events', 'raw_credentials'])
+      for (const r of (await db.prepare(`SELECT * FROM ${t}`).all<Record<string, unknown>>()).results) rows.push({ t, r });
+    artifacts.set(name, { rows, blobs });
+  });
+  await withViewStores(async (db, name) => {
+    const { rows, blobs } = artifacts.get(name)!;
+    const issued = await captureViewSession(db, 'project', 'bootstrap', { blobs, idOffset: 10_000 });
+    for (const { r } of rows.filter((row) => row.t === 'blobs')) {
+      const bytes = blobs.objects.get(blobObjectKey(String(r.project_id), String(r.key), r.generation as string | null))!.bytes;
+      const id = crypto.randomUUID();
+      await prepareDerivedStream({ db, blobs }, { projectId: String(r.project_id), sessionId: 'bootstrap', tokenId: issued.tokenId, sourceKind: 'event',
+        eventId: id, resourceId: id, envelopeHash: id }, { size: Number(r.size), digest: String(r.key), stream: () => new Blob([bytes as Uint8Array<ArrayBuffer>]).stream() }, Date.now());
+    }
+    const counts: Record<string, number> = {};
+    for (const { t } of rows) counts[t] = (counts[t] ?? 0) + 1;
+    const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: Date.now(), producer: 'test', counts };
+    await restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' });
+    expect(await one(db, `SELECT payload_format FROM events WHERE event_id=?`, uuid(2)), name).toEqual({ payload_format: 'archived' });
+    await publishDocuments({ db, blobs }, Date.now(), limits());
+    expect((await db.prepare(`SELECT prompt_id,preview FROM session_prompts WHERE session_id='archived'`).all()).results, name)
+      .toEqual([{ prompt_id: uuid(20), preview: 'factcanary' }]);
+    expect((await readPage({ db, blobs }, 'project', 'archived', uuid(20), 0))!.map((record) => [record.k, record.id, record.text]), name)
+      .toEqual([['prompt', uuid(20), 'factcanary'], ['reply', uuid(30), 'factcanary']]);
   });
 });

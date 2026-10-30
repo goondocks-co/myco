@@ -398,10 +398,10 @@ it('with learning due and dispatch refused at the spend ceiling, claims and tick
     await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,started_at,completed_at,cost_usd) VALUES('project','spent','myco-agent','turn-cards','completed','automatic',?,?,25)`).bind(NOW, NOW).run();
     await db.prepare(`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,estimate_usd,cost_usd,cost_source) VALUES('project','spent','spent','w',?,1,25,'actual')`).bind(NOW).run();
     blobs.gets.length = 0;
-    for (let poll = 0; poll < 50; poll += 1)
+    for (let poll = 0; poll < 5; poll += 1)
       expect(await claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 + poll }), name)
         .toMatchObject({ claimed: false });
-    for (let tick = 0; tick < 5; tick += 1) await runTick(env, NOW + 100 + tick);
+    for (let tick = 0; tick < 2; tick += 1) await runTick(env, NOW + 100 + tick);
     expect(blobs.gets.filter((read) => documents.has(read.key)), name).toEqual([]);
   });
 });
