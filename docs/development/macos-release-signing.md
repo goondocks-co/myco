@@ -1,7 +1,7 @@
 # macOS release signing
 
 The release workflow cross-compiles binaries on Ubuntu, then signs both
-`darwin-arm64` and `darwin-x64` on `macos-14` with
+`darwin-arm64` and `darwin-x64` on `macos-15` with
 `scripts/sign-darwin-binary.sh`, the same entry point the CI release-recipe job uses.
 It runs `codesign --force --sign - --preserve-metadata=entitlements,identifier`.
 The signature retains the compiled executable's entitlements and identifier.
@@ -16,10 +16,10 @@ strict code signatures and matches the downloaded bytes against SHA256SUMS,
 then restores the executable bit. It executes arm64 with --version and
 requires the exact release version. Any failure blocks publication.
 
-The verify-darwin job checks the exact myco-raw-binaries artifact on macos-14.
+The verify-darwin job checks the exact myco-raw-binaries artifact on macos-15.
 
 The x64 signatures and checksums are required too. Execution of x64 is
-explicitly skipped because Bun x64 raises SIGILL under the macos-14
+explicitly skipped because Bun x64 raises SIGILL under the macos-15
 runner's Rosetta (also documented in the CI hook-startup matrix). Native
 x64 execution remains a release validation limit.
 
@@ -31,7 +31,7 @@ set before compilation to avoid development-version git stamping. CI's aggregate
 requires that job. Every main push, and PRs changing workflows, actions, scripts,
 package manifests or lockfiles, or `.bun-version`, also exercise the release recipe:
 `darwin-release-build` cross-compiles arm64 on Ubuntu using the native library
-artifact from `hook-startup`; `darwin-release-verify` signs it on macos-14 via
+artifact from `hook-startup`; `darwin-release-verify` signs it on macos-15 via
 the shared script, stages it with its checksum, and executes the distribution verifier. The aggregate
 admits skipped recipe jobs only when the path selector explicitly says they are
 not required; failed or cancelled jobs always fail it. CI does not build a

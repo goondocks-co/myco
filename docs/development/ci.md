@@ -59,7 +59,7 @@ checksum manifest. Tagged releases require this gate
 before GitHub publication; see [macOS release signing](macos-release-signing.md).
 
 Every main push and PRs changing build or release inputs also cross-compile
-darwin-arm64 on Linux, then sign it on macos-14 through the release's shared
+darwin-arm64 on Linux, then sign it on macos-15 through the release's shared
 signing script and verify the staged raw binaries in execute mode.
 The selector covers workflows, actions, scripts, package manifests and lockfiles,
 and `.bun-version`; other PRs retain the native Darwin verification. The aggregate
