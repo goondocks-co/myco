@@ -9,6 +9,7 @@ import { parseViewOnce } from '@myco-server-worker/ingest/view-parse.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
+import { processedBody } from '@myco-server-worker/read/processed.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { bundleArchiveStatements, prepareArchiveBundle } from '@myco-server-worker/core/archive-bundle.js';
@@ -151,8 +152,8 @@ test('a frozen-tail session exports its frozen rows, places steering under a vie
     expect(await db.prepare(`SELECT turn_key FROM session_prompts WHERE parent_hint='view-parent'`).first(), name).toEqual({ turn_key: 'view-parent' });
     expect(await db.prepare(`SELECT content FROM plans WHERE plan_key='view-only-plan'`).first(), name).toEqual({ content: 'retained plan body' });
     // A large body stays in its object, which the canonical plan adopts; a body that cannot be read leaves its plan unpromoted.
-    expect(await db.prepare(`SELECT p.content,p.blob_key,EXISTS(SELECT 1 FROM processed_resources r WHERE r.kind='plan' AND r.resource_id=p.plan_key
-      AND r.blob_key=p.blob_key) proven FROM plans p WHERE p.plan_key='large-plan'`).first(), name).toEqual({ content: 'preview', blob_key: stored[0]!.k, proven: 1 });
+    expect(await db.prepare(`SELECT content,blob_key FROM plans WHERE plan_key='large-plan'`).first(), name).toEqual({ content: null, blob_key: stored[0]!.k });
+    expect((await processedBody({ db, blobs }, { projectId: 'project' }, 'plan', 'large-plan'))?.length, name).toBe(2_100_000);
     const report = JSON.parse((await db.prepare(`SELECT build FROM session_documents WHERE session_id='session'`).first<{ build: string }>())!.build).report;
     expect(report.classes['plan_not_promoted:body_unreadable'], name).toBe(1);
   }));

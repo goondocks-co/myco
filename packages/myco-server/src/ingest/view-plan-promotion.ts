@@ -7,8 +7,9 @@ import { releaseViewReadSources } from '../read/view-store.js';
 
 /**
  * A visible view plan becomes the authoritative plan row with its complete body, replacing any legacy row, before an edit
- * applies to it. A body the view holds in a stored object stays there: the plan row keeps the view's preview and adopts
- * the verified object as its body, with the processed proof readers require.
+ * applies to it. A body the view holds in a stored object stays there, and the plan row takes the shape a plan event with
+ * a spilled body writes: no inline content, the verified object as `blob_key` and its digest as `content_hash`, with the
+ * processed proof readers require.
  */
 export async function promoteViewPlan(
   env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -62,7 +63,7 @@ export async function promoteViewPlan(
   const blobKey = typeof plan.blob_key === 'string' ? plan.blob_key : null;
   if (blobKey !== null)
     await verifyContentObject(env, blobObjectKey(scope.projectId, blobKey, (plan.generation as string | null) ?? null), Number(plan.body_size), blobKey);
-  const content = String(plan.content ?? '');
+  const content = blobKey === null ? String(plan.content ?? '') : null;
   const tags = JSON.parse(String(plan.tags_json ?? '[]')) as string[];
   const columns = {
     project_id: scope.projectId,
@@ -73,7 +74,7 @@ export async function promoteViewPlan(
     title: plan.title,
     content,
     blob_key: blobKey,
-    content_hash: blobKey ?? (await sha256Hex(content)),
+    content_hash: content === null ? blobKey : await sha256Hex(content),
     status: plan.status,
     origin_path: plan.origin_path,
     created_at: plan.created_at,
