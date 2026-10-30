@@ -12,6 +12,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  {step:112,object:'idx_session_documents_convert',table:'session_documents',reason:'Conversion finds the sessions still waiting for it without reading the converted ones.'},
   {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
   {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
   {step:111,object:'events_document_queue',table:'events',reason:'A member content event is queued for its session\'s document in the statement that inserts it, by ingest and by restore alike, and makes its live session due.'},
