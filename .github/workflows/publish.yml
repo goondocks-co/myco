@@ -259,7 +259,7 @@ jobs:
     name: Sign macOS binary (${{ matrix.target }})
     needs: [validate-tag, cross-compile]
     if: needs.validate-tag.outputs.tag_prefix == 'myco'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -409,7 +409,7 @@ jobs:
     name: Verify staged macOS distributions
     needs: [validate-tag, build]
     if: needs.validate-tag.outputs.tag_prefix == 'myco'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -426,7 +426,7 @@ jobs:
             mode=native
             if [ "$target" = darwin-x64 ]; then
               mode=signature-only
-              echo "darwin-x64 execution skipped: Bun x64 raises SIGILL under macos-14 Rosetta; both signatures and checksums are required."
+              echo "darwin-x64 execution skipped: Bun x64 raises SIGILL under macos-15 Rosetta; both signatures and checksums are required."
             fi
             bash scripts/verify-darwin-distribution.sh "$VERSION" "raw-binaries/myco-${target}" "raw-binaries/SHA256SUMS" "$mode"
           done
