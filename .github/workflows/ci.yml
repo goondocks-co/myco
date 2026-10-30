@@ -84,7 +84,7 @@ jobs:
         include:
           - { target: linux-x64, os: ubuntu-latest, rg: linux-x64, ceiling: 80 }
           - { target: linux-arm64, os: ubuntu-24.04-arm, rg: linux-arm64, ceiling: 80 }
-          - { target: darwin-arm64, os: macos-14, rg: darwin-arm64, ceiling: 150 }
+          - { target: darwin-arm64, os: macos-15, rg: darwin-arm64, ceiling: 150 }
           - { target: windows-x64, os: ubuntu-latest, rg: win32-x64, cross: true, measure_elsewhere: true }
     steps:
       - uses: actions/checkout@v7
@@ -201,7 +201,7 @@ jobs:
     name: Sign and verify Linux-built Darwin distribution
     needs: [build, darwin-release-build]
     if: needs.build.outputs.darwin_distribution_required == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

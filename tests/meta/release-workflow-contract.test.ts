@@ -24,7 +24,7 @@ function assertFailureIsTerminal(job: typeof release.jobs.build): void {
 function assertDarwinDistribution(workflow: typeof release): void {
   const signing = workflow.jobs['sign-darwin'];
   assertFailureIsTerminal(signing);
-  expect(signing['runs-on']).toBe('macos-14');
+  expect(signing['runs-on']).toBe('macos-15');
   expect(signing.needs).toContain('cross-compile');
   expect(signing.strategy.matrix.target).toEqual(['darwin-arm64', 'darwin-x64']);
   const download = signing.steps.findIndex((step: { uses?: string }) => step.uses?.startsWith('actions/download-artifact@'));
@@ -45,7 +45,7 @@ function assertDarwinDistribution(workflow: typeof release): void {
   expect(workflow.jobs.build.steps.find((step: { name?: string }) => step.name === 'Verify platform binaries').run).toContain('chmod +x "$binary"');
   const gate = workflow.jobs['verify-darwin'];
   assertFailureIsTerminal(gate);
-  expect(gate['runs-on']).toBe('macos-14');
+  expect(gate['runs-on']).toBe('macos-15');
   expect(gate.needs).toContain('build');
   expect(gate.if).toBe("needs.validate-tag.outputs.tag_prefix == 'myco'");
   for (const artifact of ['myco-raw-binaries']) {
@@ -132,7 +132,7 @@ test('main and PR darwin builds sign and verify raw release binaries', () => {
   expect(ci.on.push.branches).toContain('main');
   expect(ci.on.pull_request.branches).toContain('main');
   const hook = ci.jobs['hook-startup'];
-  expect(hook.strategy.matrix.include).toContainEqual({ target: 'darwin-arm64', os: 'macos-14', rg: 'darwin-arm64', ceiling: 150 });
+  expect(hook.strategy.matrix.include).toContainEqual({ target: 'darwin-arm64', os: 'macos-15', rg: 'darwin-arm64', ceiling: 150 });
   const steps = hook.steps;
   const compile = steps.findIndex((step: { run?: string }) => step.run?.includes('npm run build:binary'));
   const gate = steps.findIndex((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
@@ -160,7 +160,7 @@ function assertCrossCompiledDarwin(workflow: typeof ci): void {
   expect(build.steps.some((step: { run?: string }) => step.run === 'npm ci --ignore-scripts')).toBe(true);
   expect(build.steps.some((step: { uses?: string; with?: { name?: string } }) =>
     step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === 'ci-myco-cross-darwin-arm64')).toBe(true);
-  expect(verify['runs-on']).toBe('macos-14');
+  expect(verify['runs-on']).toBe('macos-15');
   expect(verify.needs).toEqual(['build', 'darwin-release-build']);
   expect(verify.if).toBe(build.if);
   expect(verify.steps.some((step: { uses?: string; with?: { name?: string } }) =>
@@ -180,7 +180,7 @@ test('CI cross-compiles on Linux and invokes the release signing entry point on 
   expect(release.jobs['sign-darwin'].steps.some((step: { run?: string }) => step.run === SIGN_DARWIN)).toBe(true);
   for (const mutation of ['native-build', 'drifted-signing', 'ignored-failure']) {
     const changed = structuredClone(ci);
-    if (mutation === 'native-build') changed.jobs['darwin-release-build']['runs-on'] = 'macos-14';
+    if (mutation === 'native-build') changed.jobs['darwin-release-build']['runs-on'] = 'macos-15';
     if (mutation === 'drifted-signing') changed.jobs['darwin-release-verify'].steps.find((step: { run?: string }) => step.run === SIGN_DARWIN).run = 'codesign --force --sign - binary/myco';
     if (mutation === 'ignored-failure') changed.jobs['darwin-release-verify']['continue-on-error'] = true;
     expect(() => assertCrossCompiledDarwin(changed)).toThrow();
