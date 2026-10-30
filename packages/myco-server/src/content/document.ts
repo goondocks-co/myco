@@ -3,7 +3,7 @@
  *
  * A document is a set of immutable chunks. A page chunk is one gzip stream of NDJSON: page headers
  * (`{k:"page",owner,page}`) each followed by that page's records, and, in the session's last page chunk only, the
- * publisher's continuation (`{k:"state"}` per transcript and one `{k:"owners"}`). A page holds records of one owner,
+ * publisher's continuation (`{k:"state"}` per transcript, one `{k:"owners"}` and one `{k:"plans"}`). A page holds records of one owner,
  * a turn key or `''` for the session, at most `DOCUMENT_PAGE_BYTES` encoded, and never spans chunks. A body chunk
  * holds one body, uncompressed, for a record that would not fit an empty page.
  */
@@ -47,6 +47,8 @@ export interface DecodedChunk {
   states: Map<string, Record<string, unknown>>;
   /** The session's harness key owners, as `[key, {thread, record}]`. */
   owners: [string, { thread: string; record: string }][] | null;
+  /** The canonical plan keys the document holds an appearance of. */
+  plans?: string[];
 }
 
 /** The body field of each record kind, the one field that may leave its record. */
@@ -110,6 +112,7 @@ export async function encodePageChunk(chunk: DecodedChunk): Promise<Uint8Array> 
   }
   for (const [t, c] of chunk.states) lines.push(JSON.stringify({ k: 'state', t, c }));
   if (chunk.owners !== null) lines.push(JSON.stringify({ k: 'owners', owners: chunk.owners }));
+  if (chunk.plans !== undefined) lines.push(JSON.stringify({ k: 'plans', keys: chunk.plans }));
   const text = utf8(`${lines.join('\n')}\n`);
   return collect(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip')));
 }
@@ -129,6 +132,7 @@ export async function decodePageChunk(body: ReadableStream<Uint8Array>): Promise
       chunk.pages.push(open);
     } else if (value.k === 'state') chunk.states.set(String(value.t), value.c as Record<string, unknown>);
     else if (value.k === 'owners') chunk.owners = value.owners as DecodedChunk['owners'];
+    else if (value.k === 'plans') chunk.plans = value.keys as string[];
     else if (open === null) throw new Error('document_record_without_page');
     else open.records.push(value as unknown as DocRecord);
   }

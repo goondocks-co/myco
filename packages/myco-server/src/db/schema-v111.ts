@@ -1,13 +1,21 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
-import { DOCUMENT_PREVIEW_CHARS } from './document-tables.js';
+import { DOCUMENT_EVENT_KINDS, DOCUMENT_PREVIEW_CHARS } from './document-tables.js';
+import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 const project = `project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR})`;
+const documentKinds = DOCUMENT_EVENT_KINDS.map((kind) => `'${kind}'`).join(',');
 
 /**
  * Session documents: the catalog of per-session documents held in the blob store, the publisher's own progress per
  * transcript, and its queue of member events. A session present before this step waits for conversion (`convert`);
  * a session whose first transcript or queued event arrives after it is published from its first byte. A transcript
- * that arrives or grows makes its live session due.
+ * that arrives or grows makes its live session due. A member event of a document kind is queued for its session in the
+ * statement that inserts it, opens the document of a session first seen with it, and makes its live session due. A session's queue is read in
+ * key order: its prompts first, then everything else, each by creation time.
+ *
+ * `retired_objects` holds every chunk version no live directory row adopted: a version a pass is still preparing, one
+ * whose pass never committed, and one a later version superseded. Each is released after its grace unless a live
+ * `session_chunks` row names its source.
  */
 export const V111_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS session_documents (${project}, session_id TEXT NOT NULL,
@@ -50,9 +58,8 @@ export const V111_STATEMENTS: readonly string[] = [
     state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','awaiting','failed')), failure TEXT,
     awaited_size INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (project_id, transcript_id, generation))`,
   `CREATE INDEX IF NOT EXISTS idx_transcript_publication_session ON transcript_publication (project_id, session_id, generation)`,
-  `CREATE TABLE IF NOT EXISTS publish_queue (${project}, session_id TEXT NOT NULL, event_id TEXT NOT NULL,
-    queued_at INTEGER NOT NULL, PRIMARY KEY (project_id, session_id, event_id))`,
-  `CREATE INDEX IF NOT EXISTS idx_publish_queue_at ON publish_queue (queued_at)`,
+  `CREATE TABLE IF NOT EXISTS publish_queue (${project}, session_id TEXT NOT NULL, rank INTEGER NOT NULL CHECK (rank IN (0,1)),
+    created_at INTEGER NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (project_id, session_id, rank, created_at, event_id))`,
   `CREATE TABLE IF NOT EXISTS session_paths (${project}, session_id TEXT NOT NULL, generation INTEGER NOT NULL,
     path TEXT NOT NULL, tool_calls INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, session_id, generation, path))`,
@@ -65,6 +72,14 @@ export const V111_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS transcripts_document_insert AFTER INSERT ON transcripts BEGIN
     INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, updated_at)
       VALUES (NEW.project_id, NEW.session_id, 'live', 1, NEW.last_received_at);
+    UPDATE session_documents SET due_at = 0
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'live' AND due_at IS NOT 0; END`,
+  `CREATE TRIGGER IF NOT EXISTS events_document_queue AFTER INSERT ON events
+    WHEN NEW.kind IN (${documentKinds}) AND NEW.session_id IS NOT NULL AND NEW.producer_adapter <> '${TRANSCRIPT_PARSE_ADAPTER}' BEGIN
+    INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, due_at, updated_at)
+      VALUES (NEW.project_id, NEW.session_id, 'live', 1, 0, NEW.received_at);
+    INSERT OR IGNORE INTO publish_queue (project_id, session_id, rank, created_at, event_id)
+      VALUES (NEW.project_id, NEW.session_id, CASE NEW.kind WHEN 'prompt' THEN 0 ELSE 1 END, NEW.created_at, NEW.event_id);
     UPDATE session_documents SET due_at = 0
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'live' AND due_at IS NOT 0; END`,
   `CREATE TRIGGER IF NOT EXISTS transcripts_document_size AFTER UPDATE OF size ON transcripts WHEN NEW.size <> OLD.size BEGIN

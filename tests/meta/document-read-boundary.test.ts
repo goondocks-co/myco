@@ -4,8 +4,8 @@
  * Document content is read by request handlers, admitted run material endpoints and the publisher. The worker claim
  * (`api/worker.ts`, `core/harness.ts`) must reach neither `content/` nor the publisher, and the wake tick may reach
  * `content/` only through `ingest/publish.ts`, which only the transcript-parse job's module imports. Edges come from
- * the runtime's own import scanner; a non-literal dynamic import in a walked module names no module the gate can
- * follow and fails it.
+ * the runtime's own import scanner. A dynamic `import()` or `require()` in a walked module must take one plain string
+ * literal; any other argument, an interpolated template included, names no module the gate can follow and fails it.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -16,7 +16,10 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..
 const PUBLISHER = 'ingest/publish.ts';
 const PUBLISHER_IMPORTERS = ['ingest/view-cutover.ts'];
 const transpiler = new Bun.Transpiler({ loader: 'ts', deadCodeElimination: false });
-const UNKNOWN_DYNAMIC = /\b(?:import|require)\s*\(\s*(?!['"`])/;
+const UNKNOWN_DYNAMIC = /(?<![\w$.])(?:import|require)\s*\(\s*(?!(?:"[^"\\\n]*"|'[^'\\\n]*'|`[^`\\$]*`)\s*[,)])/;
+
+/** Whether a module's code holds a dynamic import whose specifier is not one plain string literal. */
+const unknownDynamicImport = (source: string): boolean => UNKNOWN_DYNAMIC.test(transpiler.transformSync(source));
 
 const relative = (file: string): string => path.relative(SRC, file).split(path.sep).join('/');
 const isContent = (file: string): boolean => file.startsWith('content/');
@@ -31,7 +34,7 @@ function closure(entry: string, stop: readonly string[] = []): Map<string, strin
     seen.set(file, from);
     if (stop.includes(file)) continue;
     const source = fs.readFileSync(path.join(SRC, file), 'utf8');
-    if (UNKNOWN_DYNAMIC.test(transpiler.transformSync(source))) throw new Error(`unknown dynamic import in ${file}`);
+    if (unknownDynamicImport(source)) throw new Error(`unknown dynamic import in ${file}`);
     for (const { path: specifier } of transpiler.scanImports(source)) {
       if (!specifier.startsWith('.')) continue;
       const target = relative(path.resolve(SRC, path.dirname(file), specifier.replace(/\.js$/, '.ts')));
@@ -60,6 +63,12 @@ describe('session documents are read by no clock and no claim', () => {
   it('the tick reaches document code only through the publisher', () => {
     expect(offending(closure('core/tick.ts', [PUBLISHER]), isContent)).toEqual([]);
     expect(closure('core/tick.ts').has(PUBLISHER)).toBe(true);
+  });
+
+  it('a dynamic import the gate cannot resolve fails it', () => {
+    const load = (argument: string) => `export async function load(name: string) { return import(${argument}); }`;
+    expect(['`../content/${name}.js`', "'../content/' + name", 'name'].filter((argument) => !unknownDynamicImport(load(argument)))).toEqual([]);
+    expect(unknownDynamicImport(load("'../content/document-reader.js'")) || unknownDynamicImport(load('`../content/document-reader.js`'))).toBe(false);
   });
 
   it('only the transcript-parse job imports the publisher', () => {

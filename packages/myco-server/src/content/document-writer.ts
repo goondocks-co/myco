@@ -28,6 +28,8 @@ export class DocumentWriter {
   states = new Map<string, Record<string, unknown>>();
   /** The session's harness key owners, written to the last page chunk. */
   owners = new Map<string, { thread: string; record: string }>();
+  /** The canonical plan keys the document holds an appearance of, written to the last page chunk. */
+  plans = new Set<string>();
   /** Owners whose pages changed. */
   readonly touched = new Set<string>();
   /** Blob store reads this writer made. */
@@ -60,6 +62,7 @@ export class DocumentWriter {
     const last = await this.chunk(this.lastPageChunk);
     this.states = new Map(last.states);
     this.owners = new Map(last.owners ?? []);
+    this.plans = new Set(last.plans ?? []);
   }
 
   private async chunk(chunkNo: number): Promise<DecodedChunk> {
@@ -187,7 +190,7 @@ export class DocumentWriter {
       target = { chunkNo: this.nextChunk++, chunk: { pages: [], states: empty, owners: null }, previous: undefined };
       pageChunks.push(target);
     }
-    target.chunk = { ...target.chunk, states: this.states, owners: [...this.owners] };
+    target.chunk = { ...target.chunk, states: this.states, owners: [...this.owners], plans: [...this.plans] };
     const pages = pageChunks.flatMap((write) => write.chunk.pages.map((page) => ({
       owner: page.owner, page: page.page, chunkNo: write.chunkNo, records: page.records.length, bytes: pageBytes(page),
     })));

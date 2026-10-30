@@ -7,14 +7,19 @@
  * frontiers, parsed with the common parser under the recorded policy, merged with its queued events, and written as
  * new chunk versions that one guarded batch makes live together with the catalog rows that describe them.
  *
- * A session is due when its `session_documents.due_at` has passed (a transcript grew, or an unfinished turn may now
- * close) or it has queued events. Only catalog rows decide that; the documents themselves are read only by a pass.
+ * A session is due when its `session_documents.due_at` has passed: a transcript grew, a member event joined its queue,
+ * or an unfinished turn may now close. Only that row decides it; the queue and the documents are read only by a pass.
+ *
+ * Every chunk version a pass writes is held by a `retired_objects` row from before it is registered until the commit
+ * that adopts it removes that row, and its proof is registered only while that row stands. A version whose pass never
+ * committed is therefore released like a superseded one: its row, past its grace or when its own pass gives up, takes
+ * its proofs with it, unless a live `session_chunks` row names its source.
  */
 import type { ContentStore, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { contentAssertion, prepareDerivedStream, readVerifiedContentText, type DerivedContentSource } from '../core/registered-content.js';
 import { registeredBlobsGuard, releaseBlobs } from '../core/object-release.js';
 import { blobObjectKey } from '../core/blob-objects.js';
-import { remainingInvocationBudget } from '../core/content-budget.js';
+import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
 import { trimTurn, type TurnInput } from '../core/turn-card-rules.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit } from '../telemetry.js';
@@ -38,6 +43,15 @@ export const RETIRED_OBJECT_GRACE_MS = 15 * 60_000;
 /** Distinct paths a session's tools touched that the catalog keeps. */
 export const SESSION_PATHS_LIMIT = 500;
 const RETIRE_PAGE = 100;
+/** Statements and blob calls a pass keeps for its registration and commit, above the wake's reserve for later jobs. */
+const PASS_CLOSING_STATEMENTS = 64;
+const PASS_CLOSING_BLOB_CALLS = 12;
+
+/** Whether the invocation can no longer pay for `statements` more without spending the wake's reserve. */
+function reserveReached(db: RelationalStore, statements: number, blobCalls: number): boolean {
+  const remaining = remainingInvocationBudget(db);
+  return remaining !== null && (remaining.statements < CONTENT_WAKE_JOB_RESERVE + statements || remaining.blobCalls < blobCalls);
+}
 /** The record identity scheme a newly published transcript is minted under. */
 const PUBLISHED_RECORD_SCHEME = 'source-record-v1';
 
@@ -72,7 +86,10 @@ interface TranscriptRow {
   reply_unfinished: number | null; reply_latest_at: number | null; prompt_scheme: string | null; record_scheme: string | null;
   state: string | null; failure: string | null; awaited_size: number | null;
 }
-interface QueuedRow { event_id: string; kind: string; payload: string; created_at: number; received_at: number }
+interface QueuedRow { event_id: string; rank: number; queued_created_at: number; kind: string; payload: string; created_at: number; received_at: number }
+/** One chunk version a pass writes, with its source and the directory row it supersedes. */
+interface ChunkVersion { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
+interface Holder { p: string; s: string; k: string; i: string }
 
 interface Publication {
   transcript: TranscriptRow;
@@ -91,26 +108,25 @@ interface Publication {
   changed: boolean;
 }
 
-/** The catalog half of one session: the sessions due, oldest first, selected without reading a document. */
+/** The sessions due, oldest first, read from the due index without reading a queue or a document. */
 async function dueSessions(db: RelationalStore, now: number, limit: number): Promise<{ project_id: string; session_id: string }[]> {
-  return (await db.prepare(`SELECT project_id,session_id FROM (
-      SELECT d.project_id,d.session_id,d.due_at at FROM session_documents d WHERE d.state='live' AND d.due_at<=?
-      UNION SELECT q.project_id,q.session_id,MIN(q.queued_at) at FROM publish_queue q JOIN session_documents d
-        ON d.project_id=q.project_id AND d.session_id=q.session_id AND d.state='live' GROUP BY q.project_id,q.session_id) due
-    WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=due.project_id AND t.session_id=due.session_id)
-    GROUP BY project_id,session_id ORDER BY MIN(at),project_id,session_id LIMIT ?`)
+  return (await db.prepare(`SELECT d.project_id,d.session_id FROM session_documents d WHERE d.due_at<=? AND d.state='live'
+      AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
+    ORDER BY d.due_at,d.project_id,d.session_id LIMIT ?`)
     .bind(now, limit).all<{ project_id: string; session_id: string }>()).results;
 }
 
-/** Publishes the due sessions within the wake's remaining budget, then retires superseded chunk versions past their grace. */
+/**
+ * Publishes the due sessions within the wake's remaining budget, then retires superseded chunk versions past their
+ * grace. Neither spends the reserve the wake keeps for its later jobs.
+ */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
   let changed = 0;
   let more = due.length === PUBLISH_SESSIONS_PER_WAKE;
   let failure: unknown;
   for (const ref of due) {
-    const remaining = remainingInvocationBudget(env.db);
-    if (limits.clock() >= limits.deadline || (remaining !== null && (remaining.statements < 64 || remaining.blobCalls < 12))) {
+    if (limits.clock() >= limits.deadline || reserveReached(env.db, 2 * PASS_CLOSING_STATEMENTS, 2 * PASS_CLOSING_BLOB_CALLS)) {
       more = true;
       break;
     }
@@ -123,30 +139,45 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       failure ??= error;
     }
   }
-  changed += await retireSupersededObjects(env.db, now);
+  if (!reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) changed += await retireSupersededObjects(env.db, now);
   if (failure !== undefined) throw failure;
   return { changed, more };
 }
 
-/** Retires holders past their grace, with the proof rows registered under their own source, then decides their objects. */
+/** Releases the holders past their grace. */
 export async function retireSupersededObjects(db: RelationalStore, now: number): Promise<number> {
   const rows = (await db.prepare(`SELECT project_id p,session_id s,blob_key k,source_id i FROM retired_objects
-    WHERE retired_at<=? ORDER BY retired_at LIMIT ${RETIRE_PAGE}`).bind(now - RETIRED_OBJECT_GRACE_MS)
-    .all<{ p: string; s: string; k: string; i: string }>()).results;
+    WHERE retired_at<=? ORDER BY retired_at LIMIT ${RETIRE_PAGE}`).bind(now - RETIRED_OBJECT_GRACE_MS).all<Holder>()).results;
   if (rows.length === 0) return 0;
+  await releaseHolders(db, rows, now);
+  return rows.length;
+}
+
+/**
+ * Deletes the holders that still stand, each with the proofs registered under its own source unless a live chunk names
+ * that source, then decides their objects.
+ */
+async function releaseHolders(db: RelationalStore, rows: readonly Holder[], now: number): Promise<void> {
   const page = JSON.stringify(rows);
   await db.batch([
     db.prepare(`DELETE FROM registered_content_proofs WHERE source_kind='document' AND (project_id,key,source_id) IN
-      (SELECT json_extract(value,'$.p'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(page),
+      (SELECT r.project_id,r.blob_key,r.source_id FROM json_each(?) j JOIN retired_objects r ON r.project_id=json_extract(j.value,'$.p')
+        AND r.session_id=json_extract(j.value,'$.s') AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
+       WHERE NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=r.project_id AND c.blob_key=r.blob_key AND c.source_id=r.source_id))`)
+      .bind(page),
     db.prepare(`DELETE FROM retired_objects WHERE (project_id,session_id,blob_key,source_id) IN
       (SELECT json_extract(value,'$.p'),json_extract(value,'$.s'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(page),
   ]);
   await releaseBlobs(db, rows.map((row) => ({ projectId: row.p, key: row.k })), now);
-  return rows.length;
 }
 
 /** The body field a spilled payload `blob` holds for an event kind. */
 const SPILLED_FIELD: Readonly<Record<string, string>> = { prompt: 'text', response: 'text', plan: 'content', 'tool.use': 'input', 'tool.failure': 'input' };
+
+/** A spilled tool input as the field held it: its JSON value, or its text when the member spilled text that is not JSON. */
+function spilledInput(text: string): unknown {
+  try { return JSON.parse(text); } catch { return text; }
+}
 
 /** A queued event's payload with a spilled body read back into the field it stands for. */
 async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
@@ -158,10 +189,13 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
   if (blob === null) throw new Error('document_event_body_missing');
   const text = await readVerifiedContentText(env, blobObjectKey(projectId, payload.blob, blob.generation), blob.size, payload.blob);
   const { blob: _spilled, ...rest } = payload;
-  return { ...rest, [field]: field === 'input' ? JSON.parse(text) : text };
+  return { ...rest, [field]: field === 'input' ? spilledInput(text) : text };
 }
 
-/** The turn a document's records describe, as the card rules read it. */
+/** The canonical plan a plan appearance belongs to. */
+const planKeyOf = (record: DocRecord): string => (typeof record.plan_key === 'string' ? record.plan_key : record.id);
+
+/** The turn a document's records describe, as the card rules read it; a plan appears as its latest appearance. */
 function turnInput(turnKey: string, records: readonly DocRecord[]): TurnInput | null {
   const prompt = records.find((record) => record.k === 'prompt' && record.id === turnKey);
   if (prompt === undefined) return null;
@@ -175,8 +209,8 @@ function turnInput(turnKey: string, records: readonly DocRecord[]): TurnInput | 
       output: typeof r.output_preview === 'string' ? r.output_preview : null, success: r.success === 1,
       errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
     })),
-    plans: records.filter((r) => r.k === 'plan').map((r) => ({
-      planKey: r.id, title: typeof r.title === 'string' ? r.title : null, status: s(r.status), content: typeof r.content === 'string' ? r.content : null,
+    plans: [...new Map(records.filter((r) => r.k === 'plan').map((r) => [planKeyOf(r), r])).values()].map((r) => ({
+      planKey: planKeyOf(r), title: typeof r.title === 'string' ? r.title : null, status: s(r.status), content: typeof r.content === 'string' ? r.content : null,
     })),
   };
 }
@@ -191,7 +225,7 @@ class SessionPublication {
   private doc!: DocumentRow;
   private writer!: DocumentWriter;
   private publications: Publication[] = [];
-  private consumed: string[] = [];
+  private consumed: { r: number; c: number; e: string }[] = [];
   private more = false;
   private calls = 0;
   private continuationChanged = false;
@@ -218,7 +252,8 @@ class SessionPublication {
   }
 
   private spent(): boolean {
-    return this.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline;
+    return this.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline
+      || reserveReached(this.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS);
   }
 
   async run(): Promise<{ records: number; more: boolean }> {
@@ -237,9 +272,10 @@ class SessionPublication {
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
         .bind(this.projectId, this.sessionId),
-      db.prepare(`SELECT q.event_id,e.kind,e.payload,e.created_at,e.received_at FROM publish_queue q
-        JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id
-        WHERE q.project_id=? AND q.session_id=? ORDER BY e.created_at,q.event_id LIMIT ${PUBLISH_QUEUE_PER_PASS}`)
+      db.prepare(`SELECT q.event_id,q.rank,q.created_at queued_created_at,e.kind,e.payload,e.created_at,e.received_at
+        FROM (SELECT rank,created_at,event_id FROM publish_queue WHERE project_id=?1 AND session_id=?2
+          ORDER BY rank,created_at,event_id LIMIT ${PUBLISH_QUEUE_PER_PASS}) q
+        JOIN events e ON e.project_id=?1 AND e.event_id=q.event_id ORDER BY q.rank,q.created_at,q.event_id`)
         .bind(this.projectId, this.sessionId),
     ]);
     this.calls += 1;
@@ -360,7 +396,7 @@ class SessionPublication {
       const payload = await hydratedPayload(this.env, this.projectId, row);
       const record = documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at });
       if (record !== null) records.push(record);
-      this.consumed.push(row.event_id);
+      this.consumed.push({ r: row.rank, c: row.queued_created_at, e: row.event_id });
     }
     await this.place(records, null);
   }
@@ -391,8 +427,23 @@ class SessionPublication {
     return (record.prompt_id === null ? null : this.turns.get(record.prompt_id)) ?? SESSION_OWNER;
   }
 
+  /** Assigns each incoming prompt its turn, a parent among these records before its children. */
+  private assignPrompts(records: readonly DocRecord[]): void {
+    let pending = records.filter((record) => record.k === 'prompt' && !this.turns.has(record.id));
+    const incoming = new Set(pending.map((record) => record.id));
+    while (pending.length > 0) {
+      const ready = pending.filter((record) => {
+        const parent = record.parent_prompt_id;
+        return typeof parent !== 'string' || !incoming.has(parent) || this.turns.has(parent);
+      });
+      for (const record of ready.length > 0 ? ready : pending) this.ownerOf(record);
+      pending = pending.filter((record) => !this.turns.has(record.id));
+    }
+  }
+
   private async place(records: readonly DocRecord[], harness: string | null): Promise<void> {
     await this.resolve(records);
+    this.assignPrompts(records);
     const reads = this.writer.reads;
     for (const record of records) {
       const owner = this.ownerOf(record);
@@ -415,7 +466,10 @@ class SessionPublication {
           if (this.firstPrompt === null && record.origin === 'user') this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
-      else if (record.k === 'plan') this.counts.plans += 1;
+      else if (record.k === 'plan') {
+        if (!this.writer.plans.has(planKeyOf(record))) this.counts.plans += 1;
+        this.writer.plans.add(planKeyOf(record));
+      }
       else {
         this.counts.tool_calls += 1;
         if (record.success === 0) this.counts.failed_tools += 1;
@@ -448,22 +502,33 @@ class SessionPublication {
     return settled;
   }
 
-  /** Writes and registers every chunk version, then makes them live with the catalog in one guarded batch. */
+  /**
+   * Holds and registers every chunk version, then adopts them into the catalog in one guarded batch. A pass that fails
+   * releases its holders; one its commit adopted has none left to release.
+   */
   private async commit(): Promise<void> {
     const db = this.db;
     const changedPublications = this.publications.filter((publication) => publication.changed);
     const writes = this.writer.changed || this.continuationChanged;
     const layout: DocumentLayout | null = writes ? this.writer.layout() : null;
     const settled = writes ? await this.settledTurns() : [];
-    const registered: { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }[] = [];
+    const encoded = layout === null ? [] : await this.encode(layout);
+    const versions = encoded.map(({ version }) => version);
+    const holders = versions.map((version): Holder => ({ p: this.projectId, s: this.sessionId, k: version.key, i: version.sourceId }));
+    if (holders.length > 0) {
+      await db.prepare(`INSERT INTO retired_objects (project_id,session_id,blob_key,source_id,retired_at)
+        SELECT json_extract(value,'$.p'),json_extract(value,'$.s'),json_extract(value,'$.k'),json_extract(value,'$.i'),? FROM json_each(?)`)
+        .bind(this.now, JSON.stringify(holders)).run();
+      this.calls += 1;
+    }
     try {
-      if (layout !== null) await this.register(layout, registered);
-      await db.batch(this.commitStatements(layout, registered, settled, changedPublications));
+      for (const { version, bytes } of encoded) await this.register(version, bytes);
+      await db.batch(this.commitStatements(layout, versions, settled, changedPublications));
     } catch (error) {
-      if (registered.length > 0) await this.abandon(registered);
+      if (holders.length > 0) await releaseHolders(db, holders, this.now);
       throw error;
     }
-    if (layout !== null) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.records, chunks: registered.length });
+    if (layout !== null) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.records, chunks: versions.length });
   }
 
   private source(sourceId: string): DerivedContentSource {
@@ -473,35 +538,35 @@ class SessionPublication {
     };
   }
 
-  private async register(layout: DocumentLayout, registered: { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }[]): Promise<void> {
-    const guard = {
-      sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)`,
-      params: [this.projectId, this.sessionId, this.doc.generation],
-    };
-    const put = async (chunkNo: number, bytes: Uint8Array<ArrayBuffer>, kind: 'page' | 'body', encoding: string, previous?: ChunkRow) => {
-      const digest = await sha256HexOf(bytes);
+  /** Every chunk version's stored bytes, bodies first so each page records its bodies' digests. */
+  private async encode(layout: DocumentLayout): Promise<{ version: ChunkVersion; bytes: Uint8Array<ArrayBuffer> }[]> {
+    const encoded: { version: ChunkVersion; bytes: Uint8Array<ArrayBuffer> }[] = [];
+    const add = async (chunkNo: number, bytes: Uint8Array<ArrayBuffer>, kind: 'page' | 'body', encoding: string, previous?: ChunkRow) => {
+      const key = await sha256HexOf(bytes);
       const sourceId = `doc:${this.sessionId}:${this.doc.generation}:${chunkNo}:${this.passId}`;
-      const content = await prepareDerivedStream(this.env, this.source(sourceId), {
-        size: bytes.byteLength, digest, stream: () => new Blob([bytes]).stream(),
-      }, this.now, guard);
-      this.calls += 4;
-      registered.push({ chunkNo, key: content.key, bytes: bytes.byteLength, kind, encoding, sourceId, ...(previous ? { previous } : {}) });
-      return digest;
+      encoded.push({ version: { chunkNo, key, bytes: bytes.byteLength, kind, encoding, sourceId, ...(previous ? { previous } : {}) }, bytes });
+      return key;
     };
-    for (const body of layout.bodyChunks) body.ref.digest = await put(body.chunkNo, utf8(body.text), 'body', BODY_ENCODING);
-    for (const write of layout.pageChunks) await put(write.chunkNo, await encodePageChunk(write.chunk) as Uint8Array<ArrayBuffer>, 'page', PAGE_ENCODING, write.previous);
+    for (const body of layout.bodyChunks) body.ref.digest = await add(body.chunkNo, utf8(body.text), 'body', BODY_ENCODING);
+    for (const write of layout.pageChunks) await add(write.chunkNo, await encodePageChunk(write.chunk) as Uint8Array<ArrayBuffer>, 'page', PAGE_ENCODING, write.previous);
+    return encoded;
   }
 
-  /** Releases what a pass registered and never made live. */
-  private async abandon(registered: readonly { key: string; sourceId: string }[]): Promise<void> {
-    await this.db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=? AND source_kind='document' AND source_id IN (SELECT value FROM json_each(?))`)
-      .bind(this.projectId, JSON.stringify(registered.map((row) => row.sourceId))).run();
-    await releaseBlobs(this.db, registered.map((row) => ({ projectId: this.projectId, key: row.key })), this.now);
+  /** Registers one version while the document is live and its holder stands. */
+  private async register(version: ChunkVersion, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
+    await prepareDerivedStream(this.env, this.source(version.sourceId), {
+      size: bytes.byteLength, digest: version.key, stream: () => new Blob([bytes]).stream(),
+    }, this.now, {
+      sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)
+        AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
+      params: [this.projectId, this.sessionId, this.doc.generation, this.projectId, this.sessionId, version.key, version.sourceId],
+    });
+    this.calls += 4;
   }
 
   private commitStatements(
     layout: DocumentLayout | null,
-    registered: readonly { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }[],
+    registered: readonly ChunkVersion[],
     settled: readonly Record<string, unknown>[],
     publications: readonly Publication[],
   ): PreparedStatement[] {
@@ -509,20 +574,26 @@ class SessionPublication {
     const p = this.projectId, s = this.sessionId, g = this.doc.generation;
     const expectedChunks = registered.map((row) => ({ n: row.chunkNo, k: row.previous?.blob_key ?? null }));
     const expectedOffsets = publications.map((publication) => ({ t: publication.transcript.transcript_id, o: publication.held }));
+    const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId })));
+    const consumed = JSON.stringify(this.consumed);
     const statements: PreparedStatement[] = [
       ...contentAssertion(db, `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=? AND next_chunk=?)
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN session_chunks c ON c.project_id=? AND c.session_id=? AND c.generation=?
           AND c.chunk_no=json_extract(j.value,'$.n') WHERE c.blob_key IS NOT json_extract(j.value,'$.k'))
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN transcript_publication t ON t.project_id=? AND t.generation=?
           AND t.transcript_id=json_extract(j.value,'$.t') WHERE t.published_offset IS NOT json_extract(j.value,'$.o'))
-        AND (SELECT COUNT(*) FROM publish_queue WHERE project_id=? AND session_id=? AND event_id IN (SELECT value FROM json_each(?)))=?`,
+        AND (SELECT COUNT(*) FROM json_each(?) j JOIN retired_objects r ON r.project_id=? AND r.session_id=?
+          AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i'))=?
+        AND (SELECT COUNT(*) FROM json_each(?) j JOIN publish_queue q ON q.project_id=? AND q.session_id=? AND q.rank=json_extract(j.value,'$.r')
+          AND q.created_at=json_extract(j.value,'$.c') AND q.event_id=json_extract(j.value,'$.e'))=?`,
       [p, s, g, this.doc.next_chunk, JSON.stringify(expectedChunks), p, s, g, JSON.stringify(expectedOffsets), p, g,
-        p, s, JSON.stringify(this.consumed), this.consumed.length]),
+        rows, p, s, registered.length, consumed, p, s, this.consumed.length]),
     ];
     if (registered.length > 0) {
-      const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId })));
       statements.push(
         registeredBlobsGuard(db, registered.map((row) => ({ projectId: p, key: row.key }))),
+        db.prepare(`DELETE FROM retired_objects WHERE (project_id,session_id,blob_key,source_id) IN
+          (SELECT ?,?,json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(p, s, rows),
         db.prepare(`INSERT OR IGNORE INTO retired_objects (project_id,session_id,blob_key,source_id,retired_at)
           SELECT c.project_id,c.session_id,c.blob_key,c.source_id,? FROM json_each(?) j JOIN session_chunks c
             ON c.project_id=? AND c.session_id=? AND c.generation=? AND c.chunk_no=json_extract(j.value,'$.n')`)
@@ -594,8 +665,9 @@ class SessionPublication {
         })))));
     }
     if (this.consumed.length > 0) {
-      statements.push(db.prepare(`DELETE FROM publish_queue WHERE project_id=? AND session_id=? AND event_id IN (SELECT value FROM json_each(?))`)
-        .bind(p, s, JSON.stringify(this.consumed)));
+      statements.push(db.prepare(`DELETE FROM publish_queue WHERE (project_id,session_id,rank,created_at,event_id) IN
+          (SELECT ?,?,json_extract(value,'$.r'),json_extract(value,'$.c'),json_extract(value,'$.e') FROM json_each(?))`)
+        .bind(p, s, consumed));
     }
     const sizes = Object.fromEntries(this.publications.map((pub) => [pub.transcript.transcript_id, pub.transcript.size]));
     const behind = this.publications.some((pub) => pub.state === 'active' && pub.offset < pub.transcript.size);
@@ -606,10 +678,11 @@ class SessionPublication {
         failed_tools=failed_tools+?,plans=plans+?,first_prompt=?,open_turn_key=?,last_record_at=MAX(COALESCE(last_record_at,0),COALESCE(?,0)),
         next_chunk=?,updated_at=?,
         due_at=CASE WHEN EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id=? AND t.session_id=?
-          AND t.size IS NOT json_extract(?, '$."' || t.transcript_id || '"')) THEN 0 ELSE ? END
+          AND t.size IS NOT json_extract(?, '$."' || t.transcript_id || '"'))
+          OR EXISTS (SELECT 1 FROM publish_queue q WHERE q.project_id=? AND q.session_id=?) THEN 0 ELSE ? END
       WHERE project_id=? AND session_id=?`)
       .bind(this.counts.prompts, this.counts.user_prompts, this.counts.replies, this.counts.tool_calls, this.counts.failed_tools, this.counts.plans,
-        this.firstPrompt, this.openTurn, this.lastRecordAt, this.writer.nextChunk, this.now, p, s, JSON.stringify(sizes), dueAt, p, s));
+        this.firstPrompt, this.openTurn, this.lastRecordAt, this.writer.nextChunk, this.now, p, s, JSON.stringify(sizes), p, s, dueAt, p, s));
     return statements;
   }
 }

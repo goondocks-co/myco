@@ -3,8 +3,9 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
-import { memoryBlobStore, uuid } from './helpers/fixtures.js';
+import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 
 const MIN = 60_000;
 const tx = 'tx_0123456789abcdef0123456789abcdef';
@@ -69,7 +70,7 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
 test('a hook-only session publishes its queued events, and records no turn holds go to the session pages', async () => {
   await withViewStores(async (db, name) => {
     const blobs = memoryBlobStore();
-    await captureViewSession(db, 'project', 'hook', { blobs });
+    const issued = await captureViewSession(db, 'project', 'hook', { blobs });
     expect(await one(db, `SELECT COUNT(*) n FROM publish_queue WHERE session_id='hook'`), name).toEqual({ n: 4 });
     const env = { db, blobs };
     await publishDocuments(env, Date.now(), limits());
@@ -77,11 +78,73 @@ test('a hook-only session publishes its queued events, and records no turn holds
     expect(turn.map((record: DocRecord) => [record.k, record.id]), name).toEqual([['prompt', uuid(20)], ['reply', uuid(30)]]);
     expect(turn[0], name).toMatchObject({ text: 'factcanary', ev: expect.any(String) });
     const unplaced = (await readPage(env, 'project', 'hook', SESSION_OWNER, 0))!;
-    expect(unplaced.map((record: DocRecord) => [record.k, record.id]), name).toEqual([['tool', uuid(40)], ['plan', uuid(50)]]);
+    expect(unplaced.map((record: DocRecord) => [record.k, record.id]), name).toEqual([['tool', uuid(40)], ['plan', uuid(5)]]);
     expect(await counters(db, 'hook'), name).toMatchObject({ prompts: 1, replies: 1, tool_calls: 1, plans: 1 });
     expect((await db.prepare(`SELECT prompt_id,turn_key,preview,replies FROM session_prompts WHERE session_id='hook'`).all()).results, name)
       .toEqual([{ prompt_id: uuid(20), turn_key: uuid(20), preview: 'factcanary', replies: 1 }]);
     expect(await one(db, `SELECT COUNT(*) n FROM publish_queue`), name).toEqual({ n: 0 });
     expect(await one(db, `SELECT path,tool_calls FROM session_paths WHERE session_id='hook'`), name).toEqual({ path: 'test', tool_calls: 1 });
+
+    // A reply queued beside its prompt at the same instant, under an event id that sorts first, joins the prompt's turn;
+    // a later appearance of the plan is kept beside the first.
+    const at = Date.now();
+    const ctx = { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: at };
+    for (const event of [
+      envelope({ eventId: uuid(601), sessionId: 'hook', kind: 'prompt', createdAt: at, payload: { promptId: uuid(602), text: 'next', origin: 'user' } }),
+      envelope({ eventId: uuid(600), sessionId: 'hook', kind: 'response', createdAt: at, payload: { responseId: uuid(603), promptId: uuid(602), text: 'done' } }),
+      envelope({ eventId: uuid(604), sessionId: 'hook', kind: 'plan', createdAt: at, payload: { planKey: uuid(50), content: 'revised plan', status: 'active' } }),
+    ]) expect((await ingestEvent(db, ctx, event, env)).persisted, name).toBe(true);
+    await publishDocuments(env, at, limits());
+    expect((await readPage(env, 'project', 'hook', uuid(602), 0))!.map((record: DocRecord) => record.id), name).toEqual([uuid(602), uuid(603)]);
+    expect((await readPage(env, 'project', 'hook', SESSION_OWNER, 0))!.filter((record: DocRecord) => record.k === 'plan')
+      .map((record: DocRecord) => [record.plan_key, record.content]), name).toEqual([[uuid(50), 'factcanary'], [uuid(50), 'revised plan']]);
+    expect(await counters(db, 'hook'), name).toMatchObject({ prompts: 2, replies: 2, plans: 1, due_at: null });
+  });
+});
+
+test('a lost commit acknowledgement keeps the live version, and a version whose pass was lost is released after the grace', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore();
+    await captureViewSession(db, 'project', 'ack', { blobs });
+    // The commit lands but its answer is lost, and the pass releases what it holds. Then a pass dies at its commit, and
+    // every later batch it sends fails as a dead process's would.
+    const sql = new WeakMap<object, string>();
+    const raw = new WeakMap<object, object>();
+    const wrap = (statement: object, text: string): object => {
+      const wrapped = new Proxy(statement, { get: (target, key) => {
+        const value = (target as Record<PropertyKey, unknown>)[key];
+        if (key === 'bind') return (...args: unknown[]) => wrap((value as (...a: unknown[]) => object).apply(target, args), text);
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      sql.set(wrapped, text);
+      raw.set(wrapped, statement);
+      return wrapped;
+    };
+    let fault: 'ack' | 'lost' = 'ack';
+    let dead = false;
+    const faulty = { prepare: (text: string) => wrap(db.prepare(text), text), batch: async (statements: object[]) => {
+      if (dead) throw new Error('process lost');
+      const commit = statements.some((statement) => sql.get(statement)?.startsWith('INSERT INTO session_chunks'));
+      if (commit && fault === 'lost') { dead = true; throw new Error('process lost'); }
+      const results = await db.batch(statements.map((statement) => raw.get(statement) ?? statement) as never);
+      if (commit) throw new Error('commit answer lost');
+      return results;
+    } } as unknown as RelationalStore;
+    const t0 = Date.now();
+    await expect(publishDocuments({ db: faulty, blobs }, t0, limits())).rejects.toThrow('commit answer lost');
+    const live = async () => (await readPage({ db, blobs }, 'project', 'ack', uuid(20), 0))!.map((record) => record.k);
+    expect(await live(), name).toEqual(['prompt', 'reply']);
+
+    await captureViewSession(db, 'project', 'ack', { blobs, idOffset: 100 });
+    fault = 'lost';
+    await expect(publishDocuments({ db: faulty, blobs }, t0 + 1, limits())).rejects.toThrow('process lost');
+    expect(Number((await one(db, `SELECT COUNT(*) n FROM registered_content_proofs p WHERE p.source_kind='document'
+      AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.source_id=p.source_id)`))!.n), name).toBeGreaterThan(0);
+    await publishDocuments({ db, blobs }, t0 + RETIRED_OBJECT_GRACE_MS + 2, limits());
+    await publishDocuments({ db, blobs }, t0 + 2 * RETIRED_OBJECT_GRACE_MS + 4, limits());
+    expect(await live(), name).toEqual(['prompt', 'reply']);
+    expect(await one(db, `SELECT COUNT(*) n FROM registered_content_proofs p WHERE p.source_kind='document'
+      AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.source_id=p.source_id)`), name).toEqual({ n: 0 });
+    expect(await one(db, `SELECT COUNT(*) n FROM retired_objects`), name).toEqual({ n: 0 });
   });
 });

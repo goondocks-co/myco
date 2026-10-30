@@ -14,6 +14,7 @@ interface Exception {
 const LISTED: readonly Exception[] = [
   {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
   {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
+  {step:111,object:'events_document_queue',table:'events',reason:'A member content event is queued for its session\'s document in the statement that inserts it, by ingest and by restore alike, and makes its live session due.'},
   {step:106,object:'prompt_batches_legacy_class_insert',table:'prompt_batches',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
   {step:106,object:'prompt_batches_legacy_class_update',table:'prompt_batches',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
   {step:106,object:'responses_legacy_class_insert',table:'responses',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},

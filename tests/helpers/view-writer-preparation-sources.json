@@ -366,9 +366,10 @@
     "hydratedPayload": "W",
     "run": "W",
     "resolve": "W",
-    "abandon": "W",
     "commitStatements": "W",
-    "put": "W"
+    "releaseHolders": "W",
+    "commit": "W",
+    "register": "W"
   },
   "packages/myco-server/src/content/document-reader.ts": {
     "readDirectory": "W",

@@ -53,10 +53,8 @@ CREATE TABLE IF NOT EXISTS transcript_publication (project_id TEXT NOT NULL CHEC
 
 CREATE INDEX IF NOT EXISTS idx_transcript_publication_session ON transcript_publication (project_id, session_id, generation);
 
-CREATE TABLE IF NOT EXISTS publish_queue (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), session_id TEXT NOT NULL, event_id TEXT NOT NULL,
-    queued_at INTEGER NOT NULL, PRIMARY KEY (project_id, session_id, event_id));
-
-CREATE INDEX IF NOT EXISTS idx_publish_queue_at ON publish_queue (queued_at);
+CREATE TABLE IF NOT EXISTS publish_queue (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), session_id TEXT NOT NULL, rank INTEGER NOT NULL CHECK (rank IN (0,1)),
+    created_at INTEGER NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (project_id, session_id, rank, created_at, event_id));
 
 CREATE TABLE IF NOT EXISTS session_paths (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), session_id TEXT NOT NULL, generation INTEGER NOT NULL,
     path TEXT NOT NULL, tool_calls INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL,
@@ -74,6 +72,15 @@ INSERT OR IGNORE INTO session_documents (project_id, session_id, state, updated_
 CREATE TRIGGER IF NOT EXISTS transcripts_document_insert AFTER INSERT ON transcripts BEGIN
     INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, updated_at)
       VALUES (NEW.project_id, NEW.session_id, 'live', 1, NEW.last_received_at);
+    UPDATE session_documents SET due_at = 0
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'live' AND due_at IS NOT 0; END;
+
+CREATE TRIGGER IF NOT EXISTS events_document_queue AFTER INSERT ON events
+    WHEN NEW.kind IN ('prompt','response','tool.use','tool.failure','plan') AND NEW.session_id IS NOT NULL AND NEW.producer_adapter <> 'transcript-parse' BEGIN
+    INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, due_at, updated_at)
+      VALUES (NEW.project_id, NEW.session_id, 'live', 1, 0, NEW.received_at);
+    INSERT OR IGNORE INTO publish_queue (project_id, session_id, rank, created_at, event_id)
+      VALUES (NEW.project_id, NEW.session_id, CASE NEW.kind WHEN 'prompt' THEN 0 ELSE 1 END, NEW.created_at, NEW.event_id);
     UPDATE session_documents SET due_at = 0
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'live' AND due_at IS NOT 0; END;
 

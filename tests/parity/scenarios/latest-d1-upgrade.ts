@@ -1,12 +1,13 @@
 import { expect } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import type { ParityScenario } from '../harness.ts';
 
 /**
  * Applies the checked-in latest D1 file through Wrangler to populated previous-version
  * workerd D1 built through the same migration mechanism.
  * Compares schema, touched rows, version and migration ledger with the canonical step;
- * checks workerd FK/quick_check and the persisted file's full integrity_check.
+ * checks workerd FK/quick_check, one table at a time as maintenance runs it, and the persisted file's full integrity_check.
  * The comparison detects emitted-file drift. A wrong but consistent canonical and
  * emitted step passes this consistency gate.
  */
@@ -40,6 +41,10 @@ export const latestD1Upgrade: ParityScenario = {
     await expect(target.sql("UPDATE transcripts SET record_identity_scheme='source-record-v1' WHERE session_id='upgrade_session'"))
       .rejects.toThrow(/record_identity_scheme_immutable/);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
-    expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
+    const problems: unknown[] = [];
+    for (const { name } of await target.sql(CHECKED_TABLES_SQL)) {
+      problems.push(...(await target.sql(quickCheckSql(String(name)))).filter((row) => row.quick_check !== 'ok'));
+    }
+    expect(problems).toEqual([]);
   },
 };

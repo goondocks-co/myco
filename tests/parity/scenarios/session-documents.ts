@@ -6,7 +6,8 @@ const cursorLine = (role: string, text: string): string => `${JSON.stringify({ r
 
 /**
  * Session documents on both targets: a live transcript shipped after the step is published by the wake into chunks
- * the catalog names, with its turns, counters and publisher frontier, beside the rows today's readers serve.
+ * the catalog names, with its turns, counters and publisher frontier, beside the rows today's readers serve. A member's
+ * tool call whose input it spilled as plain text is published into its prompt's turn from the queue.
  */
 export const sessionDocuments: ParityScenario = {
   name: 'session documents: a wake publishes a new transcript into registered chunks with its turn catalog',
@@ -48,5 +49,30 @@ export const sessionDocuments: ParityScenario = {
     expect(chunks.every((row) => row.kind === 'page' && typeof row.key === 'string')).toBe(true);
     const pages = await target.sql(`SELECT owner FROM session_pages WHERE project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`);
     expect(pages.length).toBe(2);
+
+    const hookSession = `documents-hook-${stamp}`;
+    const promptId = crypto.randomUUID();
+    const input = new TextEncoder().encode(`tool input ${stamp}`);
+    const inputKey = await sha256HexOf(input);
+    await expectPersisted(await fetch(`${target.url}/blobs/${inputKey}`, {
+      method: 'POST', headers: target.memberHeaders({ 'content-type': 'text/plain', 'content-length': String(input.byteLength) }), body: input,
+    }), 'tool input blob');
+    for (const [kind, payload] of [
+      ['prompt', { promptId, text: 'read it', origin: 'user' }],
+      ['tool.use', { toolCallId: crypto.randomUUID(), promptId, toolName: 'Read', blob: inputKey, success: true }],
+    ] as const) {
+      await expectPersisted(await fetch(`${target.url}/events`, {
+        method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: hookSession, kind, createdAt: Date.now(), channel: 'cli',
+          producer: { adapter: 'parity', version: '1' }, payload }),
+      }), kind);
+    }
+    const hook = async () => (await target.sql(`SELECT d.tool_calls, d.due_at, (SELECT COUNT(*) FROM publish_queue q WHERE q.project_id=d.project_id
+      AND q.session_id=d.session_id) queued, (SELECT tools FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id
+      AND p.prompt_id=${lit(promptId)}) turn_tools FROM session_documents d WHERE d.project_id=${lit(target.projectId)} AND d.session_id=${lit(hookSession)}`))[0];
+    for (let wake = 0; wake < 8 && Number((await hook())?.queued) > 0; wake += 1) {
+      await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+    }
+    expect(await hook()).toMatchObject({ tool_calls: 1, due_at: null, queued: 0, turn_tools: 1 });
   },
 };

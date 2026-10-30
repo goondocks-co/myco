@@ -195,7 +195,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
     }
     // Nothing under src writes a session's first receipt after inserting the row.
     const writers = [...new Bun.Glob('**/*.ts').scanSync(SERVER_SRC)]
-      .filter((file) => /first_received_at\s*=|SET[^;`]*\bfirst_received_at\b/i.test(readFileSync(join(SERVER_SRC, file), 'utf8')));
+      .filter((file) => /first_received_at\s*=|\bSET\b[^;`]*\bfirst_received_at\b/i.test(readFileSync(join(SERVER_SRC, file), 'utf8')));
     expect(writers).toEqual([]);
   });
 

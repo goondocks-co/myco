@@ -4,6 +4,9 @@
  *
  * A tool record keeps its name, its input, a one-line summary of that input, its outcome, an error excerpt, the files
  * it affected and a bounded preview of its output. The complete output is not kept.
+ *
+ * A plan record is one appearance of a plan: its id is the member event that carried it, or the transcript record
+ * the parser minted, and `plan_key` names the canonical plan.
  */
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { utf8Preview } from '../hash.js';
@@ -59,7 +62,7 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
   if (k === 'reply') return { k, id: String(p.responseId), prompt_id: str(p.promptId), ...origin, text: str(p.text) };
   if (k === 'plan') {
     return {
-      k, id: String(p.planKey), prompt_id: str(p.promptId), ...origin, title: str(p.title), content: str(p.content),
+      k, id: at.ev ?? String(p.planKey), plan_key: String(p.planKey), prompt_id: str(p.promptId), ...origin, title: str(p.title), content: str(p.content),
       status: str(p.status) ?? 'active', origin_path: str(p.originPath), source: str(p.source) ?? 'tag',
       tags: Array.isArray(p.tags) ? p.tags : [],
     };
