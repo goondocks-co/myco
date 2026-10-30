@@ -25,9 +25,13 @@ const ACTIVE_COUNTER_INDEX_REPLACE_WRITES = 2;
 const ACTIVE_COUNTER_INDEX_UPDATE_WRITES = 1;
 /** A session's first prompt after learning resumed queues the session for learning initialization: one row. */
 const LEARNING_QUEUE_WRITES = 1;
+/** A content event queues its session's publication; the session's first one also opens its document row. */
+const DOCUMENT_QUEUE_WRITES = 5;
+/** A session's first transcript makes its document due: the row and its due index entry. */
+const DOCUMENT_DUE_WRITES = 2;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14,
+  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES,
   'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;

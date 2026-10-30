@@ -3,6 +3,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { expect, it } from 'bun:test';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
+import { V111_STATEMENTS } from '@myco-server-worker/db/schema-v111.js';
 
 interface Exception {
   step: number;
@@ -11,6 +12,9 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
+  {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
+  {step:111,object:'events_document_queue',table:'events',reason:'A member content event is queued for its session\'s document in the statement that inserts it, by ingest and by restore alike, and makes its live session due.'},
   {step:106,object:'prompt_batches_legacy_class_insert',table:'prompt_batches',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
   {step:106,object:'prompt_batches_legacy_class_update',table:'prompt_batches',reason:'A change to a row\'s class evidence reclassifies it in the same statement.'},
   {step:106,object:'responses_legacy_class_insert',table:'responses',reason:'A parser row is classified as the legacy derivation in the statement that writes it.'},
@@ -105,6 +109,11 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  {
+    step: 111,
+    sql: V111_STATEMENTS.find((sql) => sql.startsWith('INSERT OR IGNORE INTO session_documents'))!,
+    reason: 'Every session present before the step waits for conversion; a session first seen after it is published from its first byte.',
+  },
   ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({
     step: 108,
     sql: 'DROP TRIGGER IF EXISTS ' + exception.object,

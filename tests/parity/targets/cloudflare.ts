@@ -1,4 +1,5 @@
 import { budgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -210,8 +211,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     if (upgrade !== undefined) {
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
       if ((await workerdSql('PRAGMA foreign_key_check')).length !== 0) throw new Error('upgraded workerd D1 has FK violations');
-      const quickCheck = await workerdSql('PRAGMA quick_check');
-      if (JSON.stringify(quickCheck) !== JSON.stringify([{ quick_check: 'ok' }])) throw new Error(`upgraded workerd D1 failed quick_check: ${JSON.stringify(quickCheck)}`);
+      const checked = (await workerdSql(CHECKED_TABLES_SQL)).map((row) => String(row.name));
+      const quickCheck = (JSON.parse(await d1(checked.map(quickCheckSql).join(';\n'))) as Array<{ results: { quick_check: string }[] }>)
+        .flatMap((answer) => answer.results.map((row) => row.quick_check)).filter((text) => text !== 'ok');
+      if (quickCheck.length !== 0) throw new Error(`upgraded workerd D1 failed quick_check: ${JSON.stringify(quickCheck)}`);
       await probeForeignKeyAssertion(databaseFile, workerdSql);
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
       // The last statement stamps the version; omission probes cover the step's data and schema work.

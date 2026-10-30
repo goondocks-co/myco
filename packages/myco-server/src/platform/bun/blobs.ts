@@ -126,7 +126,7 @@ export function diskBlobStore(root: string, sync: SyncHandle = syncHandle): Blob
       // opened here and closed only at end-of-stream leaks one per response the
       // reader never consumes, which an owner navigating away produces routinely.
       const offset = options?.range?.offset ?? 0;
-      return { size, body: fileBody(file, offset) };
+      return { size, body: fileBody(file, offset, options?.range?.length) };
     },
 
     async put(key, value, options?: BlobPutOptions): Promise<StoredObject> {

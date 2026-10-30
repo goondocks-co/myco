@@ -101,7 +101,8 @@ export function memoryBlobStore(): MemoryBlobStore {
       store.gets.push({ key, offset: options?.range?.offset ?? 0 });
       const o = store.objects.get(key);
       if (!o) return null;
-      const bytes = o.bytes.subarray(options?.range?.offset ?? 0);
+      const from = options?.range?.offset ?? 0;
+      const bytes = o.bytes.subarray(from, options?.range?.length === undefined ? undefined : from + options.range.length);
       return {
         size: o.size,
         body: new ReadableStream({

@@ -69,9 +69,9 @@ export interface StoredObjectBody extends StoredObject {
   body: ReadableStream;
 }
 
-/** What a read of a stored object asks for: the bytes from `offset` on, where a range is named. */
+/** What a read of a stored object asks for: the bytes from `offset` on, at most `length` of them when it is named. */
 export interface BlobGetOptions {
-  range?: { offset: number };
+  range?: { offset: number; length?: number };
 }
 
 export interface BlobPutOptions {
@@ -87,7 +87,7 @@ export interface BlobStore {
   head(key: string): Promise<StoredObject | null>;
   /** Proves an existing publication is crash-stable; absence answers false and storage errors throw. */
   ensureDurable?(key: string): Promise<boolean>;
-  /** The object's bytes, from `range.offset` when one is named; `size` is the whole object's either way. */
+  /** The object's bytes, from `range.offset` and at most `range.length` when named; `size` is the whole object's either way. */
   get(key: string, options?: BlobGetOptions): Promise<StoredObjectBody | null>;
   put(key: string, value: ReadableStream | null, options?: BlobPutOptions): Promise<StoredObject>;
   delete(key: string): Promise<void>;

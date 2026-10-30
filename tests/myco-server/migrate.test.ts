@@ -124,6 +124,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0108_v108.sql': '3e765561e232a9080f8399896669626909343e6e298268b59659dc9e0447ff1f',
   '0109_v109.sql': '5205f6e214876498cdf2423be30831ff9c9984894ea32967d09c762f5993e539',
   '0110_v110.sql': '6c7f344d5df92707160fb473b8973e28f17bdaeaa049e64e04c8609192872a14',
+  '0111_v111.sql': '764e3320141f27826bd38716febe028a83a8c898be8aaa50bddac37af17a057b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -789,6 +790,8 @@ describe('versioned schema steps', () => {
           : t === 'session_artifacts' && c.name === 'kind' ? "'pr'" : t === 'session_artifacts' && c.name === 'url' ? "'https://x'"
           : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
           : t === 'turn_cards' && c.name === 'state' ? "'pending'" : t === 'turn_cards' && c.name === 'signal' ? "'none'"
+          : (t === 'session_documents' || t === 'session_chunks') && c.name === 'state' ? "'live'" : t === 'transcript_publication' && c.name === 'state' ? "'active'"
+          : t === 'session_chunks' && c.name === 'kind' ? "'page'" : t === 'session_chunks' && c.name === 'encoding' ? "'identity'"
           : c.name === 'scope_reason' || c.name.startsWith('delivered_') || c.name === 'claim' ? 'NULL' : c.name === 'ask_protocol' ? "'v1'"
           : t === 'archive_bundles' && (c.name === 'version' || c.name === 'entry_count') ? '1' : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
@@ -805,9 +808,9 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
-      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_injections', 'session_read_facts', 'session_tombstones',
-      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
+      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
+      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_tombstones',
+      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_init_queue', 'turn_cards',
       ...VIEW_SESSION_TABLES,
     ].sort());

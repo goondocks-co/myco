@@ -44,8 +44,15 @@ export default {
         await db.batch([
           db.prepare('CREATE TABLE maint_parent (id INTEGER PRIMARY KEY)'),
           db.prepare('CREATE TABLE maint_child (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES maint_parent(id))'),
+          ...Array.from({ length: 400 }, (_, i) => db.prepare(\`CREATE TABLE maint_checked_\${i} (project_id TEXT NOT NULL
+            CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
+            state TEXT NOT NULL CHECK (state IN ('a','b')), PRIMARY KEY (project_id, state))\`)),
         ]);
         return Response.json({ ok: true });
+      }
+      if (step === 'whole') {
+        try { await db.prepare('PRAGMA quick_check').all(); return Response.json({ whole: 'accepted' }); }
+        catch (e) { return Response.json({ whole: String(e.message) }); }
       }
       if (step === 'dangle') {
         await db.exec('PRAGMA foreign_keys = off; INSERT INTO maint_child (parent) VALUES (99);');
@@ -83,8 +90,9 @@ try {
   check('optimize: size measured from size_after', optimize.result.measurements[0].state === 'measured' && optimize.result.measurements[0].value > 0, true);
   check('optimize: size limit unavailable', optimize.result.measurements.find((m: any) => m.name === 'size_limit').state, 'unavailable');
   check('optimize: daily quota unavailable', optimize.result.measurements.find((m: any) => m.name === 'daily_quota').state, 'unavailable');
+  check('a whole-database quick check of this schema outgrows D1', String((await call('whole')).whole).includes('SQLITE_NOMEM'), true);
   const clean = await call('integrity');
-  check('integrity: clean store answers no findings', clean.result.findings, []);
+  check('integrity: clean store answers no findings, one table at a time', clean.result.findings, []);
   // D1 enforces foreign keys at commit even with enforcement switched off, so no write can leave one dangling:
   // the finding path is reachable only from a store that arrived damaged, which a local D1 cannot be made into.
   const dangled = await call('dangle');

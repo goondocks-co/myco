@@ -11,6 +11,7 @@ import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET, VIEW_RECENT_MS, CUTOVER_SESSI
 import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
+import { publishDocuments } from './publish.js';
 
 /** The hosted relational store holds at most 10 GB; the batch stops building at this size and keeps extending published sessions. */
 export const VIEW_CUTOVER_PAUSE_BYTES = 9_000_000_000;
@@ -273,7 +274,8 @@ export async function runViewCutoverWake(
  * moved it on, asks for the next wake at `BACKLOG_CHAINED_WAKE_MS`; the legacy pass then reads only recently received
  * transcripts and its own backlog waits for the batch. A backlog that moved nowhere (every session refused publication,
  * say) takes no wake of its own: it waits for the next full wake, and the legacy pass serves every lane. A batch failure
- * is reported once the legacy pass has run.
+ * is reported once the legacy pass has run. The document publisher runs last, on its own frontiers, and its failure is
+ * reported after the batch's.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -293,11 +295,20 @@ export async function runTranscriptParseWake(
   );
   const yielding = 'error' in views || views.report.progressed;
   const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
+  const documents = await publishDocuments(env, now, {
+    calls: env.platform.jobBudget.calls,
+    deadline: Date.now() + env.platform.jobBudget.wallMs,
+    clock: Date.now,
+  }).then(
+    (report) => ({ report }),
+    (error: unknown) => ({ error }),
+  );
   if ('error' in views) throw views.error;
+  if ('error' in documents) throw documents.error;
   return {
     ...legacy,
-    changed: legacy.changed + views.report.changed,
-    more: legacy.more || (views.report.more && (views.report.progressed || !backlog)),
+    changed: legacy.changed + views.report.changed + documents.report.changed,
+    more: legacy.more || documents.report.more || (views.report.more && (views.report.progressed || !backlog)),
     ...(backlog && views.report.more && views.report.progressed ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
   };
 }

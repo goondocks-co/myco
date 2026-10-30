@@ -136,6 +136,8 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema.ts#<module>': [
     { tables: ['embedding_versions'], order: 'unverified' },
   ],
+  'ingest/publish.ts#commitStatements': ['session_chunks', 'session_pages', 'transcript_publication', 'session_paths', 'myco_tool_calls']
+    .map((table) => ({ tables: [table], order: 'unverified' as const })),
   'ingest/events.ts#planEventWrite': [
     { tables: ['sessions'], order: 'unverified' },
   ],

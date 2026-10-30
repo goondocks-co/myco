@@ -16,21 +16,32 @@
  * within 30 seconds (https://developers.cloudflare.com/d1/platform/limits/), and a check sends a fixed number of
  * statements one after another, so its work is over by that many limits after its claim; that is its bound.
  *
- * `quick_check` reports at most 100 problems by SQLite's own default. `foreign_key_check` has no documented
+ * `quick_check` runs one table at a time, the checks of every ordinary table sent together as one batch: a single
+ * whole-database `quick_check` compiles every table's constraints into one program, which D1 refuses with
+ * `SQLITE_NOMEM` once the schema's constraints outgrow its program limit. Each table reports at most 100 problems by
+ * SQLite's own default. `foreign_key_check` has no documented
  * bounded form on D1, and D1 refuses at commit any write that would leave a foreign key dangling, so rows reach
  * it only from a store that arrived damaged.
  */
 import type { MaintenanceCheck, PortResult, StoreMaintenancePort, StoreMeasurement } from '../../core/store-maintenance.js';
 
 /** The D1 binding as the product types it; D1 attaches `meta.size_after` to every result it returns. */
+interface D1Statement { all<T>(): Promise<{ results: T[]; meta?: { size_after?: number } }> }
 interface D1Like {
-  prepare(sql: string): { all<T>(): Promise<{ results: T[]; meta?: { size_after?: number } }> };
+  prepare(sql: string): D1Statement;
+  batch(statements: D1Statement[]): Promise<{ results: unknown[] }[]>;
 }
 
 /** D1's maximum SQL query duration. */
 export const D1_QUERY_LIMIT_MS = 30_000;
 /** The statements each check sends, in sequence. */
-export const D1_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 2 };
+export const D1_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 3 };
+
+/** The tables a quick check covers: every ordinary table, without SQLite's and D1's own. */
+export const CHECKED_TABLES_SQL = `SELECT name FROM sqlite_schema WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
+  AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' ORDER BY name`;
+/** One table's quick check. */
+export const quickCheckSql = (table: string): string => `PRAGMA quick_check('${table.replaceAll("'", "''")}')`;
 
 export const SIZE_LIMIT_UNAVAILABLE =
   'the plan\'s database size limit is not readable from the Worker (500 MB on Workers Free, 10 GB on Workers Paid)';
@@ -55,13 +66,14 @@ export function d1StoreMaintenance(db: D1Like): StoreMaintenancePort {
       const optimized = await db.prepare('PRAGMA optimize').all();
       return { findings: [], measurements: measurements(optimized.meta?.size_after) };
     }
-    const quick = await db.prepare('PRAGMA quick_check').all<{ quick_check: string }>();
+    const tables = await db.prepare(CHECKED_TABLES_SQL).all<{ name: string }>();
+    const quick = await db.batch(tables.results.map((table) => db.prepare(quickCheckSql(table.name))));
     const keys = await db.prepare('PRAGMA foreign_key_check').all<ForeignKeyRow>();
     const findings = [
-      ...quick.results.map((r) => r.quick_check).filter((text) => text !== 'ok'),
+      ...quick.flatMap((answer) => (answer.results as { quick_check: string }[]).map((r) => r.quick_check)).filter((text) => text !== 'ok'),
       ...keys.results.map((r) => `foreign key: ${r.table} row ${r.rowid} names a missing ${r.parent}`),
     ];
-    return { findings, measurements: measurements(keys.meta?.size_after ?? quick.meta?.size_after) };
+    return { findings, measurements: measurements(keys.meta?.size_after ?? tables.meta?.size_after) };
   };
   return {
     support: {

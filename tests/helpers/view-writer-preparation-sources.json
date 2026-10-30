@@ -335,7 +335,8 @@
     "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T",
     "it:pulls cards, then learning, at claim within the budget, and the learned spore cites its session": "T",
     "runs": "T",
-    "learning": "T"
+    "learning": "T",
+    "it:with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document": "T"
   },
   "packages/myco-server/src/core/pulled-stages.ts": {
     "selectPulled": "W",
@@ -358,5 +359,20 @@
     "detectLineageReplay": "W",
     "revokedForReplay": "W",
     "releasedRunCredential": "W"
+  },
+  "packages/myco-server/src/ingest/publish.ts": {
+    "dueSessions": "W",
+    "retireSupersededObjects": "W",
+    "hydratedPayload": "W",
+    "run": "W",
+    "resolve": "W",
+    "commitStatements": "W",
+    "releaseHolders": "W",
+    "commit": "W",
+    "register": "W"
+  },
+  "packages/myco-server/src/content/document-reader.ts": {
+    "readDirectory": "W",
+    "readPage": "W"
   }
 }

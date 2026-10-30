@@ -92,7 +92,7 @@ const payloadBodies: Readonly<Record<string, readonly string[]>> = {
 };
 
 /** View bodies use verified blob admission; all other fields retain catalogue bounds. */
-function admittedViewEvent(event: DerivedEvent, now: number): DerivedEvent {
+export function admittedViewEvent(event: DerivedEvent, now: number): DerivedEvent {
   const spec = kindSpec(event.kind),
     bodies = payloadBodies[event.kind];
   if (!spec || !bodies) throw new Error('view_record_kind_unsupported');
