@@ -99,3 +99,55 @@ export function mergeRecord(held: DocRecord, incoming: DocRecord): DocRecord {
   }
   return record;
 }
+
+const parsed = (value: unknown): unknown => {
+  if (typeof value !== 'string') return null;
+  try { return JSON.parse(value) as unknown; } catch { return null; }
+};
+
+/**
+ * The record a stored material row becomes: a legacy row or a view row of the same kind, with its bodies already
+ * read back into `text`, `input` or `content`. A view row keeps its transcript range; a legacy row its event. A plan row
+ * is one appearance of its plan: a view row's id is its plan key, as the parser minted it, and a legacy row's is the
+ * event that carried it.
+ */
+export function materialRecord(k: RecordKind, row: Record<string, unknown>): DocRecord {
+  const at = {
+    created_at: Number(row.created_at), received_at: Number(row.received_at ?? row.created_at),
+    ...(typeof row.source_transcript_id === 'string'
+      ? { src: [row.source_transcript_id, Number(row.source_offset), Number(row.source_end)] as const }
+      : typeof row.event_id === 'string' ? { ev: row.event_id } : {}),
+  };
+  if (k === 'prompt') {
+    const parent = str(row.parent_prompt_id);
+    return {
+      k, id: String(row.prompt_id), prompt_id: parent, ...at, parent_prompt_id: parent, thread_id: str(row.thread_id),
+      thread_label: str(row.thread_label), origin: str(row.origin) ?? 'user', prompt_kind: str(row.prompt_kind), text: str(row.text),
+      claim: str(row.claim), source_key: str(row.source_key), source_thread: str(row.source_thread), source_record: str(row.source_record),
+      prompt_key_hash: str(row.prompt_key_hash),
+    };
+  }
+  if (k === 'reply') return { k, id: String(row.response_id), prompt_id: str(row.prompt_id), ...at, text: str(row.text) };
+  if (k === 'plan') {
+    const tags = parsed(row.tags_json);
+    return {
+      k, id: typeof row.source_transcript_id === 'string' ? String(row.plan_key) : (str(row.event_id) ?? String(row.plan_key)),
+      plan_key: String(row.plan_key), prompt_id: str(row.prompt_id), ...at, title: str(row.title), content: str(row.content),
+      status: str(row.status) ?? 'active', origin_path: str(row.origin_path), source: str(row.source) ?? 'tag', tags: Array.isArray(tags) ? tags : [],
+    };
+  }
+  const input = typeof row.input === 'string' ? row.input : '';
+  const files = parsed(row.files_affected);
+  const call = parsed(row.call_source), outcome = parsed(row.outcome_source);
+  const named = typeof row.tool_name === 'string' && row.tool_name !== 'unknown';
+  return {
+    k, id: String(row.tool_call_id), prompt_id: str(row.prompt_id), ...at,
+    tool_name: str(row.tool_name) ?? 'unknown', myco_tool: str(row.myco_tool), myco_op: str(row.myco_op),
+    summary: toolSummary(parsed(input) ?? input), input, input_bytes: new TextEncoder().encode(input).length,
+    files_affected: Array.isArray(files) ? files : [], success: Number(row.success) === 0 ? 0 : 1,
+    output_preview: preview(row.output_preview), error_message: preview(row.error_message), result_reason: str(row.result_reason),
+    duration_ms: typeof row.duration_ms === 'number' ? row.duration_ms : null,
+    call_source: typeof call === 'object' && call !== null ? call : named ? { ordinal: 0, offset: 0, origin: 'reported' } : null,
+    outcome_source: typeof outcome === 'object' && outcome !== null ? outcome : { ordinal: 0, offset: 0, origin: 'reported' },
+  };
+}

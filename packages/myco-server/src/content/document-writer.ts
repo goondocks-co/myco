@@ -160,6 +160,12 @@ export class DocumentWriter {
     return this.dirty.size > 0 || this.fresh.length > 0 || this.bodies.length > 0;
   }
 
+  /** At least the number of chunk versions `layout()` would write now. */
+  get pendingVersions(): number {
+    const fresh = this.fresh.reduce((sum, page) => sum + pageBytes(page), 0);
+    return 2 * this.dirty.size + 2 + Math.ceil(fresh / DOCUMENT_CHUNK_BYTES) + this.bodies.length;
+  }
+
   /**
    * The chunk versions to write. Changed chunks keep their numbers; pages that no longer fit one move on, and with new
    * pages they fill the last page chunk and then new chunks. The last one carries the continuation.
