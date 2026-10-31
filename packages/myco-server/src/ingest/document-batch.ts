@@ -309,7 +309,7 @@ export class DocumentBatch {
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
-    transcriptPlans: Map<string, { record: DocRecord; hash: string }>; latestUserPrompt: number | null } {
+    transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
