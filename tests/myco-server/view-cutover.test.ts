@@ -262,6 +262,39 @@ test('a legacy backlog that outlasts the wake content wall still leaves the batc
   );
 }, 120000);
 
+test('sessions waiting for conversion advance every wake ahead of the batch, and recent transcripts are still parsed', async () => {
+  await withViewStores(async (db) =>
+    withViewWriterDriver(async () => {
+      const blobs = memoryBlobStore(), now = Date.now();
+      // Ten sessions predate documents, each with an unread transcript and a view build the batch would start.
+      for (let i = 0; i < 10; i++) {
+        const name = 'cut-d' + i;
+        await captureViewSession(db, 'project', name, { blobs, idOffset: 12_000 + i * 100 });
+        await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), turn(name, 'old', 100), now - 3 * DAY, 0, 'claude-code');
+        await requestViewRebuild(db, 'project', name, now);
+      }
+      await db.prepare(`UPDATE session_documents SET state='convert',generation=NULL,due_at=NULL`).run();
+      await db.prepare(`DELETE FROM publish_queue`).run();
+      await captureViewSession(db, 'project', 'cut-n', { idOffset: 13_000 });
+      const recent = 'tx_' + '7'.repeat(32), text = turn('cut-n', 'recent', 100);
+      const env = await captureViewTranscript(db, blobs, 'cut-n', recent, text, now - 60_000, 0, 'claude-code') as unknown as ServerEnv;
+      const progress = async () => JSON.stringify((await db.prepare(`SELECT session_id,state,build FROM session_documents ORDER BY session_id`).all()).results);
+      const waiting = () => n(db.prepare(`SELECT COUNT(*) n FROM session_documents WHERE state='convert'`));
+      for (let before = await progress(), wake = 0; await waiting() > 0; wake++) {
+        expect(wake).toBeLessThan(60);
+        const outer = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        const report = await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active') as { continueAfterMs?: number };
+        const after = await progress();
+        expect(after).not.toBe(before);
+        if (await waiting() > 0) expect(report.continueAfterMs).toBe(BACKLOG_CHAINED_WAKE_MS);
+        if (wake === 0) expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(recent))).toBe(bytes(text));
+        before = after;
+      }
+      expect((await readViewCutover(db)).built).toBe(0);
+    }),
+  );
+}, 120000);
+
 test('a batch backlog publishes old sessions the legacy pass never read, while legacy serves only recent transcripts', async () => {
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {

@@ -265,7 +265,8 @@
     "sweepViewCutover": "W",
     "readViewCutover": "W",
     "runViewCutoverWake": "W",
-    "cutoverBacklog": "W"
+    "cutoverBacklog": "W",
+    "conversionBacklog": "W"
   },
   "packages/myco-server/src/ingest/view-frozen.ts": {
     "tailStart": "W",
@@ -277,6 +278,7 @@
     "test:a killed wake resumes from its checkpoints after the lease and capture during the build lands before the flip": "T",
     "test:a session that lost bytes keeps its legacy derivation frozen and publishes a tail from the frontier": "T",
     "test:the batch pauses building at the headroom limit and keeps waiting without chaining": "T",
+    "test:sessions waiting for conversion advance every wake ahead of the batch, and recent transcripts are still parsed": "T",
     "texts": "T",
     "test:a published session keeps the legacy cursor, so legacy rows stay complete while the view extends": "T",
     "test:a tail after a lost segment keeps the complete record that opens the next retained segment": "T",
@@ -285,6 +287,8 @@
     "test:a legacy backlog that outlasts the wake content wall still leaves the batch building": "T",
     "test:a batch backlog publishes old sessions the legacy pass never read, while legacy serves only recent transcripts": "T",
     "parsed": "T",
+    "progress": "T",
+    "waiting": "T",
     "test:a draining wake builds several sessions under its own wall after the wake content wall has passed": "T",
     "test:unfinished cutover work keeps the Deployment at idle until the batch completes or pauses": "T",
     "test:promoting over a legacy plan row keeps the complete view body beyond the legacy bound": "T",
