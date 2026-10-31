@@ -395,7 +395,8 @@
     "inlineContinuation": "W",
     "hydrated": "W",
     "finishReport": "W",
-    "conversionStatements": "W"
+    "conversionStatements": "W",
+    "storedBodies": "W"
   },
   "tests/myco-server/document-conversion.test.ts": {
     "effectiveIds": "T",
@@ -404,6 +405,10 @@
     "test:a published-view session converts with the ids its readers see and resumes from the view frontier": "T",
     "test:a hook-only session converts its legacy rows with their ids, reporting the records no turn holds": "T",
     "test:a frozen-tail session exports its frozen rows, places steering under a view parent and promotes its view-only plans": "T",
-    "test:tool inputs read from bundles and stored objects convert across fresh wake budgets": "T"
+    "test:tool inputs read from bundles and stored objects convert across fresh wake budgets": "T",
+    "heldToolInputs": "T",
+    "document": "T",
+    "test:a conversion backlog chains each clock wake at the backlog cadence and converts on every one": "T",
+    "test:an export page reads the stored bodies of all its rows with one blobs read": "T"
   }
 }
