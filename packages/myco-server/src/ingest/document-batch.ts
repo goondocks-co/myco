@@ -365,8 +365,9 @@ export class DocumentBatch {
     const placed = layout === null ? [] : layout.pageChunks.flatMap((write) => write.chunk.pages.flatMap((page) =>
       page.records.filter((record) => record.k === 'prompt').map((record) => ({ id: record.id, page: page.page }))));
     if (placed.length > 0) {
-      statements.push(db.prepare(`UPDATE session_prompts SET page=json_extract(j.value,'$.page')
-        FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
+      statements.push(db.prepare(`UPDATE session_prompts SET page=(SELECT json_extract(j.value,'$.page') FROM json_each(?1) j
+          WHERE json_extract(j.value,'$.id')=session_prompts.prompt_id)
+        WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
         .bind(JSON.stringify(placed), p, s, g));
     }
     if (settled.length > 0) {

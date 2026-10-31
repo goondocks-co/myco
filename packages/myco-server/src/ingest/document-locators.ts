@@ -2,7 +2,8 @@
  * Page locators for the prompts of documents written before `session_prompts.page` existed. A wake reads at most
  * `LOCATE_CHUNKS_PER_WAKE` page chunks, in chunk order from the one after the document's `locate_after`, so each chunk
  * is read once, and records the page of every prompt they hold. A locator the publisher or conversion has already
- * written is kept. Once a document's last page chunk is read, a prompt no page holds is recorded as page -1.
+ * written is kept. Once a document's last page chunk is read, a prompt no page holds is recorded as page -1. Each
+ * locator is written through its prompt's primary key, so a wake's catalog reads follow the prompts it located.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
@@ -43,8 +44,10 @@ export async function locatePrompts(env: Pick<ServerEnv, 'db' | 'blobs'>, limits
     const where = 'project_id = ? AND session_id = ? AND generation = ?';
     const key = [doc.project_id, doc.session_id, doc.generation];
     await db.batch([
-      db.prepare(`UPDATE session_prompts SET page = json_extract(j.value, '$.page') FROM json_each(?) j
-        WHERE ${where} AND prompt_id = json_extract(j.value, '$.id') AND page IS NULL`).bind(JSON.stringify(placed), ...key),
+      db.prepare(`UPDATE session_prompts SET page = (SELECT json_extract(j.value, '$.page') FROM json_each(?1) j
+          WHERE json_extract(j.value, '$.id') = session_prompts.prompt_id)
+        WHERE project_id = ?2 AND session_id = ?3 AND generation = ?4 AND prompt_id IN (SELECT json_extract(value, '$.id') FROM json_each(?1))
+          AND page IS NULL`).bind(JSON.stringify(placed), ...key),
       ...(finished ? [db.prepare(`UPDATE session_prompts SET page = -1 WHERE ${where} AND page IS NULL`).bind(...key)] : []),
       db.prepare(`UPDATE session_documents SET locate_after = ? WHERE ${where} AND state = 'live'`)
         .bind(chunks.at(-1)?.chunk_no ?? doc.locate_after, ...key),
