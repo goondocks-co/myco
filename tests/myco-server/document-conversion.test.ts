@@ -7,13 +7,15 @@ import { createEmptyView, requestViewRebuild, tryPublishView } from '@myco-serve
 import { claimViewBuild, SERIAL_VIEW_BUDGET } from '@myco-server-worker/ingest/view-build-queue.js';
 import { parseViewOnce } from '@myco-server-worker/ingest/view-parse.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
-import { memoryBlobStore } from './helpers/fixtures.js';
+import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { bundleArchiveStatements, prepareArchiveBundle } from '@myco-server-worker/core/archive-bundle.js';
 import { withViewWriterDriver } from '../helpers/statement-recorder.js';
+import { BACKLOG_CHAINED_WAKE_MS, runTick, tickPacer } from '@myco-server-worker/core/tick.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { fixtureFlipEnvelope } from '../helpers/view-flip-envelope.js';
 
 const tx = 'tx_0123456789abcdef0123456789abcdef';
@@ -159,35 +161,39 @@ test('a frozen-tail session exports its frozen rows, places steering under a vie
   }));
 });
 
+/** A session that predates documents, holding 258 tool calls: 130 inputs each in its own stored object, 128 in two bundles. */
+async function heldToolInputs(db: RelationalStore, blobs: ReturnType<typeof memoryBlobStore>) {
+  await captureViewSession(db, 'project', 'session', { blobs });
+  await predate(db, 'session');
+  const event = (await db.prepare(`SELECT event_id,token_id FROM events WHERE kind='tool.use'`).first<{ event_id: string; token_id: string }>())!;
+  await db.prepare(`DELETE FROM tool_calls`).run();
+  await db.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,token_id,tool_name,input,input_bytes,success,created_at,received_at)
+    SELECT 'project','tool-'||value,'session',?,?,'Read','bundled input',13,1,value,value FROM json_each(?)`)
+    .bind(event.event_id, event.token_id, JSON.stringify(Array.from({ length: 258 }, (_, i) => i))).run();
+  const tools = (await db.prepare(`SELECT t.project_id,t.tool_call_id resource_id,t.session_id,t.event_id,t.token_id,e.envelope_hash,
+      t.content_revision,t.input_bytes bytes,t.received_at,e.raw_revision
+    FROM tool_calls t JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id WHERE t.created_at>=130 ORDER BY t.created_at`).all<Record<string, unknown>>()).results;
+  for (let i = 0; i < tools.length; i += 64) {
+    const bundle = await prepareArchiveBundle({ db, blobs }, tools.slice(i, i + 64).map((row) => ({ kind: 'tool-input' as const, row: row as never, text: 'bundled input' })), Date.now());
+    await db.batch(bundleArchiveStatements(db, bundle));
+  }
+  const stored = await Promise.all(Array.from({ length: 130 }, async (_, i) => {
+    const text = `stored input ${i}`, key = await sha256Hex(text), generation = crypto.randomUUID();
+    await blobs.put(blobObjectKey('project', key, generation), new Blob([text]).stream());
+    return { t: `tool-${i}`, k: key, g: generation, n: text.length };
+  }));
+  await db.batch([
+    db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+      SELECT 'project',json_extract(value,'$.k'),json_extract(value,'$.n'),'text/plain',?,1,json_extract(value,'$.g') FROM json_each(?)`).bind(event.token_id, JSON.stringify(stored)),
+    db.prepare(`UPDATE tool_calls SET input_blob_key=(SELECT json_extract(value,'$.k') FROM json_each(?1) WHERE json_extract(value,'$.t')=tool_calls.tool_call_id)
+      WHERE created_at<130`).bind(JSON.stringify(stored)),
+  ]);
+}
+
 test('tool inputs read from bundles and stored objects convert across fresh wake budgets', async () => {
   await withViewStores(async (db, name) => withViewWriterDriver(async () => {
     const blobs = memoryBlobStore();
-    await captureViewSession(db, 'project', 'session', { blobs });
-    await predate(db, 'session');
-    const event = (await db.prepare(`SELECT event_id,token_id FROM events WHERE kind='tool.use'`).first<{ event_id: string; token_id: string }>())!;
-    await db.prepare(`DELETE FROM tool_calls`).run();
-    await db.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,token_id,tool_name,input,input_bytes,success,created_at,received_at)
-      SELECT 'project','tool-'||value,'session',?,?,'Read','bundled input',13,1,value,value FROM json_each(?)`)
-      .bind(event.event_id, event.token_id, JSON.stringify(Array.from({ length: 258 }, (_, i) => i))).run();
-    // The first 130 inputs are each held in their own stored object, the other 128 in two bundles.
-    const tools = (await db.prepare(`SELECT t.project_id,t.tool_call_id resource_id,t.session_id,t.event_id,t.token_id,e.envelope_hash,
-        t.content_revision,t.input_bytes bytes,t.received_at,e.raw_revision
-      FROM tool_calls t JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id WHERE t.created_at>=130 ORDER BY t.created_at`).all<Record<string, unknown>>()).results;
-    for (let i = 0; i < tools.length; i += 64) {
-      const bundle = await prepareArchiveBundle({ db, blobs }, tools.slice(i, i + 64).map((row) => ({ kind: 'tool-input' as const, row: row as never, text: 'bundled input' })), Date.now());
-      await db.batch(bundleArchiveStatements(db, bundle));
-    }
-    const stored = await Promise.all(Array.from({ length: 130 }, async (_, i) => {
-      const text = `stored input ${i}`, key = await sha256Hex(text), generation = crypto.randomUUID();
-      await blobs.put(blobObjectKey('project', key, generation), new Blob([text]).stream());
-      return { t: `tool-${i}`, k: key, g: generation, n: text.length };
-    }));
-    await db.batch([
-      db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
-        SELECT 'project',json_extract(value,'$.k'),json_extract(value,'$.n'),'text/plain',?,1,json_extract(value,'$.g') FROM json_each(?)`).bind(event.token_id, JSON.stringify(stored)),
-      db.prepare(`UPDATE tool_calls SET input_blob_key=(SELECT json_extract(value,'$.k') FROM json_each(?1) WHERE json_extract(value,'$.t')=tool_calls.tool_call_id)
-        WHERE created_at<130`).bind(JSON.stringify(stored)),
-    ]);
+    await heldToolInputs(db, blobs);
     let wakes = 0;
     while ((await db.prepare(`SELECT state FROM session_documents WHERE session_id='session'`).first<{ state: string }>())!.state === 'convert' && wakes < 4) {
       await convertDocuments(measuredContentEnv({ db, blobs }, { statements: 800, blobCalls: 120 }).env, 2, limits());
@@ -196,5 +202,29 @@ test('tool inputs read from bundles and stored objects convert across fresh wake
     const report = JSON.parse((await db.prepare(`SELECT build FROM session_documents WHERE session_id='session' AND state='live'`).first<{ build: string }>())!.build).report;
     expect(report.bodies.tool, name).toMatchObject({ n: 258, placed: report.bodies.tool.source });
     expect(report.classes.body_unreadable, name).toBeUndefined();
+  }));
+});
+
+test('a conversion backlog chains each clock wake at the backlog cadence and converts on every one', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore();
+    await heldToolInputs(db, blobs);
+    const configured = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
+    const env = { ...configured, blobs, platform: { ...configured.platform, name: name === 'native' ? 'bun' as const : 'cloudflare' as const } };
+    const document = async () => (await db.prepare(`SELECT state,build FROM session_documents WHERE session_id='session'`).first<{ state: string; build: string | null }>())!;
+    const pacer = tickPacer();
+    let at = Date.now(), before = await document(), wakes = 0;
+    while (before.state === 'convert') {
+      const report = await runTick(env, at, { wake: 'clock', pacer });
+      const after = await document();
+      expect(after.build, name).not.toBe(before.build);
+      if (wakes > 0) expect(report.drainOnly, name).toBe(true);
+      if (after.state === 'convert') expect(report.nextWakeMs, name).toBe(BACKLOG_CHAINED_WAKE_MS);
+      at += report.nextWakeMs!;
+      before = after;
+      wakes += 1;
+      expect(wakes, name).toBeLessThan(10);
+    }
+    expect(wakes, name).toBeGreaterThan(2);
   }));
 });
