@@ -21,6 +21,11 @@ export interface DocumentLayout { pageChunks: PageChunkWrite[]; bodyChunks: Body
 
 export type Upsert = { outcome: 'inserted'; record: DocRecord } | { outcome: 'merged'; record: DocRecord; held: DocRecord } | { outcome: 'unchanged' };
 
+/** The writer's changes as they stood at a mark, restored by `undo`. */
+export interface WriterMark {
+  pages: Map<Page, DocRecord[]>; dirty: Set<number>; touched: Set<string>; plans: Set<string>; fresh: number; bodies: number; nextChunk: number;
+}
+
 const pageKey = (owner: string, page: number): string => `${owner}\u0000${page}`;
 
 export class DocumentWriter {
@@ -41,6 +46,7 @@ export class DocumentWriter {
   private readonly fresh: Page[] = [];
   private readonly bodies: BodyChunkWrite[] = [];
   private lastPageChunk: number | null;
+  private marked: WriterMark | null = null;
 
   constructor(
     readonly directory: Directory,
@@ -85,6 +91,33 @@ export class DocumentWriter {
       .sort((a, b) => a.page - b.page);
   }
 
+  /** Starts recording changes so that `undo` can restore the writer as it stands now. */
+  mark(): WriterMark {
+    this.marked = {
+      pages: new Map(), dirty: new Set(this.dirty), touched: new Set(this.touched), plans: new Set(this.plans),
+      fresh: this.fresh.length, bodies: this.bodies.length, nextChunk: this.nextChunk,
+    };
+    return this.marked;
+  }
+
+  /** Restores the writer to `mark`; chunks read after it stay loaded. */
+  undo(mark: WriterMark): void {
+    for (const [page, records] of mark.pages) page.records = records;
+    for (const page of this.fresh.splice(mark.fresh)) this.located.delete(pageKey(page.owner, page.page));
+    this.bodies.splice(mark.bodies);
+    this.nextChunk = mark.nextChunk;
+    for (const [into, from] of [[this.dirty, mark.dirty], [this.touched, mark.touched], [this.plans, mark.plans]] as const) {
+      (into as Set<unknown>).clear();
+      for (const value of from) (into as Set<unknown>).add(value);
+    }
+    this.marked = null;
+  }
+
+  /** Keeps a page's records as the mark found them, before their first change. */
+  private keep(page: Page): void {
+    if (this.marked !== null && !this.marked.pages.has(page)) this.marked.pages.set(page, page.records.slice());
+  }
+
   private markDirty(page: Page): void {
     const held = this.located.get(pageKey(page.owner, page.page));
     if (held?.chunk != null) this.dirty.add(held.chunk);
@@ -112,17 +145,20 @@ export class DocumentWriter {
     const records = pages.slice(from).flatMap((page) => page.records);
     let at = from;
     let page = pages[at]!;
+    this.keep(page);
     page.records = [];
     for (const record of records) {
       if (page.records.length > 0 && pageBytes(page) + recordBytes(record) > DOCUMENT_PAGE_BYTES) {
         at += 1;
         page = pages[at] ?? this.addPage(page.owner, page.page + 1, []);
+        this.keep(page);
         page.records = [];
       }
       page.records.push(record);
       this.markDirty(page);
     }
     for (const rest of pages.slice(at + 1)) {
+      this.keep(rest);
       rest.records = [];
       this.markDirty(rest);
     }
@@ -139,6 +175,7 @@ export class DocumentWriter {
         const held = page.records[at]!;
         const merged = mergeRecord(held, record);
         if (JSON.stringify(merged) === JSON.stringify(held)) return { outcome: 'unchanged' };
+        this.keep(page);
         page.records[at] = this.fit(merged);
         this.markDirty(page);
         if (pageBytes(page) > DOCUMENT_PAGE_BYTES) this.reflow(pages, index);
@@ -149,6 +186,7 @@ export class DocumentWriter {
     const pages = await this.pagesOf(owner);
     const last = pages.at(-1);
     if (last !== undefined && pageBytes(last) + recordBytes(fitted) <= DOCUMENT_PAGE_BYTES) {
+      this.keep(last);
       last.records.push(fitted);
       this.markDirty(last);
     } else this.addPage(owner, last === undefined ? 0 : last.page + 1, [fitted]);

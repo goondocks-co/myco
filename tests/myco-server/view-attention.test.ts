@@ -43,14 +43,14 @@ it('status metadata adds one exact-key search while preserving empty rows-read a
     const before = await observed.db.prepare(`SELECT value FROM schema_meta WHERE key = 'version'`).first<{ value: string }>();
     const baseline = observed.statements[0]!;
     observed.reset();
-    expect(await statusMetadata(observed.db)).toEqual({ version: Number(before!.value), viewReadRefusal: null });
+    expect(await statusMetadata(observed.db)).toEqual({ version: Number(before!.value), viewReadRefusal: null, documentPublishFailure: null });
     expect(observed.statements).toHaveLength(1);
     const after = observed.statements[0]!;
     if (target === 'D1') expect(after.rowsRead).toBe(baseline.rowsRead);
     else expect(after.rowsRead).toBeUndefined();
     const explain = async (sql: string) => (await db.prepare('EXPLAIN QUERY PLAN ' + sql).all<{ detail: string }>()).results.map(row => row.detail);
     const plans = { baseline: await explain(baseline.sql), metadata: await explain(after.sql) };
-    expect(plans.metadata.filter(detail => /SEARCH schema_meta/.test(detail))).toHaveLength(2);
+    expect(plans.metadata.filter(detail => /SEARCH schema_meta/.test(detail))).toHaveLength(3);
     console.info('VIEW_STATUS_METADATA', JSON.stringify({ target, rowsRead: after.rowsRead, plans }));
   });
 }, 60_000);
