@@ -146,7 +146,8 @@
     "local: #1924 session documents PR 1b, pinned Bun1.4.0 through npm test on native and Miniflare D1. tests/myco-server/document-conversion.test.ts measured 6109ms for 2 cases (a published view built, flipped and converted, and a hook-only session), weighted 9000ms for CI startup. No new parity scenario.",
     "local: #1924 session documents PR 1b review fixes, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 7.83s for 4 cases (adds a frozen-tail session and 258 tool inputs over two fresh wake budgets), weighted 27405ms.",
     "local: #1924 conversion wake chaining, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.42s for 5 cases (adds a conversion backlog driven through clock wakes at the backlog cadence), weighted 36470ms.",
-    "local: #1924 conversion page body reads, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 13.62s for 6 cases (adds one blobs read per export page), weighted 47670ms."
+    "local: #1924 conversion page body reads, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 13.62s for 6 cases (adds one blobs read per export page), weighted 47670ms.",
+    "local: #1924 publication progress under the wake budget, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 26.94s for 8 cases (adds a sixty-transcript session driven through wake-budget passes, and a failing session beside a conversion), weighted 94290ms."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -1025,7 +1026,7 @@
     "tests/utils/windows-atomic-replace.test.ts": 7,
     "tests/myco-server/view-cutover.test.ts": 153238,
     "tests/myco-server/learning-stages.test.ts": 48790,
-    "tests/myco-server/document-publish.test.ts": 28805,
+    "tests/myco-server/document-publish.test.ts": 94290,
     "tests/meta/document-read-boundary.test.ts": 2000,
     "tests/myco-server/document-conversion.test.ts": 47670
   },

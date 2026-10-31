@@ -9,7 +9,7 @@ import { latestMeasurements, type MeasurementName, type StoreMeasurement } from 
 import { storedBytes } from '../ingest/live-credential.js';
 import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
 import { schemaVersion, statusMetadata } from '../read/meta.js';
-import { viewReadRefusalFinding } from '../core/attention-state.js';
+import { documentPublishFailureFinding, viewReadRefusalFinding } from '../core/attention-state.js';
 import { listVisibleProjects } from './scope.js';
 import { readFleetProjection } from '../read/fleet.js';
 import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
@@ -98,6 +98,8 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     })),
   ]);
   const finding = metadata === undefined ? undefined : await readFact('view_state_inconsistent', async () => viewReadRefusalFinding(metadata.viewReadRefusal, ctx.now));
+  const publishFailure = metadata === undefined ? undefined
+    : await readFact('document_publish_failed', async () => documentPublishFailureFinding(metadata.documentPublishFailure, ctx.now));
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
   const learning=await readFact('learning',async()=>{
     const status=await readLearningStatus(env.db);
@@ -118,7 +120,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     transcriptBacklog: transcriptBacklog ?? null,
     projects: (projects ?? []).map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
     capture: capture ?? [], harnesses: harnesses ?? [], unavailable,
-    ...(finding == null ? {} : { findings: [finding] }),
+    ...(finding == null && publishFailure == null ? {} : { findings: [finding, publishFailure].filter((held) => held != null) }),
   });
 }
 

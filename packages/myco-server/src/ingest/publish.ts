@@ -25,12 +25,15 @@ import { type DocRecord } from '../content/document.js';
 import { documentRecord } from '../content/document-records.js';
 import { type ChunkRow, type PageRow } from '../content/document-reader.js';
 import {
-  DocumentBatch, directoryStatements, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement, publishedPromptScheme,
-  PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
+  commitAdmitted, DocumentBatch, DocumentPassFull, directoryStatements, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement,
+  publishedPromptScheme, PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
+import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { convertDocuments } from './document-conversion.js';
 import { locatePrompts } from './document-locators.js';
-import { parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, type ParsePersistence, type ParseTarget, type PassLimits } from './parse.js';
+import {
+  parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, type ParsePersistence, type ParseTarget, type PassLimits,
+} from './parse.js';
 import { promptOwners, type ParserState } from './parsers/index.js';
 import { admittedViewEvent, viewSourceReceipts } from './view-writer.js';
 import { isPromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -42,6 +45,18 @@ export const PUBLISH_QUEUE_PER_PASS = 200;
 /** How long a superseded chunk version stays readable before its holder is retired. */
 export const RETIRED_OBJECT_GRACE_MS = 15 * 60_000;
 const RETIRE_PAGE = 100;
+/** What one parse step may spend before it places its window: its segment reads and its catalog statements. */
+const STEP_STATEMENTS = 24;
+const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
+/** What reading one queued event may spend: its row, its bundle and its spilled body. */
+const QUEUED_STATEMENTS = 4;
+const QUEUED_BLOB_CALLS = 4;
+/** How long a session whose pass failed by name waits before its next pass: the time from its last advance, within bounds. */
+export const PUBLISH_BACKOFF_MIN_MS = 60_000;
+export const PUBLISH_BACKOFF_MAX_MS = 30 * 60_000;
+/** A failure named by a server code rather than a store fault: one the session's own input repeats. */
+const namedFailure = (error: unknown): string | undefined =>
+  error instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(error.message) ? error.message : undefined;
 /** Errors that stop one transcript's publication by name rather than failing the pass. */
 const PUBLISH_FAILURES: Readonly<Record<string, string>> = {
   view_record_too_large: 'record_too_large',
@@ -102,27 +117,32 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
  * wake that published everything due has left, locates the prompts of documents written before page locators with
  * what conversion leaves, then retires superseded chunk versions past their grace. None of them spends the reserve the
  * wake keeps for its later jobs.
+ *
+ * A session whose pass fails is recorded for the Deployment's health and does not hold the others: one that fails by
+ * name waits out a bounded backoff, and a store fault is reported once conversion and locating have run.
  */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
   let changed = 0;
   let more = due.length === PUBLISH_SESSIONS_PER_WAKE;
   let failure: unknown;
-  for (const ref of due) {
+  for (const [index, ref] of due.entries()) {
     if (limits.clock() >= limits.deadline || reserveReached(env.db, 2 * PASS_CLOSING_STATEMENTS, 2 * PASS_CLOSING_BLOB_CALLS)) {
       more = true;
       break;
     }
     try {
-      const report = await new SessionPublication(env, ref.project_id, ref.session_id, now, limits).run();
+      const report = await new SessionPublication(env, ref.project_id, ref.session_id, now, limits).run(index === 0);
       changed += report.records;
       more ||= report.more;
     } catch (error) {
-      emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: error instanceof Error ? error.message : 'unknown' });
-      failure ??= error;
+      const named = namedFailure(error);
+      emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: named ?? 'unknown' });
+      await deferFailedSession(env.db, ref.project_id, ref.session_id, named, now);
+      if (named === undefined) failure ??= error;
     }
   }
-  if (!more && failure === undefined) {
+  if (!more) {
     const converted = await convertDocuments(env, now, limits);
     changed += converted.changed;
     more ||= converted.more;
@@ -135,6 +155,19 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
   if (!reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) changed += await retireSupersededObjects(env.db, now);
   if (failure !== undefined) throw failure;
   return { changed, more };
+}
+
+/** Records a failed pass, and moves a session that failed by name past its backoff; neither may fail the wake. */
+async function deferFailedSession(db: RelationalStore, projectId: string, sessionId: string, named: string | undefined, now: number): Promise<void> {
+  try {
+    if (named !== undefined) {
+      await db.prepare(`UPDATE session_documents SET due_at=?3+MIN(MAX(?3-updated_at,${PUBLISH_BACKOFF_MIN_MS}),${PUBLISH_BACKOFF_MAX_MS})
+        WHERE project_id=?1 AND session_id=?2 AND state='live'`).bind(projectId, sessionId, now).run();
+    }
+    await recordDocumentPublishFailure(db, { projectId, sessionId, failure: named ?? 'unknown' }, now);
+  } catch (error) {
+    emit({ kind: 'document_publish_deferral_failed', projectId, sessionId, error: namedFailure(error) ?? 'unknown' });
+  }
 }
 
 /** Releases the holders past their grace. */
@@ -180,6 +213,7 @@ class SessionPublication {
   private publications: Publication[] = [];
   private consumed: { r: number; c: number; e: string }[] = [];
   private more = false;
+  private full = false;
   private continuationChanged = false;
 
   constructor(
@@ -192,12 +226,17 @@ class SessionPublication {
     this.db = env.db;
   }
 
-  private spent(): boolean {
-    return this.batch.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline
-      || reserveReached(this.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS);
+  /** Whether the pass must stop before a step that could spend `statements` and `blobCalls`: its commit stays payable. */
+  private spent(statements = STEP_STATEMENTS, blobCalls = STEP_BLOB_CALLS): boolean {
+    return this.full || this.batch.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline
+      || !commitAdmitted(this.db, this.batch.writer.pendingVersions, statements, blobCalls);
   }
 
-  async run(): Promise<{ records: number; more: boolean }> {
+  /**
+   * Publishes what the pass can pay for and commits it. A pass that leads its wake and can place nothing fails as
+   * `document_pass_unaffordable`: every later pass on the same input would stop at the same place.
+   */
+  async run(leads = false): Promise<{ records: number; more: boolean }> {
     const db = this.db;
     const generation = '(SELECT generation FROM session_documents WHERE project_id=?1 AND session_id=?2)';
     const [docs, chunks, pages, transcripts, queued] = await db.batch([
@@ -224,6 +263,7 @@ class SessionPublication {
     this.batch = new DocumentBatch(this.env, this.projectId, this.sessionId, doc, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
     this.batch.calls += 1;
     await this.batch.open();
+    this.batch.admitted = true;
     this.publications = (transcripts!.results as TranscriptRow[]).map((t) => ({
       transcript: t, held: t.published_offset, offset: t.published_offset ?? 0, segmentLines: t.segment_lines ?? 0,
       openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
@@ -233,6 +273,8 @@ class SessionPublication {
     }));
     for (const publication of this.publications) await this.publishTranscript(publication);
     await this.publishQueued(queued!.results as QueuedRow[]);
+    const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0;
+    if (leads && this.full && !placed) throw new Error('document_pass_unaffordable');
     const written = await this.batch.commit(this.batch.writer.changed || this.continuationChanged, 'live', this.now, (version) => ({
       sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)
         AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
@@ -321,6 +363,10 @@ class SessionPublication {
         if (report.nextOffset === null || publication.state !== 'active') return;
         if (publication.offset === from && (from < t.size || publication.unfinished === wasUnfinished)) return;
       } catch (error) {
+        if (error instanceof DocumentPassFull) {
+          this.full = this.more = true;
+          return;
+        }
         const failure = failureOf(error);
         if (failure === undefined) throw error;
         Object.assign(publication, { state: 'failed', failure, changed: true });
@@ -330,18 +376,29 @@ class SessionPublication {
     }
   }
 
+  /** Places the queued events read within the pass, the longest leading run whose commit the pass can still pay. */
   private async publishQueued(rows: readonly QueuedRow[]): Promise<void> {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
-    const records: DocRecord[] = [];
+    const read: { consumed: { r: number; c: number; e: string }; record: DocRecord | null }[] = [];
     const content = bundleContentEnv(this.env);
     for (const row of rows) {
-      if (this.spent()) { this.more = true; break; }
+      if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
       const payload = await hydratedPayload(content, this.projectId, row);
-      const record = documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at });
-      if (record !== null) records.push(record);
-      this.consumed.push({ r: row.rank, c: row.queued_created_at, e: row.event_id });
+      read.push({
+        consumed: { r: row.rank, c: row.queued_created_at, e: row.event_id },
+        record: documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at }),
+      });
     }
-    await this.batch.place(records, null);
+    for (let take = read.length; ; take = Math.floor(take / 2)) {
+      try {
+        await this.batch.place(read.slice(0, take).flatMap(({ record }) => (record === null ? [] : [record])), null);
+        this.consumed.push(...read.slice(0, take).map(({ consumed }) => consumed));
+        return;
+      } catch (error) {
+        if (!(error instanceof DocumentPassFull) || take === 0) throw error;
+        this.full = this.more = true;
+      }
+    }
   }
 
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */
