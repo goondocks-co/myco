@@ -7,17 +7,19 @@ import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { CARD_CLAIM_TURNS } from '@myco-server-worker/core/turn-cards.js';
 import { captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
-import { DocumentBatch, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
+import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
+import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { withViewStores } from './helpers/view-stores.js';
-import { memoryBlobStore, recordingDeferred, recordingLimiter } from './helpers/fixtures.js';
+import { memoryBlobStore, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import { withViewWriterDriver } from '../helpers/statement-recorder.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -66,6 +68,41 @@ it('a transcript plan larger than a page preview keeps its whole body in the can
       .toEqual({ kind: 'plan' });
     const read = await processedBody({ db, blobs }, { projectId: 'project' }, 'plan', plan.plan_key);
     expect({ length: read?.length, end: read?.endsWith('last step') }, name).toEqual({ length: body.length, end: true });
+  }));
+});
+
+it('a refused placement leaves no transcript plan and no reopened session in the commit that follows it', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const t0 = Date.now() - 2 * 60 * MIN;
+    const blobs = memoryBlobStore();
+    await captureViewSession(db, 'project', 'undone', { blobs });
+    await publishDocuments({ db, blobs }, t0, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    await db.prepare(`UPDATE sessions SET ended_at = ? WHERE project_id = 'project' AND session_id = 'undone'`).bind(t0 + 1).run();
+    const measured = measuredContentEnv({ db, blobs }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT });
+    const [docs, chunks, pages] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
+        s.created_by_token_id AS token_id FROM session_documents d JOIN sessions s USING (project_id, session_id) WHERE d.session_id = 'undone'`),
+      ...directoryStatements(db, 'project', 'undone')]);
+    const batch = new DocumentBatch(measured.env, 'project', 'undone', docs!.results[0] as never, chunks!.results as never, pages!.results as never);
+    await batch.open();
+    batch.admitted = true;
+    // A transcript's plan and a user prompt after the end, placed when the pass can pay its closing but no chunk version.
+    const at = t0 + 40 * MIN;
+    measured.usage.statements = WAKE_JOB_STATEMENT_LIMIT - CONTENT_WAKE_JOB_RESERVE - PASS_CLOSING_STATEMENTS;
+    await expect(batch.place([
+      documentRecord('plan', { planKey: 'transcript-plan', title: 'Plan', content: 'steps' }, at, { received_at: at })!,
+      documentRecord('prompt', { promptId: uuid(900), text: 'later', origin: 'user' }, at, { received_at: at })!,
+    ], null)).rejects.toBeInstanceOf(DocumentPassFull);
+    measured.usage.statements = 0;
+    await batch.place([documentRecord('response', { responseId: uuid(901), promptId: uuid(20), text: 'short' }, at, { received_at: at })!], null);
+    await batch.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => {
+      const set = batch.documentSet(at);
+      return { before: [], after: [measured.env.db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id = 'project' AND session_id = 'undone'`)
+        .bind(...set.params)] };
+    });
+    expect(await db.prepare(`SELECT replies, user_prompts FROM session_documents WHERE session_id = 'undone'`).first(), name)
+      .toEqual({ replies: 2, user_prompts: 1 });
+    expect(await db.prepare(`SELECT COUNT(*) AS n FROM plans WHERE plan_key = 'transcript-plan'`).first(), name).toEqual({ n: 0 });
+    expect(await db.prepare(`SELECT ended_at FROM sessions WHERE session_id = 'undone'`).first(), name).toEqual({ ended_at: t0 + 1 });
   }));
 });
 

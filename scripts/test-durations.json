@@ -152,7 +152,8 @@
     "local: #1924 publication pricing recheck, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 35.48s for 13 cases (adds a merge that reflows across chunks read during its placement, and a failed pass whose queued event is consumed and replaced), within its 128700ms weight.",
     "local: #1924 session documents PR 2a, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/session-documents-read.test.ts measured 4.28s for 2 cases (a published codex session read through turns, a turn, its tools, a full body, activity, placement, the list and card search; and the session page statement count at 2 and 40 turns), weighted 15050ms. tests/myco-server/dashboard-conversation-honesty.test.ts and session-read-budget-runtime.test.ts are deleted with the readers they tested.",
     "local: #1924 session documents PR 2a restore, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.81s for 5 cases after its restore case (an artifact converted, merged and refused), weighted 37835ms.",
-    "local: #1924 session documents PR 2b, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/learning-documents.test.ts measured 8.03s for 3 cases (the publisher settles cards, keeps a transcript plan canonical and reopens a resumed session; a card claim reads the same rows at 128 and 1280 due turns; an idle claim with learning off issues 4 statements), weighted 28105ms. tests/myco-server/view-title-material.test.ts is deleted with the titling material reader it tested. Parity scenarios of the stopped legacy transcript pass are deleted: Cursor transcript re-read, transcript repair priority, transcript live service, Record identity and transcript backlog."
+    "local: #1924 session documents PR 2b, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/learning-documents.test.ts measured 8.03s for 3 cases (the publisher settles cards, keeps a transcript plan canonical and reopens a resumed session; a card claim reads the same rows at 128 and 1280 due turns; an idle claim with learning off issues 4 statements), weighted 28105ms. tests/myco-server/view-title-material.test.ts is deleted with the titling material reader it tested. Parity scenarios of the stopped legacy transcript pass are deleted: Cursor transcript re-read, transcript repair priority, transcript live service, Record identity and transcript backlog.",
+    "local: #1924 refused placement rollback, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/learning-documents.test.ts measured 9.45s for 6 cases (adds a refused placement followed by a commit), weighted 33075ms."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -1032,7 +1033,7 @@
     "tests/meta/document-read-boundary.test.ts": 2000,
     "tests/myco-server/document-conversion.test.ts": 47670,
     "tests/myco-server/session-documents-read.test.ts": 15050,
-    "tests/myco-server/learning-documents.test.ts": 28105
+    "tests/myco-server/learning-documents.test.ts": 33075
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

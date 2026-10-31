@@ -435,6 +435,7 @@
     "it:an idle claim with learning off issues a small fixed number of statements": "T",
     "it:a transcript plan larger than a page preview keeps its whole body in the canonical plan": "T",
     "it:a turn past the page budget is never carded by rule, and falls due with its tail": "T",
+    "it:a refused placement leaves no transcript plan and no reopened session in the commit that follows it": "T",
     "claim": "T",
     "placeRecords": "T"
   }
