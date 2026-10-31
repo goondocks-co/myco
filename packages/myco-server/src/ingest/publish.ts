@@ -29,6 +29,7 @@ import {
   PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
 import { convertDocuments } from './document-conversion.js';
+import { locatePrompts } from './document-locators.js';
 import { parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, type ParsePersistence, type ParseTarget, type PassLimits } from './parse.js';
 import { promptOwners, type ParserState } from './parsers/index.js';
 import { admittedViewEvent, viewSourceReceipts } from './view-writer.js';
@@ -98,8 +99,9 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
 
 /**
  * Publishes the due sessions within the wake's remaining budget, converts sessions that predate documents with what a
- * wake that published everything due has left, then retires superseded chunk versions past their grace. None of them
- * spends the reserve the wake keeps for its later jobs.
+ * wake that published everything due has left, locates the prompts of documents written before page locators with
+ * what conversion leaves, then retires superseded chunk versions past their grace. None of them spends the reserve the
+ * wake keeps for its later jobs.
  */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
@@ -124,6 +126,11 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     const converted = await convertDocuments(env, now, limits);
     changed += converted.changed;
     more ||= converted.more;
+    if (!converted.more) {
+      const located = await locatePrompts(env, limits);
+      changed += located.changed;
+      more ||= located.more;
+    }
   }
   if (!reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) changed += await retireSupersededObjects(env.db, now);
   if (failure !== undefined) throw failure;
