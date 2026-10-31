@@ -4,6 +4,9 @@ import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/i
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
+import { documentRecord } from '@myco-server-worker/content/document-records.js';
+import type { ChunkRow, PageRow } from '@myco-server-worker/content/document-reader.js';
+import { DocumentBatch, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { prepareArchive } from '@myco-server-worker/core/event-content.js';
 import { bundleArchiveStatements } from '@myco-server-worker/core/archive-bundle.js';
@@ -419,5 +422,66 @@ test('a pass that fails while new input arrives leaves the session due', async (
     await pass;
     expect(documentPublishFailureFinding((await statusMetadata(db)).documentPublishFailure, t0 + 40 * MIN)?.failure, name).toBe('document_object_missing');
     expect((await counters(db, 'race'))!.due_at, name).toBe(0);
+  });
+}, 60_000);
+
+test('a merge whose page reflows across chunks read during its placement is refused before the commit it cannot pay', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore(), t0 = Date.now();
+    const issued = await captureViewSession(db, 'project', 'reflow', { blobs });
+    const env = { db, blobs };
+    await publishDocuments(env, t0, limits());
+    // The session's turn holds an outcome-only tool record on its first page, then pages of large calls over many chunks.
+    const doc = await one(db, `SELECT d.*,s.created_by_token_id token_id FROM session_documents d JOIN sessions s USING(project_id,session_id) WHERE d.session_id='reflow'`);
+    const [chunks, pages] = await db.batch(directoryStatements(db, 'project', 'reflow'));
+    const seed = new DocumentBatch(env, 'project', 'reflow', doc as never, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
+    await seed.open();
+    const target = uuid(20000);
+    await seed.place([
+      documentRecord('tool.use', { toolCallId: target, promptId: uuid(20), toolName: 'unknown', input: {}, success: true }, t0, { received_at: t0, call: null })!,
+      ...Array.from({ length: 80 }, (_, i) => documentRecord('tool.use', { toolCallId: uuid(21000 + i), promptId: uuid(20), toolName: 'shell',
+        input: { command: 'fill', env: 'x'.repeat(250_000) }, success: true }, t0, { received_at: t0 })!),
+    ], null);
+    await seed.commit(true, 'live', t0 + 1, () => ({ sql: '1', params: [] }), () => {
+      const set = seed.documentSet(t0 + 1);
+      return { before: [], after: [db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id='project' AND session_id='reflow'`).bind(...set.params)] };
+    });
+    expect(Number((await one(db, `SELECT COUNT(*) n FROM session_chunks WHERE session_id='reflow' AND kind='page'`))!.n), name).toBeLessThan(50);
+
+    // A short reply no turn holds, then the call with a large input: merging it grows the turn's first page and reflows
+    // the turn through chunks read only during that placement, more than one wake can rewrite. The reply still commits.
+    const at = t0 + 40 * MIN;
+    const ctx = { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: at };
+    expect((await ingestEvent(db, ctx, envelope({ eventId: uuid(22001), sessionId: 'reflow', kind: 'response', createdAt: at,
+      payload: { responseId: uuid(22002), promptId: uuid(22003), text: 'short' } }), env)).persisted, name).toBe(true);
+    expect((await ingestEvent(db, ctx, envelope({ eventId: uuid(22000), sessionId: 'reflow', kind: 'tool.use', createdAt: at + 1,
+      payload: { toolCallId: target, promptId: uuid(20), toolName: 'shell', input: { command: 'grow', env: 'y'.repeat(50_000) }, success: true } }), env)).persisted, name).toBe(true);
+    await publishDocuments(measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT }).env, at, limits());
+    expect(await counters(db, 'reflow'), name).toMatchObject({ replies: 2 });
+    expect(await one(db, `SELECT COUNT(*) n FROM publish_queue WHERE session_id='reflow'`), name).toEqual({ n: 1 });
+    expect((await statusMetadata(db)).documentPublishFailure, name).toBeNull();
+  });
+}, 120_000);
+
+test('a failed pass leaves the session due when its queued event was consumed and replaced', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore(), t0 = Date.now();
+    const issued = await captureViewSession(db, 'project', 'aba', { blobs });
+    const env = { db, blobs };
+    await publishDocuments(env, t0, limits());
+    const enqueue = (i: number) => ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: t0 + i },
+      envelope({ eventId: uuid(23000 + i), sessionId: 'aba', kind: 'response', createdAt: t0 + i, payload: { responseId: uuid(24000 + i), promptId: uuid(20), text: 'later' } }), env);
+    await enqueue(1);
+    // While a pass's document read is held, another pass consumes the queued event and a new one takes its place.
+    let started!: () => void, release!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; }), held = new Promise<void>((resolve) => { release = resolve; });
+    const pass = publishDocuments({ db, blobs: { ...blobs, get: async () => { started(); await held; return null; } } }, t0 + 40 * MIN, limits());
+    await reading;
+    await publishDocuments(env, t0 + 40 * MIN + 1, limits());
+    await enqueue(2);
+    release();
+    await pass;
+    expect(await one(db, `SELECT COUNT(*) n FROM publish_queue WHERE session_id='aba'`), name).toEqual({ n: 1 });
+    expect((await counters(db, 'aba'))!.due_at, name).toBe(0);
   });
 }, 60_000);

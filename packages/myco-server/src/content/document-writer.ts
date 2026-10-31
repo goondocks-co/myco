@@ -47,7 +47,7 @@ export class DocumentWriter {
   private readonly bodies: BodyChunkWrite[] = [];
   private lastPageChunk: number | null;
   private marked: WriterMark | null = null;
-  /** Changes made through `upsert` and `undo`, which `versions` is held against. */
+  /** Every change to what `layout()` writes, which `versions` is held against. */
   private revision = 0;
   private counted: { revision: number; versions: number } | null = null;
   private readonly sizes = new WeakMap<DocRecord, number>();
@@ -124,12 +124,14 @@ export class DocumentWriter {
   }
 
   private markDirty(page: Page): void {
+    this.revision += 1;
     const held = this.located.get(pageKey(page.owner, page.page));
     if (held?.chunk != null) this.dirty.add(held.chunk);
     this.touched.add(page.owner);
   }
 
   private addPage(owner: string, page: number, records: DocRecord[]): Page {
+    this.revision += 1;
     const created: Page = { owner, page, records };
     this.fresh.push(created);
     this.located.set(pageKey(owner, page), { page: created, chunk: null });
@@ -139,6 +141,7 @@ export class DocumentWriter {
 
   private fit(record: DocRecord): DocRecord {
     return fitRecord(record, ({ text }) => {
+      this.revision += 1;
       const ref: BodyRef = { chunk: this.nextChunk++, bytes: new TextEncoder().encode(text).length, digest: '' };
       this.bodies.push({ chunkNo: ref.chunk, text, ref });
       return ref;
@@ -171,7 +174,6 @@ export class DocumentWriter {
 
   /** Places a record on `owner`'s pages, or merges it into the version a page already holds under its id. */
   async upsert(record: DocRecord, owner: string): Promise<Upsert> {
-    this.revision += 1;
     const searched = record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner];
     for (const candidate of searched) {
       const pages = await this.pagesOf(candidate);

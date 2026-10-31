@@ -105,11 +105,16 @@ interface Publication {
 }
 
 /**
- * A session's publication input as a pass finds it: its queued events, and its transcripts and their sizes. New input
- * changes it, and so does a pass that consumed some.
+ * A session's publication input and progress as a pass finds it. Every write that changes them moves one part on: an
+ * enqueue raises the newest queued event's row (the events table keeps the rows of consumed events, so a new one sorts
+ * above every earlier one), a consume lowers the queued count, a transcript write raises its transcript count or bytes,
+ * and a commit raises the generation's published offsets.
  */
-const inputRevision = (table: string) => `(SELECT COUNT(*) FROM publish_queue q WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id)
-  ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)`;
+const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0) FROM publish_queue q
+    JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id)
+  ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)
+  ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0) FROM transcript_publication p
+    WHERE p.project_id=${table}.project_id AND p.session_id=${table}.session_id AND p.generation IS ${table}.generation)`;
 
 interface DueSession { project_id: string; session_id: string; revision: string }
 
