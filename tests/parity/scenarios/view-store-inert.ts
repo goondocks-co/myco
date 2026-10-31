@@ -37,7 +37,8 @@ export const viewStoreInert: ParityScenario = {
     expect(await read(`/turns/${prompt}`)).toBe(detail);
     const newTables = await target.sql("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'view_*' OR name IN ('session_views','fact_classes','plan_promotions','learning_sessions','material_versions')) AND name NOT GLOB '*_fts*'");
     expect(newTables.map(row=>row.name).sort()).toEqual([...VIEW_SESSION_TABLES,...VIEW_GLOBAL_TABLES].sort());
-    for (const { name } of newTables) expect(await target.sql(`SELECT COUNT(*) AS n FROM ${name}`)).toEqual([{ n: 0 }]);
+    // The publisher gives the published session its learning row; every view table stays empty.
+    for (const { name } of newTables) expect(await target.sql(`SELECT COUNT(*) AS n FROM ${name}`)).toEqual([{ n: name === 'learning_sessions' ? 1 : 0 }]);
     const owner = { ...target.ownerHeaders(), 'content-type': 'application/json', origin: target.url };
     const created = await fetch(`${target.url}/api/backups`, { method: 'POST', headers: owner, body: '{}' });
     expect(created.status).toBe(200);

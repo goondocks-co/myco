@@ -1,3 +1,4 @@
+import type { Database } from 'bun:sqlite';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { envelope, uuid } from './helpers/fixtures.js';
 import { createHash } from 'node:crypto';
@@ -12,7 +13,14 @@ import { sqliteEnv } from './helpers/fixtures.js';
 const NOW=Date.now();
 const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
 
-async function heldSegment(parsedOffset: number, parserContext: string | null = null) {
+/** A transcript's live publication standing at `offset`, in `state`. */
+function publishTranscript(sqlite: Database, transcriptId: string, offset: number, state: 'active' | 'failed' = 'active') {
+  sqlite.query(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,state,updated_at)
+    SELECT t.project_id,t.transcript_id,d.generation,t.session_id,?,'source-record-v1',1,?,1 FROM transcripts t
+      JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live' WHERE t.transcript_id=?`).run(offset,state,transcriptId);
+}
+
+async function heldSegment(parsedOffset: number, publication: 'active' | 'failed' = 'active') {
   const f=sqliteEnv();
   const text='retained source bytes';
   const blobKey=digest(text);
@@ -21,9 +29,10 @@ async function heldSegment(parsedOffset: number, parserContext: string | null = 
   const physical=registerBlob(f.sqlite,{projectId:'proj_1',key:blobKey,size:Buffer.byteLength(text),receivedAt:1});
   f.bucket.seed(physical,{size:Buffer.byteLength(text),bytes:new TextEncoder().encode(text)});
   f.sqlite.query(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,
-    first_received_at,last_received_at,token_id,parsed_offset,parser_context,prompt_identity_scheme)
-    VALUES('proj_1','tx-held','s-held','m','claude-code',?,1,1,'token',?,?,'claude-v1')`)
-    .run(Buffer.byteLength(text),parsedOffset,parserContext);
+    first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme)
+    VALUES('proj_1','tx-held','s-held','m','claude-code',?,1,1,'token',?,'claude-v1')`)
+    .run(Buffer.byteLength(text),parsedOffset);
+  publishTranscript(f.sqlite,'tx-held',parsedOffset,publication);
   f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
     created_at,received_at,payload_bytes,raw_revision)
     VALUES('proj_1','e-held','s-held','token','transcript.segment','cli','{}',?,1,?,2,1)`)
@@ -242,7 +251,7 @@ it('streams a source beyond the ordinary page target without blocking a later du
   } finally {f.sqlite.close();}
 });
 
-it('retains exact parsed transcript bytes and their offset after removing the hot segment row', async () => {
+it('retains exact published transcript bytes and their offset after removing the hot segment row', async () => {
   const f=sqliteEnv();
   try {
     const text='transcript bytes';
@@ -255,6 +264,7 @@ it('retains exact parsed transcript bytes and their offset after removing the ho
       first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme)
       VALUES('proj_1','tx_segment','sess_segment','m','claude-code',?,1,1,'token',?,'claude-v1')`)
       .run(Buffer.byteLength(text),Buffer.byteLength(text));
+    publishTranscript(f.sqlite,'tx_segment',Buffer.byteLength(text));
     f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
       created_at,received_at,payload_bytes,raw_revision)
       VALUES('proj_1','evt_segment','sess_segment','token','transcript.segment','cli','{}',?,1,1,2,1)`)
@@ -355,9 +365,9 @@ it('keeps inline bytes and its cursor when publication lacks a durability acknow
   } finally {f.sqlite.close();}
 });
 
-it('holds unread and pending-parser transcript source bytes', async () => {
-  for(const [offset,context] of [[0,null],[Buffer.byteLength('retained source bytes'),'{"mycoParserUnfinished":1}']] as const) {
-    const f=await heldSegment(offset,context);
+it('holds unpublished transcript source bytes and those of a stopped publication', async () => {
+  for(const [offset,publication] of [[0,'active'],[Buffer.byteLength('retained source bytes'),'failed']] as const) {
+    const f=await heldSegment(offset,publication);
     try {
       expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
       expect(f.sqlite.query(`SELECT 1 FROM transcript_segments WHERE transcript_id='tx-held'`).get()).not.toBeNull();
@@ -492,6 +502,7 @@ it('advances and wraps past learning-held transcript pages before revisiting rel
       f.sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme)
         SELECT project_id,?,?,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme
         FROM transcripts WHERE transcript_id='tx-held'`,[transcript,session]);
+      publishTranscript(f.sqlite,transcript,Buffer.byteLength('retained source bytes'));
       f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision)
         SELECT project_id,?,?,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision FROM events WHERE event_id='e-held'`,[event,session]);
       f.sqlite.run(`INSERT INTO transcript_segments(project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)

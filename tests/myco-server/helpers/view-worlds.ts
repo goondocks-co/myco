@@ -16,7 +16,6 @@ import * as sessions from '@myco-server-worker/read/sessions.js';
 import * as plans from '@myco-server-worker/read/plans.js';
 import {activityFeed} from '@myco-server-worker/read/activity.js';
 import {processedBody} from '@myco-server-worker/read/processed.js';
-import {sessionMaterial} from '@myco-server-worker/core/titling.js';
 import {childrenRowsByPrompt,turnChildPage,turns_readTurnBodies,lineage_sessionsNamed,lineage_childIdsOf} from '@myco-server-worker/read/view-store.js';
 import {legacyBodyBlobs} from '../../helpers/view-read-legacy-fixtures.js';
 
@@ -72,7 +71,6 @@ export function viewReadWorkloads():ViewReadWorkload[]{
  for(const kind of ['launched','continuation'] as const)add('lineage/child-labels/'+kind,async db=>lineage_sessionsNamed(db,worldScope,await lineage_childIdsOf(db,worldScope,kind,['session'],200)));
  add('feed',db=>activityFeed(db,worldScope));
  for(const type of [undefined,'failure','no_result','child_session','continuation'] as const)add('activity/'+type,db=>listSessionActivity(db,worldScope,'session',{type}));
- for(const mode of ['claim','owner','refresh'] as const)add('title/'+mode,db=>sessionMaterial(db,worldScope.projectId,'session',mode));
  for(const [kind,id]of [['prompt',uuid(20)],['response',uuid(30)],['plan',uuid(50)],['tool-input',uuid(40)],['tool-output',uuid(40)]] as const)
   add('body/'+kind,db=>processedBody({db,blobs:legacyBodyBlobs},worldScope,kind,id));
  add('injection',db=>injectionForPrompt(db,worldScope,'session',uuid(20)));
@@ -160,7 +158,6 @@ export function viewArityWorkloads():ViewReadWorkload[]{
   for(const name of ['listPrompts','listResponses','listToolCalls','listPlans','listAttachments','listContextInjections'] as const)add('arity/children/'+name+'/'+sessionId+'/'+cursor,db=>children[name](db,worldScope,sessionId,options));
   add('arity/hook/'+sessionId+'/'+cursor,db=>listUnplacedHookRecords(db,worldScope,sessionId,options));
   add('arity/activity/'+sessionId+'/'+cursor,db=>listSessionActivity(db,worldScope,sessionId,options));
-  for(const mode of ['claim','owner','refresh'] as const)add('arity/title/'+mode+'/'+sessionId+'/'+cursor,db=>sessionMaterial(db,worldScope.projectId,sessionId,mode));
  }
  add('arity/feed/100',db=>activityFeed(db,worldScope,100));
  for(const window of [undefined,'activity'] as const)for(const cursor of [undefined,'0:empty']){

@@ -27,6 +27,8 @@ export interface PulledStage {
   /** Strict priority: a lower level is pulled before any higher one within E(worker). */
   readonly level: number;
   readonly task: string;
+  /** Whether the stage's work is switched on; a claim reads each distinct switch once, before any probe. */
+  switchedOn(db: RelationalStore): Promise<boolean>;
   /** Whether an item of this stage is due in the Project the SQL expression `project` names. */
   due(project: string, now: number): SqlTerm;
   /** The Project's head at this stage. */
@@ -52,6 +54,13 @@ export function installPulledStages(stages: readonly PulledStage[]): () => void 
   const previous = installed;
   installed = stages;
   return () => { installed = previous; };
+}
+
+/** The stages whose switches are on, each distinct switch read once. */
+export async function switchedOnStages(db: RelationalStore, stages: readonly PulledStage[]): Promise<PulledStage[]> {
+  const on = new Map<PulledStage['switchedOn'], boolean>();
+  for (const stage of stages) if (!on.has(stage.switchedOn)) on.set(stage.switchedOn, await stage.switchedOn(db));
+  return stages.filter((stage) => on.get(stage.switchedOn) === true);
 }
 
 /** Reselections a claim makes after a pulled write refuses, before it answers no work. */

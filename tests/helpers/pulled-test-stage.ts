@@ -13,6 +13,7 @@ export function testPulledStage(level: number, task: string, build?: (item: Pull
   return {
     level,
     task,
+    switchedOn: async () => true,
     due: (project, now) => ({ sql: `EXISTS (SELECT 1 FROM pull_fixture_items i WHERE ${due('i', project)})`, params: [now] }),
     head: (db, projectId, now) => db.prepare(`SELECT i.project_id AS projectId, 'fixture:' || i.item_id AS subject, i.item_id AS key, i.due_at AS observed
       FROM pull_fixture_items i WHERE ${due('i', '?')} ORDER BY i.due_at, i.item_id LIMIT 1`).bind(projectId, now).first<PulledItem>(),

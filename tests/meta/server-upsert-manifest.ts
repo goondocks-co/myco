@@ -141,6 +141,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     .map((table) => ({ tables: [table], order: 'unverified' as const })),
   'ingest/document-batch.ts#publicationStatement': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'ingest/document-restore.ts#restartConversions': [{ tables: ['session_documents'], order: 'unverified' }],
+  'ingest/document-batch.ts#sessionRowStatements': [{ tables: ['plans'], order: 'unverified' }],
   'ingest/events.ts#planEventWrite': [
     { tables: ['sessions'], order: 'unverified' },
   ],

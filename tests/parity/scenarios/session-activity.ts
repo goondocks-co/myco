@@ -1,11 +1,6 @@
 import { expect } from 'bun:test';
 import type { SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
-import { envelopeHash } from '@myco-server-worker/ingest/events.js';
-import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
-import { PARSER_VERSION, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
-import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
-import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { documentsPublished, expectPersisted, lit, type ParityTarget, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
 
 /** Stored result reasons, metadata filters and success upgrades, read from the session's document through both front doors. */
 export const sessionActivityParity: ParityScenario = {
@@ -47,107 +42,5 @@ export const sessionActivityParity: ParityScenario = {
     await post('tool.use', stamp + 20, { toolCallId: ids[1], toolName: 'Bash', input: {}, output: 'success', success: true });
     await documentsPublished(target, session);
     expect((await read()).rows.map(row => row.id)).not.toContain(ids[1]);
-    await verifyParserResultReplay(target);
   },
 };
-
-
-/** A retained transcript supplies result metadata again under its original record identities. */
-async function verifyParserResultReplay(target: ParityTarget): Promise<void> {
-  const sessionId = `activity-parser-${crypto.randomUUID()}`;
-  const transcriptId = `tx_${crypto.randomUUID().replaceAll('-', '')}`;
-  const timestamp = new Date().toISOString();
-  const where = `project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`;
-  const transcriptWhere = `project_id=${lit(target.projectId)} AND transcript_id=${lit(transcriptId)}`;
-  const records = [
-    { type: 'user', uuid: crypto.randomUUID(), promptId: crypto.randomUUID(), message: { role: 'user', content: 'Inspect parser result metadata' }, timestamp },
-    { type: 'assistant', uuid: crypto.randomUUID(), message: { role: 'assistant', content: [
-      { type: 'tool_use', id: 'reported-call', name: 'Read', input: {} },
-      { type: 'tool_use', id: 'unfinished-call', name: 'Bash', input: {} },
-    ] }, timestamp },
-    { type: 'user', uuid: crypto.randomUUID(), message: { role: 'user', content: [
-      { type: 'tool_result', tool_use_id: 'reported-call', is_error: true, content: 'reported fixture failure' },
-    ] }, timestamp },
-  ];
-  const ship = async (values: unknown[], baseOffset: number) => {
-    const bytes = new TextEncoder().encode(values.map(value => JSON.stringify(value)).join('\n') + '\n');
-    const digest = await sha256HexOf(bytes);
-    await expectPersisted(await fetch(`${target.url}/blobs/${digest}`, {
-      method: 'POST', headers: target.memberHeaders({ 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes,
-    }), 'activity transcript bytes');
-    await expectPersisted(await fetch(`${target.url}/events`, {
-      method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind: 'transcript.segment', createdAt: Date.now(), channel: 'cli',
-        producer: { adapter: 'claude-code', version: 'activity-parity' },
-        payload: { transcriptId, agent: 'claude-code', blob: digest, baseOffset, length: bytes.byteLength } }),
-    }), 'activity transcript segment');
-    return baseOffset + bytes.byteLength;
-  };
-  const settle = async () => {
-    for (let pass = 0; pass < 8; pass++) {
-      const response = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(response.status).toBe(200);
-      const state = (await target.sql(`SELECT parsed_offset,size,parse_error FROM transcripts WHERE ${transcriptWhere}`))[0];
-      expect(state.parse_error).toBeNull();
-      if (state.parsed_offset === state.size) return;
-    }
-    throw new Error('activity transcript did not reach its captured size');
-  };
-  const calls = () => target.sql(`SELECT tool_call_id,tool_name,event_id,result_reason FROM tool_calls WHERE ${where} ORDER BY tool_name`);
-  const rawEvent = async (eventId: string) => (await target.sql(`SELECT * FROM events WHERE project_id=${lit(target.projectId)} AND event_id=${lit(eventId)}`))[0];
-  const size = await ship(records, 0);
-  await settle();
-  expect((await calls()).map(row => [row.tool_name, row.result_reason])).toEqual([['Read', 'reported']]);
-  const idleAt = Date.now() - TRANSCRIPT_IDLE_MS - 1;
-  await target.sql(`UPDATE transcripts SET last_received_at=${idleAt} WHERE ${transcriptWhere}`);
-  await target.sql(`UPDATE sessions SET last_received_at=${idleAt} WHERE ${where}`);
-  await settle();
-  const closed = await calls();
-  expect(closed.map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'no_result'], ['Read', 'reported']]);
-  const synthetic = closed[0];
-  const syntheticRaw = await rawEvent(String(synthetic.event_id));
-  const reread = async () => {
-    const response = await fetch(`${target.url}/api/transcripts/reread`, {
-      method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-      body: JSON.stringify({ projectId: target.projectId, sessionId }),
-    });
-    expect(response.status).toBe(200);
-  };
-  await target.sql(`UPDATE sessions SET ended_at=${Date.now() - SESSION_END_SETTLE_MS - 1} WHERE ${where}`);
-  for (const replay of ['owner', 'generation', 'import'] as const) {
-    if (replay === 'generation') await target.sql(`UPDATE transcripts SET parser_version=${PARSER_VERSION - 1} WHERE ${transcriptWhere}`);
-    else {
-      if (replay === 'import') await target.sql(`UPDATE transcripts SET imported_at=${Date.now()} WHERE ${transcriptWhere}`);
-      await reread();
-    }
-    for (let pass = 0; pass < 4; pass++) await settle();
-    expect(await calls()).toEqual(closed);
-    expect(await rawEvent(String(synthetic.event_id))).toEqual(syntheticRaw);
-  }
-  await ship([{ type: 'user', uuid: crypto.randomUUID(), message: { role: 'user', content: [
-    { type: 'tool_result', tool_use_id: 'unfinished-call', is_error: true, content: 'late fixture failure' },
-  ] }, timestamp: new Date().toISOString() }], size);
-  await settle();
-  expect((await calls()).map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'reported'], ['Read', 'reported']]);
-  expect(await rawEvent(String(synthetic.event_id))).toEqual(syntheticRaw);
-
-  const reported = (await calls()).find(row => row.tool_name === 'Read')!;
-  const original = await rawEvent(String(reported.event_id));
-  const payload = JSON.parse(String(original.payload)) as Record<string, unknown>;
-  delete payload.resultReason;
-  const parsed = parseEnvelope({ eventId: original.event_id, sessionId: original.session_id, kind: original.kind, createdAt: original.created_at,
-    channel: original.channel, producer: { adapter: original.producer_adapter, version: original.producer_version }, payload }, Date.now());
-  if (!parsed.ok) throw new Error('legacy activity envelope fixture is invalid');
-  const digest = await envelopeHash(parsed.value);
-  await target.sql(`UPDATE events SET payload=${lit(parsed.value.payloadJson)},envelope_hash=${lit(digest)},payload_bytes=${parsed.value.payloadBytes.byteLength}
-    WHERE project_id=${lit(target.projectId)} AND event_id=${lit(String(reported.event_id))}`);
-  await target.sql(`UPDATE tool_calls SET result_reason=NULL WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(String(reported.tool_call_id))}`);
-  const legacyRaw = await rawEvent(String(reported.event_id));
-  expect(legacyRaw.envelope_hash).toBe(digest);
-  expect(JSON.parse(String(legacyRaw.payload))).not.toHaveProperty('resultReason');
-  await reread();
-  await settle();
-  expect((await calls()).map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'reported'], ['Read', 'reported']]);
-  expect(await rawEvent(String(reported.event_id))).toEqual(legacyRaw);
-  expect(await rawEvent(String(synthetic.event_id))).toEqual(syntheticRaw);
-}

@@ -26,7 +26,7 @@ import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEED
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { convertFixture, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
@@ -216,6 +216,7 @@ describe('what a claim hands out', () => {
   it('a titling run the Deployment asked for, under the instruction it built for that session', async () => {
     const r = await rig();
     r.endedSession('s1');
+    await convertFixture(r.e);
     const asked = await titleSession(r.e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now: NOW, origin: ORIGIN });
     expect(asked.outcome).toBe('queued');
     const claimed = await r.claim(NOW + 1);

@@ -436,11 +436,13 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
 };
 
 /**
- * A session's lifecycle, decided at two projections and nowhere else, from
- * projected rows alone: the raw event log is not consulted.
+ * A session's lifecycle, decided at two projections and by the publisher, from
+ * projected and catalog rows alone: the raw event log is not consulted.
  *
  * `LATEST_USER_TURN_SQL` is the instant of the session's newest captured human
- * prompt, on any channel. An end, on any channel, applies only when it is newer
+ * prompt, on any channel: a member's prompt row, or the open turn its live
+ * document published. The publisher reopens a session for a published human
+ * prompt newer than its end. An end, on any channel, applies only when it is newer
  * than the standing end and not older than that turn, so an end delivered after
  * a newer prompt leaves a resumed session open whatever order the two arrive
  * in. A human prompt's admission reopens the session when the newest stored
@@ -451,8 +453,11 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
  *
  * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
  */
-const LATEST_USER_TURN_SQL = `(SELECT MAX(pb.created_at) FROM prompt_batches pb
-   WHERE pb.project_id = sessions.project_id AND pb.session_id = sessions.session_id AND pb.origin = 'user')`;
+const LATEST_USER_TURN_SQL = `MAX(COALESCE((SELECT MAX(pb.created_at) FROM prompt_batches pb
+   WHERE pb.project_id = sessions.project_id AND pb.session_id = sessions.session_id AND pb.origin = 'user'), 0),
+  COALESCE((SELECT sp.created_at FROM session_documents d JOIN session_prompts sp ON sp.project_id = d.project_id
+   AND sp.session_id = d.session_id AND sp.generation = d.generation AND sp.prompt_id = d.open_turn_key
+   WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live' AND sp.origin = 'user'), 0))`;
 const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= COALESCE(${LATEST_USER_TURN_SQL}, 0))`;
 const endAppliesParams = (endedAt: number): number[] => [endedAt, endedAt];
 /** A human prompt's admission reopens the session its stored turns say is open; any other prompt leaves it as it is. */

@@ -1,26 +1,21 @@
 /**
  * Stage one of learning: one card per turn, written as turns complete.
  *
- * A turn falls due when its session's next top-level prompt arrives, when it has been quiet (`schema-v110`), or when a
- * publication gives one of its records a newer material version (`schema-v110`). Due turns are read
- * through the read module: a published session from its view's records, a session with no transcript from its facts. Code settles
- * what it can with no model call: a turn whose trimmed input hashes equal to a carded turn of its session reuses that
- * card and its coverage, and a turn the declared triage rules match is carded `none`. The rest go to one cheap run per
- * batch, up to the per-run input budget, and that run writes one card per turn.
+ * The publisher keeps each turn's card state: a turn it settles with a new input is pending and waits for settlement.
+ * Settlement reads the turn's pages once: a turn whose input hashes equal to a carded turn of its session reuses that
+ * card and its coverage, a turn the declared triage rules match is carded `none`, and any other turn falls due for a
+ * model. A claim takes a session's due turns from the catalog alone, up to the per-run input budget, and that run writes
+ * one card per turn. Every statement here reads catalog rows; none reads a document.
  */
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import type { ReadScope } from '../read/scope.js';
-import { turnDetail } from '../read/turns.js';
-import { listToolCalls } from '../read/children.js';
-import { sha256Hex } from '../hash.js';
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
-import { trimTurn, triageTurn, type TrimmedTurn, type TurnInput } from './turn-card-rules.js';
+import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
 
-/** Due turns one settling pass reads before it stops. */
-const SETTLE_TURNS = 200;
+/** Due turns one claim reads at most. */
+export const CARD_CLAIM_TURNS = 64;
 /** How long a claimed card run keeps its turns out of the due set before they are offered again. */
 export const CARD_RETRY_MS = 3_600_000;
 
@@ -32,43 +27,11 @@ export function claimCardsStatement(db: RelationalStore, projectId: string, sess
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = turn_cards.project_id AND r.id = ? AND r.dispatched_by = ?)`)
     .bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy);
 }
-const TOOL_PAGE = 100;
 
-/** Every tool call recorded under one prompt, page by page. */
-async function promptTools(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string) {
-  const rows = [];
-  let cursor: string | undefined;
-  do {
-    const page = await listToolCalls(db, scope, sessionId, { promptId, limit: TOOL_PAGE, ...(cursor === undefined ? {} : { cursor }) });
-    rows.push(...page.rows);
-    cursor = page.cursor ?? undefined;
-  } while (cursor !== undefined);
-  return rows;
-}
-
-/** One turn read through the read module, or null when no prompt of that key sits in the session. */
-export async function readTurn(db: RelationalStore, scope: ReadScope, sessionId: string, turnKey: string): Promise<TurnInput | null> {
-  const detail = await turnDetail(db, scope, sessionId, turnKey);
-  if (detail === null) return null;
-  const promptIds = [turnKey, ...detail.children.map((child) => child.prompt.promptId)];
-  const tools = (await Promise.all(promptIds.map((promptId) => promptTools(db, scope, sessionId, promptId))))
-    .flat()
-    .sort((a, b) => a.createdAt - b.createdAt || a.toolCallId.localeCompare(b.toolCallId));
-  const replies = [...detail.responses, ...detail.children.flatMap((child) => child.responses)]
-    .sort((a, b) => a.createdAt - b.createdAt);
-  return {
-    turnKey,
-    origin: detail.prompt.origin,
-    prompt: detail.prompt.text ?? '',
-    steering: detail.children.map((child) => ({ promptId: child.prompt.promptId, text: child.prompt.text ?? '' })),
-    replies: replies.map((reply) => ({ responseId: reply.responseId, text: reply.text ?? '' })),
-    tools: tools.map((tool) => ({
-      toolCallId: tool.toolCallId, toolName: tool.toolName, input: tool.inputPreview, output: tool.outputPreview,
-      success: tool.success, errorMessage: tool.errorMessage,
-    })),
-    plans: detail.plans.map((plan) => ({ planKey: plan.planKey, title: plan.title, status: plan.status, content: plan.content })),
-  };
-}
+/** The input hash the publisher stored for a card's turn in its session's live document. */
+const LIVE_HASH = `(SELECT sp.input_hash FROM session_prompts sp JOIN session_documents d ON d.project_id = sp.project_id
+  AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
+  WHERE sp.project_id = turn_cards.project_id AND sp.session_id = turn_cards.session_id AND sp.prompt_id = turn_cards.turn_key)`;
 
 export interface CardFields {
   asked: string; done: string; outcome: string;
@@ -96,7 +59,8 @@ export function renderCard(card: CardFields): string {
   ].filter((line) => line !== '').join('\n');
 }
 
-const NONE_CARD = (reason: string): CardFields => ({
+/** The card a turn the triage rules match takes. */
+export const NONE_CARD = (reason: string): CardFields => ({
   asked: '', done: `mechanical turn (${reason})`, outcome: '', decisions: [], rejected: [], errors: [], corrections: [],
   files: [], commands: [], open_questions: [],
 });
@@ -129,92 +93,79 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   return writes;
 }
 
-export interface CardRecord {
-  turnKey: string;
-  changes: number;
-  trimmed: TrimmedTurn;
-  inputHash: string;
+/** A pending turn as a claim or settlement found it: its key and the change count its write is guarded by. */
+export interface DueTurn { turnKey: string; changes: number }
+
+/** The material settlement records on a turn: what its card is built from. */
+export function turnMaterial(trimmed: TrimmedTurn): { records: string; inputChars: number; rawChars: number } {
+  return { records: JSON.stringify(trimmed.records), inputChars: trimmed.text.length, rawChars: trimmed.rawChars };
 }
 
 /**
- * Write one turn's card in a batch guarded on the turn being unchanged after its read. The card's material range is
- * the current material versions of the records behind it, and an unchanged input keeps its coverage.
+ * Write one turn's card, guarded on the change count the turn had at settlement. The card takes the input hash the
+ * publisher stored for the turn, and an unchanged input keeps its coverage.
  */
 export function cardStatements(
-  db: RelationalStore, projectId: string, sessionId: string, record: CardRecord,
+  db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn,
   card: { text: string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null },
-  now: number,
+  now: number, material?: ReturnType<typeof turnMaterial>,
 ): PreparedStatement[] {
-  const records = JSON.stringify(record.trimmed.records);
-  const range = (fn: 'MIN' | 'MAX') => `(SELECT ${fn}(v.material_seq) FROM json_each(?) r JOIN material_versions v ON v.project_id = ? AND v.session_id = ?
-    AND v.kind = json_extract(r.value, '$[0]') AND v.record_id = json_extract(r.value, '$[1]'))`;
   return [
-    db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL,
-        first_seq = ${range('MIN')}, last_seq = ${range('MAX')},
-        records = ?, input_chars = ?, raw_chars = ?, card = ?, signal = ?, signal_reason = ?, shared_with = ?,
-        covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ? THEN covered ELSE 0 END,
-        input_hash = ?, run_id = ?, model = ?, carded_at = ?
+    db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL, settle_at = NULL,
+        records = COALESCE(?, records), input_chars = COALESCE(?, input_chars), raw_chars = COALESCE(?, raw_chars),
+        card = ?, signal = ?, signal_reason = ?, shared_with = ?,
+        covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
+        input_hash = ${LIVE_HASH}, run_id = ?, model = ?, carded_at = ?
       WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
-      .bind(records, projectId, sessionId, records, projectId, sessionId,
-        records, record.trimmed.text.length, record.trimmed.rawChars, card.text, card.signal, card.reason, card.sharedWith,
-        card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0, record.inputHash,
-        record.inputHash, card.runId, card.model, now, projectId, sessionId, record.turnKey, record.changes),
+      .bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
+        card.text, card.signal, card.reason, card.sharedWith,
+        card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0,
+        card.runId, card.model, now, projectId, sessionId, turn.turnKey, turn.changes),
   ];
 }
 
-/** A due turn as one settling pass found it. */
-export interface DueTurn { turnKey: string; changes: number }
-
-async function dueTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
-  const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes FROM turn_cards
-    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at <= ? ORDER BY created_at, turn_key LIMIT ?`)
-    .bind(projectId, sessionId, now, SETTLE_TURNS).all<DueTurn>();
-  return results;
+/** The carded turn of the session whose input hash equals the one stored for `turnKey`, coverage first, or null. */
+export async function reusableCard(db: RelationalStore, projectId: string, sessionId: string, turnKey: string):
+  Promise<{ turnKey: string; card: string; signal: CardSignal; reason: string; covered: number } | null> {
+  return db.prepare(`SELECT c.turn_key AS turnKey, c.card, c.signal, c.signal_reason AS reason, c.covered FROM turn_cards c
+    WHERE c.project_id = ?1 AND c.session_id = ?2 AND c.card IS NOT NULL AND c.input_hash = (SELECT sp.input_hash FROM session_prompts sp
+      JOIN session_documents d ON d.project_id = sp.project_id AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
+      WHERE sp.project_id = ?1 AND sp.session_id = ?2 AND sp.prompt_id = ?3)
+    ORDER BY c.covered DESC LIMIT 1`).bind(projectId, sessionId, turnKey)
+    .first<{ turnKey: string; card: string; signal: CardSignal; reason: string; covered: number }>();
 }
 
-/** The record a turn's write is guarded by, with the turn behind it, or null when its prompt is gone from the session. */
-export async function cardRecord(db: RelationalStore, scope: ReadScope, sessionId: string, turn: DueTurn): Promise<(CardRecord & { input: TurnInput }) | null> {
-  const input = await readTurn(db, scope, sessionId, turn.turnKey);
-  if (input === null) return null;
-  const trimmed = trimTurn(input);
-  return { turnKey: turn.turnKey, changes: turn.changes, trimmed, inputHash: await sha256Hex(trimmed.text), input };
+/** A settled turn a model must card: due now, with the material its card is built from. */
+export function modelDueStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn,
+  material: ReturnType<typeof turnMaterial>, now: number): PreparedStatement {
+  return db.prepare(`UPDATE turn_cards SET due_at = ?, settle_at = NULL, records = ?, input_chars = ?, raw_chars = ?
+    WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND settle_at IS NOT NULL`)
+    .bind(now, material.records, material.inputChars, material.rawChars, projectId, sessionId, turn.turnKey, turn.changes);
+}
+
+/** A pending turn whose prompt the live document no longer holds. */
+export function forgetTurnStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn): PreparedStatement {
+  return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
+    .bind(projectId, sessionId, turn.turnKey, turn.changes);
 }
 
 /**
- * Card what code can and answer the turns left for a model, oldest first, up to one run's input budget. Reuse and
- * rule triage are written here, in the session's own batches, so no run is spent on them.
+ * The turns a card run of this session takes: its due turns oldest first, up to one run's input budget, from at most
+ * `CARD_CLAIM_TURNS` catalog rows.
  */
-export async function settleTurns(env: Pick<ServerEnv, 'db'>, projectId: string, sessionId: string, now: number): Promise<{ ruled: number; reused: number; forModel: CardRecord[] }> {
-  const { db } = env;
-  const scope = { projectId };
-  const forModel: CardRecord[] = [];
-  let ruled = 0;
-  let reused = 0;
+export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
+  const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes, input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
+    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY created_at, turn_key LIMIT ?`)
+    .bind(projectId, sessionId, now, CARD_CLAIM_TURNS).all<DueTurn & { chars: number | null }>();
+  const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;
-  for (const turn of await dueTurns(db, projectId, sessionId, now)) {
-    const record = await cardRecord(db, scope, sessionId, turn);
-    if (record === null) {
-      await db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
-        .bind(projectId, sessionId, turn.turnKey, turn.changes).run();
-      continue;
-    }
-    const prior = await db.prepare(`SELECT turn_key AS turnKey, card, signal, signal_reason AS reason, covered FROM turn_cards
-      WHERE project_id = ? AND session_id = ? AND input_hash = ? AND card IS NOT NULL ORDER BY covered DESC LIMIT 1`)
-      .bind(projectId, sessionId, record.inputHash).first<{ turnKey: string; card: string; signal: CardSignal; reason: string; covered: number }>();
-    const rule = prior === null ? triageTurn(record.input) : null;
-    if (prior !== null || rule !== null) {
-      const card = prior !== null
-        ? { text: prior.card, signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
-        : { text: renderCard(NONE_CARD(rule!)), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
-      await db.batch([...cardStatements(db, projectId, sessionId, record, card, now), ...sessionProgressStatements(db, projectId, sessionId, now)]);
-      if (prior !== null) reused += 1; else ruled += 1;
-      continue;
-    }
-    if (record.trimmed.text.length > room && forModel.length > 0) continue;
-    room -= record.trimmed.text.length;
-    forModel.push(record);
+  for (const row of results) {
+    const chars = row.chars ?? 0;
+    if (chars > room && turns.length > 0) continue;
+    room -= chars;
+    turns.push({ turnKey: row.turnKey, changes: row.changes });
   }
-  return { ruled, reused, forModel };
+  return turns;
 }
 
 /** The run's card write as one attributed statement: it lands when the run wrote a card in this session. */
@@ -235,10 +186,8 @@ export async function writeRunCards(
     const text = renderCard(write.card);
     const [first, ...rest] = write.turns;
     for (const turnKey of write.turns) {
-      const record = await cardRecord(db, { projectId }, sessionId, byKey.get(turnKey)!);
-      if (record === null) continue;
       const results = await db.batch([
-        ...cardStatements(db, projectId, sessionId, record, {
+        ...cardStatements(db, projectId, sessionId, byKey.get(turnKey)!, {
           text, signal: write.signal, reason: 'model', sharedWith: turnKey === first || rest.length === 0 ? null : first!,
           covered: null, runId: run.runId, model: run.model,
         }, now),

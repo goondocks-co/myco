@@ -2156,9 +2156,9 @@ interface children_MaterialRow { prompt: string; response: string | null; prompt
 
 const children_MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
 
-/** Inline human prompts available to the titling material query. */
-const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM prompt_batches pb
-  WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND ${children_MATERIAL_PROMPT_SQL})`;
+/** The session's live document holds a user prompt for the titling material. */
+const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM session_documents d
+  WHERE d.project_id = ${alias}.project_id AND d.session_id = ${alias}.session_id AND d.state = 'live' AND d.user_prompts > 0)`;
 
 /**
  * Live end requests not yet attempted, with ready inline material, from
@@ -2216,16 +2216,15 @@ const children_IDLE_UNTITLED_SQL = `FROM sessions s
 
 /**
  * Titled sessions, open or ended, with activity after the material of their standing title, due a refresh: stamped at or before the
- * bound, no title run of the session in flight, and at least a number of user prompts received after the material of the
- * standing title. A refresh that closed without a write leaves that material instant where it was, so its session stays due.
- * Binds: the recency bound, the stamp bound, then the prompt number twice.
+ * bound, no title run of the session in flight, and its document holding at least a number of user prompts beyond those
+ * the standing title recorded. A refresh that closed without a write leaves that record where it was, so its session stays due.
+ * Binds: the recency bound, the stamp bound, then the prompt number.
  */
 const children_REFRESH_DUE_SQL = `FROM sessions s
     WHERE s.title IS NOT NULL AND s.last_received_at >= ? AND s.last_received_at > COALESCE(s.title_material_at, s.titled_at) AND s.titled_at <= ?
       AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND NOT ${children_import_titleRunInFlightSql('s')}
-      AND (SELECT COUNT(*) FROM (SELECT 1 FROM prompt_batches pb
-            WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user'
-              AND pb.received_at > COALESCE(s.title_material_at, s.titled_at) LIMIT ?)) >= ?`;
+      AND (SELECT d.user_prompts FROM session_documents d WHERE d.project_id = s.project_id AND d.session_id = s.session_id AND d.state = 'live')
+        - COALESCE(s.title_user_prompts, 0) >= ?`;
 
 /** Candidates in the order the convergence takes them: first titles before refreshes, and fresh work before backlog within each. */
 interface children_TitleCandidates { freshClaims: children_TitleCandidate[]; freshRefreshes: children_TitleCandidate[]; backlogClaims: children_TitleCandidate[] }
@@ -2249,7 +2248,7 @@ async function children_listTitleCandidates(db: children_import_RelationalStore,
   const idle = (side: 'fresh' | 'backlog') => children_candidatePage(db, 'claim', `${children_IDLE_UNTITLED_SQL} AND s.last_received_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.last_received_at',
     's.last_received_at DESC, s.project_id, s.session_id', [window.idleBefore, window.retryBefore, imported, window.freshAfter], limit);
   const refresh = () => children_candidatePage(db, 'refresh', children_REFRESH_DUE_SQL, 's.last_received_at', 's.last_received_at DESC, s.project_id, s.session_id',
-    [window.freshAfter, window.refreshBefore, window.refreshPrompts, window.refreshPrompts], limit);
+    [window.freshAfter, window.refreshBefore, window.refreshPrompts], limit);
   const [endedFresh, idleFresh, endedBacklog, idleBacklog, freshRefreshes] = await Promise.all([ended('fresh'), idle('fresh'), ended('backlog'), idle('backlog'), refresh()]);
   const newest = (rows: children_TitleCandidate[]) => rows.sort((a, b) => b.at - a.at || a.projectId.localeCompare(b.projectId) || a.sessionId.localeCompare(b.sessionId)).slice(0, limit);
   return { freshClaims: newest([...endedFresh, ...idleFresh]), freshRefreshes, backlogClaims: newest([...endedBacklog, ...idleBacklog]) };
@@ -4727,7 +4726,8 @@ export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore
     (project_id, ack_id, session_id, kind, record_id, served_id, run_id, acknowledged_at)
     SELECT material.project_id, ?, material.session_id, 'record', material.record_id, material.served_id, ?, ?
     FROM (${source}) material
-    JOIN prompt_batches p ON p.project_id = material.project_id AND p.prompt_id = material.record_id AND p.session_id = material.session_id
+    JOIN session_documents d ON d.project_id = material.project_id AND d.session_id = material.session_id AND d.state = 'live'
+    JOIN session_prompts p ON p.project_id = d.project_id AND p.session_id = d.session_id AND p.generation = d.generation AND p.prompt_id = material.record_id
     JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
     WHERE ${sessions_import_notTombstonedSql('s')}
       AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id = material.project_id

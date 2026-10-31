@@ -1088,13 +1088,13 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(dependencyDiffs).toHaveLength(0);
  const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
  const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
- expect(repinned).toHaveLength(19);
+ expect(repinned).toHaveLength(21);
  for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);
  const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
  const changed=sourceSealChanges(historical,derived);
- const classes=new Set(['backup and restore SQL','embedding view schema SQL','capture delivery and replay proof SQL','parser presented-date finalization','durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation','pull-at-claim claim capability','legacy lane selection bounded by the batch','session document publisher','session document reader']);
+ const classes=new Set(['backup and restore SQL','embedding view schema SQL','capture delivery and replay proof SQL','parser presented-date finalization','durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation','pull-at-claim claim capability','legacy lane selection bounded by the batch','session document publisher','session document reader','learning, titling and archival on documents']);
  const accounted=preparationOriginEnvelope.sourceClosureChanges;
  expect(accounted.map(({reason,...row})=>row).sort((a,b)=>a.tupleId.localeCompare(b.tupleId))).toEqual([...changed].sort((a,b)=>a.tupleId.localeCompare(b.tupleId)));
  expect(accounted.every(row=>classes.has(row.reason))).toBe(true);

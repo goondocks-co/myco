@@ -41,8 +41,8 @@ import { listTranscripts } from '@myco-server-worker/read/transcript.js';
 import { listSessions, listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
-import { sessionMaterial, titleReadySessions } from '@myco-server-worker/core/titling.js';
 import { BLOB_RESERVATION_TTL_MS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
+import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +56,8 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { REPO, X, fakeGithub } from './helpers/github-fake.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
+/** The session document publisher catching up with what the parse read, as the wake runs it. */
+const publish = (serverEnv: ServerEnv) => publishDocuments(serverEnv, NOW, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 const PROJECT = 'proj_1';
 const SESSION = 's1';
 const TRANSCRIPT = 'tx_0123456789abcdef0123456789abcdef';
@@ -1196,6 +1198,7 @@ describe('parsing a held transcript', () => {
       + line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'te', content: 'ok' }] }, timestamp: at(2) });
     const { sqlite, env, serverEnv } = await rig(text);
     await drain(env, sqlite);
+    await publish(serverEnv);
     expect(sqlite.query('SELECT tool_name, files_affected FROM tool_calls').all())
       .toEqual([{ tool_name: 'Edit', files_affected: JSON.stringify(['/Users/dev/repo/packages/b/src/y.ts']) }]);
     // The release check reads the paths the session's document records.
@@ -1285,7 +1288,7 @@ describe('parsing a held transcript', () => {
     }
     const whole = await rig(opening + context + ending, 2048, { agent: 'codex' });
     await drain(whole.env, whole.sqlite);
-    for (const { sqlite, serverEnv } of [whole, staged]) {
+    for (const { sqlite } of [whole, staged]) {
       expect(target(sqlite).parse_error).toBeNull();
       expect(target(sqlite).parsed_offset).toBe(size);
       expect(sqlite.query('SELECT text, origin FROM prompt_batches ORDER BY text').all()).toEqual([
@@ -1298,30 +1301,7 @@ describe('parsing a held transcript', () => {
       expect(sqlite.query('SELECT p.text AS prompt, t.output_preview AS output FROM tool_calls t JOIN prompt_batches p ON p.prompt_id = t.prompt_id').all()).toEqual([
         { prompt: 'Continue checking capture', output: 'capture checked' },
       ]);
-      expect((await sessionMaterial(serverEnv.db, PROJECT, SESSION))[0].response).toContain('The capture check is complete');
     }
-  });
-
-  it('dispatches an ended Codex conversation after parsing without changing its format fidelity', async () => {
-    const text = line({ type: 'session_meta', payload: { source: 'cli' } })
-      + codexMessage('user', 'Read the project rules heading')
-      + codexMessage('assistant', 'Project Rules')
-      + codexMessage('user', 'Wait for the second turn before summarizing')
-      + codexMessage('assistant', 'Both turns must finish parsing first');
-    const { sqlite, env, serverEnv } = await rig(text, 2048, { agent: 'codex' });
-    sqlite.run('UPDATE sessions SET ended_at = ?, titling_requested_at = ?', [NOW, NOW]);
-    const titledEnv = { ...serverEnv, origin: 'https://deployment.example' };
-    expect(await titleReadySessions(titledEnv, NOW + SESSION_END_SETTLE_MS)).toBe(0);
-    await drain(env, sqlite);
-    expect(target(sqlite)).toEqual({ parsed_offset: Buffer.byteLength(text), size: Buffer.byteLength(text), parse_error: null, fidelity: 'no_tool_results' });
-    expect(await titleReadySessions(titledEnv, NOW + SESSION_END_SETTLE_MS + 1)).toBe(1);
-    expect((await sessionMaterial(serverEnv.db, PROJECT, SESSION)).map((row) => row.prompt)).toEqual([
-      'Read the project rules heading', 'Wait for the second turn before summarizing',
-    ]);
-    expect(await serverEnv.db.prepare('SELECT SUM(eligible_prompts) AS n FROM session_read_facts WHERE project_id=?').bind(PROJECT).first()).toEqual({ n: 2 });
-    expect(await titleReadySessions(titledEnv, NOW + SESSION_END_SETTLE_MS + 2)).toBe(0);
-    expect(count(sqlite, 'agent_runs')).toBe(1);
-    expect(target(sqlite).fidelity).toBe('no_tool_results');
   });
 
   it('persists interactive user text and classified context without a developer response', async () => {
@@ -1837,8 +1817,9 @@ describe('fidelity decides what extraction may read', () => {
   });
 
   it('admits a full-fidelity session to both reads', async () => {
-    const { sqlite, env } = await rig(body(1));
+    const { sqlite, env, serverEnv } = await rig(body(1));
     await drain(env, sqlite);
+    await publish(serverEnv);
     expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toHaveLength(1);
     expect((await listSessionSummaries(env.db as never, { projectId: PROJECT }, {}, NOW)).rows).toHaveLength(1);
   });
@@ -1903,6 +1884,7 @@ describe('transcript retention', () => {
   it('uses the default 90-day window on original receipt time and keeps every derived row', async () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     await drain(env, sqlite);
+    await publish(serverEnv);
     const segments = count(sqlite, 'transcript_segments');
     const derived = count(sqlite, 'prompt_batches');
     expect(segments).toBeGreaterThan(0);
@@ -1935,6 +1917,7 @@ describe('transcript retention', () => {
   it('prunes segments past the window that the parse has already read, and keeps every derived row', async () => {
     const { sqlite, env, serverEnv } = await rig(body(2));
     await drain(env, sqlite);
+    await publish(serverEnv);
     const derived = count(sqlite, 'prompt_batches');
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
     ageSegments(sqlite, NOW - 5 * 86_400_000);
@@ -1957,6 +1940,7 @@ describe('transcript retention', () => {
     // Many small segments, each its own blob: more than one pass can free.
     const { sqlite, serverEnv, env } = await rig(body(20), 96);
     await drain(env, sqlite);
+    await publish(serverEnv);
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
     ageSegments(sqlite, NOW - 5 * 86_400_000);
     const before = count(sqlite, 'transcript_segments');
@@ -1972,6 +1956,7 @@ describe('transcript retention', () => {
   it('drains a large backlog across ticks rather than in one', async () => {
     const { sqlite, serverEnv, env } = await rig(body(20), 96);
     await drain(env, sqlite);
+    await publish(serverEnv);
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);
     ageSegments(sqlite, NOW - 5 * 86_400_000);
     const ticks = await drainArchive(serverEnv, sqlite, 500);
@@ -2081,6 +2066,7 @@ describe('transcript retention', () => {
   it('prunes a segment whose blob a tool call shares, and keeps the bytes', async () => {
     const { sqlite, serverEnv, env } = await rig(body(1));
     await drain(env, sqlite);
+    await publish(serverEnv);
     const { blob_key: key } = sqlite.query(`SELECT blob_key FROM transcript_segments`).get() as { blob_key: string };
     toolCall(sqlite, PROJECT, 'tc-3', null, key);
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('retention.transcripts', '1', ?, 'm')`, [NOW]);

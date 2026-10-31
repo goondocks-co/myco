@@ -7,12 +7,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, sessionMaterial, titleSession, titleReadySessions, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
+  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, titleSession, titleReadySessions, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
 } from '@myco-server-worker/core/titling.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { convertFixture, publishFixture, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { documentTitlingMaterial } from '@myco-server-worker/content/titling-material.js';
 
 const NOW = 1_700_000_000_000;
 const ORIGIN = 'https://deployment.example';
@@ -46,9 +47,12 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
   const runRow = (id: string) => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs WHERE id = ?`).get(id) as RunRow | null;
   const runRows = () => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`).all() as RunRow[];
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
-  const title = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN });
-  const ask = (id: string, now = NOW) => titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' });
-  return { ...e, env, launches, setting, session, prompt, response, row, runRow, runRows, secrets, title, ask };
+  // The seeded legacy rows convert into documents before titling reads the catalog.
+  const convert = () => convertFixture({ sqlite: e.sqlite, serverEnv: env });
+  const title = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }); };
+  const ask = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' }); };
+  const material = async (id: string, mode: 'claim' | 'owner' = 'claim') => { await convert(); return documentTitlingMaterial(env, 'proj_1', id, mode); };
+  return { ...e, env, launches, setting, session, prompt, response, row, runRow, runRows, secrets, title, ask, convert, material };
 }
 
 /** The same Deployment with the queue's own write refused, so a dispatch that has spent a claim fails after it. */
@@ -74,7 +78,7 @@ const seedAnthropic = async (h: ReturnType<typeof harness>, key = KEY) => {
 const untouched = { title: null, summary: null, titled_at: null, titled_by: null };
 
 describe('titleSession', () => {
-  it('defers a live end until its second turn is parsed, then the wake job claims it once', async () => {
+  it('defers a live end until its transcript is published, then the wake job claims it once', async () => {
     const h = harness();
     h.session('s1');
     h.prompt('s1', 'p1', 'first turn', NOW - 9_000);
@@ -85,21 +89,18 @@ describe('titleSession', () => {
     h.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 's1'`, [NOW]);
     expect(await h.title('s1')).toEqual({ outcome: 'capture_pending' });
     expect(h.row('s1').titled_at).toBeNull();
-    await expect(sessionMaterial(h.db, 'proj_1', 's1')).rejects.toThrow('capture is incomplete');
     const env = { ...h.env, origin: ORIGIN };
     expect(await titleReadySessions(env, NOW)).toBe(0);
     expect(h.runRows()).toHaveLength(0);
-    h.prompt('s1', 'p2', 'second turn correction', NOW - 1_000);
-    h.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx1'`);
+    await publishFixture({ sqlite: h.sqlite, serverEnv: h.env });
     await expect(titleReadySessions({ ...h.env, origin: undefined }, NOW + SESSION_END_SETTLE_MS)).rejects.toThrow('Deployment origin');
     expect(await titleReadySessions(env, NOW + SESSION_END_SETTLE_MS + 1)).toBe(1);
     expect(h.runRows()).toHaveLength(1);
-    expect((await sessionMaterial(h.db, 'proj_1', 's1')).map((p) => p.prompt)).toEqual(['first turn', 'second turn correction']);
     expect(await titleReadySessions(env, NOW + SESSION_END_SETTLE_MS + 2)).toBe(0);
     expect(h.runRows()).toHaveLength(1);
   });
 
-  it('does not automatically title imported session ends or sessions with failed parsing', async () => {
+  it('does not automatically title imported session ends or sessions whose publication failed', async () => {
     const h = harness();
     for (const id of ['imported', 'historical', 'failed']) {
       h.session(id);
@@ -110,6 +111,7 @@ describe('titleSession', () => {
     h.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset,
       first_received_at, last_received_at, token_id, parse_error) VALUES ('proj_1','tx','failed','m',100,100,1,2,'t','bad record')`);
     h.sqlite.run(`UPDATE sessions SET titling_requested_at = ? WHERE session_id = 'failed'`, [NOW]);
+    await h.convert();
     expect(await titleReadySessions({ ...h.env, origin: ORIGIN }, NOW)).toBe(0);
     expect(h.runRows()).toHaveLength(0);
     expect((await h.ask('failed')).outcome).toBe('capture_pending');
@@ -154,6 +156,7 @@ describe('titleSession', () => {
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     h.session('open', { endedAt: null });
     h.prompt('open', 'p2', 'hello', NOW - 9000);
+    await h.convert();
     const [a, b] = await Promise.all([h.title('s1'), h.title('s1')]);
     expect([a.outcome, b.outcome].sort()).toEqual(['already', 'queued']);
     expect(h.runRows()).toHaveLength(1);
@@ -164,6 +167,7 @@ describe('titleSession', () => {
     h.prompt('s2', 'p3', 'hello', NOW - 9000);
     h.session('s3');
     h.prompt('s3', 'p4', 'hello', NOW - 9000);
+    await h.convert();
     const [c, d] = await Promise.all([h.title('s2'), h.title('s3')]);
     expect([c.outcome, d.outcome]).toEqual(['queued', 'queued']);
     expect(h.runRows()).toHaveLength(3);
@@ -240,12 +244,14 @@ describe('titleSession', () => {
     h.sqlite.run(`UPDATE sessions SET titled_at = ?, titled_by = 'mem_earlier' WHERE session_id = 's2'`, [NOW - 60_000]);
     h.prompt('s2', 'p2', 'hello', NOW - 9000);
     const refusing = queueRefusing(h.env);
+    await h.convert();
     expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's2', now: NOW + OWNER_TITLING_WINDOW_MS, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' })).outcome).toBe('error');
     expect(h.row('s2')).toEqual({ ...untouched, titled_at: NOW - 60_000, titled_by: 'mem_earlier' });
 
     // The session's own attempt is untouched by the same refusal, and stays open.
     h.session('s3');
     h.prompt('s3', 'p3', 'hello', NOW - 9000);
+    await h.convert();
     expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's3', now: NOW, origin: ORIGIN })).outcome).toBe('error');
     expect(h.row('s3')).toEqual(untouched);
     expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(2);
@@ -267,7 +273,7 @@ describe('titleSession', () => {
     h.response('s1', 'p00', 'r_first', 'first response', NOW - 19_500);
     h.response('s1', 'p01', 'r_spilled', null, NOW - 19_000);
     h.prompt('s1', 'p_sys', 'system preamble', NOW - 21_000, 'system');
-    const material = await sessionMaterial(h.env.db, 'proj_1', 's1');
+    const material = await h.material('s1');
     expect(material.length).toBeLessThanOrEqual(MAX_MATERIAL_PROMPTS);
     expect(material.length).toBeGreaterThan(2);
     expect(material[0].prompt.length).toBe(MATERIAL_EXCERPT_CHARS);
@@ -344,8 +350,8 @@ describe('titleSession on an owner\'s ask', () => {
       h.prompt('s1', id, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
       h.response('s1', id, `r${i}`, `response ${i} ${'y'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
     }
-    const owner = await sessionMaterial(h.env.db, 'proj_1', 's1', 'owner');
-    const claim = await sessionMaterial(h.env.db, 'proj_1', 's1', 'claim');
+    const owner = await h.material('s1', 'owner');
+    const claim = await h.material('s1', 'claim');
     expect(owner.reduce((c, m) => c + m.prompt.length + (m.response?.length ?? 0), 0)).toBeLessThanOrEqual(MAX_MATERIAL_CHARS);
     expect(owner[0].prompt.startsWith('prompt 0 ')).toBe(true);
     expect(owner[owner.length - 1].prompt.startsWith(`prompt ${n - 1} `)).toBe(true);
@@ -354,6 +360,6 @@ describe('titleSession on an owner\'s ask', () => {
     h.session('s2');
     h.prompt('s2', 'q1', 'one', NOW - 9000);
     h.prompt('s2', 'q2', 'two', NOW - 8000);
-    expect((await sessionMaterial(h.env.db, 'proj_1', 's2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
+    expect((await h.material('s2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
   });
 });

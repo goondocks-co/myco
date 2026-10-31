@@ -16,6 +16,7 @@ import {
 import { viewContentHash } from '@myco-server-worker/core/material-content.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { completeViewConversion, beforeViewWriteBatch } from './helpers/view-instances.js';
 import { memoryBlobStore, uuid } from './helpers/fixtures.js';
 import { fixtureFlipEnvelope } from '../helpers/view-flip-envelope.js';
@@ -121,6 +122,10 @@ async function abandonedCopies(db: RelationalStore, instance: string, amount: nu
   }
 }
 
+/** The session's document holds the prompts captured so far: acknowledgements check membership against its catalog. */
+const publish = (env: Parameters<typeof publishDocuments>[0], now: number) =>
+  publishDocuments(env, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+
 async function fixture(db: RelationalStore, store: 'native' | 'D1') {
   const now = Date.now(),
     blobs = memoryBlobStore();
@@ -151,6 +156,7 @@ async function fixture(db: RelationalStore, store: 'native' | 'D1') {
     await captureViewTranscript(db, blobs, 'session', tx(n), text(), now - n, 0, 'opencode');
     return build(now + n);
   };
+  await publish(env, now);
   return { now, env, text, first, preferred };
 }
 
@@ -400,6 +406,7 @@ test('a late record ack with mixed pins leaves its unread view counterpart eligi
           break;
       await completeViewConversion(db, 'project', 'session', promptId);
       expect((await tryPublishView(db, target, now, fixtureFlipEnvelope(store))).published).toBe(true);
+      await publish(env, now);
       await captureViewTranscript(
         db,
         blobs,

@@ -3,7 +3,7 @@ import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { withViewStores, captureViewSession } from './helpers/view-stores.js';
-import { sqliteEnv, envelope, uuid } from './helpers/fixtures.js';
+import { envelope, publishFixture, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
@@ -20,6 +20,7 @@ it('releases acknowledged facts while retaining the same prompt identity in anot
     f.sqlite.run(paused);
     await captureViewSession(f.db,'proj_1','shared-session');
     await captureViewSession(f.db,'proj_2','shared-session');
+    await publishFixture(f);
     f.sqlite.run(enable);
     await ensureAgent(f.db,{id:'held-reader',name:'reader',provider:null,model:null,enabled:true},NOW);
     await recordDispatch(f.db,{projectId:'proj_1'},{id:'held-run',agentId:'held-reader',task:'extract-curate',

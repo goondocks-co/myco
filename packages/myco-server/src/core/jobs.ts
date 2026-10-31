@@ -78,7 +78,6 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
-  { name: 'learning-init', runsThrough: 'sleep', converges: 'every session is classified for learning once, newest first, in bounded pages with its cursor committed per page; a ready session has a card due for each turn it holds, and one held for publication waits until its first publication' },
   { name: 'estimate-refresh', runsThrough: 'sleep', converges: 'each priced stage and execution profile has its own recent cost and exposure sample' },
   { name: 'raw-provenance-backfill', runsThrough: 'sleep', converges: 'every historical raw reference and processed field has immutable provenance, through bounded checkpointed pages' },
   {
@@ -108,12 +107,12 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'transcript-parse',
     runsThrough: 'idle',
-    converges: 'every held transcript has been read into its rows, terminal calls and turns are closed, and older parser cursors are replayed or name unavailable source bytes; a transcript nothing can parse names its failure; every parser row is classified, and every session with a parser-read transcript has a published view built from its bytes, or a frozen derivation and tail where bytes were lost, unless the database is near its size limit',
+    converges: 'every live session document holds its transcripts\' bytes and its queued member events, and its unfinished turns close once quiet; a transcript nothing can parse names its failure; every turn whose card waits for settlement has been read once and carded by rule or reuse, or made due for a model',
   },
   {
     name: 'session-titling',
     runsThrough: 'idle',
-    converges: 'every live session-end request with fully parsed material has had its first titling attempt; a retry, and every other session, is the titling backfill\'s',
+    converges: 'every live session-end request whose document is published and holds a user prompt has had its first titling attempt; a retry, and every other session, is the titling backfill\'s',
   },
   {
     name: 'titling-backfill',

@@ -265,8 +265,7 @@
     "sweepViewCutover": "W",
     "readViewCutover": "W",
     "runViewCutoverWake": "W",
-    "cutoverBacklog": "W",
-    "conversionBacklog": "W"
+    "cutoverBacklog": "W"
   },
   "packages/myco-server/src/ingest/view-frozen.ts": {
     "tailStart": "W",
@@ -298,34 +297,31 @@
     "promoteViewPlan": "W",
     "promoted": "W"
   },
-  "packages/myco-server/src/ingest/view-cutover-pending.ts": {
-    "cutoverPending": "W"
-  },
   "packages/myco-server/src/core/learning-sessions.ts": {
     "sessionProgressStatements": "W",
-    "classify": "W",
-    "readySession": "W",
-    "initializeSession": "W",
-    "learningInitPending": "W",
-    "learningInit": "W",
     "learningHead": "W",
     "buildLearningAssignment": "W",
     "claimLearningStatement": "W",
     "assignedCards": "W",
     "completeLearning": "W",
     "readLearningStatus": "W",
-    "dispatchedBeforeResume": "W"
+    "dispatchedBeforeResume": "W",
+    "pendingCardsStatement": "W",
+    "learningSessionStatement": "W"
   },
   "packages/myco-server/src/core/turn-cards.ts": {
     "cardStatements": "W",
-    "dueTurns": "W",
-    "settleTurns": "W",
     "cardsWrittenStatement": "W",
-    "claimCardsStatement": "W"
+    "claimCardsStatement": "W",
+    "reusableCard": "W",
+    "modelDueStatement": "W",
+    "forgetTurnStatement": "W",
+    "dueCardTurns": "W"
   },
   "packages/myco-server/src/core/learning-stages.ts": {
     "learningStage": "W",
-    "cardStage": "W"
+    "cardStage": "W",
+    "learningSwitchedOn": "W"
   },
   "packages/myco-server/src/core/learning-hold.ts": {},
   "packages/myco-server/src/mcp/tools/run-learning.ts": {
@@ -335,8 +331,6 @@
     "ready": "T",
     "it:cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice": "T",
     "it:closes an all-mechanical session without a run and orders sessions newest first": "T",
-    "it:initializes from a cold start through its assertion": "T",
-    "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T",
     "it:pulls cards, then learning, at claim within the budget, and the learned spore cites its session": "T",
     "runs": "T",
     "learning": "T",
@@ -388,7 +382,9 @@
     "statements": "W",
     "commit": "W",
     "releaseHolders": "W",
-    "publicationStatement": "W"
+    "publicationStatement": "W",
+    "sessionRowStatements": "W",
+    "cardStatements": "W"
   },
   "packages/myco-server/src/ingest/document-conversion.ts": {
     "convertDocuments": "W",
@@ -425,5 +421,19 @@
     "statements": "T",
     "attach": "T",
     "place": "T"
+  },
+  "packages/myco-server/src/ingest/document-convertible.ts": {
+    "conversionBacklog": "W"
+  },
+  "packages/myco-server/src/ingest/card-settle.ts": {
+    "settleCards": "W",
+    "settleTurn": "W"
+  },
+  "tests/myco-server/learning-documents.test.ts": {
+    "it:the publisher settles cards, keeps transcript plans canonical and reopens a resumed session": "T",
+    "it:a card claim reads the same catalog rows whatever the session holds": "T",
+    "rowsRead": "T",
+    "counted": "T",
+    "it:an idle claim with learning off issues a small fixed number of statements": "T"
   }
 }

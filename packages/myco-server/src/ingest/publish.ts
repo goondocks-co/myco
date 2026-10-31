@@ -21,6 +21,7 @@ import { blobObjectKey } from '../core/blob-objects.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { eventContent } from '../core/event-content.js';
 import { emit } from '../telemetry.js';
+import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { type DocRecord } from '../content/document.js';
 import { documentRecord } from '../content/document-records.js';
 import { type ChunkRow, type PageRow } from '../content/document-reader.js';
@@ -30,6 +31,8 @@ import {
 } from './document-batch.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { convertDocuments } from './document-conversion.js';
+import { conversionBacklog } from './document-convertible.js';
+import { settleCards } from './card-settle.js';
 import { locatePrompts } from './document-locators.js';
 import {
   parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, type ParsePersistence, type ParseTarget, type PassLimits,
@@ -129,11 +132,11 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
 /**
  * Publishes the due sessions within the wake's remaining budget, converts sessions that predate documents with what a
  * wake that published everything due has left, locates the prompts of documents written before page locators with
- * what conversion leaves, then retires superseded chunk versions past their grace. None of them spends the reserve the
- * wake keeps for its later jobs.
+ * what conversion leaves, settles the turn cards due for it, then retires superseded chunk versions past their grace.
+ * None of them spends the reserve the wake keeps for its later jobs.
  *
  * A session whose pass fails is recorded for the Deployment's health and does not hold the others: one that fails by
- * name waits out a bounded backoff, and a store fault is reported once conversion and locating have run.
+ * name waits out a bounded backoff, and a store fault is reported once conversion, locating and settlement have run.
  */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
@@ -166,6 +169,9 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       more ||= located.more;
     }
   }
+  const cards = await settleCards(env, now, limits);
+  changed += cards.settled;
+  more ||= cards.more;
   if (!reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) changed += await retireSupersededObjects(env.db, now);
   if (failure !== undefined) throw failure;
   return { changed, more };
@@ -186,6 +192,16 @@ async function deferFailedSession(db: RelationalStore, ref: DueSession, named: s
   } catch (error) {
     emit({ kind: 'document_publish_deferral_failed', projectId, sessionId, error: namedFailure(error) ?? 'unknown' });
   }
+}
+
+/**
+ * The transcript-parse job: the publisher, within the job budget of the wake. While sessions wait for conversion, a wake
+ * that moved the publisher on and left more asks for the next at `BACKLOG_CHAINED_WAKE_MS`.
+ */
+export async function runPublishWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
+  const converting = await conversionBacklog(env.db);
+  const report = await publishDocuments(env, now, { calls: env.platform.jobBudget.calls, deadline: Date.now() + env.platform.jobBudget.wallMs, clock: Date.now });
+  return converting && report.more && report.changed > 0 ? { ...report, continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : report;
 }
 
 /** Releases the holders past their grace. */

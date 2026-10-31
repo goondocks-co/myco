@@ -16,7 +16,7 @@ import { EXTRACTION_TASK } from './task-catalogue.js';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
-import { CARD_TASK, claimCardsStatement, settleTurns } from './turn-cards.js';
+import { CARD_TASK, claimCardsStatement, dueCardTurns } from './turn-cards.js';
 import { TURN_CARD_PROMPT } from './turn-card-prompt.js';
 import { buildLearningAssignment, claimLearningStatement, FRESH_LEARNING_MS, learningHead, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
 /** A card run's assignment: the turns it cards, each with the change count its write is guarded by. */
@@ -73,16 +73,21 @@ export async function buildHandStartLearning(env: Pick<ServerEnv, 'db'>, project
   return session === null ? null : buildLearningInput(env.db, projectId, session);
 }
 
-/** A card run's input: what code cannot card in this session's due turns, up to one run's budget. */
+/** A card run's input: this session's turns due for a model, up to one run's budget, read from the catalog alone. */
 export async function buildCardInput(env: Pick<ServerEnv, 'db'>, projectId: string, sessionId: string, now: number): Promise<TaskInput | null> {
-  const settled = await settleTurns(env, projectId, sessionId, now);
-  if (settled.forModel.length === 0) return null;
-  const assignment: CardAssignment = { kind: 'cards', turns: settled.forModel.map((record) => ({ turnKey: record.turnKey, changes: record.changes })) };
+  const turns = await dueCardTurns(env.db, projectId, sessionId, now);
+  if (turns.length === 0) return null;
+  const assignment: CardAssignment = { kind: 'cards', turns };
   return {
     instruction: TURN_CARD_PROMPT, inputHash: await inputHashOf([sessionId, assignment]),
-    counts: { turns: assignment.turns.length, ruled: settled.ruled, reused: settled.reused },
+    counts: { turns: turns.length },
     context: { session_id: sessionId, assignment },
   };
+}
+
+/** Whether learning is switched on, the switch both learning stages share. */
+async function learningSwitchedOn(db: RelationalStore): Promise<boolean> {
+  return (await db.prepare(`SELECT ${learningEnabledSql()} AS enabled`).first<{ enabled: number }>())?.enabled === 1;
 }
 
 /** The range a stage's eligibility instant falls in: within the fresh window, or older. */
@@ -95,7 +100,7 @@ const freshRange = (fresh: boolean, now: number): string => `${fresh ? '>' : '<=
 function learningStage(level: number, fresh: boolean): PulledStage {
   const eligible = (now: number) => `eligible_at <= ${Math.floor(now)} AND eligible_at ${freshRange(fresh, now)} AND ${learningEnabledSql()}`;
   return {
-    level, task: EXTRACTION_TASK,
+    level, task: EXTRACTION_TASK, switchedOn: learningSwitchedOn,
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM learning_sessions l INDEXED BY idx_learning_eligible WHERE l.project_id = ${project}
         AND l.${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')})`,
@@ -119,7 +124,7 @@ function learningStage(level: number, fresh: boolean): PulledStage {
 function cardStage(level: number, fresh: boolean): PulledStage {
   const pending = (now: number) => `state = 'pending' AND due_at <= ${Math.floor(now)} AND due_at ${freshRange(fresh, now)} AND ${learningEnabledSql()}`;
   return {
-    level, task: CARD_TASK,
+    level, task: CARD_TASK, switchedOn: learningSwitchedOn,
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_due WHERE c.project_id = ${project} AND c.${pending(now)}
         AND ${notInFlight(CARD_TASK, cardSubject, 'c.session_id')})`,

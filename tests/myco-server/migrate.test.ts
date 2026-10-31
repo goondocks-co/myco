@@ -1,3 +1,4 @@
+import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
@@ -10,7 +11,7 @@ import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js'
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { sqliteD1 } from './helpers/d1.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { VIEW_SESSION_TABLES } from '@myco-server-worker/db/view-tables.js';
@@ -128,6 +129,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0112_v112.sql': '86092b5ee45c43ca54ae8ec15f0c1ea08799d25cc187f98aa9afc2c57e1d8ac1',
   '0113_v113.sql': '389e1a4b4c92de6df94e7a4f66e7e2c14e769fcb9d9937721ab2ffd77baaed12',
   '0114_v114.sql': 'b8636d93008a7849f9fda64ab94b5415923e37c6c5c87d2cc8e4016b210f47c6',
+  '0115_v115.sql': '403302b8d1d3a73a3653d87ccfd77b061a6c31b9450b0ea7517daef2809f0657',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -648,7 +650,8 @@ describe('versioned schema steps', () => {
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
-          expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger)) })
+          expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -744,8 +747,11 @@ describe('versioned schema steps', () => {
         eventId: crypto.randomUUID(), sessionId: 'grammar-session', kind: 'prompt', createdAt: 1, channel: 'cli',
         producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId, text: 'Grammar fixture', origin: 'user' },
       })).toMatchObject({ persisted: true, projected: true });
+      await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
+      // The view seeds below write the session's learning row themselves.
+      source.sqlite.run('DELETE FROM learning_sessions');
       await captureViewSession(source.db, 'proj_1', 'grammar-session');
       await seedViewInstance(source.db, { projectId: 'proj_1', sessionId: 'grammar-session', instanceId: 'grammar-view', state: 'live' });
       await seedViewState(source.db, 'proj_1', 'grammar-session', 'grammar-view');

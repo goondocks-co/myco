@@ -104,7 +104,7 @@ test('a published session reads its turns, a turn with its tools and their full 
     // The session list labels and counts the session from its catalog row; a card answers a prompt search with its turn.
     const listed = (await listSessionSummaries(db, scope, {}, Date.now())).rows.find((row) => row.sessionId === 'session')!;
     expect([listed.label, listed.promptCount, listed.toolCallCount], name).toEqual(['run the tests', 2, 3]);
-    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,state,card,created_at) VALUES ('project','session',?,'carded','Ran the flaky suite twice',1)`).bind(first).run();
+    await db.prepare(`UPDATE turn_cards SET state='carded',card='Ran the flaky suite twice' WHERE project_id='project' AND session_id='session' AND turn_key=?`).bind(first).run();
     const hits = await searchProject(db, scope, { query: 'flaky', type: 'prompt', session_id: 'session' });
     expect(hits.results.map((hit) => [hit.id, hit.turn?.prompt_id, hit.turn?.preview]), name).toEqual([[first, first, 'run the tests']]);
     expect((await searchProject(db, scope, { query: 'flaky', type: 'response' })).results.map((hit) => [hit.id, hit.turn?.prompt_id]), name).toEqual([[first, first]]);

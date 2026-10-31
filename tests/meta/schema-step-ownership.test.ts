@@ -4,6 +4,7 @@ import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { expect, it } from 'bun:test';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 import { V111_STATEMENTS } from '@myco-server-worker/db/schema-v111.js';
+import { V115_STATEMENTS } from '@myco-server-worker/db/schema-v115.js';
 import { V114_STATEMENTS } from '@myco-server-worker/db/schema-v114.js';
 
 interface Exception {
@@ -22,6 +23,8 @@ const LISTED: readonly Exception[] = [
   {step:114,object:'turn_cards_fts_ai',table:'turn_cards',reason:'Card search follows every card written.'},
   {step:114,object:'turn_cards_fts_au',table:'turn_cards',reason:'Card search follows every card rewritten.'},
   {step:114,object:'turn_cards_fts_ad',table:'turn_cards',reason:'Card search drops every card deleted.'},
+  {step:115,object:'idx_turn_cards_settle',table:'turn_cards',reason:'Card settlement reads the turns waiting for it across every Project without reading settled ones.'},
+  {step:115,object:'idx_turn_cards_model_due',table:'turn_cards',reason:'A card claim reads one session\'s turns due for a model without reading its other cards.'},
   {step:112,object:'idx_session_documents_convert',table:'session_documents',reason:'Conversion finds the sessions still waiting for it without reading the converted ones.'},
   {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
   {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
@@ -120,6 +123,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
+    step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
+  })),
   ...V114_STATEMENTS.filter((sql) => sql.startsWith('INSERT INTO _v114_guard_documents') || sql.startsWith('DROP TABLE _v114_guard_documents')).map((sql) => ({
     step: 114, sql, reason: 'Readers move to documents only once every session is converted and its publisher holds every byte and event received.',
   })),

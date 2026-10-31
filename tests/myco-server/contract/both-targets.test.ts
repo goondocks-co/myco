@@ -19,6 +19,7 @@
  * This is the in-process half of the "one server product, two adapters" claim in
  * `docs/architecture/myco-2.0.md` §3.3.
  */
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { describe, it, expect, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
@@ -33,7 +34,6 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
 import { titleReadySessions, titleSession } from '@myco-server-worker/core/titling.js';
-import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { listSessions, renameProject } from '@myco-server-worker/read/sessions.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
@@ -444,6 +444,7 @@ describe('archival refuses capture the same on both stores', () => {
       await publish();
       expect((await post({ eventId: uuid(322), sessionId: 'sess_n', kind: 'session.end', createdAt: 8_000, payload: { endedAt: 8_000 } })).projected).toBe(true);
       await t.settle();
+      await publish();
       await titleReadySessions({ ...t.env, origin: 'https://s' }, settled());
       const unprovided = await row('sess_n');
 

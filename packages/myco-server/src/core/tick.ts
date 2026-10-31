@@ -1,6 +1,4 @@
-import { learningInitPending } from './learning-sessions.js';
 import { estimateRefreshDue } from './budget-estimates.js';
-import { cutoverPending } from '../ingest/view-cutover-pending.js';
 import { storageCleanupPending } from './storage-cleanup.js';
 import { deviceReclamationPending } from '../auth/enrollment.js';
 import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
@@ -32,7 +30,7 @@ import { pendingSearchBlobs } from './search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
 import { holdSettlementDue } from './recovery-hold.js';
-import { pendingTranscripts, type TranscriptBacklog } from '../ingest/parse.js';
+import { pendingPublication, type PublicationBacklog } from '../read/document-status.js';
 import { embeddingKeepsAwake, embeddingSweepPending, EMBEDDING_SWEEP_ASSERTION } from './embedding/jobs.js';
 import { anyMaintenanceDue } from './store-maintenance.js';
 
@@ -75,8 +73,8 @@ export interface TickReport {
   jobs: JobReport[];
   /** Milliseconds until the next wake this tick asks for; null in deep sleep, where nothing is scheduled. */
   nextWakeMs: number | null;
-  /** The transcripts waiting to be read, as this wake counted them. */
-  backlog: TranscriptBacklog;
+  /** What the publisher has due, as this wake counted it. */
+  backlog: PublicationBacklog;
   /** Whether this wake ran only the jobs that left work (`TickPacer`), rather than every job due. */
   drainOnly: boolean;
 }
@@ -163,15 +161,13 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const [inside, queued,budgetQueued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db,'other'),hasQueuedRun(env.db,'budget')]);
   const assertions: PowerAssertion[] = [];
   if (await estimateRefreshDue(env.db,now)) assertions.push({name:'estimate:due',maxDepth:'sleep'});
-  if (await learningInitPending(env.db)) assertions.push({ name: 'learning:init', maxDepth: 'sleep' });
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
-  const backlog = await pendingTranscripts(env.db, now);
-  if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
-  if (backlog.imported.transcripts > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
-  if (await cutoverPending(env.db)) assertions.push({ name: 'view-cutover:pending', maxDepth: 'idle' });
+  const backlog = await pendingPublication(env.db, now);
+  if (backlog.sessions - backlog.imported.sessions > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
+  if (backlog.imported.sessions > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
   else if (await embeddingSweepPending(env, now)) assertions.push({ name: EMBEDDING_SWEEP_ASSERTION, maxDepth: 'sleep' });
   // Requested work that waits keeps the Deployment awake until it runs.
@@ -224,7 +220,7 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
     Object.assign(pacer, continuation);
     const untilFull = Math.max(0, pacer.fullAt + nextWakeDelayMs(pacer.state, WAKE_INTERVALS)! - now);
     const nextWakeMs = continuationDelay(now, untilFull, pacer.drainAt ?? {});
-    const backlog = await pendingTranscripts(env.db, now);
+    const backlog = await pendingPublication(env.db, now);
     return { state: pacer.state, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
   }
   const last = await lastActivityAt(env.db);
@@ -256,7 +252,7 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
   const cadence = nextWakeDelayMs(resolved.state, WAKE_INTERVALS);
   const continuation = continuedJobs(now, jobs);
   const nextWakeMs = cadence === null ? null : continuationDelay(now, cadence, continuation.drainAt);
-  const backlog = await pendingTranscripts(env.db, now);
+  const backlog = await pendingPublication(env.db, now);
   if (pacer !== undefined) Object.assign(pacer, { fullAt: now, state: resolved.state, heldBy: resolved.heldBy, idleMs, ...continuation });
   return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog, drainOnly: false };
 }

@@ -1,7 +1,7 @@
 import { registerBlob } from './helpers/d1.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { convertFixture, sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost, seedMemberRoleAccount } from './helpers/owner.js';
@@ -129,6 +129,7 @@ describe('session turns', () => {
   it('titles a session on an owner\'s ask, queuing the run for a worker, and finds nothing outside the scope', async () => {
     const e = sqliteEnv();
     seed(e);
+    await convertFixture(e);
     const asked = Date.now();
     const res = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);

@@ -151,7 +151,8 @@
     "local: #1924 publication pricing follow-up to #1989, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 36.77s for 11 cases (adds packed turns that outgrow their chunk, a queue of replies with stored bodies, and a failed pass racing new input), weighted 128700ms.",
     "local: #1924 publication pricing recheck, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 35.48s for 13 cases (adds a merge that reflows across chunks read during its placement, and a failed pass whose queued event is consumed and replaced), within its 128700ms weight.",
     "local: #1924 session documents PR 2a, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/session-documents-read.test.ts measured 4.28s for 2 cases (a published codex session read through turns, a turn, its tools, a full body, activity, placement, the list and card search; and the session page statement count at 2 and 40 turns), weighted 15050ms. tests/myco-server/dashboard-conversation-honesty.test.ts and session-read-budget-runtime.test.ts are deleted with the readers they tested.",
-    "local: #1924 session documents PR 2a restore, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.81s for 5 cases after its restore case (an artifact converted, merged and refused), weighted 37835ms."
+    "local: #1924 session documents PR 2a restore, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.81s for 5 cases after its restore case (an artifact converted, merged and refused), weighted 37835ms.",
+    "local: #1924 session documents PR 2b, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/learning-documents.test.ts measured 8.03s for 3 cases (the publisher settles cards, keeps a transcript plan canonical and reopens a resumed session; a card claim reads the same rows at 128 and 1280 due turns; an idle claim with learning off issues 4 statements), weighted 28105ms. tests/myco-server/view-title-material.test.ts is deleted with the titling material reader it tested. Parity scenarios of the stopped legacy transcript pass are deleted: Cursor transcript re-read, transcript repair priority, transcript live service, Record identity and transcript backlog."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -824,7 +825,6 @@
     "tests/myco-server/view-source-closure.test.ts": 110000,
     "tests/myco-server/view-store-maintenance.test.ts": 14093,
     "tests/myco-server/view-store-schema.test.ts": 14962,
-    "tests/myco-server/view-title-material.test.ts": 11888,
     "tests/myco-server/view-turns.test.ts": 24891,
     "tests/myco-server/view-work-status.test.ts": 12422,
     "tests/myco-server/view-writer-throughput.test.ts": 5800,
@@ -1031,15 +1031,14 @@
     "tests/myco-server/document-publish.test.ts": 128700,
     "tests/meta/document-read-boundary.test.ts": 2000,
     "tests/myco-server/document-conversion.test.ts": 47670,
-    "tests/myco-server/session-documents-read.test.ts": 15050
+    "tests/myco-server/session-documents-read.test.ts": 15050,
+    "tests/myco-server/learning-documents.test.ts": 28105
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,
-    "Cursor transcript: a wait keyed on bytes, segment-dated rows, and an owner re-read, identical on both targets": 29000,
     "D1: latest migration upgrades seeded previous schema to expected state": 70000,
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
-    "Record identity: transcript pins, distinct positional replies, reread and whole-artifact restore refusals": 15000,
     "a join refused as identity_claimed writes no member and leaves the invitation redeemable, over the route and myco login": 17000,
     "a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent": 41000,
     "an outcome run: the ask queues a run carrying its prompt and hash, the wake leaves it for a worker, and session start serves the Project and its instructions": 27000,
@@ -1126,9 +1125,6 @@
     "today: the lists across Projects, Myco's work, capture recency and Needs you, read by a member and an admin": 36000,
     "token refresh: a token lapsed offline rotates once within its lineage, a superseded one asking to rotate revokes it, a lineage never ends for age, and one silent past the inactivity bound is refused by name": 33000,
     "tool-call blobs: kept by the orphan sweep while referenced, read back whole; the deleted session's and the unreferenced freed": 9000,
-    "transcript backlog: counted in bytes, reported by each wake, drained beside live work, and dated by line": 16000,
-    "transcript live service: equal-time deployed checkpoints, fair indexed selection, and matching pending counts": 74000,
-    "transcript repair priority: fresh live bytes precede a large rewind and repair completes through indexed selections": 131000,
     "two Deployments: every HTTP route and served MCP operation refuses foreign authority before writes": 182000,
     "view read closure: actual HTTP MCP scheduled clock alarm and recovery constructors": 26000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,

@@ -32,3 +32,35 @@ export async function readDocumentStatus(db: RelationalStore): Promise<DocumentS
     differences: Object.fromEntries((differences!.results as { class: string; n: number }[]).map((row) => [row.class, Number(row.n)])),
   };
 }
+
+/**
+ * What the publisher has due: the transcripts its live publications stand behind and their unpublished bytes, and the
+ * due sessions, each total also counted for the sessions whose every transcript arrived by import.
+ */
+export interface PublicationBacklog {
+  sessions: number;
+  transcripts: number;
+  bytes: number;
+  imported: { sessions: number; transcripts: number; bytes: number };
+}
+
+/** The live sessions due for publication, read through the publisher's due index, with their transcripts behind it. */
+export async function pendingPublication(db: RelationalStore, now: number): Promise<PublicationBacklog> {
+  const behind = `FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id = t.project_id AND p.transcript_id = t.transcript_id
+    AND p.generation = d.generation WHERE t.project_id = d.project_id AND t.session_id = d.session_id AND COALESCE(p.published_offset, 0) < t.size`;
+  const row = await db.prepare(`SELECT COUNT(*) AS sessions, COALESCE(SUM(imported), 0) AS imported_sessions,
+      COALESCE(SUM(transcripts), 0) AS transcripts, COALESCE(SUM(bytes), 0) AS bytes,
+      COALESCE(SUM(CASE WHEN imported = 1 THEN transcripts ELSE 0 END), 0) AS imported_transcripts,
+      COALESCE(SUM(CASE WHEN imported = 1 THEN bytes ELSE 0 END), 0) AS imported_bytes
+    FROM (SELECT (SELECT COUNT(*) ${behind}) AS transcripts,
+        (SELECT COALESCE(SUM(t.size - COALESCE(p.published_offset, 0)), 0) ${behind}) AS bytes,
+        EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = d.project_id AND t.session_id = d.session_id)
+          AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = d.project_id AND t.session_id = d.session_id AND t.imported_at IS NULL) AS imported
+      FROM session_documents d INDEXED BY idx_session_documents_due WHERE d.due_at <= ? AND d.state = 'live')`)
+    .bind(now).first<Record<string, number>>();
+  const n = (key: string) => Number(row?.[key] ?? 0);
+  return {
+    sessions: n('sessions'), transcripts: n('transcripts'), bytes: n('bytes'),
+    imported: { sessions: n('imported_sessions'), transcripts: n('imported_transcripts'), bytes: n('imported_bytes') },
+  };
+}

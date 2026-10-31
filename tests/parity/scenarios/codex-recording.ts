@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { expectPersisted, lit, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
 
 export const codexRecording: ParityScenario = {
   name: 'Codex recording: custom call and array result through segment upload and wake',
@@ -22,17 +22,11 @@ export const codexRecording: ParityScenario = {
         payload: { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'codex', headHash: digest },
       }),
     }), 'recording segment');
-    const read = () => target.sql(`SELECT parsed_offset, size, parse_error FROM transcripts WHERE project_id=${lit(target.projectId)} AND transcript_id=${lit(transcriptId)}`);
-    const maxWakes = 8;
-    for (let wake = 0; wake < maxWakes; wake += 1) {
-      const response = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(response.status).toBe(200);
-      const [row] = await read();
-      if (Number(row.parsed_offset) === Number(row.size)) break;
-    }
-    expect(await read()).toEqual([{ parsed_offset: bytes.byteLength, size: bytes.byteLength, parse_error: null }]);
-    expect(await target.sql(`SELECT tool_name, input, output_preview, success FROM tool_calls WHERE project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`)).toEqual([
-      { tool_name: 'exec', input: JSON.stringify('[redacted input]'), output_preview: '[redacted text]\n\n[redacted text]', success: 1 },
-    ]);
+    // The wake publishes the recording into the session's document: the custom call is one tool call, and it succeeded.
+    await documentsPublished(target, sessionId);
+    expect(await target.sql(`SELECT p.published_offset, p.state, d.tool_calls, d.failed_tools FROM transcript_publication p
+      JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id AND d.generation = p.generation AND d.state = 'live'
+      WHERE p.project_id=${lit(target.projectId)} AND p.transcript_id=${lit(transcriptId)}`))
+      .toEqual([{ published_offset: bytes.byteLength, state: 'active', tool_calls: 1, failed_tools: 0 }]);
   },
 };

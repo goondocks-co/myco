@@ -111,3 +111,10 @@ export async function documentCounters(db: RelationalStore, scope: ReadScope, se
     firstPrompt: (row.first_prompt as string | null) ?? null,
   };
 }
+
+/** True when the session's live document holds a user prompt. */
+export async function sessionHasUserPrompt(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
+  const row = await db.prepare(`SELECT 1 AS held FROM session_documents WHERE project_id = ? AND session_id = ? AND state = 'live' AND user_prompts > 0`)
+    .bind(projectId, sessionId).first<{ held: number }>();
+  return row !== null;
+}
