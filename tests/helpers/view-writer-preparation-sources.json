@@ -395,7 +395,8 @@
     "inlineContinuation": "W",
     "hydrated": "W",
     "finishReport": "W",
-    "conversionStatements": "W"
+    "conversionStatements": "W",
+    "storedBodies": "W"
   },
   "tests/myco-server/document-conversion.test.ts": {
     "effectiveIds": "T",
@@ -407,6 +408,7 @@
     "test:tool inputs read from bundles and stored objects convert across fresh wake budgets": "T",
     "heldToolInputs": "T",
     "document": "T",
-    "test:a conversion backlog chains each clock wake at the backlog cadence and converts on every one": "T"
+    "test:a conversion backlog chains each clock wake at the backlog cadence and converts on every one": "T",
+    "test:an export page reads the stored bodies of all its rows with one blobs read": "T"
   }
 }

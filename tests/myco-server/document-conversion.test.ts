@@ -188,6 +188,7 @@ async function heldToolInputs(db: RelationalStore, blobs: ReturnType<typeof memo
     db.prepare(`UPDATE tool_calls SET input_blob_key=(SELECT json_extract(value,'$.k') FROM json_each(?1) WHERE json_extract(value,'$.t')=tool_calls.tool_call_id)
       WHERE created_at<130`).bind(JSON.stringify(stored)),
   ]);
+  return stored.map((body) => body.k);
 }
 
 test('tool inputs read from bundles and stored objects convert across fresh wake budgets', async () => {
@@ -202,6 +203,26 @@ test('tool inputs read from bundles and stored objects convert across fresh wake
     const report = JSON.parse((await db.prepare(`SELECT build FROM session_documents WHERE session_id='session' AND state='live'`).first<{ build: string }>())!.build).report;
     expect(report.bodies.tool, name).toMatchObject({ n: 258, placed: report.bodies.tool.source });
     expect(report.classes.body_unreadable, name).toBeUndefined();
+  }));
+});
+
+test('an export page reads the stored bodies of all its rows with one blobs read', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore();
+    const keys = await heldToolInputs(db, blobs);
+    // Counts the blobs reads that name a stored body, whether one key at a time or a page's keys together.
+    let reads = 0;
+    const counted: RelationalStore = { prepare: (sql) => {
+      const statement = db.prepare(sql);
+      return /FROM blobs/.test(sql) ? { ...statement, bind: (...values: unknown[]) => {
+        if (values.some((value) => typeof value === 'string' && keys.some((key) => value.includes(key)))) reads += 1;
+        return statement.bind(...values);
+      } } : statement;
+    }, batch: (statements) => db.batch(statements) };
+    await convertDocuments({ db: counted, blobs }, 2, limits());
+    const report = JSON.parse((await db.prepare(`SELECT build FROM session_documents WHERE session_id='session' AND state='live'`).first<{ build: string }>())!.build).report;
+    expect(report.bodies.tool, name).toMatchObject({ n: 258, placed: report.bodies.tool.source });
+    expect(reads, name).toBe(1);
   }));
 });
 

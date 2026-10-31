@@ -47,6 +47,8 @@ const VERSION_BLOB_CALLS = 3;
 const ROW_STATEMENTS = 8;
 const ROW_BLOB_CALLS = 4;
 const ROW_VERSIONS = 2;
+/** Stored bodies one export page reads at once: a Worker keeps six connections open at a time. */
+const CONVERT_READS_IN_FLIGHT = 6;
 const GENERATION = 1;
 
 const MATERIALS = [
@@ -111,11 +113,74 @@ const steps = (build: Build): Step[] => [
 const exhausted = (error: unknown): boolean => error instanceof Error && error.message.endsWith('_budget_exhausted');
 const unreadable = (error: unknown): boolean => error instanceof Error && error.message.startsWith('content_') && !exhausted(error);
 
-/** Whether the wake can still read one more row and commit the page with it. */
-function rowAdmitted(db: RelationalStore, pendingVersions: number): boolean {
+/** Whether the wake can still read `rows` more rows and commit the page with them. */
+function rowAdmitted(db: RelationalStore, pendingVersions: number, rows = 1): boolean {
   const versions = pendingVersions + ROW_VERSIONS;
-  return !reserveReached(db, PASS_CLOSING_STATEMENTS + ROW_STATEMENTS + versions * VERSION_STATEMENTS,
-    PASS_CLOSING_BLOB_CALLS + ROW_BLOB_CALLS + versions * VERSION_BLOB_CALLS);
+  return !reserveReached(db, PASS_CLOSING_STATEMENTS + rows * ROW_STATEMENTS + versions * VERSION_STATEMENTS,
+    PASS_CLOSING_BLOB_CALLS + rows * ROW_BLOB_CALLS + versions * VERSION_BLOB_CALLS);
+}
+
+/** The size and generation of each stored body a page's rows name, keyed by blob key. */
+type StoredBodies = ReadonlyMap<string, { generation: string | null; size: number }>;
+
+/** Reads the stored body of every row of a page in one statement; a page that names none reads nothing. */
+async function storedBodies(db: RelationalStore, projectId: string, material: Material, rows: readonly Record<string, unknown>[]):
+  Promise<{ stored: StoredBodies; calls: number }> {
+  const keys = [...new Set(rows.flatMap((row) => material.bodies.map(([column]) => row[column]).filter((key): key is string => typeof key === 'string')))];
+  if (keys.length === 0) return { stored: new Map(), calls: 0 };
+  const found = (await db.prepare(`SELECT key,generation,size FROM blobs WHERE project_id=? AND key IN (SELECT value FROM json_each(?))`)
+    .bind(projectId, JSON.stringify(keys)).all<{ key: string; generation: string | null; size: number }>()).results;
+  return { stored: new Map(found.map((row) => [row.key, { generation: row.generation, size: row.size }])), calls: 1 };
+}
+
+/** The bytes and calls reading a row's bodies costs; a bundle is charged to the first row of the page that names it. */
+function bodyCost(material: Material, row: Record<string, unknown>, stored: StoredBodies, bundles: Set<number>): { bytes: number; calls: number } {
+  let bytes = 0, calls = 0;
+  for (const [blobColumn] of material.bodies) {
+    const blob = typeof row[blobColumn] === 'string' ? stored.get(row[blobColumn] as string) : undefined;
+    if (blob === undefined) continue;
+    bytes += blob.size;
+    calls += 1;
+  }
+  if (material.kind === 'tool' && typeof row.input_bundle_id === 'number' && typeof row.input_blob_key !== 'string' && !bundles.has(row.input_bundle_id)) {
+    bundles.add(row.input_bundle_id);
+    bytes += ARCHIVE_BUNDLE_BYTES;
+    calls += 5;
+  }
+  return { bytes, calls };
+}
+
+/**
+ * How many rows from `start` the wake admits to read together: each must fit the page's bytes and calls as the rows
+ * before it would leave them, and the wake must keep one row's reserve for every row read besides the commit's.
+ */
+function admittedWindow(db: RelationalStore, rows: readonly Record<string, unknown>[], start: number, material: Material,
+  stored: StoredBodies, held: { bytes: number; bundles: ReadonlySet<number>; batch: DocumentBatch; limits: PassLimits }): number {
+  const bundles = new Set(held.bundles);
+  let bytes = held.bytes, calls = held.batch.calls, admitted = 0;
+  for (let index = start; index < rows.length; index += 1) {
+    if (index !== 0 && !(bytes < CONVERT_BYTES_PER_PAGE && calls < held.limits.calls && held.limits.clock() < held.limits.deadline
+      && rowAdmitted(db, held.batch.writer.pendingVersions, admitted + 1))) break;
+    const cost = bodyCost(material, rows[index]!, stored, bundles);
+    bytes += cost.bytes;
+    calls += cost.calls;
+    admitted += 1;
+  }
+  return admitted;
+}
+
+/** Runs `read` over `items` at most `CONVERT_READS_IN_FLIGHT` at a time, answering in the order of `items`. */
+async function readsInFlight<T, R>(items: readonly T[], read: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0, failed = false;
+  const lane = async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try { out[index] = await read(items[index]!); } catch (error) { failed = true; throw error; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONVERT_READS_IN_FLIGHT, items.length) }, lane));
+  return out;
 }
 
 /**
@@ -279,22 +344,35 @@ export async function convertPage(env: Pick<ServerEnv, 'db' | 'blobs'>, projectI
     else {
       await batch.resolve(rows.map((row) => materialRecord(material.kind, row)));
       const content = bundleContentEnv(env);
+      const { stored, calls } = await storedBodies(db, projectId, material, rows);
+      batch.calls += calls;
       const bundles = new Set<number>();
       const read: Record<string, unknown>[] = [];
       const placed: string[] = [];
-      let bytes = 0;
-      for (const [index, row] of rows.entries()) {
-        if (!more(index, bytes)) break;
-        const before = batch.inserted.length;
-        const body = await hydrated(content, projectId, material, row, build.report, bundles);
-        batch.calls += body.calls;
-        bytes += body.bytes;
-        const record = materialRecord(material.kind, body.row);
-        const [held] = await batch.place([record], null);
-        for (const [field, source] of body.sources)
-          checks.push({ kind: material.kind, id: record.id, field, source, bytes: utf8(String(body.row[field])).byteLength, placed: held ?? null });
-        placed.push(...batch.inserted.slice(before).filter(([kind]) => kind === material.kind).map(([, id]) => id));
-        read.push(row);
+      let bytes = 0, stopped = false;
+      // Rows are read a window at a time and placed in order; a row whose reads are done is placed while its commit fits.
+      for (let index = 0; !stopped && index < rows.length;) {
+        const window = admittedWindow(db, rows, index, material, stored, { bytes, bundles, batch, limits });
+        if (window === 0) break;
+        const bodies = await readsInFlight(rows.slice(index, index + window), (row) => hydrated(content, projectId, material, row, stored, bundles));
+        for (const body of bodies) {
+          if (index !== 0 && !(bytes < CONVERT_BYTES_PER_PAGE && batch.calls < limits.calls && limits.clock() < limits.deadline
+            && rowAdmitted(db, batch.writer.pendingVersions, 0))) {
+            stopped = true;
+            break;
+          }
+          const before = batch.inserted.length;
+          batch.calls += body.calls;
+          bytes += body.bytes;
+          for (const name of body.classes) count(build.report.classes, name);
+          const record = materialRecord(material.kind, body.row);
+          const [held] = await batch.place([record], null);
+          for (const [field, source] of body.sources)
+            checks.push({ kind: material.kind, id: record.id, field, source, bytes: utf8(String(body.row[field])).byteLength, placed: held ?? null });
+          placed.push(...batch.inserted.slice(before).filter(([kind]) => kind === material.kind).map(([, id]) => id));
+          read.push(rows[index]!);
+          index += 1;
+        }
       }
       const ids = build.report.ids[material.kind]!;
       build.report.ids[material.kind] = {
@@ -389,15 +467,16 @@ async function adopt(db: RelationalStore, projectId: string, sessionId: string, 
 }
 
 /**
- * A row with its retained bodies read back, the digest of every complete body it holds, and the bytes and calls the
- * reads cost. A body that cannot be read keeps its preview and is reported by class.
+ * A row with its retained bodies read back, the digest of every complete body it holds, the bytes and calls the reads
+ * cost, and the classes it reports. A body that cannot be read keeps its preview and is reported by class.
  */
 async function hydrated(env: Pick<ServerEnv, 'db' | 'blobs'>, projectId: string, material: Material, row: Record<string, unknown>,
-  report: ConversionReport, bundles: Set<number>): Promise<{ row: Record<string, unknown>; sources: Map<string, string>; bytes: number; calls: number }> {
+  stored: StoredBodies, bundles: Set<number>): Promise<{ row: Record<string, unknown>; sources: Map<string, string>; bytes: number; calls: number; classes: string[] }> {
   const out = { ...row };
   const complete = new Set<string>();
-  let bytes = 0, calls = 0;
-  if (material.kind === 'tool' && typeof row.output_blob_key === 'string') count(report.classes, 'output_preview_only');
+  const classes: string[] = [];
+  const { bytes, calls } = bodyCost(material, row, stored, bundles);
+  if (material.kind === 'tool' && typeof row.output_blob_key === 'string') classes.push('output_preview_only');
   for (const [blobColumn, field] of material.bodies) {
     const key = row[blobColumn];
     const bundled = material.kind === 'tool' && typeof row.input_bundle_id === 'number';
@@ -405,37 +484,29 @@ async function hydrated(env: Pick<ServerEnv, 'db' | 'blobs'>, projectId: string,
       if (!bundled && typeof row[field] === 'string') complete.add(field);
       continue;
     }
-    const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?').bind(projectId, key)
-      .first<{ generation: string | null; size: number }>();
-    calls += 2;
-    if (blob === null) { count(report.classes, 'body_missing'); continue; }
+    const blob = stored.get(key);
+    if (blob === undefined) { classes.push('body_missing'); continue; }
     try {
       out[field] = await readVerifiedContentText(env, blobObjectKey(projectId, key, blob.generation), blob.size, key);
-      bytes += blob.size;
       complete.add(field);
     } catch (error) {
       if (!unreadable(error)) throw error;
-      count(report.classes, 'body_unreadable');
+      classes.push('body_unreadable');
     }
   }
   if (material.kind === 'tool' && typeof row.input_bundle_id === 'number' && typeof row.input_blob_key !== 'string') {
-    if (!bundles.has(row.input_bundle_id)) {
-      bundles.add(row.input_bundle_id);
-      bytes += ARCHIVE_BUNDLE_BYTES;
-      calls += 5;
-    }
     try {
       out.input = await readBundleEntry(env, { projectId, bundleId: row.input_bundle_id, entry: Number(row.input_bundle_entry),
         kind: 'tool-input', resourceId: String(row.tool_call_id), tokenId: String(row.token_id) });
       complete.add('input');
     } catch (error) {
       if (!unreadable(error)) throw error;
-      count(report.classes, 'body_unreadable');
+      classes.push('body_unreadable');
     }
   }
   const sources = new Map<string, string>();
   for (const field of complete) sources.set(field, await sha256Hex(String(out[field])));
-  return { row: out, sources, bytes, calls };
+  return { row: out, sources, bytes, calls, classes };
 }
 
 /** The difference classes a finished export reports: id sets that differ, and cards whose turn the document lacks. */
