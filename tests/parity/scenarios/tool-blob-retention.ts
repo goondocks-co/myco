@@ -87,10 +87,5 @@ export const toolBlobRetention: ParityScenario = {
     expect((await read(orphan)).status).toBe(404);
     expect(await target.sql(`SELECT key FROM blobs WHERE key IN (${lit(input)}, ${lit(output)}, ${lit(doomed)}, ${lit(orphan)}) ORDER BY key`))
       .toEqual([input, output].sort().map((key) => ({ key })));
-
-    const calls = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${kept}/turns/${promptId}/tool-calls`, { headers: target.ownerHeaders() });
-    expect(calls.status).toBe(200);
-    const { rows } = (await calls.json()) as { rows: Array<{ toolCallId: string; inputBlobKey: string | null; outputBlobKey: string | null }> };
-    expect(rows.map((r) => [r.toolCallId, r.inputBlobKey, r.outputBlobKey])).toEqual([[toolCallId, input, output]]);
   },
 };

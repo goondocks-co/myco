@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { listTurns, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, toolUsage, sessionTurnContexts } from '@myco-server-worker/read/turns.js';
-import { listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections, sessionMaterialRows, sessionMaterialTailRows } from '@myco-server-worker/read/children.js';
+import { listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections } from '@myco-server-worker/read/children.js';
 import { listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { captureViewSession, withViewStores } from './helpers/view-stores.js';
@@ -26,9 +26,7 @@ async function conversation(db: RelationalStore): Promise<string> {
     await toolUsage(db, scope, session), await sessionTurnContexts(db, scope, session));
   for (const collection of TURN_COLLECTIONS) values.push(await turnCollection(db, scope, session, uuid(20), collection, { limit: 1 }));
   for (const read of [listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections]) values.push(await read(db, scope, session));
-  values.push(await listUnplacedHookRecords(db, scope, session),
-    await sessionMaterialRows(db, scope.projectId, session, { limit: 2, excerptChars: 20 }),
-    await sessionMaterialTailRows(db, scope.projectId, session, { limit: 2, excerptChars: 20 }));
+  values.push(await listUnplacedHookRecords(db, scope, session));
   return JSON.stringify(values);
 }
 
@@ -50,67 +48,6 @@ it('turn sources preserve the independent captured result with poisoned and gone
     await db.batch(['prompt_batches', 'responses', 'tool_calls', 'plans'].map(table => db.prepare(`DELETE FROM ${table} WHERE project_id='project'`)));
     expect(await conversation(db), target + ' gone').toBe(expected);
     expect(await listTurns(db, { projectId: 'other' }, session)).toEqual({ rows: [], cursor: null });
-  });
-}, 60_000);
-
-it('the HTTP turn collection keeps its admission source across a publication flip', async () => {
-  await withViewStores(async (db, target) => {
-    await captureViewSession(db);
-    await db.prepare("UPDATE members SET github_id='100001',role='admin' WHERE id='member'").run();
-    await mirrorViewSession(db, { ...scope, sessionId: session, instanceId: 'first', state: 'live' });
-    await publishMirroredSession(db, scope.projectId, session, 'first');
-    await mirrorViewSession(db, { ...scope, sessionId: session, instanceId: 'second', state: 'building' });
-    await updateViewSearchText(db, scope.projectId, 'second', 'next response');
-    let flipped = false;
-    const recorded = statementRecorder(db, { accounting: target === 'D1' ? 'd1' : 'native', after: async entry => {
-      if (flipped || !entry.sql.includes('SELECT 1 AS present FROM prompt_batches') || !entry.sql.includes('__myco_pins AS MATERIALIZED')) return;
-      flipped = true;
-      await publishMirroredSession(db, scope.projectId, session, 'second');
-    } });
-    const cookie = await ownerCookie(db, Date.now(), '100001');
-    const env = { MYCO_DB: recorded.db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter(), ...OWNER_ENV };
-    const response = await worker.fetch(new Request(`https://s/api/projects/project/sessions/session/turns/${uuid(20)}?collection=responses`, {
-      headers: { cookie, 'cf-connecting-ip': '1.2.3.4' },
-    }), env);
-    expect(response.status, target).toBe(200);
-    expect(flipped, target + ' admission control reached').toBe(true);
-    expect(await response.json(), target).toMatchObject({ rows: [{ text: 'factcanary' }] });
-    expect(recorded.statements.filter(entry => entry.sql.includes('FROM session_views sv')).length, target + ' one capture').toBe(1);
-    expect((await listResponses(db, scope, session)).rows[0]?.text, target + ' next response control').toBe('next response');
-  });
-}, 60_000);
-
-it('selected row identity survives a fact promotion between admission and hydration', async () => {
-  await withViewStores(async (db, target) => {
-    await captureViewSession(db);
-    await mirrorViewSession(db, { ...scope, sessionId: session, instanceId: 'first', state: 'live' });
-    await setViewLayerValues(db, scope.projectId, 'first', 'selected source');
-    await publishMirroredSession(db, scope.projectId, session, 'first');
-    await withViewReadResponse(db, () => 1, async bound => {
-      expect(await promptInSession(bound, scope, session, uuid(20)), target).toBe(true);
-      await keepSurvivingFacts(db, scope.projectId, session);
-      expect((await listPrompts(bound, scope, session)).rows[0]?.text, target).toBe('selected source');
-    });
-    expect((await listPrompts(db, scope, session)).rows[0]?.text, target + ' new response control').toBe('factcanary');
-  });
-}, 60_000);
-
-it('admission and collection hydration retain one response closure through a flip and a store decorator', async () => {
-  await withViewStores(async (db, target) => {
-    await captureViewSession(db);
-    await mirrorViewSession(db, { ...scope, sessionId: session, instanceId: 'first', state: 'live' });
-    await publishMirroredSession(db, scope.projectId, session, 'first');
-    await mirrorViewSession(db, { ...scope, sessionId: session, instanceId: 'second', state: 'building' });
-    await updateViewSearchText(db, scope.projectId, 'second', 'new generation');
-    let assertions = 0;
-    await withViewReadResponse(db, () => 1_700_000_000_000, async bound => {
-      const guarded = writeGuardStore(bound, () => { assertions++; return bound.prepare('SELECT 1'); }, error => { throw error; });
-      expect(await promptInSession(guarded, scope, session, uuid(20)), target).toBe(true);
-      await publishMirroredSession(db, scope.projectId, session, 'second');
-      expect((await listPrompts(guarded, scope, session)).rows[0]?.text, target).toBe('factcanary');
-      expect(assertions, target + ' SELECT remains a read').toBe(0);
-    });
-    expect((await listPrompts(db, scope, session)).rows[0]?.text, target + ' control').toBe('new generation');
   });
 }, 60_000);
 

@@ -2,7 +2,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isProcessedBodyKind, processedAttachment, processedBody } from '../read/processed.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
-import { notFound, resolveProjectScope } from './scope.js';
+import { notFound, resolveProjectScope, sessionInScope } from './scope.js';
+import { documentBody, isDocumentBodyKind } from '../content/session-pages.js';
 
 const ATTACHMENT_IMAGES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const PROCESSED_SECURITY = {
@@ -12,7 +13,11 @@ const PROCESSED_SECURITY = {
   'cache-control': 'private, no-store',
 };
 
-/** A typed projected field or attachment, served with current Project admission. */
+/**
+ * A typed projected field or attachment, served with current Project admission. A prompt's or reply's text and a tool's
+ * input or output are read from the session's document at the locator the row carried: `session`, `generation`,
+ * `owner` and `page`.
+ */
 export async function handleProcessedBody(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const kind = ctx.params.kind;
   if (!isProcessedBodyKind(kind)) return notFound();
@@ -30,6 +35,17 @@ export async function handleProcessedBody(env: ServerEnv, ctx: OwnerContext): Pr
       'content-length': String(attachment.size),
       ...(image ? {} : { 'content-disposition': `attachment; filename="${encodeURIComponent(id)}"` }),
     } });
+  }
+  if (isDocumentBodyKind(kind)) {
+    const search = ctx.url.searchParams;
+    const sessionId = search.get('session'), owner = search.get('owner');
+    const generation = Number(search.get('generation')), page = Number(search.get('page'));
+    if (sessionId === null || owner === null || !Number.isSafeInteger(generation) || !Number.isSafeInteger(page)) return notFound();
+    if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+    const text = await documentBody(env, scope.projectId, sessionId, kind, id, { generation, owner, page });
+    if (text === 'stale') return Response.json({ error: 'stale_cursor' }, { status: 409 });
+    if (text === null) return notFound();
+    return new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8', ...PROCESSED_SECURITY } });
   }
   const body = await processedBody(bundleContentEnv(env), scope, kind, id);
   if (body === null) return notFound();

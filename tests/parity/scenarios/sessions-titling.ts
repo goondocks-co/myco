@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
@@ -80,6 +80,8 @@ export const sessionsTitling: ParityScenario = {
     const s2 = `parity-${Date.now()}-2`;
     await post(s2, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
     await post(s2, 'prompt', { promptId: crypto.randomUUID(), text: 'Rename the project from the card', origin: 'user' });
+    // An ask is admitted once the publisher has caught up with the session's capture.
+    await documentsPublished(target, s2);
     expect(await askTitle(s2)).toMatchObject({ outcome: 'queued' });
     expect(await runFor(s2)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });

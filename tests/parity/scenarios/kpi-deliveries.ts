@@ -33,14 +33,17 @@ export const kpiDeliveries: ParityScenario = {
     const answer = await attention.json() as AttentionAnswer;
     expect(answer.unavailable as string[]).not.toContain('prompt_references');
     expect(answer.items.map(item => item.kind) as string[]).not.toContain('prompt_references');
-    await target.sql(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES (${project},'placement-selection','placement-s','placement-e1','user','h',${now},${now},'t',${now}),
-        (${project},'placement-cross','placement-other','placement-e2','user','h',${now},${now},'t',${now})`);
+    // Prompts are what the sessions' live documents hold.
+    await target.sql(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at)
+      VALUES (${project},'placement-s','live',1,${now}),(${project},'placement-other','live',1,${now})`);
+    await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+      VALUES (${project},'placement-s',1,'placement-selection','placement-selection',0,'user',${now}),
+        (${project},'placement-other',1,'placement-cross','placement-cross',0,'user',${now})`);
     const selectionOnly = await kpis();
     expect(selectionOnly.promptsServed).toBe(before.promptsServed);
     expect(selectionOnly.deliveries).toEqual(unplaced.deliveries);
-    await target.sql(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES (${project},'placement-delivery','placement-s','placement-e3','user','h',${now},${now},'t',${now})`);
+    await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+      VALUES (${project},'placement-s',1,'placement-delivery','placement-delivery',1,'user',${now})`);
     const placed = await kpis();
     expect(placed.promptsServed).toBe(before.promptsServed + 1);
     expect(placed.deliveries).toEqual({ placed: before.deliveries.placed + 1, unplaced: before.deliveries.unplaced + 2 });

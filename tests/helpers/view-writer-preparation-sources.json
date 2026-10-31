@@ -265,8 +265,7 @@
     "sweepViewCutover": "W",
     "readViewCutover": "W",
     "runViewCutoverWake": "W",
-    "cutoverBacklog": "W",
-    "conversionBacklog": "W"
+    "cutoverBacklog": "W"
   },
   "packages/myco-server/src/ingest/view-frozen.ts": {
     "tailStart": "W",
@@ -298,34 +297,31 @@
     "promoteViewPlan": "W",
     "promoted": "W"
   },
-  "packages/myco-server/src/ingest/view-cutover-pending.ts": {
-    "cutoverPending": "W"
-  },
   "packages/myco-server/src/core/learning-sessions.ts": {
     "sessionProgressStatements": "W",
-    "classify": "W",
-    "readySession": "W",
-    "initializeSession": "W",
-    "learningInitPending": "W",
-    "learningInit": "W",
     "learningHead": "W",
     "buildLearningAssignment": "W",
     "claimLearningStatement": "W",
     "assignedCards": "W",
     "completeLearning": "W",
     "readLearningStatus": "W",
-    "dispatchedBeforeResume": "W"
+    "dispatchedBeforeResume": "W",
+    "pendingCardsStatement": "W",
+    "learningSessionStatement": "W"
   },
   "packages/myco-server/src/core/turn-cards.ts": {
     "cardStatements": "W",
-    "dueTurns": "W",
-    "settleTurns": "W",
     "cardsWrittenStatement": "W",
-    "claimCardsStatement": "W"
+    "claimCardsStatement": "W",
+    "reusableCard": "W",
+    "modelDueStatement": "W",
+    "forgetTurnStatement": "W",
+    "dueCardTurns": "W"
   },
   "packages/myco-server/src/core/learning-stages.ts": {
     "learningStage": "W",
-    "cardStage": "W"
+    "cardStage": "W",
+    "learningSwitchedOn": "W"
   },
   "packages/myco-server/src/core/learning-hold.ts": {},
   "packages/myco-server/src/mcp/tools/run-learning.ts": {
@@ -335,8 +331,6 @@
     "ready": "T",
     "it:cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice": "T",
     "it:closes an all-mechanical session without a run and orders sessions newest first": "T",
-    "it:initializes from a cold start through its assertion": "T",
-    "it:holds a transcript session until publication, then cards its published view records and re-checks only changed ones": "T",
     "it:pulls cards, then learning, at claim within the budget, and the learned spore cites its session": "T",
     "runs": "T",
     "learning": "T",
@@ -368,6 +362,7 @@
     "dueSessions": "W",
     "retireSupersededObjects": "W",
     "hydratedPayload": "W",
+    "read": "W",
     "run": "W",
     "held": "W",
     "commitStatements": "W",
@@ -387,7 +382,9 @@
     "statements": "W",
     "commit": "W",
     "releaseHolders": "W",
-    "publicationStatement": "W"
+    "publicationStatement": "W",
+    "sessionRowStatements": "W",
+    "cardStatements": "W"
   },
   "packages/myco-server/src/ingest/document-conversion.ts": {
     "convertDocuments": "W",
@@ -410,6 +407,36 @@
     "heldToolInputs": "T",
     "document": "T",
     "test:a conversion backlog chains each clock wake at the backlog cadence and converts on every one": "T",
-    "test:an export page reads the stored bodies of all its rows with one blobs read": "T"
+    "test:an export page reads the stored bodies of all its rows with one blobs read": "T",
+    "test:a restored artifact converts a session the target lacks, merges into a live document, and refuses ambiguous precedence": "T",
+    "test:a restore into a session mid-conversion exports the restored rows behind its cursor": "T",
+    "test:a restore planned while a session converts refuses before any write once that session goes live": "T",
+    "test:a restore holding a converting session refuses an overlapping restore of it, and keeps its hold until it applies": "T",
+    "artifact": "T"
+  },
+  "tests/myco-server/session-documents-read.test.ts": {
+    "published": "T",
+    "test:a published session reads its turns, a turn with its tools and their full input, and its activity from the document": "T",
+    "test:the session page reads the same statements whatever the session holds": "T",
+    "statements": "T",
+    "attach": "T",
+    "place": "T"
+  },
+  "packages/myco-server/src/ingest/document-convertible.ts": {
+    "conversionBacklog": "W"
+  },
+  "packages/myco-server/src/ingest/card-settle.ts": {
+    "settleCards": "W",
+    "settleTurn": "W"
+  },
+  "tests/myco-server/learning-documents.test.ts": {
+    "it:the publisher settles cards, keeps transcript plans canonical and reopens a resumed session": "T",
+    "it:a card claim reads the same catalog rows whatever the session holds": "T",
+    "it:an idle claim with learning off issues a small fixed number of statements": "T",
+    "it:a transcript plan larger than a page preview keeps its whole body in the canonical plan": "T",
+    "it:a turn past the page budget is never carded by rule, and falls due with its tail": "T",
+    "it:a refused placement leaves no transcript plan and no reopened session in the commit that follows it": "T",
+    "claim": "T",
+    "placeRecords": "T"
   }
 }

@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { uuidv5 } from '@myco-server-worker/hash.js';
-import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * Plans on both targets: a plan captured with the prompt it came from, an
@@ -81,6 +81,7 @@ export const plans: ParityScenario = {
     expect((await owner(`${base}/plans?status=all`)).status).toBe(400);
 
     // The turn body carries the plan under the prompt it came from; the list reads it by session.
+    await documentsPublished(target, session);
     const detail = await owner<{ plans: { planKey: string; status: string; progress: string; promptId: string | null }[] }>(`${base}/turns/${p1}`);
     expect(detail.body.plans.map((p) => [p.planKey, p.status, p.progress, p.promptId])).toEqual([[key, 'completed', '1/2', p1]]);
     const listed = (await mcp({ op: 'list', session, status: 'all' })) as unknown as { id: string; prompt_id: string | null; progress: string }[];

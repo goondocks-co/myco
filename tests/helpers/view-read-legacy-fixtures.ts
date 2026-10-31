@@ -73,8 +73,6 @@ export async function legacyExecutionCases(db: RelationalStore, target: 'native'
  await run(key+'/tools/prompt',()=>turns.toolUsage(observed,scope,sessionId,uuid(20)));
  await run(key+'/contexts',()=>turns.sessionTurnContexts(observed,scope,sessionId));
  for(const op of ['listPrompts','listContextInjections','listToolCalls','listResponses','listPlans','listAttachments'] as const) await run(key+'/'+op,()=>children[op](observed,scope,sessionId,{limit:1}));
- await run(key+'/material',()=>children.sessionMaterialRows(observed,projectId,sessionId,{limit:10,excerptChars:100}));
- await run(key+'/material-tail',()=>children.sessionMaterialTailRows(observed,projectId,sessionId,{limit:10,excerptChars:100}));
  await run(key+'/get-session',()=>sessions.getSession(observed,scope,sessionId,1000));
  await run(key+'/counts',()=>sessions.sessionCounts(observed,scope,sessionId));
  await run(key+'/counts-bulk',()=>sessions.sessionCountsFor(observed,scope,[sessionId]));
@@ -91,7 +89,7 @@ export async function legacyExecutionCases(db: RelationalStore, target: 'native'
  await run(projectId+'/feed',()=>activityFeed(observed,scope));
  for(const window of [undefined,'activity'] as const)for(const q of [undefined,'baseline','unmatched']) {
  const opts={limit:1,...(window===undefined?{}:{window,since:0}),...(q===undefined?{}:{q})};
- await run(projectId+'/sessions/'+window+'/'+q,()=>sessions.listSessionSummaries(observed,scope,opts,1000,{activity:true}));
+ await run(projectId+'/sessions/'+window+'/'+q,()=>sessions.listSessionSummaries(observed,scope,opts,1000));
  }
  for(const [kind,id]of [['prompt',uuid(20)],['response',uuid(30)],['plan',uuid(50)],['tool-input',uuid(40)],['tool-output',uuid(40)]] as const)
  await run(projectId+'/body/'+kind,()=>processedBody({db:observed,blobs:{get:async()=>{throw new Error('Unexpected blob read')},put:async()=>{throw new Error('Unexpected blob write')},delete:async()=>{throw new Error('Unexpected blob delete')},head:async()=>{throw new Error('Unexpected blob head')}}},scope,kind,id));
@@ -846,7 +844,6 @@ export async function executeReadVariant(db:RelationalStore,variant:LegacyVarian
    if(v.statement==='countOwed')return read('children','countConvergenceTitleSessions',0,900);
    return read('children','listTitleCandidates',{retryBefore:0,idleBefore:900,freshAfter:50,refreshBefore:50,refreshPrompts:2,imported:v.origin==='imported'},200);
   }
-  case 'M23':return read('children',v.operation==='materialRows-DESC'?'sessionMaterialTailRows':'sessionMaterialRows',scope.projectId,sessionId,{limit:v.limit==='1'?1:v.limit==='max'?200:50,excerptChars:100});
   case 'M26':{
    const kind=v.kind==='attachment-companion'?'attachment':String(v.kind),id=bodyWorldId(v.storage,kind),env={db,blobs:legacyBodyBlobs};
    return v.stage==='field'?call('processed','processedField',env,scope,kind,id):call('processed','processedBody',env,scope,kind,id);

@@ -219,28 +219,6 @@ describe('the reads a person waits on', () => {
     }
   });
 
-  it('pages structured session activity over immutable indexed keys and verifies prompt targets by index', async () => {
-    const db = migrated();
-    try {
-      for (const opts of [{}, { type: 'failure' as const, tool: 'Bash', failed: true, cursor: encodeCursor(1_700_000_000_000, 'tool') }]) {
-        const { db: recorder, statements } = recordingStore();
-        await listSessionActivity(recorder, { projectId: 'proj_1' }, 's1', opts);
-        expect(statements).toHaveLength(opts.type === undefined ? 3 : 2);
-        expect(statements.map(s => s.sql).join(' ')).not.toMatch(/error_message|output_preview|input_blob_key/);
-        if (opts.type === undefined) {
-          const edges = await planOf(db, statements[1].sql, statements[1].params);
-          expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_launch_parent \(project_id=\? AND launch_parent_session_id=\?\)/);
-          expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_parent \(project_id=\? AND parent_session_id=\?\)/);
-          expect(edges).not.toMatch(/SCAN [rs]\b/);
-        }
-        const plan = await planOf(db, statements[0].sql, statements[0].params);
-        expect(plan).toContain('idx_tool_calls_activity');
-        expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
-        expect(plan).toMatch(/SEARCH hook_prompt USING (?:COVERING )?INDEX/);
-      }
-    } finally { db.close(); }
-  });
-
   it('keeps the same plan when a cursor narrows the page', async () => {
     // The keyset predicate is where the ordering expression appears a second
     // and third time. A cursor built over a different expression than the sort

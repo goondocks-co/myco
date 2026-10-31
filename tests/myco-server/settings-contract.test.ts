@@ -51,7 +51,7 @@ import { closureOf, codeOf, entryFiles, filesUnder, moduleKey, REPO_ROOT } from 
 import { readFileSync } from 'node:fs';
 import { seededSqlite } from './helpers/d1.js';
 import { indexFixture } from './helpers/vector-index.js';
-import { memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { convertFixture, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, asOwnerPut, MEMBER_PRINCIPAL, OWNER_ENV, seedMemberRoleAccount } from './helpers/owner.js';
 import type { Database } from 'bun:sqlite';
 
@@ -183,6 +183,7 @@ async function titlesQuietSession(r: Rig): Promise<number> {
   const quietSince = NOW - 3_600_000;
   r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 's_quiet', 'machine_1', 'tok_1', ?, ?, 'claude-code')`, [quietSince, quietSince]);
   r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES ('proj_1', 's_quiet', 'p_quiet', 'e_quiet', 'a session gone quiet', 'user', 'h_quiet', ?, ?, 'tok_1', ?, 1)`, [quietSince, quietSince, quietSince]);
+  await convertFixture({ sqlite: r.sqlite, serverEnv: r.env });
   try {
     await backfillTitles(r.env, NOW, 'idle');
     return (r.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE json_extract(run_context, '$.session_id') = 's_quiet'`).get() as { n: number }).n;

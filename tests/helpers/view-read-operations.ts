@@ -91,13 +91,6 @@ export const VIEW_READ_OPERATIONS = [
     "expressionSha256": "27e78d2f9524eaba58d33511c1c47045380234ab4551f1303e40e2a858bc278e"
   },
   {
-    "id": "M16:sessions_instantStatements:0",
-    "family": "M16",
-    "operation": "sessions_instantStatements",
-    "template": "0",
-    "expressionSha256": "a7680e34e936702987dddfdcb096f8de416c1d9afd3e3f350832e5baffc51505"
-  },
-  {
     "id": "M17:sessions_projectStats:0",
     "family": "M17",
     "operation": "sessions_projectStats",
@@ -404,13 +397,6 @@ export const VIEW_READ_OPERATIONS = [
     "operation": "children_listChildrenByPrompt",
     "template": "0",
     "expressionSha256": "3ff3321160027e21cb62d8996cdf4c1a644c1ce091ff2d98f5e3b8a7e74294dd"
-  },
-  {
-    "id": "M23:children_materialRows:0",
-    "family": "M23",
-    "operation": "children_materialRows",
-    "template": "0",
-    "expressionSha256": "492051b11222901322a54c742aec8cf54cb94ec53baf7679b517fecfb08dd59b"
   },
   {
     "id": "M26:processed_processedField:0",

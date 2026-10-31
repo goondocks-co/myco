@@ -261,14 +261,15 @@ async function inlineContinuation(db: RelationalStore, projectId: string, transc
   return { ...context, mycoParserState: JSON.parse(encoded) as unknown };
 }
 
-/** Converts sessions that predate documents, newest first, within what the wake has left. */
+/** Converts sessions that predate documents, newest first, within what the wake has left; a session a restore holds waits for its `due_at`. */
 export async function convertDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   let changed = 0, calls = 0;
   for (;;) {
     if (calls >= limits.calls || limits.clock() >= limits.deadline || !rowAdmitted(env.db, 2 * ROW_VERSIONS)) return { changed, more: true };
     const next = await env.db.prepare(`SELECT d.project_id,d.session_id FROM session_documents d JOIN sessions s
         ON s.project_id=d.project_id AND s.session_id=d.session_id
-      WHERE ${CONVERTIBLE_SQL} ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).first<{ project_id: string; session_id: string }>();
+      WHERE ${CONVERTIBLE_SQL} AND (d.due_at IS NULL OR d.due_at<=?)
+      ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).bind(now).first<{ project_id: string; session_id: string }>();
     if (next === null) return { changed, more: false };
     const page = await convertPage(env, next.project_id, next.session_id, now, { ...limits, calls: limits.calls - calls });
     changed += page.records;
@@ -537,4 +538,13 @@ function conversionStatements(db: RelationalStore, projectId: string, sessionId:
         .bind(...set.params, JSON.stringify({ report: build.report }), projectId, sessionId),
     ],
   };
+}
+
+/** A legacy content row as a document record, its retained prompt, reply or tool input body read back. */
+export async function legacyRecord(env: Pick<ServerEnv, 'db' | 'blobs'>, projectId: string, kind: 'prompt' | 'reply' | 'tool',
+  row: Record<string, unknown>): Promise<DocRecord> {
+  const material = MATERIALS.find((held) => held.kind === kind)!;
+  const { stored } = await storedBodies(env.db, projectId, material, [row]);
+  const body = await hydrated(bundleContentEnv(env), projectId, material, row, stored, new Set());
+  return materialRecord(kind, body.row);
 }

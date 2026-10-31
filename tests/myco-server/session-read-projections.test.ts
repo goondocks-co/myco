@@ -1,9 +1,9 @@
-import { markPromptProcessed } from './helpers/extraction.js';
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { PRE_DOCUMENTS_STEPS } from './helpers/migrate.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
@@ -56,7 +56,7 @@ async function verify(db: RelationalStore) {
   ];
   for (const sql of initial) await db.prepare(sql).run();
   await db.batch(READ_BUDGET_SESSION_STATEMENTS.map((sql) => db.prepare(sql)));
-  for (const step of SCHEMA_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+  for (const step of PRE_DOCUMENTS_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await assertProjection(db);
   await db.batch([
     db.prepare('UPDATE session_read_facts SET eligible_prompts=99'),
@@ -72,11 +72,9 @@ async function verify(db: RelationalStore) {
   await assertProjection(db);
   expect(await db.prepare("SELECT session_id FROM session_read_facts WHERE project_id='proj_stale'").first()).toBeNull();
   expect(await db.prepare("SELECT project_id FROM project_session_counts WHERE project_id='proj_stale'").first()).toBeNull();
-  expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'old')).toBe(true);
-  expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'absent')).toBe(false);
+  await db.prepare(`INSERT INTO extraction_acks(project_id,ack_id,session_id,kind,record_id,run_id,acknowledged_at)
+    VALUES('proj_1','ack_old','old','record','old','run_old',1)`).run();
   await assertProjection(db);
-  await db.prepare('DELETE FROM agent_runs').run();
-  await db.prepare("UPDATE prompt_batches SET processed=0 WHERE prompt_id='old'").run();
   const mutations = [
     "UPDATE transcripts SET imported_at=1 WHERE transcript_id='old'",
     "UPDATE prompt_batches SET processed=1 WHERE prompt_id='tie'",

@@ -94,21 +94,10 @@ export const storageCleanupParity: ParityScenario = {
       (SELECT COUNT(*) FROM prompt_batches WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS prompts,
       (SELECT COUNT(*) FROM responses WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS responses,
       (SELECT COUNT(*) FROM tool_calls WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS tools`);
-    const search = async () => {
-      const response = await ownerGet(`/api/projects/${target.projectId}/search?q=${searchWord}`);
-      expect(response.status).toBe(200);
-      const body = await response.json() as { results: Array<{ id: string }> };
-      return body.results.map((row) => row.id).sort();
-    };
-    const inputPath = `/api/projects/${target.projectId}/processed/tool-input/${toolCallId}`;
-    const outputPath = `/api/projects/${target.projectId}/processed/tool-output/${toolCallId}`;
     const rawPath = `/api/projects/${target.projectId}/blobs/${rawKey}`;
     const transcriptPath = `/api/projects/${target.projectId}/sessions/${sessionId}/transcript`;
-    const before = { responses: await responseRows(), tool: await toolFacts(), counts: await counts(), search: await search() };
+    const before = { responses: await responseRows(), tool: await toolFacts(), counts: await counts() };
     expect(before.responses).toHaveLength(1);
-    expect(before.search).toContain(responseId);
-    expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
-    expect(await (await ownerGet(outputPath)).text()).toBe(output);
     expect((await rawGet(rawPath)).status).toBe(200);
     expect((await ownerGet(rawPath)).status).toBe(404);
     const [freshInput]=await target.sql(`SELECT input FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
@@ -116,7 +105,6 @@ export const storageCleanupParity: ParityScenario = {
     await target.sql(`DELETE FROM processed_resources WHERE project_id=${project} AND kind='tool-input' AND resource_id=${tool}`);
     await target.sql(`UPDATE tool_calls SET input=${lit(fullInput)},input_blob_key=NULL,input_bytes=NULL,input_bundle_id=NULL,input_bundle_entry=NULL
       WHERE project_id=${project} AND tool_call_id=${tool}`);
-    expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
 
     const control=async(paused:boolean)=>{
       const response=await fetch(`${target.url}/api/storage-cleanup`,{method:'PATCH',
@@ -181,12 +169,9 @@ export const storageCleanupParity: ParityScenario = {
     expect(Number(toolState.input_bytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
     expect(new TextEncoder().encode(String(toolState.input)).byteLength).toBeLessThanOrEqual(2048);
     expect(Number.isSafeInteger(toolState.input_bundle_id)).toBe(true);
-    expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
-    expect(await (await ownerGet(outputPath)).text()).toBe(output);
     expect(await responseRows()).toEqual(before.responses);
     expect(await toolFacts()).toEqual(before.tool);
     expect(await counts()).toEqual(before.counts);
-    expect(await search()).toEqual(before.search);
 
     const [rawRef] = await target.sql(`SELECT disposition,archive_key,receipt_key,length FROM raw_archive_refs WHERE project_id=${project}
       AND source_kind='transcript' AND transcript_id=${transcript}`);
@@ -229,7 +214,6 @@ export const storageCleanupParity: ParityScenario = {
       if(released)break;
     }
     expect(released).toBe(true);
-    expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
     expect(await target.sql(`SELECT archive_key FROM archive_bundles WHERE project_id=${project} AND archive_key=${lit(String(eventRef.archive_key))}`))
       .toEqual([{archive_key:eventRef.archive_key}]);
   },

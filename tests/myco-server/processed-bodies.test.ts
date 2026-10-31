@@ -41,17 +41,17 @@ function fixture(spilled = true) {
 }
 
 describe('typed processed fields', () => {
-  it('serves every complete processed field identically inline or spilled, with inert content and no browser caching', async () => {
+  it('serves a plan body identically inline or spilled, with inert content and no browser caching', async () => {
     for (const spilled of [false, true]) {
       const e = fixture(spilled);
-      for (const kind of KINDS) {
+      for (const kind of ['plan'] as const) {
         const response = await e.get(kind);
         expect({ kind, spilled, status: response.status, text: await response.text() }).toEqual({ kind, spilled, status: 200, text: BODY });
         expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
         expect(response.headers.get('cache-control')).toBe('private, no-store');
         expect(response.headers.get('x-content-type-options')).toBe('nosniff');
       }
-      expect(e.bucket.gets.length).toBe(spilled ? KINDS.length : 0);
+      expect(e.bucket.gets.length).toBe(spilled ? 1 : 0);
     }
   });
 

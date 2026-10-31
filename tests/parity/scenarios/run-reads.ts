@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { expectPersisted, lit, memberHeadersFor, SESSION_SECRET, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, memberHeadersFor, SESSION_SECRET, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /** The GitHub account the scenario links to the member-role member it joins. */
 const MEMBER_ROLE_SUB = '1518003';
@@ -34,6 +34,7 @@ export const runReads: ParityScenario = {
       }), kind);
       await post('session.start', { agent: 'claude-code', startedAt: now });
       await post('prompt', { promptId: crypto.randomUUID(), text: 'Record what the run reads', origin: 'user' });
+      await documentsPublished(target, sessionId);
 
       await target.sql(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_harness', 'harness', ${now})`);
       await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);

@@ -307,6 +307,8 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
 
   const sessionIds: string[] = [];
   const lastPrompt: string[] = [];
+  const firstPrompts: Array<{ id: string; at: number }> = [];
+  const turns: Array<{ projectId: string; sessionId: string; id: string; text: string; at: number }> = [];
   let liveSessionId = '';
   for (const [index, seed] of SESSIONS.entries()) {
     const sessionId = await uuidv5('screens-session', seed.project, String(index));
@@ -322,7 +324,11 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     for (const [i, text] of seed.prompts.entries()) {
       const at = startedAt + Math.round(((i + 0.5) / seed.prompts.length) * span * MINUTE);
       promptId = await uuidv5('screens-prompt', sessionId, String(i));
-      await post(seed.machine, seed.project, sessionId, 'prompt', { promptId, text, origin: 'user' }, at);
+      if (i === 0) firstPrompts.push({ id: promptId, at });
+      turns.push({ projectId: idOf(seed.project), sessionId, id: promptId, text, at });
+      // The session reading fixture's opening prompt carries a subagent notification ahead of its words.
+      const said = index === OUTCOME_SESSION && i === 0 ? `<subagent_notification>/audit</subagent_notification> ${text}` : text;
+      await post(seed.machine, seed.project, sessionId, 'prompt', { promptId, text: said, origin: 'user' }, at);
       await post(seed.machine, seed.project, sessionId, 'response', { responseId: await uuidv5('screens-response', sessionId, String(i)), promptId, text: `Done: ${text.toLowerCase()}.` }, at + 2 * MINUTE);
     }
     lastPrompt.push(promptId);
@@ -334,6 +340,22 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
       await post(seed.machine, seed.project, sessionId, 'session.end', { endedAt, title: seed.title, summary: seed.summary, ...end }, endedAt);
     }
   }
+
+  // The session reading fixture: a delegation linked under its first prompt, and tool results that did not succeed,
+  // one on its last turn and the rest placed on no turn.
+  const outcome = SESSIONS[OUTCOME_SESSION]!, outcomeSession = sessionIds[OUTCOME_SESSION]!, opening = firstPrompts[OUTCOME_SESSION]!;
+  await post(outcome.machine, outcome.project, outcomeSession, 'prompt', { promptId: await uuidv5('screens-audit-child', outcomeSession), parentPromptId: opening.id,
+    threadId: await uuidv5('screens-audit-thread', outcomeSession), threadLabel: 'Reviewer', origin: 'agent_dispatch', text: 'Check the port fix' }, opening.at + 1000);
+  for (const [index, row] of [
+    { tool: 'Bash', reason: 'reported', prompt: lastPrompt[OUTCOME_SESSION]! },
+    { tool: 'Read', reason: 'no_result', prompt: null },
+    { tool: 'Write', reason: null, prompt: null },
+    { tool: 'Grep', reason: 'pending_limit', prompt: null },
+  ].entries()) {
+    await post(outcome.machine, outcome.project, outcomeSession, 'tool.use', { toolCallId: await uuidv5('screens-tool', outcomeSession, String(index)), toolName: row.tool,
+      input: {}, success: false, ...(row.prompt === null ? {} : { promptId: row.prompt }), ...(row.reason === null ? {} : { resultReason: row.reason }) }, now - (40 - index) * MINUTE);
+  }
+  await publishCapture(url, ownerHeaders, ctx.databasePath);
 
   const sporeIds: string[] = [];
   for (const spore of SPORES) {
@@ -445,13 +467,13 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   // Search reads with Ollama's bge-m3, chosen before anything was built, and a switch to nomic-embed-text is under way.
   await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
   await seedSessionAudit(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, sporeIds[0]!);
-  await seedSessionActivity(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, lastPrompt[OUTCOME_SESSION]!, now);
   seedEmbeddingSwitch(ctx.databasePath, now);
 
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
   settleWaitingRepositories(ctx.databasePath, now);
   seedWorkerContact(ctx.databasePath, now);
   seedTitles(ctx.databasePath, sessionIds, now);
+  seedTurnCards(ctx.databasePath, turns);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedReleaseState(ctx.databasePath, sessionIds, now);
@@ -544,6 +566,26 @@ function seedTitles(databasePath: string, sessionIds: string[], now: number): vo
       const titledAt = now - (seed.startedAgo - seed.minutes - 2) * MINUTE;
       sqlite.query('UPDATE sessions SET title = ?, summary = ?, titled_at = ? WHERE project_id = ? AND session_id = ?')
         .run(seed.title, seed.summary, titledAt, idOf(seed.project), sessionIds[index]!);
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * The card each captured turn has, as learning writes it once a turn settles: what was asked and what the reply said.
+ * The publisher holds a pending card for each turn it published, which the learned card replaces. Search finds prompts
+ * and replies through these cards.
+ */
+function seedTurnCards(databasePath: string, turns: ReadonlyArray<{ projectId: string; sessionId: string; id: string; text: string; at: number }>): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const turn of turns) {
+      sqlite.query(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at, carded_at) VALUES (?, ?, ?, 'carded', ?, ?, ?)
+        ON CONFLICT (project_id, session_id, turn_key) DO UPDATE SET state = 'carded', card = excluded.card, carded_at = excluded.carded_at,
+          settle_at = NULL, due_at = NULL`)
+        .run(turn.projectId, turn.sessionId, turn.id, `${turn.text}. Done: ${turn.text.toLowerCase()}.`, turn.at, turn.at + 2 * MINUTE);
     }
   } finally {
     sqlite.close();
@@ -792,16 +834,27 @@ function seedBackup(databasePath: string, now: number): void {
 }
 
 
-/** Context receipts, the first prompt's selected and the second delivered, and a linked delegation in the session reading fixture. */
+/** Wakes the server until every captured event is published into its session's document, as the clock's wakes would. */
+async function publishCapture(url: string, ownerHeaders: Record<string, string>, databasePath: string): Promise<void> {
+  const pending = (): number => {
+    const sqlite = new Database(databasePath);
+    sqlite.exec('PRAGMA busy_timeout = 5000');
+    try {
+      return (sqlite.query(`SELECT (SELECT COUNT(*) FROM publish_queue) + (SELECT COUNT(*) FROM session_documents WHERE state = 'live' AND due_at = 0) AS n`).get() as { n: number }).n;
+    } finally { sqlite.close(); }
+  };
+  for (let wake = 0; wake < 40 && pending() > 0; wake += 1) await expectOk(await fetch(`${url}/api/wake`, { method: 'POST', headers: ownerHeaders, body: '{}' }), 'wake');
+  if (pending() > 0) throw new Error('captured events are still waiting for publication');
+}
+
+/** Context receipts in the session reading fixture, the first prompt's selected and the second delivered. */
 async function seedSessionAudit(databasePath: string, sessionId: string, sporeId: string): Promise<void> {
   const sqlite = new Database(databasePath);
   try {
     const projectId = idOf('myco');
-    const [first, second] = sqlite.query('SELECT prompt_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id LIMIT 2').all(projectId, sessionId) as Array<{ prompt_id: string; created_at: number }>;
+    const [first, second] = sqlite.query(`SELECT prompt_id, created_at FROM session_prompts WHERE project_id = ? AND session_id = ? AND turn_key = prompt_id
+      ORDER BY created_at, prompt_id LIMIT 2`).all(projectId, sessionId) as Array<{ prompt_id: string; created_at: number }>;
     if (first === undefined || second === undefined) throw new Error('the session reading fixture holds fewer than two prompts');
-    const child = await uuidv5('screens-audit-child', sessionId);
-    sqlite.query("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,parent_prompt_id,thread_id,thread_label,origin,text,content_hash,created_at,updated_at,token_id,received_at) VALUES (?,?,?,'audit-child',?,'audit-review','Reviewer','agent_dispatch','Check the port fix','audit',?,?,'fixture',?)")
-      .run(projectId, sessionId, child, first.prompt_id, first.created_at + 1000, first.created_at + 1000, first.created_at + 1000);
     const db = sqliteRelationalStore(sqlite);
     const admission = sessionWriteAdmission({ projectId, machineId: machineOf(SESSIONS[OUTCOME_SESSION]!.machine).id }, sessionId);
     for (const [kind, at] of [['cortex', first.created_at - 1000], ['cortex:audit-review', first.created_at + 900]] as const) {
@@ -813,28 +866,6 @@ async function seedSessionAudit(databasePath: string, sessionId: string, sporeId
     const plan = sqlite.query('SELECT plan_key FROM plans WHERE project_id = ? LIMIT 1').get(projectId) as { plan_key: string } | null;
     sqlite.query("INSERT INTO spore_injections(id,project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,ask_protocol,asked_at,delivered_at,delivered_prompt_id,created_at) VALUES ('audit-receipt',?,?,?,?,?,?,'v1',?,?,?,?)")
       .run(projectId, sessionId, first.prompt_id, 'audit', JSON.stringify([sporeId]), JSON.stringify(plan === null ? [] : [plan.plan_key]), first.created_at, second.created_at, second.prompt_id, first.created_at + 1);
-    sqlite.query("UPDATE prompt_batches SET text = '<subagent_notification>/audit</subagent_notification> This test fails one run in twenty' WHERE project_id = ? AND prompt_id = ?")
-      .run(projectId, first.prompt_id);
   } finally { sqlite.close(); }
 }
 
-/** Tool result classifications, with both turn-bound and session-level diagnostics. */
-async function seedSessionActivity(databasePath: string, sessionId: string, promptId: string, now: number): Promise<void> {
-  const sqlite = new Database(databasePath);
-  sqlite.exec('PRAGMA busy_timeout = 5000');
-  try {
-    for (const [index, row] of [
-      { tool: 'Bash', reason: 'reported', prompt: promptId },
-      { tool: 'Read', reason: 'no_result', prompt: null },
-      { tool: 'Write', reason: null, prompt: null },
-      { tool: 'Grep', reason: 'pending_limit', prompt: null },
-    ].entries()) {
-      const id = await uuidv5('screens-tool', sessionId, String(index));
-      sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, success, result_reason, created_at, token_id, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'fixture', ?)`)
-        .run(idOf('myco'), id, sessionId, row.prompt, id, row.tool, row.reason, now - (40 - index) * MINUTE, now);
-    }
-  } finally {
-    sqlite.close();
-  }
-}

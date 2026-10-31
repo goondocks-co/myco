@@ -1,3 +1,4 @@
+import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
@@ -5,12 +6,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrationFileName, readSchemaVersion, renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { applySchemaSteps } from './helpers/migrate.js';
+import { applySchemaSteps, PRE_DOCUMENTS_STEPS } from './helpers/migrate.js';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { sqliteD1 } from './helpers/d1.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { VIEW_SESSION_TABLES } from '@myco-server-worker/db/view-tables.js';
@@ -127,6 +128,8 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0111_v111.sql': '764e3320141f27826bd38716febe028a83a8c898be8aaa50bddac37af17a057b',
   '0112_v112.sql': '86092b5ee45c43ca54ae8ec15f0c1ea08799d25cc187f98aa9afc2c57e1d8ac1',
   '0113_v113.sql': '389e1a4b4c92de6df94e7a4f66e7e2c14e769fcb9d9937721ab2ffd77baaed12',
+  '0114_v114.sql': 'b8636d93008a7849f9fda64ab94b5415923e37c6c5c87d2cc8e4016b210f47c6',
+  '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -135,6 +138,8 @@ const shape = (sqlite: Database) =>
   sqlite.query(`SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`).all();
 const version = (sqlite: Database) => (sqlite.query(`SELECT value FROM schema_meta WHERE key='version'`).get() as any).value;
 const schemaVersionsFrom = (first: number) => SCHEMA_STEPS.filter((step) => step.version >= first).map((step) => step.version);
+/** The steps below the documents guard. A test that seeds captured sessions applies these: the guard refuses a session whose capture is unpublished. */
+const preDocumentsVersionsFrom = (first: number) => PRE_DOCUMENTS_STEPS.filter((step) => step.version >= first).map((step) => step.version);
 const fresh = () => { const s = new Database(':memory:'); s.exec('PRAGMA foreign_keys = ON'); return s; };
 
 /** Inventories accept only a canonical ordered prefix of schema steps. */
@@ -349,13 +354,13 @@ describe('versioned schema steps', () => {
       session('no-transcript', null);
       session('already-named', 'cursor'); transcript('already-named', 'tx7', 'codex');
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(40));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual(preDocumentsVersionsFrom(40));
       const after = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
       const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
       expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
       // The v45 presentation columns arrive NULL on every existing session: a backfill would be history the parse has not read.
       expect(after.map((row) => ({ ...row, agent: null }))).toEqual(before.map((row) => ({ ...row, agent: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null })));
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual([]);
       expect(sqlite.query('SELECT * FROM sessions ORDER BY session_id').all()).toEqual(after);
     } finally { sqlite.close(); }
   });
@@ -367,9 +372,9 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary, titled_at, titled_by)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(39));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual(preDocumentsVersionsFrom(39));
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null });
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual([]);
     } finally { sqlite.close(); }
   });
 
@@ -380,9 +385,9 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(36));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual(preDocumentsVersionsFrom(36));
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null });
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual([]);
     } finally { sqlite.close(); }
   });
 
@@ -550,9 +555,9 @@ describe('versioned schema steps', () => {
         const before = sqlite.query('SELECT * FROM sessions').all();
         const retainedRelease = sqlite.query("SELECT * FROM knowledge_release_state WHERE namespace='sessions'").all();
         for (const table of retired) expect((sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
-        if (mode === 'native') for (const migration of SCHEMA_STEPS.filter(({ version }) => version >= 86)) sqlite.exec(renderMigrationFile(migration));
-        else expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(86));
-        expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+        if (mode === 'native') for (const migration of PRE_DOCUMENTS_STEPS.filter(({ version }) => version >= 86)) sqlite.exec(renderMigrationFile(migration));
+        else expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual(preDocumentsVersionsFrom(86));
+        expect(await applySchemaSteps(sqliteD1(sqlite), PRE_DOCUMENTS_STEPS)).toEqual([]);
         sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
         expect(version(sqlite)).toBe('86');
         expect(sqlite.prepare('SELECT * FROM sessions').all()).toEqual(before.map((row) => ({ ...row as Record<string, unknown>, launch_parent_session_id: null })));
@@ -644,7 +649,8 @@ describe('versioned schema steps', () => {
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
-          expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger)) })
+          expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -740,8 +746,11 @@ describe('versioned schema steps', () => {
         eventId: crypto.randomUUID(), sessionId: 'grammar-session', kind: 'prompt', createdAt: 1, channel: 'cli',
         producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId, text: 'Grammar fixture', origin: 'user' },
       })).toMatchObject({ persisted: true, projected: true });
+      await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
+      // The view seeds below write the session's learning row themselves.
+      source.sqlite.run('DELETE FROM learning_sessions');
       await captureViewSession(source.db, 'proj_1', 'grammar-session');
       await seedViewInstance(source.db, { projectId: 'proj_1', sessionId: 'grammar-session', instanceId: 'grammar-view', state: 'live' });
       await seedViewState(source.db, 'proj_1', 'grammar-session', 'grammar-view');
@@ -880,4 +889,29 @@ it('schema 107 installs the source-range path on empty and populated prompt stor
         index: { sql: 'CREATE INDEX idx_view_prompts_source_range ON view_prompts(project_id,instance_id,source_transcript_id,source_offset,source_end,prompt_id)' } });
     } finally { db.close(); }
   }
+});
+
+it('schema 114 moves readers to documents only once every session is live, its publisher holds every byte received and its prompts are located', async () => {
+  const sqlite = fresh();
+  const db = sqliteD1(sqlite);
+  try {
+    await applySchemaSteps(db, PRE_DOCUMENTS_STEPS);
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('proj_1','one',1)");
+    sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','s1','m1','t1',1,2)");
+    sqlite.run("INSERT INTO session_documents(project_id,session_id,state,updated_at) VALUES ('proj_1','s1','convert',1)");
+    const step = SCHEMA_STEPS.filter((s) => s.version === 114);
+    await expect(applySchemaSteps(db, step)).rejects.toThrow('documents_converting');
+    sqlite.run("UPDATE session_documents SET state='live', generation=1 WHERE session_id='s1'");
+    // Just received, its legacy cursor at zero, and never published: the publisher has no frontier, so nothing counts as published.
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, first_received_at, last_received_at, token_id)
+      VALUES ('proj_1', 'tx1', 's1', 'm1', 'codex', 10, 0, 1, ${Date.now()}, 't1')`);
+    await expect(applySchemaSteps(db, step)).rejects.toThrow('documents_publication_behind');
+    sqlite.run(`INSERT INTO transcript_publication (project_id, transcript_id, generation, session_id, published_offset, record_scheme, parser_version, updated_at)
+      VALUES ('proj_1', 'tx1', 1, 's1', 10, 'source-record-v1', 1, 2)`);
+    // A prompt of the live document its locator backfill has not reached yet.
+    sqlite.run("INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,created_at) VALUES ('proj_1','s1',1,'p1','p1',0,1)");
+    await expect(applySchemaSteps(db, step)).rejects.toThrow('documents_unlocated');
+    sqlite.run("UPDATE session_prompts SET page = 0 WHERE prompt_id = 'p1'");
+    expect(await applySchemaSteps(db, step)).toEqual([114]);
+  } finally { sqlite.close(); }
 });

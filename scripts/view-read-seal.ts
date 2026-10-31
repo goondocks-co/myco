@@ -71,7 +71,9 @@ export function classifySourceSealChange(
   f.endsWith('/core/injection.ts')?'renamed injection composition':
   f.endsWith('/core/write-guard-store.ts')?'opaque-context decorator':
   f.endsWith('/ingest/parse.ts')&&['nextTargets','nextRecentTargets','parseTranscripts','recentLegacyWork'].includes(o)?'legacy lane selection bounded by the batch':
-  /\/ingest\/(?:publish|document-batch|document-conversion|document-locators)\.ts$/.test(f)||f.startsWith('packages/myco-server/src/content/')||f.endsWith('/document-conversion.test.ts')||f.endsWith('/ingest/events.ts')&&o==='planEventWrite'&&change.change==='added'?'session document publisher':
+  /\/ingest\/(?:publish|document-batch|document-conversion|document-locators|document-restore)\.ts$/.test(f)||f.startsWith('packages/myco-server/src/content/')||f.endsWith('/document-conversion.test.ts')||f.endsWith('/ingest/events.ts')&&o==='planEventWrite'&&change.change==='added'?'session document publisher':
+  /\/(?:core\/(?:raw-archive|turn-cards|learning-sessions|learning-stages|titling|tick|jobs-run)|ingest\/card-settle|read\/(?:material-readiness|sessions)|mcp\/tools\/run-(?:cards|learning|sessions))\.ts$/.test(f)||f.endsWith('/learning-documents.test.ts')?'learning, titling and archival on documents':
+  /\/(?:api\/(?:sessions|processed|status)|read\/document-(?:catalog|status))\.ts$/.test(f)||deps.some(p=>/\/read\/document-catalog\.ts$/.test(p.file))||f.endsWith('/session-documents-read.test.ts')?'session document reader':
   f.endsWith('/core/attention-state.ts')||f.endsWith('/read/meta.ts')?'bounded refusal/status metadata':
   f.endsWith('/server/sql-dump.ts')?'SQL identifier dependency fingerprint':
   f.endsWith('/thin-learning-admission.test.ts')||deps.some(p=>/\/(?:db\/thin-learning-admission|db\/schema-v104)\.ts$/.test(p.file))?'schema 104 admission projection':

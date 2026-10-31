@@ -171,6 +171,8 @@ export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE sessions(project_id TEXT,session_id TEXT,agent TEXT,branch TEXT,origin_path TEXT,parent_session_id TEXT,parent_reason TEXT,launch_parent_session_id TEXT,facts_event_id TEXT,started_at INTEGER,ended_at INTEGER,ended_by TEXT,titling_requested_at INTEGER,PRIMARY KEY(project_id,session_id))',
   "INSERT INTO sessions(project_id,session_id) VALUES ('p','s')",
   'CREATE TABLE prompt_batches(project_id TEXT,session_id TEXT,origin TEXT,created_at INTEGER)',
+  'CREATE TABLE session_documents(project_id TEXT,session_id TEXT,generation INTEGER,state TEXT,open_turn_key TEXT,PRIMARY KEY(project_id,session_id))',
+  'CREATE TABLE session_prompts(project_id TEXT,session_id TEXT,generation INTEGER,prompt_id TEXT,origin TEXT,created_at INTEGER,PRIMARY KEY(project_id,session_id,generation,prompt_id))',
   'CREATE TABLE knowledge_git_provenance(project_id TEXT,identity_key TEXT,session_id TEXT,capture_point TEXT,captured_at INTEGER,event_id TEXT,branch TEXT,head_sha TEXT,is_dirty INTEGER,error TEXT,status_hash TEXT,created_at INTEGER,PRIMARY KEY(project_id,identity_key))',
   'CREATE TABLE plans(project_id TEXT,plan_key TEXT,session_id TEXT,event_id TEXT,machine_id TEXT,title TEXT,content TEXT,blob_key TEXT,content_hash TEXT,status TEXT,origin_path TEXT,source TEXT,prompt_id TEXT,updated_by TEXT,created_at INTEGER,updated_at INTEGER,token_id TEXT,received_at INTEGER,PRIMARY KEY(project_id,plan_key))',
   'CREATE TABLE tags(project_id TEXT,entity_kind TEXT,entity_id TEXT,tag TEXT,PRIMARY KEY(project_id,entity_kind,entity_id,tag))',

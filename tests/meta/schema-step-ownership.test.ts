@@ -4,6 +4,8 @@ import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { expect, it } from 'bun:test';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 import { V111_STATEMENTS } from '@myco-server-worker/db/schema-v111.js';
+import { V115_STATEMENTS } from '@myco-server-worker/db/schema-v115.js';
+import { V114_STATEMENTS } from '@myco-server-worker/db/schema-v114.js';
 
 interface Exception {
   step: number;
@@ -13,6 +15,16 @@ interface Exception {
 }
 const LISTED: readonly Exception[] = [
   {step:113,object:'idx_session_prompts_unlocated',table:'session_prompts',reason:'The locator backfill finds the prompts it has yet to locate without reading the located ones.'},
+  {step:114,object:'idx_session_prompts_prompt',table:'session_prompts',reason:'A prompt cited by id alone is found in its Project without knowing its session.'},
+  {step:114,object:'idx_session_prompts_created',table:'session_prompts',reason:'Prompt measures read a window of prompt times, not every prompt.'},
+  {step:114,object:'idx_attachments_prompt_order',table:'attachments',reason:'A turn reads each prompt\'s first page of attachments, however many share a time.'},
+  {step:114,object:'idx_prompt_context_answers_prompt_order',table:'prompt_context_answers',reason:'A turn reads each prompt\'s first page of context answers, however many share a time.'},
+  {step:114,object:'idx_spore_injections_delivered_at',table:'spore_injections',reason:'A turn reads the latest receipt of each of its prompts without reading the others.'},
+  {step:114,object:'turn_cards_fts_ai',table:'turn_cards',reason:'Card search follows every card written.'},
+  {step:114,object:'turn_cards_fts_au',table:'turn_cards',reason:'Card search follows every card rewritten.'},
+  {step:114,object:'turn_cards_fts_ad',table:'turn_cards',reason:'Card search drops every card deleted.'},
+  {step:115,object:'idx_turn_cards_settle',table:'turn_cards',reason:'Card settlement reads the turns waiting for it across every Project without reading settled ones.'},
+  {step:115,object:'idx_turn_cards_model_due',table:'turn_cards',reason:'A card claim reads one session\'s turns due for a model without reading its other cards.'},
   {step:112,object:'idx_session_documents_convert',table:'session_documents',reason:'Conversion finds the sessions still waiting for it without reading the converted ones.'},
   {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
   {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
@@ -111,6 +123,15 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
+    step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
+  })),
+  ...V114_STATEMENTS.filter((sql) => sql.startsWith('INSERT INTO _v114_guard_documents') || sql.startsWith('DROP TABLE _v114_guard_documents')).map((sql) => ({
+    step: 114, sql, reason: 'Readers move to documents only once every session is converted and its publisher holds every byte and event received.',
+  })),
+  ...V114_STATEMENTS.filter((sql) => sql.includes('turn_cards_fts USING fts5') || sql.startsWith("INSERT INTO turn_cards_fts(turn_cards_fts)")).map((sql) => ({
+    step: 114, sql, reason: 'Card search is an external-content index over the cards already written.',
+  })),
   {
     step: 111,
     sql: V111_STATEMENTS.find((sql) => sql.startsWith('INSERT OR IGNORE INTO session_documents'))!,
@@ -301,6 +322,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: 'The temporary admission guard is released after validation.' },
   { step: 113, sql: 'ALTER TABLE session_prompts ADD COLUMN page INTEGER', reason: 'A prompt read by name opens the page of its owner that holds its record.' },
   { step: 113, sql: 'ALTER TABLE session_documents ADD COLUMN locate_after INTEGER', reason: 'The locator backfill resumes after the last page chunk it read.' },
+  { step: 114, sql: 'ALTER TABLE session_documents ADD COLUMN restore_hold TEXT', reason: 'A restore holds the sessions it converts from conversion, and from other restores, under its own identity.' },
   { step: 109, sql: 'ALTER TABLE agent_runs ADD COLUMN subject TEXT',
     reason: 'Runs retain the single-flight subject a pulled or subject-bearing claim writes.' },
 ];

@@ -399,6 +399,23 @@
     "fields": "historical schema bytes; schema-step ownership gate"
   },
   {
+    "file": "packages/myco-server/src/ingest/document-batch.ts",
+    "owner": "sessionRowStatements",
+    "table": "plans",
+    "operation": "INSERT",
+    "mode": "legacy",
+    "targets": [
+      "plans"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/learning-documents.test.ts",
+      "test": "the publisher settles cards, keeps transcript plans canonical and reopens a resumed session"
+    },
+    "fields": "Publication inserts the canonical row of a plan a transcript holds, and follows a newer appearance's title and body only on a row last written from a transcript with no member edit; a body the document holds in a body chunk is written as a spilled plan. Like legacy projection writes it carries no material version.",
+    "expression": "`INSERT INTO plans (project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,\n        created_at,updated_at,token_id,received_at,prompt_id,source)\n      SELECT ?1,json_extract(j.value,'$.key'),?2,json_extract(j.value,'$.id'),\n        COALESCE((SELECT machine_id FROM sessions WHERE project_id=?1 AND session_id=?2),''),json_extract(j.value,'$.title'),\n        json_extract(j.value,'$.content'),json_extract(j.value,'$.blob'),json_extract(j.value,'$.hash'),json_extract(j.value,'$.status'),json_extract(j.value,'$.path'),\n        json_extract(j.value,'$.at'),json_extract(j.value,'$.at'),?3,?4,json_extract(j.value,'$.prompt'),json_extract(j.value,'$.source') FROM json_each(?5) j WHERE true\n      ON CONFLICT (project_id,plan_key) DO UPDATE SET title=excluded.title,content=excluded.content,blob_key=excluded.blob_key,content_hash=excluded.content_hash,\n        event_id=excluded.event_id,updated_at=excluded.updated_at,received_at=excluded.received_at\n      WHERE (plans.event_id=plans.plan_key OR EXISTS (SELECT 1 FROM events e WHERE e.project_id=plans.project_id\n          AND e.event_id=plans.event_id AND e.producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}'))\n        AND plans.updated_by IS NULL AND plans.updated_at<excluded.updated_at AND plans.content_hash<>excluded.content_hash`"
+  },
+  {
     "file": "packages/myco-server/src/ingest/events.ts",
     "owner": "planEventWrite",
     "expression": "`INSERT INTO events (${rawMaterial.insert.columns.join(',')})\n      SELECT ${rawMaterial.insert.sql} WHERE ${admission.map((a) => a.sql).join(' AND ')}\n      ON CONFLICT(project_id,event_id) DO NOTHING`",

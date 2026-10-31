@@ -28,7 +28,7 @@ import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-cat
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { convertFixture, memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
@@ -82,6 +82,7 @@ async function rig() {
   const claimedTitling = async (now: number) => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'add a retry to the runner', 'user', 'h1', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    await convertFixture(e);
     const asked = await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now, origin: ORIGIN });
     expect(asked.outcome).toBe('queued');
     const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
@@ -93,6 +94,7 @@ async function rig() {
   const claimedRetitle = async (now: number) => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at, title, summary) VALUES ('proj_1', 's2', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?, 'A title an earlier run wrote', 'And its summary.')`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's2', 'p2', 'e2', 'rename the thing', 'user', 'h2', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    await convertFixture(e);
     const asked = await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's2', now, origin: ORIGIN }, { mode: 'owner', by: 'mem_worker' });
     expect(asked.outcome).toBe('queued');
     const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
@@ -107,8 +109,10 @@ async function rig() {
   const learningDue = (sessionId: string, promptId: string) => {
     e.sqlite.run(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES ('proj_1', ?)`, [sessionId]);
     e.sqlite.run(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, records, input_hash, card, signal, created_at, carded_at)
-      VALUES ('proj_1', ?, ?, 'carded', ?, 'h', 'asked: why the claim retries', 'high', ?, ?)`, [sessionId, promptId, JSON.stringify([['prompt', promptId]]), NOW, NOW]);
-    e.sqlite.run(`UPDATE learning_sessions SET init_state = 'ready', due_cards = 1, eligible_at = ? WHERE project_id = 'proj_1' AND session_id = ?`, [NOW - 1, sessionId]);
+      VALUES ('proj_1', ?, ?, 'carded', ?, 'h', 'asked: why the claim retries', 'high', ?, ?)
+      ON CONFLICT (project_id, session_id, turn_key) DO UPDATE SET state = 'carded', records = excluded.records, input_hash = excluded.input_hash,
+        card = excluded.card, signal = excluded.signal, carded_at = excluded.carded_at, settle_at = NULL, due_at = NULL`, [sessionId, promptId, JSON.stringify([['prompt', promptId]]), NOW, NOW]);
+    e.sqlite.run(`UPDATE learning_sessions SET init_state = 'ready', pending_cards = 0, due_cards = 1, eligible_at = ? WHERE project_id = 'proj_1' AND session_id = ?`, [NOW - 1, sessionId]);
   };
   return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome, learningDue };
 }
@@ -243,6 +247,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's3', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     r.e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's3', 'p3', 'e3', 'why does the runner retry the claim twice', 'user', 'h3', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
     r.e.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at) VALUES ('proj_1', 'resp3', 's3', 'p3', 'e3r', 'The lease renewal re-claims it; wrap only the claim call.', 'hr3', ?, 'tok_1', ?)`, [NOW - 4000, NOW - 4000]);
+    await convertFixture(r.e);
     r.learningDue('s3', 'p3');
     const asked = await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
     expect(asked).toMatchObject({ dispatched: true, queued: true });

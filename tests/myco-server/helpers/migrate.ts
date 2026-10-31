@@ -13,3 +13,6 @@ export async function applySchemaSteps(db: RelationalStore, steps: readonly Sche
   }
   return applied;
 }
+
+/** The steps before readers move to documents: the step after them refuses a database holding sessions that predate documents. */
+export const PRE_DOCUMENTS_STEPS = SCHEMA_STEPS.filter((step) => step.version < 114);

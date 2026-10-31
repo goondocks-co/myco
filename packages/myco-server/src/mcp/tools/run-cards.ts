@@ -2,12 +2,16 @@
  * `myco_run_cards`: the card stage's own material and writes.
  *
  * It takes no session argument. The session and the turns are the ones the claim wrote into the run's context, so a
- * run reads and writes exactly its assignment: the trimmed input of each turn, and one card per turn.
+ * run reads and writes exactly its assignment: the trimmed input of each turn, read from the turn's pages, and one card
+ * per turn.
  */
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 import { commitAttributedWrite } from '../../core/runs.js';
-import { cardRecord, cardsWrittenStatement, parseCardWrites, writeRunCards } from '../../core/turn-cards.js';
+import { cardsWrittenStatement, parseCardWrites, writeRunCards } from '../../core/turn-cards.js';
+import { trimTurn } from '../../core/turn-card-rules.js';
+import { SessionDocument } from '../../content/session-pages.js';
+import { documentTurnInput } from '../../content/turn-material.js';
 import type { CardAssignment } from '../../core/learning-stages.js';
 import { CARD_TOOL } from '../../core/tool-catalogue.js';
 import { assignmentOf } from './run-learning.js';
@@ -20,9 +24,10 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
   const scope = { projectId: ctx.projectId };
   if (input.op === 'material') {
     const turns = [];
+    const document = await SessionDocument.open(ctx.env, ctx.projectId, held.sessionId);
     for (const turn of held.assignment.turns) {
-      const record = await cardRecord(db, scope, held.sessionId, turn);
-      if (record !== null) turns.push({ turn_key: turn.turnKey, input: record.trimmed.text });
+      const input = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, turn.turnKey, document);
+      if (input !== null) turns.push({ turn_key: turn.turnKey, input: trimTurn(input).text });
     }
     return { session_id: held.sessionId, turns };
   }

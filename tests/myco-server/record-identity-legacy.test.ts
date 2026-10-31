@@ -13,7 +13,7 @@ import { BACKUP_FORMAT, BACKUP_TABLES, deploymentId, restoreArtifact } from '@my
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import type { DerivedEvent, ParsedLine, ParserInput, ParserState } from '@myco-server-worker/ingest/parsers/index.js';
 import { registerBlob, sqliteD1 } from './helpers/d1.js';
-import { applySchemaSteps } from './helpers/migrate.js';
+import { applySchemaSteps, PRE_DOCUMENTS_STEPS } from './helpers/migrate.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import frozen from '../fixtures/record-identity-legacy-vectors.json';
@@ -144,7 +144,7 @@ describe('frozen parser identity compatibility', () => {
         const artifactRows = artifact.split('\n').map(line => JSON.parse(line) as { schemaVersion?: number; t?: string; r?: Record<string, unknown> });
         expect(artifactRows[0]!.schemaVersion).toBe(92);
         for (const row of artifactRows.filter(row => row.t === 'tool_calls')) expect(Object.hasOwn(row.r!, 'result_reason')).toBe(false);
-        expect(await applySchemaSteps(db)).toEqual(SCHEMA_STEPS.filter(step => step.version > 92).map(step => step.version));
+        expect(await applySchemaSteps(db, PRE_DOCUMENTS_STEPS)).toEqual(PRE_DOCUMENTS_STEPS.filter(step => step.version > 92).map(step => step.version));
         expect<unknown>(projected(sqlite)).toEqual(expected);
         expect(sqlite.query('SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason IS NOT NULL').get()).toEqual({ n: 0 });
         expect(sqlite.query('SELECT record_identity_scheme AS pin FROM transcripts').get()).toEqual({ pin: LEGACY });

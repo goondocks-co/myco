@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { lit, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
 
 /** Atomic receipt snapshots and their retained turn metadata on both stores. */
 export const receiptSnapshots: ParityScenario = {
@@ -46,8 +46,10 @@ export const receiptSnapshots: ParityScenario = {
     expect(snapshots.map(row => [row.item_id, row.session_id, row.content_hash, row.unavailable]))
       .toEqual(planIds.map(id => [id, 'snapshot-source', id, 0]));
     await target.sql(`UPDATE spore_injections SET delivered_prompt_id=${lit(promptId)},delivered_at=${now} WHERE project_id=${project} AND id=${lit(answer.receiptId)}`);
-    await target.sql(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES (${project},'snapshot-receiver',${lit(promptId)},'snapshot-prompt-event','request','user','hash',${now},${now},${tokenId},${now})`);
+    await expectPersisted(await fetch(`${target.url}/events`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: 'snapshot-receiver', kind: 'prompt', createdAt: now, channel: 'cli',
+        producer: { adapter: 'parity', version: '1' }, payload: { promptId, text: 'request', origin: 'user' } }) }), 'prompt');
+    await documentsPublished(target, 'snapshot-receiver');
     const read = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/snapshot-receiver/turns/${promptId}`, { headers: target.ownerHeaders() });
       const body = await res.json() as { injection: { planIds: string[]; plans: { planKey: string; title: string | null }[] } };

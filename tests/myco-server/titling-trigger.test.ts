@@ -2,7 +2,7 @@
  * A projected session end records a title request and dispatches nothing as it
  * arrives: the end hook sends the transcript bytes the end closes after it. The
  * wake cycle dispatches the request once the session has sent nothing for the
- * settle window and every byte it holds is read, queueing a `title-summary` run
+ * settle window and its publisher has caught up with every byte it holds, queueing a `title-summary` run
  * for a worker that calls back to the Deployment's origin.
  */
 import { backfillTitles, OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
@@ -13,14 +13,14 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { envelope, memberPost, publishFixture, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {
   it('waits for an ended session to settle longer than any member hook may run, so the end hook has sent every byte it sends', () => {
     expect(SESSION_END_SETTLE_MS).toBeGreaterThan(longestDeclaredHookTimeoutMs());
   });
 
-  it('retries a failed automatic title through the paced convergence, after parsing, past the run window and after every title run of the session closes', async () => {
+  it('retries a failed automatic title through the paced convergence, after publication, past the run window and after every title run of the session closes', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json();
@@ -31,6 +31,7 @@ describe('the events route', () => {
     await e.deferred.settle();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, 1, 'mem_1')`, [JSON.stringify({ 'title-summary': { schedule: { intervalSeconds: 0 } } })]);
     const env = { ...serverEnvFromBindings(e.env), origin: 'https://s' };
+    await publishFixture(e);
     const received = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
     expect(await titleReadySessions(env, received + SESSION_END_SETTLE_MS)).toBe(1);
     const first = e.sqlite.query(`SELECT id, queued_at FROM agent_runs`).get() as { id: string; queued_at: number };
@@ -40,10 +41,10 @@ describe('the events route', () => {
     e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE id = ?`, [later, first.id]);
     // A request's first attempt is spent, so the end-request job never takes it again.
     expect(await titleReadySessions(env, later + 1)).toBe(0);
-    // Late bytes unparsed hold the retry; inside the run window it is held too.
+    // Late bytes unpublished hold the retry; inside the run window it is held too.
     e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [later]);
     expect(await backfillTitles(env, later + 1, 'idle')).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    await publishFixture(e);
     expect(await backfillTitles(env, first.queued_at + 1, 'idle')).toBe(0);
     // An owner's attempt in flight holds it.
     e.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, run_context)
@@ -59,7 +60,7 @@ describe('the events route', () => {
     expect(await backfillTitles(env, later + 2 * OWNER_TITLING_WINDOW_MS, 'idle')).toBe(0);
   });
 
-  it('persists a deferred title with the admitted live end and retries after parsing, while import creates no request', async () => {
+  it('persists a deferred title with the admitted live end and retries after publication, while import creates no request', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const post = async (over: Record<string, unknown>) => (await worker.fetch(memberPost(t.token, envelope(over)), e.env, e.deferred)).json() as Promise<Record<string, unknown>>;
@@ -73,7 +74,7 @@ describe('the events route', () => {
     expect(pending().titled_at).toBeNull();
     expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
     await post({ eventId: uuid(3), kind: 'prompt', payload: { promptId: uuid(21), text: 'second turn', origin: 'user' } });
-    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    await publishFixture(e);
     const settled = Date.now() + SESSION_END_SETTLE_MS;
     expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, settled)).toBe(1);
     expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, settled)).toBe(0);
@@ -97,6 +98,7 @@ describe('the events route', () => {
     expect(e.deferred.pending).toHaveLength(1);
     await e.deferred.settle();
     expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+    await publishFixture(e);
     const received = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at;
     expect(e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ titled_at: null });
 
@@ -165,9 +167,9 @@ describe('the events route', () => {
     e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 'sess_1'`, [tail]);
     e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [tail]);
     expect(await titleReadySessions(env, end + SESSION_END_SETTLE_MS)).toBe(0);
-    // Settled but unread: still held.
+    // Settled but unpublished: still held.
     expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(0);
-    e.sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx'`);
+    await publishFixture(e);
     expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(1);
   });
 
@@ -183,6 +185,7 @@ describe('the events route', () => {
     expect((await post({ eventId: uuid(2), kind: 'prompt', payload: { promptId: uuid(20), text: 'hi', origin: 'user' } })).persisted).toBe(true);
     expect(await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).toEqual({ persisted: true, projected: true });
     await e.deferred.settle();
+    await publishFixture(e);
     const settled = (e.sqlite.query(`SELECT last_received_at AS at FROM sessions WHERE session_id = 'sess_1'`).get() as { at: number }).at + SESSION_END_SETTLE_MS;
     expect(await titleReadySessions(env, settled)).toBe(1);
     // A bound runtime serves three tasks and titling is not one of them: the

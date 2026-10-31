@@ -9,14 +9,14 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
-  backfillTitles, freshReserve, sessionMaterial, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, titlingIdleCloseMinutes, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
+  backfillTitles, freshReserve, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, titlingIdleCloseMinutes, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
 import { deploymentTaskCeilingWindow } from '@myco-server-worker/core/runs.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { overwriteTitle } from '@myco-server-worker/read/sessions.js';
+import { overwriteTitle, writeTitle } from '@myco-server-worker/read/sessions.js';
 import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
 import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
 
@@ -36,12 +36,22 @@ function rig() {
   const env: ServerEnv = { ...withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } }), origin: ORIGIN, wake: async () => {} };
   const setting = (leaf: string, value: unknown) =>
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
-  /** An ended session with one inline user prompt and one transcript; by default imported and parsed. */
+  /** The session's live document, holding `userPrompts` user prompts. */
+  const documented = (project: string, id: string, userPrompts: number) =>
+    e.sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, user_prompts, updated_at) VALUES (?, ?, 'live', 1, ?, 1)
+      ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'live', generation = 1, user_prompts = excluded.user_prompts`, [project, id, userPrompts]);
+  /** Every transcript published as far as its legacy cursor reached. */
+  const published = () => e.sqlite.run(`INSERT INTO transcript_publication (project_id, transcript_id, generation, session_id, published_offset, record_scheme, parser_version, updated_at)
+    SELECT t.project_id, t.transcript_id, d.generation, t.session_id, t.parsed_offset, 'source-record-v1', 1, 1 FROM transcripts t
+      JOIN session_documents d ON d.project_id = t.project_id AND d.session_id = t.session_id AND d.state = 'live' WHERE true
+    ON CONFLICT (project_id, transcript_id, generation) DO UPDATE SET published_offset = excluded.published_offset`);
+  /** An ended session with one inline user prompt and one transcript; by default imported and published. */
   const session = (id: string, over: { project?: string; endedAt?: number; imported?: boolean; parsed?: boolean; title?: string; material?: boolean; transcript?: boolean } = {}) => {
     const project = over.project ?? 'proj_1';
     const endedAt = over.endedAt ?? NOW - 1000;
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title)
                   VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?)`, [project, id, endedAt - 10_000, endedAt, endedAt - 10_000, endedAt, over.title ?? null]);
+    documented(project, id, over.material === false ? 0 : 1);
     if (over.material !== false) {
       e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                     VALUES (?, ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [project, id, `p_${id}`, `e_${id}`, `Please fix the build for ${id}`, `h_${id}`, endedAt - 5000, endedAt - 5000, endedAt - 5000]);
@@ -49,13 +59,14 @@ function rig() {
     if (over.transcript !== false) {
       e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
                     VALUES (?, ?, ?, 'm1', 100, ?, ?, ?, 'tok_1', ?)`, [project, `tx_${id}`, id, over.parsed === false ? 40 : 100, endedAt, endedAt, over.imported === false ? null : endedAt]);
+      published();
     }
   };
   const runs = () => e.sqlite.query(`SELECT id, project_id AS projectId, status, json_extract(run_context, '$.session_id') AS sessionId, json_extract(run_context, '$.mode') AS mode, json_extract(dispatch_spec, '$.actor') AS actor
                                      FROM agent_runs WHERE task = ? ORDER BY COALESCE(queued_at, started_at), id`).all(TITLING_TASK) as Array<{ id: string; projectId: string; status: string; sessionId: string; mode: string; actor: string }>;
   const titledAt = (id: string) => (e.sqlite.query(`SELECT titled_at FROM sessions WHERE session_id = ?`).get(id) as { titled_at: number | null }).titled_at;
   const on = () => { setting('agent.scheduled_tasks_enabled', true); setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true } } }); };
-  return { ...e, bindings: e.env, env, launches, setting, session, runs, titledAt, on };
+  return { ...e, bindings: e.env, env, launches, setting, session, runs, titledAt, on, documented, published };
 }
 
 describe('the imported-session backfill', () => {
@@ -112,6 +123,7 @@ describe('the imported-session backfill', () => {
     r.session('mixed', { endedAt: NOW - 3000 });
     r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
                   VALUES ('proj_1', 'tx_mixed_live', 'mixed', 'm1', 10, 10, ?, ?, 'tok_1', NULL)`, [NOW, NOW]);
+    r.published();
     r.session('no-transcript', { transcript: false, endedAt: NOW - 4000 });
     r.session('requested', { imported: false, endedAt: NOW - 5000 });
     r.sqlite.run(`UPDATE sessions SET titling_requested_at = ?, titled_at = ? WHERE session_id = 'requested'`, [NOW - 5000, NOW - DAY]);
@@ -255,7 +267,7 @@ describe('the imported-session backfill', () => {
     expect(r.runs().map((run) => [run.sessionId, run.actor])).toEqual([['a', TITLING_BACKFILL_ACTOR]]);
   });
 
-  it('reads every candidate kind through its own partial index, and counts a refresh\'s new prompts through the receipt index', async () => {
+  it('reads every candidate kind through its own partial index, and counts a refresh\'s new prompts from the catalog', async () => {
     const r = rig();
     const plan = (sql: string, binds: unknown[]) => (r.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(binds as never[])) as { detail: string }[]).map((row) => row.detail).join('\n');
     const statements: Array<{ sql: string; binds: unknown[] }> = [];
@@ -267,7 +279,7 @@ describe('the imported-session backfill', () => {
     expect(using('idx_sessions_untitled_ended')).toHaveLength(2);
     expect(using('idx_sessions_untitled_open')).toHaveLength(2);
     expect(using('idx_sessions_titled_recent')).toHaveLength(1);
-    expect(plans.find((p) => p.includes('idx_sessions_titled_recent'))).toMatch(/idx_prompt_batches_user_received/);
+    for (const p of plans) expect(p).not.toMatch(/prompt_batches/);
     for (const p of plans) expect(p).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/);
   });
 
@@ -661,11 +673,11 @@ describe('sessions that never end', () => {
     r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, title, summary, titled_at, title_material_at, ended_at)
                   VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'codex', ?, ?, ?, ?, ?, ?)`,
       [id, lastReceivedAt - 2 * DAY, lastReceivedAt, lastReceivedAt - 2 * DAY, over.title ?? null, over.title === undefined ? null : 'Standing summary', over.titledAt ?? null, over.materialAt ?? null, over.endedAt ?? null]);
-    for (let i = 0; i < (over.prompts ?? 1); i += 1) {
-      const at = lastReceivedAt - i * 1000;
-      r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                    VALUES ('proj_1', ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [id, `p_${id}_${i}`, `e_${id}_${i}`, `Work on ${id} step ${i}`, `h_${id}_${i}`, at - (over.clockBehind ?? 0), at - (over.clockBehind ?? 0), at]);
-    }
+    const prompts = over.prompts ?? 1;
+    r.documented('proj_1', id, prompts);
+    // The standing title records the prompts received by the instant of its material.
+    const covered = over.titledAt === undefined ? null : Array.from({ length: prompts }, (_, i) => lastReceivedAt - i * 1000).filter((at) => at <= (over.materialAt ?? over.titledAt!)).length;
+    r.sqlite.run(`UPDATE session_documents SET titled_user_prompts = ? WHERE session_id = ?`, [covered, id]);
   }
   const endedAt = (r: ReturnType<typeof rig>, id: string) => (r.sqlite.query(`SELECT ended_at FROM sessions WHERE session_id = ?`).get(id) as { ended_at: number | null }).ended_at;
 
@@ -699,6 +711,7 @@ describe('sessions that never end', () => {
     open(r, 'unread', { quietFor: 3 * HOUR });
     r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
                   VALUES ('proj_1', 'tx_unread', 'unread', 'm1', 100, 40, ?, ?, 'tok_1')`, [NOW, NOW]);
+    r.published();
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 1, remaining: 0 });
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
     expect(r.runs().map((run) => run.sessionId)).toEqual(['quiet']);
@@ -721,19 +734,6 @@ describe('sessions that never end', () => {
     // A second wake finds the stamp new: the refresh waits out the interval.
     expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
     expect(r.runs()).toHaveLength(1);
-  });
-
-  it('reads a refresh\'s material from both ends of a long session, where a first title reads its opening', async () => {
-    const r = rig();
-    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 30 });
-    const texts = async (mode: 'claim' | 'refresh') => (await sessionMaterial(r.env.db, 'proj_1', 'long', mode)).map((line) => line.prompt);
-    const opening = await texts('claim');
-    expect(opening).toContain('Work on long step 29');
-    expect(opening).not.toContain('Work on long step 0');
-    const both = await texts('refresh');
-    expect(both).toContain('Work on long step 29');
-    expect(both).toContain('Work on long step 0');
-    expect(both).not.toContain('Work on long step 15');
   });
 
   it('refuses a refresh inside the interval at the claim itself, whoever asks', async () => {
@@ -801,6 +801,18 @@ describe('sessions that never end', () => {
     expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(0);
   });
 
+  it('a refused title write leaves the prompts the standing title covers where they were', async () => {
+    const r = rig();
+    r.session('retried', { transcript: false });
+    r.documented('proj_1', 'retried', 3);
+    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(true);
+    r.documented('proj_1', 'retried', 9);
+    // A retry after a lost answer writes nothing, so the six new prompts stay uncovered.
+    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(false);
+    expect(r.sqlite.query(`SELECT user_prompts, titled_user_prompts FROM session_documents WHERE session_id = 'retried'`).get())
+      .toEqual({ user_prompts: 9, titled_user_prompts: 3 });
+  });
+
   it('counts new prompts by the server\'s receipt time, so a member whose clock runs behind still gets its refresh', async () => {
     const r = rig();
     open(r, 'behind', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12, clockBehind: 6 * HOUR });
@@ -820,6 +832,7 @@ describe('sessions that never end', () => {
     open(r, 'quiet-import', { quietFor: 3 * HOUR });
     r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
                   VALUES ('proj_1', 'tx_qi', 'quiet-import', 'm1', 100, 100, ?, ?, 'tok_1', ?)`, [NOW, NOW, NOW]);
+    r.published();
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1 });
   });
 

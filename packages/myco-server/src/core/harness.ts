@@ -2,8 +2,8 @@ import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHeld } from './run-budget.js';
 import { BUDGET_WORKER_TASKS } from './budget-policy.js';
-import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, type PulledStage, type ServedQueue } from './pulled-stages.js';
-import { queueHeads } from './queue-heads.js';
+import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
+import { queueHeads, unclaimedQueued } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { learningPaused, LEARNING_PAUSED } from './learning-pause.js';
@@ -893,9 +893,17 @@ type SelectedExecution = { harness: string; profile: ExecutionProfile; credentia
 
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
-  const choices = worker?.kind === 'runner' ? await runnerCredentialChoices(env.db, worker.runnerId) : undefined;
-  const { selected, reason } = await selectExecution(task, offers, settings, claimLogin(env), choices);
-  return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
+  return (await workerSelector(env, offers, worker))(task, settings);
+}
+
+/** Selects executions for one worker's claim, reading a runner's credential choices at the first selection and only then. */
+async function workerSelector(env: ServerEnv, offers: readonly OfferedHarness[], worker?: WorkerPrincipal) {
+  let choices: Promise<Awaited<ReturnType<typeof runnerCredentialChoices>> | undefined> | undefined;
+  return async (task: string, settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
+    choices ??= worker?.kind === 'runner' ? runnerCredentialChoices(env.db, worker.runnerId) : Promise.resolve(undefined);
+    const { selected, reason } = await selectExecution(task, offers, settings, claimLogin(env), await choices);
+    return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
+  };
 }
 
 /** Keep profile holders based on the recent fleet's offers and current Settings. */
@@ -948,16 +956,22 @@ export async function claimNextRun(
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
   const policy=await observedSettingsGuard(env.db,[...CLAIM_SETTING_LEAVES,...Object.values(LIMIT_LEAVES)],true);
   const settings = await claimSettings({...env,db:policy.view});
-  await recordCapabilityHolds(env, reported, unmet, worker.now, settings);
+  const select = await workerSelector(env, worker.harnesses, worker.principal);
+  // Holds name why queued rows wait, so a claim with no unclaimed queued row records none and seeks no head.
+  const queued = await unclaimedQueued(env.db);
+  if (queued) {
+    await recordCapabilityHolds(env, reported, unmet, worker.now, settings);
+    await recordProfileHolds(env, worker, settings);
+  }
   const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
-  await recordProfileHolds(env, worker, settings);
   const activation = await budgetActivation(env.db);
-  const claimLimits = await readDispatchLimits(env);
+  const claimLimits = await readDispatchLimits({ ...env, db: policy.view });
   const refusedHeads = new Set<string>();
   const headKey=(row:ClaimCandidate)=>JSON.stringify([row.projectId,row.id]);
   const limitHolders=new Map<string,ReturnType<typeof heldBy>>();
   let limitHeld=false;
   const next = async () => {
+    if(!queued)return null;
     if(!activation.active)return nextClaimable(env.db,excluded);
     const heads=await queueHeads(env.db,excluded);
     for(const task of new Set(heads.map(row=>row.task))) {
@@ -981,7 +995,7 @@ export async function claimNextRun(
       candidate = await next();
       continue;
     }
-    const { selected } = await selectWorkerExecution(env, candidate.task, worker.harnesses, settings, worker.principal);
+    const { selected } = await select(candidate.task, settings);
     chosen = selected;
     if (chosen !== null) {
       const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,chosen.harness,chosen.profile);
@@ -1000,7 +1014,7 @@ export async function claimNextRun(
   }
   if (candidate === null || chosen === null) {
     // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
-    const pulled = activation.active ? await pullAtClaim(env, worker, excluded) : null;
+    const pulled = activation.active ? await pullAtClaim(env, worker, excluded, select, { policy, settings, limits: claimLimits }) : null;
     if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
     if (pulled !== null) return pulled;
   }
@@ -1092,33 +1106,37 @@ export async function claimNextRun(
 }
 
 /**
- * Create the best due pulled run for this worker, or answer null when none is admitted. The selection is reasserted
- * inside the claim's write; a refused write reselects against fresh settings, at most `PULL_RESELECTIONS` times.
+ * Create the best due pulled run for this worker, or answer null when none is admitted. Each distinct stage switch is
+ * read once first, and a claim with every stage switched off probes nothing more. The first selection uses the
+ * settings and limits the claim already read. The selection is reasserted inside the claim's write; a refused write
+ * reselects against fresh settings, at most `PULL_RESELECTIONS` times.
  * When the selected head does not fit the budget nothing is pulled: cheaper work never overtakes it.
  */
 async function pullAtClaim(
   env: ServerEnv,
   worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; now: number },
   excluded: readonly string[],
+  select: Awaited<ReturnType<typeof workerSelector>>,
+  read: { policy: Awaited<ReturnType<typeof observedSettingsGuard>>; settings: ReadonlyMap<string, string>; limits: DispatchLimits },
 ): Promise<ClaimOutcome | 'queued' | null> {
-  const stages: readonly PulledStage[] = pulledStages();
+  const stages = (await switchedOnStages(env.db, pulledStages())).filter((stage) => !excluded.includes(stage.task));
   if (stages.length === 0) return null;
   for (let attempt = 0; attempt < PULL_RESELECTIONS; attempt += 1) {
-    const policy = await observedSettingsGuard(env.db, [...CLAIM_SETTING_LEAVES, ...Object.values(LIMIT_LEAVES)], true);
-    const settings = await claimSettings({ ...env, db: policy.view });
+    const policy = attempt === 0 ? read.policy : await observedSettingsGuard(env.db, [...CLAIM_SETTING_LEAVES, ...Object.values(LIMIT_LEAVES)], true);
+    const settings = attempt === 0 ? read.settings : await claimSettings({ ...env, db: policy.view });
     const executions = new Map<string, SelectedExecution>();
     for (const task of new Set(stages.map((stage) => stage.task))) {
-      if (excluded.includes(task)) continue;
-      const { selected } = await selectWorkerExecution(env, task, worker.harnesses, settings, worker.principal);
+      const { selected } = await select(task, settings);
       if (selected !== null) executions.set(task, selected);
     }
     const compatible = stages.filter((stage) => executions.has(stage.task));
+    if (compatible.length === 0) return null;
     const queues: ServedQueue[] = [];
     for (const task of BUDGET_WORKER_TASKS.filter((task) => !excluded.includes(task))) {
-      const { selected } = await selectWorkerExecution(env, task, worker.harnesses, settings, worker.principal);
+      const { selected } = executions.has(task) ? { selected: executions.get(task)! } : await select(task, settings);
       if (selected !== null) queues.push({ task, estimateKey: estimateKey(task, selected.harness, selected.profile) });
     }
-    const limits = await readDispatchLimits(env);
+    const limits = attempt === 0 ? read.limits : await readDispatchLimits(env);
     const queued = queuedAdmissibleSql(queues, limits, worker.now);
     const eligible: PulledStage[] = [];
     for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);

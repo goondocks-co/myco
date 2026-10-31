@@ -221,8 +221,13 @@ describe('the record', () => {
     await expectInjectionRead('N:injectionSessionRecords:0', /SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections/);
 
     expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
-    await db.prepare(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES (?,?,'p1','p1-event','request','user','h',1,1,'t',1)`).bind(SCOPE.projectId, SESSION).run();
+    // A receipt is placed on a prompt its session's live document catalogs.
+    await db.batch([
+      db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES (?,?,'live',1,1)
+        ON CONFLICT (project_id,session_id) DO UPDATE SET state='live',generation=1`).bind(SCOPE.projectId, SESSION),
+      db.prepare(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+        VALUES (?,?,1,'p1','p1',0,'user',1)`).bind(SCOPE.projectId, SESSION),
+    ]);
     expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
     await db.prepare('UPDATE spore_injections SET delivered_at=created_at,delivered_prompt_id=prompt_id WHERE project_id=? AND session_id=?')
       .bind(SCOPE.projectId, SESSION).run();

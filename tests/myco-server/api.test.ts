@@ -1,7 +1,7 @@
 import { registerBlob } from './helpers/d1.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { convertFixture, sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost, seedMemberRoleAccount } from './helpers/owner.js';
@@ -52,7 +52,7 @@ describe('sessions', () => {
       sessionId: 's1', machineId: 'machine_1', createdByTokenId: 'tok_1',
       agent: 'claude-code', branch: 'main', originPath: '/repo',
     });
-    expect(body.counts).toEqual({ prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 });
+    expect(body.counts).toEqual({ prompts: 0, toolCalls: 0, failedTools: 0, responses: 0, plans: 0, attachments: 0 });
   });
 
   it('never serves another project\'s session under the same id', async () => {
@@ -79,18 +79,6 @@ describe('sessions', () => {
     const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions?cursor=garbage'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'bad_request' });
-  });
-
-  it('serves a session\'s children in order, and refuses children of a session outside the scope', async () => {
-    const e = sqliteEnv();
-    seed(e);
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
-                  VALUES ('proj_1','p1','s1','e1','user','first','h1',10,10,'tok_1',10),
-                         ('proj_1','p2','s1','e2','user','second','h2',20,20,'tok_1',20)`);
-    const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/s1/prompts'), { ...e.env, ...OWNER_ENV });
-    expect((await res.json() as { rows: { text: string }[] }).rows.map((r) => r.text)).toEqual(['first', 'second']);
-    const outside = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/absent/prompts'), { ...e.env, ...OWNER_ENV });
-    expect(outside.status).toBe(404);
   });
 
   it('pages context receipts within the requested project and session', async () => {
@@ -128,17 +116,6 @@ describe('session turns', () => {
   };
   const get = async (e: ReturnType<typeof sqliteEnv>, path: string) => worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
 
-  it('lists the session\'s turns with counts, defaulting to what a person typed, and every origin on request', async () => {
-    const e = sqliteEnv();
-    seed(e);
-    const res = await get(e, '/api/projects/proj_1/sessions/s1/turns');
-    expect(res.status).toBe(200);
-    const body = await res.json() as { rows: { promptId: string; toolCallCount: number; preview: string }[]; cursor: string | null };
-    expect(body.rows.map((r) => [r.promptId, r.toolCallCount, r.preview])).toEqual([[P1, 1, 'first']]);
-    const all = await (await get(e, '/api/projects/proj_1/sessions/s1/turns?origins=user,system')).json() as { rows: { promptId: string }[] };
-    expect(all.rows.map((r) => r.promptId)).toEqual([P1, P2]);
-  });
-
   it('refuses an unknown origin and a malformed cursor, and answers not found outside the scope', async () => {
     const e = sqliteEnv();
     seed(e);
@@ -149,19 +126,10 @@ describe('session turns', () => {
     expect((await get(e, `/api/projects/proj_1/sessions/s2/turns/${P1}/tool-calls`)).status).toBe(404);
   });
 
-  it('serves one turn\'s body and its tool calls on their own', async () => {
-    const e = sqliteEnv();
-    seed(e);
-    const detail = await (await get(e, `/api/projects/proj_1/sessions/s1/turns/${P1}`)).json() as { prompt: { text: string }; responses: unknown[]; attachments: unknown[]; children: unknown[] };
-    expect(detail.prompt.text).toBe('first');
-    expect([detail.responses, detail.attachments, detail.children]).toEqual([[], [], []]);
-    const calls = await (await get(e, `/api/projects/proj_1/sessions/s1/turns/${P1}/tool-calls`)).json() as { rows: { toolCallId: string }[] };
-    expect(calls.rows.map((t) => t.toolCallId)).toEqual(['tc1']);
-  });
-
   it('titles a session on an owner\'s ask, queuing the run for a worker, and finds nothing outside the scope', async () => {
     const e = sqliteEnv();
     seed(e);
+    await convertFixture(e);
     const asked = Date.now();
     const res = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
@@ -202,18 +170,6 @@ describe('session turns', () => {
     expect((await post(`/api/projects/proj_1/sessions/s1/plans/00000000-0000-5000-8000-000000000009/status`, { status: 'active' })).status).toBe(404);
   });
 
-  it('lists sessions with their rail facts and honours the state, branch and text filters', async () => {
-    const e = sqliteEnv();
-    seed(e);
-    const rows = async (query: string) => ((await (await get(e, `/api/projects/proj_1/sessions${query}`)).json()) as { rows: { sessionId: string; promptCount: number; toolCallCount: number; activityBuckets: number[] }[] }).rows;
-    const all = await rows('');
-    expect(all.map((r) => [r.sessionId, r.promptCount, r.toolCallCount, r.activityBuckets.length])).toEqual([['s2', 0, 0, 8], ['s1', 2, 2, 8]]);
-    expect((await rows('?state=open')).map((r) => r.sessionId)).toEqual(['s1']);
-    expect((await rows('?state=ended')).map((r) => r.sessionId)).toEqual(['s2']);
-    expect((await rows('?branch=fix')).map((r) => r.sessionId)).toEqual(['s2']);
-    expect((await rows('?q=claude')).map((r) => r.sessionId)).toEqual(['s1']);
-    expect((await get(e, '/api/projects/proj_1/sessions?state=live')).status).toBe(400);
-  });
 });
 
 describe('credentials', () => {

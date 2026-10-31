@@ -10,12 +10,13 @@
  * material and writes its answer over the run routes.
  */
 import {
-  MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, SESSION_END_SETTLE_MS, TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
+  SESSION_END_SETTLE_MS, TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
   TITLING_IDLE_CLOSE_MINUTES_DEFAULT, TITLING_REFRESH_MIN_INTERVAL_MS, TITLING_REFRESH_MIN_PROMPTS,
 } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { countConvergenceTitleSessions, listTitleCandidates, sessionMaterialRows, sessionMaterialTailRows, listReadyTitleSessions, type MaterialRow, type TitleCandidate, type TitleCandidateWindow } from '../read/children.js';
+import { countConvergenceTitleSessions, listTitleCandidates, listReadyTitleSessions, type TitleCandidate, type TitleCandidateWindow } from '../read/children.js';
+import { sessionHasUserPrompt } from '../read/document-catalog.js';
 import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from './runs.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
 import type { PowerState } from './power.js';
@@ -24,8 +25,7 @@ import { claimOwnerTitling, claimRefreshTitling, claimTitling, restoreTitlingSta
 import { storedSettings } from './settings.js';
 import { CeilingReached, DispatchAdmissionRefused, dispatchPrepared, prepareDispatch, type ActorCeiling, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { TITLING_TASK } from './task-catalogue.js';
-import { assertSessionSourceReady as assertSessionMaterialReady, withViewReadResponse } from '../read/view-store.js';
-import { SessionMaterialPendingError } from '../read/material-readiness.js';
+import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
 
 export { TITLING_TASK } from './task-catalogue.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, type TitlingMode, type TitlingParams } from './titling-params.js';
@@ -45,47 +45,6 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
 export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable'
   | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
-
-export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
-
-const lineCost = (row: MaterialRow): number => row.prompt.length + (row.response?.length ?? 0);
-
-/** The rows that fit a character budget, taken in the given order and answered in that order. */
-function fit(rows: readonly MaterialRow[], budget: number): { rows: MaterialRow[]; used: number } {
-  const kept: MaterialRow[] = [];
-  let used = 0;
-  for (const row of rows) {
-    const cost = lineCost(row);
-    if (used + cost > budget) break;
-    used += cost;
-    kept.push(row);
-  }
-  return { rows: kept, used };
-}
-
-/**
- * The session's inline user prompts, each with the start of its first inline response, inside the character budget.
- * At a session's end: the earliest prompts. On an owner's ask or a refresh: the earliest and the latest halves, each fitted to its own half of the budget — the tail from the latest prompt backwards, so what survives is the arc's end and never its middle.
- */
-export function sessionMaterial(db: RelationalStore, projectId: string, sessionId: string, mode: TitlingMode = 'claim'): Promise<MaterialLine[]> {
-  return withViewReadResponse(db,Date.now,bound=>readSessionMaterial(bound,projectId,sessionId,mode));
-}
-async function readSessionMaterial(db: RelationalStore, projectId: string, sessionId: string, mode: TitlingMode = 'claim'): Promise<MaterialLine[]> {
-  const excerpt = { excerptChars: MATERIAL_EXCERPT_CHARS };
-  const toLine = (row: MaterialRow): MaterialLine => ({ prompt: row.prompt, response: row.response ?? null });
-  if (mode === 'claim') {
-    return fit(await sessionMaterialRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS, ...excerpt }), MAX_MATERIAL_CHARS).rows.map(toLine);
-  }
-  const halfPrompts = Math.ceil(MAX_MATERIAL_PROMPTS / 2);
-  const halfChars = Math.ceil(MAX_MATERIAL_CHARS / 2);
-  const headRows = await sessionMaterialRows(db, projectId, sessionId, { limit: halfPrompts, ...excerpt });
-  const tailRows = await sessionMaterialTailRows(db, projectId, sessionId, { limit: MAX_MATERIAL_PROMPTS - halfPrompts, ...excerpt });
-  const seen = new Set(headRows.map((r) => r.promptId));
-  const tailOnly = tailRows.filter((r) => !seen.has(r.promptId));
-  const tail = fit([...tailOnly].reverse(), halfChars);
-  const head = fit(headRows, MAX_MATERIAL_CHARS - tail.used);
-  return [...head.rows, ...tail.rows.reverse()].map(toLine);
-}
 
 /** A title as the run offered it, made fit to store: one line, no trailing period, inside the bound; null when nothing usable remains. */
 export function cleanTitle(title: string): string | null {
@@ -133,14 +92,11 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
  * Titles one session: at its end or once it has gone quiet past `idleBefore` (`claim`, the default; a first attempt unless
  * `retry` admits one that ended untitled), on an owner's ask (`owner`), or as the renewal of the title of a session still open
  * (`refresh`).
- * Validates parsed material and capture admission, reads bounded material,
- * claims the session, then queues its worker run. Resolves with the outcome
+ * Checks that the session's document is published and holds a user prompt,
+ * claims the session, then queues its worker run; no material is read here. Resolves with the outcome
  * it emitted; never rejects.
  */
-export function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean; idleBefore?: number } = {}): Promise<TitlingResult> {
-  return withViewReadResponse(env.db,()=>target.now,db=>readTitleSession({...env,db},target,opts));
-}
-async function readTitleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean; idleBefore?: number } = {}): Promise<TitlingResult> {
+export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean; idleBefore?: number } = {}): Promise<TitlingResult> {
   const { projectId, sessionId, now } = target;
   const mode = opts.mode ?? 'claim';
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
@@ -150,8 +106,7 @@ async function readTitleSession(env: ServerEnv, target: TitlingTarget, opts: { m
     const prepared = await prepareDispatch(env, TITLING_TASK, projectId);
     if (!prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
 
-    const material = await sessionMaterial(env.db, projectId, sessionId, mode);
-    if (material.length === 0) return skipped('no_material');
+    if (!(await sessionHasUserPrompt(env.db, projectId, sessionId))) return skipped('no_material');
 
     // The claim is the last thing before the launch, so a refusal decided above costs nothing.
     const claim = mode === 'owner'

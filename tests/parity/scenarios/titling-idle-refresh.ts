@@ -73,7 +73,7 @@ export const titlingIdleRefresh: ParityScenario = {
       expect(using('idx_sessions_untitled_ended')).toHaveLength(2);
       expect(using('idx_sessions_untitled_open')).toHaveLength(2);
       expect(using('idx_sessions_titled_recent')).toHaveLength(1);
-      expect(plans.find((plan) => plan.includes('idx_sessions_titled_recent'))).toMatch(/idx_prompt_batches_user_received/);
+      for (const plan of plans) expect(plan).not.toMatch(/prompt_batches/);
       for (const plan of plans) expect(plan).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/);
     } finally {
       if (held.length === 0) await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.tasks'`);

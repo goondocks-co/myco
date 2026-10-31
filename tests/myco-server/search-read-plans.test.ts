@@ -118,10 +118,10 @@ describe('search under the statistics a Deployment plans from', () => {
           expect({
             reach, shape, store,
             hasPaging: shape.endsWith('NextPage') ? /d\.created_at > \?/.test(sql) : !/d\.created_at > \?/.test(sql),
-            ownPrompt: /SEARCH rp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
-            turn: /SEARCH tp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
+            document: /SEARCH td USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND session_id=\?\)/.test(plan),
+            turn: /SEARCH tp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND session_id=\? AND generation=\? AND prompt_id=\?\)/.test(plan),
             scans: tableScans(plan),
-          }).toEqual({ reach, shape, store, hasPaging: true, ownPrompt: true, turn: true, scans: [] });
+          }).toEqual({ reach, shape, store, hasPaging: true, document: true, turn: true, scans: [] });
         }
       }
     }

@@ -10,11 +10,13 @@
  * dispatch named, resolved from the run row before any handler runs, so there
  * is no id for a caller to get wrong and no check to forget. The titling mode
  * is the dispatch's too: at a session's end a title is written only where none
- * exists, on an owner's ask or a refresh over whatever is there. The material served is
+ * exists, on an owner's ask or a refresh over whatever is there. The material is
+ * read from the session's document once its publisher has caught up, and is
  * recorded as the run's read of its session.
  */
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
-import { cleanSummary, cleanTitle, sessionMaterial, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
+import { cleanSummary, cleanTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
+import { documentTitlingMaterial } from '../../content/titling-material.js';
 import { preview } from '../../core/run-material.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
@@ -55,7 +57,8 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
 
   if (input.op === 'material') {
     const counts = await sessionCounts(db, scope, sessionId);
-    const material = await sessionMaterial(db, ctx.projectId, sessionId, params.mode);
+    await assertSessionMaterialReady(db, ctx.projectId, sessionId);
+    const material = await documentTitlingMaterial(ctx.env, ctx.projectId, sessionId, params.mode);
     noteRunReads(ctx, [sessionId]);
     return {
       session_id: sessionId,

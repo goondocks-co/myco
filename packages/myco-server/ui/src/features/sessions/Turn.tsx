@@ -1,11 +1,11 @@
 import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, ReadState, ReadUnavailable, StatusChip, TypeChip } from '../../design';
-import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer } from '../../hooks/use-sessions';
+import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator } from '../../hooks/use-sessions';
 import { useTurnCollection } from '../../hooks/use-turn-collection';
 import { cn } from '../../lib/cn';
 import { PlanLine } from '../knowledge/PlanLine';
 import { TextOrBlob } from './StoredText';
-import { ToolCalls } from './ToolCalls';
+import { ToolCalls, ToolSummary } from './ToolCalls';
 import { formatMillis } from '../../lib/format';
 import { projectPath, PLAN_SUFFIX } from '../../routes/nav';
 import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
@@ -89,14 +89,14 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
   );
 }
 
-function Replies({ projectId, responses }: { projectId: string; responses: ResponseRow[] }) {
+function Replies({ projectId, sessionId, responses }: { projectId: string; sessionId: string; responses: ResponseRow[] }) {
   if (responses.length === 0) return null;
   return (
     <div className="flex flex-col gap-s4">
       {responses.map((r) => (
         <div key={r.responseId} className="flex flex-col gap-s1" data-testid="turn-response">
           <time dateTime={new Date(r.createdAt).toISOString()} className="t-meta text-faint">Reply · {clockTime(r.createdAt)}</time>
-          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} body={{ kind: 'response', id: r.responseId }} markdown />
+          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} body={{ kind: 'response', id: r.responseId, at: r.locator === undefined ? undefined : { ...r.locator, sessionId } }} markdown />
         </div>
       ))}
     </div>
@@ -131,17 +131,17 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
 }
 
 /** The prompt itself: its whole text once the body is read, its opening before; a long one shows its opening until asked. */
-function PromptText({ projectId, turn, text, blobKey, agent }: { projectId: string; turn: TurnRow; text: string | null | undefined; blobKey: string | null | undefined; agent: string | null }) {
+function PromptText({ projectId, sessionId, turn, text, blobKey, locator, agent }: { projectId: string; sessionId: string; turn: TurnRow; text: string | null | undefined; blobKey: string | null | undefined; locator?: RecordLocator; agent: string | null }) {
   const [whole, setWhole] = useState(false);
   if (text === undefined) return <p className="whitespace-pre-wrap break-words t-body font-medium text-ink">{promptPreview(turn, agent)}</p>;
-  const stored = text === null && blobKey != null;
+  const stored = blobKey != null;
   if (!whole && (stored || (text?.length ?? 0) > LONG_PROMPT_CHARS)) {
     return <div className="flex flex-col items-start gap-s1">
       {text === null ? <p>{promptPreview(turn, agent)}</p> : <PromptContent text={text} agent={agent} folded />}
       <Button variant="ghost" size="sm" className="-ml-s3" onClick={() => setWhole(true)}>Show the whole prompt</Button>
     </div>;
   }
-  return <TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId }} render={(value) => <PromptContent text={value} agent={agent} />} />;
+  return <TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId, at: locator === undefined ? undefined : { ...locator, sessionId } }} render={(value) => <PromptContent text={value} agent={agent} />} />;
 }
 
 function PromptContent({ text, agent, folded = false }: { text: string; agent: string | null; folded?: boolean }) {
@@ -196,7 +196,7 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
           {turn.threadLabel !== null && <StatusChip>{turn.threadLabel}</StatusChip>}
           <time dateTime={new Date(turn.createdAt).toISOString()}>{clockTime(turn.createdAt)}</time>
         </span>
-        <PromptText projectId={projectId} turn={turn} text={body === undefined ? undefined : body.prompt.text} agent={agent} blobKey={body?.prompt.blobKey} />
+        <PromptText projectId={projectId} sessionId={sessionId} turn={turn} text={body === undefined ? undefined : body.prompt.text} agent={agent} blobKey={body?.prompt.blobKey} locator={body?.prompt.locator} />
       </div>
       <div data-testid="turn-body" className="flex flex-col gap-s4 pl-s6">
         <ReadState data={body} pending={detail.isPending} error={partial ? null : detail.error} onRetry={() => { void detail.refetch(); }} label="this turn">
@@ -220,12 +220,14 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
                 {rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={Date.now()} />)}
               </div>}
             </TurnPages>
-            <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
+            {body.tools !== undefined && <ToolSummary projectId={projectId} sessionId={sessionId} summary={body.tools} />}
+            <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} partial={body.tools?.complete === false}
+              total={body.tools === undefined || !body.tools.complete ? Math.max(turn.toolCallCount, body.tools?.total ?? 0) : body.tools.total} />
             {deferredChildren && !showChildren ? <Button variant="secondary" className="w-fit" onClick={() => setShowChildren(true)}>Show child prompts ({initial?.childCount})</Button> : <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" unloaded={initial?.body !== undefined && (initial.childCount ?? 0) > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
               {(rows) => <ol className="flex flex-col gap-s4 border-l-2 border-line-strong pl-s4" aria-label="Child prompts">{rows.map((child) => <Turn key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} contexts={contexts} agent={agent} initial={child} steering={child.prompt.origin === 'user'} turn={{ ...child.prompt, preview: child.prompt.text, textChars: child.prompt.text?.length ?? null, toolCallCount: child.toolCallCount, responseCount: child.responses.length, childCount: child.childCount ?? 0, planCount: child.body?.plans.length ?? 0, attachmentCount: child.body?.attachments.length ?? 0 }} />)}</ol>}
             </TurnPages>}
             <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies">
-              {(rows) => <Replies projectId={projectId} responses={rows} />}
+              {(rows) => <Replies projectId={projectId} sessionId={sessionId} responses={rows} />}
             </TurnPages>
           </>}
         </ReadState>

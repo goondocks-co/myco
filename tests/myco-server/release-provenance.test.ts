@@ -38,15 +38,21 @@ const settings = (over: Partial<ReleaseProvenanceWrite> = {}): ReleaseProvenance
   includeUnknown: true, maxLookups: 50, credential: { token: TOKEN }, ...over,
 });
 
+/** Records a tool call that touched `file` in the session's live document catalog: its path, and one more call. */
+function touch(r: ReturnType<typeof rig>, sessionId: string, file: string) {
+  r.sqlite.query(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at) VALUES (?, ?, 'live', 1, 1)
+    ON CONFLICT (project_id, session_id) DO NOTHING`).run(P, sessionId);
+  r.sqlite.query(`INSERT INTO session_paths (project_id, session_id, generation, path, tool_calls, last_at) VALUES (?, ?, 1, ?, 1, 1)
+    ON CONFLICT (project_id, session_id, generation, path) DO UPDATE SET tool_calls = tool_calls + 1`).run(P, sessionId, file);
+  r.sqlite.query(`UPDATE session_documents SET tool_calls = tool_calls + 1 WHERE project_id = ? AND session_id = ?`).run(P, sessionId);
+}
+
 function seedSession(r: ReturnType<typeof rig>, sessionId: string, headSha: string, files: string[] = []) {
   r.sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
     VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
   r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, status_hash, created_at)
     VALUES (?, ?, ?, 'session_end', 10, ?, '', 10)`).run(P, `session:${sessionId}:session_end`, sessionId, headSha);
-  if (files.length > 0) {
-    r.sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, success, created_at, token_id, received_at, files_affected)
-      VALUES (?, ?, ?, ?, 'Edit', 1, 1, 'mt_1', 1, ?)`).run(P, `tc_${sessionId}`, sessionId, `ev_${sessionId}`, JSON.stringify(files));
-  }
+  for (const file of files) touch(r, sessionId, file);
 }
 
 const rows = (r: ReturnType<typeof rig>) => r.sqlite.query(
@@ -455,15 +461,12 @@ describe('the source a session state is classified from', () => {
     addCommit(r, 's_mapped', 'session_end', X);
     newSession(r, 's_late_paths');
     addCommit(r, 's_late_paths', 'session_end', X);
-    const toolCall = (sessionId: string, n: number, file: string) => r.sqlite.query(`INSERT INTO tool_calls
-      (project_id, tool_call_id, session_id, event_id, tool_name, success, created_at, token_id, received_at, files_affected)
-      VALUES (?, ?, ?, ?, 'Edit', 1, 1, 'mt_1', 1, ?)`).run(P, `tc_${sessionId}_${n}`, sessionId, `ev_${sessionId}_${n}`, JSON.stringify([file]));
-    toolCall('s_mapped', 1, 'packages/a/x.ts');
-    toolCall('s_late_paths', 1, 'packages/a/x.ts');
+    touch(r, 's_mapped', 'packages/a/x.ts');
+    touch(r, 's_late_paths', 'packages/a/x.ts');
     await check(r, 100 * MIN);
     expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['not_on_release_line', 'not_on_release_line']);
 
-    toolCall('s_late_paths', 2, 'packages/b/y.ts');
+    touch(r, 's_late_paths', 'packages/b/y.ts');
     await check(r, 110 * MIN);
     expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['not_on_release_line', 'not_on_release_line']);
     expect((await r.store.describe(P)).check?.counts).toMatchObject({ checked: 1 });
@@ -514,11 +517,12 @@ describe('stored data that cannot be read', () => {
     expect(status).toEqual({ status: 'unavailable', failure: 'stored_settings_unreadable' });
   });
 
-  it('reads a session whose changed paths cannot be read as unknown rather than as a session that changed nothing', async () => {
+  it('reads a session whose changed paths cannot be read yet as unknown rather than as a session that changed nothing', async () => {
     const r = rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_paths', X, ['packages/b/y.ts']);
-    r.sqlite.query("UPDATE tool_calls SET files_affected = '[broken' WHERE session_id = 's_paths'").run();
+    // A restore set the session's document converting again: its paths are not in the catalog until it is live.
+    r.sqlite.query("UPDATE session_documents SET state = 'convert', generation = NULL WHERE session_id = 's_paths'").run();
     await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, 100 * MIN);
     expect(byRecord(r).s_paths).toBe('unknown');
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'partial', failure: 'changed_paths_unreadable' });

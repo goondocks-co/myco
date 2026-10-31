@@ -7,13 +7,16 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adap
 import { contentAssertion, prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
 import { registeredBlobsGuard, releaseBlobs } from '../core/object-release.js';
-import { trimTurn, type TurnInput } from '../core/turn-card-rules.js';
+import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
+import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
+import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord } from '../content/document.js';
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type WriterMark } from '../content/document-writer.js';
-import { PARSER_VERSION } from '../constants.js';
+import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { resolvePresentedDates } from './projections.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Distinct paths a session's tools touched that the catalog keeps. */
@@ -90,32 +93,63 @@ const planKeyOf = (record: DocRecord): string => (typeof record.plan_key === 'st
 /** Parent links `resolve` follows from a prompt to its turn. */
 const ANCESTRY_DEPTH = 8;
 
-/** The turn a document's records describe, as the card rules read it; a plan appears as its latest appearance. */
-function turnInput(turnKey: string, records: readonly DocRecord[]): TurnInput | null {
-  const prompt = records.find((record) => record.k === 'prompt' && record.id === turnKey);
-  if (prompt === undefined) return null;
-  const s = (value: unknown): string => (typeof value === 'string' ? value : '');
-  return {
-    turnKey, origin: s(prompt.origin) || 'user', prompt: s(prompt.text),
-    steering: records.filter((r) => r.k === 'prompt' && r.id !== turnKey).map((r) => ({ promptId: r.id, text: s(r.text) })),
-    replies: records.filter((r) => r.k === 'reply').map((r) => ({ responseId: r.id, text: s(r.text) })),
-    tools: records.filter((r) => r.k === 'tool').map((r) => ({
-      toolCallId: r.id, toolName: s(r.tool_name), input: typeof r.input === 'string' ? r.input : null,
-      output: typeof r.output_preview === 'string' ? r.output_preview : null, success: r.success === 1,
-      errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
-    })),
-    plans: [...new Map(records.filter((r) => r.k === 'plan').map((r) => [planKeyOf(r), r])).values()].map((r) => ({
-      planKey: planKeyOf(r), title: typeof r.title === 'string' ? r.title : null, status: s(r.status), content: typeof r.content === 'string' ? r.content : null,
-    })),
-  };
-}
-
 /** The generation a batch writes: the live one, or generation 1 while the session waits for conversion. */
 const BATCH_GENERATION = '(SELECT COALESCE(generation, 1) FROM session_documents WHERE project_id=?1 AND session_id=?2)';
 
 /** The directory of the generation a batch writes, read in one round trip with whatever else the caller reads. */
 export function directoryStatements(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement[] {
   return [db.prepare(chunkRowsSql(BATCH_GENERATION)).bind(projectId, sessionId), db.prepare(pageRowsSql(BATCH_GENERATION)).bind(projectId, sessionId)];
+}
+
+/** A plan a transcript holds, as placed, with the digest of its whole body and whether the body moved to a body chunk. */
+interface TranscriptPlan { record: DocRecord; hash: string; spilled: boolean }
+
+/**
+ * What a live publication tells the session's canonical rows. A plan a transcript holds is inserted, or its title and
+ * content follow a newer appearance while the row has no member edit and its last writer is a transcript (publication,
+ * whose appearance id is the plan key, or the transcript parse); status and other editorial fields are never
+ * overwritten. A body the document moved to a body chunk is stored as a spilled plan: no inline content, the chunk's
+ * object as `blob_key` and its digest as `content_hash`, with the processed proof its readers require. A user prompt
+ * newer than the session's end reopens it. A session an import alone accounts for is presented from its document: its
+ * first turn's prompt and its latest record.
+ */
+function sessionRowStatements(db: RelationalStore, projectId: string, sessionId: string, generation: number, tokenId: string,
+  plans: ReadonlyMap<string, TranscriptPlan>, latestUserPrompt: number | null, lastRecordAt: number | null, now: number): PreparedStatement[] {
+  const statements: PreparedStatement[] = [];
+  if (plans.size > 0) {
+    const rows = JSON.stringify([...plans].map(([key, { record, hash, spilled }]) => ({
+      key, id: record.id, title: record.title ?? null, content: spilled ? null : record.content, blob: spilled ? hash : null, hash,
+      status: record.status ?? 'active', path: record.origin_path ?? null, at: record.created_at, prompt: record.prompt_id ?? null, source: record.source ?? null,
+    })));
+    statements.push(db.prepare(`INSERT INTO plans (project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,
+        created_at,updated_at,token_id,received_at,prompt_id,source)
+      SELECT ?1,json_extract(j.value,'$.key'),?2,json_extract(j.value,'$.id'),
+        COALESCE((SELECT machine_id FROM sessions WHERE project_id=?1 AND session_id=?2),''),json_extract(j.value,'$.title'),
+        json_extract(j.value,'$.content'),json_extract(j.value,'$.blob'),json_extract(j.value,'$.hash'),json_extract(j.value,'$.status'),json_extract(j.value,'$.path'),
+        json_extract(j.value,'$.at'),json_extract(j.value,'$.at'),?3,?4,json_extract(j.value,'$.prompt'),json_extract(j.value,'$.source') FROM json_each(?5) j WHERE true
+      ON CONFLICT (project_id,plan_key) DO UPDATE SET title=excluded.title,content=excluded.content,blob_key=excluded.blob_key,content_hash=excluded.content_hash,
+        event_id=excluded.event_id,updated_at=excluded.updated_at,received_at=excluded.received_at
+      WHERE (plans.event_id=plans.plan_key OR EXISTS (SELECT 1 FROM events e WHERE e.project_id=plans.project_id
+          AND e.event_id=plans.event_id AND e.producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}'))
+        AND plans.updated_by IS NULL AND plans.updated_at<excluded.updated_at AND plans.content_hash<>excluded.content_hash`)
+      .bind(projectId, sessionId, tokenId, now, rows),
+      db.prepare(`INSERT INTO processed_resources (project_id,kind,resource_id,blob_key,source_token_id,event_id)
+        SELECT ?1,'plan',p.plan_key,p.blob_key,p.token_id,p.event_id FROM json_each(?2) j
+          JOIN plans p ON p.project_id=?1 AND p.plan_key=json_extract(j.value,'$.key') AND p.blob_key=json_extract(j.value,'$.blob')
+          JOIN blobs b ON b.project_id=p.project_id AND b.key=p.blob_key
+        WHERE json_extract(j.value,'$.blob') IS NOT NULL ON CONFLICT DO NOTHING`).bind(projectId, rows));
+  }
+  if (latestUserPrompt !== null) {
+    statements.push(db.prepare(`UPDATE sessions SET ended_at=NULL,ended_by=NULL WHERE project_id=? AND session_id=? AND ended_at IS NOT NULL AND ended_at<?`)
+      .bind(projectId, sessionId, latestUserPrompt));
+  }
+  statements.push(resolvePresentedDates(db, projectId, sessionId, undefined, {
+    min: { sql: `(SELECT sp.created_at FROM session_prompts sp WHERE sp.project_id=? AND sp.session_id=? AND sp.generation=? AND sp.turn_key=sp.prompt_id
+      ORDER BY sp.ord LIMIT 1)`, params: [projectId, sessionId, generation] },
+    max: { sql: `MAX(COALESCE((SELECT d.last_record_at FROM session_documents d WHERE d.project_id=? AND d.session_id=?),0),COALESCE(?,0))`,
+      params: [projectId, sessionId, lastRecordAt] },
+  }));
+  return statements;
 }
 
 export class DocumentBatch {
@@ -146,6 +180,10 @@ export class DocumentBatch {
   admitted = false;
   /** The pending versions at the placement in progress, which every read keeps payable. */
   private floor = 0;
+  /** The latest appearance this batch placed of each plan a transcript holds, with its content hash. */
+  private readonly transcriptPlans = new Map<string, TranscriptPlan>();
+  /** The latest top-level user prompt this batch added. */
+  private latestUserPrompt: number | null = null;
 
   constructor(
     private readonly env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -270,13 +308,14 @@ export class DocumentBatch {
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
-    resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }> } {
+    resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
+    transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), resolved: new Set(this.resolved), paths: new Map(this.paths),
-      mycoCalls: new Map(this.mycoCalls),
+      mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
     };
   }
 
@@ -284,10 +323,11 @@ export class DocumentBatch {
     this.writer.undo(mark.writer);
     Object.assign(this.counts, mark.counts);
     Object.assign(this, { records: mark.records, lastRecordAt: mark.lastRecordAt, openTurn: mark.openTurn, firstPrompt: mark.firstPrompt,
-      unplaced: mark.unplaced, unresolved: mark.unresolved });
+      unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
-    for (const [into, from] of [[this.turns, mark.turns], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls]] as const) {
+    for (const [into, from] of [[this.turns, mark.turns], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
+      [this.transcriptPlans, mark.transcriptPlans]] as const) {
       (into as Map<string, unknown>).clear();
       for (const [key, value] of from) (into as Map<string, unknown>).set(key, value);
     }
@@ -308,6 +348,13 @@ export class DocumentBatch {
       this.records += 1;
       this.lastRecordAt = Math.max(this.lastRecordAt ?? 0, record.created_at);
       if (record.k === 'tool' && typeof placed.record.myco_tool === 'string') this.mycoCalls.set(record.id, { ...placed.record, harness });
+      if (record.k === 'plan' && typeof placed.record.ev !== 'string' && typeof placed.record.content === 'string'
+        && record.created_at >= (this.transcriptPlans.get(planKeyOf(record))?.record.created_at ?? 0)) {
+        const content = typeof record.content === 'string' ? record.content : placed.record.content;
+        this.transcriptPlans.set(planKeyOf(record), {
+          record: placed.record, hash: await sha256Hex(content), spilled: placed.record.bodies?.content !== undefined,
+        });
+      }
       if (placed.outcome === 'merged') {
         if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
         continue;
@@ -324,6 +371,7 @@ export class DocumentBatch {
         this.newPrompts.push({ record, turnKey });
         if (turnKey === record.id) {
           this.openTurn = record.id;
+          if (record.origin === 'user') this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
           if (this.firstPrompt === null && record.origin === 'user') this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
@@ -356,7 +404,8 @@ export class DocumentBatch {
       const trimmed = trimTurn(input);
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
-        id: owner, preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
+        id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
+        preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
         tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length,
         input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
       });
@@ -443,6 +492,7 @@ export class DocumentBatch {
         WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
         .bind(JSON.stringify(placed), p, s, g));
     }
+    if (settled.length > 0) statements.push(...this.cardStatements(settled, chunkState === 'building', now));
     if (settled.length > 0) {
       statements.push(db.prepare(`UPDATE session_prompts SET preview=json_extract(j.value,'$.preview'),text_chars=json_extract(j.value,'$.text_chars'),
           tools=json_extract(j.value,'$.tools'),replies=json_extract(j.value,'$.replies'),children=json_extract(j.value,'$.children'),
@@ -450,6 +500,7 @@ export class DocumentBatch {
         FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
         .bind(JSON.stringify(settled), p, s, g));
     }
+    if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at)
         SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at') FROM json_each(?) j
@@ -468,6 +519,33 @@ export class DocumentBatch {
         })))));
     }
     return statements;
+  }
+
+  /**
+   * The card state of the turns this batch settled, run before their new input hashes are stored. A turn whose input
+   * hash changed, or that has no card, is pending and waits to be settled: at once when it is closed, and once quiet
+   * when it is the open turn. A new open turn brings the pending turns before it forward. A building generation adds
+   * only the cards missing, so the cards of a converted session carry over by key.
+   */
+  private cardStatements(settled: readonly Record<string, unknown>[], building: boolean, now: number): PreparedStatement[] {
+    const db = this.db;
+    const p = this.projectId, s = this.sessionId;
+    const turns = JSON.stringify(settled.map((turn) => ({
+      id: turn.id, hash: turn.input_hash, at: turn.at, settle: turn.id === this.openTurn ? Number(turn.last) + TURN_QUIET_MS : now,
+    })));
+    return [
+      db.prepare(`INSERT INTO turn_cards (project_id,session_id,turn_key,settle_at,created_at)
+        SELECT ?1,?2,json_extract(j.value,'$.id'),json_extract(j.value,'$.settle'),json_extract(j.value,'$.at') FROM json_each(?4) j
+        WHERE json_extract(j.value,'$.hash') IS NOT (SELECT sp.input_hash FROM session_prompts sp WHERE sp.project_id=?1 AND sp.session_id=?2
+          AND sp.generation=?3 AND sp.prompt_id=json_extract(j.value,'$.id'))
+        ON CONFLICT (project_id,session_id,turn_key) DO ${building ? 'NOTHING' : `UPDATE SET state='pending',changes=changes+1,due_at=NULL,settle_at=excluded.settle_at`}`)
+        .bind(p, s, this.doc.generation, turns),
+      ...(this.openTurn === this.doc.open_turn_key ? [] : [db.prepare(`UPDATE turn_cards SET settle_at=MIN(settle_at,?) WHERE project_id=? AND session_id=?
+        AND state='pending' AND settle_at IS NOT NULL AND turn_key IS NOT ?`).bind(now, p, s, this.openTurn)]),
+      learningSessionStatement(db, p, s),
+      pendingCardsStatement(db, p, s),
+      ...sessionProgressStatements(db, p, s, now),
+    ];
   }
 
   /** The counter, chunk numbering and turn fields of the session's catalog row, as SET terms and their parameters. */

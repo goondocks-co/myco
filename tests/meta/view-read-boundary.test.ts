@@ -446,7 +446,6 @@ describe('view read schema boundary controls', () => {
 
 const CAPTURED_OPERATIONS = [
   "M01:turns_listTurns:0",
-  "M02:turns_promptInSession:0",
   "M03:turns_readTurnBodies:0",
   "M04:children_listChildren:0",
   "M04:children_listChildrenByPrompt:0",
@@ -463,8 +462,6 @@ const CAPTURED_OPERATIONS = [
   "M13:sessions_selectSessions:ordinary",
   "M14:sessions_selectSessions:receipt",
   "M14:sessions_selectSessions:working",
-  "M15:sessions_countStatements:0",
-  "M16:sessions_instantStatements:0",
   "M18:lineage_sessionsNamed:0",
   "M18:lineage_childIdsOf:0",
   "M19:activity_activityFeed:0",
@@ -472,7 +469,6 @@ const CAPTURED_OPERATIONS = [
   "M20:session_activity_toolRows:0",
   "M20:session_activity_edgeRows:0",
   "M21:hook_placement_countUnplacedContextRecords:0",
-  "M23:children_materialRows:0",
   "M26:processed_processedField:0",
   "M26:processedBundle:0",
   "M45:injectedPromptRecord:0",
@@ -483,8 +479,8 @@ test('read membership is the exact protected-operation partition and retains the
  expect(text).not.toMatch(/from\s+['"]\.\.\/core\/runs\.js/);
  const captured=new Set<string>(CAPTURED_OPERATIONS),remaining=new Set<string>(LEGACY_ONLY_OPERATIONS);
  const protectedIds=VIEW_READ_OPERATIONS.filter(operation=>operation.id.startsWith('M')).map(operation=>operation.id);
- expect(captured.size).toBe(32);
- expect(remaining.size).toBe(64);
+ expect(captured.size).toBe(28);
+ expect(remaining.size).toBe(66);
  expect<string[]>([...protectedIds].filter(id=>!remaining.has(id)).sort()).toEqual([...captured].sort());
  for(const id of protectedIds){
   const sql='/*vs:'+id+'*/SELECT 1',row={sql,operation:'probe',phase:'logical',statementId:id,origin:{kind:'module' as const}};
@@ -1046,7 +1042,6 @@ const FACT_STATUS_CALLERS = [
  'tests/myco-server/view-material-facts.test.ts#test:the canonical plan merge and tag operation define the same postimage for new, edited, stale and tied events',
  'tests/myco-server/view-records.test.ts#it:fact-only status primitive retains the frozen result and complete empty-world statement work',
  'tests/myco-server/embedding-reconcile.test.ts#test:plan status writes report their own result and invalidate indexed metadata',
- 'tests/myco-server/dashboard-conversation-honesty.test.ts#it:gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation',
 ] as const;
 
 function planStatusCallerViolations(sources: ReadonlyMap<string,string>,calls=planStatusCallers(sources)): string[] {
@@ -1092,13 +1087,13 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(dependencyDiffs).toHaveLength(0);
  const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
  const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
- expect(repinned).toHaveLength(18);
+ expect(repinned).toHaveLength(20);
  for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);
  const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
  const changed=sourceSealChanges(historical,derived);
- const classes=new Set(['backup and restore SQL','embedding view schema SQL','capture delivery and replay proof SQL','parser presented-date finalization','durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation','pull-at-claim claim capability','legacy lane selection bounded by the batch','session document publisher']);
+ const classes=new Set(['backup and restore SQL','embedding view schema SQL','capture delivery and replay proof SQL','parser presented-date finalization','durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation','pull-at-claim claim capability','legacy lane selection bounded by the batch','session document publisher','session document reader','learning, titling and archival on documents']);
  const accounted=preparationOriginEnvelope.sourceClosureChanges;
  expect(accounted.map(({reason,...row})=>row).sort((a,b)=>a.tupleId.localeCompare(b.tupleId))).toEqual([...changed].sort((a,b)=>a.tupleId.localeCompare(b.tupleId)));
  expect(accounted.every(row=>classes.has(row.reason))).toBe(true);
