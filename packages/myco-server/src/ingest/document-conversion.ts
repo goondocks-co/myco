@@ -32,6 +32,7 @@ import {
 import { readParserCheckpoint } from './parser-checkpoint.js';
 import type { PassLimits } from './parse.js';
 import { promoteViewPlan } from './view-plan-promotion.js';
+import { CONVERTIBLE_SQL } from './document-convertible.js';
 
 /** Rows one export page reads from one source. */
 export const CONVERT_ROWS_PER_PAGE = 200;
@@ -205,8 +206,7 @@ export async function convertDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     if (calls >= limits.calls || limits.clock() >= limits.deadline || !rowAdmitted(env.db, 2 * ROW_VERSIONS)) return { changed, more: true };
     const next = await env.db.prepare(`SELECT d.project_id,d.session_id FROM session_documents d JOIN sessions s
         ON s.project_id=d.project_id AND s.session_id=d.session_id
-      WHERE d.state='convert' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
-      ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).first<{ project_id: string; session_id: string }>();
+      WHERE ${CONVERTIBLE_SQL} ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).first<{ project_id: string; session_id: string }>();
     if (next === null) return { changed, more: false };
     const page = await convertPage(env, next.project_id, next.session_id, now, { ...limits, calls: limits.calls - calls });
     changed += page.records;

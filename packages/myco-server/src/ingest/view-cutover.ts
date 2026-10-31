@@ -12,6 +12,7 @@ import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
 import { publishDocuments } from './publish.js';
+import { CONVERTIBLE_SQL } from './document-convertible.js';
 
 /** The hosted relational store holds at most 10 GB; the batch stops building at this size and keeps extending published sessions. */
 export const VIEW_CUTOVER_PAUSE_BYTES = 9_000_000_000;
@@ -181,21 +182,34 @@ export async function readViewCutover(db: RelationalStore): Promise<ViewCutoverS
   };
 }
 
+/** Half of what a bounded wake has left, keeping the wake's reserve on both sides of the split. */
+function halfShare(env: ServerEnv): ServerEnv {
+  const held = remainingInvocationBudget(env.db);
+  if (held === null) return env;
+  return measuredContentEnv(env, {
+    statements: CONTENT_WAKE_JOB_RESERVE + Math.floor(Math.max(0, held.statements - 2 * CONTENT_WAKE_JOB_RESERVE) / 2),
+    blobCalls: CONTENT_BLOB_LIMIT + Math.floor(Math.max(0, held.blobCalls - 2 * CONTENT_BLOB_LIMIT) / 2),
+  }).env;
+}
+
 /**
  * While legacy transcripts wait, the batch takes half of what a bounded wake leaves its parsers; the legacy pass takes the
  * rest. With `legacySince`, only transcripts last received at or after that instant count as waiting.
  */
 async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): Promise<ServerEnv> {
-  const held = remainingInvocationBudget(env.db);
-  if (held === null) return env;
+  if (remainingInvocationBudget(env.db) === null) return env;
   const waiting = legacySince === undefined
     ? (await pendingTranscripts(env.db, now)).transcripts > 0
     : await recentLegacyWork(env.db, now, legacySince);
-  if (!waiting) return env;
-  return measuredContentEnv(env, {
-    statements: CONTENT_WAKE_JOB_RESERVE + Math.floor(Math.max(0, held.statements - 2 * CONTENT_WAKE_JOB_RESERVE) / 2),
-    blobCalls: CONTENT_BLOB_LIMIT + Math.floor(Math.max(0, held.blobCalls - 2 * CONTENT_BLOB_LIMIT) / 2),
-  }).env;
+  return waiting ? halfShare(env) : env;
+}
+
+/** Sessions that predate documents still wait for conversion, counted as conversion selects them. */
+export async function conversionBacklog(db: RelationalStore): Promise<boolean> {
+  const row = await db
+    .prepare(`SELECT EXISTS(SELECT 1 FROM session_documents d WHERE ${CONVERTIBLE_SQL}) backlog`)
+    .first<{ backlog: number }>();
+  return row?.backlog === 1;
 }
 
 /**
@@ -213,12 +227,15 @@ export async function cutoverBacklog(db: RelationalStore): Promise<boolean> {
   return row?.backlog === 1;
 }
 
-/** One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. */
+/**
+ * One wake of the batch: classify, check headroom, sweep, copy frozen derivations, then build and publish. With
+ * `stopBuilds`, as under the headroom pause, it builds nothing new and only extends published sessions.
+ */
 export async function runViewCutoverWake(
   wake: ServerEnv,
   now: number,
   readBytes = databaseBytes,
-  options: { legacySince?: number; ownWall?: boolean; inFlight?: number } = {},
+  options: { legacySince?: number; ownWall?: boolean; inFlight?: number; stopBuilds?: boolean } = {},
 ) {
   const env = await cutoverShare(wake, now, options.legacySince);
   const db = env.db;
@@ -240,7 +257,8 @@ export async function runViewCutoverWake(
   }
   const state = await cutoverState(db, now);
   const classified = state.classified_at !== null;
-  if (classified && !paused) {
+  const stopped = paused || options.stopBuilds === true;
+  if (classified && !stopped) {
     changed += await sweepViewCutover(env, now);
     changed += await copyFrozenPage(env, now);
   }
@@ -250,7 +268,7 @@ export async function runViewCutoverWake(
     profile,
     envelope: productionFlipEnvelope(native ? 'native' : 'remote', native ? 'parallel' : 'serial'),
     cutover: true,
-    buildPaused: paused || !classified,
+    buildPaused: stopped || !classified,
     mirrorFrontier: false,
     ownWall: options.ownWall === true,
     inFlight: options.inFlight,
@@ -264,7 +282,7 @@ export async function runViewCutoverWake(
       OR EXISTS(SELECT 1 FROM cutover_progress WHERE id=1 AND swept_at IS NULL) pending`,
     )
     .first<{ pending: number }>();
-  return { changed, more: !paused && (!classified || pending?.pending === 1), progressed };
+  return { changed, more: !stopped && (!classified || pending?.pending === 1), progressed };
 }
 
 /**
@@ -276,6 +294,11 @@ export async function runViewCutoverWake(
  * say) takes no wake of its own: it waits for the next full wake, and the legacy pass serves every lane. A batch failure
  * is reported once the legacy pass has run. The document publisher runs last, on its own frontiers, and its failure is
  * reported after the batch's.
+ *
+ * While sessions wait for conversion, the batch builds nothing new and only extends published sessions, within the
+ * wake's content wall; the document publisher follows, within half of what the wake has left and before the legacy
+ * pass, which reads only recently received transcripts; and a wake whose conversion moved on asks for the next at
+ * `BACKLOG_CHAINED_WAKE_MS`.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -283,19 +306,10 @@ export async function runTranscriptParseWake(
   _state?: unknown,
   context?: { drainOnly: boolean },
 ): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
-  const backlog = await cutoverBacklog(env.db),
-    recentSince = backlog ? now - VIEW_RECENT_MS : undefined;
-  const views = await runViewCutoverWake(env, now, databaseBytes, {
-    legacySince: recentSince,
-    ownWall: context?.drainOnly === true,
-    inFlight: backlog ? CUTOVER_SESSIONS_IN_FLIGHT : 1,
-  }).then(
-    (report) => ({ report }),
-    (error: unknown) => ({ error }),
-  );
-  const yielding = 'error' in views || views.report.progressed;
-  const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
-  const documents = await publishDocuments(env, now, {
+  const converting = await conversionBacklog(env.db),
+    backlog = !converting && await cutoverBacklog(env.db),
+    recentSince = backlog || converting ? now - VIEW_RECENT_MS : undefined;
+  const publish = (target: ServerEnv) => publishDocuments(target, now, {
     calls: env.platform.jobBudget.calls,
     deadline: Date.now() + env.platform.jobBudget.wallMs,
     clock: Date.now,
@@ -303,12 +317,28 @@ export async function runTranscriptParseWake(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
   );
+  const views = await runViewCutoverWake(env, now, databaseBytes, {
+    legacySince: recentSince,
+    ownWall: context?.drainOnly === true,
+    inFlight: backlog ? CUTOVER_SESSIONS_IN_FLIGHT : 1,
+    stopBuilds: converting,
+  }).then(
+    (report) => ({ report }),
+    (error: unknown) => ({ error }),
+  );
+  const converted = converting ? await publish(halfShare(env)) : undefined;
+  const yielding = converting || 'error' in views || views.report.progressed;
+  const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
+  const documents = converted ?? await publish(env);
   if ('error' in views) throw views.error;
   if ('error' in documents) throw documents.error;
+  const chained = converting
+    ? documents.report.more && documents.report.changed > 0
+    : backlog && views.report.more && views.report.progressed;
   return {
     ...legacy,
     changed: legacy.changed + views.report.changed + documents.report.changed,
     more: legacy.more || documents.report.more || (views.report.more && (views.report.progressed || !backlog)),
-    ...(backlog && views.report.more && views.report.progressed ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
+    ...(chained ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
   };
 }
