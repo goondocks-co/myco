@@ -48,8 +48,8 @@ const RETIRE_PAGE = 100;
 /** What one parse step may spend before it places its window: its segment reads and its catalog statements. */
 const STEP_STATEMENTS = 24;
 const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
-/** What reading one queued event may spend: its row, its bundle and its spilled body. */
-const QUEUED_STATEMENTS = 4;
+/** What reading one queued event may spend: its row, its bundle and its spilled body, and resolving its prompt. */
+const QUEUED_STATEMENTS = 6;
 const QUEUED_BLOB_CALLS = 4;
 /** How long a session whose pass failed by name waits before its next pass: the time from its last advance, within bounds. */
 export const PUBLISH_BACKOFF_MIN_MS = 60_000;
@@ -104,12 +104,26 @@ interface Publication {
   changed: boolean;
 }
 
-/** The sessions due, oldest first, read from the due index without reading a queue or a document. */
-async function dueSessions(db: RelationalStore, now: number, limit: number): Promise<{ project_id: string; session_id: string }[]> {
-  return (await db.prepare(`SELECT d.project_id,d.session_id FROM session_documents d WHERE d.due_at<=? AND d.state='live'
+/**
+ * A session's publication input and progress as a pass finds it. Every write that changes them moves one part on: an
+ * enqueue raises the newest queued event's row (the events table keeps the rows of consumed events, so a new one sorts
+ * above every earlier one), a consume lowers the queued count, a transcript write raises its transcript count or bytes,
+ * and a commit raises the generation's published offsets.
+ */
+const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0) FROM publish_queue q
+    JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id)
+  ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)
+  ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0) FROM transcript_publication p
+    WHERE p.project_id=${table}.project_id AND p.session_id=${table}.session_id AND p.generation IS ${table}.generation)`;
+
+interface DueSession { project_id: string; session_id: string; revision: string }
+
+/** The sessions due, oldest first, read from the due index, each with the input revision its selection found. */
+async function dueSessions(db: RelationalStore, now: number, limit: number): Promise<DueSession[]> {
+  return (await db.prepare(`SELECT d.project_id,d.session_id,${inputRevision('d')} revision FROM session_documents d WHERE d.due_at<=? AND d.state='live'
       AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
     ORDER BY d.due_at,d.project_id,d.session_id LIMIT ?`)
-    .bind(now, limit).all<{ project_id: string; session_id: string }>()).results;
+    .bind(now, limit).all<DueSession>()).results;
 }
 
 /**
@@ -138,7 +152,7 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     } catch (error) {
       const named = namedFailure(error);
       emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: named ?? 'unknown' });
-      await deferFailedSession(env.db, ref.project_id, ref.session_id, named, now);
+      await deferFailedSession(env.db, ref, named, now);
       if (named === undefined) failure ??= error;
     }
   }
@@ -157,12 +171,16 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
   return { changed, more };
 }
 
-/** Records a failed pass, and moves a session that failed by name past its backoff; neither may fail the wake. */
-async function deferFailedSession(db: RelationalStore, projectId: string, sessionId: string, named: string | undefined, now: number): Promise<void> {
+/**
+ * Records a failed pass, and moves a session that failed by name past its backoff while its input is still the input
+ * its selection found; input that arrived during the pass keeps the session due. Neither may fail the wake.
+ */
+async function deferFailedSession(db: RelationalStore, ref: DueSession, named: string | undefined, now: number): Promise<void> {
+  const { project_id: projectId, session_id: sessionId } = ref;
   try {
     if (named !== undefined) {
       await db.prepare(`UPDATE session_documents SET due_at=?3+MIN(MAX(?3-updated_at,${PUBLISH_BACKOFF_MIN_MS}),${PUBLISH_BACKOFF_MAX_MS})
-        WHERE project_id=?1 AND session_id=?2 AND state='live'`).bind(projectId, sessionId, now).run();
+        WHERE project_id=?1 AND session_id=?2 AND state='live' AND ${inputRevision('session_documents')}=?4`).bind(projectId, sessionId, now, ref.revision).run();
     }
     await recordDocumentPublishFailure(db, { projectId, sessionId, failure: named ?? 'unknown' }, now);
   } catch (error) {
@@ -229,7 +247,7 @@ class SessionPublication {
   /** Whether the pass must stop before a step that could spend `statements` and `blobCalls`: its commit stays payable. */
   private spent(statements = STEP_STATEMENTS, blobCalls = STEP_BLOB_CALLS): boolean {
     return this.full || this.batch.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline
-      || !commitAdmitted(this.db, this.batch.writer.pendingVersions, statements, blobCalls);
+      || !commitAdmitted(this.db, this.batch.writer.versions, statements, blobCalls);
   }
 
   /**
@@ -376,28 +394,37 @@ class SessionPublication {
     }
   }
 
-  /** Places the queued events read within the pass, the longest leading run whose commit the pass can still pay. */
+  /**
+   * Places the queued events in groups of one, two, four and on, each group read and placed before the next is read,
+   * so reading never spends what placing the events already read needs. A group stops at the longest leading run
+   * whose commit the pass can still pay.
+   */
   private async publishQueued(rows: readonly QueuedRow[]): Promise<void> {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
-    const read: { consumed: { r: number; c: number; e: string }; record: DocRecord | null }[] = [];
     const content = bundleContentEnv(this.env);
-    for (const row of rows) {
-      if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
-      const payload = await hydratedPayload(content, this.projectId, row);
-      read.push({
-        consumed: { r: row.rank, c: row.queued_created_at, e: row.event_id },
-        record: documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at }),
-      });
-    }
-    for (let take = read.length; ; take = Math.floor(take / 2)) {
-      try {
-        await this.batch.place(read.slice(0, take).flatMap(({ record }) => (record === null ? [] : [record])), null);
-        this.consumed.push(...read.slice(0, take).map(({ consumed }) => consumed));
-        return;
-      } catch (error) {
-        if (!(error instanceof DocumentPassFull) || take === 0) throw error;
-        this.full = this.more = true;
+    for (let at = 0, size = 1; at < rows.length; size *= 2) {
+      const group: { consumed: { r: number; c: number; e: string }; record: DocRecord | null }[] = [];
+      for (const row of rows.slice(at, at + size)) {
+        if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
+        const payload = await hydratedPayload(content, this.projectId, row);
+        group.push({
+          consumed: { r: row.rank, c: row.queued_created_at, e: row.event_id },
+          record: documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at }),
+        });
       }
+      let take = group.length;
+      for (; take > 0; take = Math.floor(take / 2)) {
+        try {
+          await this.batch.place(group.slice(0, take).flatMap(({ record }) => (record === null ? [] : [record])), null);
+          break;
+        } catch (error) {
+          if (!(error instanceof DocumentPassFull)) throw error;
+          this.full = this.more = true;
+        }
+      }
+      this.consumed.push(...group.slice(0, take).map(({ consumed }) => consumed));
+      if (take < size || this.full) return;
+      at += take;
     }
   }
 
