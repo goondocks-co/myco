@@ -362,6 +362,13 @@ export class DocumentBatch {
           hash: record.prompt_key_hash ?? null, preview: preview(record.text), chars: typeof record.text === 'string' ? record.text.length : 0,
         })))));
     }
+    const placed = layout === null ? [] : layout.pageChunks.flatMap((write) => write.chunk.pages.flatMap((page) =>
+      page.records.filter((record) => record.k === 'prompt').map((record) => ({ id: record.id, page: page.page }))));
+    if (placed.length > 0) {
+      statements.push(db.prepare(`UPDATE session_prompts SET page=json_extract(j.value,'$.page')
+        FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
+        .bind(JSON.stringify(placed), p, s, g));
+    }
     if (settled.length > 0) {
       statements.push(db.prepare(`UPDATE session_prompts SET preview=json_extract(j.value,'$.preview'),text_chars=json_extract(j.value,'$.text_chars'),
           tools=json_extract(j.value,'$.tools'),replies=json_extract(j.value,'$.replies'),children=json_extract(j.value,'$.children'),

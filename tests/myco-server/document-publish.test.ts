@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
+import { LOCATE_CHUNKS_PER_WAKE } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -187,5 +188,35 @@ test('a restored session whose prompt was archived publishes the prompt read fro
       .toEqual([{ prompt_id: uuid(20), preview: 'factcanary' }]);
     expect((await readPage({ db, blobs }, 'project', 'archived', uuid(20), 0))!.map((record) => [record.k, record.id, record.text]), name)
       .toEqual([['prompt', uuid(20), 'factcanary'], ['reply', uuid(30), 'factcanary']]);
+  });
+});
+
+test('a document written before page locators has every prompt located by publisher wakes, each reading a bounded share', async () => {
+  await withViewStores(async (db, name) => {
+    const t0 = Date.now() - 2 * 60 * MIN, blobs = memoryBlobStore();
+    let text = '';
+    for (let i = 0; i < 20; i += 1) text += user(`turn-${i}`, `step ${i}`) + reply('x'.repeat(240_000));
+    const env = await captureViewTranscript(db, blobs, 'session', tx, text, t0, 0, 'codex');
+    await publishDocuments(env, t0 + 11 * MIN, limits());
+    const pages = (await db.prepare(`SELECT owner,page FROM session_pages WHERE session_id='session'`).all<{ owner: string; page: number }>()).results;
+    const expected: Record<string, number> = {};
+    for (const at of pages) for (const record of (await readPage(env, 'project', 'session', at.owner, at.page))!) if (record.k === 'prompt') expected[record.id] = at.page;
+    // As the document stood before locators: no prompt located, nothing read.
+    await db.prepare(`UPDATE session_prompts SET page=NULL WHERE session_id='session'`).run();
+    await db.prepare(`UPDATE session_documents SET locate_after=NULL WHERE session_id='session'`).run();
+    const get = blobs.get.bind(blobs);
+    let gets = 0;
+    blobs.get = async (...args: Parameters<typeof get>) => { gets += 1; return get(...args); };
+    const perWake: number[] = [];
+    for (let wake = 0; wake < 10; wake += 1) {
+      gets = 0;
+      const report = await publishDocuments(env, t0 + 11 * MIN, limits());
+      perWake.push(gets);
+      if (!report.more) break;
+    }
+    const located = Object.fromEntries((await db.prepare(`SELECT prompt_id,page FROM session_prompts WHERE session_id='session'`)
+      .all<{ prompt_id: string; page: number }>()).results.map((row) => [row.prompt_id, row.page]));
+    expect({ located, wakes: perWake.length > 1, bounded: perWake.every((n) => n <= LOCATE_CHUNKS_PER_WAKE) }, name)
+      .toEqual({ located: expected, wakes: true, bounded: true });
   });
 });
