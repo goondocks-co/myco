@@ -206,21 +206,30 @@ function spilledInput(text: string): unknown {
 }
 
 /**
- * A queued event's payload, with a spilled body read back into the field it stands for. Only an inline payload is
- * read from its row; any other is read through the verified event content reader, an archived one from its bundle.
+ * A queued event's payload, with each spilled body read back into the field it stands for: the body `blob` names, and a
+ * tool's output `outputBlob` names, of which the document keeps the preview. Only an inline payload is read from its
+ * row; any other is read through the verified event content reader, an archived one from its bundle.
  */
 async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
   const body = row.payload_format === 'inline' ? row.payload : await eventContent(env, projectId, row.event_id);
   if (body === null) throw new Error('document_event_body_missing');
-  const payload = JSON.parse(body) as Record<string, unknown>;
+  const { blob: spilled, outputBlob, ...payload } = JSON.parse(body) as Record<string, unknown>;
+  const read = async (key: string): Promise<string> => {
+    const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
+      .bind(projectId, key).first<{ generation: string | null; size: number }>();
+    if (blob === null) throw new Error('document_event_body_missing');
+    return readVerifiedContentText(env, blobObjectKey(projectId, key, blob.generation), blob.size, key);
+  };
   const field = SPILLED_FIELD[row.kind];
-  if (field === undefined || typeof payload.blob !== 'string') return payload;
-  const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
-    .bind(projectId, payload.blob).first<{ generation: string | null; size: number }>();
-  if (blob === null) throw new Error('document_event_body_missing');
-  const text = await readVerifiedContentText(env, blobObjectKey(projectId, payload.blob, blob.generation), blob.size, payload.blob);
-  const { blob: _spilled, ...rest } = payload;
-  return { ...rest, [field]: field === 'input' ? spilledInput(text) : text };
+  if (typeof spilled === 'string') {
+    if (field === undefined) payload.blob = spilled;
+    else { const text = await read(spilled); payload[field] = field === 'input' ? spilledInput(text) : text; }
+  }
+  if (typeof outputBlob === 'string') {
+    if (field === 'input') payload.output = await read(outputBlob);
+    else payload.outputBlob = outputBlob;
+  }
+  return payload;
 }
 
 /** One pass over one session: its transcripts from their frontiers, then its queued events, committed together. */

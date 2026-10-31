@@ -45,6 +45,10 @@ function rig(): Rig {
   }
   sqlite.query(`INSERT INTO members (id, label, created_at, revoked_at) VALUES ('mem_1', 'chris', ?, NULL)`).run(NOW);
 
+  // Prompts and Myco calls are measured from each session's live document catalog.
+  let ord = 0;
+  const live = (project: string, sessionId: string) => sqlite.query(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at)
+    VALUES (?, ?, 'live', 1, ?) ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'live', generation = 1`).run(project, sessionId, NOW);
   const r: Rig = {
     db: sqliteRelationalStore(sqlite),
     sqlite,
@@ -58,6 +62,7 @@ function rig(): Rig {
       sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
                     VALUES (?, ?, 'm1', ?, ?, ?)`)
         .run(opts.project ?? PROJECT, id, opts.tokenId ?? 'cred_1', at, at);
+      live(opts.project ?? PROJECT, id);
       if (opts.agent !== null) {
         sqlite.query(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
                       VALUES (?, ?, ?, 'm1', ?, 0, 0, ?, ?, ?, 'primary', ?)`)
@@ -66,15 +71,18 @@ function rig(): Rig {
     },
     prompt: (id, sessionId, opts = {}) => {
       const at = opts.at ?? NOW;
-      sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
-                    VALUES (?, ?, ?, ?, 'user', ?, ?, ?, 'cred_1', ?)`)
-        .run(opts.project ?? PROJECT, id, sessionId, `ev_${id}`, `hash_${id}`, at, at, at);
+      sqlite.query(`INSERT INTO session_prompts (project_id, session_id, generation, prompt_id, turn_key, ord, origin, created_at)
+                    VALUES (?, ?, 1, ?, ?, ?, 'user', ?)`)
+        .run(opts.project ?? PROJECT, sessionId, id, id, ord++, at);
     },
     call: (id, sessionId, opts = {}) => {
       const at = opts.at ?? NOW;
-      sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, myco_tool, myco_op, success, created_at, token_id, received_at)
-                    VALUES (?, ?, ?, ?, 'mcp', ?, ?, 1, ?, 'cred_1', ?)`)
-        .run(opts.project ?? PROJECT, id, sessionId, `ev_${id}`, opts.tool === undefined ? 'myco_search' : opts.tool, opts.op ?? null, at, at);
+      // The catalog keeps Myco's own calls; a call to any other tool leaves no row.
+      const tool = opts.tool === undefined ? 'myco_search' : opts.tool;
+      if (tool === null) return;
+      sqlite.query(`INSERT INTO myco_tool_calls (project_id, session_id, generation, tool_call_id, myco_tool, myco_op, success, created_at)
+                    VALUES (?, ?, 1, ?, ?, ?, 1, ?)`)
+        .run(opts.project ?? PROJECT, sessionId, id, tool, opts.op ?? null, at);
     },
     sporeInjection: (sessionId, promptId, sporeIds, opts = {}) => {
       const at = opts.at ?? NOW;

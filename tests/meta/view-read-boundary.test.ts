@@ -446,7 +446,6 @@ describe('view read schema boundary controls', () => {
 
 const CAPTURED_OPERATIONS = [
   "M01:turns_listTurns:0",
-  "M02:turns_promptInSession:0",
   "M03:turns_readTurnBodies:0",
   "M04:children_listChildren:0",
   "M04:children_listChildrenByPrompt:0",
@@ -463,7 +462,6 @@ const CAPTURED_OPERATIONS = [
   "M13:sessions_selectSessions:ordinary",
   "M14:sessions_selectSessions:receipt",
   "M14:sessions_selectSessions:working",
-  "M15:sessions_countStatements:0",
   "M18:lineage_sessionsNamed:0",
   "M18:lineage_childIdsOf:0",
   "M19:activity_activityFeed:0",
@@ -482,8 +480,8 @@ test('read membership is the exact protected-operation partition and retains the
  expect(text).not.toMatch(/from\s+['"]\.\.\/core\/runs\.js/);
  const captured=new Set<string>(CAPTURED_OPERATIONS),remaining=new Set<string>(LEGACY_ONLY_OPERATIONS);
  const protectedIds=VIEW_READ_OPERATIONS.filter(operation=>operation.id.startsWith('M')).map(operation=>operation.id);
- expect(captured.size).toBe(31);
- expect(remaining.size).toBe(64);
+ expect(captured.size).toBe(29);
+ expect(remaining.size).toBe(66);
  expect<string[]>([...protectedIds].filter(id=>!remaining.has(id)).sort()).toEqual([...captured].sort());
  for(const id of protectedIds){
   const sql='/*vs:'+id+'*/SELECT 1',row={sql,operation:'probe',phase:'logical',statementId:id,origin:{kind:'module' as const}};

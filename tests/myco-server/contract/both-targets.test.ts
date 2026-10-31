@@ -33,6 +33,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
 import { titleReadySessions, titleSession } from '@myco-server-worker/core/titling.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { listSessions, renameProject } from '@myco-server-worker/read/sessions.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
@@ -415,6 +416,8 @@ describe('archival refuses capture the same on both stores', () => {
       const post = async (over: Record<string, unknown>) => json(await t.fetch(memberPost(token, envelope(over))));
       const scope = { projectId: 'proj_1' };
       const row = async (id: string) => (await listSessions(t.env.db, scope, { sessionId: id })).rows[0];
+      // A captured prompt reaches the session's label once the publisher has placed it in the session's document.
+      const publish = () => publishDocuments(t.env, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
       const settings = async (rows: Array<[string, string]>) => {
         await t.env.db.prepare(`DELETE FROM deployment_settings`).run();
         for (const [leaf, value] of rows) await t.env.db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).bind(leaf, JSON.stringify(value)).run();
@@ -422,6 +425,7 @@ describe('archival refuses capture the same on both stores', () => {
 
       expect((await post({ eventId: uuid(300), sessionId: 'sess_t', kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(301), sessionId: 'sess_t', payload: { promptId: uuid(310), text: 'Add a retry to the runner\nplease', origin: 'user' } })).persisted).toBe(true);
+      await publish();
       const labelBefore = (await row('sess_t'))?.label;
       const beforeEnd = (await titleSession(t.env, { projectId: 'proj_1', sessionId: 'sess_t', now: 5_000, origin: 'https://s' })).outcome;
       expect(await post({ eventId: uuid(302), sessionId: 'sess_t', kind: 'session.end', createdAt: 6_000, payload: { endedAt: 6_000 } })).toEqual({ persisted: true, projected: true });
@@ -437,6 +441,7 @@ describe('archival refuses capture the same on both stores', () => {
       await settings([]);
       expect((await post({ eventId: uuid(320), sessionId: 'sess_n', kind: 'session.start', payload: { agent: 'codex', startedAt: 1_000 } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(321), sessionId: 'sess_n', payload: { promptId: uuid(330), text: 'No provider here', origin: 'user' } })).persisted).toBe(true);
+      await publish();
       expect((await post({ eventId: uuid(322), sessionId: 'sess_n', kind: 'session.end', createdAt: 8_000, payload: { endedAt: 8_000 } })).projected).toBe(true);
       await t.settle();
       await titleReadySessions({ ...t.env, origin: 'https://s' }, settled());
@@ -453,7 +458,8 @@ describe('archival refuses capture the same on both stores', () => {
     }
     const waiting = { task: 'title-summary', status: 'queued', heldBy: 'worker', dispatchedBy: null };
     const expected = {
-      labelBefore: 'Add a retry to the runner', beforeEnd: 'already', title: null, summary: null, label: 'Add a retry to the runner', attempted: true,
+      // The label is the first prompt's catalog preview, its whitespace collapsed.
+      labelBefore: 'Add a retry to the runner please', beforeEnd: 'already', title: null, summary: null, label: 'Add a retry to the runner please', attempted: true,
       sent: [], sentAfterSecondEnd: 0, queued: [waiting, waiting],
       unprovided: { attempted: true, title: null, label: 'No provider here' }, renamed: 'renamed', absent: 'absent',
     };

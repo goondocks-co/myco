@@ -13,6 +13,7 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import type { RecordIdScheme } from '@goondocks/myco-shared/record-identity';
 import { envelopeHash } from '@myco-server-worker/ingest/events.js';
 import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
@@ -1197,6 +1198,8 @@ describe('parsing a held transcript', () => {
     await drain(env, sqlite);
     expect(sqlite.query('SELECT tool_name, files_affected FROM tool_calls').all())
       .toEqual([{ tool_name: 'Edit', files_affected: JSON.stringify(['/Users/dev/repo/packages/b/src/y.ts']) }]);
+    // The release check reads the paths the session's document records.
+    await publishDocuments(env as never, NOW, LIMITS);
 
     const store = releaseProvenance(serverEnv.db, deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey));
     await store.save(PROJECT, { revision: null, enabled: true, githubRepo: 'o/r', productionRefs: ['refs/tags/a/v*', 'refs/tags/b/v*'],

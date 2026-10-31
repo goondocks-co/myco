@@ -989,6 +989,8 @@ const VIEW_READ_OPERATION_IDS = [
 ] as const;
 
 export const LEGACY_ONLY_OPERATIONS = [
+  "M02:turns_promptInSession:0",
+  "M15:sessions_countStatements:0",
   "M24:plans_planTotals:0",
   "M24:plans_selectPlans:0",
   "M17:sessions_projectStats:0",
@@ -3411,7 +3413,7 @@ async function kpis_harnessSplit(db: kpis_import_RelationalStore, since: number 
   const [promptRows, callRows] = await Promise.all([
     prepareViewRead(db, "M42:kpis_harnessSplit:0", `SELECT ${kpis_HARNESS_OF('p')} AS harness, COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${prompts.sql} GROUP BY harness`)
       .bind(...prompts.params).all<{ harness: string; n: number }>(),
-    prepareViewRead(db, "M42:kpis_harnessSplit:1", `SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${calls.sql} AND ${kpis_MYCO_CALL} GROUP BY harness`)
+    prepareViewRead(db, "M42:kpis_harnessSplit:1", `SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${calls.sql} AND ${kpis_MYCO_CALL} GROUP BY 1`)
       .bind(...calls.params).all<{ harness: string; n: number }>(),
   ]);
   const promptsBy = new Map(promptRows.results.map((r) => [r.harness, r.n]));
@@ -4754,9 +4756,9 @@ const release_RELEASE_UPSERT = `ON CONFLICT(project_id, identity_key) DO UPDATE 
 const release_DERIVED = [['spores', 'spores', 'id'], ['plans', 'plans', 'plan_key']] as const;
 
 export function prepareReleasePaths(db: sessions_import_RelationalStore, projectId: string, sessionId: string) {
-  return db.prepare(`SELECT json_group_array(path) AS files FROM (SELECT p.path FROM session_documents d JOIN session_paths p
-      ON p.project_id = d.project_id AND p.session_id = d.session_id AND p.generation = d.generation
-    WHERE d.project_id = ? AND d.session_id = ? AND d.state = 'live' ORDER BY p.last_at DESC, p.path LIMIT 500)`).bind(projectId, sessionId);
+  return db.prepare(`SELECT d.state, CASE WHEN d.state = 'live' THEN (SELECT json_group_array(path) FROM (SELECT p.path FROM session_paths p
+      WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.generation = d.generation ORDER BY p.last_at DESC, p.path LIMIT 500)) END AS files
+    FROM session_documents d WHERE d.project_id = ? AND d.session_id = ?`).bind(projectId, sessionId);
 }
 
 export function prepareReleaseCandidates(db: sessions_import_RelationalStore, projectId: string, mapped: number, prefix: string, fingerprint: string | null, limit: number) {

@@ -368,6 +368,7 @@
     "dueSessions": "W",
     "retireSupersededObjects": "W",
     "hydratedPayload": "W",
+    "read": "W",
     "run": "W",
     "held": "W",
     "commitStatements": "W",

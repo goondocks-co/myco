@@ -341,9 +341,12 @@ interface Candidate extends ReleaseSource { sessionId: string; pathsMark: number
 
 const identityOf = (projectId: string, namespace: string, recordId: string) => `${projectId}:${namespace}:${recordId}`;
 
-/** The paths a session's tool calls touched, or null when a stored list cannot be read. */
+/**
+ * The paths a session's tool calls touched, from its document's catalog: none for a session with no document, and null
+ * while its document still converts or when a stored list cannot be read.
+ */
 async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<string[] | null> {
-  const { results } = await prepareReleasePaths(db, projectId, sessionId).all<{ files: string }>();
+  const { results } = await prepareReleasePaths(db, projectId, sessionId).all<{ state: string; files: string | null }>();
   const paths = new Set<string>();
   for (const { files } of results) {
     let list: string[];

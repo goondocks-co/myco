@@ -9,6 +9,8 @@ import { sqliteD1 } from './helpers/d1.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { BACKFILL_PROJECTS, historicalBackfillSql, HISTORICAL_BLOBS, HISTORICAL_EVENTS, HISTORICAL_PLANS, HISTORICAL_TRANSCRIPTS } from './helpers/raw-backfill-fixture.js';
 
+/** The steps before the documents guard, which refuses these sessions: they predate documents and wait for conversion. */
+const PRE_DOCUMENTS_STEPS = SCHEMA_STEPS.filter((step) => step.version < 114);
 const NOW = Date.parse('2026-10-04T12:00:00Z');
 const MAX_PASSES = 3;
 
@@ -151,7 +153,7 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(count(sqlite, 'events')).toBe(HISTORICAL_EVENTS + HISTORICAL_PLANS);
       const current = sqlite.query(`SELECT complete FROM raw_provenance_backfill WHERE id = 1`).get();
       expect(current).toEqual({ complete: 0 });
-      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
+      for(const step of PRE_DOCUMENTS_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'blob', id: '0'.repeat(64) }, 'read')).toBe(false);
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(false);
@@ -209,7 +211,7 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(sqlite.query(`SELECT COUNT(*) AS n FROM raw_resources WHERE kind = 'event'`).get()).toEqual({ n: 0 });
       for (const original of originals) expect(await fingerprint(sqlite, original.table)).toBe(original.hash);
       expect(await rawBackfill(sqliteD1(sqlite), NOW + MAX_PASSES)).toEqual({ changed: 0, more: false });
-      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
+      for(const step of PRE_DOCUMENTS_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(true);
       for (const id of ['mixed', 'unknown', 'conflicting']) expect(await reader.allows({ kind: 'transcript', id }, 'read')).toBe(false);

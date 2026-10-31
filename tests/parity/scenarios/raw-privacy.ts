@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobFields, KINDS } from '@myco-server-worker/ingest/kinds.js';
-import { expectPersisted, lit, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 type RequestFetch = (request: Request) => Promise<Response>;
 const TOKEN_TTL_MS = 3_600_000;
@@ -171,9 +171,20 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
     await event('attachment', { attachmentId, promptId, blob: attachment.key, description: 'shared captured file' });
     attachments.push({ attachmentId, key: attachment.key, mediaType, bytes });
   }
+  await documentsPublished(target, session, PROJECT);
   const turnResponse = await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}`, other.headers);
   expect(turnResponse.status).toBe(200);
-  const turn = await turnResponse.json() as { attachments: Array<{ attachmentId: string; blobKey: string; mediaType: string; byteSize: number }> };
+  type Locator = { generation: number; owner: string; page: number };
+  const turn = await turnResponse.json() as { prompt: { locator: Locator }; responses: Array<{ locator: Locator }>;
+    attachments: Array<{ attachmentId: string; blobKey: string; mediaType: string; byteSize: number }> };
+  const tools = await (await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}/tool-calls`, other.headers)).json() as { rows: Array<{ locator: Locator; outputPreview: string | null }> };
+  // A tool's output is served as the preview its document keeps of the spilled body.
+  const outputPreview = tools.rows[0]!.outputPreview ?? '';
+  expect(outputPreview.length > 0 && processed.startsWith(outputPreview)).toBe(true);
+  // A prompt, reply or tool body is read from the session's document at the locator its row carried.
+  const at = (locator: Locator) => `?${new URLSearchParams({ session, generation: String(locator.generation), owner: locator.owner, page: String(locator.page) })}`;
+  const located: Record<string, string> = { prompt: at(turn.prompt.locator), response: at(turn.responses[0]!.locator),
+    'tool-input': at(tools.rows[0]!.locator), 'tool-output': at(tools.rows[0]!.locator) };
   expect(turn.attachments).toHaveLength(attachments.length);
   expect(turn.attachments.map(({ attachmentId, blobKey, mediaType, byteSize }) => ({ attachmentId, blobKey, mediaType, byteSize })))
     .toEqual(expect.arrayContaining(attachments.map(({ attachmentId, key, mediaType, bytes }) => ({ attachmentId, blobKey: key, mediaType, byteSize: bytes.byteLength }))));
@@ -198,8 +209,8 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   expect((await get(`/api/projects/${PROJECT}/processed/plan/${forgedPlan}`, other.headers)).status).toBe(404);
   expect(await target.sql(`SELECT owner_member_id FROM raw_resources WHERE project_id = ${lit(PROJECT)} AND kind = 'blob' AND resource_id = ${lit(spilled.key)}`)).toEqual([{ owner_member_id: uploader.id }]);
   for (const reader of readers) {
-    for (const [kind, id, expected] of [['prompt', promptId, processed], ['response', responseId, processed], ['plan', planKey, processed], ['plan', inlinePlanKey, 'shared inline plan'], ['tool-input', toolCallId, processed], ['tool-output', toolCallId, processed]] as const) {
-      const response = await get(`/api/projects/${PROJECT}/processed/${kind}/${id}`, reader.headers);
+    for (const [kind, id, expected] of [['prompt', promptId, processed], ['response', responseId, processed], ['plan', planKey, processed], ['plan', inlinePlanKey, 'shared inline plan'], ['tool-input', toolCallId, processed], ['tool-output', toolCallId, outputPreview]] as const) {
+      const response = await get(`/api/projects/${PROJECT}/processed/${kind}/${id}${located[kind] ?? ''}`, reader.headers);
       expect({ viewer: reader.name, kind, status: response.status }).toEqual({ viewer: reader.name, kind, status: 200 });
       expect(await response.text()).toBe(expected);
     }

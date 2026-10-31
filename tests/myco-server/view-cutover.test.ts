@@ -534,7 +534,8 @@ test('a parse resuming mid-turn on rows written before the upgrade lands beside 
     const blobs = memoryBlobStore(), now = Date.now(), at = now - 2 * DAY;
     const lines = turn('cut-u', 'resumed', 100).split(/(?<=\n)/), head = lines.slice(0, 2).join('');
     const session = await legacySession(db, blobs, 'cut-u', at, [head]);
-    for (const step of SCHEMA_STEPS.filter((step) => step.version > 105)) await db.batch(step.statements.map((sql) => db.prepare(sql)));
+    // Up to the documents guard, which refuses a session that predates documents until it converts.
+    for (const step of SCHEMA_STEPS.filter((step) => step.version > 105 && step.version < 114)) await db.batch(step.statements.map((sql) => db.prepare(sql)));
     await db.prepare(`INSERT INTO fact_classes(project_id,table_name,record_id,session_id,class,classified_at)
       SELECT project_id,'tool_calls',tool_call_id,session_id,'unverified',? FROM tool_calls`).bind(now).run();
     await captureViewTranscript(db, blobs, 'cut-u', session.transcript, lines.slice(2).join(''), at, bytes(head), 'claude-code');
