@@ -198,6 +198,10 @@ async function inlineContinuation(db: RelationalStore, projectId: string, transc
   return { ...context, mycoParserState: JSON.parse(encoded) as unknown };
 }
 
+/** A document `d` conversion still owes: waiting, with its session header held and no tombstone. */
+export const CONVERTIBLE_SQL = `d.state='convert' AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id=d.project_id AND s.session_id=d.session_id)
+  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`;
+
 /** Converts sessions that predate documents, newest first, within what the wake has left. */
 export async function convertDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   let changed = 0, calls = 0;
@@ -205,8 +209,7 @@ export async function convertDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     if (calls >= limits.calls || limits.clock() >= limits.deadline || !rowAdmitted(env.db, 2 * ROW_VERSIONS)) return { changed, more: true };
     const next = await env.db.prepare(`SELECT d.project_id,d.session_id FROM session_documents d JOIN sessions s
         ON s.project_id=d.project_id AND s.session_id=d.session_id
-      WHERE d.state='convert' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
-      ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).first<{ project_id: string; session_id: string }>();
+      WHERE ${CONVERTIBLE_SQL} ORDER BY s.last_received_at DESC,d.session_id LIMIT 1`).first<{ project_id: string; session_id: string }>();
     if (next === null) return { changed, more: false };
     const page = await convertPage(env, next.project_id, next.session_id, now, { ...limits, calls: limits.calls - calls });
     changed += page.records;

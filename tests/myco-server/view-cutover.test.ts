@@ -11,6 +11,7 @@ import { VIEW_BUILD_LEASE_MS, SERIAL_VIEW_BUDGET, CUTOVER_SESSIONS_IN_FLIGHT } f
 import { productionFlipEnvelope } from '@myco-server-worker/ingest/view-flip-calibration.js';
 import { beginFlipObservation } from '@myco-server-worker/ingest/view-flip-work.js';
 import { requestViewRebuild } from '@myco-server-worker/ingest/view-lifecycle.js';
+import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewStores, captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
 import { beforeViewWriteBatch } from './helpers/view-instances.js';
@@ -266,6 +267,11 @@ test('sessions waiting for conversion advance every wake ahead of the batch, and
   await withViewStores(async (db) =>
     withViewWriterDriver(async () => {
       const blobs = memoryBlobStore(), now = Date.now();
+      // A published session whose transcript grows while conversion runs.
+      const published = await legacySession(db, blobs, 'cut-p', now - 3 * DAY, [turn('cut-p', 'first', 100)]);
+      await drain(published.env, now);
+      const grown = turn('cut-p', 'second', 100);
+      await captureViewTranscript(db, blobs, 'cut-p', published.transcript, grown, now - 60_000, published.size, 'claude-code');
       // Ten sessions predate documents, each with an unread transcript and a view build the batch would start.
       for (let i = 0; i < 10; i++) {
         const name = 'cut-d' + i;
@@ -273,24 +279,50 @@ test('sessions waiting for conversion advance every wake ahead of the batch, and
         await captureViewTranscript(db, blobs, name, 'tx_' + Buffer.from(name).toString('hex').padEnd(32, '0'), turn(name, 'old', 100), now - 3 * DAY, 0, 'claude-code');
         await requestViewRebuild(db, 'project', name, now);
       }
+      // A deleted session keeps its header and is never converted.
+      await captureViewSession(db, 'project', 'cut-x', { blobs, idOffset: 13_500 });
+      await tombstoneSession({ db }, { projectId: 'project' }, 'cut-x', 'test', now);
+      await db.prepare(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,updated_at) VALUES('project','cut-x','convert',?)`).bind(now).run();
       await db.prepare(`UPDATE session_documents SET state='convert',generation=NULL,due_at=NULL`).run();
       await db.prepare(`DELETE FROM publish_queue`).run();
       await captureViewSession(db, 'project', 'cut-n', { idOffset: 13_000 });
       const recent = 'tx_' + '7'.repeat(32), text = turn('cut-n', 'recent', 100);
       const env = await captureViewTranscript(db, blobs, 'cut-n', recent, text, now - 60_000, 0, 'claude-code') as unknown as ServerEnv;
+      // The publisher's first due-session read spends longer than the wake's content wall.
+      let stall = true;
+      const stalled: ServerEnv = { ...env, db: { prepare: (sql) => {
+        if (stall && sql.includes('d.due_at<=?')) { stall = false; setSystemTime(new Date(Date.now() + CONTENT_WALL_MS + 1000)); }
+        return db.prepare(sql);
+      }, batch: (statements) => db.batch(statements) } };
       const progress = async () => JSON.stringify((await db.prepare(`SELECT session_id,state,build FROM session_documents ORDER BY session_id`).all()).results);
-      const waiting = () => n(db.prepare(`SELECT COUNT(*) n FROM session_documents WHERE state='convert'`));
-      for (let before = await progress(), wake = 0; await waiting() > 0; wake++) {
-        expect(wake).toBeLessThan(60);
-        const outer = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
-        const report = await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active') as { continueAfterMs?: number };
-        const after = await progress();
-        expect(after).not.toBe(before);
-        if (await waiting() > 0) expect(report.continueAfterMs).toBe(BACKLOG_CHAINED_WAKE_MS);
-        if (wake === 0) expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(recent))).toBe(bytes(text));
-        before = after;
+      const waiting = () => n(db.prepare(`SELECT COUNT(*) n FROM session_documents WHERE state='convert' AND session_id<>'cut-x'`));
+      const wake = async () => {
+        const outer = measuredContentEnv(stalled, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS });
+        return await JOB_IMPLEMENTATIONS['transcript-parse']!(outer.env, now, 'active') as { continueAfterMs?: number };
+      };
+      try {
+        for (let before = await progress(), turns = 0; await waiting() > 0; turns++) {
+          expect(turns).toBeLessThan(60);
+          setSystemTime(new Date(now));
+          const report = await wake();
+          const after = await progress();
+          expect(after).not.toBe(before);
+          if (await waiting() > 0) expect(report.continueAfterMs).toBe(BACKLOG_CHAINED_WAKE_MS);
+          if (turns === 0) {
+            expect(await n(db.prepare(`SELECT parsed_offset n FROM transcripts WHERE transcript_id=?`).bind(recent))).toBe(bytes(text));
+            expect(await n(db.prepare(`SELECT c.parsed_offset n FROM view_checkpoints c JOIN session_views s ON s.project_id=c.project_id
+              AND s.live_instance=c.instance_id WHERE c.transcript_id=?`).bind(published.transcript))).toBe(published.size + bytes(grown));
+          }
+          before = after;
+        }
+        expect((await readViewCutover(db)).built).toBe(1);
+        // Once only the deleted session is left, the batch builds again.
+        setSystemTime(new Date(now));
+        await wake();
+      } finally {
+        setSystemTime();
       }
-      expect((await readViewCutover(db)).built).toBe(0);
+      expect((await readViewCutover(db)).built).toBeGreaterThan(1);
     }),
   );
 }, 120000);

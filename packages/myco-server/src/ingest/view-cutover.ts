@@ -12,6 +12,7 @@ import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
 import { publishDocuments } from './publish.js';
+import { CONVERTIBLE_SQL } from './document-conversion.js';
 
 /** The hosted relational store holds at most 10 GB; the batch stops building at this size and keeps extending published sessions. */
 export const VIEW_CUTOVER_PAUSE_BYTES = 9_000_000_000;
@@ -203,10 +204,10 @@ async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): 
   return waiting ? halfShare(env) : env;
 }
 
-/** Sessions that predate documents still wait for conversion. */
+/** Sessions that predate documents still wait for conversion, counted as conversion selects them. */
 export async function conversionBacklog(db: RelationalStore): Promise<boolean> {
   const row = await db
-    .prepare(`SELECT EXISTS(SELECT 1 FROM session_documents WHERE state='convert') backlog`)
+    .prepare(`SELECT EXISTS(SELECT 1 FROM session_documents d WHERE ${CONVERTIBLE_SQL}) backlog`)
     .first<{ backlog: number }>();
   return row?.backlog === 1;
 }
@@ -294,9 +295,10 @@ export async function runViewCutoverWake(
  * is reported once the legacy pass has run. The document publisher runs last, on its own frontiers, and its failure is
  * reported after the batch's.
  *
- * While sessions wait for conversion, the document publisher runs first, within half of what the wake has left; the
- * batch builds nothing new and only extends published sessions; the legacy pass reads only recently received
- * transcripts; and a wake whose conversion moved on asks for the next at `BACKLOG_CHAINED_WAKE_MS`.
+ * While sessions wait for conversion, the batch builds nothing new and only extends published sessions, within the
+ * wake's content wall; the document publisher follows, within half of what the wake has left and before the legacy
+ * pass, which reads only recently received transcripts; and a wake whose conversion moved on asks for the next at
+ * `BACKLOG_CHAINED_WAKE_MS`.
  */
 export async function runTranscriptParseWake(
   env: ServerEnv,
@@ -315,7 +317,6 @@ export async function runTranscriptParseWake(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
   );
-  const converted = converting ? await publish(halfShare(env)) : undefined;
   const views = await runViewCutoverWake(env, now, databaseBytes, {
     legacySince: recentSince,
     ownWall: context?.drainOnly === true,
@@ -325,6 +326,7 @@ export async function runTranscriptParseWake(
     (report) => ({ report }),
     (error: unknown) => ({ error }),
   );
+  const converted = converting ? await publish(halfShare(env)) : undefined;
   const yielding = converting || 'error' in views || views.report.progressed;
   const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
   const documents = converted ?? await publish(env);
