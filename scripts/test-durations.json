@@ -144,7 +144,9 @@
     "local: #1924 session documents PR 1, pinned Bun1.4.0 through npm test on native and Miniflare D1. tests/myco-server/document-publish.test.ts measured 5311ms for 2 cases, weighted 8000ms; tests/meta/document-read-boundary.test.ts measured 928ms for 3 cases, weighted 2000ms; the new learning-stages zero-document-read case (50 claims and 5 ticks on both stores) exceeds bun's 5000ms default alone, so learning-stages.test.ts gains 8000ms. New parity scenario 'session documents' passed on both targets in a 32.7s run that includes both boots, weighted 8000ms.",
     "local: #1924 session documents PR 1 review fixes, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/learning-stages.test.ts measured 13.92s/13.93s/13.98s for 8 cases after its zero-document-read case drops to 5 claims and 2 ticks (case 4.79s to 2.15s; CI run 41111549355 timed it out at 30s on Linux), weighted 48790ms; tests/myco-server/document-publish.test.ts measured 8.23s for 4 cases, weighted 28805ms.",
     "local: #1924 session documents PR 1b, pinned Bun1.4.0 through npm test on native and Miniflare D1. tests/myco-server/document-conversion.test.ts measured 6109ms for 2 cases (a published view built, flipped and converted, and a hook-only session), weighted 9000ms for CI startup. No new parity scenario.",
-    "local: #1924 session documents PR 1b review fixes, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 7.83s for 4 cases (adds a frozen-tail session and 258 tool inputs over two fresh wake budgets), weighted 27405ms."
+    "local: #1924 session documents PR 1b review fixes, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 7.83s for 4 cases (adds a frozen-tail session and 258 tool inputs over two fresh wake budgets), weighted 27405ms.",
+    "local: #1924 conversion wake chaining, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.42s for 5 cases (adds a conversion backlog driven through clock wakes at the backlog cadence), weighted 36470ms.",
+    "local: #1924 conversion page body reads, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 13.62s for 6 cases (adds one blobs read per export page), weighted 47670ms."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -1025,7 +1027,7 @@
     "tests/myco-server/learning-stages.test.ts": 48790,
     "tests/myco-server/document-publish.test.ts": 28805,
     "tests/meta/document-read-boundary.test.ts": 2000,
-    "tests/myco-server/document-conversion.test.ts": 27405
+    "tests/myco-server/document-conversion.test.ts": 47670
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
