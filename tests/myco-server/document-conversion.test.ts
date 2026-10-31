@@ -234,7 +234,9 @@ test('a conversion backlog chains each clock wake at the backlog cadence and con
     const blobs = memoryBlobStore();
     await heldToolInputs(db, blobs);
     const configured = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
-    const env = { ...configured, blobs, platform: { ...configured.platform, name: name === 'native' ? 'bun' as const : 'cloudflare' as const } };
+    // Each wake's calls cover a share of the backlog's stored objects, so conversion spans several wakes on either store.
+    const platform = { ...configured.platform, name: name === 'native' ? 'bun' as const : 'cloudflare' as const, jobBudget: { ...configured.platform.jobBudget, calls: 60 } };
+    const env = { ...configured, blobs, platform };
     const document = async () => (await db.prepare(`SELECT state,build FROM session_documents WHERE session_id='session'`).first<{ state: string; build: string | null }>())!;
     const pacer = tickPacer();
     let at = Date.now(), before = await document(), wakes = 0;

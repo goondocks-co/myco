@@ -171,7 +171,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
     await event('attachment', { attachmentId, promptId, blob: attachment.key, description: 'shared captured file' });
     attachments.push({ attachmentId, key: attachment.key, mediaType, bytes });
   }
-  await documentsPublished(target, session, PROJECT);
+  await documentsPublished(target, session, PROJECT, requestFetch);
   const turnResponse = await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}`, other.headers);
   expect(turnResponse.status).toBe(200);
   type Locator = { generation: number; owner: string; page: number };

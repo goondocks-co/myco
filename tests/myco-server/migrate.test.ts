@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrationFileName, readSchemaVersion, renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { applySchemaSteps } from './helpers/migrate.js';
+import { applySchemaSteps, PRE_DOCUMENTS_STEPS } from './helpers/migrate.js';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
@@ -139,7 +139,6 @@ const shape = (sqlite: Database) =>
 const version = (sqlite: Database) => (sqlite.query(`SELECT value FROM schema_meta WHERE key='version'`).get() as any).value;
 const schemaVersionsFrom = (first: number) => SCHEMA_STEPS.filter((step) => step.version >= first).map((step) => step.version);
 /** The steps below the documents guard. A test that seeds captured sessions applies these: the guard refuses a session whose capture is unpublished. */
-const PRE_DOCUMENTS_STEPS = SCHEMA_STEPS.filter((step) => step.version < 114);
 const preDocumentsVersionsFrom = (first: number) => PRE_DOCUMENTS_STEPS.filter((step) => step.version >= first).map((step) => step.version);
 const fresh = () => { const s = new Database(':memory:'); s.exec('PRAGMA foreign_keys = ON'); return s; };
 

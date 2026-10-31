@@ -168,11 +168,12 @@ export function volumeSql(databasePath: string) {
 }
 
 /** Wakes the target until the session's document holds every event captured for it, so a read sees what was sent. */
-export async function documentsPublished(target: ParityTarget, sessionId: string, projectId = target.projectId): Promise<void> {
+export async function documentsPublished(target: ParityTarget, sessionId: string, projectId = target.projectId,
+  requestFetch: (request: Request) => Promise<Response> = (request) => fetch(request)): Promise<void> {
   const pending = async () => Number((await target.sql(`SELECT
       (SELECT COUNT(*) FROM publish_queue WHERE project_id=${lit(projectId)} AND session_id=${lit(sessionId)})
       + (SELECT COUNT(*) FROM session_documents WHERE project_id=${lit(projectId)} AND session_id=${lit(sessionId)} AND due_at <= ${Date.now()}) AS n`))[0]?.n ?? 0);
   for (let wake = 0; wake < 8 && await pending() > 0; wake += 1)
-    await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+    await requestFetch(new Request(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } }));
   expect(await pending()).toBe(0);
 }

@@ -246,13 +246,19 @@ describe('what outlives the answers', () => {
       for (const table of ['prompt_context_answers', 'spore_injections', 'session_injections', 'prompt_batches']) m.e.sqlite.run(`UPDATE ${table} SET created_at = created_at - ?`, [(PROMPT_ANSWER_RETENTION_DAYS + 1) * DAY]);
       return prunePromptAnswers(m.e.db, NOW - PROMPT_ANSWER_RETENTION_DAYS * DAY, 100);
     };
-    return { ...m, answer, deliver, sessionLevel, prune };
+    // Prompts are measured from the session's live document catalog.
+    const catalogPrompt = (promptId: string) => {
+      m.e.sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at) VALUES ('proj_1', ?, 'live', 1, ?)
+        ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'live', generation = 1`, [SESSION, NOW]);
+      m.e.sqlite.run(`INSERT INTO session_prompts (project_id, session_id, generation, prompt_id, turn_key, ord, origin, created_at) VALUES ('proj_1', ?, 1, ?, ?, 0, 'user', ?)`, [SESSION, promptId, promptId, NOW]);
+    };
+    return { ...m, answer, deliver, sessionLevel, prune, catalogPrompt };
   }
 
   it('credits a prompt delivered only the plan nudge after its answer is pruned, from a member that names only the answer', async () => {
     const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });
     expect(s.answer.parts.map((p) => p.kind)).toContain('plan-nudge');
-    s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e2', 'user', 'h', ?, ?, 't', ?)`, [uuid(2), SESSION, NOW, NOW, NOW]);
+    s.catalogPrompt(uuid(2));
     // The nudge alone: the receipt this answer carried is set aside, so only the nudge can credit the prompt.
     s.e.sqlite.run(`DELETE FROM spore_injections`);
     expect(await s.deliver(1, { answerId: s.answer.answerId, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
@@ -266,7 +272,7 @@ describe('what outlives the answers', () => {
   it('credits a prompt the plan nudge was delivered to when the delivery arrives after its answer was pruned', async () => {
     const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });
     expect(s.answer.sessionRecord).toBe('plan-nudge');
-    s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e2', 'user', 'h', ?, ?, 't', ?)`, [uuid(2), SESSION, NOW, NOW, NOW]);
+    s.catalogPrompt(uuid(2));
     s.e.sqlite.run(`DELETE FROM spore_injections`);
     expect(await s.prune()).toBe(1);
     // The member renders the cached answer long after: it reports the answer and the record it carried.
