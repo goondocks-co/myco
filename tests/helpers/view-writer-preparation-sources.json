@@ -374,7 +374,8 @@
     "releaseHolders": "W",
     "commit": "W",
     "register": "W",
-    "frontier": "W"
+    "frontier": "W",
+    "deferFailedSession": "W"
   },
   "packages/myco-server/src/content/document-reader.ts": {
     "readDirectory": "W",

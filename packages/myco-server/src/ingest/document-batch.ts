@@ -12,7 +12,7 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord } from '../content/document.js';
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
-import { DocumentWriter, type DocumentLayout } from '../content/document-writer.js';
+import { DocumentWriter, type DocumentLayout, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION } from '../constants.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
@@ -22,10 +22,27 @@ export const SESSION_PATHS_LIMIT = 500;
 export const PASS_CLOSING_STATEMENTS = 64;
 export const PASS_CLOSING_BLOB_CALLS = 12;
 
+/** Statements one chunk version's registration may spend, and its blob calls: a store or durability check, then its verifying read. */
+export const VERSION_STATEMENTS = 12;
+export const VERSION_BLOB_CALLS = 2;
+
 /** Whether the invocation can no longer pay for `statements` more without spending the wake's reserve. */
 export function reserveReached(db: RelationalStore, statements: number, blobCalls: number): boolean {
   const remaining = remainingInvocationBudget(db);
   return remaining !== null && (remaining.statements < CONTENT_WAKE_JOB_RESERVE + statements || remaining.blobCalls < blobCalls);
+}
+
+/**
+ * Whether the invocation can still commit `versions` chunk versions after spending `statements` and `blobCalls` more.
+ * A commit's only blob calls are its versions' registrations.
+ */
+export function commitAdmitted(db: RelationalStore, versions: number, statements = 0, blobCalls = 0): boolean {
+  return !reserveReached(db, PASS_CLOSING_STATEMENTS + versions * VERSION_STATEMENTS + statements, versions * VERSION_BLOB_CALLS + blobCalls);
+}
+
+/** A placement the batch refused: its commit could no longer be paid, and the batch holds what it held before it. */
+export class DocumentPassFull extends Error {
+  constructor() { super('document_pass_full'); }
 }
 
 /** A row of `retired_objects`: a chunk version's holder until a live directory row adopts it. */
@@ -122,6 +139,13 @@ export class DocumentBatch {
   private readonly newPrompts: { record: DocRecord; turnKey: string | null }[] = [];
   private readonly paths = new Map<string, { n: number; at: number }>();
   private readonly mycoCalls = new Map<string, DocRecord & { harness: string | null }>();
+  /**
+   * When set, every placement keeps the batch's commit payable: a chunk read or a placement whose commit the
+   * invocation could no longer pay is undone and refused with `DocumentPassFull`.
+   */
+  admitted = false;
+  /** The pending versions at the placement in progress, which every read keeps payable. */
+  private floor = 0;
 
   constructor(
     private readonly env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -134,7 +158,10 @@ export class DocumentBatch {
     this.db = env.db;
     this.openTurn = doc.open_turn_key;
     this.firstPrompt = doc.first_prompt;
-    this.writer = new DocumentWriter(directoryOf(doc.generation, chunks, pages), doc.next_chunk, (row) => readPageChunk(env, row));
+    this.writer = new DocumentWriter(directoryOf(doc.generation, chunks, pages), doc.next_chunk, async (row) => {
+      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.pendingVersions), 0, 1)) throw new DocumentPassFull();
+      return readPageChunk(env, row);
+    });
   }
 
   /** Reads the last page chunk and its continuation. */
@@ -221,8 +248,54 @@ export class DocumentBatch {
     }
   }
 
-  /** Places records in order, counting what each adds to the session's catalog. Returns each record as placed, null when unchanged. */
+  /**
+   * Places records in order, counting what each adds to the session's catalog. Returns each record as placed, null when
+   * unchanged. While `admitted`, a placement whose commit could no longer be paid leaves the batch unchanged and throws
+   * `DocumentPassFull`.
+   */
   async place(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
+    if (!this.admitted) return this.placeAll(records, harness);
+    const mark = this.mark();
+    try {
+      const placed = await this.placeAll(records, harness);
+      if (!commitAdmitted(this.db, this.writer.pendingVersions)) throw new DocumentPassFull();
+      return placed;
+    } catch (error) {
+      if (error instanceof DocumentPassFull) this.undo(mark);
+      throw error;
+    } finally {
+      this.floor = 0;
+    }
+  }
+
+  private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
+    firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
+    resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }> } {
+    this.floor = this.writer.pendingVersions;
+    return {
+      writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
+      firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
+      newPrompts: this.newPrompts.length, turns: new Map(this.turns), resolved: new Set(this.resolved), paths: new Map(this.paths),
+      mycoCalls: new Map(this.mycoCalls),
+    };
+  }
+
+  private undo(mark: ReturnType<DocumentBatch['mark']>): void {
+    this.writer.undo(mark.writer);
+    Object.assign(this.counts, mark.counts);
+    Object.assign(this, { records: mark.records, lastRecordAt: mark.lastRecordAt, openTurn: mark.openTurn, firstPrompt: mark.firstPrompt,
+      unplaced: mark.unplaced, unresolved: mark.unresolved });
+    this.inserted.splice(mark.inserted);
+    this.newPrompts.splice(mark.newPrompts);
+    for (const [into, from] of [[this.turns, mark.turns], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls]] as const) {
+      (into as Map<string, unknown>).clear();
+      for (const [key, value] of from) (into as Map<string, unknown>).set(key, value);
+    }
+    this.resolved.clear();
+    for (const id of mark.resolved) this.resolved.add(id);
+  }
+
+  private async placeAll(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
     await this.resolve(records);
     this.assignPrompts(records);
     const reads = this.writer.reads;

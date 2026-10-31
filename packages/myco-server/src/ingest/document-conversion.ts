@@ -27,7 +27,7 @@ import type { DocRecord, RecordKind } from '../content/document.js';
 import type { ChunkRow, PageRow } from '../content/document-reader.js';
 import {
   DocumentBatch, directoryStatements, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement, publishedPromptScheme,
-  PUBLISHED_RECORD_SCHEME, reserveReached, type BatchDocument, type ChunkVersion, type Commit,
+  PUBLISHED_RECORD_SCHEME, reserveReached, VERSION_BLOB_CALLS, VERSION_STATEMENTS, type BatchDocument, type ChunkVersion, type Commit,
 } from './document-batch.js';
 import { readParserCheckpoint } from './parser-checkpoint.js';
 import type { PassLimits } from './parse.js';
@@ -40,9 +40,6 @@ export const CONVERT_ROWS_PER_PAGE = 200;
 export const CONVERT_BYTES_PER_PAGE = 8 * 1024 * 1024;
 /** View plans one promotion page reads. */
 const PROMOTE_PER_PAGE = 50;
-/** Statements and blob calls one chunk version's registration may spend. */
-const VERSION_STATEMENTS = 12;
-const VERSION_BLOB_CALLS = 3;
 /** What one more row may spend: its body, bundle and page chunk reads, and the chunk versions it can add. */
 const ROW_STATEMENTS = 8;
 const ROW_BLOB_CALLS = 4;

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
@@ -12,6 +12,10 @@ import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
+import { statusMetadata } from '@myco-server-worker/read/meta.js';
+import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
 import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 
@@ -260,5 +264,71 @@ test('a locator wake reads the same catalog rows for the same prompts however ma
     const short = await wake('short', 20);
     await db.prepare(`UPDATE session_prompts SET page=0 WHERE session_id='short'`).run();
     expect(await wake('long', 60), name).toEqual(short);
+  });
+});
+
+test('a session too large for one pass commits progress on every pass under the wake budget and converges', async () => {
+  await withViewStores(async (db, name) => {
+    // Sixty transcripts, each its own turn, whose pages fill more chunks than one wake's blob calls can rewrite.
+    const t0 = Date.now() - 2 * 60 * MIN;
+    const blobs = memoryBlobStore();
+    const shell = (id: string, bytes: number) => item('response_item', { type: 'function_call', call_id: id, name: 'shell',
+      arguments: JSON.stringify({ command: `npm test ${id}`, env: 'x'.repeat(bytes) }) }) + item('response_item', { type: 'function_call_output', call_id: id, output: 'ok' });
+    const transcripts = Array.from({ length: 60 }, (_, i) => `tx_${String(i).padStart(32, '0')}`);
+    const offsets = new Map<string, number>();
+    let calls = 0;
+    let env: Pick<ServerEnv, 'db' | 'blobs'> = { db, blobs };
+    const grow = async (text: (t: number) => string, at: number) => {
+      for (const [i, t] of transcripts.entries()) {
+        const bytes = text(i);
+        env = await captureViewTranscript(db, blobs, 'session', t, bytes, at, offsets.get(t) ?? 0, 'codex');
+        offsets.set(t, (offsets.get(t) ?? 0) + bytes.length);
+      }
+    };
+    await grow((i) => user(`turn-${i}`, `task ${i}`) + shell(`c${calls++}`, 50_000) + shell(`c${calls++}`, 50_000) + shell(`c${calls++}`, 50_000), t0);
+    for (let more = true; more;) more = (await publishDocuments(env, t0 + MIN, limits())).more;
+    expect(Number((await one(db, `SELECT COUNT(DISTINCT chunk_no) n FROM session_pages`))!.n), name).toBeGreaterThan(8);
+
+    // Every transcript grows by one call: the pass touches every turn's chunk, more than one wake's blob calls can rewrite.
+    await grow(() => shell(`c${calls++}`, 2_000), t0 + 2 * MIN);
+    let published = Number((await counters(db, 'session'))!.tool_calls);
+    for (let pass = 0; ; pass += 1) {
+      expect(pass, name).toBeLessThan(10);
+      const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT });
+      const report = await publishDocuments(measured.env, t0 + 2 * MIN + pass, limits());
+      const held = Number((await counters(db, 'session'))!.tool_calls);
+      if (published < calls) expect(held, `${name} pass ${pass}`).toBeGreaterThan(published);
+      published = held;
+      if (!report.more) break;
+    }
+    expect(await counters(db, 'session'), name).toMatchObject({ tool_calls: calls, prompts: 60, due_at: null });
+    expect((await statusMetadata(db)).documentPublishFailure, name).toBeNull();
+  });
+}, 120_000);
+
+test('a session whose publication keeps failing backs off and is recorded while another session converts in the same wake', async () => {
+  await withViewStores(async (db, name) => {
+    const t0 = Date.now() - 2 * 60 * MIN;
+    const blobs = memoryBlobStore();
+    const first = user('turn-1', 'run the tests') + reply('running');
+    const env = await captureViewTranscript(db, blobs, 'session', tx, first, t0, 0, 'codex');
+    await publishDocuments(env, t0 + MIN, limits());
+    await captureViewTranscript(db, blobs, 'session', tx, reply('still running'), t0 + 2 * MIN, first.length, 'codex');
+    await captureViewSession(db, 'project', 'old', { blobs });
+    await db.prepare(`UPDATE session_documents SET state='convert',generation=NULL,due_at=NULL WHERE session_id='old'`).run();
+    await db.prepare(`DELETE FROM publish_queue WHERE session_id='old'`).run();
+
+    // The live session's chunk objects can no longer be read, so every pass over it fails by name.
+    const lost = new Set((await db.prepare(`SELECT b.generation,c.blob_key FROM session_chunks c JOIN blobs b ON b.project_id=c.project_id AND b.key=c.blob_key
+      WHERE c.session_id='session'`).all<{ generation: string | null; blob_key: string }>()).results.map((row) => blobObjectKey('project', row.blob_key, row.generation)));
+    const get = blobs.get.bind(blobs);
+    blobs.get = async (key, options) => (lost.has(key) ? null : get(key, options));
+
+    const now = t0 + 3 * MIN;
+    await publishDocuments(env, now, limits());
+    expect(await one(db, `SELECT state FROM session_documents WHERE session_id='old'`), name).toEqual({ state: 'live' });
+    expect(Number((await counters(db, 'session'))!.due_at), name).toBeGreaterThan(now);
+    expect(documentPublishFailureFinding((await statusMetadata(db)).documentPublishFailure, now), name)
+      .toEqual({ kind: 'document_publish_failed', tone: 'warn', failures: 1, lastFailedAt: now, failure: 'document_object_missing' });
   });
 });
