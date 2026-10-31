@@ -13,14 +13,14 @@ const live = `FROM session_documents d WHERE d.state = 'live'
 /**
  * Learning reads documents. The publisher becomes the one writer of card state: the legacy triggers go, and a pending
  * card waits for settlement (`settle_at`) before a model may be asked for it (`due_at`). Every turn of a live document
- * gets its card row and every live session its learning row, ready. A session's title records the user prompts its
- * document held at its writing, so a refresh is due by counting rather than by reading prompts.
+ * gets its card row and every live session its learning row, ready. A live document records the user prompts it holds
+ * at each title write, so a refresh is due by counting rather than by reading prompts.
  */
 export const V115_STATEMENTS: readonly string[] = [
   ...V110_LEGACY_TRIGGERS.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
   `ALTER TABLE turn_cards ADD COLUMN settle_at INTEGER`,
   `CREATE INDEX IF NOT EXISTS idx_turn_cards_settle ON turn_cards (settle_at) WHERE state = 'pending'`,
-  `CREATE INDEX IF NOT EXISTS idx_turn_cards_model_due ON turn_cards (project_id, session_id, created_at)
+  `CREATE INDEX IF NOT EXISTS idx_turn_cards_model_due ON turn_cards (project_id, session_id, due_at, turn_key)
     WHERE state = 'pending' AND due_at IS NOT NULL`,
   `UPDATE turn_cards SET settle_at = COALESCE(due_at, created_at + ${TURN_QUIET_MS}), due_at = NULL WHERE state = 'pending'`,
   `INSERT OR IGNORE INTO turn_cards (project_id, session_id, turn_key, settle_at, created_at)
@@ -31,7 +31,7 @@ export const V115_STATEMENTS: readonly string[] = [
     WHERE c.project_id = learning_sessions.project_id AND c.session_id = learning_sessions.session_id AND c.state = 'pending')`,
   `UPDATE learning_sessions SET eligible_at = NULL WHERE pending_cards > 0`,
   `DELETE FROM learning_init_queue`,
-  `ALTER TABLE sessions ADD COLUMN title_user_prompts INTEGER`,
-  `UPDATE sessions SET title_user_prompts = (SELECT d.user_prompts FROM session_documents d
-    WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live') WHERE title IS NOT NULL`,
+  `ALTER TABLE session_documents ADD COLUMN titled_user_prompts INTEGER`,
+  `UPDATE session_documents SET titled_user_prompts = user_prompts WHERE state = 'live' AND EXISTS (SELECT 1 FROM sessions s
+    WHERE s.project_id = session_documents.project_id AND s.session_id = session_documents.session_id AND s.title IS NOT NULL)`,
 ];

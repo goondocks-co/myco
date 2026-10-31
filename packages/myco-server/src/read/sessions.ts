@@ -3,7 +3,7 @@ import type { PreparedStatement, RelationalStore, RunResult } from '../core/adap
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { containsPattern, inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
-import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
+import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublishedSql } from './material-readiness.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
@@ -141,15 +141,20 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
 }
 
 
-/** The user prompts the session's live document holds, which a title records as the material it covers. */
-const TITLE_USER_PROMPTS = `(SELECT d.user_prompts FROM session_documents d WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live')`;
+/** Records on the session's live document the user prompts a title just written covers; a write that did not land leaves it as it was. */
+function titledUserPrompts(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): PreparedStatement {
+  return db.prepare(`UPDATE session_documents SET titled_user_prompts = user_prompts
+    WHERE project_id = ? AND session_id = ? AND state = 'live' AND EXISTS (SELECT 1 FROM sessions s
+      WHERE s.project_id = session_documents.project_id AND s.session_id = session_documents.session_id AND s.title = ? AND s.summary = ?)`)
+    .bind(projectId, sessionId, title, summary);
+}
 
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null, attribution?: RunWrite): Promise<boolean> {
   const statement = db
-    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}), title_user_prompts = ${TITLE_USER_PROMPTS} WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`)
     .bind(title, summary, titledBy, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId, title, summary)]);
   return result.meta.changes > 0;
 }
 
@@ -157,9 +162,9 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
   const statement = db
-    .prepare(`UPDATE sessions SET title = ?, summary = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}), title_user_prompts = ${TITLE_USER_PROMPTS} WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`)
     .bind(title, summary, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId, title, summary)]);
   return result.meta.changes > 0;
 }
 

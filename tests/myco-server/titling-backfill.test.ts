@@ -677,7 +677,7 @@ describe('sessions that never end', () => {
     r.documented('proj_1', id, prompts);
     // The standing title records the prompts received by the instant of its material.
     const covered = over.titledAt === undefined ? null : Array.from({ length: prompts }, (_, i) => lastReceivedAt - i * 1000).filter((at) => at <= (over.materialAt ?? over.titledAt!)).length;
-    r.sqlite.run(`UPDATE sessions SET title_user_prompts = ? WHERE session_id = ?`, [covered, id]);
+    r.sqlite.run(`UPDATE session_documents SET titled_user_prompts = ? WHERE session_id = ?`, [covered, id]);
   }
   const endedAt = (r: ReturnType<typeof rig>, id: string) => (r.sqlite.query(`SELECT ended_at FROM sessions WHERE session_id = ?`).get(id) as { ended_at: number | null }).ended_at;
 

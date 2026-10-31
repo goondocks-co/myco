@@ -469,7 +469,6 @@ const CAPTURED_OPERATIONS = [
   "M20:session_activity_toolRows:0",
   "M20:session_activity_edgeRows:0",
   "M21:hook_placement_countUnplacedContextRecords:0",
-  "M23:children_materialRows:0",
   "M26:processed_processedField:0",
   "M26:processedBundle:0",
   "M45:injectedPromptRecord:0",
@@ -480,7 +479,7 @@ test('read membership is the exact protected-operation partition and retains the
  expect(text).not.toMatch(/from\s+['"]\.\.\/core\/runs\.js/);
  const captured=new Set<string>(CAPTURED_OPERATIONS),remaining=new Set<string>(LEGACY_ONLY_OPERATIONS);
  const protectedIds=VIEW_READ_OPERATIONS.filter(operation=>operation.id.startsWith('M')).map(operation=>operation.id);
- expect(captured.size).toBe(29);
+ expect(captured.size).toBe(28);
  expect(remaining.size).toBe(66);
  expect<string[]>([...protectedIds].filter(id=>!remaining.has(id)).sort()).toEqual([...captured].sort());
  for(const id of protectedIds){
@@ -1088,7 +1087,7 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(dependencyDiffs).toHaveLength(0);
  const frozenIds=new Set(legacy.sourceExceptions.map(row=>row.id));
  const repinned=preparationOriginEnvelope.writer.sourceExceptions.filter(row=>frozenIds.has(row.id));
- expect(repinned).toHaveLength(21);
+ expect(repinned).toHaveLength(20);
  for(const row of repinned)expect(derivedDependencies.get(row.id),row.id).toEqual(row.dependencies);
  const derived={closures,callers};
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/reseal-view-writer-preparations.ts').toEqual([]);

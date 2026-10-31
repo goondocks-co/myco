@@ -30,14 +30,31 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
   };
 }
 
+/** A turn read from the live document, and whether the read held every page of it. */
+export interface DocumentTurn { input: TurnInput; complete: boolean }
+
 /**
  * A turn of the session's live document, read from at most `TURN_PAGES` of its pages; null when the session has no
- * live document or the document holds no such turn. A caller reading several turns of one session passes its document.
+ * live document or the document holds no such turn. A turn with more pages is read at its head and its last page and is
+ * not complete: what lies between is unread. A caller reading several turns of one session passes its document.
  */
-export async function documentTurnInput(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
-  document?: SessionDocument | null): Promise<TurnInput | null> {
+export async function documentTurn(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
+  document?: SessionDocument | null): Promise<DocumentTurn | null> {
   const doc = document === undefined ? await SessionDocument.open(env, projectId, sessionId) : document;
   if (doc === null) return null;
-  const { pages } = await doc.ownerPages(turnKey, 0, TURN_PAGES);
-  return turnInput(turnKey, pages.flatMap((page) => page.records));
+  const head = await doc.ownerPages(turnKey, 0, TURN_PAGES);
+  if (!head.more) {
+    const input = turnInput(turnKey, head.pages.flatMap((page) => page.records));
+    return input === null ? null : { input, complete: true };
+  }
+  const last = await doc.lastPage(turnKey);
+  const tail = last === null ? [] : (await doc.ownerPages(turnKey, last, 1)).pages;
+  const input = turnInput(turnKey, [...head.pages.slice(0, TURN_PAGES - 1), ...tail].flatMap((page) => page.records));
+  return input === null ? null : { input, complete: false };
+}
+
+/** The turn's input as `documentTurn` reads it, complete or not. */
+export async function documentTurnInput(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
+  document?: SessionDocument | null): Promise<TurnInput | null> {
+  return (await documentTurn(env, projectId, sessionId, turnKey, document))?.input ?? null;
 }

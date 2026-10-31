@@ -16,6 +16,7 @@ import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocR
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { resolvePresentedDates } from './projections.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Distinct paths a session's tools touched that the catalog keeps. */
@@ -100,36 +101,54 @@ export function directoryStatements(db: RelationalStore, projectId: string, sess
   return [db.prepare(chunkRowsSql(BATCH_GENERATION)).bind(projectId, sessionId), db.prepare(pageRowsSql(BATCH_GENERATION)).bind(projectId, sessionId)];
 }
 
+/** A plan a transcript holds, as placed, with the digest of its whole body and whether the body moved to a body chunk. */
+interface TranscriptPlan { record: DocRecord; hash: string; spilled: boolean }
+
 /**
  * What a live publication tells the session's canonical rows. A plan a transcript holds is inserted, or its title and
  * content follow a newer appearance while the row has no member edit and its last writer is a transcript (publication,
  * whose appearance id is the plan key, or the transcript parse); status and other editorial fields are never
- * overwritten. A user prompt newer than the session's end reopens it.
+ * overwritten. A body the document moved to a body chunk is stored as a spilled plan: no inline content, the chunk's
+ * object as `blob_key` and its digest as `content_hash`, with the processed proof its readers require. A user prompt
+ * newer than the session's end reopens it. A session an import alone accounts for is presented from its document: its
+ * first turn's prompt and its latest record.
  */
-function sessionRowStatements(db: RelationalStore, projectId: string, sessionId: string, tokenId: string,
-  plans: ReadonlyMap<string, { record: DocRecord; hash: string }>, latestUserPrompt: number | null, now: number): PreparedStatement[] {
+function sessionRowStatements(db: RelationalStore, projectId: string, sessionId: string, generation: number, tokenId: string,
+  plans: ReadonlyMap<string, TranscriptPlan>, latestUserPrompt: number | null, lastRecordAt: number | null, now: number): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
   if (plans.size > 0) {
-    statements.push(db.prepare(`INSERT INTO plans (project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,origin_path,
+    const rows = JSON.stringify([...plans].map(([key, { record, hash, spilled }]) => ({
+      key, id: record.id, title: record.title ?? null, content: spilled ? null : record.content, blob: spilled ? hash : null, hash,
+      status: record.status ?? 'active', path: record.origin_path ?? null, at: record.created_at, prompt: record.prompt_id ?? null, source: record.source ?? null,
+    })));
+    statements.push(db.prepare(`INSERT INTO plans (project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,
         created_at,updated_at,token_id,received_at,prompt_id,source)
       SELECT ?1,json_extract(j.value,'$.key'),?2,json_extract(j.value,'$.id'),
         COALESCE((SELECT machine_id FROM sessions WHERE project_id=?1 AND session_id=?2),''),json_extract(j.value,'$.title'),
-        json_extract(j.value,'$.content'),json_extract(j.value,'$.hash'),json_extract(j.value,'$.status'),json_extract(j.value,'$.path'),
+        json_extract(j.value,'$.content'),json_extract(j.value,'$.blob'),json_extract(j.value,'$.hash'),json_extract(j.value,'$.status'),json_extract(j.value,'$.path'),
         json_extract(j.value,'$.at'),json_extract(j.value,'$.at'),?3,?4,json_extract(j.value,'$.prompt'),json_extract(j.value,'$.source') FROM json_each(?5) j WHERE true
-      ON CONFLICT (project_id,plan_key) DO UPDATE SET title=excluded.title,content=excluded.content,blob_key=NULL,content_hash=excluded.content_hash,
+      ON CONFLICT (project_id,plan_key) DO UPDATE SET title=excluded.title,content=excluded.content,blob_key=excluded.blob_key,content_hash=excluded.content_hash,
         event_id=excluded.event_id,updated_at=excluded.updated_at,received_at=excluded.received_at
       WHERE (plans.event_id=plans.plan_key OR EXISTS (SELECT 1 FROM events e WHERE e.project_id=plans.project_id
           AND e.event_id=plans.event_id AND e.producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}'))
         AND plans.updated_by IS NULL AND plans.updated_at<excluded.updated_at AND plans.content_hash<>excluded.content_hash`)
-      .bind(projectId, sessionId, tokenId, now, JSON.stringify([...plans].map(([key, { record, hash }]) => ({
-        key, id: record.id, title: record.title ?? null, content: record.content, hash, status: record.status ?? 'active',
-        path: record.origin_path ?? null, at: record.created_at, prompt: record.prompt_id ?? null, source: record.source ?? null,
-      })))));
+      .bind(projectId, sessionId, tokenId, now, rows),
+      db.prepare(`INSERT INTO processed_resources (project_id,kind,resource_id,blob_key,source_token_id,event_id)
+        SELECT ?1,'plan',p.plan_key,p.blob_key,p.token_id,p.event_id FROM json_each(?2) j
+          JOIN plans p ON p.project_id=?1 AND p.plan_key=json_extract(j.value,'$.key') AND p.blob_key=json_extract(j.value,'$.blob')
+          JOIN blobs b ON b.project_id=p.project_id AND b.key=p.blob_key
+        WHERE json_extract(j.value,'$.blob') IS NOT NULL ON CONFLICT DO NOTHING`).bind(projectId, rows));
   }
   if (latestUserPrompt !== null) {
     statements.push(db.prepare(`UPDATE sessions SET ended_at=NULL,ended_by=NULL WHERE project_id=? AND session_id=? AND ended_at IS NOT NULL AND ended_at<?`)
       .bind(projectId, sessionId, latestUserPrompt));
   }
+  statements.push(resolvePresentedDates(db, projectId, sessionId, undefined, {
+    min: { sql: `(SELECT sp.created_at FROM session_prompts sp WHERE sp.project_id=? AND sp.session_id=? AND sp.generation=? AND sp.turn_key=sp.prompt_id
+      ORDER BY sp.ord LIMIT 1)`, params: [projectId, sessionId, generation] },
+    max: { sql: `MAX(COALESCE((SELECT d.last_record_at FROM session_documents d WHERE d.project_id=? AND d.session_id=?),0),COALESCE(?,0))`,
+      params: [projectId, sessionId, lastRecordAt] },
+  }));
   return statements;
 }
 
@@ -162,7 +181,7 @@ export class DocumentBatch {
   /** The pending versions at the placement in progress, which every read keeps payable. */
   private floor = 0;
   /** The latest appearance this batch placed of each plan a transcript holds, with its content hash. */
-  private readonly transcriptPlans = new Map<string, { record: DocRecord; hash: string }>();
+  private readonly transcriptPlans = new Map<string, TranscriptPlan>();
   /** The latest top-level user prompt this batch added. */
   private latestUserPrompt: number | null = null;
 
@@ -331,7 +350,10 @@ export class DocumentBatch {
       if (record.k === 'tool' && typeof placed.record.myco_tool === 'string') this.mycoCalls.set(record.id, { ...placed.record, harness });
       if (record.k === 'plan' && typeof placed.record.ev !== 'string' && typeof placed.record.content === 'string'
         && record.created_at >= (this.transcriptPlans.get(planKeyOf(record))?.record.created_at ?? 0)) {
-        this.transcriptPlans.set(planKeyOf(record), { record: placed.record, hash: await sha256Hex(placed.record.content) });
+        const content = typeof record.content === 'string' ? record.content : placed.record.content;
+        this.transcriptPlans.set(planKeyOf(record), {
+          record: placed.record, hash: await sha256Hex(content), spilled: placed.record.bodies?.content !== undefined,
+        });
       }
       if (placed.outcome === 'merged') {
         if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
@@ -478,7 +500,7 @@ export class DocumentBatch {
         FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
         .bind(JSON.stringify(settled), p, s, g));
     }
-    if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, now));
+    if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at)
         SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at') FROM json_each(?) j

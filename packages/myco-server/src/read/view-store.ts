@@ -41,7 +41,6 @@ import { sessionMaterialReadySql as sessions_import_sessionMaterialReadySql } fr
 import { CAPTURE_RULE_BUNDLES as sessions_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { sourceTimestampsRecorded as sessions_import_sourceTimestampsRecorded } from "@goondocks/myco-shared/capture-rules";
 import type { RelationalStore as children_import_RelationalStore } from "../core/adapters.js";
-import { assertSessionMaterialReady as children_import_assertSessionMaterialReady } from "./material-readiness.js";
 import { sessionMaterialReadySql as children_import_sessionMaterialReadySql } from "./material-readiness.js";
 import { titlingClaimAvailableSql as children_import_titlingClaimAvailableSql } from "./material-readiness.js";
 import { notTombstonedSql as children_import_notTombstonedSql } from "../core/tombstones.js";
@@ -185,8 +184,6 @@ import { EMBEDDING_SELECTION_LEAVES as switchSettingLeaves, type StoredEmbedding
 import { CLEANLINESS_SQL as releaseCleanliness } from '../core/provenance.js';
 
 import { ViewReadRefusal, observedViewRead } from '../core/read-refusals.js';
-import { SessionMaterialPendingError } from './material-readiness.js';
-import { transcriptPendingSql } from '../db/session-read-model.js';
 import { RELATIONAL_CONTEXT } from '../core/adapters.js';
 
 
@@ -293,15 +290,6 @@ function capturedSources(raw: unknown, projectId: string, sessionId: string): Se
   return Object.freeze({ projectId, sessionId, mode: 'published', fence, ready: live.ready===1, instances: Object.freeze(visible) });
 }
 
-/** Titling reads a captured live checkpoint before admitting material or a claim. */
-export async function assertSessionSourceReady(db:sessions_import_RelationalStore,projectId:string,sessionId:string):Promise<void>{
-  const read=responseRead(db);
-  const rows=await sessionRows<Record<string,unknown>>(db,'M23:children_materialRows:0',read,projectId,sessionId,
-    `SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ?
-    AND (${transcriptPendingSql('t')}) LIMIT 1`,[projectId,sessionId],1,null,undefined,'first');
-  const source=read.context.get(sourceKey(projectId,sessionId));
-  if(source?.mode==='published'?!source.ready:rows.length!==0)throw new SessionMaterialPendingError();
-}
 
 const MATERIAL_READS = {
   prompt_batches: { view: 'view_prompts', id: 'prompt_id', sessionIndex:'idx_prompt_batches_session', viewColumn:(column:string,alias:string):string=>column==='processed'?'0 AS processed':alias+'.'+column,
@@ -935,7 +923,6 @@ const VIEW_READ_OPERATION_IDS = [
   "M11:sessions_sessionCounts:1",
   "M04:children_listChildren:0",
   "M04:children_listChildrenByPrompt:0",
-  "M23:children_materialRows:0",
   "M26:processed_processedField:0",
   "M01:turns_listTurns:0",
   "M02:turns_promptInSession:0",
@@ -2152,9 +2139,7 @@ function children_listPlans(db: children_import_RelationalStore, scope: children
 }
 const children_listAttachments = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_ChildOptions) => children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, opts);
 
-interface children_MaterialRow { prompt: string; response: string | null; promptId: string }
 
-const children_MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
 
 /** The session's live document holds a user prompt for the titling material. */
 const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM session_documents d
@@ -2223,8 +2208,8 @@ const children_IDLE_UNTITLED_SQL = `FROM sessions s
 const children_REFRESH_DUE_SQL = `FROM sessions s
     WHERE s.title IS NOT NULL AND s.last_received_at >= ? AND s.last_received_at > COALESCE(s.title_material_at, s.titled_at) AND s.titled_at <= ?
       AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND NOT ${children_import_titleRunInFlightSql('s')}
-      AND (SELECT d.user_prompts FROM session_documents d WHERE d.project_id = s.project_id AND d.session_id = s.session_id AND d.state = 'live')
-        - COALESCE(s.title_user_prompts, 0) >= ?`;
+      AND (SELECT d.user_prompts - COALESCE(d.titled_user_prompts, 0) FROM session_documents d
+        WHERE d.project_id = s.project_id AND d.session_id = s.session_id AND d.state = 'live') >= ?`;
 
 /** Candidates in the order the convergence takes them: first titles before refreshes, and fresh work before backlog within each. */
 interface children_TitleCandidates { freshClaims: children_TitleCandidate[]; freshRefreshes: children_TitleCandidate[]; backlogClaims: children_TitleCandidate[] }
@@ -2287,13 +2272,6 @@ async function children_untitledReason(db: children_import_RelationalStore, proj
   return row?.reason ?? null;
 }
 
-/** A session's earliest inline user prompts, each cut to `excerptChars`, with the start of its first inline response; `limit` prompts at most, oldest first. */
-const children_sessionMaterialRows = (db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<children_MaterialRow[]> =>
-  children_materialRows(db, projectId, sessionId, opts, 'ASC');
-
-/** The same for the session's latest inline user prompts, answered oldest first so the two halves read in order. */
-const children_sessionMaterialTailRows = async (db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<children_MaterialRow[]> =>
-  (await children_materialRows(db, projectId, sessionId, opts, 'DESC')).reverse();
 
 /** The most generations the walk climbs above the session, and descends below the root it reached. */
 const lineage_LINEAGE_MAX_DEPTH = 8;
@@ -3010,7 +2988,6 @@ export {
   type children_PlanChildOptions,
   children_listPlans,
   children_listAttachments,
-  type children_MaterialRow,
   children_listReadyTitleSessions,
   type children_TitleCandidate,
   type children_TitleCandidateWindow,
@@ -3019,8 +2996,6 @@ export {
   children_countConvergenceTitleSessions,
   type children_UntitledReason,
   children_untitledReason,
-  children_sessionMaterialRows,
-  children_sessionMaterialTailRows,
   lineage_LINEAGE_MAX_DEPTH,
   lineage_LINEAGE_MAX_NODES,
   lineage_LINEAGE_EDGE_KINDS,
@@ -4011,24 +3986,6 @@ async function hook_placement_listUnplacedHookRecordsImpl(db: hook_placement_imp
   }
   return pages;
 }
-const children_materialSql = (published: boolean): string => `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
-                     (SELECT substr(r.text, 1, ?) FROM responses r
-                       WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
-                       ORDER BY r.created_at, r.response_id LIMIT 1) AS response
-                FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND ${children_MATERIAL_PROMPT_SQL}${published ? '' : ' AND ' + children_import_sessionMaterialReadySql('pb')}`;
-const children_MATERIAL_SQL = children_materialSql(false);
-
-async function children_materialRows(db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC', read: ResponseRead = responseRead(db)): Promise<children_MaterialRow[]> {
-  const ordering = ` ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`;
-  const sql = children_MATERIAL_SQL + ordering;
-  const published = children_materialSql(true) + ordering;
-  const results = await sessionRows<{ prompt_id: string; prompt: string; response: string | null }>(db, "M23:children_materialRows:0", read, projectId, sessionId, sql, [opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit], 3, published);
-  const source=read.context.get(sourceKey(projectId,sessionId));
-  if(source?.mode==='published'){if(!source.ready)throw new SessionMaterialPendingError();}
-  else await children_import_assertSessionMaterialReady(db, projectId, sessionId);
-  return results.map((r) => ({ promptId: r.prompt_id, prompt: r.prompt, response: r.response ?? null }));
-}
 
 /** A projected field whose inline value or exact stored-body provenance is admitted. */
 async function processed_processedField(env: Pick<processed_import_ServerEnv, 'db'>, scope: processed_import_ReadScope, kind: processed_ProcessedBodyKind, id: string): Promise<processed_ProcessedField | null> {
@@ -4726,9 +4683,7 @@ export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore
     (project_id, ack_id, session_id, kind, record_id, served_id, run_id, acknowledged_at)
     SELECT material.project_id, ?, material.session_id, 'record', material.record_id, material.served_id, ?, ?
     FROM (${source}) material
-    JOIN session_documents d ON d.project_id = material.project_id AND d.session_id = material.session_id AND d.state = 'live'
-    JOIN session_prompts p ON p.project_id = d.project_id AND p.session_id = d.session_id AND p.generation = d.generation AND p.prompt_id = material.record_id
-    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
+    JOIN sessions s ON s.project_id = material.project_id AND s.session_id = material.session_id
     WHERE ${sessions_import_notTombstonedSql('s')}
       AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id = material.project_id
         AND a.record_id = material.record_id AND a.kind = 'record' AND a.run_id = ? AND a.served_id IS material.served_id)

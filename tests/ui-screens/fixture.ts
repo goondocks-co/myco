@@ -574,14 +574,17 @@ function seedTitles(databasePath: string, sessionIds: string[], now: number): vo
 
 /**
  * The card each captured turn has, as learning writes it once a turn settles: what was asked and what the reply said.
- * Search finds prompts and replies through these cards.
+ * The publisher holds a pending card for each turn it published, which the learned card replaces. Search finds prompts
+ * and replies through these cards.
  */
 function seedTurnCards(databasePath: string, turns: ReadonlyArray<{ projectId: string; sessionId: string; id: string; text: string; at: number }>): void {
   const sqlite = new Database(databasePath);
   sqlite.exec('PRAGMA busy_timeout = 5000');
   try {
     for (const turn of turns) {
-      sqlite.query(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at, carded_at) VALUES (?, ?, ?, 'carded', ?, ?, ?)`)
+      sqlite.query(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at, carded_at) VALUES (?, ?, ?, 'carded', ?, ?, ?)
+        ON CONFLICT (project_id, session_id, turn_key) DO UPDATE SET state = 'carded', card = excluded.card, carded_at = excluded.carded_at,
+          settle_at = NULL, due_at = NULL`)
         .run(turn.projectId, turn.sessionId, turn.id, `${turn.text}. Done: ${turn.text.toLowerCase()}.`, turn.at, turn.at + 2 * MINUTE);
     }
   } finally {

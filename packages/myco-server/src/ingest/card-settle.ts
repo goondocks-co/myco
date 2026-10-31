@@ -3,8 +3,9 @@
  *
  * A pending turn whose `settle_at` has passed is read once from its pages. A turn the live document no longer holds
  * loses its card row; a turn whose input hash matches a carded turn of its session reuses that card; a turn the triage
- * rules match is carded `none`; any other falls due for a model, with the material its card is built from. Every write
- * is guarded on the turn's change count, so a turn the publisher changed meanwhile waits for its next settlement.
+ * rules match is carded `none`; any other falls due for a model, with the material its card is built from. The rules
+ * judge a whole turn only: a turn past the page budget, read at its head and its last page, always falls due. Every
+ * write is guarded on the turn's change count, so a turn the publisher changed meanwhile waits for its next settlement.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import { trimTurn, triageTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
@@ -13,7 +14,7 @@ import {
 } from '../core/turn-cards.js';
 import { pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { SessionDocument } from '../content/session-pages.js';
-import { documentTurnInput } from '../content/turn-material.js';
+import { documentTurn } from '../content/turn-material.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached } from './document-batch.js';
 import type { PassLimits } from './parse.js';
 
@@ -48,14 +49,15 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: SettleRow, 
       .bind(now + TURN_QUIET_MS, p, s, turn.turnKey, turn.changes).run();
     return;
   }
-  const input = await documentTurnInput(env, p, s, turn.turnKey, document);
-  if (input === null) {
+  const read = await documentTurn(env, p, s, turn.turnKey, document);
+  if (read === null) {
     await db.batch([forgetTurnStatement(db, p, s, turn), pendingCardsStatement(db, p, s), ...sessionProgressStatements(db, p, s, now)]);
     return;
   }
+  const { input, complete } = read;
   const material = turnMaterial(trimTurn(input));
   const prior = await reusableCard(db, p, s, turn.turnKey);
-  const rule = prior === null ? triageTurn(input) : null;
+  const rule = prior === null && complete ? triageTurn(input) : null;
   if (prior === null && rule === null) {
     await modelDueStatement(db, p, s, turn, material, now).run();
     return;

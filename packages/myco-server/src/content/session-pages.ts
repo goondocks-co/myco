@@ -44,6 +44,13 @@ export class SessionDocument {
     return held;
   }
 
+  /** The number of an owner's last page, or null when it holds none. */
+  async lastPage(owner: string): Promise<number | null> {
+    const row = await this.env.db.prepare(`SELECT MAX(page) AS page FROM session_pages WHERE project_id=? AND session_id=? AND generation=? AND owner=?`)
+      .bind(this.projectId, this.sessionId, this.generation, owner).first<{ page: number | null }>();
+    return row?.page ?? null;
+  }
+
   /** An owner's pages from `from` on, at most `limit`, each with its records; `more` says whether pages remain. */
   async ownerPages(owner: string, from: number, limit: number): Promise<{ pages: Page[]; more: boolean }> {
     const rows = (await this.env.db.prepare(`SELECT p.page,${CHUNK_COLUMNS} ${LIVE}

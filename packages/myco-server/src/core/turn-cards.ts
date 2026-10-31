@@ -150,12 +150,13 @@ export function forgetTurnStatement(db: RelationalStore, projectId: string, sess
 }
 
 /**
- * The turns a card run of this session takes: its due turns oldest first, up to one run's input budget, from at most
- * `CARD_CLAIM_TURNS` catalog rows.
+ * The turns a card run of this session takes: its due turns in the order they fell due, up to one run's input budget,
+ * from at most `CARD_CLAIM_TURNS` catalog rows. The index holds the order whole, so the read seeks the due range and
+ * stops at its limit whatever the session holds: turns due at one instant, or turns postponed past now.
  */
 export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
   const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes, input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
-    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY created_at, turn_key LIMIT ?`)
+    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, turn_key LIMIT ?`)
     .bind(projectId, sessionId, now, CARD_CLAIM_TURNS).all<DueTurn & { chars: number | null }>();
   const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;

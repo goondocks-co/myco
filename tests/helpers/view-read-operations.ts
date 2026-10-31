@@ -399,13 +399,6 @@ export const VIEW_READ_OPERATIONS = [
     "expressionSha256": "3ff3321160027e21cb62d8996cdf4c1a644c1ce091ff2d98f5e3b8a7e74294dd"
   },
   {
-    "id": "M23:children_materialRows:0",
-    "family": "M23",
-    "operation": "children_materialRows",
-    "template": "0",
-    "expressionSha256": "492051b11222901322a54c742aec8cf54cb94ec53baf7679b517fecfb08dd59b"
-  },
-  {
     "id": "M26:processed_processedField:0",
     "family": "M26",
     "operation": "processed_processedField",

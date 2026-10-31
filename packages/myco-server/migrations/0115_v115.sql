@@ -26,7 +26,7 @@ ALTER TABLE turn_cards ADD COLUMN settle_at INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_turn_cards_settle ON turn_cards (settle_at) WHERE state = 'pending';
 
-CREATE INDEX IF NOT EXISTS idx_turn_cards_model_due ON turn_cards (project_id, session_id, created_at)
+CREATE INDEX IF NOT EXISTS idx_turn_cards_model_due ON turn_cards (project_id, session_id, due_at, turn_key)
     WHERE state = 'pending' AND due_at IS NOT NULL;
 
 UPDATE turn_cards SET settle_at = COALESCE(due_at, created_at + 600000), due_at = NULL WHERE state = 'pending';
@@ -46,9 +46,9 @@ UPDATE learning_sessions SET eligible_at = NULL WHERE pending_cards > 0;
 
 DELETE FROM learning_init_queue;
 
-ALTER TABLE sessions ADD COLUMN title_user_prompts INTEGER;
+ALTER TABLE session_documents ADD COLUMN titled_user_prompts INTEGER;
 
-UPDATE sessions SET title_user_prompts = (SELECT d.user_prompts FROM session_documents d
-    WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live') WHERE title IS NOT NULL;
+UPDATE session_documents SET titled_user_prompts = user_prompts WHERE state = 'live' AND EXISTS (SELECT 1 FROM sessions s
+    WHERE s.project_id = session_documents.project_id AND s.session_id = session_documents.session_id AND s.title IS NOT NULL);
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '115');

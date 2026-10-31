@@ -15,7 +15,6 @@ export {
   type children_PlanChildOptions as PlanChildOptions,
   children_listPlans as listPlans,
   children_listAttachments as listAttachments,
-  type children_MaterialRow as MaterialRow,
   children_listReadyTitleSessions as listReadyTitleSessions,
   type children_TitleCandidate as TitleCandidate,
   type children_TitleCandidateWindow as TitleCandidateWindow,
@@ -24,6 +23,4 @@ export {
   children_countConvergenceTitleSessions as countConvergenceTitleSessions,
   type children_UntitledReason as UntitledReason,
   children_untitledReason as untitledReason,
-  children_sessionMaterialRows as sessionMaterialRows,
-  children_sessionMaterialTailRows as sessionMaterialTailRows,
 } from './view-store.js';

@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { listTurns, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, toolUsage, sessionTurnContexts } from '@myco-server-worker/read/turns.js';
-import { listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections, sessionMaterialRows, sessionMaterialTailRows } from '@myco-server-worker/read/children.js';
+import { listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections } from '@myco-server-worker/read/children.js';
 import { listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { captureViewSession, withViewStores } from './helpers/view-stores.js';
@@ -26,9 +26,7 @@ async function conversation(db: RelationalStore): Promise<string> {
     await toolUsage(db, scope, session), await sessionTurnContexts(db, scope, session));
   for (const collection of TURN_COLLECTIONS) values.push(await turnCollection(db, scope, session, uuid(20), collection, { limit: 1 }));
   for (const read of [listPrompts, listResponses, listToolCalls, listPlans, listAttachments, listContextInjections]) values.push(await read(db, scope, session));
-  values.push(await listUnplacedHookRecords(db, scope, session),
-    await sessionMaterialRows(db, scope.projectId, session, { limit: 2, excerptChars: 20 }),
-    await sessionMaterialTailRows(db, scope.projectId, session, { limit: 2, excerptChars: 20 }));
+  values.push(await listUnplacedHookRecords(db, scope, session));
   return JSON.stringify(values);
 }
 

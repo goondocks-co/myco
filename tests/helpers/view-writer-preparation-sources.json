@@ -432,8 +432,9 @@
   "tests/myco-server/learning-documents.test.ts": {
     "it:the publisher settles cards, keeps transcript plans canonical and reopens a resumed session": "T",
     "it:a card claim reads the same catalog rows whatever the session holds": "T",
-    "rowsRead": "T",
-    "counted": "T",
-    "it:an idle claim with learning off issues a small fixed number of statements": "T"
+    "it:an idle claim with learning off issues a small fixed number of statements": "T",
+    "it:a transcript plan larger than a page preview keeps its whole body in the canonical plan": "T",
+    "it:a turn past the page budget is never carded by rule, and falls due with its tail": "T",
+    "claim": "T"
   }
 }
