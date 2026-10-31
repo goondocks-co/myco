@@ -1,18 +1,21 @@
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { convertDocuments } from '@myco-server-worker/ingest/document-conversion.js';
+import { convertDocuments, convertPage } from '@myco-server-worker/ingest/document-conversion.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { createEmptyView, requestViewRebuild, tryPublishView } from '@myco-server-worker/ingest/view-lifecycle.js';
 import { claimViewBuild, SERIAL_VIEW_BUDGET } from '@myco-server-worker/ingest/view-build-queue.js';
 import { parseViewOnce } from '@myco-server-worker/ingest/view-parse.js';
 import { captureViewSession, captureViewTranscript, withViewStores } from './helpers/view-stores.js';
-import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
+import { memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { bundleArchiveStatements, prepareArchiveBundle } from '@myco-server-worker/core/archive-bundle.js';
+import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { restoreDocuments } from '@myco-server-worker/ingest/document-restore.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withViewWriterDriver } from '../helpers/statement-recorder.js';
 import { BACKLOG_CHAINED_WAKE_MS, runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -247,5 +250,125 @@ test('a conversion backlog chains each clock wake at the backlog cadence and con
       expect(wakes, name).toBeLessThan(10);
     }
     expect(wakes, name).toBeGreaterThan(2);
+  }));
+});
+
+/** The tables a restore test's artifact carries, read whole from the store that captured them. */
+const ARTIFACT_TABLES = {
+  members: 'SELECT * FROM members', member_credentials: 'SELECT * FROM member_credentials', raw_credentials: 'SELECT * FROM raw_credentials',
+  sessions: 'SELECT * FROM sessions', events: 'SELECT * FROM events', prompt_batches: 'SELECT * FROM prompt_batches',
+  responses: 'SELECT * FROM responses', tool_calls: 'SELECT * FROM tool_calls',
+} as const;
+
+test('a restored artifact converts a session the target lacks, merges into a live document, and refuses ambiguous precedence', async () => {
+  const artifacts = new Map<string, { t: string; r: Record<string, unknown> }[]>();
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    await captureViewSession(db, 'project', 'restored');
+    const rows: { t: string; r: Record<string, unknown> }[] = [];
+    for (const t of Object.keys(ARTIFACT_TABLES) as (keyof typeof ARTIFACT_TABLES)[])
+      for (const r of (await db.prepare(ARTIFACT_TABLES[t]).all<Record<string, unknown>>()).results) rows.push({ t, r });
+    // The artifact classifies the restored prompt as the legacy derivation, and carries a reply the target's live session lacks.
+    rows.push({ t: 'fact_classes', r: { project_id: 'project', table_name: 'prompt_batches', record_id: uuid(20), session_id: 'restored', class: 'legacy', classified_at: 1 } });
+    const reply = rows.find((row) => row.t === 'responses')!.r;
+    rows.push({ t: 'responses', r: { ...reply, session_id: 'live', response_id: 'merged-reply', prompt_id: uuid(10_020) } });
+    artifacts.set(name, rows);
+  }));
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore(), now = Date.now();
+    await captureViewSession(db, 'project', 'live', { idOffset: 10_000 });
+    await publishDocuments({ db, blobs }, now, limits());
+    const text = async (rows: { t: string; r: Record<string, unknown> }[]) => {
+      const counts: Record<string, number> = {};
+      for (const { t } of rows) counts[t] = (counts[t] ?? 0) + 1;
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: now, producer: 'test', counts };
+      return [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n';
+    };
+    const restore = async (rows: { t: string; r: Record<string, unknown> }[]) =>
+      restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, now, text: await text(rows), documents: restoreDocuments({ db, blobs }) });
+
+    // Precedence is ambiguous for a legacy-classified prompt the live document lacks: nothing is written.
+    const prompt = artifacts.get(name)!.find((row) => row.t === 'prompt_batches')!.r;
+    const ambiguous = [{ t: 'prompt_batches', r: { ...prompt, session_id: 'live', prompt_id: 'ambiguous' } },
+      { t: 'fact_classes', r: { project_id: 'project', table_name: 'prompt_batches', record_id: 'ambiguous', session_id: 'live', class: 'legacy', classified_at: 1 } }];
+    await expect(restore(ambiguous), name).rejects.toThrow('artifact_precedence_ambiguous');
+    expect(await db.prepare(`SELECT COUNT(*) n FROM prompt_batches WHERE prompt_id='ambiguous'`).first(), name).toEqual({ n: 0 });
+
+    const outcome = await restore(artifacts.get(name)!);
+    expect(outcome.documents, name).toEqual({ convert: 1, merge: 1, records: 1, refuse: [] });
+    await convertDocuments({ db, blobs }, now, limits());
+    expect((await documentIds({ db, blobs }, 'restored')).prompt, name).toEqual([uuid(20)]);
+    expect((await documentIds({ db, blobs }, 'live')).reply, name).toContain('merged-reply');
+  }));
+});
+
+test('a restore into a session mid-conversion exports the restored rows behind its cursor', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore(), now = Date.now(), env = { db, blobs };
+    await captureViewSession(db);
+    await predate(db, 'session');
+    // Adoption, then a first export page: the cursor now stands past a prompt created at time 0.
+    await convertPage(env, 'project', 'session', now, limits());
+    await convertPage(env, 'project', 'session', now, limits());
+    const base = (await db.prepare(ARTIFACT_TABLES.prompt_batches).all<Record<string, unknown>>()).results[0]!;
+    const rows = [{ t: 'prompt_batches', r: { ...base, prompt_id: 'restored-earlier', created_at: 0, text: 'restored prompt' } }];
+    const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: now, producer: 'test', counts: { prompt_batches: 1 } };
+    await restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, now, documents: restoreDocuments(env),
+      text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' });
+    await convertDocuments(env, now, limits());
+    expect((await documentIds(env, 'session')).prompt, name).toContain('restored-earlier');
+  }));
+});
+
+test('a restore planned while a session converts refuses before any write once that session goes live', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore(), now = Date.now(), env = { db, blobs };
+    await captureViewSession(db);
+    await predate(db, 'session');
+    const base = (await db.prepare(ARTIFACT_TABLES.prompt_batches).all<Record<string, unknown>>()).results[0]!;
+    const rows = [{ t: 'prompt_batches', r: { ...base, prompt_id: 'ambiguous-copy' } },
+      { t: 'fact_classes', r: { project_id: 'project', table_name: 'prompt_batches', record_id: 'ambiguous-copy', session_id: 'session', class: 'legacy', classified_at: 1 } }];
+    const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: now, producer: 'test', counts: { prompt_batches: 1, fact_classes: 1 } };
+    // The session's conversion finishes between the plan and the restore's first write.
+    const planned = restoreDocuments(env);
+    const racing = { plan: async (byTable: Parameters<typeof planned.plan>[0]) => {
+      const plan = await planned.plan(byTable);
+      await convertDocuments(env, now, limits());
+      return plan;
+    } };
+    const outcome = await restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, now, documents: racing,
+      text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' }).then(() => 'applied', (error: unknown) => String(error));
+    const written = await db.prepare(`SELECT COUNT(*) n FROM prompt_batches WHERE prompt_id='ambiguous-copy'`).first();
+    expect([outcome.includes('restore_plan_stale'), written], name).toEqual([true, { n: 0 }]);
+  }));
+});
+
+test('a restore holding a converting session refuses an overlapping restore of it, and keeps its hold until it applies', async () => {
+  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+    const blobs = memoryBlobStore(), now = Date.now(), env = { db, blobs };
+    await captureViewSession(db);
+    await predate(db, 'session');
+    const base = (await db.prepare(ARTIFACT_TABLES.prompt_batches).all<Record<string, unknown>>()).results[0]!;
+    const artifact = async (id: string, legacy: boolean) => {
+      const rows = [{ t: 'prompt_batches', r: { ...base, prompt_id: id } },
+        ...(legacy ? [{ t: 'fact_classes', r: { project_id: 'project', table_name: 'prompt_batches', record_id: id, session_id: 'session', class: 'legacy', classified_at: 1 } }] : [])];
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: now, producer: 'test',
+        counts: legacy ? { prompt_batches: 1, fact_classes: 1 } : { prompt_batches: 1 } };
+      return [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n';
+    };
+    const [a, b] = [await artifact('restore-a', false), await artifact('restore-b-ambiguous', true)];
+    const restore = (text: string, documents: Parameters<typeof restoreArtifact>[1]['documents']) =>
+      restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, now, text, documents }).then(() => 'applied', (error: unknown) => String(error));
+    // Restore A and a conversion pass run after restore B has fenced the session and before B writes its rows.
+    const normal = restoreDocuments(env);
+    let overlapping = '';
+    const fenced = { plan: async (byTable: Parameters<typeof normal.plan>[0]) => {
+      const plan = await normal.plan(byTable);
+      return { ...plan, fence: async (at: number) => {
+        await plan.fence(at);
+        overlapping = await restore(a, normal);
+        await convertDocuments(env, Date.now(), limits());
+      } };
+    } };
+    expect([await restore(b, fenced), overlapping.includes('restore_in_progress')], name).toEqual(['applied', true]);
   }));
 });

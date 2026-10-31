@@ -410,6 +410,19 @@
     "heldToolInputs": "T",
     "document": "T",
     "test:a conversion backlog chains each clock wake at the backlog cadence and converts on every one": "T",
-    "test:an export page reads the stored bodies of all its rows with one blobs read": "T"
+    "test:an export page reads the stored bodies of all its rows with one blobs read": "T",
+    "test:a restored artifact converts a session the target lacks, merges into a live document, and refuses ambiguous precedence": "T",
+    "test:a restore into a session mid-conversion exports the restored rows behind its cursor": "T",
+    "test:a restore planned while a session converts refuses before any write once that session goes live": "T",
+    "test:a restore holding a converting session refuses an overlapping restore of it, and keeps its hold until it applies": "T",
+    "artifact": "T"
+  },
+  "tests/myco-server/session-documents-read.test.ts": {
+    "published": "T",
+    "test:a published session reads its turns, a turn with its tools and their full input, and its activity from the document": "T",
+    "test:the session page reads the same statements whatever the session holds": "T",
+    "statements": "T",
+    "attach": "T",
+    "place": "T"
   }
 }

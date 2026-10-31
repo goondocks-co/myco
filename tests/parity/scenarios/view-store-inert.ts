@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
 import { selectOwner } from './backup-restore.ts';
 import { VIEW_SESSION_TABLES, VIEW_GLOBAL_TABLES } from '@myco-server-worker/db/view-tables.js';
 
@@ -28,6 +28,7 @@ export const viewStoreInert: ParityScenario = {
       expect(res.status).toBe(200);
       return res.text();
     };
+    await documentsPublished(target, session);
     const page = await read('/turns');
     expect(JSON.parse(page).rows.map((row: { promptId: string }) => row.promptId)).toEqual([prompt]);
     const detail = await read(`/turns/${prompt}`);

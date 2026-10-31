@@ -2,7 +2,8 @@
  * Meta gate: no clock and no claim reads a session document.
  *
  * Document content is read by request handlers, admitted run material endpoints and the publisher. The worker claim
- * (`api/worker.ts`, `core/harness.ts`) must reach neither `content/` nor the publisher, and the wake tick may reach
+ * (`api/worker.ts`, `core/harness.ts`) and the learning stages' due, head and build (`core/learning-stages.ts`,
+ * `core/pulled-stages.ts`) must reach neither `content/` nor the publisher, and the wake tick may reach
  * `content/` only through `ingest/publish.ts`, which only the transcript-parse job's module imports. Edges come from
  * the runtime's own import scanner. A dynamic `import()` or `require()` in a walked module must take one plain string
  * literal; any other argument, an interpolated template included, names no module the gate can follow and fails it.
@@ -55,8 +56,8 @@ const offending = (seen: Map<string, string | null>, bad: (file: string) => bool
   [...seen.keys()].filter(bad).map((file) => chain(seen, file));
 
 describe('session documents are read by no clock and no claim', () => {
-  it('the worker claim reaches no document reader and not the publisher', () => {
-    for (const entry of ['api/worker.ts', 'core/harness.ts'])
+  it('the worker claim and the learning stages reach no document reader and not the publisher', () => {
+    for (const entry of ['api/worker.ts', 'core/harness.ts', 'core/learning-stages.ts', 'core/pulled-stages.ts'])
       expect(offending(closure(entry), (file) => isContent(file) || file === PUBLISHER)).toEqual([]);
   });
 

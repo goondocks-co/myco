@@ -91,7 +91,7 @@ export async function legacyExecutionCases(db: RelationalStore, target: 'native'
  await run(projectId+'/feed',()=>activityFeed(observed,scope));
  for(const window of [undefined,'activity'] as const)for(const q of [undefined,'baseline','unmatched']) {
  const opts={limit:1,...(window===undefined?{}:{window,since:0}),...(q===undefined?{}:{q})};
- await run(projectId+'/sessions/'+window+'/'+q,()=>sessions.listSessionSummaries(observed,scope,opts,1000,{activity:true}));
+ await run(projectId+'/sessions/'+window+'/'+q,()=>sessions.listSessionSummaries(observed,scope,opts,1000));
  }
  for(const [kind,id]of [['prompt',uuid(20)],['response',uuid(30)],['plan',uuid(50)],['tool-input',uuid(40)],['tool-output',uuid(40)]] as const)
  await run(projectId+'/body/'+kind,()=>processedBody({db:observed,blobs:{get:async()=>{throw new Error('Unexpected blob read')},put:async()=>{throw new Error('Unexpected blob write')},delete:async()=>{throw new Error('Unexpected blob delete')},head:async()=>{throw new Error('Unexpected blob head')}}},scope,kind,id));

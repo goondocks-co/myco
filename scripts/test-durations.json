@@ -149,7 +149,9 @@
     "local: #1924 conversion page body reads, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 13.62s for 6 cases (adds one blobs read per export page), weighted 47670ms.",
     "local: #1924 publication progress under the wake budget, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 26.94s for 8 cases (adds a sixty-transcript session driven through wake-budget passes, and a failing session beside a conversion), weighted 94290ms.",
     "local: #1924 publication pricing follow-up to #1989, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 36.77s for 11 cases (adds packed turns that outgrow their chunk, a queue of replies with stored bodies, and a failed pass racing new input), weighted 128700ms.",
-    "local: #1924 publication pricing recheck, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 35.48s for 13 cases (adds a merge that reflows across chunks read during its placement, and a failed pass whose queued event is consumed and replaced), within its 128700ms weight."
+    "local: #1924 publication pricing recheck, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-publish.test.ts measured 35.48s for 13 cases (adds a merge that reflows across chunks read during its placement, and a failed pass whose queued event is consumed and replaced), within its 128700ms weight.",
+    "local: #1924 session documents PR 2a, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/session-documents-read.test.ts measured 4.28s for 2 cases (a published codex session read through turns, a turn, its tools, a full body, activity, placement, the list and card search; and the session page statement count at 2 and 40 turns), weighted 15050ms. tests/myco-server/dashboard-conversation-honesty.test.ts and session-read-budget-runtime.test.ts are deleted with the readers they tested.",
+    "local: #1924 session documents PR 2a restore, pinned Bun1.4.0 through npm test on native and Miniflare D1, weights are local x3.5. tests/myco-server/document-conversion.test.ts measured 10.81s for 5 cases after its restore case (an artifact converted, merged and refused), weighted 37835ms."
   ],
   "files": {
     "target/test-bundles/node-env-mt-BWNuLz/tests-symbionts-parsers.test.ts": 6,
@@ -553,7 +555,6 @@
     "tests/myco-server/contract/server-bin.test.ts": 12867,
     "tests/myco-server/cost.test.ts": 15,
     "tests/myco-server/credential-revoke.test.ts": 6065,
-    "tests/myco-server/dashboard-conversation-honesty.test.ts": 3151,
     "tests/myco-server/dashboard-status-honesty.test.ts": 369,
     "tests/myco-server/deployment-audience.test.ts": 65,
     "tests/myco-server/deployment-clock-object.test.ts": 12,
@@ -740,7 +741,6 @@
     "tests/myco-server/session-end-api.test.ts": 93,
     "tests/myco-server/session-lifecycle.test.ts": 306,
     "tests/myco-server/session-pages-api.test.ts": 1213,
-    "tests/myco-server/session-read-budget-runtime.test.ts": 33033,
     "tests/myco-server/session-read-projections.test.ts": 5167,
     "tests/myco-server/session-resume.test.ts": 108,
     "tests/myco-server/sessions-wire.test.ts": 4,
@@ -1030,7 +1030,8 @@
     "tests/myco-server/learning-stages.test.ts": 48790,
     "tests/myco-server/document-publish.test.ts": 128700,
     "tests/meta/document-read-boundary.test.ts": 2000,
-    "tests/myco-server/document-conversion.test.ts": 47670
+    "tests/myco-server/document-conversion.test.ts": 47670,
+    "tests/myco-server/session-documents-read.test.ts": 15050
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1100,7 +1101,7 @@
     "runner fleet: display states, device replacement, terminal attribution, queue and safe legacy forget": 73000,
     "runners: device registration, held and failing approvals leave nothing, a runner-only claim, and removal ending every authority": 110000,
     "runners: explicit per-agent stored sign-in, own default and unavailable credential holds": 60000,
-    "search by time: a session's identical-text matches, a steering prompt and a stored body reached by cursor past capture elsewhere, once each, on HTTP and MCP": 15000,
+    "search by time: a session's identical card matches reached by cursor past cards elsewhere, once each, on HTTP and MCP": 15000,
     "search: scoped HTTP and MCP, every retained type, spilled bodies, updates and explicit semantic availability": 16000,
     "session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade": 15000,
     "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000,

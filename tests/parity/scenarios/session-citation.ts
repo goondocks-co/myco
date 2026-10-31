@@ -31,6 +31,11 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
       SELECT ${lit(project)},${lit(session)},json_extract(value,'$.id'),json_extract(value,'$.id'),'Whole-session material','user','content',
         json_extract(value,'$.at'),json_extract(value,'$.at'),${lit(tokenId)},json_extract(value,'$.at') FROM json_each(${lit(JSON.stringify(prompts))})`);
+    // The same prompts as the session's live document holds them.
+    await target.sql(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(${lit(project)},${lit(session)},'live',1,${now})`);
+    await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+      SELECT ${lit(project)},${lit(session)},1,json_extract(value,'$.id'),json_extract(value,'$.id'),key,'user',json_extract(value,'$.at')
+      FROM json_each(${lit(JSON.stringify(prompts))})`);
     await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,run_context)
       VALUES(${lit(project)},${lit(run)},'myco-agent','extract-curate','running',${now},${lit(tokenId)},${lit(JSON.stringify({ session_id: session, timeoutSeconds: 300 }))})`);
     const save = { op: 'save', type: 'gotcha', content: 'A whole-session finding', session_id: session };

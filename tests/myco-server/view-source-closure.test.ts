@@ -99,40 +99,6 @@ it('building headers and missing stored source coordinates refuse with named cod
  });
 },60_000);
 
-it('M21 count statements retain absent and published sources in every scope across a flip',async()=>{
- const evidence:{target:string;mode:string;scope:string;before:number;actual:number;after:number}[]=[];
- for(const mode of ['absent','published','all-placed'])for(const selection of ['all','project','session']){
-  await withViewStorePair('native-D1',async db=>{
-   await seedViewConsumerWorld(db);
-   const issued=await captureViewSession(db,'project','session',{idOffset:47978});
-   if(mode==='all-placed')await appendCostHistory(db,{projectId:'project',sessionId:'session',tokenId:issued.tokenId,material:COST_MATERIALS[0],from:0,through:1,idBase:47998,parser:false});
-   if(mode!=='absent')await mirrorConsumerWorld(db);
-  },async(native,d1)=>{
-   for(const [db,target]of [[native,'native'],[d1,'D1']]as const){
-   const project=selection==='all'?undefined:scope,session=selection==='session'?'session':undefined;
-   const before=await countUnplacedContextRecords(db,project,session,700);
-   await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'empty-next',state:'building'},false);
-   let changed=false;
-   const observed=statementRecorder(db,{accounting:target==='D1'?'d1':'native',captureRows:true,
-    after:async row=>{
-     if(!changed&&row.sql.startsWith('/*vs:M21:')&&row.sql.includes("'receipt:'")){
-      changed=true;await publishMirroredSession(db,'project','session','empty-next');
-     }
-    },
-   });
-   const actual=await withViewReadResponse(observed.db,()=>700,bound=>countUnplacedContextRecords(bound,project,session,700));
-   const after=await countUnplacedContextRecords(db,project,session,700);
-   evidence.push({target,mode,scope:selection,before,actual,after});
-   expect(before,target+' nonzero original world').toBe(mode==='all-placed'?0:1);
-   expect(after,target+' different complete source').toBe(3);
-   expect(actual,target+' '+mode+' '+selection).toBe(before);
-   expect(observed.statements.map(row=>row.method)).toEqual(['first','first']);
-   }
-  },'native');
- }
- console.info('M21_FLIP_EVIDENCE',JSON.stringify(evidence));
-},60_000);
-
 it('M21 delivery counts refuse a malformed captured parent',async()=>{
  const evidence:unknown[]=[];
  await withViewStores(async(db,target)=>{
@@ -148,35 +114,6 @@ it('M21 delivery counts refuse a malformed captured parent',async()=>{
  for(const row of evidence as {target:string;result:unknown}[])expect(row.result,row.target).toMatchObject({code:'view_state_inconsistent'});
 },60_000);
 
-
-it('M21 capture probes retain their derived per-delivery multiplicities',async()=>{
- await withViewStores(async(db,target)=>{
-  await seedViewConsumerWorld(db);await mirrorConsumerWorld(db);
-  const observed=statementRecorder(db,{accounting:target==='D1'?'d1':'native',captureRows:true});
-  await withViewReadResponse(observed.db,()=>700,bound=>countUnplacedContextRecords(bound,scope,undefined,700));
-  expect(observed.statements).toHaveLength(2);
-  for(const [index,query]of observed.statements.entries()){
-   const result=await deliveryProbeMultiplicity(db,query);
-   expect(result.errors,target+'/'+index).toEqual([]);
-   expect(result.captureExpressions).toBeGreaterThan(0);
-   const row=query.rows?.[0];
-   expect(typeof row).toBe('object');
-   if(typeof row!=='object'||row===null||!('__myco_aggregate_sources'in row))throw new Error('Missing aggregate carrier');
-   const raw=row.__myco_aggregate_sources;
-   if(typeof raw!=='string')throw new Error('Missing aggregate owner JSON');
-   const owners:unknown=JSON.parse(raw);
-   if(!Array.isArray(owners))throw new Error('Missing delivery owners');
-   const deliveries=owners.length,instances=2;
-   const bounds={publication:deliveries*result.probes.publication,visible:deliveries*result.probes.visible*instances,
-    header:deliveries*result.probes.header*instances,checkpoint:deliveries*result.probes.checkpoint*instances};
-   if(target==='D1')expect(query.rowsRead).toBeGreaterThan(0);else expect(query.rowsRead).toBeUndefined();
-   console.info('M21_PROBE_MULTIPLICITY',JSON.stringify({target,index,deliveries,instances,probes:result.probes,scalarDefinitions:result.scalarDefinitions,scalarMultiplicity:result.scalarMultiplicity,bounds,rowsRead:query.rowsRead??null,
-    units:'structural upper bounds per statement; checkpoint bound counts indexed ranges, with transcript work per checkpoint'}));
-   const extra={...query,sql:query.sql.replace('AS __myco_aggregate_sources','AS __myco_aggregate_sources, (SELECT COUNT(*) FROM view_visible) AS __probe')};
-   expect((await deliveryProbeMultiplicity(db,extra)).errors.some(error=>error.includes('unbounded capture scan'))).toBe(true);
-  }
- });
-},60_000);
 
 
 it('M21 validates an owner first encountered by the second delivery source',async()=>{

@@ -91,13 +91,6 @@ export const VIEW_READ_OPERATIONS = [
     "expressionSha256": "27e78d2f9524eaba58d33511c1c47045380234ab4551f1303e40e2a858bc278e"
   },
   {
-    "id": "M16:sessions_instantStatements:0",
-    "family": "M16",
-    "operation": "sessions_instantStatements",
-    "template": "0",
-    "expressionSha256": "a7680e34e936702987dddfdcb096f8de416c1d9afd3e3f350832e5baffc51505"
-  },
-  {
     "id": "M17:sessions_projectStats:0",
     "family": "M17",
     "operation": "sessions_projectStats",

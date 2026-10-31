@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
@@ -83,6 +83,7 @@ export const sessionsTitling: ParityScenario = {
     expect(await askTitle(s2)).toMatchObject({ outcome: 'queued' });
     expect(await runFor(s2)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
+    await documentsPublished(target, s2);
     expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
   },
 };

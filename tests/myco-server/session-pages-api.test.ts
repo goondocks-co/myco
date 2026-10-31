@@ -10,8 +10,6 @@ import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
-import { registerBlob } from './helpers/d1.js';
-import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { MAX_FEED } from '@myco-server-worker/read/activity.js';
@@ -91,14 +89,6 @@ describe('the project home', () => {
 });
 
 describe('the session pages', () => {
-  it('lists children for a session whose id needs escaping in the path', async () => {
-    const { get, session, sqlite } = await harness();
-    session('proj_1', 's one', NOW);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s one','p1','e1','hello','user','h1',?,?,'tok_1',?)`, [NOW, NOW, NOW]);
-    const { status, body } = await get('/api/projects/proj_1/sessions/s%20one/prompts');
-    expect({ status, texts: (body.rows as { text: string }[]).map((r) => r.text) }).toEqual({ status: 200, texts: ['hello'] });
-  });
 
   it('carries the member behind a session through the list and the detail, and names the machine only to the member it belongs to', async () => {
     const { get, session, sqlite } = await harness();
@@ -171,7 +161,7 @@ describe('a session\'s plans', () => {
     for (const status of ['all', 'done', '']) {
       expect((await get(`/api/projects/proj_1/sessions/s1/plans?status=${status}`)).status).toBe(400);
     }
-    expect((await get('/api/projects/proj_1/sessions/s1/prompts?status=bogus&q=x')).status).toBe(200);
+    expect((await get('/api/projects/proj_1/sessions/s1/attachments?status=bogus&q=x')).status).toBe(200);
   });
 });
 
@@ -197,8 +187,8 @@ describe('a project\'s name', () => {
     session('proj_1', 's_t', NOW + 1, { agent: 'claude-code' });
     session('proj_1', 's_p', NOW + 2, { agent: 'codex' });
     sqlite.run(`UPDATE sessions SET title = 'Titled by the model' WHERE session_id = 's_t'`);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s_p','p1','e1','Fix the flaky test\nplease','user','h1',?,?,'tok_1',?)`, [NOW + 2, NOW + 2, NOW + 2]);
+    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, first_prompt, updated_at)
+                VALUES ('proj_1','s_p','live',1,'Fix the flaky test',?)`, [NOW + 2]);
     const feed = (await get('/api/projects/proj_1/activity')).body.items as { id: string; summary: string }[];
     const rows = (await get('/api/projects/proj_1/sessions')).body.rows as { sessionId: string; label: string }[];
     const labels = Object.fromEntries(rows.map((r) => [r.sessionId, r.label]));
@@ -207,183 +197,6 @@ describe('a project\'s name', () => {
   });
 });
 
-
-describe('searching a session\'s conversation', () => {
-  const TURN_PAGE = 200;
-
-  async function conversation() {
-    const h = await harness();
-    h.session('proj_1', 's1', NOW);
-    h.session('proj_1', 's2', NOW);
-    const prompt = (session: string, id: string, at: number, text: string | null, blobKey: string | null = null) =>
-      h.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, blob_key, origin, content_hash, created_at, updated_at, token_id, received_at)
-                    VALUES ('proj_1', ?, ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [session, id, `e_${id}`, text, blobKey, `h_${id}`, at, at, at]);
-    const reply = (session: string, id: string, promptId: string | null, at: number, text: string) =>
-      h.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at)
-                    VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [id, session, promptId, `e_${id}`, text, `h_${id}`, at, at]);
-    // The route's own query, exactly as the dashboard's conversation search sends it.
-    const searchPage = async (type: string, extra: Record<string, string> = {}, session = 's1') => {
-      const { status, body } = await h.get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type, limit: '20', session_id: session, mode: 'fts', ...extra })}`);
-      expect(status).toBe(200);
-      return body as { results: { id: string; type: string; session_id: string; prompt_id?: string; preview: string; created_at: number; turn?: { prompt_id: string } | null }[]; cursor: string | null };
-    };
-    const search = async (type: string, session = 's1') => (await searchPage(type, {}, session)).results;
-    return { ...h, prompt, reply, search, searchPage };
-  }
-
-  it('returns this session\'s prompt and reply hits only, including a prompt beyond the first page of turns and a hit inside a stored body', async () => {
-    const { get, prompt, reply, search, sqlite, bucket, db } = await conversation();
-    prompt('s1', 'p_oldest', NOW, 'zirconium opening request');
-    for (let i = 1; i <= TURN_PAGE + 5; i += 1) prompt('s1', `p_${String(i).padStart(4, '0')}`, NOW + i, `filler ${i}`);
-    reply('s1', 'r_answer', 'p_0007', NOW + 7, 'the zirconium answer');
-    reply('s1', 'r_orphan', null, NOW + 8, 'a zirconium note with no prompt');
-    prompt('s2', 'p_other', NOW, 'zirconium in another session');
-    reply('s2', 'r_other', 'p_other', NOW + 1, 'zirconium elsewhere');
-    const text = `${'padding '.repeat(10_000)} zirconium deepbody`;
-    const objectKey = registerBlob(sqlite, { projectId: 'proj_1', key: 'long-prompt', size: text.length, tokenId: 'tok_1', receivedAt: NOW });
-    await bucket.put(objectKey, new Response(text).body);
-    prompt('s1', 'p_long', NOW + 9, null, 'long-prompt');
-    await reconcileSearchIndex(db, bucket, NOW);
-
-    // The oldest prompt is not on the first page of turns, so only the search reaches it.
-    const firstPage = (await get('/api/projects/proj_1/sessions/s1/turns?origins=user&limit=200&order=desc')).body as { rows: { promptId: string }[]; cursor: string | null };
-    expect(firstPage.rows).toHaveLength(TURN_PAGE);
-    expect(firstPage.cursor).not.toBeNull();
-    expect(firstPage.rows.map((row) => row.promptId)).not.toContain('p_oldest');
-
-    const prompts = await search('prompt');
-    expect(prompts.map((hit) => hit.id).sort()).toEqual(['p_long', 'p_oldest']);
-    expect(prompts.every((hit) => hit.type === 'prompt' && hit.session_id === 's1' && hit.prompt_id === hit.id)).toBe(true);
-    // The stored body has no inline text; its hit is found through the body's chunks.
-    expect(prompts.find((hit) => hit.id === 'p_long')!.preview.length).toBeGreaterThan(0);
-    const replies = await search('response');
-    expect(replies.map((hit) => [hit.id, hit.session_id, hit.prompt_id ?? null]).sort()).toEqual([['r_answer', 's1', 'p_0007'], ['r_orphan', 's1', null]]);
-
-    // The named lookup the hit opens reads the turn directly, past the first page.
-    const lookup = (await get('/api/projects/proj_1/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=p_oldest')).body as { rows: { promptId: string }[] };
-    expect(lookup.rows.map((row) => row.promptId)).toEqual(['p_oldest']);
-
-    // Without the session filter the other session's hits are found, so the filter is what keeps them out.
-    const { body } = await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', limit: '20', mode: 'fts' })}`);
-    expect((body.results as { id: string }[]).map((hit) => hit.id)).toContain('p_other');
-    // The other session searched for its own gets only its own.
-    expect((await search('prompt', 's2')).map((hit) => hit.id)).toEqual(['p_other']);
-  });
-
-  it('leaves a hit on a prompt the session does not hold without a turn, and keeps its own time', async () => {
-    const { prompt, reply, search } = await conversation();
-    prompt('s2', 'p_other', NOW, 'a prompt kept elsewhere');
-    reply('s1', 'r_stray', 'p_other', NOW + 1, 'a zirconium reply to a prompt of another session');
-    reply('s1', 'r_free', null, NOW + 2, 'a zirconium reply with no prompt');
-    expect((await search('response')).map((hit) => [hit.id, hit.prompt_id ?? null, hit.turn, hit.created_at]).sort())
-      .toEqual([['r_free', null, null, NOW + 2], ['r_stray', 'p_other', null, NOW + 1]]);
-  });
-
-  it('pages every match of a session by time through the route, past the first page of turns and past capture elsewhere, with each hit\'s own time and turn', async () => {
-    const { get, prompt, reply, searchPage, sqlite } = await conversation();
-    // 130 prompts of identical text and time, then a reply to the oldest of them: the 101st match and beyond sit past any one page.
-    for (let i = 0; i < 130; i += 1) prompt('s1', `p_${String(i).padStart(4, '0')}`, NOW, 'zirconium same words');
-    prompt('s2', 'p_other', NOW, 'zirconium same words');
-    reply('s1', 'r_old', 'p_0000', NOW + 5, 'a zirconium reply to the oldest prompt');
-    const seen: string[] = [];
-    let cursor: string | null = null;
-    let pageCount = 0;
-    do {
-      const page: Awaited<ReturnType<typeof searchPage>> = await searchPage('prompt', cursor === null ? { limit: '100', order: 'time' } : { limit: '100', order: 'time', cursor });
-      seen.push(...page.results.map((hit) => hit.id));
-      expect(page.results.every((hit) => hit.session_id === 's1' && hit.turn?.prompt_id === hit.id && hit.created_at === NOW)).toBe(true);
-      if (cursor === null) {
-        // Capture in another Project between pages changes every relevance score and no match's place in the list.
-        for (let i = 0; i < 200; i += 1) {
-          sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                      VALUES ('proj_2', 'sx', ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [`n_${i}`, `e_n_${i}`, `unrelated text ${i}`, `h_n_${i}`, NOW, NOW, NOW]);
-        }
-      }
-      cursor = page.cursor;
-      pageCount += 1;
-    } while (cursor !== null);
-    expect(pageCount).toBe(2);
-    expect(seen).toEqual(Array.from({ length: 130 }, (_, i) => `p_${String(i).padStart(4, '0')}`));
-    // The reply's hit carries its own time and opens the turn its prompt starts.
-    const [answer] = (await searchPage('response')).results;
-    expect(answer).toMatchObject({ id: 'r_old', created_at: NOW + 5, turn: { prompt_id: 'p_0000' } });
-    // Relevance order is one bounded page with no cursor, and refuses one.
-    expect((await searchPage('prompt', { limit: '5' })).cursor).toBeNull();
-    const query = (extra: Record<string, string>) => get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', session_id: 's1', ...extra })}`);
-    expect((await query({ cursor: 'e30' })).status).toBe(400);
-    expect((await query({ order: 'relevance', cursor: 'e30' })).status).toBe(400);
-    // A cursor that is not one the search issued is refused as the neighbouring parameters are.
-    for (const bad of ['nonsense', 'e30']) expect((await query({ order: 'time', cursor: bad })).status).toBe(400);
-    expect((await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', session_id: 's1', order: 'time' })}`)).status).toBe(400);
-    expect((await query({ order: 'newest' })).status).toBe(400);
-  });
-});
-
-describe('a session\'s agent activity', () => {
-  async function activity() {
-    const h = await harness();
-    h.session('proj_1', 's1', NOW);
-    h.session('proj_1', 's2', NOW);
-    h.session('proj_2', 's1', NOW);
-    const prompt = (project: string, session: string, id: string) => h.sqlite.run(`INSERT INTO prompt_batches
-      (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES (?, ?, ?, ?, 'prompt body secret', 'user', ?, ?, ?, 'tok_1', ?)`, [project, session, id, id, id, NOW, NOW, NOW]);
-    const call = (id: string, reason: string | null, at: number, over: { project?: string; session?: string; prompt?: string; tool?: string; success?: number } = {}) => h.sqlite.run(`INSERT INTO tool_calls
-      (project_id,session_id,tool_call_id,event_id,tool_name,prompt_id,success,result_reason,input,output_preview,error_message,created_at,token_id,received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'input secret', 'output secret', 'error secret', ?, 'tok_1', ?)`,
-      [over.project ?? 'proj_1', over.session ?? 's1', id, id, over.tool ?? 'Bash', over.prompt ?? null, over.success ?? 0, reason, at, NOW]);
-    return { ...h, prompt, call };
-  }
-  const base = '/api/projects/proj_1/sessions/s1/activity';
-  const rowIds = (body: Record<string, unknown>) => (body.rows as { id: string }[]).map(r => r.id);
-
-  it('projects stored reasons and only prompt targets in the same project and session, without tool bodies', async () => {
-    const { get, prompt, call } = await activity();
-    prompt('proj_1', 's1', 'p_here');
-    prompt('proj_1', 's2', 'p_elsewhere');
-    prompt('proj_2', 's1', 'p_other_project');
-    call('reported', 'reported', NOW + 1, { prompt: 'p_here' });
-    call('idle', 'no_result', NOW + 2, { prompt: 'p_elsewhere' });
-    call('pending', 'pending_limit', NOW + 3, { prompt: 'p_other_project' });
-    call('legacy', null, NOW + 4);
-    call('complete', 'no_result', NOW + 5);
-    call('end', 'no_result', NOW + 6);
-    call('success', null, NOW + 7, { success: 1 });
-    call('other_session', 'reported', NOW + 8, { session: 's2' });
-    call('other_project', 'reported', NOW + 9, { project: 'proj_2' });
-    const { status, body } = await get(base);
-    expect(status).toBe(200);
-    expect(rowIds(body)).toEqual(['end', 'complete', 'legacy', 'pending', 'idle', 'reported']);
-    const rows = body.rows as Record<string, unknown>[];
-    expect(rows.map(r => [r.type, r.promptId])).toEqual([['no_result', null], ['no_result', null], ['failure', null], ['no_result', null], ['no_result', null], ['failure', 'p_here']]);
-    expect(rows.find(r => r.id === 'legacy')).toMatchObject({ title: 'Tool call did not succeed', detail: 'Reason not recorded · Not placed on a turn' });
-    for (const row of rows.filter(r => r.id !== 'reported')) expect(row.detail).toContain('Not placed on a turn');
-    expect(JSON.stringify(body)).not.toMatch(/input secret|output secret|error secret|prompt body secret/);
-    expect((await get('/api/projects/proj_1/sessions/absent/activity')).status).toBe(404);
-    expect((await get('/api/projects/absent/sessions/s1/activity')).status).toBe(404);
-  });
-
-  it('filters the full collection and pages immutable time and id ties while new rows arrive', async () => {
-    const { sqlite, get, call } = await activity();
-    for (const index of sqlite.query<{ name: string; origin: string }, []>("PRAGMA index_list('tool_calls')").all()) {
-      if (index.origin !== 'pk') sqlite.exec(`DROP INDEX "${index.name}"`);
-    }
-    call('late_b', 'reported', NOW, { tool: 'Read' });
-    call('late_a', 'reported', NOW, { tool: 'Read' });
-    for (let i = 0; i < 5; i++) call(`noise_${i}`, 'no_result', NOW + 10 + i);
-    expect(rowIds((await get(`${base}?limit=2`)).body)).toEqual(['noise_4', 'noise_3']);
-    const first = (await get(`${base}?limit=1&type=failure&tool=Read&failed=true`)).body;
-    expect(rowIds(first)).toEqual(['late_b']);
-    expect(first.tools).toEqual(['Bash', 'Read']);
-    call('new', 'reported', NOW + 100, { tool: 'Read' });
-    const next = (await get(`${base}?limit=1&type=failure&tool=Read&failed=true&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
-    expect([rowIds(next), next.cursor]).toEqual([['late_a'], null]);
-    expect(rowIds((await get(`${base}?tool=read`)).body)).toEqual([]);
-    expect(rowIds((await get(`${base}?failed=false`)).body)).toEqual([]);
-    expect(rowIds((await get(`${base}?tool=error%20secret`)).body)).toEqual([]);
-    for (const query of ['type=all', 'failed=0', 'cursor=broken', 'limit=no']) expect((await get(`${base}?${query}`)).status).toBe(400);
-  });
-});
 
 describe('a session\'s lineage', () => {
   async function family() {
@@ -508,30 +321,22 @@ describe('a session\'s lineage', () => {
     expect((await get('/api/projects/proj_2/sessions/parent/lineage')).status).toBe(404);
   });
 
-  it('lists children and continuations as agent activity at the related session\'s start, beside tool rows', async () => {
+  it('lists children and continuations as agent activity at the related session\'s start', async () => {
     const { add, get, sqlite } = await family();
     add('proj_1', 'parent', 0);
     add('proj_1', 'here', 10, { continues: 'parent', reason: 'fork' });
     add('proj_1', 'launched', 20, { launch: 'here' });
     add('proj_1', 'next', 30, { continues: 'here', reason: 'compact continuation' });
     add('proj_2', 'foreign', 25, { launch: 'here' });
-    sqlite.run(`INSERT INTO tool_calls (project_id,session_id,tool_call_id,event_id,tool_name,success,result_reason,created_at,token_id,received_at)
-      VALUES ('proj_1','here','call',  'call','Bash',0,'reported',?,'tok_1',?)`, [NOW + 20, NOW]);
     const base = '/api/projects/proj_1/sessions/here/activity';
     const rows = (body: Record<string, unknown>) => (body.rows as Array<Record<string, unknown>>).map((r) => [r.type, r.title, r.detail, r.sessionId]);
     expect(rows((await get(base)).body)).toEqual([
       ['continuation', 'Session next', 'Continues this session’s conversation · compact continuation', 'next'],
       ['child_session', 'Session launched', 'Child of this session', 'launched'],
-      ['failure', 'Bash', 'Tool reported a failure · Not placed on a turn', null],
       ['continuation', 'Session parent', 'This session continues its conversation · fork', 'parent'],
     ]);
     expect(rows((await get(`${base}?type=child_session`)).body)).toEqual([['child_session', 'Session launched', 'Child of this session', 'launched']]);
-    expect(rows((await get(`${base}?tool=Bash`)).body).map((r) => r[0])).toEqual(['failure']);
     expect(rows((await get(`${base}?failed=false`)).body).map((r) => r[0])).toEqual(['continuation', 'child_session', 'continuation']);
-    const first = (await get(`${base}?limit=2`)).body;
-    const second = (await get(`${base}?limit=2&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
-    expect([...rows(first), ...rows(second)].map((r) => r[3] ?? r[1])).toEqual(['next', 'launched', 'Bash', 'parent']);
-    expect(second.cursor).toBeNull();
     sqlite.run(`DELETE FROM sessions WHERE project_id = 'proj_1' AND session_id = 'parent'`);
     expect(rows((await get(`${base}?type=continuation`)).body).at(-1)).toEqual(['continuation', 'A session not captured here', 'This session continues its conversation · fork', null]);
   });

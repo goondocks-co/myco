@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { memberHeadersFor } from '../harness.ts';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * Spores on both targets: a member's save naming its session carries that
@@ -42,6 +42,7 @@ export const spores: ParityScenario = {
     await post(session, 'prompt', { promptId: p1, text: `What did we settle on ${stamp}`, origin: 'user' }, stamp + 1);
     await post(session, 'prompt', { promptId: p2, text: 'and carry on with it', origin: 'user' }, stamp + 2);
 
+    await documentsPublished(target, session);
     // A save cites its session and stores no prompt.
     const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, prompt_id: p1, project: target.projectId });
     const oldId = String(first.id);

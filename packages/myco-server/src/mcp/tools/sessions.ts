@@ -85,6 +85,6 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     state,
     memberLabel: str(input.user),
     sessionId,
-  }, ctx.now, { activity: false });
+  }, ctx.now);
   return page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount }));
 }

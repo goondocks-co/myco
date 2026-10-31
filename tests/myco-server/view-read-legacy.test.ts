@@ -82,72 +82,6 @@ test.skipIf(!process.env.MYCO_VIEW_READ_Q_CASES)('every recorded independent SQL
  }
 },7200000);
 
-test('scalar probe ownership follows independent pruning and rejects missing, extra and exchanged captures',async()=>{
- const unreachableFilterVariant='M13.0006913';
- const variant=[...legacyVariants()].find(row=>row.id===unreachableFilterVariant);
- if(variant===undefined)throw new Error('Missing unreachable-filter corpus variant');
- await withFrozenCIOracle(async oracle=>{
-  const readers=frozenListingReaders(oracle);
-  const metadataVariant=[...legacyVariants()].find(row=>row.id==='M07.0000001');
-  if(metadataVariant===undefined)throw new Error('Missing metadata carrier corpus variant');
-  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyFixture,async(baseline,candidate)=>{
-   const beforeRecorder=statementRecorder(baseline,{accounting:target==='native'?'native':'d1'});
-   const afterRecorder=statementRecorder(candidate,{accounting:target==='native'?'native':'d1'});
-   await executeReadVariant(oracle.replayStore(beforeRecorder.db),metadataVariant,frozenReadPort(oracle));
-   await executeReadVariant(afterRecorder.db,metadataVariant,currentReadPort);
-   await beforeRecorder.drain();await afterRecorder.drain();
-   const after=afterRecorder.statements.find(row=>readTag(row.sql)?.operation==='M08:hook_placement_sessionContextHints:0');
-   if(after===undefined)throw new Error('Metadata corpus variant produced no carrier');
-   const before=beforeRecorder.statements[afterRecorder.statements.indexOf(after)]!;
-   const input={sql:after.sql,original:before.sql,operation:readTag(after.sql)!.operation,baseline:await explainReadPlan(baseline,before),candidate:await explainReadPlan(candidate,after)};
-   expect(legacyArmPlanViolations(input),target+' metadata carrier').toEqual([]);
-   const proof=captureProbePlan(input.sql,input.candidate,input);
-   expect(proof.owners).toHaveLength(1);expect(proof.expected.publication).toBeGreaterThan(0);
-   const probe=input.candidate.find(row=>/^SEARCH sv USING /.test(row.detail))!;
-   const missing=input.candidate.filter(row=>row.id!==probe.id);
-   expect(captureProbePlan(input.sql,missing,{...input,candidate:missing}).errors).toContain('outer publication probe multiplicity differs');
-  });
-  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyFixture,async(baseline,candidate)=>{
-   const beforeRecorder=statementRecorder(baseline,{accounting:target==='native'?'native':'d1'});
-   const afterRecorder=statementRecorder(candidate,{accounting:target==='native'?'native':'d1'});
-   await executeListingVariant(oracle.replayStore(beforeRecorder.db),variant,readers);
-   await executeListingVariant(afterRecorder.db,variant);
-   await beforeRecorder.drain();await afterRecorder.drain();
-   const before=beforeRecorder.statements[0],after=afterRecorder.statements[0];
-   if(before===undefined||after===undefined)throw new Error('Scalar corpus variant produced no statement');
-   const input={sql:after.sql,original:before.sql,operation:readTag(after.sql)!.operation,baseline:await explainReadPlan(baseline,before),candidate:await explainReadPlan(candidate,after)};
-   expect(legacyArmPlanViolations(input),target).toEqual([]);
-   const proof=captureProbePlan(input.sql,input.candidate,input),owners=proof.owners.filter(row=>row.name!=='outer');
-   expect(owners).toHaveLength(2);
-   expect(owners.filter(row=>row.active)).toHaveLength(target==='D1'?1:2);
-   const active=owners.find(row=>row.active)!;
-   const probe=input.candidate.find(row=>active.planIds.includes(row.id)&&/^SEARCH sv USING /.test(row.detail))!;
-   const missing=input.candidate.filter(row=>row.id!==probe.id);
-   expect(captureProbePlan(input.sql,missing,{...input,candidate:missing}).errors).toContain(active.name+' publication probe multiplicity differs');
-   const nextId=Math.max(...input.candidate.map(row=>row.id))+1;
-   const extra=[...input.candidate,{...probe,id:nextId}];
-   expect(captureProbePlan(input.sql,extra,{...input,candidate:extra}).errors).toContain(active.name+' publication probe multiplicity differs');
-   const inactive=owners.find(row=>!row.active);
-   if(inactive!==undefined){
-    const root={id:nextId,parent:0,notused:0,detail:'CORRELATED SCALAR SUBQUERY '+inactive.labels[0]};
-    const unexpected={...probe,id:nextId+1,parent:root.id};
-    const surviving=[...input.candidate,root,unexpected],exchanged=[...missing,root,unexpected];
-    expect(captureProbePlan(input.sql,surviving,{...input,candidate:surviving}).errors).toContain(inactive.name+' publication probe multiplicity differs');
-    const exchange=captureProbePlan(input.sql,exchanged,{...input,candidate:exchanged});
-    expect(exchange.actual).toEqual(proof.actual);
-    expect(exchange.errors).toContain(active.name+' publication probe multiplicity differs');
-    expect(exchange.errors).toContain(inactive.name+' publication probe multiplicity differs');
-   }
-  });
- });
- const expression='(CASE WHEN EXISTS(SELECT 1 FROM session_views sv WHERE sv.project_id = s.project_id AND sv.session_id = s.session_id) THEN COALESCE((WITH __myco_capture_scalar AS MATERIALIZED (SELECT 1) SELECT 1), (SELECT 1)) ELSE (SELECT 1) END)';
- for(const prefix of ['SELECT * FROM ','SELECT * FROM (','SELECT * FROM sessions, ','SELECT * FROM sessions JOIN members ON 1, ','SELECT 1 IN ','SELECT (1,2) IN ']){
-  const suffix=prefix.endsWith('(')?')':'',original=prefix+'(SELECT 1)'+suffix,sql=prefix+expression+suffix;
-  const baseline=prefix.includes(' IN ')?[{id:1,parent:0,notused:0,detail:'LIST SUBQUERY 1'}]:[];
-  expect(()=>captureProbePlan(sql,[],{sql,original,operation:'probe',baseline,candidate:[]})).toThrow('not a supported scalar role');
- }
-},30000);
-
 test('legacy membership preserves exact SQL while migrated reads compare their original arm',()=>{
  const base='SELECT prompt_id FROM prompt_batches WHERE project_id=?';
  const wrapper=`SELECT legacy.*, NULL AS __myco_capture, 0 AS __myco_sentinel FROM (${base}) legacy UNION ALL SELECT NULL, NULL, 1 FROM session_views sv`;
@@ -169,21 +103,6 @@ test('a supplied capture flag cannot replace observed source preparation',()=>{
   expect(()=>withReadPreparation({kind:'module'},()=>recorder.db.prepare('/*vs:M01:turns_listTurns:0*/SELECT 1'))).toThrow('nonmember missing source capture');
  }finally{sqlite.close();}
 });
-
-test('legacy read execution matches independent base bytes, methods, order and D1 accounting',async()=>{
- await withViewStores(async(db,target)=>{
-  if(target!=='native' && target!=='D1')throw new Error('Unknown execution target');
-  const observed=await legacyExecutionCases(db,target);
-  const frozen: Record<string, { bytes: string; statements: {text:number;binds:unknown[];method:string;rowsRead?:number}[] }> = legacy.calibration.cases[target];
-  expect(Object.keys(observed)).toEqual(Object.keys(frozen));
-  for(const [name,actual]of Object.entries(observed)){
-   const expected=frozen[name]!;
-   expect({name,bytes:actual.bytes}).toEqual({name,bytes:expected.bytes});
-   expect<unknown>(actual.statements.map(statement=>({sql:readTag(statement.sql)===null ? (()=>{expect(protectedSql(statement.sql),name+' untagged protected statement').toBe(false);return statement.sql})() : emptyReadSql(statement.sql),binds:statement.binds,method:statement.method,...(statement.rowsRead===undefined?{}:{rowsRead:statement.rowsRead})})),name)
-    .toEqual(expected.statements.map(statement=>({sql:legacy.calibration.statementText[statement.text],binds:statement.binds,method:statement.method,...(statement.rowsRead===undefined?{}:{rowsRead:statement.rowsRead})})));
-  }
- });
-},30000);
 
 test('canonical generator covers the frozen complete census domain and every per-family digest',()=>{
  const whole=createHash('sha256');
@@ -326,15 +245,6 @@ test('D1 diagnostics admit exactly the canonical leading tag byte offset',async(
  const secondByte=await operationOutcome(async()=>{throw new Error('D1_ERROR: no such column: prompt_id at offset 1371: SQLITE_ERROR')});
  expect(d1DiagnosticOutcome(secondByte,[event])).not.toEqual(original);
 });
-test('M04.0000036 preserves every D1 error byte with exactly the admitted tag offset',async()=>{
- const variant=[...legacyVariants()].find(row=>row.id==='M04.0000036');
- if(!variant)throw new Error('Missing diagnostic census case');
- await withViewStorePair('D1',async()=>{},async(_base,db)=>{
-  const recorder=statementRecorder(db,{accounting:'d1'});
-  const actual=await operationOutcome(()=>executeReadVariant(recorder.db,variant));await recorder.drain();
-  expect(d1DiagnosticOutcome(actual,recorder.events)).toEqual({error:{name:'Error',message:'D1_ERROR: no such column: prompt_id at offset 1336: SQLITE_ERROR'}});
- });
-},30000);
 async function nativeVariantIdentity(fixture:'listing'|'arity'){
  await withFrozenOracle(async oracle=>{
   const frozen=frozenReadPort(oracle),listings=frozenListingReaders(oracle),classes=new Set<string>();
@@ -534,145 +444,12 @@ test('aggregate witnesses require every named column and admit signed nonzero ra
  }
 });
 
-test('the CI strata preserve frozen statement sequences and replay result rows on both targets',async()=>{
- const text=gunzipSync(Buffer.from(legacy.ci.data,'base64'));
- expect(createHash('sha256').update(text).digest('hex')).toBe(legacy.ci.sha256);
- const frozen=JSON.parse(text.toString()) as {texts:string[];rows:{id:string;target:'native'|'D1';fixture:'listing'|'arity';outcome:Awaited<ReturnType<typeof operationOutcome>>;events:(Omit<ReturnType<typeof eventIdentity>[number],'sql'>&{text:number})[]}[]};
- expect(frozen.texts).toHaveLength(legacy.ci.texts);
- const rows=frozen.rows.map(row=>({...row,events:row.events.map(({text,...event})=>{const sql=frozen.texts[text];if(sql===undefined)throw new Error('Missing frozen CI text');return {...event,sql};})}));
- const variants=new Map(legacyCIVariants().map(variant=>[variant.id,variant]));
- expect(variants.size).toBe(legacy.ci.cases);expect(rows).toHaveLength(2*variants.size);
- expect(new Set([...variants.values()].map(row=>row.family)).size).toBe(Object.keys(legacy.axes).length);
- const random=spyOn(crypto,'randomUUID').mockReturnValue('00000000-0000-7000-8000-000000009999');
- const templates=new Set<string>();
- const witnesses=new Map<string,Set<string>>();
- const aggregates=new Map<string,Set<string>>();
- const aggregateFields=new Map<string,Set<string>>();
- const aggregateStatements=new Map<string,{target:string;operation:string;sql:string}>();
- const witness=(target:string,rows:readonly import('../helpers/statement-recorder.js').RecordedStatement[])=>{
-  const ids=witnesses.get(target)??new Set<string>();
-  for(const row of rows){
-   const tag=readTag(row.sql);
-   const columns=tag?aggregateColumns[tag.operation]:undefined;
-   if(tag&&columns){
-    const sql=significantRead(row.sql),key=aggregateIdentity(target,tag.operation,sql),entry=aggregates.get(key)??new Set<string>();
-    aggregateStatements.set(key,{target,operation:tag.operation,sql});
-    for(const column of nonzeroColumns(row.rows??[],columns))entry.add(column);
-    aggregates.set(key,entry);
-    const fields=aggregateFields.get(key)??new Set<string>();
-    for(const value of row.rows??[])if(typeof value==='object'&&value!==null)for(const column of columns)if(column in value&&typeof Reflect.get(value,column)==='number')fields.add(column);
-    aggregateFields.set(key,fields);
-   }
-   if(tag&&((row.changes??0)>0||(columns?nonzeroColumns(row.rows??[],columns).size>0:(row.rows??[]).length>0)))ids.add(tag.operation);
-  }
-  witnesses.set(target,ids);
- };
- try{await withFrozenCIOracle(async oracle=>{
-  for(const fixture of ['listing','arity'] as const)for(const target of ['native','D1'] as const)await withViewStorePair(target,fixture==='listing'?seedLegacyFixture:seedLegacyPromptArity,async(baseline,candidate)=>{
-   const started=performance.now();console.info(JSON.stringify({kind:'view_read_CI_phase',fixture,target,stage:'start'}));
-   const references=await legacyReceiptReferences(baseline);
-   const replay=statementRecorder(baseline,{accounting:target==='native'?'native':'d1',captureRows:true});
-   const current=statementRecorder(candidate,{accounting:target==='native'?'native':'d1',captureRows:true});
-   for(const row of rows.filter(row=>row.fixture===fixture&&row.target===target)){
-    const variant=variants.get(row.id);if(!variant)throw new Error('Unknown CI stratum '+row.id);
-    replay.reset();current.reset();
-    const baseline=()=>fixture==='listing'?executeListingVariant(oracle.replayStore(replay.db),variant,frozenListingReaders(oracle)):executeReadVariant(oracle.replayStore(replay.db),variant,frozenReadPort(oracle));
-    const candidate=()=>fixture==='listing'?executeListingVariant(current.db,variant):executeReadVariant(current.db,variant,currentReadPort);
-    const bundleField=bundledFieldRefusal(variant);
-    let expected:Awaited<ReturnType<typeof operationOutcome>>|undefined,actual:typeof expected;
-    if(bundleField){
-     for(const work of [baseline,candidate])await assertedBundleFieldRefusal(work);
-    }else [expected,actual]=await Promise.all([operationOutcome(baseline),operationOutcome(candidate)]);
-    await replay.drain();await current.drain();
-    if(actual!==undefined)expect<unknown>(target==='D1'?d1DiagnosticOutcome(actual,current.events):actual,target+' '+row.id+' response').toEqual(expected);
-    expect(eventIdentity(current.events,true),target+' '+row.id+' live bind identity').toEqual(eventIdentity(replay.events,false));
-    expect<unknown>(legacyReferencedEvents(eventIdentity(current.events,true),references),target+' '+row.id).toEqual(row.events);
-    witness(target,current.statements);
-    for(const event of current.events){const tag=readTag(event.sql);if(tag)templates.add(tag.operation);}
-    const work=(statements:typeof current.statements,tagged:boolean)=>statements.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:emptyReadRows(rows),rowCount,rowsRead,rowsWritten,failed}));
-    expect(work(current.statements,true),target+' '+row.id).toEqual(work(replay.statements,false));
-   }
-   console.info(JSON.stringify({kind:'view_read_CI_phase',fixture,target,stage:'complete',milliseconds:performance.now()-started}));
-  },'native');
-  let serial=100000;
-  random.mockImplementation(()=>uuid(serial++) as ReturnType<typeof crypto.randomUUID>);
-  for(const target of ['native','D1']as const)for(const [seed,read]of [[seedLegacyCIResults,legacyCIResultReads],[seedLegacyCISwitch,legacyCISwitchReads]]as const)await withViewStorePair(target,seed,async(baseline,candidate)=>{
-   console.info(JSON.stringify({kind:'view_read_CI_positive',target,fixture:seed.name,stage:'start'}));
-   const before=statementRecorder(baseline,{accounting:target==='native'?'native':'d1',captureRows:true}),after=statementRecorder(candidate,{accounting:target==='native'?'native':'d1',captureRows:true});
-   serial=200000;const expected=await read(oracle.replayStore(before.db),frozenReadPort(oracle));
-   serial=200000;const actual=await read(after.db);
-   await before.drain();await after.drain();expect(actual,target+' positive results').toEqual(expected);
-   if(read===legacyCIResultReads){
-    const counts=actual.find(row=>row.name==='title-counts')?.value;
-    if(typeof counts!=='object'||counts===null||!('live'in counts)||!('imported'in counts))throw new Error('Missing CI title counts');
-    expect(counts.live,target+' live title backlog').toBeGreaterThan(0);
-    expect(counts.imported,target+' imported title backlog').toBeGreaterThan(0);
-   }else expect(actual).toContainEqual({name:'switch-completion',value:true});
-   const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,changes,failed})=>({sql:tagged?emptyReadSql(sql):sql,binds,method,rows:emptyReadRows(rows),rowCount,rowsRead,rowsWritten,changes,failed}));
-   expect(work(after.statements,true),target+' positive statement results and work').toEqual(work(before.statements,false));
-   witness(target,after.statements);
-   console.info(JSON.stringify({kind:'view_read_CI_positive',target,fixture:seed.name,stage:'complete'}));
-  },'native');
-  for(const target of ['native','D1']){
-   const missing=[...LEGACY_ONLY_OPERATIONS].filter(id=>!witnesses.get(target)?.has(id));
-   console.info(JSON.stringify({kind:'view_read_CI_results',target,missing}));
-   expect(missing,target+' templates without a positive result').toEqual([]);
-   for(const operation of Object.keys(aggregateColumns))expect([...aggregateStatements.values()].some(row=>row.target===target&&row.operation===operation),target+' '+operation+' missing aggregate statement').toBe(true);
-   const missingAggregates=[...aggregateStatements].filter(([,row])=>row.target===target).flatMap(([key,{operation,sql}])=>{
-    const columns=aggregateColumns[operation]!,observed=aggregates.get(key)??new Set<string>(),exempt=aggregateExemptions[operation]??{};
-    const numeric=columns.filter(column=>!aggregateFields.get(key)?.has(column)),nonzero=columns.filter(column=>!observed.has(column)&&!exempt[column]);
-    return numeric.length||nonzero.length?[{operation,sql,columnsWithoutNumericRows:numeric,columnsWithoutNonzeroResult:nonzero}]:[];
-   });
-   console.info(JSON.stringify({kind:'view_read_CI_aggregates',target,missing:missingAggregates}));
-   expect(missingAggregates,target+' aggregate columns without numeric or nonzero witnesses').toEqual([]);
-   for(const [operation,exempt]of Object.entries(aggregateExemptions))for(const column of Object.keys(exempt))expect([...aggregateStatements].filter(([,row])=>row.target===target&&row.operation===operation).some(([key])=>!aggregates.get(key)?.has(column)),target+' '+operation+'/'+column+' redundant aggregate exemption').toBe(true);
-  }
-  expect([...LEGACY_ONLY_OPERATIONS].filter(id=>!templates.has(id))).toEqual([]);
- });}finally{random.mockRestore()}
-},120000);
-
 
 test('catalogue identity admits only each program declared schema stamp and preserves other fields',()=>{
  expect(activeCatalogueRows([{schema_version:'103',id:'member'}],103)).toEqual(activeCatalogueRows([{schema_version:'104',id:'member'}],104));
  expect(activeCatalogueRows([{schema_version:'105',id:'member'}],104)).not.toEqual(activeCatalogueRows([{schema_version:'103',id:'member'}],103));
  expect(activeCatalogueRows([{schema_version:'104',id:'other'}],104)).not.toEqual(activeCatalogueRows([{schema_version:'103',id:'member'}],103));
 });
-
-test('public HTTP and MCP compositions preserve exact base status content type bytes and statement counts',async()=>{
- const random=spyOn(crypto,'randomUUID').mockReturnValue('00000000-0000-7000-8000-000000009999');
- try{await withFrozenCIOracle(async oracle=>{
-  for(const target of ['native','D1']as const){
-   let identity:Awaited<ReturnType<typeof seedLegacyPublicFixture>>|undefined;
-   await withViewStorePair(target,async db=>{identity=await seedLegacyPublicFixture(db)},async(baseline,candidate)=>{
-    if(!identity)throw new Error('Public fixture has no identity');
-    await baseline.prepare("UPDATE schema_meta SET value=? WHERE key='version'").bind(String(legacy.schema.steps.at(-1)!.version)).run();
-    const before=statementRecorder(baseline,{accounting:target==='native'?'native':'d1',captureRows:true}),after=statementRecorder(candidate,{accounting:target==='native'?'native':'d1',captureRows:true});
-    const base=legacyPublicServer(oracle.replayStore(before.db),oracle),current=legacyPublicServer(after.db);
-    const requests=legacyPublicRequests(identity);
-    expect(requests.length).toBe(legacy.ci.publicCompositions.requestsPerTarget);
-    for(const [index,request]of requests.entries()){
-     before.reset();after.reset();
-     const response=async(fetch:(input:Request)=>Promise<Response>)=>{const row=await fetch(new Request(request.url,{method:request.method,headers:request.headers,...(request.method==='GET'?{}:{body:await request.clone().text()})}));return {status:row.status,contentType:row.headers.get('content-type'),bytes:await row.text()}};
-     const original=await response(base),actual=await response(current);await before.drain();await after.drain();
-     expect(actual,target+' '+request.url).toEqual(original);
-     const frozen=legacy.ci.publicCompositions.requests[index]!;
-     expect({status:actual.status,contentType:actual.contentType,method:request.method,url:request.url}).toEqual(frozen);
-     expect(eventIdentity(after.events,true),target+' '+request.url+' preparation and execution count').toEqual(eventIdentity(before.events,false));
-     const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(({sql,binds,method,rows,rowCount,rowsRead,rowsWritten,failed})=>{
-      const schemaVersion=tagged?SERVER_SCHEMA_VERSION:legacy.schema.steps.at(-1)!.version;
-      const qualified=sql.startsWith('SELECT s.value AS schema_version,')?rows?.map(row=>{
-       if(typeof row!=='object'||row===null||!('schema_version'in row))throw new Error('Missing authentication schema header');
-       expect(row.schema_version).toBe(String(schemaVersion));
-       return {...row,schema_version:'admitted-schema'};
-      }):rows;
-      return {sql:tagged&&readTag(sql)?emptyReadSql(sql):sql,binds,method,rows:activeCatalogueRows(emptyReadRows(qualified),schemaVersion),rowCount,rowsRead,rowsWritten,failed};
-     });
-     expect(work(after.statements,true),target+' '+request.url+' statement results').toEqual(work(before.statements,false));
-    }
-   },legacy.schema.steps.at(-1)!.version);
-  }
- });}finally{random.mockRestore()}
-},30000);
 
 test('writer-produced blob and bundle bodies reach their distinct hydration paths on both targets',async()=>{
  const random=spyOn(crypto,'randomUUID').mockReturnValue('00000000-0000-7000-8000-000000009999');
@@ -742,32 +519,6 @@ test('oracle tokens retain loader identity and are bound to one exact statement'
  });
 });
 
-
-test('M21 alone admits the declared FILTER transformation with exact empty-world output and work',async()=>{
- await withFrozenCIOracle(async oracle=>{
-  for(const target of ['native','D1'] as const)await withViewStorePair(target,seedLegacyCIResults,async(baseline,candidate)=>{
-   for(const [scope,session]of [[undefined,undefined],[{projectId:'project'},undefined],[{projectId:'project'},'session'],[{projectId:'project'},'unknown']] as const){
-    const before=statementRecorder(baseline,{accounting:target==='D1'?'d1':'native',captureRows:true});
-    const after=statementRecorder(candidate,{accounting:target==='D1'?'d1':'native',captureRows:true});
-    const expected=await frozenReadPort(oracle)('hookPlacement','countUnplacedContextRecords',[oracle.replayStore(before.db),scope,session,700]);
-    const actual=await currentReadPort('hookPlacement','countUnplacedContextRecords',[after.db,scope,session,700]);
-    await before.drain();await after.drain();
-    expect(actual,target).toEqual(expected);
-    expect(before.statements.map(row=>row.method)).toEqual(['first','first']);
-    expect(after.statements.map(row=>row.method)).toEqual(['first','first']);
-    expect(eventIdentity(after.events,true)).toEqual(eventIdentity(before.events,false));
-    const work=(rows:typeof before.statements,tagged:boolean)=>rows.map(row=>({sql:tagged?emptyReadSql(row.sql):row.sql,binds:row.binds,method:row.method,rows:emptyReadRows(row.rows),rowCount:row.rowCount,rowsRead:row.rowsRead,rowsWritten:row.rowsWritten,failed:row.failed}));
-    expect(work(after.statements,true),target+' M21 exact E').toEqual(work(before.statements,false));
-    const first=after.statements[0]!.sql,base=before.statements[0]!.sql;
-    expect(()=>emptyReadSql(first.replace('M21:hook_placement_countUnplacedContextRecords:0','M42:kpis_countOf:0'))).toThrow('M21 aggregate rule cannot admit another operation');
-    expect(()=>emptyReadSql(first.replace('WHERE NOT r.__myco_delivery_placed','WHERE r.__myco_delivery_placed'))).toThrow('Invalid M21 aggregate count');
-    expect(emptyReadSql(first.replaceAll('hook_prompt.prompt_id = r.delivered_prompt_id','hook_prompt.prompt_id = r.session_id'))).not.toBe(base);
-    const extra=first.replace(' AS __myco_delivery_capture'," || (CASE WHEN EXISTS(SELECT 1 FROM session_views) THEN (SELECT COUNT(*) FROM plans) ELSE '' END) AS __myco_delivery_capture");
-    expect(()=>emptyReadSql(extra)).toThrow('Invalid M21 owner capture');
-   }
-  });
- });
-},60_000);
 
 test('the empty-world M10 fence transformation applies only to its declared UPDATE',()=>{
  const sql='UPDATE plans SET status=? WHERE project_id=? AND plan_key=? AND (NOT EXISTS (SELECT 1 FROM session_views sv WHERE sv.project_id=plans.project_id)) RETURNING plan_key';

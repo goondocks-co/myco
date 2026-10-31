@@ -44,6 +44,9 @@ export const search: ParityScenario = {
     await post('plan', { planKey: plan, promptId: prompt, title: `${word} titleword`, blob: key, status: 'active' });
     const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', type: 'decision', content: `${word} advice`, project: target.projectId });
     await target.sql(`UPDATE sessions SET title = ${lit(word)} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
+    // A prompt and its replies are found through their turn's card.
+    await target.sql(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at)
+      VALUES (${lit(target.projectId)}, ${lit(session)}, ${lit(prompt)}, 'carded', ${lit(`${word} card for the turn that reached distantneedle`)}, ${stamp})`);
     let indexed = await owner(word);
     for (let attempt = 0; indexed.coverage.pending_blobs > 0 && attempt < 4; attempt++) {
       const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}' });
@@ -51,9 +54,10 @@ export const search: ParityScenario = {
       indexed = await owner(word);
     }
     expect(indexed.coverage.pending_blobs).toBe(0);
-    expect(indexed.results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'session', 'spore']);
+    expect(indexed.results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'session', 'spore']);
     expect(await mcp<SearchAnswer>('myco_search', { query: word, limit: 20 })).toEqual(indexed);
-    expect((await owner(`${word} distantneedle`)).results.map((r) => r.id).sort()).toEqual([prompt, response, plan].sort());
+    expect((await owner(`${word} distantneedle`)).results.map((r) => r.id).sort()).toEqual([prompt, plan].sort());
+    expect((await owner(word, { type: 'response' })).results.map((r) => [r.type, r.id])).toEqual([['response', prompt]]);
     expect((await owner('titleword distantneedle')).results.map((r) => r.id)).toEqual([plan]);
     expect((await owner(word, { observation_type: 'decision' })).results.map((r) => r.id)).toEqual([spore.id]);
     expect(await owner(word, { mode: 'semantic' })).toMatchObject({ results: [], mode: 'semantic', provider_unavailable: true });
@@ -81,11 +85,11 @@ export const search: ParityScenario = {
     expect(found(everywhere.body)).toEqual(indexed.results.map((r) => `${target.projectId}/${r.type}/${r.id}`).sort());
     expect(found((await across(word, [foreign])).body)).toEqual([`${foreign}/spore/sp-${foreign}`]);
     expect(found((await across(`${word} distantneedle`, [target.projectId, foreign])).body))
-      .toEqual([`${target.projectId}/plan/${plan}`, `${target.projectId}/prompt/${prompt}`, `${target.projectId}/response/${response}`].sort());
+      .toEqual([`${target.projectId}/plan/${plan}`, `${target.projectId}/prompt/${prompt}`].sort());
     expect((await across(word, [], { mode: 'semantic' })).status).toBe(400);
     expect((await across(word, [`absent-${stamp}`])).status).toBe(404);
     expect((await fetch(`${target.url}/api/search?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
     await target.sql(`UPDATE sessions SET title = 'changed title' WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
-    expect((await owner(word)).results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'spore']);
+    expect((await owner(word)).results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'spore']);
   },
 };

@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
 import { subagentIdFor } from '@myco/member/envelope.js';
 
 /** The same hint changes placement only when its exact session prompt becomes available. */
@@ -14,11 +14,20 @@ export const hookPlacement: ParityScenario = {
     const [previous, next, overlap, late, wrongSession, wrongProject] = Array.from({ length: 6 }, () => crypto.randomUUID());
     await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES (${lit(otherProject)},'Other',1)`);
     await target.sql(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at)
-      VALUES (${project},${lit(session)},'t',1,1),(${project},${lit(otherSession)},'t',1,1),(${lit(otherProject)},${lit(session)},'t',1,1)`);
-    const prompt = async (id: string, ownSession = session, ownProject = target.projectId, thread = 'main') => target.sql(`INSERT INTO prompt_batches
-      (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,thread_id)
-      VALUES (${lit(ownProject)},${lit(ownSession)},${lit(id)},${lit(id)},'same text','user','same hash',100,100,'t',100,${lit(thread)})`);
-    await prompt(previous); await prompt(next); await prompt(overlap, session, target.projectId, 'parallel');
+      VALUES (${lit(otherProject)},${lit(session)},'t',1,1)`);
+    // A prompt of this Project is captured and published into its session's document; another Project's is only a row there.
+    const [mainThread, parallelThread] = [crypto.randomUUID(), crypto.randomUUID()];
+    const prompt = async (id: string, ownSession = session, ownProject = target.projectId, thread = mainThread) => {
+      if (ownProject !== target.projectId) return target.sql(`INSERT INTO prompt_batches
+        (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,thread_id)
+        VALUES (${lit(ownProject)},${lit(ownSession)},${lit(id)},${lit(id)},'same text','user','same hash',100,100,'t',100,${lit(thread)})`);
+      const response = await fetch(target.url + '/events', { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: ownSession, kind: 'prompt', createdAt: 100, channel: 'cli',
+          producer: { adapter: 'parity', version: '1' }, payload: { promptId: id, text: 'same text', origin: 'user', threadId: thread } }) });
+      await expectPersisted(response, 'prompt');
+      await documentsPublished(target, ownSession);
+    };
+    await prompt(previous); await prompt(next); await prompt(overlap, session, target.projectId, parallelThread);
     await prompt(wrongSession, otherSession); await prompt(wrongProject, session, otherProject);
     for (const [id, hint, selection] of [['late', late, 'selection-late'], ['wrong-session', wrongSession, 'selection-session'],
       ['wrong-project', wrongProject, 'selection-project'], ['null', null, 'selection-null'], ['placed', overlap, next]]) {
@@ -86,7 +95,8 @@ export const hookPlacement: ParityScenario = {
       await post('session.start', { agent: adapter, startedAt: 1 });
       const toolId = crypto.randomUUID();
       await post('tool.use', { toolCallId: toolId, toolName: 'Shell', input: { command: 'true' }, success: true });
-      expect((await read<{ rows: Row[] }>(`/api/projects/${target.projectId}/sessions/${hookSession}/unplaced`)).rows.map(r => r.id)).toContain(toolId);
+      await documentsPublished(target, hookSession);
+      expect((await read<{ rows: Row[] }>(`/api/projects/${target.projectId}/sessions/${hookSession}/unplaced-records`)).rows.map(r => r.id)).toContain(toolId);
     }
     for (const adapter of ['claude-code', 'codex']) {
       const capturedSession = session + '-subagents-' + adapter;

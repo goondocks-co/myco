@@ -1,39 +1,20 @@
 import { expect } from 'bun:test';
-import { listSessionActivity, type SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
 import { envelopeHash } from '@myco-server-worker/ingest/events.js';
 import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
 import { PARSER_VERSION, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { expectPersisted, lit, type ParityTarget, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityTarget, type ParityScenario } from '../harness.ts';
 
-/** The read's own statements and bound keys, captured without accessing a store. */
-async function issued(projectId: string, sessionId: string, cursor?: string): Promise<Array<{ sql: string; binds: unknown[] }>> {
-  const statements: Array<{ sql: string; binds: unknown[] }> = [];
-  const db = {
-    prepare(sql: string): PreparedStatement {
-      const record = { sql, binds: [] as unknown[] };
-      statements.push(record);
-      const statement = {
-        bind(...values: unknown[]) { record.binds = values; return statement; },
-        all: async () => ({ results: [] }),
-      } as unknown as PreparedStatement;
-      return statement;
-    },
-  } as unknown as RelationalStore;
-  await listSessionActivity(db, { projectId }, sessionId, { type: 'no_result', tool: 'Bash', failed: true, cursor });
-  return statements;
-}
-
-/** Stored result reasons, scoped metadata filters and success upgrades through both front doors. */
+/** Stored result reasons, metadata filters and success upgrades, read from the session's document through both front doors. */
 export const sessionActivityParity: ParityScenario = {
   name: 'session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade',
   async run(target) {
     const stamp = Date.now();
     const session = `parity-activity-${stamp}`;
     const prompt = crypto.randomUUID();
-    const ids = Array.from({ length: 6 }, () => crypto.randomUUID());
+    const ids = Array.from({ length: 5 }, () => crypto.randomUUID());
     const post = async (kind: string, at: number, payload: Record<string, unknown>) => {
       const response = await fetch(`${target.url}/events`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
@@ -52,35 +33,19 @@ export const sessionActivityParity: ParityScenario = {
     for (const [index, resultReason] of reasons.entries()) {
       await post('tool.use', stamp + index + 2, { toolCallId: ids[index], promptId: index === 0 ? prompt : undefined, toolName: index === 0 ? 'Read' : 'Bash', input: { secret: 'activity input secret' }, output: 'activity output secret', success: false, resultReason });
     }
-    await target.sql(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,success,result_reason,error_message,created_at,token_id,received_at)
-      VALUES (${lit(target.projectId)},${lit(session)},${lit(ids[5])},${lit(ids[5])},'Legacy',0,NULL,'activity error secret',${stamp + 10},'legacy',${stamp + 10})`);
+    await documentsPublished(target, session);
     const full = await read();
-    expect(full.rows.map(row => row.id)).toEqual([ids[5], ids[4], ids[3], ids[2], ids[1], ids[0]]);
+    expect(full.rows.map(row => row.id)).toEqual([ids[4], ids[3], ids[2], ids[1], ids[0]]);
     expect(full.rows.at(-1)?.promptId).toBe(prompt);
     expect(full.rows.slice(0, -1).every(row => row.promptId === null && row.detail.includes('Not placed on a turn'))).toBe(true);
-    expect(full.rows[0]).toMatchObject({ title: 'Tool call did not succeed', resultReason: null });
-    expect(JSON.stringify(full)).not.toMatch(/activity input secret|activity output secret|activity error secret/);
-    expect(await target.sql(`SELECT result_reason FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ result_reason: 'no_result' }]);
-    expect((await read('?tool=Read&type=failure&failed=true&limit=1')).rows.map(row => row.id)).toEqual([ids[0]]);
-    const first = await read('?type=no_result&limit=2');
-    expect(first.tools).toEqual(['Bash', 'Legacy', 'Read']);
-    const second = await read(`?type=no_result&limit=2&cursor=${encodeURIComponent(first.cursor!)}`);
-    expect([...first.rows, ...second.rows].map(row => row.id)).toEqual([ids[4], ids[3], ids[2], ids[1]]);
-    expect(second.cursor).toBeNull();
-    for (const cursor of [undefined, first.cursor!]) {
-      const statements = await issued(target.projectId, session, cursor);
-      let next = 0;
-      const sql = statements[0].sql.replace(/\?/g, () => {
-        const value = statements[0].binds[next++];
-        return typeof value === 'number' ? String(value) : lit(String(value));
-      });
-      const plan = (await target.sql(`EXPLAIN QUERY PLAN ${sql}`)).map(row => String(row.detail)).join('\n');
-      expect(plan).toContain('idx_tool_calls_activity');
-      expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
-      expect(plan).toMatch(/SEARCH hook_prompt USING (?:COVERING )?INDEX/);
-    }
+    expect(full.rows.map(row => row.resultReason)).toEqual(['no_result', 'no_result', 'pending_limit', 'no_result', 'reported']);
+    expect(full.tools).toEqual(['Bash', 'Read']);
+    expect(JSON.stringify(full)).not.toMatch(/activity input secret|activity output secret/);
+    expect((await read('?tool=Read&type=failure&failed=true')).rows.map(row => row.id)).toEqual([ids[0]]);
+    expect((await read('?type=no_result')).rows.map(row => row.id)).toEqual([ids[4], ids[3], ids[2], ids[1]]);
+    expect((await read('?failed=false')).rows).toEqual([]);
     await post('tool.use', stamp + 20, { toolCallId: ids[1], toolName: 'Bash', input: {}, output: 'success', success: true });
-    expect(await target.sql(`SELECT success,result_reason,created_at FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ success: 1, result_reason: null, created_at: stamp + 3 }]);
+    await documentsPublished(target, session);
     expect((await read()).rows.map(row => row.id)).not.toContain(ids[1]);
     await verifyParserResultReplay(target);
   },

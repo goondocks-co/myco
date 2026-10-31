@@ -17,7 +17,7 @@ import * as plans from '@myco-server-worker/read/plans.js';
 import {activityFeed} from '@myco-server-worker/read/activity.js';
 import {processedBody} from '@myco-server-worker/read/processed.js';
 import {sessionMaterial} from '@myco-server-worker/core/titling.js';
-import {childrenRowsByPrompt,turnChildPage,turns_readTurnBodies,lineage_sessionsNamed,lineage_childIdsOf,sessions_instantStatements} from '@myco-server-worker/read/view-store.js';
+import {childrenRowsByPrompt,turnChildPage,turns_readTurnBodies,lineage_sessionsNamed,lineage_childIdsOf} from '@myco-server-worker/read/view-store.js';
 import {legacyBodyBlobs} from '../../helpers/view-read-legacy-fixtures.js';
 
 export const worldScope={projectId:'project'};
@@ -144,12 +144,6 @@ export function viewArityWorkloads():ViewReadWorkload[]{
  for(const count of [0,1,90,91,201]){
   const sessionIds=Array.from({length:count},(_,index)=>index===0?'session':'arity-missing-'+index);
   add('arity/counts/'+count,db=>sessions.sessionCountsFor(db,worldScope,sessionIds));
-  add('arity/instants/'+count,async db=>{
-   const work=sessions_instantStatements(db,worldScope,sessionIds);
-   const instants=await work.parse(work.statements.length?await db.batch(work.statements):[]);
-   return {instants:instants.toSorted((a,b)=>a.sessionId.localeCompare(b.sessionId)||a.at-b.at),
-    buckets:[...sessions.bucketActivity(sessionIds.map(sessionId=>({sessionId,startedAt:0,firstReceivedAt:0,endedAt:1000,lastReceivedAt:1000})),instants,1000)]};
-  });
   if(count<=91){
    const prompts=Array.from({length:count},(_,index)=>index===0?uuid(20):uuid(70000+index));
    add('arity/bodies/'+count,db=>turns_readTurnBodies(db,worldScope,'session',prompts));

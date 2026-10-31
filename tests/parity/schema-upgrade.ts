@@ -10,9 +10,18 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
 const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'], 107: ['view_prompts'] };
+/** The seeded state a guarded step admits: for 114, every document converted, its publisher holding every byte received and its prompts located. */
+const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
+  114: `UPDATE session_documents SET state = 'live', generation = COALESCE(generation, 1);
+    UPDATE session_prompts SET page = 0 WHERE page IS NULL;
+    DELETE FROM publish_queue;
+    INSERT OR REPLACE INTO transcript_publication (project_id, transcript_id, generation, session_id, published_offset, record_scheme, parser_version, updated_at)
+      SELECT t.project_id, t.transcript_id, d.generation, t.session_id, t.size, 'source-record-v1', 1, 1
+      FROM transcripts t JOIN session_documents d ON d.project_id = t.project_id AND d.session_id = t.session_id;`,
+};
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
-  prompt_context_answers: { outcome: 'served' },
+  prompt_context_answers: { outcome: 'served', prompt_id: 'upgrade_prompt' },
   legacy_worker_audit: { action: 'forgotten' },
   agent_run_attempts: { owner_kind: 'runner' },
   agent_run_steps: { kind: 'read', outcome: 'ok' },
@@ -23,6 +32,7 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   view_visible: { role: 'live' },
   view_content_proofs: { kind: 'prompt' },
   view_findings: { kind: 'key_reuse' },
+  spore_injections: { prompt_id: 'upgrade_prompt' },
 };
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -269,7 +279,9 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, first_received_at, last_received_at, token_id)
         VALUES ('proj_parity', 'upgrade_transcript_read', 'upgrade_session', 'upgrade_machine', 'codex', 10, 10, 5, 1, 1, 'upgrade_token'),
                ('proj_parity', 'upgrade_transcript_unread', 'upgrade_session', 'upgrade_machine', 'codex', 10, 0, 0, 1, 1, 'upgrade_token');`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION, new Set(EMPTY_UPGRADE_INPUTS[version] ?? []))])];
+    const touched = [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION, new Set(EMPTY_UPGRADE_INPUTS[version] ?? []))])];
+    if (UPGRADE_PRECONDITIONS[version] !== undefined) db.exec(UPGRADE_PRECONDITIONS[version]);
+    return touched;
   } finally { db.close(); }
 }
 

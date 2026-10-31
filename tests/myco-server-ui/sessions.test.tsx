@@ -421,10 +421,8 @@ describe('the session reading page', () => {
   it('reads records not placed on a turn only when their disclosure opens, including a session with no prompts', async () => {
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1/turns': () => page([]),
-      '/api/projects/x/sessions/s1/unplaced': () => page([
-        { key: 'tool_call:a', kind: 'tool_call', id: 'a', label: 'Shell', createdAt: NOW },
-        { key: 'receipt:b', kind: 'receipt', id: 'b', label: 'Context received', createdAt: NOW },
-      ]),
+      '/api/projects/x/sessions/s1/unplaced-records': () => page([{ key: 'tool:a', kind: 'tool', id: 'a', label: 'Shell', createdAt: NOW, failed: true }]),
+      '/api/projects/x/sessions/s1/unplaced': () => page([{ key: 'receipt:b', kind: 'receipt', id: 'b', label: 'Context received', createdAt: NOW }]),
     }));
     mount('/p/x/sessions/s1');
     await screen.findByRole('heading', { level: 1 });
@@ -433,11 +431,11 @@ describe('the session reading page', () => {
     expect(requested.some(path => path.includes('/unplaced'))).toBe(false);
     fireEvent.click(disclosure);
     const unplaced = await screen.findByRole('region', { name: 'Not placed on a turn' });
-    expect(within(unplaced).getByText('Shell')).toBeTruthy();
+    expect(within(within(unplaced).getByRole('list', { name: 'Conversation records' })).getByText('Shell · failed')).toBeTruthy();
     expect(within(unplaced).getByText('Context received')).toBeTruthy();
     expect(screen.getAllByText('Not placed on a turn')).toHaveLength(1);
     expect(within(unplaced).getByText('These records belong to this session. No turn in this session matches them.')).toBeTruthy();
-    expect(requested.filter(path => path.includes('/unplaced'))).toHaveLength(1);
+    expect(requested.filter(path => path.includes('/unplaced'))).toHaveLength(2);
   });
 
   it('leads with the title and summary, keeps the facts and what came of it beside the conversation, and shows no raw id', async () => {
@@ -1112,7 +1110,12 @@ describe('the session reading page', () => {
   });
 
   it('reads a turn’s tool calls only when they open, then shows how each went', async () => {
-    const { requested } = server(routes());
+    // The turn's first pages hold none of its calls, so its summary is partial: the turn's own count still offers them.
+    const { requested } = server(routes({ [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+      prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
+      responses: [], attachments: [], plans: [], injection: null, children: [],
+      tools: { complete: false, total: 0, failed: 0, byTool: [], failures: [], files: [], myco: [] },
+    }) }));
     mount('/p/x/sessions/s1');
     const first = await screen.findByTestId(`turn-${P1}`);
     const toggle = await within(first).findByTestId('tool-calls-toggle');
@@ -1188,6 +1191,11 @@ describe('the session reading page', () => {
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
         prompt: prompt(P1, 'user', '<command-name>/fork</command-name><command-args></command-args>'),
         metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
+        tools: { complete: true, total: 3, failed: 1, byTool: [{ toolName: 'Read', count: 2 }, { toolName: 'Bash', count: 1 }], files: ['src/read.ts'],
+          myco: [{ tool: 'myco_search', op: null, count: 1, failed: 0 }],
+          failures: [{ toolCallId: 'failed-call', promptId: P1, toolName: 'Bash', mycoTool: null, mycoOp: null, inputPreview: 'npm test', inputBytes: 8,
+            inputTruncated: false, inputBlobKey: null, outputPreview: null, outputBlobKey: null, success: false, errorMessage: 'exit 1',
+            durationMs: null, filesAffected: null, createdAt: NOW, orderedAt: NOW }] },
         injection: { sporeIds: ['sp1'], spores: [{ id: 'sp1', observationType: 'decision', preview: 'Shared read path' }], planIds: ['plan1'], plans: [{ planKey: 'plan1', title: 'Session audit plan' }], createdAt: NOW },
         answers: [{ id: 'empty-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty'], failures: [], selection: { ...emptyInjectionCounts(), sporeRawMatches: 12 }, createdAt: NOW }, { id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'store_quota', operation: 'hydrate_spores' }], selection: emptyInjectionCounts(), createdAt: NOW }],
         children: [
@@ -1210,6 +1218,11 @@ describe('the session reading page', () => {
     expect(within(parent).queryByText('/fork')).toBeNull();
     expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
     expect(within(parent).getByText('Read × 2')).toBeTruthy();
+    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files it changed folded.
+    const summary = within(parent).getByTestId('tool-summary');
+    expect(within(summary).getByText('myco_search')).toBeTruthy();
+    expect(within(within(summary).getByRole('list', { name: 'Failed tool calls' })).getByTestId('tool-call-failed-call')).toBeTruthy();
+    expect(within(summary).getByText('1 file changed')).toBeTruthy();
     expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
     expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);
