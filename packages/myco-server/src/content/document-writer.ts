@@ -8,7 +8,7 @@
  * last page chunk written carries the continuation.
  */
 import {
-  chunkBytes, DOCUMENT_CHUNK_BYTES, DOCUMENT_PAGE_BYTES, fitRecord, pageBytes, recordBytes, SESSION_OWNER,
+  DOCUMENT_CHUNK_BYTES, DOCUMENT_PAGE_BYTES, fitRecord, pageBytes, pageHeaderBytes, recordBytes, SESSION_OWNER,
   type BodyRef, type DecodedChunk, type DocRecord, type Page,
 } from './document.js';
 import { mergeRecord } from './document-records.js';
@@ -47,6 +47,10 @@ export class DocumentWriter {
   private readonly bodies: BodyChunkWrite[] = [];
   private lastPageChunk: number | null;
   private marked: WriterMark | null = null;
+  /** Changes made through `upsert` and `undo`, which `versions` is held against. */
+  private revision = 0;
+  private counted: { revision: number; versions: number } | null = null;
+  private readonly sizes = new WeakMap<DocRecord, number>();
 
   constructor(
     readonly directory: Directory,
@@ -102,6 +106,7 @@ export class DocumentWriter {
 
   /** Restores the writer to `mark`; chunks read after it stay loaded. */
   undo(mark: WriterMark): void {
+    this.revision += 1;
     for (const [page, records] of mark.pages) page.records = records;
     for (const page of this.fresh.splice(mark.fresh)) this.located.delete(pageKey(page.owner, page.page));
     this.bodies.splice(mark.bodies);
@@ -166,6 +171,7 @@ export class DocumentWriter {
 
   /** Places a record on `owner`'s pages, or merges it into the version a page already holds under its id. */
   async upsert(record: DocRecord, owner: string): Promise<Upsert> {
+    this.revision += 1;
     const searched = record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner];
     for (const candidate of searched) {
       const pages = await this.pagesOf(candidate);
@@ -204,6 +210,34 @@ export class DocumentWriter {
     return 2 * this.dirty.size + 2 + Math.ceil(fresh / DOCUMENT_CHUNK_BYTES) + this.bodies.length;
   }
 
+  /** The number of chunk versions `layout()` writes now: the versions a commit registers. */
+  get versions(): number {
+    if (this.counted?.revision === this.revision) return this.counted.versions;
+    const nextChunk = this.nextChunk;
+    try {
+      const layout = this.layout();
+      this.counted = { revision: this.revision, versions: layout.pageChunks.length + layout.bodyChunks.length };
+      return this.counted.versions;
+    } finally {
+      this.nextChunk = nextChunk;
+    }
+  }
+
+  /** A page's encoded size, each record measured once. */
+  private sizeOf(page: Page): number {
+    let bytes = pageHeaderBytes(page.owner, page.page);
+    for (const record of page.records) {
+      let held = this.sizes.get(record);
+      if (held === undefined) this.sizes.set(record, held = recordBytes(record));
+      bytes += held;
+    }
+    return bytes;
+  }
+
+  private bytesOf(pages: readonly Page[]): number {
+    return pages.reduce((sum, page) => sum + this.sizeOf(page), 0);
+  }
+
   /**
    * The chunk versions to write. Changed chunks keep their numbers; pages that no longer fit one move on, and with new
    * pages they fill the last page chunk and then new chunks. The last one carries the continuation.
@@ -217,14 +251,14 @@ export class DocumentWriter {
     for (const chunkNo of [...rewrite].sort((a, b) => a - b)) {
       const decoded = this.loaded.get(chunkNo)!;
       const pages = [...decoded.pages];
-      while (pages.length > 1 && chunkBytes(pages, empty, null) > DOCUMENT_CHUNK_BYTES) queue.unshift(pages.pop()!);
+      while (pages.length > 1 && this.bytesOf(pages) > DOCUMENT_CHUNK_BYTES) queue.unshift(pages.pop()!);
       pageChunks.push({ chunkNo, chunk: { pages, states: empty, owners: null }, previous: this.directory.chunks.get(chunkNo) });
     }
     queue.push(...this.fresh.filter((page) => page.records.length > 0).sort((a, b) =>
       a.owner === b.owner ? a.page - b.page : 0));
     let target = pageChunks.find((write) => write.chunkNo === this.lastPageChunk);
     for (const page of queue) {
-      if (target === undefined || chunkBytes([...target.chunk.pages, page], empty, null) > DOCUMENT_CHUNK_BYTES) {
+      if (target === undefined || this.bytesOf(target.chunk.pages) + this.sizeOf(page) > DOCUMENT_CHUNK_BYTES) {
         target = { chunkNo: this.nextChunk++, chunk: { pages: [], states: empty, owners: null }, previous: undefined };
         pageChunks.push(target);
       }

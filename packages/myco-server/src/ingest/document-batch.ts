@@ -159,7 +159,7 @@ export class DocumentBatch {
     this.openTurn = doc.open_turn_key;
     this.firstPrompt = doc.first_prompt;
     this.writer = new DocumentWriter(directoryOf(doc.generation, chunks, pages), doc.next_chunk, async (row) => {
-      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.pendingVersions), 0, 1)) throw new DocumentPassFull();
+      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.versions), 0, 1)) throw new DocumentPassFull();
       return readPageChunk(env, row);
     });
   }
@@ -258,7 +258,7 @@ export class DocumentBatch {
     const mark = this.mark();
     try {
       const placed = await this.placeAll(records, harness);
-      if (!commitAdmitted(this.db, this.writer.pendingVersions)) throw new DocumentPassFull();
+      if (!commitAdmitted(this.db, this.writer.versions)) throw new DocumentPassFull();
       return placed;
     } catch (error) {
       if (error instanceof DocumentPassFull) this.undo(mark);
@@ -271,7 +271,7 @@ export class DocumentBatch {
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }> } {
-    this.floor = this.writer.pendingVersions;
+    this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,

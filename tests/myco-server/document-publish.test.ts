@@ -11,6 +11,7 @@ import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worke
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
@@ -332,3 +333,91 @@ test('a session whose publication keeps failing backs off and is recorded while 
       .toEqual({ kind: 'document_publish_failed', tone: 'warn', failures: 1, lastFailedAt: now, failure: 'document_object_missing' });
   });
 });
+
+/** Drives wake-budget passes over unchanged input: every pass must add to `field` until it reaches `target`. */
+async function convergesUnderWakeBudget(env: Pick<ServerEnv, 'db' | 'blobs'>, session: string, at: number, field: 'tool_calls' | 'replies', target: number, name: string) {
+  for (let pass = 0, held = Number((await counters(env.db, session))![field]); held < target; pass += 1) {
+    expect(pass, name).toBeLessThan(20);
+    const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT });
+    await publishDocuments(measured.env, at + pass, limits());
+    const now = Number((await counters(env.db, session))![field]);
+    expect(now, `${name} pass ${pass}`).toBeGreaterThan(held);
+    held = now;
+  }
+  expect((await statusMetadata(env.db)).documentPublishFailure, name).toBeNull();
+}
+
+test('turns packed in one chunk whose pages each grow past it commit progress on every wake-budget pass', async () => {
+  await withViewStores(async (db, name) => {
+    const t0 = Date.now() - 2 * 60 * MIN;
+    const blobs = memoryBlobStore();
+    const transcripts = Array.from({ length: 60 }, (_, i) => `tx_${String(i).padStart(32, '0')}`);
+    let env: Pick<ServerEnv, 'db' | 'blobs'> = { db, blobs };
+    const opened = new Map(transcripts.map((t, i) => [t, user(`turn-${i}`, `small task ${i}`)]));
+    for (const [t, text] of opened) env = await captureViewTranscript(db, blobs, 'packed', t, text, t0, 0, 'codex');
+    for (let more = true; more;) more = (await publishDocuments(env, t0 + MIN, limits())).more;
+    expect(await one(db, `SELECT prompts,next_chunk FROM session_documents WHERE session_id='packed'`), name).toEqual({ prompts: 60, next_chunk: 1 });
+
+    // Each turn gains one call too large to share a chunk with many others, so rewriting the one chunk spills into many.
+    for (const [i, t] of transcripts.entries()) {
+      const big = item('response_item', { type: 'function_call', call_id: `big-${i}`, name: 'shell', arguments: JSON.stringify({ command: 'run', env: 'x'.repeat(250_000) }) });
+      env = await captureViewTranscript(db, blobs, 'packed', t, big, t0 + 2 * MIN, opened.get(t)!.length, 'codex');
+    }
+    await convergesUnderWakeBudget(env, 'packed', t0 + 40 * MIN, 'tool_calls', 60, name);
+  });
+}, 120_000);
+
+test('queued events with stored bodies commit progress on every wake-budget pass', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore(), t0 = Date.now();
+    const issued = await captureViewSession(db, 'project', 'queue', { blobs });
+    const env = { db, blobs };
+    await publishDocuments(env, t0, limits());
+    const stored = async (text: string) => {
+      const key = await sha256Hex(text), source = crypto.randomUUID();
+      await prepareDerivedStream(env, { projectId: 'project', sessionId: 'queue', tokenId: issued.tokenId, sourceKind: 'event', eventId: source, resourceId: source, envelopeHash: source },
+        { size: new TextEncoder().encode(text).length, digest: key, stream: () => new Blob([text]).stream() }, t0);
+      return key;
+    };
+    const queue = async (n: number, kind: 'prompt' | 'response', payload: (i: number) => Record<string, unknown>) => {
+      for (let i = 0; i < n; i++) {
+        const event = envelope({ eventId: uuid(8000 + i + (kind === 'prompt' ? 500 : 0)), sessionId: 'queue', kind, createdAt: t0 + i, payload: payload(i) });
+        expect((await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: t0 }, event, env)).persisted, name).toBe(true);
+      }
+    };
+    // Later turns fill chunks past the one holding the session's first turn.
+    const filler = await stored('later turn '.repeat(20_000));
+    await queue(6, 'prompt', (i) => ({ promptId: uuid(9500 + i), origin: 'user', blob: filler }));
+    for (let more = true; more;) more = (await publishDocuments(env, t0 + 1, limits())).more;
+    expect(Number((await one(db, `SELECT next_chunk n FROM session_documents WHERE session_id='queue'`))!.n), name).toBeGreaterThan(1);
+
+    // Sixty replies to the first turn, each reading a stored body larger than a page: every one rewrites that turn's
+    // chunk and adds a body chunk.
+    const body = await stored('large queued reply '.repeat(16_000));
+    await queue(60, 'response', (i) => ({ responseId: uuid(9000 + i), promptId: uuid(20), blob: body }));
+    await convergesUnderWakeBudget(env, 'queue', t0 + 40 * MIN, 'replies', 61, name);
+    expect(await one(db, `SELECT COUNT(*) n FROM publish_queue WHERE session_id='queue'`), name).toEqual({ n: 0 });
+  });
+}, 120_000);
+
+test('a pass that fails while new input arrives leaves the session due', async () => {
+  await withViewStores(async (db, name) => {
+    const blobs = memoryBlobStore(), t0 = Date.now();
+    const issued = await captureViewSession(db, 'project', 'race', { blobs });
+    const env = { db, blobs };
+    await publishDocuments(env, t0, limits());
+    const enqueue = (i: number) => ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: t0 + i },
+      envelope({ eventId: uuid(10000 + i), sessionId: 'race', kind: 'response', createdAt: t0 + i, payload: { responseId: uuid(11000 + i), promptId: uuid(20), text: 'later' } }), env);
+    await enqueue(1);
+    // The pass's document read is held while another event is queued, then fails as missing.
+    let started!: () => void, release!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; }), held = new Promise<void>((resolve) => { release = resolve; });
+    const pass = publishDocuments({ db, blobs: { ...blobs, get: async () => { started(); await held; return null; } } }, t0 + 40 * MIN, limits());
+    await reading;
+    await enqueue(2);
+    release();
+    await pass;
+    expect(documentPublishFailureFinding((await statusMetadata(db)).documentPublishFailure, t0 + 40 * MIN)?.failure, name).toBe('document_object_missing');
+    expect((await counters(db, 'race'))!.due_at, name).toBe(0);
+  });
+}, 60_000);
