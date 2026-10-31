@@ -16,7 +16,7 @@ import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { overwriteTitle } from '@myco-server-worker/read/sessions.js';
+import { overwriteTitle, writeTitle } from '@myco-server-worker/read/sessions.js';
 import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
 import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
 
@@ -799,6 +799,18 @@ describe('sessions that never end', () => {
     expect((r.sqlite.query(`SELECT title_material_at AS at, titled_at AS stamp FROM sessions WHERE session_id = 'long'`).get() as { at: number; stamp: number })).toEqual({ at: NOW, stamp: NOW });
     r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ?`, [NOW + 1000]);
     expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(0);
+  });
+
+  it('a refused title write leaves the prompts the standing title covers where they were', async () => {
+    const r = rig();
+    r.session('retried', { transcript: false });
+    r.documented('proj_1', 'retried', 3);
+    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(true);
+    r.documented('proj_1', 'retried', 9);
+    // A retry after a lost answer writes nothing, so the six new prompts stay uncovered.
+    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(false);
+    expect(r.sqlite.query(`SELECT user_prompts, titled_user_prompts FROM session_documents WHERE session_id = 'retried'`).get())
+      .toEqual({ user_prompts: 9, titled_user_prompts: 3 });
   });
 
   it('counts new prompts by the server\'s receipt time, so a member whose clock runs behind still gets its refresh', async () => {

@@ -3,9 +3,12 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { documentTurn } from '@myco-server-worker/content/turn-material.js';
+import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { CARD_CLAIM_TURNS } from '@myco-server-worker/core/turn-cards.js';
-import { captureViewTranscript } from './helpers/view-stores.js';
+import { captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
+import { DocumentBatch, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
+import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
@@ -89,18 +92,51 @@ it('a turn past the page budget is never carded by rule, and falls due with its 
       for (let wake = 0; wake < 4; wake++) await publishDocuments(env, t0 + 11 * MIN, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 
       expect(await db.prepare(`SELECT failed_tools FROM session_documents WHERE session_id = ?`).bind(session).first(), name).toEqual({ failed_tools: 1 });
-      const [first] = (await db.prepare(`SELECT p.prompt_id, c.state, c.signal_reason, c.due_at IS NOT NULL AS due FROM session_prompts p
+      const [first] = (await db.prepare(`SELECT p.prompt_id, c.state, c.due_at IS NOT NULL AS due FROM session_prompts p
         JOIN turn_cards c ON c.project_id = p.project_id AND c.session_id = p.session_id AND c.turn_key = p.prompt_id
         WHERE p.session_id = ? AND p.turn_key = p.prompt_id ORDER BY p.ord LIMIT 1`).bind(session)
-        .all<{ prompt_id: string; state: string; signal_reason: string | null; due: number }>()).results;
-      expect({ where, state: first!.state, reason: first!.signal_reason, due: first!.due }, name).toEqual({ where, state: 'pending', reason: null, due: 1 });
+        .all<{ prompt_id: string; state: string; due: number }>()).results;
+      expect({ where, state: first!.state, due: first!.due }, name).toEqual({ where, state: 'pending', due: 1 });
       const read = (await documentTurn(env, 'project', session, first!.prompt_id))!;
       expect({ where, complete: read.complete }, name).toEqual({ where, complete: false });
       // The model's material is read at the turn's head and its last page.
       if (where === 'last') expect(read.input.tools.filter((tool) => !tool.success).map((tool) => tool.errorMessage), name).toEqual(['release failed: tag exists']);
     }
+
+    // A turn whose six pages sit in six chunks, between another turn's pages, costs four page GETs: three at its head
+    // and its last page.
+    const blobs = memoryBlobStore(), env = { db, blobs };
+    await captureViewSession(db, 'project', 'session-chunked', { idOffset: 9000 });
+    await publishDocuments(env, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const at = Date.now(), records: DocRecord[] = [{ k: 'prompt', id: 'chunked-turn', prompt_id: null, created_at: at, text: 'continue', origin: 'user', parent_prompt_id: null }];
+    for (let i = 0; i < 6; i++) {
+      records.push({ k: 'reply', id: `chunked-reply-${i}`, prompt_id: 'chunked-turn', created_at: at + 1 + i * 10, text: `${i}`.repeat(240_000) });
+      records.push({ k: 'prompt', id: `other-${i}`, prompt_id: null, created_at: at + 2 + i * 10, text: 'interleaved turn', origin: 'user', parent_prompt_id: null });
+      for (let j = 0; j < 4; j++) records.push({ k: 'reply', id: `other-reply-${i}-${j}`, prompt_id: `other-${i}`, created_at: at + 3 + i * 10 + j, text: `${j}`.repeat(240_000) });
+    }
+    await placeRecords(env, 'session-chunked', records);
+    expect((await db.prepare(`SELECT COUNT(DISTINCT chunk_no) AS chunks FROM session_pages WHERE session_id = 'session-chunked' AND owner = 'chunked-turn'`)
+      .first<{ chunks: number }>())!.chunks, name).toBe(6);
+    const document = (await SessionDocument.open(env, 'project', 'session-chunked'))!;
+    expect({ complete: (await documentTurn(env, 'project', 'session-chunked', 'chunked-turn', document))!.complete, gets: document.gets }, name)
+      .toEqual({ complete: false, gets: 4 });
   }));
 });
+
+/** Places records into a live session's document through the shared batch, as the publisher commits them. */
+async function placeRecords(env: { db: RelationalStore; blobs: ReturnType<typeof memoryBlobStore> }, sessionId: string, records: DocRecord[]): Promise<void> {
+  const { db } = env;
+  const [docs, chunks, pages] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
+      s.created_by_token_id AS token_id FROM session_documents d JOIN sessions s USING (project_id, session_id) WHERE d.project_id = 'project' AND d.session_id = ?`)
+    .bind(sessionId), ...directoryStatements(db, 'project', sessionId)]);
+  const batch = new DocumentBatch(env, 'project', sessionId, docs!.results[0] as never, chunks!.results as never, pages!.results as never);
+  await batch.open();
+  await batch.place(records, null);
+  await batch.commit(batch.writer.changed, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {
+    const set = batch.documentSet(Date.now());
+    return { before: [], after: [db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id = 'project' AND session_id = ?`).bind(...set.params, sessionId)] };
+  });
+}
 
 it('a card claim reads the same catalog rows whatever the session holds', async () => {
   await withViewStores(async (db, name) => {

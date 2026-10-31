@@ -141,12 +141,14 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
 }
 
 
-/** Records on the session's live document the user prompts a title just written covers; a write that did not land leaves it as it was. */
-function titledUserPrompts(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): PreparedStatement {
+/**
+ * Records on the session's live document the user prompts the title just written covers. It runs right after the title
+ * write in one batch and lands only when that write changed a row: the attribution between them is gated the same way.
+ */
+function titledUserPrompts(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
   return db.prepare(`UPDATE session_documents SET titled_user_prompts = user_prompts
-    WHERE project_id = ? AND session_id = ? AND state = 'live' AND EXISTS (SELECT 1 FROM sessions s
-      WHERE s.project_id = session_documents.project_id AND s.session_id = session_documents.session_id AND s.title = ? AND s.summary = ?)`)
-    .bind(projectId, sessionId, title, summary);
+    WHERE project_id = ? AND session_id = ? AND state = 'live' AND changes() > 0`)
+    .bind(projectId, sessionId);
 }
 
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
@@ -154,7 +156,7 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
   const statement = db
     .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`)
     .bind(title, summary, titledBy, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId, title, summary)]);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId)]);
   return result.meta.changes > 0;
 }
 
@@ -164,7 +166,7 @@ export async function writeTitle(db: RelationalStore, projectId: string, session
   const statement = db
     .prepare(`UPDATE sessions SET title = ?, summary = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`)
     .bind(title, summary, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId, title, summary)]);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId)]);
   return result.meta.changes > 0;
 }
 

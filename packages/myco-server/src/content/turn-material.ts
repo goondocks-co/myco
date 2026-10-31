@@ -34,23 +34,20 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
 export interface DocumentTurn { input: TurnInput; complete: boolean }
 
 /**
- * A turn of the session's live document, read from at most `TURN_PAGES` of its pages; null when the session has no
- * live document or the document holds no such turn. A turn with more pages is read at its head and its last page and is
- * not complete: what lies between is unread. A caller reading several turns of one session passes its document.
+ * A turn of the session's live document, read from at most `TURN_PAGES` of its pages: the first `TURN_PAGES - 1`, and
+ * its last page when more remain. Null when the session has no live document or the document holds no such turn. A turn
+ * whose pages between the head and the last page go unread is not complete. A caller reading several turns of one
+ * session passes its document.
  */
 export async function documentTurn(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
   document?: SessionDocument | null): Promise<DocumentTurn | null> {
   const doc = document === undefined ? await SessionDocument.open(env, projectId, sessionId) : document;
   if (doc === null) return null;
-  const head = await doc.ownerPages(turnKey, 0, TURN_PAGES);
-  if (!head.more) {
-    const input = turnInput(turnKey, head.pages.flatMap((page) => page.records));
-    return input === null ? null : { input, complete: true };
-  }
-  const last = await doc.lastPage(turnKey);
+  const head = await doc.ownerPages(turnKey, 0, TURN_PAGES - 1);
+  const last = head.more ? await doc.lastPage(turnKey) : null;
   const tail = last === null ? [] : (await doc.ownerPages(turnKey, last, 1)).pages;
-  const input = turnInput(turnKey, [...head.pages.slice(0, TURN_PAGES - 1), ...tail].flatMap((page) => page.records));
-  return input === null ? null : { input, complete: false };
+  const input = turnInput(turnKey, [...head.pages, ...tail].flatMap((page) => page.records));
+  return input === null ? null : { input, complete: !head.more || last === head.pages.length };
 }
 
 /** The turn's input as `documentTurn` reads it, complete or not. */
