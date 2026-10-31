@@ -12,7 +12,7 @@ import { productionFlipEnvelope } from './view-flip-calibration.js';
 import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
 import { publishDocuments } from './publish.js';
-import { CONVERTIBLE_SQL } from './document-conversion.js';
+import { CONVERTIBLE_SQL } from './document-convertible.js';
 
 /** The hosted relational store holds at most 10 GB; the batch stops building at this size and keeps extending published sessions. */
 export const VIEW_CUTOVER_PAUSE_BYTES = 9_000_000_000;

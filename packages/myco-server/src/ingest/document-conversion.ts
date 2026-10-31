@@ -32,6 +32,7 @@ import {
 import { readParserCheckpoint } from './parser-checkpoint.js';
 import type { PassLimits } from './parse.js';
 import { promoteViewPlan } from './view-plan-promotion.js';
+import { CONVERTIBLE_SQL } from './document-convertible.js';
 
 /** Rows one export page reads from one source. */
 export const CONVERT_ROWS_PER_PAGE = 200;
@@ -197,10 +198,6 @@ async function inlineContinuation(db: RelationalStore, projectId: string, transc
     throw new Error('document_conversion_continuation_incomplete');
   return { ...context, mycoParserState: JSON.parse(encoded) as unknown };
 }
-
-/** A document `d` conversion still owes: waiting, with its session header held and no tombstone. */
-export const CONVERTIBLE_SQL = `d.state='convert' AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id=d.project_id AND s.session_id=d.session_id)
-  AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`;
 
 /** Converts sessions that predate documents, newest first, within what the wake has left. */
 export async function convertDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
