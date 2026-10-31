@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
+import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -187,5 +188,77 @@ test('a restored session whose prompt was archived publishes the prompt read fro
       .toEqual([{ prompt_id: uuid(20), preview: 'factcanary' }]);
     expect((await readPage({ db, blobs }, 'project', 'archived', uuid(20), 0))!.map((record) => [record.k, record.id, record.text]), name)
       .toEqual([['prompt', uuid(20), 'factcanary'], ['reply', uuid(30), 'factcanary']]);
+  });
+});
+
+/** A published codex session of `turns` turns, one large reply each, with its prompts' locators cleared as a document written before them. */
+async function unlocated(db: RelationalStore, session: string, turns: number) {
+  const t0 = Date.now() - 2 * 60 * MIN, blobs = memoryBlobStore();
+  let text = '';
+  for (let i = 0; i < turns; i += 1) text += user(`turn-${i}`, `step ${i}`) + reply('x'.repeat(240_000));
+  const env = await captureViewTranscript(db, blobs, session, `tx_${[...session].map((c) => c.charCodeAt(0).toString(16)).join('').padEnd(32, '0').slice(0, 32)}`, text, t0, 0, 'codex');
+  await publishDocuments(env, t0 + 11 * MIN, limits());
+  const pages = (await db.prepare(`SELECT owner,page FROM session_pages WHERE session_id=?`).bind(session).all<{ owner: string; page: number }>()).results;
+  const expected: Record<string, number> = {};
+  for (const at of pages) for (const record of (await readPage(env, 'project', session, at.owner, at.page))!) if (record.k === 'prompt') expected[record.id] = at.page;
+  await db.prepare(`UPDATE session_prompts SET page=NULL WHERE session_id=?`).bind(session).run();
+  await db.prepare(`UPDATE session_documents SET locate_after=NULL WHERE session_id=?`).bind(session).run();
+  return { env, blobs, expected, at: t0 + 11 * MIN };
+}
+
+/** A store that sums the rows each statement reports reading (D1 reports them; the native store reports none). */
+function rowsRead(db: RelationalStore) {
+  let read = 0;
+  const add = (meta: unknown) => { read += Number((meta as { rows_read?: number } | undefined)?.rows_read ?? 0); };
+  const own = new WeakMap<PreparedStatement, PreparedStatement>();
+  const wrap = (statement: PreparedStatement): PreparedStatement => {
+    const wrapped = {
+      bind: (...values: unknown[]) => wrap(statement.bind(...values)),
+      first: async <T,>() => { const result = await statement.all<T>(); add((result as { meta?: unknown }).meta); return (result.results[0] ?? null) as T | null; },
+      all: async <T,>() => { const result = await statement.all<T>(); add((result as { meta?: unknown }).meta); return result; },
+      run: async () => { const result = await statement.run(); add(result.meta); return result; },
+    } as PreparedStatement;
+    own.set(wrapped, statement);
+    return wrapped;
+  };
+  const store = { ...db, prepare: (sql: string) => wrap(db.prepare(sql)), batch: async (statements: PreparedStatement[]) => {
+    const results = await db.batch(statements.map((statement) => own.get(statement) ?? statement));
+    for (const result of results) add(result.meta);
+    return results;
+  } } as RelationalStore;
+  return { store, read: () => read };
+}
+
+test('a document written before page locators has every prompt located by publisher wakes, each reading a bounded share', async () => {
+  await withViewStores(async (db, name) => {
+    const { env, blobs, expected, at } = await unlocated(db, 'session', 20);
+    const get = blobs.get.bind(blobs);
+    let gets = 0;
+    blobs.get = async (...args: Parameters<typeof get>) => { gets += 1; return get(...args); };
+    const perWake: number[] = [];
+    for (let wake = 0; wake < 10; wake += 1) {
+      gets = 0;
+      const report = await publishDocuments(env, at, limits());
+      perWake.push(gets);
+      if (!report.more) break;
+    }
+    const located = Object.fromEntries((await db.prepare(`SELECT prompt_id,page FROM session_prompts WHERE session_id='session'`)
+      .all<{ prompt_id: string; page: number }>()).results.map((row) => [row.prompt_id, row.page]));
+    expect({ located, wakes: perWake.length > 1, bounded: perWake.every((n) => n <= LOCATE_CHUNKS_PER_WAKE) }, name)
+      .toEqual({ located: expected, wakes: true, bounded: true });
+  });
+});
+
+test('a locator wake reads the same catalog rows for the same prompts however many the document still holds', async () => {
+  await withViewStores(async (db, name) => {
+    const wake = async (session: string, turns: number) => {
+      const { env } = await unlocated(db, session, turns);
+      const counted = rowsRead(db);
+      const report = await locatePrompts({ ...env, db: counted.store }, limits());
+      return { located: report.changed, rowsRead: counted.read() };
+    };
+    const short = await wake('short', 20);
+    await db.prepare(`UPDATE session_prompts SET page=0 WHERE session_id='short'`).run();
+    expect(await wake('long', 60), name).toEqual(short);
   });
 });

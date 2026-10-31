@@ -12,6 +12,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  {step:113,object:'idx_session_prompts_unlocated',table:'session_prompts',reason:'The locator backfill finds the prompts it has yet to locate without reading the located ones.'},
   {step:112,object:'idx_session_documents_convert',table:'session_documents',reason:'Conversion finds the sessions still waiting for it without reading the converted ones.'},
   {step:111,object:'transcripts_document_insert',table:'transcripts',reason:'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it.'},
   {step:111,object:'transcripts_document_size',table:'transcripts',reason:'A transcript that grows makes its live session due for publication.'},
@@ -298,6 +299,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: 'Activation requires a valid pause boundary and drained thin extraction dispatches.' },
   { step: 104, sql: 'DROP TABLE _v104_guard_thin_learning',
     reason: 'The temporary admission guard is released after validation.' },
+  { step: 113, sql: 'ALTER TABLE session_prompts ADD COLUMN page INTEGER', reason: 'A prompt read by name opens the page of its owner that holds its record.' },
+  { step: 113, sql: 'ALTER TABLE session_documents ADD COLUMN locate_after INTEGER', reason: 'The locator backfill resumes after the last page chunk it read.' },
   { step: 109, sql: 'ALTER TABLE agent_runs ADD COLUMN subject TEXT',
     reason: 'Runs retain the single-flight subject a pulled or subject-bearing claim writes.' },
 ];
