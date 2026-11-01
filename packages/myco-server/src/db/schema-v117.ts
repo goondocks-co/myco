@@ -69,7 +69,7 @@ const documentCounters = [
 
 /** Retained content must be published before its relational source can be removed. */
 export const V117_STATEMENTS: readonly string[] = [
-  `CREATE TABLE IF NOT EXISTS _v117_documents_guard (missing INTEGER NOT NULL CONSTRAINT "documents_retirement_incomplete: finish and verify conversion with the previous release before upgrading" CHECK (missing=0))`,
+  `CREATE TABLE IF NOT EXISTS _v117_documents_guard (missing INTEGER NOT NULL CONSTRAINT "documents_retirement_incomplete: verify missing document records, body mismatches or unpromoted plans on the previous release" CHECK (missing=0))`,
   `UPDATE session_documents SET state='live',generation=COALESCE(generation,1),due_at=0 WHERE state='convert' AND prompts=0 AND replies=0 AND tool_calls=0 AND plans=0 AND attachments=0
     AND NOT EXISTS(SELECT 1 FROM session_chunks c WHERE c.project_id=session_documents.project_id AND c.session_id=session_documents.session_id)
     AND NOT EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=session_documents.project_id AND p.session_id=session_documents.session_id)
@@ -86,8 +86,8 @@ export const V117_STATEMENTS: readonly string[] = [
     WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
       AND (d.build IS NOT NULL AND NOT json_valid(d.build) OR EXISTS (
         SELECT 1 FROM json_each(CASE WHEN json_valid(d.build) THEN d.build ELSE '{}' END,'$.report.classes') c
-        WHERE c.value>0 AND (c.key IN ('unplaced','unresolved_prompt') OR c.key LIKE 'ids_differ:%'
-          OR c.key LIKE 'body_differs:%' OR c.key LIKE 'plan_not_promoted%')))`,
+        WHERE c.value>0 AND (c.key GLOB 'ids_differ:*'
+          OR c.key GLOB 'body_differs:*' OR c.key GLOB 'plan_not_promoted*')))`,
   `DROP TABLE _v117_documents_guard`,
   ...[
     {table:'prompt_batches',id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},

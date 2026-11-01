@@ -1030,6 +1030,7 @@ test('a stopped publication retains bounded diagnostics and reread clears them',
 
 test('retirement refuses missing records and preserves archived blob holders through safe event indexes', async () => {
   await withDocumentStores(async (db,name) => {
+    const blobs=memoryBlobStore();
     const retire=SCHEMA_STEPS.find(step=>step.version===117)!;
     const run=(step:typeof retire)=>db.batch(step.statements.map(sql=>db.prepare(sql)));
     await db.prepare(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
@@ -1038,11 +1039,25 @@ test('retirement refuses missing records and preserves archived blob holders thr
     await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
     await db.prepare('DELETE FROM prompt_batches').run();
     await db.prepare("DELETE FROM session_documents WHERE session_id='orphan'").run();
-    await db.prepare(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','converted','token',1,1)`).run();
-    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at,build) VALUES('project','converted','live',1,1,?)`)
-      .bind(JSON.stringify({report:{classes:{unplaced:1}}})).run();
+    await captureDocumentSession(db,'project','converted',{blobs});
+    await db.prepare('UPDATE session_documents SET build=?').bind(JSON.stringify({report:{classes:{'ids_differ:reply':1}}})).run();
     await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
-    await db.prepare('UPDATE session_documents SET build=NULL').run();
+    const doc=await one(db, `SELECT d.*,s.created_by_token_id token_id FROM session_documents d JOIN sessions s USING(project_id,session_id) WHERE d.session_id='converted'`);
+    const batch=new DocumentBatch({db,blobs},'project','converted',doc as never,[],[]);
+    await batch.open();
+    const records=[
+      documentRecord('response',{responseId:uuid(98000),text:'unplaced reply'},1,{received_at:1})!,
+      documentRecord('response',{responseId:uuid(98001),promptId:uuid(98999),text:'unresolved reply'},2,{received_at:2})!,
+    ];
+    for(const record of records)await db.prepare(`INSERT INTO responses(project_id,session_id,response_id,prompt_id,event_id,text,content_hash,created_at,token_id,received_at)
+      VALUES('project','converted',?,?,?,?,?,?,?,?)`).bind(record.id,record.prompt_id,record.id,record.text,await sha256Hex(String(record.text)),record.created_at,doc!.token_id,record.received_at).run();
+    await batch.place(records,null);
+    expect({unplaced:batch.unplaced,unresolved:batch.unresolved},name).toEqual({unplaced:2,unresolved:1});
+    await batch.commit(true,'live',3,()=>({sql:'1',params:[]}),()=>{
+      const set=batch.documentSet(3);
+      const build=JSON.stringify({report:{classes:{unplaced:batch.unplaced,unresolved_prompt:batch.unresolved}}});
+      return {before:[],after:[db.prepare(`UPDATE session_documents SET build=?,${set.sql} WHERE project_id='project' AND session_id='converted'`).bind(build,...set.params)]};
+    });
     const output='b'.repeat(64);
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99001)).run();
     await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
@@ -1051,6 +1066,8 @@ test('retirement refuses missing records and preserves archived blob holders thr
     await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
       VALUES('project','converted','tool','archived','Read',?,1,1,'token',1)`).bind(output).run();
     for(const step of SCHEMA_STEPS.filter(step=>step.version>=117))await run(step);
+    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='responses'").first(),name).toBeNull();
+    expect(await readPage({db,blobs},'project','converted',SESSION_OWNER,0),name).toMatchObject(records);
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
     expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
