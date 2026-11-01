@@ -6,7 +6,17 @@ import { recordServedPrompts } from '@myco-server-worker/core/served-material.js
  * member-side tool answers.
  */
 import { jsonBody } from '../helpers/json-body.js';
+import type { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
+
+/** The live document catalog of the sessions whose prompts a test seeded as legacy rows. */
+function catalogPrompts(sqlite: Database): void {
+  sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at)
+    SELECT DISTINCT project_id, session_id, 'live', 1, 1 FROM prompt_batches WHERE true
+    ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'live', generation = 1`);
+  sqlite.run(`INSERT OR IGNORE INTO session_prompts (project_id, session_id, generation, prompt_id, turn_key, ord, origin, created_at)
+    SELECT project_id, session_id, 1, prompt_id, COALESCE(parent_prompt_id, prompt_id), rowid, origin, created_at FROM prompt_batches`);
+}
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -170,6 +180,7 @@ describe('POST /mcp', () => {
       VALUES ('proj_1', ?, 'sess_mine', ?, 'user', 'h', ?, ?, ?, ?)`);
     prompt.run('p_first', 'e1', 1_000, 1_000, t1.tokenId, 1_000);
     prompt.run('p_last', 'e2', 2_000, 2_000, t1.tokenId, 2_000);
+    catalogPrompts(sqlite);
 
     const saved = (await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'named', session_id: 'sess_mine', prompt_id: 'p_first' })).result;
     expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine', prompt_id: null });
@@ -198,6 +209,7 @@ describe('POST /mcp', () => {
       VALUES ('proj_1', 'sess_theirs', 'machine_2', ?, 1000, 1000)`).run(t2.tokenId);
     sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
       VALUES ('proj_1', 'p_only', 'sess_mine', 'e1', 'user', 'h', 1000, 1000, ?, 1000)`).run(t1.tokenId);
+    catalogPrompts(sqlite);
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
 
@@ -633,6 +645,7 @@ async function runSetup(options: Parameters<typeof sqliteEnv>[0] = {}) {
                 VALUES ('proj_1', 'sess_1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [RUN_NOW - 10_000, RUN_NOW, RUN_NOW - 10_000, RUN_NOW]);
   e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                 VALUES ('proj_1', 'sess_1', 'p_1', 'e_1', 'hello', 'user', 'h_1', ?, ?, 'tok_1', ?)`, [RUN_NOW - 5_000, RUN_NOW - 5_000, RUN_NOW - 5_000]);
+  catalogPrompts(e.sqlite);
   await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness runtime');
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
   const member = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -869,6 +882,7 @@ describe('POST /mcp over a run credential', () => {
     }
     sqlite.run(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
       VALUES ('proj_1','sess_2','p_2','e_2','second session','user','h_2',?,?,'tok_1',?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    catalogPrompts(sqlite);
     await serve([{promptId:'p_1',sessionId:'sess_1',createdAt:RUN_NOW,endedAt:RUN_NOW},{promptId:'p_2',sessionId:'sess_2',createdAt:RUN_NOW,endedAt:RUN_NOW}]);
     const args = { op: 'save', type: 'gotcha', content: 'A finding from the second session', session_id: 'sess_2' };
     const saved = (await call(harness.token, 'myco_spores', args)).result;
@@ -994,11 +1008,13 @@ describe('POST /mcp over a run credential', () => {
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
     sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
       VALUES ('proj_1', 'sess_1', 'p_later', 'e_later', 'later prompt', 'user', 'later', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    catalogPrompts(sqlite);
     const args = { op: 'save', type: 'gotcha', content: 'A finding from the earlier prompt' };
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
       VALUES ('proj_2', 'foreign-session', 'm1', 'tok_1', ?, ?)`, [RUN_NOW, RUN_NOW]);
     sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
       VALUES ('proj_2', 'foreign-session', 'foreign-prompt', 'foreign-event', 'foreign', 'user', 'foreign', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    catalogPrompts(sqlite);
     expect((await call(harness.token, 'myco_spores', args)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
     expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'missing' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
     expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'foreign-prompt' })).result).toEqual({ ok: false, error: 'prompt_id not found' });

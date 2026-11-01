@@ -3,6 +3,7 @@
  * has: a deferral handed in with the request, or a tracked promise the
  * self-hosted env waits for before it closes.
  */
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync } from "../support/fenced-fs.mjs";
@@ -76,6 +77,7 @@ describe('afterResponse', () => {
       expect((await post({ eventId: uuid(3), kind: 'session.end', createdAt: 5_000, payload: { endedAt: 5_000 } })).status).toBe(200);
       const slow = later();
       handler.env.afterResponse(() => slow.promise.then(async () => {
+        await publishDocuments(handler.env, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
         await titleReadySessions({ ...handler.env, origin: 'https://s' }, Date.now() + SESSION_END_SETTLE_MS);
       }));
       const closing = handler.close();

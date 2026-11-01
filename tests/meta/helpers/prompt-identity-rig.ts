@@ -14,6 +14,7 @@ import { recordingFetch, registerTestMember } from '../../member/helpers/hooks.j
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { parseTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 
 export const RELEVANT_WORD = 'retention';
@@ -31,7 +32,7 @@ export interface IdentityRig {
   rig: MemberRig;
   mycoHome: string;
   fetch: ReturnType<typeof recordingFetch>;
-  /** Run the Deployment's parse over every transcript it holds until nothing changes, now and once it has gone idle. */
+  /** Run the Deployment's parse and document publication over every transcript it holds until nothing changes, now and once it has gone idle. */
   parse(): Promise<void>;
   /** Store bytes as a transcript's only segment, as a member's shipped transcript lands. */
   storeTranscript(opts: { transcriptId: string; sessionId: string; agent: string; text: string; role?: 'primary' | 'subagent'; scheme?: PromptIdScheme }): Promise<void>;
@@ -75,6 +76,9 @@ export async function identityRig(opts: { relevant?: number; background?: number
       for (const at of [Date.now(), Date.now() + TRANSCRIPT_IDLE_MS + 1]) {
         for (let pass = 0; pass < 20; pass += 1) {
           if ((await parseTranscripts(rig.env.serverEnv, at)).changed === 0) break;
+        }
+        for (let pass = 0; pass < 20; pass += 1) {
+          if (!(await publishDocuments(rig.env.serverEnv, at, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more) break;
         }
       }
     },

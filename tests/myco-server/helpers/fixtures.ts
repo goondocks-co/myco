@@ -7,6 +7,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { sqliteD1, seededSqlite } from './d1.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 
 /** The canonical form a bare `text/plain` upload is stored under. */
 export const TEXT_MEDIA_TYPE = 'text/plain; charset=utf-8';
@@ -178,6 +179,34 @@ export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => voi
     get serverEnv() { return { ...serverEnvFromBindings(e, deferred), blobs: e.BUCKET as MemoryBlobStore }; },
     db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
   };
+}
+
+/**
+ * The publisher caught up with a fixture: each transcript row a test inserted without bytes stands published to its
+ * size, and every queued member event is published into its session's document.
+ */
+export async function publishFixture(f: { sqlite: Database; serverEnv: ServerEnv }, now = Date.now()): Promise<void> {
+  f.sqlite.run(`INSERT INTO transcript_publication (project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at)
+    SELECT t.project_id,t.transcript_id,d.generation,t.session_id,t.size,'source-record-v1',1,1 FROM transcripts t
+      JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
+    WHERE NOT EXISTS (SELECT 1 FROM transcript_segments x WHERE x.project_id=t.project_id AND x.transcript_id=t.transcript_id)
+    ON CONFLICT (project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset`);
+  await publishDocuments(f.serverEnv, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+}
+
+/**
+ * The documents a fixture's legacy rows convert into: each session with no document, or with one that holds nothing yet,
+ * waits for conversion, and conversion runs to its end. A transcript's publication starts from its legacy cursor.
+ */
+export async function convertFixture(f: { sqlite: Database; serverEnv: ServerEnv }, now = Date.now()): Promise<void> {
+  f.sqlite.run(`INSERT OR IGNORE INTO session_documents (project_id, session_id, state, updated_at) SELECT project_id, session_id, 'convert', 1 FROM sessions`);
+  f.sqlite.run(`UPDATE session_documents SET state = 'convert', generation = NULL, due_at = NULL WHERE next_chunk = 0
+    AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id = session_documents.project_id AND c.session_id = session_documents.session_id)`);
+  for (let pass = 0; pass < 100; pass += 1) {
+    if ((await publishDocuments(f.serverEnv, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more) continue;
+    if (f.sqlite.query(`SELECT 1 FROM session_documents WHERE state = 'convert'`).get() === null) return;
+  }
+  throw new Error('fixture conversion did not finish');
 }
 
 /** What a dispatch hands a runtime. */

@@ -11,7 +11,7 @@ import { endSession } from '@myco-server-worker/core/session-end.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { convertFixture, count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 /** A little before the request clock the route reads, so seeded turns are older than the end it writes. */
 const NOW = Date.now() - 600_000;
@@ -35,6 +35,7 @@ describe('ending a session as a person', () => {
     r.session('s1');
     r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
                   VALUES ('proj_1', 's1', 'p1', 'e1', 'first turn', 'user', 'h1', ?, ?, ?, ?)`, [NOW - 8_000, NOW - 8_000, r.tokenId, NOW - 8_000]);
+    await convertFixture(r);
     const first = await r.post('s1');
     expect(first.status).toBe(200);
     const body = (await first.json()) as { outcome: string; endedAt: number };

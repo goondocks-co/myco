@@ -40,6 +40,7 @@ export interface SessionRow {
 export interface SessionCounts {
   prompts: number;
   toolCalls: number;
+  failedTools?: number;
   responses: number;
   plans: number;
   attachments: number;
@@ -96,6 +97,7 @@ export interface ToolCallRow {
   inputBytes: number | null;
   inputTruncated: boolean;
   inputBlobKey: string | null;
+  locator?: RecordLocator;
   outputPreview: string | null;
   outputBlobKey: string | null;
   success: boolean;
@@ -111,6 +113,7 @@ export interface ResponseRow {
   promptId: string | null;
   text: string | null;
   blobKey: string | null;
+  locator?: RecordLocator;
   createdAt: number;
   orderedAt: number;
 }
@@ -182,7 +185,7 @@ export interface TranscriptResponse {
   segments: TranscriptSegment[];
 }
 
-export type SessionChild = 'unplaced' | 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
+export type SessionChild = 'unplaced' | 'unplaced-records' | 'plans' | 'attachments' | 'context-injections';
 /** A record of what Myco served the session as a whole; see the Deployment's `read/children.ts`. */
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
 
@@ -219,6 +222,7 @@ export interface TurnPrompt {
   threadLabel: string | null;
   text: string | null;
   blobKey: string | null;
+  locator?: RecordLocator;
   createdAt: number;
 }
 
@@ -258,6 +262,8 @@ export interface TurnDetail {
   injection: TurnInjection | null;
   children: TurnChild[];
   metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
+  /** The prompt's tool calls in brief: counts by tool, failures, files changed and Myco calls. */
+  tools?: ToolSummary;
   context?: { subagents: number };
   answers?: PromptAnswer[];
   cursors?: Record<TurnCollection, string | null>;
@@ -275,8 +281,12 @@ const RAW_READ_CACHE_VERSION = 71;
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}?raw=${RAW_READ_CACHE_VERSION}`;
 
 export type ProcessedBodyKind = 'prompt' | 'response' | 'plan' | 'tool-input' | 'tool-output' | 'attachment';
-export interface ProcessedBodyRef { kind: ProcessedBodyKind; id: string }
-export const processedBodyUrl = (projectId: string, ref: ProcessedBodyRef) => `${project(projectId)}/processed/${ref.kind}/${seg(ref.id)}`;
+/** Where a session document holds a record: its generation and its owner's page. */
+export interface RecordLocator { generation: number; owner: string; page: number }
+/** A body to read: its kind and id, and for a prompt, reply or tool record the session and page that hold it. */
+export interface ProcessedBodyRef { kind: ProcessedBodyKind; id: string; at?: RecordLocator & { sessionId: string } }
+export const processedBodyUrl = (projectId: string, ref: ProcessedBodyRef) => `${project(projectId)}/processed/${ref.kind}/${seg(ref.id)}${ref.at === undefined ? ''
+  : `?${new URLSearchParams({ session: ref.at.sessionId, generation: String(ref.at.generation), owner: ref.at.owner, page: String(ref.at.page) })}`}`;
 
 /** What the table asks the list for; each narrows the list on the server. */
 export interface SessionListFilters {
@@ -560,6 +570,16 @@ export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revis
 }
 
 export interface ToolUsage { toolName: string; count: number }
+export interface ToolSummary {
+  /** False when the turn has pages the summary did not read: its counts then cover only the start of the turn. */
+  complete: boolean;
+  total: number;
+  failed: number;
+  byTool: ToolUsage[];
+  failures: ToolCallRow[];
+  files: string[];
+  myco: { tool: string; op: string | null; count: number; failed: number }[];
+}
 export interface PromptAnswer {
   id: string; createdAt: number; outcome: string; contextChars: number;
   parts: Array<{ kind: string; sporeCount?: number; planCount?: number }>;

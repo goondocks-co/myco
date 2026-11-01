@@ -14,7 +14,7 @@ import { runTick } from '@myco-server-worker/core/tick.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { convertFixture, sqliteEnv, turnOnGatedCapabilities, withHarness } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
@@ -218,6 +218,7 @@ describe('a titling past a limit', () => {
     const f = await fixture();
     f.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     f.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'hello there', 'user', 'h1', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    await convertFixture(f);
     f.setting('agent.limits.concurrent_runs', 1);
     await f.dispatch();
     const asked = await titleSession(f.env, { projectId: 'proj_1', sessionId: 's1', now: NOW + 1, origin: ORIGIN });

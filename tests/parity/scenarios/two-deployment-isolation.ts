@@ -20,7 +20,7 @@ const ROUTE_VALUES: Record<string, string> = {
   sporeId: 'spore_isolation', switchId: 'switch_isolation', agentId: 'agent_isolation',
   candidateId: 'candidate_isolation', skillId: 'skill_isolation', id: 'id_isolation',
   leaf: 'agent.limits.concurrent_runs', name: 'anthropic', check: 'database',
-  kind: 'prompt', child: 'prompts', tier: '1', capability: 'search',
+  kind: 'prompt', child: 'plans', tier: '1', capability: 'search',
   rootKey: 'a'.repeat(16), key: 'a'.repeat(64), sha256: 'a'.repeat(64),
 };
 

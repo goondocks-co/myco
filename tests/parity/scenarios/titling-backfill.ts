@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
@@ -53,10 +53,12 @@ export const titlingBackfill: ParityScenario = {
     await post(session, 'session.end', { endedAt: stamp - 60_000 });
     expect(await target.sql(`SELECT titling_requested_at AS requested, titled_at AS titled, title FROM sessions WHERE session_id = ${lit(session)}`)).toEqual([{ requested: null, titled: null, title: null }]);
 
-    // Off by default: the wake parses the import and dispatches nothing.
+    // Off by default: the wake publishes the import and dispatches nothing.
     expect(await owner('GET', '/api/titling-backfill')).toMatchObject({ scheduledTasksEnabled: true, backfillEnabled: false, enabled: false });
     await owner('POST', '/api/wake');
-    expect(await target.sql(`SELECT parsed_offset = size AS parsed FROM transcripts WHERE session_id = ${lit(session)}`)).toEqual([{ parsed: 1 }]);
+    await documentsPublished(target, session);
+    expect(await target.sql(`SELECT p.published_offset = t.size AS published FROM transcripts t JOIN transcript_publication p
+      ON p.project_id = t.project_id AND p.transcript_id = t.transcript_id WHERE t.session_id = ${lit(session)}`)).toEqual([{ published: 1 }]);
     expect((await backfillRuns() as Array<{ sessionId: string }>).filter((r) => r.sessionId === session)).toEqual([]);
     expect((await owner('GET', '/api/titling-backfill')).remaining).toBeGreaterThanOrEqual(1);
 

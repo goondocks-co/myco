@@ -28,12 +28,10 @@ const readState=(db:RelationalStore)=>db.prepare(`SELECT phase,cursor_project,cu
   FROM raw_archive_state WHERE id=1`).first<State>();
 const readRawEventState=(db:RelationalStore)=>db.prepare(`SELECT cursor_project,cursor_session,cursor_created,cursor_rowid,revision
   FROM raw_event_archive_state WHERE id=1`).first<RawEventState>();
-const parserPending=(t:string)=>`(COALESCE(json_extract(${t}.parser_context,'$.mycoParserUnfinished'),0)=1
-  OR COALESCE(json_extract(${t}.parser_context,'$.mycoParserReplyUnfinished'),0)=1
-  OR COALESCE(json_extract(${t}.parser_context,'$.mycoParserState.chunked'),0)=1
-  OR COALESCE(json_extract(${t}.parser_context,'$.mycoLegacyResponseUntil'),
-    json_extract(${t}.parser_context,'$.mycoParserRereadUntil'),
-    json_extract(${t}.parser_context,'$.mycoParserState.legacyReplies.until'),0)>${t}.parsed_offset)`;
+/** The byte a transcript's live publication has reached; -1 while it has none or its publication stopped on a failure. */
+const publishedSql=(t:string)=>`COALESCE((SELECT p.published_offset FROM session_documents d JOIN transcript_publication p
+  ON p.project_id=d.project_id AND p.generation=d.generation AND p.transcript_id=${t}.transcript_id
+  WHERE d.project_id=${t}.project_id AND d.session_id=${t}.session_id AND d.state='live' AND p.state<>'failed'),-1)`;
 const stateGuard=(s:State)=>({sql:`EXISTS (SELECT 1 FROM raw_archive_state WHERE id=1 AND phase=?
   AND cursor_project=? AND cursor_id=? AND cursor_offset=? AND due_received=? AND due_kind=? AND revision=?)`,
   params:[s.phase,s.cursor_project,s.cursor_id,s.cursor_offset,s.due_received,s.due_kind,s.revision]});
@@ -86,23 +84,22 @@ async function seedSegments(db:RelationalStore,s:State):Promise<void> {
   await commit(db,s,{cursor_project:last.project_id,cursor_id:last.transcript_id,cursor_offset:last.base_offset},writes);
 }
 
-/** A parsed segment's existing registered generation becomes its retained cold locator. */
+/** A published segment's existing registered generation becomes its retained cold locator. */
 async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,now:number,days:number,deadline:number):Promise<void> {
   const db=env.db;
   if(row.transcript_id===null||row.base_offset===null||row.length===null||row.created_at===null
     ||row.source_blob_key===null||row.size!==row.length) throw new Error('raw_archive_segment_metadata_missing');
   const sourceRow=await db.prepare(`SELECT x.event_id,x.blob_key,x.length,x.created_at,x.received_at,x.token_id,
-    e.envelope_hash,t.parsed_offset,${parserPending('t')} AS pending,t.parse_error,b.generation FROM transcript_segments x
+    e.envelope_hash,${publishedSql('t')} AS published,b.generation FROM transcript_segments x
     JOIN transcripts t ON t.project_id=x.project_id AND t.transcript_id=x.transcript_id
     JOIN events e ON e.project_id=x.project_id AND e.event_id=x.event_id
     JOIN blobs b ON b.project_id=x.project_id AND b.key=x.blob_key
     WHERE x.project_id=? AND x.transcript_id=? AND x.base_offset=?`)
     .bind(row.project_id,row.transcript_id,row.base_offset).first<{
       event_id:string;blob_key:string;length:number;created_at:number;received_at:number;token_id:string;
-      envelope_hash:string;parsed_offset:number;pending:number;parse_error:string|null;generation:string|null}>();
+      envelope_hash:string;published:number;generation:string|null}>();
   if(sourceRow===null) throw new Error('raw_archive_segment_source_missing');
-  if(sourceRow.parsed_offset<row.base_offset+row.length||sourceRow.pending===1||sourceRow.parse_error!==null)
-    throw new Error('raw_archive_segment_parser_pending');
+  if(sourceRow.published<row.base_offset+row.length) throw new Error('raw_archive_segment_unpublished');
   if(sourceRow.blob_key!==row.source_blob_key||sourceRow.generation!==row.source_generation
     ||sourceRow.length!==row.length||sourceRow.created_at!==row.created_at||sourceRow.received_at!==row.received_at
     ||sourceRow.token_id!==row.token_id) throw new Error('raw_archive_segment_source_changed');
@@ -130,8 +127,7 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
       WHERE r.project_id=? AND r.source_kind='transcript' AND r.source_id=? AND r.disposition='hot'
         AND r.received_at<=? AND r.source_blob_key=x.blob_key AND r.source_generation IS b.generation
         AND r.length=x.length AND r.created_at=x.created_at AND r.token_id=x.token_id
-        AND e.envelope_hash=? AND t.parsed_offset>=x.base_offset+x.length AND NOT ${parserPending('t')}
-        AND t.parse_error IS NULL)`;
+        AND e.envelope_hash=? AND ${publishedSql('t')}>=x.base_offset+x.length)`;
   await commit(db,s,{cursor_project:row.project_id,cursor_id:row.source_id,due_received:row.eligible_at,
     due_kind:row.source_kind},[
     ...contentAssertion(db,guard,[...policy.params,...bodyProof.params,...receiptProof.params,
@@ -168,11 +164,9 @@ async function archiveDue(env:Pick<ServerEnv,'db'|'blobs'>,s:State,now:number,da
   }
   for(const row of results) {
     if(await learningHolds(db,row.project_id,row.session_id)) continue;
-    const parser=await db.prepare(`SELECT parsed_offset,${parserPending('t')} AS pending,parse_error FROM transcripts t
-      WHERE project_id=? AND transcript_id=?`).bind(row.project_id,row.transcript_id)
-      .first<{parsed_offset:number;pending:number;parse_error:string|null}>();
-    if(parser!==null&&row.base_offset!==null&&row.length!==null&&parser.parsed_offset>=row.base_offset+row.length
-      && parser.pending===0&&parser.parse_error===null) {
+    const publication=await db.prepare(`SELECT ${publishedSql('t')} AS published FROM transcripts t
+      WHERE project_id=? AND transcript_id=?`).bind(row.project_id,row.transcript_id).first<{published:number}>();
+    if(publication!==null&&row.base_offset!==null&&row.length!==null&&publication.published>=row.base_offset+row.length) {
       await archiveSegment(env,s,row,now,days,deadline);
       return 1;
     }

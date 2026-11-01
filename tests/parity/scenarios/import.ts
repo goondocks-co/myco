@@ -78,10 +78,9 @@ export const importParity: ParityScenario = {
     // A caller may ask past the Deployment's window.
     expect((await plan([candidate('parity-old', tx('d'), { modifiedAt: Date.now() - 90 * 86_400_000 })], { windowDays: 180 })).candidates?.[0].take).toBe('from');
 
-    // The tick reads an import beside live work, on both stores: while imports wait, live reading takes at most
-    // half a pass's budget, so an import is read within a few wakes however much live work stands. This database is
-    // shared with every other scenario, so what one wake reaches is not asserted; that both are read soon is.
-    const parsed = async (id: string) => Number((await target.sql(`SELECT parsed_offset FROM transcripts WHERE transcript_id=${lit(id)}`))[0].parsed_offset);
+    // The tick publishes an import beside live work, on both stores, within a few wakes. This database is shared with
+    // every other scenario, so what one wake reaches is not asserted; that both are published soon is.
+    const parsed = async (id: string) => Number((await target.sql(`SELECT COALESCE(MAX(published_offset), 0) AS n FROM transcript_publication WHERE transcript_id=${lit(id)}`))[0].n);
     for (let wake = 0; wake < 8 && ((await parsed(tx('a'))) === 0 || (await parsed(tx('b'))) === 0); wake += 1) {
       expect((await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } })).status).toBe(200);
     }

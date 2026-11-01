@@ -1,3 +1,4 @@
+import { readDocumentStatus } from '../read/document-status.js';
 import { readBudgetStatus } from '../read/budget.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
@@ -110,11 +111,13 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     return readViewStatus(env.db,projects.map(project=>project.projectId),ctx.now);
   });
   const viewCutover=await readFact('viewCutover',()=>readViewCutover(env.db));
+  const documents=await readFact('documents',()=>readDocumentStatus(env.db));
   return ok({
     budget,
     learning:learning??null,
     views:views??null,
     viewCutover:viewCutover??null,
+    documents:documents??null,
     schema: schemaCheck(metadata?.version ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,

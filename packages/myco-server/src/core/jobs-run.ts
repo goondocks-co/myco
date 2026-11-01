@@ -1,9 +1,8 @@
-import { learningInit } from './learning-sessions.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS } from './budget-policy.js';
 import { dailyBudget,effectiveBudgetSql } from './settings.js';
 import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
-import { runTranscriptParseWake } from '../ingest/view-cutover.js';
+import { runPublishWake } from '../ingest/publish.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 /**
@@ -231,7 +230,6 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
-  'learning-init': (env, now) => learningInit(env, now),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
     return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });
@@ -247,7 +245,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'grant-expiry': grantExpiry,
   'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
-  'transcript-parse': runTranscriptParseWake,
+  'transcript-parse': runPublishWake,
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,

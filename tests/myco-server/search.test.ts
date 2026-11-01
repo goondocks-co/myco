@@ -17,7 +17,9 @@ function fixture() {
     insert('sessions', { project_id: project, session_id: 's', machine_id: 'm', created_by_token_id: 't', first_received_at: 1000, last_received_at: 1000, title: 'cobalt session' });
   }
   const base = { project_id: 'search-a', session_id: 's', event_id: 'e', token_id: 't', received_at: 1000, created_at: 1000, content_hash: 'hash' };
-  const prompt = (id: string, text: string | null, blobKey: string | null = null, project = 'search-a') => insert('prompt_batches', { ...base, project_id: project, prompt_id: id, origin: 'user', updated_at: 1000, text, blob_key: blobKey });
+  /** A prompt is found through its turn's card. */
+  const prompt = (id: string, text: string, project = 'search-a', over: Record<string, unknown> = {}) =>
+    insert('turn_cards', { project_id: project, session_id: 's', turn_key: id, state: 'carded', card: text, created_at: 1000, ...over });
   const plan = (id: string, content: string | null, blobKey: string | null = null) => insert('plans', { ...base, plan_key: id, machine_id: 'm', status: 'active', title: 'cobalt plan', updated_at: 1000, content, blob_key: blobKey });
   const blob = async (key: string, text: string) => {
     const bytes = new TextEncoder().encode(text);
@@ -42,7 +44,7 @@ describe('full-text search', () => {
   it('rolls back chunks with their cursor on failure and converges under overlapping index jobs', async () => {
     const f = fixture();
     await f.blob('retry-body', `${'padding '.repeat(10000)} retryneedle`);
-    f.prompt('retry', null, 'retry-body');
+    f.plan('retry', null, 'retry-body');
     const broken = { ...f.db, batch: (statements: Parameters<typeof f.db.batch>[0]) => f.db.batch([...statements, f.db.prepare('INSERT INTO missing_search_table VALUES (1)')]) };
     await expect(reconcileSearchIndex(broken, f.bucket, 1000)).rejects.toThrow();
     expect(f.sqlite.query('SELECT COUNT(*) AS n FROM search_blob_chunks').get()).toEqual({ n: 0 });
@@ -63,7 +65,7 @@ describe('full-text search', () => {
   it('restores source records, rebuilds inline search immediately and queues every spilled body once', async () => {
     const source = fixture();
     await source.blob('restore-body', 'restoredneedle deepbody');
-    source.prompt('restored', null, 'restore-body');
+    source.plan('restored', null, 'restore-body');
     source.plan('restored-plan', 'restoredneedle inlinebody');
     await reconcileSearchIndex(source.db, source.bucket, 1000);
     const backup = await createBackup(source.db, source.bucket, { producer: 'test', now: 2000 });
@@ -72,12 +74,12 @@ describe('full-text search', () => {
     // A backup carries no blob bytes: a target without the body registered refuses the whole artifact before writing.
     const bare = fixture();
     await expect(restoreArtifact(bare.db, { authorization: { kind: 'recovery' }, text: artifact, allowForeignLineage: true })).rejects.toBeInstanceOf(BackupObjectsMissingError);
-    expect(bare.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: 0 });
+    expect(bare.sqlite.query('SELECT COUNT(*) AS n FROM plans').get()).toEqual({ n: 0 });
     const target = fixture();
     await target.blob('restore-body', 'restoredneedle deepbody');
     const result = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact, allowForeignLineage: true });
     expect(result.tables.blobs).toEqual({ rows: 1, inserted: 0, reused: 1 });
-    expect(result.tables.prompt_batches.inserted).toBe(1);
+    expect(result.tables.plans.inserted).toBe(2);
     expect((await target.search('restoredneedle')).results.map((r) => r.id)).toEqual(['restored-plan']);
     expect(await pendingSearchBlobs(target.db)).toBe(1);
     const tick = await runTick(target.serverEnv, POWER_THRESHOLDS.deepSleepMs + 100_000);
@@ -92,7 +94,7 @@ describe('full-text search', () => {
     const f = fixture();
     const content = `${'a'.repeat(SEARCH_CHUNK_CHARS - 514)}𐐀𐐁 z ${'b'.repeat(SEARCH_CHUNK_CHARS)} tailneedle`;
     await f.blob('unicode', content);
-    f.prompt('unicode', null, 'unicode');
+    f.plan('unicode', null, 'unicode');
     await reconcileSearchIndex(f.db, f.bucket, 1000);
     const rows = f.sqlite.query<{ text: string; offset: number }, []>('SELECT text, offset FROM search_blob_chunks ORDER BY offset').all();
     for (const row of rows) {
@@ -103,12 +105,13 @@ describe('full-text search', () => {
   });
   it('finds every retained type with actionable IDs and keeps another project out', async () => {
     const f = fixture();
-    f.prompt('p', 'cobalt prompt'); f.prompt('foreign', 'cobalt secret', null, 'search-b');
-    f.insert('responses', { ...f.base, response_id: 'r', prompt_id: 'p', text: 'cobalt response' });
+    f.prompt('p', 'cobalt prompt'); f.prompt('foreign', 'cobalt secret', 'search-b');
     f.plan('plan', 'cobalt body');
     f.insert('spores', { project_id: 'search-a', id: 'sp', agent_id: 'search-agent', content: 'cobalt spore', observation_type: 'decision', created_at: 1000 });
     const result = await f.search('cobalt');
-    expect(result.results.map((r) => r.type).sort()).toEqual([...SEARCH_TYPES].sort());
+    // A card answers for its prompt and its replies, so a search of every type lists it once, as the prompt.
+    expect(result.results.map((r) => r.type).sort()).toEqual(SEARCH_TYPES.filter((type) => type !== 'response').sort());
+    expect((await f.search('cobalt', { type: 'response' })).results.map((r) => [r.type, r.id])).toEqual([['response', 'p']]);
     expect(result.results.some((r) => r.id === 'foreign')).toBe(false);
     expect(result.results.find((r) => r.type === 'plan')?.retrieve?.input.id).toBe('plan');
     expect(result.results.find((r) => r.type === 'prompt')).toMatchObject({ id: 'p', session_id: 's', prompt_id: 'p' });
@@ -149,21 +152,22 @@ describe('full-text search', () => {
   it('indexes large blob bodies resumably, matches across chunks and title/body, and removes stale hits', async () => {
     const f = fixture();
     const text = 'firstword ' + 'padding '.repeat(Math.ceil(SEARCH_CHUNK_CHARS * (SEARCH_CHUNKS_PER_PASS + 2) / 8)) + ' lastword';
-    await f.blob('blob', text); f.plan('p', null, 'blob'); f.prompt('prompt', null, 'blob');
+    await f.blob('blob', text); f.plan('p', null, 'blob');
+    f.insert('plans', { ...f.base, plan_key: 'other', machine_id: 'm', status: 'active', title: 'other plan', updated_at: 1000, content: null, blob_key: 'blob' });
     expect(await pendingSearchBlobs(f.db)).toBe(1);
     await reconcileSearchIndex(f.db, f.bucket, 1);
     expect(await pendingSearchBlobs(f.db)).toBe(1);
     await reconcileSearchIndex(f.db, f.bucket, 2);
     expect(await pendingSearchBlobs(f.db)).toBe(0);
-    expect((await f.search('firstword lastword')).results.map((r) => r.id).sort()).toEqual(['p', 'prompt']);
+    expect((await f.search('firstword lastword')).results.map((r) => r.id).sort()).toEqual(['other', 'p']);
     expect((await f.search('cobalt lastword')).results.map((r) => r.id)).toEqual(['p']);
     f.sqlite.exec("UPDATE plans SET content='replacement', blob_key=NULL WHERE plan_key='p'");
-    expect((await f.search('lastword')).results.map((r) => r.id)).toEqual(['prompt']);
+    expect((await f.search('lastword')).results.map((r) => r.id)).toEqual(['other']);
     expect(await reconcileSearchIndex(f.db, f.bucket, 3)).toBe(0);
   });
 
   it('surfaces missing blobs without falsely completing the index', async () => {
-    const f = fixture(); await f.blob('missing', 'secret'); f.prompt('p', null, 'missing');
+    const f = fixture(); await f.blob('missing', 'secret'); f.plan('p', null, 'missing');
     f.bucket.objects.delete(registeredObject(f.sqlite, 'search-a', 'missing')!);
     await expect(reconcileSearchIndex(f.db, f.bucket, 1)).rejects.toThrow('missing');
     expect((await f.search('secret')).coverage.pending_blobs).toBe(1);
@@ -206,7 +210,7 @@ describe('listing a search of one type by time', () => {
 
   it('lists matches oldest first, then by id, whatever their relevance', async () => {
     const f = fixture();
-    const at = (id: string, createdAt: number, text: string) => f.insert('prompt_batches', { ...f.base, prompt_id: id, origin: 'user', updated_at: createdAt, created_at: createdAt, text });
+    const at = (id: string, createdAt: number, text: string) => f.prompt(id, text, 'search-a', { created_at: createdAt });
     for (const [id, createdAt] of [['a', 3000], ['b', 1000], ['c', 1000], ['d', 2000], ['e', 1000]] as const) at(id, createdAt, 'cobalt common');
     at('rare', 500, 'cobalt rare rare rare');
     for (let i = 0; i < 40; i++) at(`filler${String(i).padStart(2, '0')}`, 400, `cobalt ${'unrelated words '.repeat(i + 1)}`);
@@ -222,11 +226,11 @@ describe('listing a search of one type by time', () => {
     const f = fixture();
     const all = Array.from({ length: 105 }, (_, i) => `p${String(i).padStart(3, '0')}`);
     for (const id of all) f.prompt(id, 'cobalt common words');
-    const rankOf = () => f.sqlite.query<{ rank: number }, []>("SELECT rank FROM prompt_batches_fts WHERE prompt_batches_fts MATCH 'cobalt' LIMIT 1").get()!.rank;
+    const rankOf = () => f.sqlite.query<{ rank: number }, []>("SELECT rank FROM turn_cards_fts WHERE turn_cards_fts MATCH 'cobalt' LIMIT 1").get()!.rank;
     const rankBefore = rankOf();
     const first = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 20 });
     // Unrelated capture, in another Project, moves every match's relevance score.
-    for (let i = 0; i < 200; i++) f.prompt(`noise${i}`, `unrelated text ${i}`, null, 'search-b');
+    for (let i = 0; i < 200; i++) f.prompt(`noise${i}`, `unrelated text ${i}`, 'search-b');
     const rest = [];
     let cursor: string | null = first.cursor;
     while (cursor !== null) {
@@ -242,12 +246,12 @@ describe('listing a search of one type by time', () => {
     const f = fixture();
     const body = `cobalt ${'padding '.repeat(SEARCH_CHUNK_CHARS / 4)} cobalt ${'padding '.repeat(SEARCH_CHUNK_CHARS / 4)} cobalt`;
     await f.blob('long', body);
-    f.prompt('long', null, 'long');
-    for (let i = 0; i < 5; i++) f.prompt(`p${i}`, 'cobalt short');
+    f.plan('long', null, 'long');
+    for (let i = 0; i < 5; i++) f.plan(`p${i}`, 'cobalt short');
     await reconcileSearchIndex(f.db, f.bucket, 1000);
     expect((f.sqlite.query('SELECT COUNT(*) AS n FROM search_blob_chunks').get() as { n: number }).n).toBeGreaterThan(1);
     for (const limit of [1, 2, 100]) {
-      const found = ids(await pages(f, 'cobalt', { type: 'prompt', limit }));
+      const found = ids(await pages(f, 'cobalt', { type: 'plan', limit }));
       expect([...found].sort()).toEqual(['long', 'p0', 'p1', 'p2', 'p3', 'p4']);
     }
   });
@@ -257,8 +261,8 @@ describe('listing a search of one type by time', () => {
     f.insert('sessions', { project_id: 'search-a', session_id: 'other', machine_id: 'm', created_by_token_id: 't', first_received_at: 1000, last_received_at: 1000 });
     for (let i = 0; i < 12; i++) {
       f.prompt(`own${String(i).padStart(2, '0')}`, 'cobalt words');
-      f.insert('prompt_batches', { ...f.base, session_id: 'other', prompt_id: `zother${i}`, origin: 'user', updated_at: 1000, text: 'cobalt words' });
-      f.prompt(`zforeign${i}`, 'cobalt words', null, 'search-b');
+      f.prompt(`zother${i}`, 'cobalt words', 'search-a', { session_id: 'other' });
+      f.prompt(`zforeign${i}`, 'cobalt words', 'search-b');
     }
     const found = ids(await pages(f, 'cobalt', { type: 'prompt', limit: 5, session_id: 's' }));
     expect(found).toEqual(Array.from({ length: 12 }, (_, i) => `own${String(i).padStart(2, '0')}`));
@@ -280,7 +284,7 @@ describe('listing a search of one type by time', () => {
 
   it('refuses an order by time that cannot page, and a cursor it did not issue or issued for another type', async () => {
     const f = fixture();
-    for (let i = 0; i < 3; i++) { f.prompt(`p${i}`, 'cobalt'); f.insert('responses', { ...f.base, response_id: `r${i}`, prompt_id: `p${i}`, text: 'cobalt' }); }
+    for (let i = 0; i < 3; i++) f.prompt(`p${i}`, 'cobalt');
     const { cursor } = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 1 });
     expect(cursor).not.toBeNull();
     const forged = (value: unknown) => btoa(JSON.stringify(value)).replace(/=+$/, '');
@@ -306,32 +310,20 @@ describe('the turn a conversation hit names', () => {
   it('gives each hit its own time and the turn it opens, only where the Project\'s session holds the prompt', async () => {
     const f = fixture();
     f.insert('sessions', { project_id: 'search-a', session_id: 'other', machine_id: 'm', created_by_token_id: 't', first_received_at: 1000, last_received_at: 1000 });
-    const prompt = (id: string, over: Record<string, unknown>) => f.insert('prompt_batches', { ...f.base, prompt_id: id, origin: 'user', updated_at: 1000, text: 'opening request', ...over });
-    const reply = (id: string, promptId: string | null, createdAt: number, over: Record<string, unknown> = {}) =>
-      f.insert('responses', { ...f.base, response_id: id, prompt_id: promptId, created_at: createdAt, text: 'cobalt answer', ...over });
-    prompt('turn', { created_at: 1000 });
-    prompt('steer', { created_at: 1500, parent_prompt_id: 'turn', text: 'steering words' });
-    prompt('foreign-turn', { created_at: 900, session_id: 'other' });
-    await f.blob('stored', 'a stored opening');
-    prompt('stored-turn', { created_at: 1800, text: null, blob_key: 'stored' });
-    reply('r_turn', 'turn', 2000);
-    reply('r_steer', 'steer', 2100);
-    reply('r_stored', 'stored-turn', 2200);
-    reply('r_foreign', 'foreign-turn', 2300);
-    reply('r_absent', 'never-captured', 2400);
-    reply('r_none', null, 2500);
-    const hits = new Map((await f.search('cobalt', { type: 'response', limit: 100 })).results.map((r) => [r.id, r]));
-    expect([...hits.values()].map((r) => r.created_at).sort()).toEqual([2000, 2100, 2200, 2300, 2400, 2500]);
-    expect(hits.get('r_turn')).toMatchObject({ created_at: 2000, prompt_id: 'turn', turn: { prompt_id: 'turn', preview: 'opening request', text_chars: 15, stored: false } });
-    // A steering prompt opens the turn it steers.
-    expect(hits.get('r_steer')).toMatchObject({ prompt_id: 'steer', turn: { prompt_id: 'turn', preview: 'opening request' } });
-    expect(hits.get('r_stored')!.turn).toEqual({ prompt_id: 'stored-turn', preview: null, text_chars: null, stored: true });
-    // A prompt of another session, one never captured and none at all leave the hit unlinked, with its own time.
-    for (const id of ['r_foreign', 'r_absent', 'r_none']) expect(hits.get(id)!.turn).toBeNull();
-    const prompts = (await f.search('opening', { type: 'prompt', limit: 100 })).results;
-    expect(prompts.find((r) => r.id === 'steer')).toBeUndefined();
-    // A prompt hit opens its own turn, checked against the session the prompt itself belongs to.
-    expect(prompts.map((r) => [r.id, r.turn?.prompt_id]).sort()).toEqual([['foreign-turn', 'foreign-turn'], ['turn', 'turn']]);
+    for (const session of ['s', 'other']) f.insert('session_documents', { project_id: 'search-a', session_id: session, state: 'live', generation: 1, updated_at: 1 });
+    f.insert('session_prompts', { project_id: 'search-a', session_id: 's', generation: 1, prompt_id: 'turn', turn_key: 'turn', ord: 0, created_at: 1000, preview: 'opening request', text_chars: 15 });
+    f.prompt('turn', 'cobalt answer', 'search-a', { created_at: 2000 });
+    // Cards whose turn the session's catalog does not hold: one keyed by another session's prompt, one never captured.
+    f.prompt('turn', 'cobalt answer', 'search-a', { session_id: 'other', created_at: 2100 });
+    f.prompt('never-captured', 'cobalt answer', 'search-a', { created_at: 2200 });
+    for (const type of ['prompt', 'response']) {
+      const hits = (await f.search('cobalt', { type, limit: 100 })).results;
+      expect(hits.map((r) => [r.session_id, r.id, r.created_at, r.turn]).sort(), type).toEqual([
+        ['other', 'turn', 2100, null],
+        ['s', 'never-captured', 2200, null],
+        ['s', 'turn', 2000, { prompt_id: 'turn', preview: 'opening request', text_chars: 15, stored: false }],
+      ]);
+    }
     // Only a conversation's hits carry a turn.
     f.insert('spores', { project_id: 'search-a', id: 'sp', agent_id: 'search-agent', content: 'cobalt advice', observation_type: 'decision', created_at: 3000 });
     const spore = (await f.search('cobalt', { type: 'spore' })).results[0]!;

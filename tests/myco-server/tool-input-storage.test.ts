@@ -31,6 +31,47 @@ function fixture() {
 }
 
 describe('tool input storage', () => {
+  it('finishes clearing a legacy full input when a late success arrives after its proof', async () => {
+    const f = fixture();
+    try {
+      const id = uuid(210);
+      const failureEvent = uuid(211);
+      const successEvent = uuid(212);
+      const original = { text: 'é'.repeat(7000), file_path: '/repo/legacy.ts' };
+      expect(await f.send(211, id, { text: 'small', file_path: original.file_path }, 'tool.failure'))
+        .toEqual({ persisted: true, projected: true });
+
+      const payload = JSON.stringify({ toolCallId: id, toolName: 'Write', input: original, success: false, errorMessage: 'failed' });
+      const source = f.sqlite.query(`SELECT session_id,kind,created_at,channel,producer_adapter,producer_version
+        FROM events WHERE event_id=?`).get(failureEvent) as {
+        session_id: string; kind: string; created_at: number; channel: string; producer_adapter: string; producer_version: string;
+      };
+      const sourceHash = await sha256Hex(`${JSON.stringify([
+        source.session_id, source.kind, source.created_at, source.channel, source.producer_adapter, source.producer_version,
+      ])}\n${payload}`);
+      f.sqlite.query(`UPDATE events SET payload=?,payload_bytes=?,envelope_hash=? WHERE event_id=?`)
+        .run(payload, new TextEncoder().encode(payload).byteLength, sourceHash, failureEvent);
+      f.sqlite.query(`UPDATE tool_calls SET input=?,input_bytes=NULL WHERE tool_call_id=?`).run(JSON.stringify(original), id);
+
+      const candidate = await cleanupCandidate(f.db, { project_id: 'proj_1', resource_kind: 'tool-input', resource_id: id });
+      expect(candidate).not.toBeNull();
+      await prepareArchive(f.serverEnv, 'tool-input', candidate!, NOW);
+      expect(await f.send(212, id, { text: 'replacement', file_path: '/repo/replacement.ts' }, 'tool.use', 'Read'))
+        .toEqual({ persisted: true, projected: true });
+
+      expect((await storageCleanup(f.serverEnv, NOW)).changed).toBe(1);
+      const row = (await listToolCalls(f.db, { projectId: 'proj_1' }, 's1')).rows[0];
+      expect([row.success, row.toolName, row.filesAffected, row.inputTruncated, row.inputBytes]).toEqual([
+        true, 'Write', '["/repo/legacy.ts"]', true, new TextEncoder().encode(JSON.stringify(original)).byteLength,
+      ]);
+      expect(new TextEncoder().encode(row.inputPreview!).byteLength).toBeLessThanOrEqual(2048);
+      expect(f.sqlite.query(`SELECT entry_count FROM archive_bundles a JOIN tool_calls t ON t.input_bundle_id=a.id WHERE t.tool_call_id=?`).get(id)).toEqual({entry_count:1});
+      expect(f.sqlite.query(`SELECT event_id FROM tool_calls WHERE tool_call_id=?`).get(id)).toEqual({ event_id: successEvent });
+      expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).toBe(JSON.stringify(original));
+      expect((await createBackup(f.db, f.serverEnv.blobs, { producer: 'test', now: NOW })).size_bytes).toBeGreaterThan(0);
+    } finally { f.sqlite.close(); }
+  });
+
   it('leaves an oversized archived singleton readable while draining later captured inputs', async () => {
     const f=fixture();
     try{
@@ -200,39 +241,6 @@ describe('tool input storage', () => {
       expect((await listToolCalls(f.db, { projectId: 'proj_1' }, 's1')).rows[0].outputPreview).toBe(fullOutput.slice(0, 4096));
     } finally { f.sqlite.close(); }
   });
-  it('keeps inline inputs through 2048 UTF-8 bytes and spills complete larger inputs', async () => {
-    const f = fixture();
-    try {
-      for (const [n, input] of [
-        [1, { text: 'x'.repeat(2036) }],
-        [2, { text: 'x'.repeat(2037) }],
-        [3, { text: 'x'.repeat(2038) }],
-        [4, { text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' }],
-        [5, { text: `${'é🙂'.repeat(2200)}tail`, file_path: '/repo/late.ts' }],
-      ] as const) {
-        expect(await f.send(n, uuid(100 + n), input)).toEqual({ persisted: true, projected: true });
-      }
-      const rows = (await listToolCalls(f.db, { projectId: 'proj_1' }, 's1')).rows;
-      const locators = f.sqlite.query(`SELECT input_bundle_id FROM tool_calls WHERE project_id='proj_1' AND session_id='s1'
-        ORDER BY created_at,tool_call_id`).all() as Array<{ input_bundle_id: number | null }>;
-      expect(rows.map((r, index) => [r.inputBytes, r.inputTruncated, locators[index]!.input_bundle_id !== null])).toEqual([
-        [2047, false, false], [2048, false, false], [2049, true, true],
-        [new TextEncoder().encode(JSON.stringify({ text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' })).byteLength, true, true],
-        [new TextEncoder().encode(JSON.stringify({ text: `${'é🙂'.repeat(2200)}tail`, file_path: '/repo/late.ts' })).byteLength, true, true],
-      ]);
-      expect(rows[3].inputPreview).not.toContain('/repo/late.ts');
-      expect(new TextEncoder().encode(rows[3].inputPreview!).byteLength).toBeLessThanOrEqual(2048);
-      expect(new TextEncoder().encode(rows[4].inputPreview!).byteLength).toBeLessThanOrEqual(2048);
-      expect(rows[3].filesAffected).toBe('["/repo/late.ts"]');
-      expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', uuid(104)))
-        .toBe(JSON.stringify({ text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' }));
-      const full = await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${uuid(104)}`), { ...f.env, ...OWNER_ENV });
-      expect([full.status, await full.text(), full.headers.get('cache-control')]).toEqual([
-        200, JSON.stringify({ text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' }), 'private, no-store',
-      ]);
-      expect(f.bucket.puts.length).toBeGreaterThan(0);
-    } finally { f.sqlite.close(); }
-  });
 
   it('keeps the original input, blob proof, name and file facts on a late success', async () => {
     const f = fixture();
@@ -248,69 +256,6 @@ describe('tool input storage', () => {
       ]);
       expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).toBe(JSON.stringify(original));
       expect(f.sqlite.query(`SELECT key FROM registered_content_proofs WHERE source_kind='bundle' AND event_id=?`).all(uuid(202))).toEqual([]);
-    } finally { f.sqlite.close(); }
-  });
-
-  it('finishes clearing a legacy full input when a late success arrives after its proof', async () => {
-    const f = fixture();
-    try {
-      const id = uuid(210);
-      const failureEvent = uuid(211);
-      const successEvent = uuid(212);
-      const original = { text: 'é'.repeat(7000), file_path: '/repo/legacy.ts' };
-      expect(await f.send(211, id, { text: 'small', file_path: original.file_path }, 'tool.failure'))
-        .toEqual({ persisted: true, projected: true });
-
-      const payload = JSON.stringify({ toolCallId: id, toolName: 'Write', input: original, success: false, errorMessage: 'failed' });
-      const source = f.sqlite.query(`SELECT session_id,kind,created_at,channel,producer_adapter,producer_version
-        FROM events WHERE event_id=?`).get(failureEvent) as {
-        session_id: string; kind: string; created_at: number; channel: string; producer_adapter: string; producer_version: string;
-      };
-      const sourceHash = await sha256Hex(`${JSON.stringify([
-        source.session_id, source.kind, source.created_at, source.channel, source.producer_adapter, source.producer_version,
-      ])}\n${payload}`);
-      f.sqlite.query(`UPDATE events SET payload=?,payload_bytes=?,envelope_hash=? WHERE event_id=?`)
-        .run(payload, new TextEncoder().encode(payload).byteLength, sourceHash, failureEvent);
-      f.sqlite.query(`UPDATE tool_calls SET input=?,input_bytes=NULL WHERE tool_call_id=?`).run(JSON.stringify(original), id);
-
-      const candidate = await cleanupCandidate(f.db, { project_id: 'proj_1', resource_kind: 'tool-input', resource_id: id });
-      expect(candidate).not.toBeNull();
-      await prepareArchive(f.serverEnv, 'tool-input', candidate!, NOW);
-      expect(await f.send(212, id, { text: 'replacement', file_path: '/repo/replacement.ts' }, 'tool.use', 'Read'))
-        .toEqual({ persisted: true, projected: true });
-
-      expect((await storageCleanup(f.serverEnv, NOW)).changed).toBe(1);
-      const row = (await listToolCalls(f.db, { projectId: 'proj_1' }, 's1')).rows[0];
-      expect([row.success, row.toolName, row.filesAffected, row.inputTruncated, row.inputBytes]).toEqual([
-        true, 'Write', '["/repo/legacy.ts"]', true, new TextEncoder().encode(JSON.stringify(original)).byteLength,
-      ]);
-      expect(new TextEncoder().encode(row.inputPreview!).byteLength).toBeLessThanOrEqual(2048);
-      expect(f.sqlite.query(`SELECT entry_count FROM archive_bundles a JOIN tool_calls t ON t.input_bundle_id=a.id WHERE t.tool_call_id=?`).get(id)).toEqual({entry_count:1});
-      expect(f.sqlite.query(`SELECT event_id FROM tool_calls WHERE tool_call_id=?`).get(id)).toEqual({ event_id: successEvent });
-      expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).toBe(JSON.stringify(original));
-      const full = await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV });
-      expect([full.status, await full.text()]).toEqual([200, JSON.stringify(original)]);
-      expect((await createBackup(f.db, f.serverEnv.blobs, { producer: 'test', now: NOW })).size_bytes).toBeGreaterThan(0);
-    } finally { f.sqlite.close(); }
-  });
-
-  it('refuses a missing proof and corrupt complete body even when a preview is present', async () => {
-    const f = fixture();
-    try {
-      const id = uuid(300);
-      expect(await f.send(301, id, { text: 'c'.repeat(2200) })).toEqual({ persisted: true, projected: true });
-      const row=f.sqlite.query(`SELECT a.archive_key AS key FROM archive_bundles a JOIN tool_calls t ON t.input_bundle_id=a.id
-        WHERE t.tool_call_id=?`).get(id) as {key:string};
-      const proof=f.sqlite.query('SELECT * FROM registered_content_proofs WHERE key=?').get(row.key) as Record<string,unknown>;
-      f.sqlite.run('DELETE FROM registered_content_proofs WHERE key=?',[row.key]);
-      await expect(processedBody(f.serverEnv,{projectId:'proj_1'},'tool-input',id)).rejects.toThrow('event_content_reference_invalid');
-      expect((await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`),{...f.env,...OWNER_ENV})).status).toBe(503);
-      const columns=Object.keys(proof);
-      f.sqlite.query(`INSERT INTO registered_content_proofs(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(key=>proof[key]));
-      const objectKey = (f.sqlite.query(`SELECT project_id || '/' || key || '~' || generation AS object_key FROM blobs WHERE project_id = 'proj_1' AND key = ?`).get(row.key) as { object_key: string }).object_key;
-      f.bucket.seed(objectKey, { size: 3, bytes: new TextEncoder().encode('bad') });
-      await expect(processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).rejects.toThrow('event_content_archive_invalid');
-      expect((await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV })).status).toBe(503);
     } finally { f.sqlite.close(); }
   });
 

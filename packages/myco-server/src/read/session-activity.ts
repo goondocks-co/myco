@@ -5,4 +5,5 @@ export {
   type session_activity_SessionActivityOptions as SessionActivityOptions,
   session_activity_NOT_CAPTURED_TITLE as NOT_CAPTURED_TITLE,
   session_activity_listSessionActivity as listSessionActivity,
+  session_activity_sessionEdges as sessionEdges,
 } from './view-store.js';

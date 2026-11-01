@@ -169,7 +169,7 @@ export function emptyReadSql(sql: string): string {
     const start = arm.indexOf('FROM (') + 5;
     arm = arm.slice(start + 1, bracketEnd(arm, start));
   }
-  if(['M15:sessions_countStatements:0','M16:sessions_instantStatements:0'].includes(tag.operation)&&arm.includes(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')){
+  if(tag.operation==='M15:sessions_countStatements:0'&&arm.includes(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')){
     arm=arm.slice(0,arm.indexOf('\n    UNION ALL SELECT')).replace(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ',' FROM ');
   }
   if(arm.includes('AS __myco_aggregate_sources'))arm=m21AggregateArm(arm);
@@ -547,7 +547,7 @@ export function legacyLayout(sql:string,operation:string):SqlSpan{
  }else if(arm.text.startsWith('SELECT ')&&/NULL AS __myco_capture,(?:NULL AS __myco_owner,)? ?0 AS __myco_sentinel FROM \(/.test(arm.text)){
   const start=arm.text.indexOf('FROM (')+5;arm=slice(arm,start+1,bracketEnd(arm.text,start));
  }
- if(['M15:sessions_countStatements:0','M16:sessions_instantStatements:0'].includes(operation)&&arm.text.includes(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')){
+ if(operation==='M15:sessions_countStatements:0'&&arm.text.includes(', NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM ')){
   arm=replace(slice(arm,0,arm.text.indexOf('\n    UNION ALL SELECT')),/, NULL AS __myco_capture, NULL AS __myco_owner, 0 AS __myco_sentinel FROM /g,' FROM ');
  }
  if(arm.text.includes('AS __myco_aggregate_sources')){
@@ -757,7 +757,7 @@ function declaredCaptureProbes(sql:string){
  }
  const operation=readTag(sql)?.operation;
  let groups=1;
- if(operation==='M15:sessions_countStatements:0'||operation==='M16:sessions_instantStatements:0'){
+ if(operation==='M15:sessions_countStatements:0'){
   groups=(sql.match(/SELECT sv.session_id FROM session_views sv WHERE sv.project_id=\?1 AND sv.session_id=\?\d+/g)??[]).length;
   while(groups>4)groups=Math.ceil(groups/4);
   groups=Math.max(1,groups);

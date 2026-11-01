@@ -21,6 +21,7 @@ import { blobObjectKey } from '../core/blob-objects.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { eventContent } from '../core/event-content.js';
 import { emit } from '../telemetry.js';
+import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { type DocRecord } from '../content/document.js';
 import { documentRecord } from '../content/document-records.js';
 import { type ChunkRow, type PageRow } from '../content/document-reader.js';
@@ -30,6 +31,8 @@ import {
 } from './document-batch.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { convertDocuments } from './document-conversion.js';
+import { conversionBacklog } from './document-convertible.js';
+import { settleCards } from './card-settle.js';
 import { locatePrompts } from './document-locators.js';
 import {
   parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, type ParsePersistence, type ParseTarget, type PassLimits,
@@ -129,11 +132,11 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
 /**
  * Publishes the due sessions within the wake's remaining budget, converts sessions that predate documents with what a
  * wake that published everything due has left, locates the prompts of documents written before page locators with
- * what conversion leaves, then retires superseded chunk versions past their grace. None of them spends the reserve the
- * wake keeps for its later jobs.
+ * what conversion leaves, settles the turn cards due for it, then retires superseded chunk versions past their grace.
+ * None of them spends the reserve the wake keeps for its later jobs.
  *
  * A session whose pass fails is recorded for the Deployment's health and does not hold the others: one that fails by
- * name waits out a bounded backoff, and a store fault is reported once conversion and locating have run.
+ * name waits out a bounded backoff, and a store fault is reported once conversion, locating and settlement have run.
  */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
@@ -166,6 +169,9 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       more ||= located.more;
     }
   }
+  const cards = await settleCards(env, now, limits);
+  changed += cards.settled;
+  more ||= cards.more;
   if (!reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) changed += await retireSupersededObjects(env.db, now);
   if (failure !== undefined) throw failure;
   return { changed, more };
@@ -188,6 +194,16 @@ async function deferFailedSession(db: RelationalStore, ref: DueSession, named: s
   }
 }
 
+/**
+ * The transcript-parse job: the publisher, within the job budget of the wake. While sessions wait for conversion, a wake
+ * that moved the publisher on and left more asks for the next at `BACKLOG_CHAINED_WAKE_MS`.
+ */
+export async function runPublishWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
+  const converting = await conversionBacklog(env.db);
+  const report = await publishDocuments(env, now, { calls: env.platform.jobBudget.calls, deadline: Date.now() + env.platform.jobBudget.wallMs, clock: Date.now });
+  return converting && report.more && report.changed > 0 ? { ...report, continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : report;
+}
+
 /** Releases the holders past their grace. */
 export async function retireSupersededObjects(db: RelationalStore, now: number): Promise<number> {
   const rows = (await db.prepare(`SELECT project_id p,session_id s,blob_key k,source_id i FROM retired_objects
@@ -206,21 +222,30 @@ function spilledInput(text: string): unknown {
 }
 
 /**
- * A queued event's payload, with a spilled body read back into the field it stands for. Only an inline payload is
- * read from its row; any other is read through the verified event content reader, an archived one from its bundle.
+ * A queued event's payload, with each spilled body read back into the field it stands for: the body `blob` names, and a
+ * tool's output `outputBlob` names, of which the document keeps the preview. Only an inline payload is read from its
+ * row; any other is read through the verified event content reader, an archived one from its bundle.
  */
 async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
   const body = row.payload_format === 'inline' ? row.payload : await eventContent(env, projectId, row.event_id);
   if (body === null) throw new Error('document_event_body_missing');
-  const payload = JSON.parse(body) as Record<string, unknown>;
+  const { blob: spilled, outputBlob, ...payload } = JSON.parse(body) as Record<string, unknown>;
+  const read = async (key: string): Promise<string> => {
+    const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
+      .bind(projectId, key).first<{ generation: string | null; size: number }>();
+    if (blob === null) throw new Error('document_event_body_missing');
+    return readVerifiedContentText(env, blobObjectKey(projectId, key, blob.generation), blob.size, key);
+  };
   const field = SPILLED_FIELD[row.kind];
-  if (field === undefined || typeof payload.blob !== 'string') return payload;
-  const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
-    .bind(projectId, payload.blob).first<{ generation: string | null; size: number }>();
-  if (blob === null) throw new Error('document_event_body_missing');
-  const text = await readVerifiedContentText(env, blobObjectKey(projectId, payload.blob, blob.generation), blob.size, payload.blob);
-  const { blob: _spilled, ...rest } = payload;
-  return { ...rest, [field]: field === 'input' ? spilledInput(text) : text };
+  if (typeof spilled === 'string') {
+    if (field === undefined) payload.blob = spilled;
+    else { const text = await read(spilled); payload[field] = field === 'input' ? spilledInput(text) : text; }
+  }
+  if (typeof outputBlob === 'string') {
+    if (field === 'input') payload.output = await read(outputBlob);
+    else payload.outputBlob = outputBlob;
+  }
+  return payload;
 }
 
 /** One pass over one session: its transcripts from their frontiers, then its queued events, committed together. */

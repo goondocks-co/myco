@@ -1,5 +1,5 @@
 import {expect} from 'bun:test';
-import {expectPersisted,type ParityScenario} from '../harness.ts';
+import {documentsPublished,expectPersisted,type ParityScenario} from '../harness.ts';
 import {selectOwner} from './backup-restore.ts';
 import {readTag,runtimeBoundary} from '../../helpers/view-read-contract.ts';
 import type {ReadTrace} from '../../helpers/statement-recorder.ts';
@@ -62,8 +62,9 @@ export const viewReadClosure:ParityScenario={
    if(target.name==='cloudflare'){if(!target.clockAlarm)throw new Error('Target has no controlled real alarm');await target.clockAlarm(Date.now()+3*WORK_SWEEP_MIN_MS+1);}else await target.clockWake();
    const switched=await target.readTrace();traces.push(switched);
    expect(switched.statements.some(row=>row.phase==='clock'&&readTag(row.sql)?.operation.startsWith('M35:')),'clock-dispatched switch completion').toBe(true);
+   await documentsPublished(target,session);traces.push(await target.readTrace());
    const base='/api/projects/'+target.projectId+'/sessions/'+session;
-   for(const route of [base+'/turns',base+'/turns/'+prompt,base+'/activity',base+'/responses',base+'/tool-calls',base+'/plans',base,'/api/projects/'+target.projectId+'/sessions','/api/projects/'+target.projectId+'/search?q=closurecanary&mode=fts'])await owner(route);
+   for(const route of [base+'/turns',base+'/turns/'+prompt,base+'/turns/'+prompt+'/tool-calls',base+'/activity',base+'/unplaced-records',base+'/plans',base,'/api/projects/'+target.projectId+'/sessions','/api/projects/'+target.projectId+'/search?q=closurecanary&mode=fts'])await owner(route);
    const http=await target.readTrace();traces.push(http);expect(http.statements.filter(row=>readTag(row.sql)!==null).length).toBeGreaterThan(0);
    expect(http.spans.some(row=>row.phase==='entry')).toBe(true);expect(runtimeBoundary(http.statements)).toEqual([]);
    for(const [name,args]of [

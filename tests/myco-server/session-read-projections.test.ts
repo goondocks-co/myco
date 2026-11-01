@@ -1,4 +1,3 @@
-import { markPromptProcessed } from './helpers/extraction.js';
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -72,11 +71,9 @@ async function verify(db: RelationalStore) {
   await assertProjection(db);
   expect(await db.prepare("SELECT session_id FROM session_read_facts WHERE project_id='proj_stale'").first()).toBeNull();
   expect(await db.prepare("SELECT project_id FROM project_session_counts WHERE project_id='proj_stale'").first()).toBeNull();
-  expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'old')).toBe(true);
-  expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'absent')).toBe(false);
+  await db.prepare(`INSERT INTO extraction_acks(project_id,ack_id,session_id,kind,record_id,run_id,acknowledged_at)
+    VALUES('proj_1','ack_old','old','record','old','run_old',1)`).run();
   await assertProjection(db);
-  await db.prepare('DELETE FROM agent_runs').run();
-  await db.prepare("UPDATE prompt_batches SET processed=0 WHERE prompt_id='old'").run();
   const mutations = [
     "UPDATE transcripts SET imported_at=1 WHERE transcript_id='old'",
     "UPDATE prompt_batches SET processed=1 WHERE prompt_id='tie'",

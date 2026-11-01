@@ -33,7 +33,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { convertFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const NOW = Date.now();
@@ -523,9 +523,9 @@ describe('a run\'s state is a compare-and-set', () => {
 });
 
 describe('a titling run reads and writes its own session', () => {
-  it('refuses incomplete material and title writes on the run MCP path until parsing finishes', async () => {
+  it('refuses incomplete material and title writes on the run MCP path until publication catches up', async () => {
     for (const mode of ['claim', 'owner']) {
-      const { harness, dispatch, call, sqlite, prompt } = await setup();
+      const { harness, dispatch, call, sqlite, prompt, serverEnv } = await setup();
       prompt('first');
       await dispatch('run_t', TITLING, { mode });
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
@@ -536,6 +536,7 @@ describe('a titling run reads and writes its own session', () => {
       expect(sqlite.query(`SELECT count(*) AS n FROM agent_run_events WHERE event_type = 'run_write'`).get()).toEqual({ n: 0 });
       prompt('second');
       sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
+      await convertFixture({ sqlite, serverEnv });
       expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(2);
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
     }
@@ -595,7 +596,7 @@ describe('a titling run reads and writes its own session', () => {
   });
 
   it('records each call it failed against the run with what the failure said, and a call off the run\'s surface not at all', async () => {
-    const { harness, dispatch, call, sqlite, prompt, db } = await setup();
+    const { harness, dispatch, call, sqlite, prompt, db, serverEnv } = await setup();
     prompt('first');
     await dispatch('run_t', TITLING, { mode: 'claim' });
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
@@ -604,10 +605,11 @@ describe('a titling run reads and writes its own session', () => {
     expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: '', summary: 'x' })).result.ok).toBe(false);
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'off the surface' })).error?.message).toContain('Unknown tool');
     sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
+      await convertFixture({ sqlite, serverEnv });
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(1);
     const calls = (await runToolCalls(db, { projectId: 'proj_1' }, 'run_t')).map(({ tool, op, failure }) => ({ tool, op, failure }));
     expect(calls).toEqual([
-      { tool: 'myco_run_sessions', op: 'material', failure: { code: 'tool_call_failed', message: 'Session capture is incomplete or has errors; retry after its transcripts are fully processed.' } },
+      { tool: 'myco_run_sessions', op: 'material', failure: { code: 'tool_call_failed', message: 'Session capture is incomplete or has errors; retry after its transcripts are fully published.' } },
       { tool: 'myco_run_sessions', op: 'title', failure: { code: 'tool_failure', message: expect.stringContaining('a title is 1 to') } },
       { tool: 'myco_run_sessions', op: 'material', failure: undefined },
     ]);

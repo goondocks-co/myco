@@ -3,13 +3,14 @@
  *
  * It takes no session argument. The session and the slice are the ones the claim wrote into the run's context, so a
  * run reads and completes exactly its assignment: it reads its slice's cards, may open the raw turn behind a
- * high-signal card, and completes the slice.
+ * high-signal card from the turn's pages, and completes the slice.
  */
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 import { recordServedPrompts } from '../../core/served-material.js';
 import { RAW_TURN_CHARS } from '../../core/read-window.js';
-import { readTurn } from '../../core/turn-cards.js';
+import type { TurnInput } from '../../core/turn-card-rules.js';
+import { documentTurnInput } from '../../content/turn-material.js';
 import { assignedCards, completeLearning, HANDOFF_MAX_BYTES, type LearningAssignment } from '../../core/learning-sessions.js';
 import { LEARNING_TOOL } from '../../core/tool-catalogue.js';
 
@@ -20,7 +21,7 @@ export function assignmentOf<T extends { kind: string }>(runContext: string | nu
   } catch { return null; }
 }
 
-function rawTurnText(turn: NonNullable<Awaited<ReturnType<typeof readTurn>>>): string {
+function rawTurnText(turn: TurnInput): string {
   const lines = [`PROMPT (${turn.origin}):`, turn.prompt, ...turn.steering.flatMap((s) => ['STEERING PROMPT:', s.text])];
   for (const reply of turn.replies) lines.push('REPLY:', reply.text);
   for (const tool of turn.tools) {
@@ -53,7 +54,7 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
     const card = cards.find((c) => c.turnKey === input.turn_key);
     if (card === undefined) return failure('turn_key names no card of this slice');
     if (card.signal !== 'high') return failure('only a high-signal card opens its raw turn');
-    const turn = await readTurn(db, scope, held.sessionId, card.turnKey);
+    const turn = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, card.turnKey);
     return turn === null ? failure('the turn is no longer held') : { turn_key: card.turnKey, raw: rawTurnText(turn) };
   }
   if (input.op === 'complete') {
