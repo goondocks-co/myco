@@ -20,7 +20,7 @@ import { registeredObjectKeySql } from '../core/blob-objects.js';
 
 import { remainingInvocationBudget } from '../core/content-budget.js';
 
-import { MAX_BLOB_BYTES, SESSION_END_SETTLE_MS, PARSER_VERSION } from '../constants.js';
+import { MAX_BLOB_BYTES, SESSION_END_SETTLE_MS } from '../constants.js';
 
 const PARSER_CHECKPOINT_HEADROOM = 64;
 
@@ -649,7 +649,7 @@ export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTr
  const rows=(await db.prepare(`SELECT p.project_id,p.failure,p.diagnostic,COUNT(*) n,MAX(p.updated_at) latest
   FROM transcript_publication p INDEXED BY idx_transcript_publication_failed JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id
     AND d.generation=p.generation AND d.state='live' JOIN projects pr ON pr.project_id=p.project_id AND pr.archived_at IS NULL
-  WHERE p.state='failed' AND p.parser_version=${PARSER_VERSION} AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=p.project_id AND t.session_id=p.session_id)
+  WHERE p.state='failed' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=p.project_id AND t.session_id=p.session_id)
   GROUP BY p.project_id,p.failure`).all<{project_id:string;failure:string;diagnostic:string|null;n:number;latest:number}>()).results;
  const projects=new Map<string,StoppedTranscripts>();
  for(const row of rows){const held=projects.get(row.project_id)??{projectId:row.project_id,transcripts:0,latestAt:null,reasons:{}};

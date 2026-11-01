@@ -119,7 +119,7 @@ describe('Needs you', () => {
     expect(await kinds(NOW + 8 * DAY)).toEqual([]);
   });
 
-  it('names transcripts the current parser stopped, and not ones waiting for bytes or stopped by an older parser', async () => {
+  it('names stopped publications across parser versions and excludes ones waiting for bytes', async () => {
     const { sqlite, read, publication } = harness();
     const transcript = (id: string, error: string, version: number) =>
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version, parser_context)
@@ -131,7 +131,7 @@ describe('Needs you', () => {
     transcript('tx_legacy', 'parse', PARSER_VERSION);
     sqlite.run("UPDATE transcripts SET parser_context=NULL WHERE transcript_id='tx_legacy'");
     publication();
-    expect((await read()).items).toEqual([{ kind: 'transcripts_stopped', tone: 'warn', projectId: 'proj_1', transcripts: 2, latestAt: NOW - HOUR, reasons: { parse: 1, event_refused: 1 } }]);
+    expect((await read()).items).toEqual([{ kind: 'transcripts_stopped', tone: 'warn', projectId: 'proj_1', transcripts: 3, latestAt: NOW - HOUR, reasons: { parse: 2, event_refused: 1 } }]);
   });
 
   it('only exposes bounded stop diagnostics from the latest failure', async () => {

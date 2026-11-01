@@ -1,4 +1,5 @@
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
 import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
@@ -938,6 +939,8 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
       .bind('a'.repeat(64),source.created_by_token_id,uuid(99000)).run();
     const continuation = JSON.stringify({planPosition:3});
     const rows = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},{t:'plans',r:plan},
+      {t:'plans',r:{...plan,plan_key:'plan-orphan',event_id:'orphan-event',prompt_id:null,session_id:'absent'}},
+      {t:'plans',r:{...plan,plan_key:'plan-target',event_id:'target-event',prompt_id:null,session_id:'source'}},
       ...['a','b'].map((key,i)=>({t:'prompt_batches',r:{...prompt,prompt_id:uuid(981+i),text:'retained preview',blob_key:key.repeat(64)}})),
       {t:'sessions',r:{...source,session_id:'later'}},{t:'prompt_batches',r:{...prompt,session_id:'later',prompt_id:uuid(983)}},
       {t:'transcripts',r:{project_id:'project',session_id:'restored',transcript_id:tx,machine_id:'machine',token_id:source.created_by_token_id,
@@ -949,7 +952,8 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
       counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
     const first = await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
-    expect(first.documents, name).toMatchObject({convert:2,merge:0});
+    expect(first.documents, name).toMatchObject({convert:2,merge:1});
+    expect(await counters(db,'source'),name).toMatchObject({plans:1});
     expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
     expect(await counters(db,'later'),name).toMatchObject({prompts:1});
     expect(await db.prepare("SELECT state,restore_hold FROM session_documents WHERE session_id='restored'").first(),name).toEqual({state:'live',restore_hold:null});
@@ -961,7 +965,10 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE project_id='project' AND session_id='restored'`).first(),name)
       .toEqual({published_offset:42});
     await publishDocuments({db,blobs},Date.now(),limits());
-    await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
+    const modernText=[{...header,schemaVersion:SERVER_SCHEMA_VERSION},...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
+    await restoreArtifact(db, {text:modernText,blobs,authorization:{kind:'recovery'}});
+    expect(await db.prepare("SELECT session_id FROM plans WHERE plan_key='plan-orphan'").first(),name).toEqual({session_id:'absent'});
+    expect(await db.prepare("SELECT restore_hold FROM session_documents WHERE session_id='absent'").first(),name).toBeNull();
     expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
     expect(await db.prepare(`SELECT 1 FROM sqlite_master WHERE name='prompt_batches'`).first(), name).toBeNull();
   });
@@ -1011,6 +1018,10 @@ test('a stopped publication retains bounded diagnostics and reread clears them',
     await publishDocuments(env,now,{calls:500,deadline:Infinity,clock:()=>now,completeFile:true});
     expect(await stoppedTranscripts(db)).toMatchObject([{projectId:'project',transcripts:1,
       latestDiagnostic:{branch:'malformed_lines',offset:0,lineKind:'unknown'}}]);
+    await db.prepare('UPDATE transcript_publication SET parser_version=?').bind(PARSER_VERSION-1).run();
+    expect(await stoppedTranscripts(db)).toMatchObject([{projectId:'project',transcripts:1}]);
+    await publishDocuments(env,now+1,{calls:500,deadline:Infinity,clock:()=>now+1,completeFile:true});
+    expect(await stoppedTranscripts(db)).toMatchObject([{projectId:'project',transcripts:1}]);
     expect(await rereadTranscripts(db,{projectId:'project',sessionId:'diagnostic'})).toBe(1);
     expect(await stoppedTranscripts(db)).toEqual([]);
     expect(await db.prepare('SELECT diagnostic FROM transcript_publication WHERE transcript_id=?').bind(tx).first()).toEqual({diagnostic:null});

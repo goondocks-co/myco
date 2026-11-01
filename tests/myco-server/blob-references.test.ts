@@ -36,7 +36,7 @@ describe('the blob reference catalogue', () => {
 
   it('is indexed by Project and key at every reference, so the held check is a seek per holder rather than a scan', () => {
     for (const ref of BLOB_REFERENCES) {
-      const indexed = DDL.some(sql => sql.replace(/\s/g, '').includes(`ON${ref.table}(project_id,${blobReferenceColumn(ref)})`));
+      const indexed = DDL.some(sql => sql.replace(/\s/g, '').includes(`ON${ref.table}(project_id,${blobReferenceColumn(ref).replace(/\s/g, '')})`));
       expect({ ref: referenceLabel(ref), indexed }).toEqual({ ref: referenceLabel(ref), indexed: true });
     }
   });

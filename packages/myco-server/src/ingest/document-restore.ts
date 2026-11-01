@@ -1,5 +1,5 @@
 import { materialRecord } from '../content/document-records.js';
-import { isTombstoned } from '../core/tombstones.js';
+import { isTombstoned, sessionPresent } from '../core/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readStoredObject } from '../core/stored-object.js';
@@ -108,6 +108,7 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
 export async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
   const legacy = new Set((byTable.get('fact_classes') ?? []).filter((row) => row.class === 'legacy')
     .map((row) => JSON.stringify([row.project_id, row.table_name, row.record_id])));
+  const artifactSessions = new Set((byTable.get('sessions') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
   const documented = new Set((byTable.get('session_documents') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
   const sessions = new Map<string, SessionRef & { rows: { kind: ContentKind; table: string; id: string; row: Row }[] }>();
   for (const { table, kind } of CONTENT) for (const row of byTable.get(table) ?? []) {
@@ -129,7 +130,12 @@ export async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, 
   for (const session of sessions.values()) {
     const ref = { projectId: session.projectId, sessionId: session.sessionId };
     if(await isTombstoned(env.db,ref.projectId,ref.sessionId))continue;
-    const snapshot=snapshots.get(JSON.stringify([ref.projectId,ref.sessionId]));
+    const key=JSON.stringify([ref.projectId,ref.sessionId]);
+    const snapshot=snapshots.get(key);
+    if(!artifactSessions.has(key) && session.rows.some(({kind})=>kind==='plan') && !await sessionPresent(env.db,ref.projectId,ref.sessionId)) {
+      session.rows=session.rows.filter(({kind})=>kind!=='plan');
+      if(session.rows.length===0 && snapshot===undefined)continue;
+    }
     const present = await documentIds(env, ref);
     if (present === null) { plan.convert.push({ ...ref, snapshot, rows: session.rows.map(({ kind, row }) => ({ kind, row })),
       transcripts: (byTable.get('transcripts') ?? []).filter(row=>row.project_id===ref.projectId&&row.session_id===ref.sessionId),

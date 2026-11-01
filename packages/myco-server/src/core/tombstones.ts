@@ -72,7 +72,7 @@ export interface TombstoneOutcome {
 }
 
 /** True when the Project holds this session at all, tombstoned or not: what separates "already deleted" from "never here". */
-async function sessionPresent(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
+export async function sessionPresent(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ present: number }>();
   return row !== null;
 }
