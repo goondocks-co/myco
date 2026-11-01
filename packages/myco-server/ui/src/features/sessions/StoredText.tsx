@@ -11,10 +11,10 @@ export function StoredText({ projectId, body, blobKey, markdown = false, transfo
   return markdown ? <Markdown content={transform(text.data)} /> : <PlainText text={transform(text.data)} />;
 }
 
-/** Text held inline, or fetched from its blob, or noted absent. */
+/** Text held inline, or fetched whole when a stored body stands behind it, or noted absent. */
 export function TextOrBlob({ projectId, text, blobKey, body, markdown = false, transform = (value) => value, render }: { projectId: string; text: string | null; blobKey: string | null; body: ProcessedBodyRef; markdown?: boolean; transform?: (value: string) => string; render?: (value: string) => ReactNode }) {
-  if (text !== null) return render !== undefined ? render(text) : markdown ? <Markdown content={transform(text)} /> : <PlainText text={transform(text)} />;
   if (blobKey !== null) return <StoredText projectId={projectId} body={body} blobKey={blobKey} markdown={markdown} transform={transform} render={render} />;
+  if (text !== null) return render !== undefined ? render(text) : markdown ? <Markdown content={transform(text)} /> : <PlainText text={transform(text)} />;
   return <span className="t-small text-muted">No text recorded.</span>;
 }
 

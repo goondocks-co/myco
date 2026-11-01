@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
@@ -109,6 +109,7 @@ export const recall: ParityScenario = {
 
     // The record of what the prompt was served reaches the turn body under that prompt.
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }
+    await documentsPublished(target, session);
     const turn = await owner<Turn>(`/api/projects/${target.projectId}/sessions/${session}/turns/${p1}`);
     expect(turn.status).toBe(200);
     expect(turn.body.injection).toBeNull();

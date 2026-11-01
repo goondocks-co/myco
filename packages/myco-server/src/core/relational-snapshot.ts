@@ -85,9 +85,11 @@ export async function relationalSnapshot(db: RelationalStore, tables: readonly s
   };
   const [preflight] = await db.batch([db.prepare(admissionSql)]);
   admit(preflight?.results[0] as Admission | undefined);
-  const selections = tables.map((table, index) =>
-    `SELECT ${index} AS ordinal, rowid AS rid, json_object('t', '${table}', 'r', ${serializedRow(names[index]!)}) AS line FROM ${table}
-      WHERE (SELECT admission_count <= ${MAX_RELATIONAL_SNAPSHOT_ROWS} AND admission_bytes <= ${byteLimit} FROM admission)`);
+  // One admission gate over every table's rows: the statement references the admission once, however many tables it reads.
+  const tableRows = tables.map((table, index) =>
+    `SELECT ${index} AS ordinal, rowid AS rid, json_object('t', '${table}', 'r', ${serializedRow(names[index]!)}) AS line FROM ${table}`);
+  const selections = [`SELECT * FROM (${unionGroups(tableRows)})
+      WHERE (SELECT admission_count <= ${MAX_RELATIONAL_SNAPSHOT_ROWS} AND admission_bytes <= ${byteLimit} FROM admission)`];
   const [result] = await db.batch([db.prepare(`WITH admission AS MATERIALIZED (${admissionSql}),
     snapshot_rows AS MATERIALIZED (${unionGroups(selections)}),
     snapshot_size AS (SELECT COUNT(*) AS snapshot_count, COALESCE(SUM(length(CAST(line AS BLOB)) + 1), 0) AS snapshot_bytes FROM snapshot_rows)

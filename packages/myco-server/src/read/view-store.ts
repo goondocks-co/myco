@@ -1,3 +1,4 @@
+import { placedPromptSql } from './document-catalog.js';
 import {coverageCandidateSql as preflightCoverageCandidateSql} from '../core/coverage-carry.js';
 import { unreadPromptSql as extraction_coverage_unreadPromptSql } from '../db/session-read-model.js';
 import type { RelationalStore as hook_placement_import_RelationalStore } from "../core/adapters.js";
@@ -40,7 +41,6 @@ import { sessionMaterialReadySql as sessions_import_sessionMaterialReadySql } fr
 import { CAPTURE_RULE_BUNDLES as sessions_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { sourceTimestampsRecorded as sessions_import_sourceTimestampsRecorded } from "@goondocks/myco-shared/capture-rules";
 import type { RelationalStore as children_import_RelationalStore } from "../core/adapters.js";
-import { assertSessionMaterialReady as children_import_assertSessionMaterialReady } from "./material-readiness.js";
 import { sessionMaterialReadySql as children_import_sessionMaterialReadySql } from "./material-readiness.js";
 import { titlingClaimAvailableSql as children_import_titlingClaimAvailableSql } from "./material-readiness.js";
 import { notTombstonedSql as children_import_notTombstonedSql } from "../core/tombstones.js";
@@ -184,8 +184,6 @@ import { EMBEDDING_SELECTION_LEAVES as switchSettingLeaves, type StoredEmbedding
 import { CLEANLINESS_SQL as releaseCleanliness } from '../core/provenance.js';
 
 import { ViewReadRefusal, observedViewRead } from '../core/read-refusals.js';
-import { SessionMaterialPendingError } from './material-readiness.js';
-import { transcriptPendingSql } from '../db/session-read-model.js';
 import { RELATIONAL_CONTEXT } from '../core/adapters.js';
 
 
@@ -292,15 +290,6 @@ function capturedSources(raw: unknown, projectId: string, sessionId: string): Se
   return Object.freeze({ projectId, sessionId, mode: 'published', fence, ready: live.ready===1, instances: Object.freeze(visible) });
 }
 
-/** Titling reads a captured live checkpoint before admitting material or a claim. */
-export async function assertSessionSourceReady(db:sessions_import_RelationalStore,projectId:string,sessionId:string):Promise<void>{
-  const read=responseRead(db);
-  const rows=await sessionRows<Record<string,unknown>>(db,'M23:children_materialRows:0',read,projectId,sessionId,
-    `SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ?
-    AND (${transcriptPendingSql('t')}) LIMIT 1`,[projectId,sessionId],1,null,undefined,'first');
-  const source=read.context.get(sourceKey(projectId,sessionId));
-  if(source?.mode==='published'?!source.ready:rows.length!==0)throw new SessionMaterialPendingError();
-}
 
 const MATERIAL_READS = {
   prompt_batches: { view: 'view_prompts', id: 'prompt_id', sessionIndex:'idx_prompt_batches_session', viewColumn:(column:string,alias:string):string=>column==='processed'?'0 AS processed':alias+'.'+column,
@@ -890,7 +879,6 @@ const VIEW_READ_OPERATION_IDS = [
   "N:sessions_sessionDurationMs:0",
   "N:sessions_sessionLifecycle:0",
   "M15:sessions_countStatements:0",
-  "M16:sessions_instantStatements:0",
   "M17:sessions_projectStats:0",
   "M17:sessions_projectStats:1",
   "N:sessions_projectExists:0",
@@ -935,7 +923,6 @@ const VIEW_READ_OPERATION_IDS = [
   "M11:sessions_sessionCounts:1",
   "M04:children_listChildren:0",
   "M04:children_listChildrenByPrompt:0",
-  "M23:children_materialRows:0",
   "M26:processed_processedField:0",
   "M01:turns_listTurns:0",
   "M02:turns_promptInSession:0",
@@ -989,6 +976,8 @@ const VIEW_READ_OPERATION_IDS = [
 ] as const;
 
 export const LEGACY_ONLY_OPERATIONS = [
+  "M02:turns_promptInSession:0",
+  "M15:sessions_countStatements:0",
   "M24:plans_planTotals:0",
   "M24:plans_selectPlans:0",
   "M17:sessions_projectStats:0",
@@ -1059,8 +1048,7 @@ interface hook_placement_HookHintSql { project: string; session: string; prompt:
 
 /** A hint places a record only in its own Project and session's prompt set. */
 function hook_placement_hookPlacementSql(hint: hook_placement_HookHintSql): string {
-  return `EXISTS (SELECT 1 FROM prompt_batches hook_prompt WHERE hook_prompt.project_id = ${hint.project}
-    AND hook_prompt.session_id = ${hint.session} AND hook_prompt.prompt_id = ${hint.prompt})`;
+  return placedPromptSql(hint);
 }
 
 function hook_placement_placedHintSql(hint: hook_placement_HookHintSql): string {
@@ -1079,7 +1067,6 @@ const hook_placement_DELIVERY_RECORD_SOURCES = [
 const hook_placement_HOOK_RECORD_SOURCES = [
   ...hook_placement_DELIVERY_RECORD_SOURCES,
   { table: 'session_injections', kind: 'session_context', id: 'kind', hint: 'r.placement_hint', label: "CASE WHEN kind = 'plan-nudge' THEN 'Plan reminder' ELSE 'Context for a sub-agent' END", where: '1 = 1' },
-  { table: 'tool_calls', kind: 'tool_call', id: 'tool_call_id', hint: 'r.prompt_id', label: 'tool_name', where: '1 = 1' },
   { table: 'attachments', kind: 'attachment', id: 'attachment_id', hint: 'r.prompt_id', label: "COALESCE(description, 'Attachment')", where: '1 = 1' },
   { table: 'events', index: 'idx_events_subagent_start', kind: 'event', id: 'event_id', hint: "json_extract(payload, '$.parentPromptId')", label: "'Sub-agent started'", where: "kind = 'subagent.start'" },
   { table: 'events', kind: 'event', id: 'event_id', hint: "CASE WHEN kind = 'turn' THEN json_extract(payload, '$.promptId') ELSE json_extract(payload, '$.parentPromptId') END", label: "CASE kind WHEN 'turn' THEN 'Turn ' || COALESCE(json_extract(payload, '$.phase'), '') ELSE 'Sub-agent stopped' END", where: "kind IN ('turn', 'subagent.stop')" },
@@ -1454,14 +1441,9 @@ const sessions_FIRST_PROMPT_CHARS = 160;
 /** The longest label the fallback rule produces. */
 const sessions_LABEL_MAX_CHARS = 80;
 
-/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the sessions alias `alias`; `idx_prompt_batches_first` serves the whole order, so it stops at the first row, and a spilled prompt (no inline text) is skipped. */
-const sessions_legacyFirstPromptSql = (alias: string): string => `(SELECT substr(pb.text, 1, ${sessions_FIRST_PROMPT_CHARS}) FROM prompt_batches pb
-       WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
-       ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
-const sessions_firstPromptSql = (alias: string, read?: ScalarSources, packed = true): string => {
-  const legacy = sessions_legacyFirstPromptSql(alias);
-  return read === undefined ? legacy : correlatedScalar(read, alias + '.project_id', alias + '.session_id', legacy, ['prompt_batches'], packed);
-};
+/** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
+const sessions_firstPromptSql = (alias: string, _read?: ScalarSources, _packed = true): string =>
+  `(SELECT first_prompt FROM session_documents first_doc WHERE first_doc.project_id = ${alias}.project_id AND first_doc.session_id = ${alias}.session_id)`;
 const sessions_FIRST_PROMPT_SQL = sessions_firstPromptSql('s');
 
 /** What a label shows for a session with no title, typed prompt or agent, where an id fragment must never reach the reader. */
@@ -1807,8 +1789,11 @@ async function sessions_sessionLifecycle(db: sessions_import_RelationalStore, sc
   };
 }
 
-/** The child counts of every named session, one statement per table per run of ids; a session with no rows in a table counts zero. */
-async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<Map<string, sessions_SessionCounts>> {
+/** The counts a list shows beside each session: the counters its document's catalog row keeps. */
+type sessions_ListCounts = Omit<sessions_SessionCounts, 'attachments'>;
+
+/** The catalog counters of every named session, one statement per run of ids; a session with no live document counts zero. */
+async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<Map<string, sessions_ListCounts>> {
   const read = sessions_countStatements(db, scope, sessionIds);
   return read.parse(read.statements.length === 0 ? [] : await db.batch(read.statements));
 }
@@ -1816,130 +1801,37 @@ async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, sc
 const sessions_COUNTED_TABLES = [['prompts', 'prompt_batches'], ['toolCalls', 'tool_calls'], ['responses', 'responses'], ['plans', 'plans'], ['attachments', 'attachments']] as const;
 
 /** The statements `sessionCountsFor` sends, and how their results read, so a caller may send them in a batch of its own. */
-function sessions_countStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<Map<string, sessions_SessionCounts>> } {
-  const read=responseRead(db);
-  const chunks=sessions_import_inListChunks(sessionIds);
-  const queries=chunks.map(ids=>{
-    const sql=(table:string)=>`SELECT session_id, COUNT(*) AS n FROM ${table} WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')}) GROUP BY session_id`;
-    const sources=ids.map(id=>read.context.get(sourceKey(scope.projectId,id)));
-    const known=sources.every(source=>source!==undefined)?sources:undefined;
-    const carrierSql=sessionSetCarrier(read,scope.projectId,ids,sql('prompt_batches'),2);
-    const batch:SourceBatch=Object.freeze({projectId:scope.projectId,sessionIds:ids,carrierSql});
-    const statements=sessions_COUNTED_TABLES.map(([,table],index)=>{
-      if(known!==undefined&&known.some(source=>source.mode==='published')&&isMaterialTable(table))
-        return multiSessionStatement(db,'M15:sessions_countStatements:0',known,table,sql(table),[scope.projectId,...ids]);
-      const query=index===0?carrierSql:sql(table);
-      const capture:SourcePreparation=known!==undefined?{mode:'pinned-set',sources:known}:{mode:'batch-candidate',batch};
-      return prepareViewRead(db,'M15:sessions_countStatements:0',query,capture).bind(scope.projectId,...ids);
+function sessions_countStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<Map<string, sessions_ListCounts>> } {
+  const statements = sessions_import_inListChunks(sessionIds).map(ids => db.prepare(`SELECT d.session_id, d.prompts, d.tool_calls, d.replies, d.plans
+    FROM session_documents d WHERE d.project_id = ? AND d.session_id IN (SELECT value FROM json_each(?)) AND d.state = 'live'`).bind(scope.projectId, JSON.stringify(ids)));
+  return { statements, parse: async results => {
+    const out = new Map<string, sessions_ListCounts>(sessionIds.map(id => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0 }]));
+    for (const result of results) for (const row of result.results as Record<string, unknown>[]) out.set(String(row.session_id), {
+      prompts: Number(row.prompts), toolCalls: Number(row.tool_calls), responses: Number(row.replies), plans: Number(row.plans),
     });
-    return {ids,sql,known,statements};
-  });
-  return {statements:queries.flatMap(query=>query.statements),parse:results=>read.capture(async()=>{
-    const out=new Map<string,sessions_SessionCounts>(sessionIds.map(id=>[id,{prompts:0,toolCalls:0,responses:0,plans:0,attachments:0}]));
-    for(const [chunk,query]of queries.entries()){
-      const first=results[chunk*sessions_COUNTED_TABLES.length]!;
-      const sources=query.known??sessionSetSources(read,scope.projectId,query.ids,first.results);
-      for(const [index,[key,table]]of sessions_COUNTED_TABLES.entries()){
-        const candidate=results[chunk*sessions_COUNTED_TABLES.length+index]!;
-        const rows=query.known===undefined&&sources.some(source=>source.mode==='published')&&isMaterialTable(table)
-          ? (await multiSessionStatement(db,'M15:sessions_countStatements:0',sources,table,query.sql(table),[scope.projectId,...query.ids]).all()).results
-          : candidate.results.flatMap(row=>{if(!objectValue(row))throw new Error('Relational result row must be an object');const projected=legacyProjection(row);return projected===null?[]:[projected]});
-        for(const row of rows){const counts=out.get(String(row.session_id));if(counts)counts[key]=Number(row.n);}
-      }
-    }
     return out;
-  })};
+  } };
 }
 
-/** How many lifetime buckets a session's activity is spread over; the rail's sparkline width. */
-const sessions_ACTIVITY_BUCKETS = 8;
-
-/** A session row with what the rail shows beside it: its counts and its activity spread over its lifetime, oldest bucket first. */
+/** A session row with the counts the rail shows beside it. */
 interface sessions_SessionSummaryRow extends sessions_SessionRow {
   promptCount: number;
   toolCallCount: number;
-  activityBuckets: number[];
 }
 
-/**
- * Buckets each session's prompt instants over its lifetime. The stored range is
- * a hint widened by the observed instants: a session with no recorded start, or
- * whose prompts predate a re-registered start, still shows its activity.
- */
-function sessions_bucketActivity(sessions: readonly Pick<sessions_SessionRow, 'sessionId' | 'startedAt' | 'firstReceivedAt' | 'endedAt' | 'lastReceivedAt'>[], instants: readonly { sessionId: string; at: number }[], nowMs: number): Map<string, number[]> {
-  const out = new Map<string, number[]>(sessions.map((s) => [s.sessionId, new Array<number>(sessions_ACTIVITY_BUCKETS).fill(0)]));
-  const observed = new Map<string, { start: number; end: number }>();
-  for (const { sessionId, at } of instants) {
-    const range = observed.get(sessionId);
-    if (range === undefined) observed.set(sessionId, { start: at, end: at });
-    else { range.start = Math.min(range.start, at); range.end = Math.max(range.end, at); }
-  }
-  const ranges = new Map<string, { start: number; end: number }>();
-  for (const s of sessions) {
-    const seen = observed.get(s.sessionId);
-    const start = Math.min(s.startedAt ?? s.firstReceivedAt, seen?.start ?? Number.POSITIVE_INFINITY);
-    const end = Math.max(start + 1, s.endedAt ?? (s.startedAt === null ? s.lastReceivedAt : nowMs), seen?.end ?? Number.NEGATIVE_INFINITY);
-    ranges.set(s.sessionId, { start, end });
-  }
-  for (const { sessionId, at } of instants) {
-    const buckets = out.get(sessionId);
-    const range = ranges.get(sessionId);
-    if (buckets === undefined || range === undefined || at < range.start || at > range.end) continue;
-    const span = Math.max(1, range.end - range.start);
-    const idx = Math.min(sessions_ACTIVITY_BUCKETS - 1, Math.floor(((at - range.start) / span) * sessions_ACTIVITY_BUCKETS));
-    buckets[idx] += 1;
-  }
-  return out;
-}
-
-/** Every prompt instant of the named sessions, one statement per run of ids. */
-async function sessions_promptInstants(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<{ sessionId: string; at: number }[]> {
-  const read = sessions_instantStatements(db, scope, sessionIds);
-  return read.parse(read.statements.length === 0 ? [] : await db.batch(read.statements));
-}
-
-/** The statements `promptInstants` sends, and how their results read. */
-function sessions_instantStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<{ sessionId: string; at: number }[]> } {
-  const read=responseRead(db);
-  const queries=sessions_import_inListChunks(sessionIds).map(ids=>{
-    const sql=`SELECT session_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id IN (${ids.map(() => '?').join(', ')})`;
-    const sources=ids.map(id=>read.context.get(sourceKey(scope.projectId,id)));
-    const known=sources.every(source=>source!==undefined)?sources:undefined;
-    const carrierSql=sessionSetCarrier(read,scope.projectId,ids,sql,2);
-    const statement=known!==undefined&&known.some(source=>source.mode==='published')
-      ?multiSessionStatement(db,'M16:sessions_instantStatements:0',known,'prompt_batches',sql,[scope.projectId,...ids])
-      :prepareViewRead(db,'M16:sessions_instantStatements:0',carrierSql,known===undefined?{mode:'batch-candidate',batch:Object.freeze({projectId:scope.projectId,sessionIds:ids,carrierSql})}:{mode:'pinned-set',sources:known}).bind(scope.projectId,...ids);
-    return {ids,sql,known,statement};
-  });
-  return {statements:queries.map(query=>query.statement),parse:results=>read.capture(async()=>{
-    const out:{sessionId:string;at:number}[]=[];
-    for(const [index,query]of queries.entries()){
-      const candidate=results[index]!;
-      const sources=query.known??sessionSetSources(read,scope.projectId,query.ids,candidate.results);
-      const rows=query.known===undefined&&sources.some(source=>source.mode==='published')
-        ?(await multiSessionStatement(db,'M16:sessions_instantStatements:0',sources,'prompt_batches',query.sql,[scope.projectId,...query.ids]).all()).results
-        :candidate.results.flatMap(row=>{if(!objectValue(row))throw new Error('Relational result row must be an object');const projected=legacyProjection(row);return projected===null?[]:[projected]});
-      out.push(...rows.map(row=>({sessionId:String(row.session_id),at:Number(row.created_at)})));
-    }
-    return out;
-  })};
-}
-
-/** The session list with its rail facts: the counts of every child table and, unless the caller has no use for it, the activity buckets, over the page's ids only. The dashboard and the MCP tool both read the list through this. */
+/** The session list with its rail facts: the catalog counters of the page's sessions only. The dashboard and the MCP tool both read the list through this. */
 const sessions_listSessionSummaries = sourceOperation(sessions_listSessionSummariesImpl);
-async function sessions_listSessionSummariesImpl(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number, facts: { activity?: boolean } = {}): Promise<sessions_import_Page<sessions_SessionSummaryRow>> {
+async function sessions_listSessionSummariesImpl(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, opts: { limit?: number; cursor?: string } & sessions_SessionFilters, nowMs: number): Promise<sessions_import_Page<sessions_SessionSummaryRow>> {
   // A person and an agent browsing history see every session, labelled by what
   // its transcript could carry; the caller may still narrow.
   const listed = await sessions_listSessions(db, scope, { fidelity: 'any', now: nowMs, ...opts });
   const ids = listed.rows.map((r) => r.sessionId);
   const counts = await sessions_sessionCountsFor(db, scope, ids);
-  const instants = facts.activity === false ? [] : await sessions_promptInstants(db, scope, ids);
-  const buckets = sessions_bucketActivity(listed.rows, instants, nowMs);
   return {
     cursor: listed.cursor,
     rows: listed.rows.map((row) => {
       const c = counts.get(row.sessionId);
-      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0, activityBuckets: buckets.get(row.sessionId) ?? new Array<number>(sessions_ACTIVITY_BUCKETS).fill(0) };
+      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
     }),
   };
 }
@@ -1956,22 +1848,17 @@ async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_Relat
   const listed = await sessions_listSessionsAcross(db, set, { fidelity: 'any', now: nowMs, ...opts });
   const byProject = new Map<string, string[]>();
   for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
-  const reads = [...byProject].map(([projectId, ids]) => ({ projectId, counts: sessions_countStatements(db, { projectId }, ids), instants: sessions_instantStatements(db, { projectId }, ids) }));
-  const statements = reads.flatMap((r) => [...r.counts.statements, ...r.instants.statements]);
+  const reads = [...byProject].map(([projectId, ids]) => ({ projectId, counts: sessions_countStatements(db, { projectId }, ids) }));
+  const statements = reads.flatMap((r) => r.counts.statements);
   const results = statements.length === 0 ? [] : await db.batch(statements);
-  const facts = new Map<string, { counts: Map<string, sessions_SessionCounts>; buckets: Map<string, number[]> }>();
+  const counts = new Map<string, Map<string, sessions_ListCounts>>();
   let at = 0;
-  for (const read of reads) {
-    const counts = await read.counts.parse(results.slice(at, at += read.counts.statements.length));
-    const instants = await read.instants.parse(results.slice(at, at += read.instants.statements.length));
-    facts.set(read.projectId, { counts, buckets: sessions_bucketActivity(listed.rows.filter((r) => r.projectId === read.projectId), instants, nowMs) });
-  }
+  for (const read of reads) counts.set(read.projectId, await read.counts.parse(results.slice(at, at += read.counts.statements.length)));
   return {
     cursor: listed.cursor,
     rows: listed.rows.map((row) => {
-      const held = facts.get(row.projectId);
-      const c = held?.counts.get(row.sessionId);
-      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0, activityBuckets: held?.buckets.get(row.sessionId) ?? new Array<number>(sessions_ACTIVITY_BUCKETS).fill(0) };
+      const c = counts.get(row.projectId)?.get(row.sessionId);
+      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
     }),
   };
 }
@@ -1987,12 +1874,14 @@ async function sessions_projectStats(db: sessions_import_RelationalStore, scope:
     const row = await prepareViewRead(db, "M17:sessions_projectStats:1", `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).bind(scope.projectId).first<{ n: number }>();
     return row?.n ?? 0;
   };
+  const totals = await db.prepare(`SELECT COALESCE(SUM(prompts), 0) AS prompts, COALESCE(SUM(tool_calls), 0) AS tool_calls
+    FROM session_documents WHERE project_id = ? AND state = 'live'`).bind(scope.projectId).first<Record<string, number>>();
   return {
     sessions: (sessions?.total as number | null) ?? 0,
     openSessions: (sessions?.open as number | null) ?? 0,
     sessionsLast7d: (sessions?.recent as number | null) ?? 0,
-    prompts: await countOf('prompt_batches'),
-    toolCalls: await countOf('tool_calls'),
+    prompts: Number(totals?.prompts ?? 0),
+    toolCalls: Number(totals?.tool_calls ?? 0),
     plans: await countOf('plans'),
     attachments: await countOf('attachments'),
     lastActivityAt: (sessions?.last as number | null) ?? null,
@@ -2250,13 +2139,11 @@ function children_listPlans(db: children_import_RelationalStore, scope: children
 }
 const children_listAttachments = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_ChildOptions) => children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, opts);
 
-interface children_MaterialRow { prompt: string; response: string | null; promptId: string }
 
-const children_MATERIAL_PROMPT_SQL = `pb.origin = 'user' AND pb.text IS NOT NULL`;
 
-/** Inline human prompts available to the titling material query. */
-const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM prompt_batches pb
-  WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND ${children_MATERIAL_PROMPT_SQL})`;
+/** The session's live document holds a user prompt for the titling material. */
+const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM session_documents d
+  WHERE d.project_id = ${alias}.project_id AND d.session_id = ${alias}.session_id AND d.state = 'live' AND d.user_prompts > 0)`;
 
 /**
  * Live end requests not yet attempted, with ready inline material, from
@@ -2314,16 +2201,15 @@ const children_IDLE_UNTITLED_SQL = `FROM sessions s
 
 /**
  * Titled sessions, open or ended, with activity after the material of their standing title, due a refresh: stamped at or before the
- * bound, no title run of the session in flight, and at least a number of user prompts received after the material of the
- * standing title. A refresh that closed without a write leaves that material instant where it was, so its session stays due.
- * Binds: the recency bound, the stamp bound, then the prompt number twice.
+ * bound, no title run of the session in flight, and its document holding at least a number of user prompts beyond those
+ * the standing title recorded. A refresh that closed without a write leaves that record where it was, so its session stays due.
+ * Binds: the recency bound, the stamp bound, then the prompt number.
  */
 const children_REFRESH_DUE_SQL = `FROM sessions s
     WHERE s.title IS NOT NULL AND s.last_received_at >= ? AND s.last_received_at > COALESCE(s.title_material_at, s.titled_at) AND s.titled_at <= ?
       AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND NOT ${children_import_titleRunInFlightSql('s')}
-      AND (SELECT COUNT(*) FROM (SELECT 1 FROM prompt_batches pb
-            WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user'
-              AND pb.received_at > COALESCE(s.title_material_at, s.titled_at) LIMIT ?)) >= ?`;
+      AND (SELECT d.user_prompts - COALESCE(d.titled_user_prompts, 0) FROM session_documents d
+        WHERE d.project_id = s.project_id AND d.session_id = s.session_id AND d.state = 'live') >= ?`;
 
 /** Candidates in the order the convergence takes them: first titles before refreshes, and fresh work before backlog within each. */
 interface children_TitleCandidates { freshClaims: children_TitleCandidate[]; freshRefreshes: children_TitleCandidate[]; backlogClaims: children_TitleCandidate[] }
@@ -2347,7 +2233,7 @@ async function children_listTitleCandidates(db: children_import_RelationalStore,
   const idle = (side: 'fresh' | 'backlog') => children_candidatePage(db, 'claim', `${children_IDLE_UNTITLED_SQL} AND s.last_received_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.last_received_at',
     's.last_received_at DESC, s.project_id, s.session_id', [window.idleBefore, window.retryBefore, imported, window.freshAfter], limit);
   const refresh = () => children_candidatePage(db, 'refresh', children_REFRESH_DUE_SQL, 's.last_received_at', 's.last_received_at DESC, s.project_id, s.session_id',
-    [window.freshAfter, window.refreshBefore, window.refreshPrompts, window.refreshPrompts], limit);
+    [window.freshAfter, window.refreshBefore, window.refreshPrompts], limit);
   const [endedFresh, idleFresh, endedBacklog, idleBacklog, freshRefreshes] = await Promise.all([ended('fresh'), idle('fresh'), ended('backlog'), idle('backlog'), refresh()]);
   const newest = (rows: children_TitleCandidate[]) => rows.sort((a, b) => b.at - a.at || a.projectId.localeCompare(b.projectId) || a.sessionId.localeCompare(b.sessionId)).slice(0, limit);
   return { freshClaims: newest([...endedFresh, ...idleFresh]), freshRefreshes, backlogClaims: newest([...endedBacklog, ...idleBacklog]) };
@@ -2386,13 +2272,6 @@ async function children_untitledReason(db: children_import_RelationalStore, proj
   return row?.reason ?? null;
 }
 
-/** A session's earliest inline user prompts, each cut to `excerptChars`, with the start of its first inline response; `limit` prompts at most, oldest first. */
-const children_sessionMaterialRows = (db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<children_MaterialRow[]> =>
-  children_materialRows(db, projectId, sessionId, opts, 'ASC');
-
-/** The same for the session's latest inline user prompts, answered oldest first so the two halves read in order. */
-const children_sessionMaterialTailRows = async (db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }): Promise<children_MaterialRow[]> =>
-  (await children_materialRows(db, projectId, sessionId, opts, 'DESC')).reverse();
 
 /** The most generations the walk climbs above the session, and descends below the root it reached. */
 const lineage_LINEAGE_MAX_DEPTH = 8;
@@ -2758,6 +2637,13 @@ async function session_activity_listSessionActivityImpl(db: session_activity_imp
   return { ...session_activity_import_page(rows, limit, row => ({ createdAt: row.at, id: row.id })), tools: tools.map(row => row.tool_name) };
 }
 
+/** A session's parent edges of the named type, as activity rows, newest first after the cursor. */
+const session_activity_sessionEdges = sourceOperation(session_activity_sessionEdgesImpl);
+async function session_activity_sessionEdgesImpl(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, opts: session_activity_SessionActivityOptions = {}): Promise<session_activity_SessionActivityRow[]> {
+  const sources = session_activity_EDGE_SOURCES.filter(source => opts.type === undefined || source.type === opts.type);
+  return sources.length === 0 ? [] : session_activity_edgeRows(db, scope, sessionId, sources, opts);
+}
+
 async function session_activity_toolRows(db: session_activity_import_RelationalStore, scope: session_activity_import_ReadScope, sessionId: string, sources: readonly typeof session_activity_TOOL_SOURCES[number][], opts: session_activity_SessionActivityOptions): Promise<session_activity_SessionActivityRow[]> {
   const source = sources[0]!;
   const paging = session_activity_import_keyset(opts, { order: source.order, id: source.id, direction: 'DESC' })!;
@@ -3072,9 +2958,7 @@ export {
   sessions_sessionLifecycle,
   sessions_sessionCounts,
   sessions_sessionCountsFor,
-  sessions_ACTIVITY_BUCKETS,
   type sessions_SessionSummaryRow,
-  sessions_bucketActivity,
   sessions_listSessionSummaries,
   type sessions_SessionAcrossRow,
   sessions_listSessionSummariesAcross,
@@ -3104,7 +2988,6 @@ export {
   type children_PlanChildOptions,
   children_listPlans,
   children_listAttachments,
-  type children_MaterialRow,
   children_listReadyTitleSessions,
   type children_TitleCandidate,
   type children_TitleCandidateWindow,
@@ -3113,8 +2996,6 @@ export {
   children_countConvergenceTitleSessions,
   type children_UntitledReason,
   children_untitledReason,
-  children_sessionMaterialRows,
-  children_sessionMaterialTailRows,
   lineage_LINEAGE_MAX_DEPTH,
   lineage_LINEAGE_MAX_NODES,
   lineage_LINEAGE_EDGE_KINDS,
@@ -3133,6 +3014,7 @@ export {
   type session_activity_SessionActivityOptions,
   session_activity_NOT_CAPTURED_TITLE,
   session_activity_listSessionActivity,
+  session_activity_sessionEdges,
   type injection_served_items_ServedPlan,
   receiptPlans,
   type processed_ProcessedBodyKind,
@@ -3299,6 +3181,11 @@ async function extraction_coverage_hasAcknowledgedPrompts(db: extraction_coverag
  */
 
 /** The agents this build declares a prompt identity for: a transcript of one left unpinned is a scheme conflict. */
+/** The live generation's prompts and Myco tool calls of every session, as the measures read them. */
+const kpis_PROMPTS = `(SELECT p.* FROM session_prompts p JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id
+  AND d.generation = p.generation AND d.state = 'live')`;
+const kpis_MYCO_CALLS = `(SELECT c.* FROM myco_tool_calls c JOIN session_documents d ON d.project_id = c.project_id AND d.session_id = c.session_id
+  AND d.generation = c.generation AND d.state = 'live')`;
 const kpis_DECLARED_AGENTS: readonly string[] = kpis_import_CAPTURE_RULE_BUNDLES.map((bundle) => bundle.name);
 
 /** A measured value and the number of rows behind it. A sample of zero carries a null value. */
@@ -3463,9 +3350,9 @@ const kpis_PLAN_READ = `c.myco_tool = 'myco_plans' AND (c.myco_op IS NULL OR c.m
 async function kpis_promptMeasures(db: kpis_import_RelationalStore, since: number | null): Promise<{ prompts: number; served: number; withSpores: number }> {
   const w = kpis_windowClause('p.created_at', since);
   const [prompts, served, withSpores] = await Promise.all([
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM prompt_batches p WHERE ${w.sql}`, w.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM prompt_batches p WHERE ${w.sql} AND (${kpis_SERVED_PROMPTS})`, w.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM prompt_batches p
+    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${w.sql}`, w.params),
+    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${w.sql} AND (${kpis_SERVED_PROMPTS})`, w.params),
+    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p
                   WHERE ${w.sql} AND EXISTS (
                     SELECT 1 FROM spore_injections i
                      WHERE i.project_id = p.project_id AND i.session_id = p.session_id
@@ -3498,9 +3385,9 @@ async function kpis_harnessSplit(db: kpis_import_RelationalStore, since: number 
   const prompts = kpis_windowClause('p.created_at', since);
   const calls = kpis_windowClause('c.created_at', since);
   const [promptRows, callRows] = await Promise.all([
-    prepareViewRead(db, "M42:kpis_harnessSplit:0", `SELECT ${kpis_HARNESS_OF('p')} AS harness, COUNT(*) AS n FROM prompt_batches p WHERE ${prompts.sql} GROUP BY harness`)
+    prepareViewRead(db, "M42:kpis_harnessSplit:0", `SELECT ${kpis_HARNESS_OF('p')} AS harness, COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${prompts.sql} GROUP BY harness`)
       .bind(...prompts.params).all<{ harness: string; n: number }>(),
-    prepareViewRead(db, "M42:kpis_harnessSplit:1", `SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM tool_calls c WHERE ${calls.sql} AND ${kpis_MYCO_CALL} GROUP BY harness`)
+    prepareViewRead(db, "M42:kpis_harnessSplit:1", `SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${calls.sql} AND ${kpis_MYCO_CALL} GROUP BY 1`)
       .bind(...calls.params).all<{ harness: string; n: number }>(),
   ]);
   const promptsBy = new Map(promptRows.results.map((r) => [r.harness, r.n]));
@@ -3557,7 +3444,7 @@ async function kpis_promptIdentityCounts(db: kpis_import_RelationalStore, since:
   const kinds = Object.values(kpis_IDENTITY_KINDS).map((kind) => `SUM(p.prompt_kind = '${kind}') AS "${kind}"`).join(', ');
   const [rows, conflicts, unpinned, duplicates, mixed] = await Promise.all([
     prepareViewRead(db, "M43:kpis_promptIdentityCounts:0", `SELECT ${kpis_HARNESS_OF('p')} AS harness, COUNT(*) AS n, ${kinds}, SUM(p.claim = 'reused') AS reused
-        FROM projects pr CROSS JOIN prompt_batches p WHERE p.project_id = pr.project_id AND p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
+        FROM projects pr CROSS JOIN ${kpis_PROMPTS} p WHERE p.project_id = pr.project_id AND p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
       .bind(...claimed.params).all<Record<string, number | string>>(),
     prepareViewRead(db, "M43:kpis_promptIdentityCounts:1", `SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM projects pr CROSS JOIN prompt_identity_conflicts c
         WHERE c.project_id = pr.project_id AND ${refused.sql} GROUP BY harness`).bind(...refused.params).all<{ harness: string; n: number }>(),
@@ -3605,8 +3492,8 @@ async function kpis_readKpis(db: kpis_import_RelationalStore, opts: { windowDays
     kpis_harnessSplit(db, since),
     kpis_countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql}`, sessionWindow.params),
     kpis_countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql} AND ${kpis_SESSIONS_STARTED_WITH_BLOCK}`, sessionWindow.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${kpis_PLAN_READ}`, callWindow.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${kpis_MYCO_CALL}`, callWindow.params),
+    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${callWindow.sql} AND ${kpis_PLAN_READ}`, callWindow.params),
+    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${callWindow.sql} AND ${kpis_MYCO_CALL}`, callWindow.params),
     kpis_firstInjectionSamples(db, since),
     kpis_promptIdentityCounts(db, since),
     kpis_deliveryMeasures(db, since),
@@ -3631,7 +3518,8 @@ async function kpis_readKpis(db: kpis_import_RelationalStore, opts: { windowDays
 
 /** The captured session supporting an extraction finding, within the run's Project. */
 async function prompts_extractionSourceSession(db: prompts_import_RelationalStore, scope: prompts_import_ReadScope, promptId: string): Promise<string | null> {
-  const source = await prepareViewRead(db, "M36:prompts_extractionSourceSession:0", `SELECT p.session_id AS sessionId FROM prompt_batches p
+  const source = await db.prepare(`SELECT p.session_id AS sessionId FROM session_prompts p
+    JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id AND d.generation = p.generation AND d.state = 'live'
     JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
     WHERE p.project_id = ? AND p.prompt_id = ? AND p.origin IN (${prompts_import_READ_ORIGINS.map(() => '?').join(', ')}) AND ${prompts_import_notTombstonedSql('s')}`)
     .bind(scope.projectId, promptId, ...prompts_import_READ_ORIGINS).first<{ sessionId: string }>();
@@ -3656,13 +3544,15 @@ interface search_Source {
   line?: string;
   /** A hit on a record of a conversation names the turn it belongs to. */
   turn?: true;
+  /** The type whose hits repeat this type's: searched alone this type answers them, and beside that type it adds none. */
+  coveredBy?: search_import_SearchType;
 }
 const search_SOURCES: Record<search_import_SearchType, search_Source> = {
   session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: search_import_occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: search_import_presentedStatus('d.'), namespace: 'sessions' },
   spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'NULL', status: 'd.status', namespace: 'spores', line: 'd.agent_line' },
   plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: 'plan', namespace: 'plans' },
-  prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'prompt', namespace: 'prompt_batches', turn: true },
-  response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'response', namespace: 'responses', turn: true },
+  prompt: { table: 'turn_cards', id: 'turn_key', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.turn_key', namespace: 'prompt_batches', turn: true },
+  response: { table: 'turn_cards', id: 'turn_key', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.turn_key', namespace: 'responses', turn: true, coveredBy: 'prompt' },
 };
 
 const search_ALIASES: Record<string, search_import_SearchType> = {
@@ -3791,9 +3681,10 @@ async function search_searchType(db: search_import_RelationalStore, reach: searc
   if (s.blob) params.push(terms[0]);
   // A conversation hit names its turn: the hit's own prompt reference, kept only where the Project's session holds that prompt, and a
   // steering prompt resolved to the turn it steers, as the named-turn read does. Both reads are by primary key.
-  const turnColumns = s.turn ? `, tp.prompt_id AS turn_id, substr(tp.text, 1, ${turns_TURN_PREVIEW_CHARS}) AS turn_preview, length(tp.text) AS turn_chars, tp.blob_key IS NOT NULL AS turn_stored` : '';
-  const turnJoins = s.turn ? `LEFT JOIN prompt_batches rp ON rp.project_id = kept.project_id AND rp.session_id = kept.session_id AND rp.prompt_id = kept.prompt_id
-    LEFT JOIN prompt_batches tp ON tp.project_id = rp.project_id AND tp.session_id = rp.session_id AND tp.prompt_id = COALESCE(rp.parent_prompt_id, rp.prompt_id) AND tp.parent_prompt_id IS NULL` : '';
+  const turnColumns = s.turn ? `, tp.prompt_id AS turn_id, tp.preview AS turn_preview, tp.text_chars AS turn_chars, 0 AS turn_stored` : '';
+  const turnJoins = s.turn ? `LEFT JOIN session_documents td ON td.project_id = kept.project_id AND td.session_id = kept.session_id AND td.state = 'live'
+    LEFT JOIN session_prompts tp ON tp.project_id = td.project_id AND tp.session_id = td.session_id AND tp.generation = td.generation
+      AND tp.prompt_id = kept.prompt_id AND tp.turn_key = tp.prompt_id` : '';
   const keptOrder = listing.by === 'time' ? 'created_at, id, d.project_id' : 'rank, created_at DESC, id, d.project_id';
   const listedOrder = listing.by === 'time' ? 'kept.created_at, kept.id, kept.project_id' : 'kept.rank, kept.created_at DESC, kept.id, kept.project_id';
   const found = (await prepareViewRead(db, "M25:search_searchType:0", `WITH candidates AS MATERIALIZED (${first}${blob}),
@@ -3923,7 +3814,8 @@ async function search_fullText(db: search_import_RelationalStore, reach: search_
     const { hits, cursor } = await search_searchType(db, reach, types[0]!, terms, opts, limit, listing);
     return { results: hits, cursor };
   }
-  const branches = (await Promise.all(types.map((type) => search_searchType(db, reach, type, terms, opts, limit, listing)))).map((branch) => branch.hits);
+  const searched = types.filter((type) => { const by = search_SOURCES[type].coveredBy; return by === undefined || !types.includes(by); });
+  const branches = (await Promise.all(searched.map((type) => search_searchType(db, reach, type, terms, opts, limit, listing)))).map((branch) => branch.hits);
   const order = (a: search_import_SearchAcrossResult, b: search_import_SearchAcrossResult) => b.score - a.score || search_import_SEARCH_TYPES.indexOf(a.type) - search_import_SEARCH_TYPES.indexOf(b.type) || a.id.localeCompare(b.id) || a.projectId.localeCompare(b.projectId);
   const floor = branches.flatMap((hits) => hits.slice(0, 1)).sort(order).slice(0, limit);
   const remaining = branches.flatMap((hits) => hits.slice(1)).sort(order).slice(0, limit - floor.length);
@@ -4094,24 +3986,6 @@ async function hook_placement_listUnplacedHookRecordsImpl(db: hook_placement_imp
   }
   return pages;
 }
-const children_materialSql = (published: boolean): string => `SELECT pb.prompt_id, substr(pb.text, 1, ?) AS prompt,
-                     (SELECT substr(r.text, 1, ?) FROM responses r
-                       WHERE r.project_id = pb.project_id AND r.session_id = pb.session_id AND r.prompt_id = pb.prompt_id AND r.text IS NOT NULL
-                       ORDER BY r.created_at, r.response_id LIMIT 1) AS response
-                FROM prompt_batches pb
-               WHERE pb.project_id = ? AND pb.session_id = ? AND ${children_MATERIAL_PROMPT_SQL}${published ? '' : ' AND ' + children_import_sessionMaterialReadySql('pb')}`;
-const children_MATERIAL_SQL = children_materialSql(false);
-
-async function children_materialRows(db: children_import_RelationalStore, projectId: string, sessionId: string, opts: { limit: number; excerptChars: number }, order: 'ASC' | 'DESC', read: ResponseRead = responseRead(db)): Promise<children_MaterialRow[]> {
-  const ordering = ` ORDER BY pb.created_at ${order}, pb.prompt_id ${order} LIMIT ?`;
-  const sql = children_MATERIAL_SQL + ordering;
-  const published = children_materialSql(true) + ordering;
-  const results = await sessionRows<{ prompt_id: string; prompt: string; response: string | null }>(db, "M23:children_materialRows:0", read, projectId, sessionId, sql, [opts.excerptChars, opts.excerptChars, projectId, sessionId, opts.limit], 3, published);
-  const source=read.context.get(sourceKey(projectId,sessionId));
-  if(source?.mode==='published'){if(!source.ready)throw new SessionMaterialPendingError();}
-  else await children_import_assertSessionMaterialReady(db, projectId, sessionId);
-  return results.map((r) => ({ promptId: r.prompt_id, prompt: r.prompt, response: r.response ?? null }));
-}
 
 /** A projected field whose inline value or exact stored-body provenance is admitted. */
 async function processed_processedField(env: Pick<processed_import_ServerEnv, 'db'>, scope: processed_import_ReadScope, kind: processed_ProcessedBodyKind, id: string): Promise<processed_ProcessedField | null> {
@@ -4176,8 +4050,9 @@ async function processed_processedField(env: Pick<processed_import_ServerEnv, 'd
 
 /** True when a prompt of that id sits in the session. */
  async function turns_promptInSession(db: turns_import_RelationalStore, scope: turns_import_ReadScope, sessionId: string, promptId: string, read: ResponseRead = responseRead(db)): Promise<boolean> {
-  const row = await ((await sessionRows<{ present: number }>(db, "M02:turns_promptInSession:0", read, scope.projectId, sessionId, `SELECT 1 AS present FROM prompt_batches WHERE project_id = ? AND session_id = ? AND prompt_id = ?`, [scope.projectId, sessionId, promptId], 1, undefined, {table:'prompt_batches',recordId:promptId}, 'first'))[0] ?? null);
-  return row !== null;
+  void read;
+  return (await db.prepare(`SELECT 1 AS present WHERE ${placedPromptSql({ project: '?1', session: '?2', prompt: '?3' })}`)
+    .bind(scope.projectId, sessionId, promptId).first()) !== null;
 }
 
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */
@@ -4808,15 +4683,14 @@ export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore
     (project_id, ack_id, session_id, kind, record_id, served_id, run_id, acknowledged_at)
     SELECT material.project_id, ?, material.session_id, 'record', material.record_id, material.served_id, ?, ?
     FROM (${source}) material
-    JOIN prompt_batches p ON p.project_id = material.project_id AND p.prompt_id = material.record_id AND p.session_id = material.session_id
-    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
+    JOIN sessions s ON s.project_id = material.project_id AND s.session_id = material.session_id
     WHERE ${sessions_import_notTombstonedSql('s')}
       AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id = material.project_id
         AND a.record_id = material.record_id AND a.kind = 'record' AND a.run_id = ? AND a.served_id IS material.served_id)
     ON CONFLICT (project_id, served_id) DO NOTHING`).bind(ackId, runId, now, ...params, runId);
 }
 
-const release_PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN (SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = g.project_id AND t.session_id = g.session_id) ELSE 0 END';
+const release_PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN COALESCE((SELECT d.tool_calls FROM session_documents d WHERE d.project_id = g.project_id AND d.session_id = g.session_id), 0) ELSE 0 END';
 
 const release_FENCE = 'EXISTS (SELECT 1 FROM project_release_provenance f WHERE f.project_id = ? AND f.check_run_id = ? AND f.revision = ?)';
 
@@ -4837,8 +4711,9 @@ const release_RELEASE_UPSERT = `ON CONFLICT(project_id, identity_key) DO UPDATE 
 const release_DERIVED = [['spores', 'spores', 'id'], ['plans', 'plans', 'plan_key']] as const;
 
 export function prepareReleasePaths(db: sessions_import_RelationalStore, projectId: string, sessionId: string) {
-  return prepareViewRead(db, "M44:prepareReleasePaths:0", `SELECT files_affected AS files FROM tool_calls
-    WHERE project_id = ? AND session_id = ? AND files_affected IS NOT NULL LIMIT 200`).bind(projectId, sessionId);
+  return db.prepare(`SELECT d.state, CASE WHEN d.state = 'live' THEN (SELECT json_group_array(path) FROM (SELECT p.path FROM session_paths p
+      WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.generation = d.generation ORDER BY p.last_at DESC, p.path LIMIT 500)) END AS files
+    FROM session_documents d WHERE d.project_id = ? AND d.session_id = ?`).bind(projectId, sessionId);
 }
 
 export function prepareReleaseCandidates(db: sessions_import_RelationalStore, projectId: string, mapped: number, prefix: string, fingerprint: string | null, limit: number) {
@@ -5053,7 +4928,7 @@ export function* prepareHubnessWork(db: sessions_import_RelationalStore, project
   for (const { sql, binds } of core_embedding_hubness_hubnessQueries(projectId, model, now)) yield prepareViewRead(db, "M34:core_embedding_hubness_recordedHubness:1", sql).bind(...binds);
 }
 
-export { turns_readTurnBodies, lineage_sessionsNamed, lineage_childIdsOf, sessions_instantStatements };
+export { turns_readTurnBodies, lineage_sessionsNamed, lineage_childIdsOf };
 
 export function childrenRowsByPrompt(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, collection: 'response' | 'attachment' | 'plan' | 'answer', promptIds: readonly string[], limit: number) {
   switch (collection) {

@@ -3,13 +3,16 @@ import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getSession, listSessionSummaries, projectStats, sessionCounts, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
+import { getSession, listSessionSummaries, projectStats, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
-import { listSessionActivity, SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
+import { SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
-import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
-import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, toolUsage, sessionTurnContexts, type TurnCollection } from '../read/turns.js';
+import { listAttachments, listContextInjections, listPlans, untitledReason } from '../read/children.js';
+import { parseOrigins, sessionTurnContexts } from '../read/turns.js';
+import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
+import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
+import { documentSessionActivity } from '../content/session-activity.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
@@ -22,12 +25,13 @@ import { sessionLineage } from '../read/lineage.js';
 import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 
+/** A cursor naming a document generation that is no longer live: the reader restarts from the first page. */
+export const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
+
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
-  prompts: listPrompts,
   unplaced: listUnplacedHookRecords,
-  'tool-calls': listToolCalls,
-  responses: listResponses,
+  'unplaced-records': documentUnplacedRecords,
   plans: listPlans,
   attachments: listAttachments,
   'context-injections': listContextInjections,
@@ -107,11 +111,15 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   const read = await getSession(env.db, scope, sessionId, ctx.now);
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
+  const counters = await documentCounters(env.db, scope, sessionId);
   return ok({
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
-    metrics: { tools: await toolUsage(env.db, scope, sessionId), tokens: null,
-      durationMs: await sessionDurationMs(env.db, scope, sessionId) },
-    session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
+    metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
+    session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
+    counts: {
+      prompts: counters?.prompts ?? 0, toolCalls: counters?.toolCalls ?? 0, failedTools: counters?.failedTools ?? 0,
+      responses: counters?.replies ?? 0, plans: counters?.plans ?? 0, attachments: counters?.attachments ?? 0,
+    },
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });
 }
@@ -126,12 +134,16 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
+  if (query === documentUnplacedRecords) {
+    const rows = await documentUnplacedRecords(env, scope, sessionId, page.cursor);
+    return rows === null ? badRequest('malformed cursor') : rows === 'stale' ? staleCursor() : ok(rows);
+  }
   if (query === listPlans) {
     const filters = planFilters(ctx.url);
     if (filters instanceof Response) return filters;
     return ok(await listPlans(env.db, scope, sessionId, { ...page, ...filters }));
   }
-  return ok(await query(env.db, scope, sessionId, page));
+  return ok(await (query as typeof listAttachments)(env.db, scope, sessionId, page));
 }
 
 /** A session's plans list narrows by `status`, one the catalogue holds, and by `q`, a text the title contains. */
@@ -187,10 +199,11 @@ export async function handleSessionActivity(env: ServerEnv, ctx: OwnerContext): 
   const failed = ctx.url.searchParams.get('failed');
   if (failed !== null && failed !== 'true' && failed !== 'false') return badRequest('failed must be true or false');
   const tool = ctx.url.searchParams.get('tool');
-  return ok(await listSessionActivity(env.db, scope, sessionId, {
+  const activity = await documentSessionActivity(env, scope, sessionId, {
     ...page, type: type === null ? undefined : type as SessionActivityType,
     tool: tool === null ? undefined : tool, failed: failed === null ? undefined : failed === 'true',
-  }));
+  });
+  return activity === null ? badRequest('malformed cursor') : activity === 'stale' ? staleCursor() : ok(activity);
 }
 
 /** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */
@@ -207,7 +220,7 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   const order = ctx.url.searchParams.get('order');
   if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
   const promptId = ctx.url.searchParams.get('turn') ?? undefined;
-  return ok(await listTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId }));
+  return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId }));
 }
 
 /** One turn's body: the prompt, its responses, attachments and steering children. */
@@ -221,10 +234,10 @@ export async function handleSessionTurn(env: ServerEnv, ctx: OwnerContext): Prom
     if (!TURN_COLLECTIONS.includes(collection as TurnCollection)) return badRequest('unknown turn collection');
     const page = paging(ctx.url);
     if (page instanceof Response) return page;
-    if (!(await promptInSession(env.db, scope, sessionId, ctx.params.promptId))) return notFound();
-    return ok(await turnCollection(env.db, scope, sessionId, ctx.params.promptId, collection as TurnCollection, page));
+    const rows = await documentTurnCollection(env, scope, sessionId, ctx.params.promptId, collection as TurnCollection, page.cursor);
+    return rows === null ? notFound() : rows === 'stale' ? staleCursor() : ok(rows);
   }
-  const detail = await turnDetail(env.db, scope, sessionId, ctx.params.promptId);
+  const detail = await documentTurnDetail(env, scope, sessionId, ctx.params.promptId);
   return detail === null ? notFound() : ok(detail);
 }
 
@@ -234,10 +247,10 @@ export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerConte
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  if (!(await promptInSession(env.db, scope, sessionId, ctx.params.promptId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listToolCalls(env.db, scope, sessionId, { ...page, promptId: ctx.params.promptId }));
+  const rows = await documentPromptTools(env, scope, sessionId, ctx.params.promptId, page.cursor);
+  return rows === null ? notFound() : rows === 'stale' ? staleCursor() : ok(rows);
 }
 
 /** `POST …/sessions/{sessionId}/title`: a person asks for the session's title and summary now, over its opening and closing prompts, replacing what is there. Answers the outcome of the ask — `dispatched` with the run that will write them, or the refusal — never the title itself. */

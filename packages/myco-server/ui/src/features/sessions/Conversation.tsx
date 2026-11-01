@@ -67,22 +67,28 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, now
   );
 }
 
-interface UnplacedRecord { key: string; kind: string; id: string; label: string; createdAt: number }
+interface UnplacedRecord { key: string; kind: string; id: string; label: string; createdAt: number; failed?: boolean }
 
+/** What the session holds that no turn does: the conversation's own records, then what hooks recorded beside it. */
 function UnplacedRecords({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
-  const records = useSessionChildren<UnplacedRecord>(projectId, sessionId, 'unplaced');
-  if (records.isPending) return <LoadingState label="Reading records not placed on a turn" count={1} />;
-  if (records.error) return <ErrorState error={records.error} onRetry={records.retry} />;
-  if (records.rows.length === 0) return <p className="t-small text-muted">No records to show here.</p>;
+  const conversation = useSessionChildren<UnplacedRecord>(projectId, sessionId, 'unplaced-records');
+  const hooks = useSessionChildren<UnplacedRecord>(projectId, sessionId, 'unplaced');
+  if (conversation.isPending || hooks.isPending) return <LoadingState label="Reading records not placed on a turn" count={1} />;
+  const failed = conversation.error ?? hooks.error;
+  if (failed) return <ErrorState error={failed} onRetry={() => { conversation.retry(); hooks.retry(); }} />;
+  if (conversation.rows.length === 0 && hooks.rows.length === 0) return <p className="t-small text-muted">No records to show here.</p>;
   return (
     <section aria-label="Not placed on a turn" className="flex flex-col gap-s3 border-t border-line pt-s4">
       <p className="t-small text-muted">These records belong to this session. No turn in this session matches them.</p>
-      <ul className="flex flex-col divide-y divide-line">
-        {records.rows.map(record => <li key={record.key} className="flex flex-wrap justify-between gap-s2 py-s2 t-small">
-          <span>{record.label}</span><time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
-        </li>)}
-      </ul>
-      {records.hasMore && <ShowMore shown={records.rows.length} noun="records" onMore={records.more} pending={records.isFetchingMore} hasMore />}
+      {[conversation, hooks].map((records, index) => records.rows.length > 0 && <div key={index} className="flex flex-col gap-s2">
+        <ul aria-label={index === 0 ? 'Conversation records' : 'Hook records'} className="flex flex-col divide-y divide-line">
+          {records.rows.map(record => <li key={record.key} className="flex flex-wrap justify-between gap-s2 py-s2 t-small">
+            <span className={record.failed ? 'text-bad' : undefined}>{record.label}{record.failed ? ' · failed' : ''}</span>
+            <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
+          </li>)}
+        </ul>
+        {records.hasMore && <ShowMore shown={records.rows.length} noun="records" onMore={records.more} pending={records.isFetchingMore} hasMore />}
+      </div>)}
     </section>
   );
 }

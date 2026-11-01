@@ -5,6 +5,7 @@
  * relational rows alone; object-store bytes and the operator-entered
  * configuration tables stay outside it, and the UI says so.
  */
+import { restoreDocuments } from '../ingest/document-restore.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
@@ -50,7 +51,7 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
 /** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   try {
-    const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
+    const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId, restoreDocuments(env));
     if (preview === null) return notFound();
     const admission = await restoreAdmission(env.db, { kind: 'member', memberId: ctx.member.id }, preview.tableKeys);
     const reasons = {
@@ -79,6 +80,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
       allowForeignLineage: body.allowForeignLineage === true,
       authorization: { kind: 'member', memberId: ctx.member.id },
       now: ctx.now,
+      documents: restoreDocuments(env),
     });
     if (outcome === null) return notFound();
     return ok({ applied: true, ...outcome });
@@ -128,7 +130,7 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   }
   try {
     assertBackupSize(body.artifact);
-    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id }, now: ctx.now });
+    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id }, now: ctx.now, documents: restoreDocuments(env) });
     return ok({ applied: true, ...outcome });
   } catch (err) {
     if (err instanceof RecordSchemeError) return Response.json({ error: err.code }, { status: 409 });

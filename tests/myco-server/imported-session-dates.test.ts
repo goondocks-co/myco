@@ -16,6 +16,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { parseOnce, TRANSCRIPT_PARSE_EVENTS_PER_BATCH } from '@myco-server-worker/ingest/parse.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -94,6 +95,11 @@ const send = (serverEnv: { db: unknown }, tokenId: string, kind: string, at: num
 async function importFacts(serverEnv: { db: unknown }, tokenId: string) {
   await send(serverEnv, tokenId, 'session.start', IMPORT_AT, { agent: 'claude-code', startedAt: IMPORT_AT, originPath: '/w/p' }, 'import');
   await send(serverEnv, tokenId, 'session.end', IMPORT_AT, { endedAt: IMPORT_AT }, 'import');
+}
+
+/** Publishes the session's transcript into its document, as the wake does. */
+async function publish(serverEnv: Parameters<typeof publishDocuments>[0]): Promise<void> {
+  for (let wake = 0; wake < 8 && (await publishDocuments(serverEnv, NOW, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more; wake++);
 }
 
 /** Drives passes to completion. */
@@ -438,8 +444,7 @@ describe('a presented date does not decide the lifecycle', () => {
       + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'a later answer' }] }, timestamp: new Date(IMPORT_AT + 60_000).toISOString() });
     const r = await rig(later);
     await importFacts(r.serverEnv, r.tokenId);
-    await drain(r.env, r.sqlite);
-    await r.serverEnv.db.batch([resolvePresentedDates(r.serverEnv.db, PROJECT, SESSION)]);
+    await publish(r.serverEnv);
 
     const presented = (await listSessions(r.serverEnv.db, { projectId: PROJECT })).rows[0]!;
     const raw = r.sqlite.query(`SELECT started_at, ended_at FROM sessions`).get() as { started_at: number | null; ended_at: number | null };
@@ -473,10 +478,9 @@ describe('a presented date does not decide the lifecycle', () => {
       + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'an undated answer' }] } });
     const r = await rig(undated);
     await send(r.serverEnv, r.tokenId, 'session.start', IMPORT_AT, { agent: 'claude-code', startedAt: IMPORT_AT, originPath: '/w/p' }, 'import');
-    await drain(r.env, r.sqlite);
-    await r.serverEnv.db.batch([resolvePresentedDates(r.serverEnv.db, PROJECT, SESSION)]);
+    await publish(r.serverEnv);
 
-    const prompts = r.sqlite.query(`SELECT created_at FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
+    const prompts = r.sqlite.query(`SELECT created_at FROM session_prompts WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
     expect(prompts.length).toBeGreaterThan(0);
     for (const prompt of prompts) expect(prompt.created_at).toBe(IMPORT_AT);
     // The conversation stays where the import put it rather than moving to the parse.

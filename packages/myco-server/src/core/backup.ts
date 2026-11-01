@@ -102,7 +102,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts', 'learning_init_queue',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...[...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks'].map(table => `${table}_fts`), ...VIEW_FTS_TABLES]
+  ...[...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`), ...VIEW_FTS_TABLES]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
@@ -372,8 +372,8 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
 
 /** What a restore would touch, answered from a verified artifact without executing its rows. */
 export async function previewRestore(
-  db: RelationalStore, blobs: BlobStore, id: string,
-): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[]; tables: RestoreOutcome['tables']; retiredNotice?: string } | null> {
+  db: RelationalStore, blobs: BlobStore, id: string, documents?: RestoreDocuments,
+): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[]; tables: RestoreOutcome['tables']; retiredNotice?: string; documents?: DocumentRestoreSummary } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
   const newline = artifact.text.indexOf('\n');
@@ -386,7 +386,11 @@ export async function previewRestore(
   const authorityExcluded = foreignLineage
     ? { tables: FOREIGN_AUTHORITY_TABLES.filter((table) => tableKeys.has(table)), notice: FOREIGN_AUTHORITY_NOTICE }
     : null;
-  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys], tables: admitted.tables, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
+  const byTable = new Map<string, Record<string, unknown>[]>();
+  for (const row of admitted.rows) byTable.set(row.t, [...(byTable.get(row.t) ?? []), row.r]);
+  const planned = documents === undefined ? undefined : (await documents.plan(byTable)).summary;
+  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys], tables: admitted.tables, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
+    ...(planned === undefined ? {} : { documents: planned }) };
 }
 
 /**
@@ -408,8 +412,23 @@ function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unkn
   }
 }
 
+/** What a restore does to session documents, decided before any write: sessions converted, merged and refused. */
+export interface DocumentRestoreSummary { convert: number; merge: number; records: number; refuse: string[] }
+/**
+ * The document side of a restore, supplied by its caller: a plan read before any write, fenced as the restore's first
+ * write, and applied once the rows are restored.
+ */
+export interface RestoreDocuments {
+  plan(byTable: ReadonlyMap<string, readonly Record<string, unknown>[]>): Promise<{
+    summary: DocumentRestoreSummary; fence(now: number): Promise<void>; apply(now: number): Promise<void>;
+  }>;
+}
+/** The refusal of an artifact whose legacy-classified content a live document may hold under another id. */
+export const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
+
 export interface RestoreOutcome {
   retiredNotice?: string;
+  documents?: DocumentRestoreSummary;
   /** `reused` counts `blobs` rows this Deployment already registers, kept as they stand. */
   tables: Record<string, { rows: number; inserted: number; skipped?: string; reused?: number }>;
 }
@@ -540,11 +559,11 @@ async function restoreTranscriptReference(
  */
 export async function restoreBackup(
   db: RelationalStore, blobs: BlobStore,
-  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number },
+  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number; documents?: RestoreDocuments },
 ): Promise<RestoreOutcome | null> {
   const artifact = await readArtifact(db, blobs, opts.id);
   if (artifact === null) return null;
-  return restoreArtifact(db, { text: artifact.text, blobs, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization, now: opts.now });
+  return restoreArtifact(db, { text: artifact.text, blobs, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization, now: opts.now, documents: opts.documents });
 }
 
 /**
@@ -553,7 +572,7 @@ export async function restoreBackup(
  */
 export async function restoreArtifact(
   db: RelationalStore,
-  opts: { text: string; blobs?: BlobStore; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number },
+  opts: { text: string; blobs?: BlobStore; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number; documents?: RestoreDocuments },
 ): Promise<RestoreOutcome> {
   const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
@@ -630,7 +649,13 @@ export async function restoreArtifact(
     throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
   }
 
-  const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
+  const documents = opts.documents === undefined ? undefined : await opts.documents.plan(byTable);
+  if (documents !== undefined && documents.summary.refuse.length > 0) {
+    throw new BackupApplyError('documents', `${ARTIFACT_PRECEDENCE_AMBIGUOUS}: sessions ${documents.summary.refuse.join(', ')} hold legacy-classified content their live documents may keep under other ids; restore them through the staged restore`);
+  }
+  await documents?.fence(restoredAt);
+  const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
+    ...(documents === undefined ? {} : { documents: documents.summary }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
@@ -964,6 +989,7 @@ export async function restoreArtifact(
     prepareRestoredSessionUnread(db, JSON.stringify([...restoredSessions.values()])),
     db.prepare('UPDATE backup_restore_progress SET next_row=1 WHERE table_name=? AND artifact_hash=?').bind(recountPhase, hash),
   ]);
+  await documents?.apply(restoredAt);
   return outcome;
 }
 

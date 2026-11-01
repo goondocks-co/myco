@@ -7,6 +7,12 @@ export const queueHeadSeek = (columns: string, task: string, origin: string): st
         FROM agent_runs INDEXED BY idx_agent_runs_queue_head WHERE status='queued' AND dispatched_by IS NULL AND task=${task} AND origin=${origin}
         ORDER BY queued_at,id LIMIT 1`;
 
+/** Whether any queued row waits unclaimed. */
+export async function unclaimedQueued(db: RelationalStore): Promise<boolean> {
+  const row = await db.prepare(`SELECT EXISTS (SELECT 1 FROM agent_runs WHERE status='queued' AND dispatched_by IS NULL) AS queued`).first<{ queued: number }>();
+  return row?.queued === 1;
+}
+
 /** Two queue-head seeks per compatible task, independent of the queue prefix. */
 export async function queueHeads(db: RelationalStore, excluded: readonly string[]): Promise<ClaimCandidate[]> {
   const heads: (ClaimCandidate & {queuedAt:number})[]=[];

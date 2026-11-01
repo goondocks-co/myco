@@ -31,9 +31,9 @@ function harness() {
                 VALUES (?, ?, 'm1', 'tok_1', ?, ?, ?, ?)`, [project, id, NOW, NOW, NOW, title]);
   const spore = (project: string, id: string, content: string, at = NOW) =>
     sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES (?, ?, 'agent_1', 'gotcha', 'active', ?, ?)`, [project, id, content, at]);
-  const prompt = (project: string, id: string, text: string | null, blobKey: string | null = null) =>
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, token_id, received_at, created_at, updated_at, content_hash, origin, text, blob_key)
-                VALUES (?, 's', ?, ?, 't', ?, ?, ?, 'h', 'user', ?, ?)`, [project, id, `ev_${id}`, NOW, NOW, NOW, text, blobKey]);
+  const plan = (project: string, key: string, content: string | null, blobKey: string | null = null) =>
+    sqlite.run(`INSERT INTO plans (project_id, session_id, plan_key, machine_id, status, title, event_id, token_id, received_at, created_at, updated_at, content_hash, content, blob_key)
+                VALUES (?, 's', ?, 'm', 'active', 'plan', ?, 't', ?, ?, ?, 'h', ?, ?)`, [project, key, `ev_${key}`, NOW, NOW, NOW, content, blobKey]);
   const blob = async (project: string, key: string, text: string) => {
     const bytes = new TextEncoder().encode(text);
     await fixture.bucket.put(registerBlob(sqlite, { projectId: project, key, size: bytes.length, tokenId: 't', receivedAt: 1000 }), new Response(bytes).body);
@@ -47,7 +47,7 @@ function harness() {
     expect({ path, status }).toEqual({ path, status: 200 });
     return (body.results as Array<{ projectId: string; id: string; type: string }>).map((r) => `${r.projectId}/${r.type}/${r.id}`).sort();
   };
-  return { fixture, sqlite, archive, session, spore, prompt, blob, get, hits };
+  return { fixture, sqlite, archive, session, spore, plan, blob, get, hits };
 }
 
 describe('search across Projects', () => {
@@ -132,28 +132,28 @@ describe('search across Projects', () => {
     const h = harness();
     await h.blob('proj_2', 'body-2', 'deepneedle in two');
     await h.blob('proj_3', 'body-3', 'deepneedle archived');
-    h.prompt('proj_2', 'pr_2', null, 'body-2');
-    h.prompt('proj_3', 'pr_3', null, 'body-3');
+    h.plan('proj_2', 'pr_2', null, 'body-2');
+    h.plan('proj_3', 'pr_3', null, 'body-3');
     h.archive('proj_3');
     expect((await h.get('/api/search?q=deepneedle')).body.coverage.pending_blobs).toBe(1);
     expect((await h.get('/api/search?q=deepneedle&project=proj_1')).body.coverage.pending_blobs).toBe(0);
     // One body per pass.
     while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
-    expect(await h.hits('/api/search?q=deepneedle')).toEqual(['proj_2/prompt/pr_2']);
+    expect(await h.hits('/api/search?q=deepneedle')).toEqual(['proj_2/plan/pr_2']);
     expect(await h.hits('/api/search?q=deepneedle&project=proj_1')).toEqual([]);
-    expect(await h.hits('/api/search?q=deepneedle&project=proj_3')).toEqual(['proj_3/prompt/pr_3']);
+    expect(await h.hits('/api/search?q=deepneedle&project=proj_3')).toEqual(['proj_3/plan/pr_3']);
     expect((await h.get('/api/search?q=deepneedle')).body.coverage.pending_blobs).toBe(0);
   });
 
   it('previews each result from the text that matched it: an inline body, or the chunk of a spilled one', async () => {
     const h = harness();
     await h.blob('proj_1', 'body-1', `${'filler '.repeat(400)} spillneedle in the spilled body`);
-    h.prompt('proj_1', 'pr_spilled', null, 'body-1');
-    h.prompt('proj_2', 'pr_inline', 'spillneedle in an inline prompt');
+    h.plan('proj_1', 'pr_spilled', null, 'body-1');
+    h.plan('proj_2', 'pr_inline', 'spillneedle in an inline plan');
     while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
-    const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=prompt')).body.results as any[]).map((r) => [r.id, r.preview]));
+    const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=plan')).body.results as any[]).map((r) => [r.id, r.preview]));
     expect(byId.pr_spilled).toContain('spillneedle in the spilled body');
-    expect(byId.pr_inline).toContain('spillneedle in an inline prompt');
+    expect(byId.pr_inline).toContain('spillneedle in an inline plan');
   });
 
   it('previews a spilled body from its best-ranked chunk, not its first or its last', async () => {
@@ -162,14 +162,14 @@ describe('search across Projects', () => {
     const pad = (text: string) => `${`${text} ${'filler '.repeat(Math.ceil(SEARCH_CHUNK_CHARS / 7))}`.slice(0, SEARCH_CHUNK_CHARS - 1)} `;
     const body = pad('rankneedle opening') + pad('rankneedle middlemarker '.repeat(200)) + pad('rankneedle closing');
     await h.blob('proj_1', 'body-3', body);
-    h.prompt('proj_1', 'pr_three', null, 'body-3');
+    h.plan('proj_1', 'pr_three', null, 'body-3');
     while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
     // The opening, the middle and the closing each match in a chunk of their own; the middle matches most.
     const matched = h.sqlite.query(`SELECT rowid FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH 'rankneedle' ORDER BY rank`).all() as { rowid: number }[];
     expect(matched.length).toBe(3);
     const best = matched[0]!.rowid;
     expect({ best, notFirst: best !== Math.min(...matched.map((m) => m.rowid)), notLast: best !== Math.max(...matched.map((m) => m.rowid)) }).toEqual({ best, notFirst: true, notLast: true });
-    const [hit] = (await h.get('/api/search?q=rankneedle&type=prompt')).body.results as any[];
+    const [hit] = (await h.get('/api/search?q=rankneedle&type=plan')).body.results as any[];
     expect({ id: hit.id, fromMiddle: hit.preview.includes('middlemarker') }).toEqual({ id: 'pr_three', fromMiddle: true });
   });
 

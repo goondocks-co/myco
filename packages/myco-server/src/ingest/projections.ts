@@ -436,24 +436,30 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
 };
 
 /**
- * A session's lifecycle, decided at two projections and nowhere else, from
- * projected rows alone: the raw event log is not consulted.
+ * A session's lifecycle, decided at two projections and by the publisher, from
+ * projected and catalog rows alone: the raw event log is not consulted.
  *
- * `LATEST_USER_TURN_SQL` is the instant of the session's newest captured human
- * prompt, on any channel. An end, on any channel, applies only when it is newer
- * than the standing end and not older than that turn, so an end delivered after
- * a newer prompt leaves a resumed session open whatever order the two arrive
- * in. A human prompt's admission reopens the session when the newest stored
- * human turn is newer than the standing end: the stored row decides, never the
- * envelope of the event that named it, so a replayed prompt under a fresh event
- * id and a later instant changes nothing. An applied end records the acting
- * member, or NULL for an agent's or an import's; a reopen clears it.
+ * `LATEST_USER_TURN_SQL` is the instant of the session's newest human prompt a
+ * member's capture projected, on any channel. An end, on any channel, applies
+ * only when it is newer than the standing end and not older than that turn nor
+ * the open turn the session's live document published, so an end delivered
+ * after a newer prompt leaves a resumed session open whatever order the two
+ * arrive in. A human prompt's admission reopens the session when the newest
+ * stored human turn is newer than the standing end: the stored row decides,
+ * never the envelope of the event that named it, so a replayed prompt under a
+ * fresh event id and a later instant changes nothing. The publisher reopens a
+ * session for a published human prompt newer than its end. An applied end
+ * records the acting member, or NULL for an agent's or an import's; a reopen
+ * clears it.
  *
  * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
  */
 const LATEST_USER_TURN_SQL = `(SELECT MAX(pb.created_at) FROM prompt_batches pb
    WHERE pb.project_id = sessions.project_id AND pb.session_id = sessions.session_id AND pb.origin = 'user')`;
-const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= COALESCE(${LATEST_USER_TURN_SQL}, 0))`;
+const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= MAX(COALESCE(${LATEST_USER_TURN_SQL}, 0),
+  COALESCE((SELECT sp.created_at FROM session_documents d JOIN session_prompts sp ON sp.project_id = d.project_id
+   AND sp.session_id = d.session_id AND sp.generation = d.generation AND sp.prompt_id = d.open_turn_key
+   WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live' AND sp.origin = 'user'), 0)))`;
 const endAppliesParams = (endedAt: number): number[] => [endedAt, endedAt];
 /** A human prompt's admission reopens the session its stored turns say is open; any other prompt leaves it as it is. */
 const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] =>
@@ -520,9 +526,10 @@ const derivedBoundParams = (projectId: string, sessionId: string): string[] =>
  * The instants a session is presented and ordered by.
  *
  * While an import alone accounts for the lifecycle, the session is presented at
- * the conversation the parse derived: the earliest derived row, and the latest
- * where the import shipped an end. Any other session holds neither and reads
- * through to its raw instants.
+ * its conversation: the earliest record, and the latest where the import shipped
+ * an end. The publisher passes the bounds its document holds, and runs after the
+ * import's own events; a projection reads the derived rows. Any other session
+ * holds neither and reads through to its raw instants.
  *
  * The only writer of the two columns, and no projection reads them: admission,
  * reopen and titling decide against the raw lifecycle. The answer is a function

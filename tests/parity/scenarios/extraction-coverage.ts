@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { expectPersisted, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /** Coverage follows the exact items served over each front door. */
 export const extractionCoverage: ParityScenario = {
@@ -18,7 +18,8 @@ export const extractionCoverage: ParityScenario = {
         body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: source, kind, createdAt: at, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }) }), kind);
     };
     const prompt = (promptId: string, at: number) => capture('prompt', at, { promptId, text: 'Material to extract', origin: 'user' });
-    const complete = () => capture('session.end', now, { endedAt: now });
+    // A session's end is captured, then the wake publishes the prompts an acknowledgement is checked against.
+    const complete = async () => { await capture('session.end', now, { endedAt: now }); await documentsPublished(target, session); };
     const count = async (n: number) => expect(await target.sql(`SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id=${lit(project)} AND session_id=${lit(session)}`)).toEqual([{ n }]);
     await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES('mem_harness','Coverage',${now})`);
     await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,${now})`);

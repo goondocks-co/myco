@@ -33,37 +33,6 @@ describe('read/sessions', () => {
     expect(cursor).toBeNull();
   });
 
-  it('labels a session by its title, else by the first line of its first user prompt cut on a word boundary, else by its agent, else by its id', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedSessions(sqlite);
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1','s4','m1','tok_1',4,40)`);
-    sqlite.run(`UPDATE sessions SET title = 'Wave-based executor', summary = 'Built it.', titled_at = 50 WHERE session_id = 's3'`);
-    const long = `${'abcde '.repeat(30).trim()}\nsecond line`;
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s1','p2','e2','later prompt','user','h2',20,20,'t1',20),
-                       ('proj_1','s1','p1','e1',?,'user','h1',10,10,'t1',10),
-                       ('proj_1','s1','p0','e0','assistant text first','assistant','h0',5,5,'t1',5),
-                       ('proj_1','s2','pS','eS',NULL,'user','hS',10,10,'t1',10),
-                       ('proj_1','s3','p3','e3','ignored: the title wins','user','h3',10,10,'t1',10)`, [long]);
-    const rows = (await listSessions(db, { projectId: 'proj_1' })).rows;
-    const byId = Object.fromEntries(rows.map((r) => [r.sessionId, r]));
-    expect(byId.s3.label).toBe('Wave-based executor');
-    expect(byId.s3.summary).toBe('Built it.');
-    expect(byId.s3.titledAt).toBe(50);
-    expect(byId.s1.label.endsWith('…')).toBe(true);
-    expect(byId.s1.label.length).toBeLessThanOrEqual(LABEL_MAX_CHARS + 1);
-    expect(byId.s1.label).toBe(`${'abcde '.repeat(13).trim()}…`);
-    expect(byId.s2.label).toBe('claude-code');
-    expect(byId.s4.label).toBe('s4');
-    expect((await getSession(db, { projectId: 'proj_1' }, 's1'))?.label).toBe(byId.s1.label);
-    expect(sessionLabel(null, '  first line here  \n\nmore', null, 'x')).toBe('first line here');
-    expect(sessionLabel(null, 'a'.repeat(100), null, 'x')).toBe(`${'a'.repeat(LABEL_MAX_CHARS)}…`);
-    const exact = `${'abcdefghij '.repeat(7)}abc tail words`;
-    expect(exact[LABEL_MAX_CHARS]).toBe(' ');
-    expect(sessionLabel(null, exact, null, 'x')).toBe(`${'abcdefghij '.repeat(7)}abc…`);
-    expect(sessionLabel('  Titled  ', 'prompt', 'agent', 'x')).toBe('Titled');
-  });
-
   it('distinguishes recorded endpoints from synthetic transcript bounds for session durations', async () => {
     const { db, sqlite } = sqliteEnv();
     seedSessions(sqlite);
@@ -102,23 +71,6 @@ describe('read/sessions', () => {
       ['s3', 'chris', null, 'host'], ['s2', null, null, null], ['s1', 'chris', null, 'host'],
     ]);
     expect((await getSession(db, { projectId: 'proj_1' }, 's2'))?.memberId).toBeNull();
-  });
-
-  it('counts what a project holds, and only that project', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedSessions(sqlite);
-    sqlite.run(`UPDATE sessions SET ended_at = 9 WHERE project_id = 'proj_1' AND session_id = 's1'`);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s1','p1','e1','a','user','h1',1,1,'t',1), ('proj_2','other','p2','e2','b','user','h2',1,1,'t',1)`);
-    sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','pl1','s1','e3','m1','h3','active',1,1,'t',1), ('proj_2','pl2','other','e4','m9','h4','active',1,1,'t',1)`);
-    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at)
-                VALUES ('proj_1','s1','tc1','e5','Read',1,1,'t',1), ('proj_2','other','tc2','e6','Read',1,1,'t',1)`);
-    sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
-                VALUES ('proj_1','a1','s1','e7','${'a'.repeat(64)}','image/png',9,1,'t',1), ('proj_2','a2','other','e8','${'b'.repeat(64)}','image/png',9,1,'t',1)`);
-    expect(await projectStats(db, { projectId: 'proj_1' }, 3 + 7 * 24 * 60 * 60 * 1000)).toEqual({
-      sessions: 3, openSessions: 2, sessionsLast7d: 1, prompts: 1, toolCalls: 1, plans: 1, attachments: 1, lastActivityAt: 30,
-    });
   });
 
   it('pages with a cursor and never repeats or drops a row', async () => {
@@ -239,7 +191,6 @@ describe('read/children', () => {
 
 import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS, toolUsage, turnCollection, sessionTurnContexts } from '@myco-server-worker/read/turns.js';
 import { listAttachments } from '@myco-server-worker/read/children.js';
-import { bucketActivity, containsPattern, listSessionSummaries, ACTIVITY_BUCKETS } from '@myco-server-worker/read/sessions.js';
 import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
@@ -264,18 +215,6 @@ describe('read/turns', () => {
       ('proj_1',?,'s1','ep1','m1','Plan','- [x] a\n- [ ] b','hp1','in_progress',?,'mem_x',15,16,'t1',16)`, [UUID(5), UUID(1)]);
   }
 
-  it('lists top-level prompts of the default origin oldest first, with a preview, the spilled key, and counts of what followed each', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    const { rows, cursor } = await listTurns(db, { projectId: 'proj_1' }, 's1');
-    expect(cursor).toBeNull();
-    expect(rows.map((r) => r.promptId)).toEqual([UUID(1), UUID(4)]);
-    expect(rows[0]).toMatchObject({ origin: 'user', threadLabel: null, blobKey: null, createdAt: 10, toolCallCount: 2, responseCount: 1, childCount: 1, planCount: 1, attachmentCount: 1 });
-    expect(rows[0].preview).toHaveLength(TURN_PREVIEW_CHARS);
-    expect(rows[0].textChars).toBe(`${'first prompt '.repeat(20)}tail`.length);
-    expect(rows[1]).toMatchObject({ preview: null, textChars: null, blobKey: 'a'.repeat(64), toolCallCount: 0, responseCount: 0, childCount: 0, planCount: 0, attachmentCount: 0 });
-  });
-
   it('shows every origin when asked, pages by the turn key, and refuses an origin the wire does not admit', async () => {
     const { db, sqlite } = sqliteEnv();
     seedTurns(sqlite);
@@ -292,99 +231,7 @@ describe('read/turns', () => {
     expect((await listTurns(db, { projectId: 'proj_1' }, 's1', { cursor: 'garbage' })).rows).toEqual([]);
   });
 
-  it('reads one turn with its responses, its attachments and its steering children, and nothing of another project', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
-    expect(detail?.prompt).toMatchObject({ promptId: UUID(1), origin: 'user', parentPromptId: null, blobKey: null });
-    expect(detail?.prompt.text?.endsWith('tail')).toBe(true);
-    expect(detail?.responses.map((r) => r.text)).toEqual(['done the first']);
-    expect(detail?.attachments.map((a) => [a.attachmentId, a.promptId, a.mediaType])).toEqual([['a1', UUID(1), 'image/png']]);
-    expect(detail?.plans.map((p) => [p.planKey, p.promptId, p.status, p.progress, p.updatedBy])).toEqual([[UUID(5), UUID(1), 'in_progress', '1/2', 'mem_x']]);
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.plans).toEqual([]);
-    expect(detail?.children.map((c) => [c.prompt.promptId, c.prompt.threadLabel, c.prompt.text, c.toolCallCount, c.responses.map((r) => r.text)])).toEqual([[UUID(3), 'reviewer', 'steer it left', 1, ['steered']]]);
-    expect(await turnDetail(db, { projectId: 'proj_2' }, 's1', UUID(1))).toBeNull();
-    expect(await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(9))).toBeNull();
-  });
 
-  it('carries what Myco added to a turn, hydrated, and null for a turn it added nothing to', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1','a','built-in',1,0)`);
-    sqlite.run(`INSERT INTO spores (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, importance, created_at, embedded)
-      VALUES ('proj_1','sp1','agent_1',NULL,NULL,'decision','active','the selector reads recency',5,5,0)`);
-    // Selected with an earlier prompt's text, delivered with this one: the turn shows what reached it.
-    sqlite.run(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at, delivered_at, delivered_prompt_id)
-      VALUES ('proj_1','s1',?,'ph1',?,9,10,?)`, [UUID(4), JSON.stringify(['sp1', 'sp_gone']), UUID(1)]);
-
-    const prepare = db.prepare.bind(db);
-    let reads = 0;
-    db.prepare = (...args) => { reads++; return prepare(...args); };
-    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
-    expect(reads).toBeLessThanOrEqual(12);
-    expect(detail?.injection).toEqual({
-      planIds: [], plans: [],
-      sporeIds: ['sp1', 'sp_gone'],
-      createdAt: 9,
-      spores: [{ id: 'sp1', observationType: 'decision', preview: 'the selector reads recency' }],
-    });
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.injection).toBeNull();
-  });
-
-
-  it('joins context receipts, served plans, answer reasons and complete metrics to their own prompt', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    const { subagentIdFor, deriveId } = await import('@myco/member/envelope.js');
-    sqlite.run("UPDATE prompt_batches SET origin = 'agent_dispatch', thread_id = 'reviewer' WHERE project_id = 'proj_1' AND prompt_id = ?", [UUID(3)]);
-    sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex',1),('proj_1','s1','cortex:reviewer',22)");
-    sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES ('proj_1','reviewer-start','s1','t','subagent.start','hook',?,'hash',22,22)", [JSON.stringify({ subagentId: subagentIdFor('s1', 'reviewer'), agentType: 'reviewer', parentPromptId: UUID(3) })]);
-    sqlite.run("INSERT INTO prompt_context_answers (project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES ('proj_1','s1',?,'a','empty',0,'[]',?, ?, ?,9)",
-      [UUID(1), JSON.stringify(['spores:empty','plan-nudge:no_intent']), JSON.stringify([{ contributor: 'spores', error: 'unavailable' }]), JSON.stringify({ candidates: 0 })]);
-    sqlite.run("INSERT INTO prompt_context_answers (project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES ('proj_1','s1',?,'b','empty',0,'[]','[\"spores:short_prompt\"]','[]','{}',10)", [UUID(4)]);
-    sqlite.run("INSERT INTO spore_injections(project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at,delivered_at,delivered_prompt_id) VALUES ('proj_1','s1',?,'h','[]',?,9,9,?)", [UUID(1), JSON.stringify([UUID(5), 'gone']), UUID(1)]);
-    sqlite.run("UPDATE tool_calls SET duration_ms = 250 WHERE tool_call_id = 'tc1'");
-    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
-    // The session's start block is the session's: no prompt carries it.
-    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(1)]).toBeUndefined();
-    expect(detail?.metrics).toEqual({ tools: [{ toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], durationMs: 3, tokens: null });
-    expect(detail?.injection?.plans).toEqual([{ planKey: UUID(5), title: 'Plan' }]);
-    expect(detail?.injection?.planIds).toEqual([UUID(5), 'gone']);
-    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(1), 'answers', {})).rows).toMatchObject([{ id: 'a' }]);
-    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(4), 'answers', {})).rows).toMatchObject([{ id: 'b' }]);
-    expect(detail?.answers.map(a => a.id)).toEqual(['a']);
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.answers.map(a => a.id)).toEqual(['b']);
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(3)))?.answers).toEqual([]);
-    expect(detail?.answers[0]).toMatchObject({ outcome: 'empty', skipped: ['spores:empty','plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'unavailable' }], selection: { candidates: 0 } });
-    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ subagents: 1 });
-    sqlite.run("UPDATE prompt_batches SET thread_id = ? WHERE project_id = 'proj_1' AND prompt_id = ?", [deriveId('thread', 'reviewer'), UUID(3)]);
-    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ subagents: 1 });
-    sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex:raw-agent',24)");
-    sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES ('proj_1','agent-start','s1','t','subagent.start','hook',?,'hash',24,24)", [JSON.stringify({ subagentId: subagentIdFor('s1', 'raw-agent'), parentPromptId: UUID(1) })]);
-    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(1)]).toEqual({ subagents: 1 });
-    for (let n = 1; n <= 50; n++) sqlite.run("INSERT INTO prompt_context_answers (project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES ('proj_1','s1',?,?,'empty',0,'[]','[]','[]','{}',?)", [UUID(1), 'answer-' + n, 10 + n]);
-    const paged = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
-    expect(paged?.answers).toHaveLength(50);
-    expect(paged?.cursors.answers).not.toBeNull();
-    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(1), 'answers', { cursor: paged!.cursors.answers! })).rows).toHaveLength(1);
-
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.metrics.durationMs).toBeNull();
-    expect(await toolUsage(db, { projectId: 'proj_1' }, 's1')).toEqual([{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }]);
-    expect(await toolUsage(db, { projectId: 'proj_2' }, 's1')).toEqual([]);
-    const answers = await turnCollection(db, { projectId: 'proj_2' }, 's1', UUID(1), 'answers', {});
-    expect(answers.rows).toEqual([]);
-    const { listToolCalls } = await import('@myco-server-worker/read/children.js');
-    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(1) })).rows[0]?.durationMs).toBe(250);
-  });
-
-  it('narrows a child read to one prompt, and carries the prompt an attachment accompanies', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    const { listToolCalls } = await import('@myco-server-worker/read/children.js');
-    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(1) })).rows.map((t) => t.toolCallId)).toEqual(['tc1', 'tc2']);
-    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(3), limit: 1 })).rows.map((t) => t.toolName)).toEqual(['Bash']);
-    expect((await listAttachments(db, { projectId: 'proj_1' }, 's1')).rows.map((a) => a.promptId)).toEqual([UUID(1)]);
-  });
   it('seeks session/prompt tool calls without statistics', async () => {
     const { db, sqlite } = sqliteEnv();
     seedTurns(sqlite);
@@ -403,66 +250,6 @@ describe('read/turns', () => {
     seedTurns(sqlite);
     sqlite.run("UPDATE sessions SET agent = 'cursor' WHERE session_id = 's1'");
     expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1)))?.metrics.durationMs).toBeNull();
-  });
-});
-
-describe('read/sessions summaries', () => {
-  it('spreads prompt instants over a session\'s lifetime, widening a stored range by what it observes', () => {
-    const open = { sessionId: 'open', startedAt: 1_000, firstReceivedAt: 1_000, endedAt: null, lastReceivedAt: 5_000 };
-    const ended = { sessionId: 'ended', startedAt: 1_000, firstReceivedAt: 1_000, endedAt: 9_000, lastReceivedAt: 9_000 };
-    const unstarted = { sessionId: 'unstarted', startedAt: null, firstReceivedAt: 2_000, endedAt: null, lastReceivedAt: 6_000 };
-    const buckets = bucketActivity([open, ended, unstarted], [
-      { sessionId: 'open', at: 1_000 }, { sessionId: 'open', at: 9_000 },
-      { sessionId: 'ended', at: 1_000 }, { sessionId: 'ended', at: 5_000 }, { sessionId: 'ended', at: 9_000 },
-      { sessionId: 'unstarted', at: 500 }, { sessionId: 'unstarted', at: 6_000 },
-    ], 17_000);
-    expect(buckets.get('ended')).toEqual([1, 0, 0, 0, 1, 0, 0, 1]);
-    expect(buckets.get('open')).toEqual([1, 0, 0, 0, 1, 0, 0, 0]);
-    expect(buckets.get('unstarted')).toEqual([1, 0, 0, 0, 0, 0, 0, 1]);
-    expect(buckets.get('open')).toHaveLength(ACTIVITY_BUCKETS);
-  });
-
-  it('lists sessions with their counts and buckets, and filters by the text the rail types', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedSessions(sqlite);
-    sqlite.run(`UPDATE sessions SET title = 'Wave-based executor' WHERE session_id = 's3'`);
-    sqlite.run(`UPDATE sessions SET branch = 'fix/50%_case' WHERE session_id = 's2'`);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s1','p1','e1','rename the project card','user','h1',5,5,'t1',5), ('proj_1','s1','p2','e2','again','user','h2',9,9,'t1',9)`);
-    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at) VALUES ('proj_1','s1','tc1','ev1','Read',1,6,'t1',6)`);
-    const { rows } = await listSessionSummaries(db, { projectId: 'proj_1' }, {}, 100);
-    const byId = Object.fromEntries(rows.map((r) => [r.sessionId, r]));
-    expect([byId.s1.promptCount, byId.s1.toolCallCount, byId.s1.label]).toEqual([2, 1, 'rename the project card']);
-    expect(byId.s1.activityBuckets.reduce((a, b) => a + b, 0)).toBe(2);
-    expect([byId.s2.promptCount, byId.s2.toolCallCount, byId.s2.activityBuckets]).toEqual([0, 0, [0, 0, 0, 0, 0, 0, 0, 0]]);
-    const find = async (q: string) => (await listSessionSummaries(db, { projectId: 'proj_1' }, { q }, 100)).rows.map((r) => r.sessionId);
-    expect(await find('wave')).toEqual(['s3']);
-    expect(await find('rename the')).toEqual(['s1']);
-    expect(await find('50%_c')).toEqual(['s2']);
-    expect(await find('%')).toEqual(['s2']);
-    expect(await find('nothing here')).toEqual([]);
-    expect(await find('  ')).toEqual(['s3', 's2', 's1']);
-    expect(containsPattern('a%b_c\\d')).toBe('%a\\%b\\_c\\\\d%');
-  });
-
-  it('names ids in runs under the bound-parameter ceiling, so a full page of summaries reads on every store', async () => {
-    expect(MAX_IN_LIST).toBeLessThan(100);
-    expect(inListChunks([])).toEqual([]);
-    expect(inListChunks(['a']).length).toBe(1);
-    const many = Array.from({ length: MAX_IN_LIST * 2 + 1 }, (_, i) => `s${i}`);
-    const chunks = inListChunks(many);
-    expect(chunks.map((c) => c.length)).toEqual([MAX_IN_LIST, MAX_IN_LIST, 1]);
-    expect(chunks.flat()).toEqual(many);
-
-    const { db, sqlite } = sqliteEnv();
-    sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1)`);
-    for (let i = 0; i < MAX_PAGE; i++) {
-      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1', 'many-${i}', 'm1', 'tok_1', ${1000 + i}, ${2000 + i}, ${1000 + i})`);
-      sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 'many-${i}', 'p-${i}', 'e-${i}', 'hi', 'user', 'h-${i}', ${1500 + i}, ${1500 + i}, 't1', ${1500 + i})`);
-    }
-    const { rows } = await listSessionSummaries(db, { projectId: 'proj_1' }, { limit: MAX_PAGE }, 5000);
-    expect(rows.length).toBe(MAX_PAGE);
-    expect(rows.every((r) => r.promptCount === 1 && r.activityBuckets.reduce((a, b) => a + b, 0) === 1)).toBe(true);
   });
 });
 

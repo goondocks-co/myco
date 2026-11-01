@@ -4,15 +4,12 @@ import { contentAssertion } from '../core/registered-content.js';
 import { measuredContentEnv, remainingInvocationBudget, CONTENT_WAKE_JOB_RESERVE, CONTENT_BLOB_LIMIT } from '../core/content-budget.js';
 import { LEGACY_CLASS_TABLES, legacyRowSql, unverifiedRowSql, CLASSIFIED_AT_SQL } from '../db/schema-v106.js';
 import { PARSERS } from './parsers/registry.js';
-import { PARSER_VERSION, parseTranscripts, pendingTranscripts, recentLegacyWork } from './parse.js';
+import { PARSER_VERSION, pendingTranscripts, recentLegacyWork } from './parse.js';
 import { requestViewRebuild } from './view-lifecycle.js';
 import { runViewParseJob } from './view-run.js';
-import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET, VIEW_RECENT_MS, CUTOVER_SESSIONS_IN_FLIGHT } from './view-build-queue.js';
+import { SERIAL_VIEW_BUDGET, PARALLEL_VIEW_BUDGET } from './view-build-queue.js';
 import { productionFlipEnvelope } from './view-flip-calibration.js';
-import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { copyFrozenPage, startFrozenTail } from './view-frozen.js';
-import { publishDocuments } from './publish.js';
-import { CONVERTIBLE_SQL } from './document-convertible.js';
 
 /** The hosted relational store holds at most 10 GB; the batch stops building at this size and keeps extending published sessions. */
 export const VIEW_CUTOVER_PAUSE_BYTES = 9_000_000_000;
@@ -204,14 +201,6 @@ async function cutoverShare(env: ServerEnv, now: number, legacySince?: number): 
   return waiting ? halfShare(env) : env;
 }
 
-/** Sessions that predate documents still wait for conversion, counted as conversion selects them. */
-export async function conversionBacklog(db: RelationalStore): Promise<boolean> {
-  const row = await db
-    .prepare(`SELECT EXISTS(SELECT 1 FROM session_documents d WHERE ${CONVERTIBLE_SQL}) backlog`)
-    .first<{ backlog: number }>();
-  return row?.backlog === 1;
-}
-
 /**
  * The batch holds a backlog: more sessions it can build now than one sweep page queues, and no headroom pause. Sessions
  * captured on a converted Deployment arrive fewer at a time.
@@ -283,62 +272,4 @@ export async function runViewCutoverWake(
     )
     .first<{ pending: number }>();
   return { changed, more: !stopped && (!classified || pending?.pending === 1), progressed };
-}
-
-/**
- * The transcript-parse job. The batch runs before the legacy pass, which keeps its own wall. On a full wake the batch
- * reads within the wake's content wall, which the jobs after it share; a wake that only drains gives it its own wall.
- * While the batch holds a backlog, it builds `CUTOVER_SESSIONS_IN_FLIGHT` sessions side by side and, after a wake that
- * moved it on, asks for the next wake at `BACKLOG_CHAINED_WAKE_MS`; the legacy pass then reads only recently received
- * transcripts and its own backlog waits for the batch. A backlog that moved nowhere (every session refused publication,
- * say) takes no wake of its own: it waits for the next full wake, and the legacy pass serves every lane. A batch failure
- * is reported once the legacy pass has run. The document publisher runs last, on its own frontiers, and its failure is
- * reported after the batch's.
- *
- * While sessions wait for conversion, the batch builds nothing new and only extends published sessions, within the
- * wake's content wall; the document publisher follows, within half of what the wake has left and before the legacy
- * pass, which reads only recently received transcripts; and a wake whose conversion moved on asks for the next at
- * `BACKLOG_CHAINED_WAKE_MS`.
- */
-export async function runTranscriptParseWake(
-  env: ServerEnv,
-  now: number,
-  _state?: unknown,
-  context?: { drainOnly: boolean },
-): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
-  const converting = await conversionBacklog(env.db),
-    backlog = !converting && await cutoverBacklog(env.db),
-    recentSince = backlog || converting ? now - VIEW_RECENT_MS : undefined;
-  const publish = (target: ServerEnv) => publishDocuments(target, now, {
-    calls: env.platform.jobBudget.calls,
-    deadline: Date.now() + env.platform.jobBudget.wallMs,
-    clock: Date.now,
-  }).then(
-    (report) => ({ report }),
-    (error: unknown) => ({ error }),
-  );
-  const views = await runViewCutoverWake(env, now, databaseBytes, {
-    legacySince: recentSince,
-    ownWall: context?.drainOnly === true,
-    inFlight: backlog ? CUTOVER_SESSIONS_IN_FLIGHT : 1,
-    stopBuilds: converting,
-  }).then(
-    (report) => ({ report }),
-    (error: unknown) => ({ error }),
-  );
-  const converted = converting ? await publish(halfShare(env)) : undefined;
-  const yielding = converting || 'error' in views || views.report.progressed;
-  const legacy = await parseTranscripts(env, now, { recentSince: yielding ? recentSince : undefined });
-  const documents = converted ?? await publish(env);
-  if ('error' in views) throw views.error;
-  if ('error' in documents) throw documents.error;
-  const chained = converting
-    ? documents.report.more && documents.report.changed > 0
-    : backlog && views.report.more && views.report.progressed;
-  return {
-    ...legacy,
-    changed: legacy.changed + views.report.changed + documents.report.changed,
-    more: legacy.more || documents.report.more || (views.report.more && (views.report.progressed || !backlog)),
-    ...(chained ? { continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : {}),
-  };
 }

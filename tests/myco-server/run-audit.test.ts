@@ -21,7 +21,7 @@ import { readAttention } from '@myco-server-worker/core/attention.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { memberHeaders, memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { convertFixture, memberHeaders, memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
@@ -47,6 +47,7 @@ async function rig() {
   const claimedTitling = async () => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'add a retry to the runner', 'user', 'h1', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
+    await convertFixture(e);
     expect((await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now: NOW + 1, origin: ORIGIN })).outcome).toBe('queued');
     const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 2 });
     if (!claimed.claimed) throw new Error('the titling run was not claimed');

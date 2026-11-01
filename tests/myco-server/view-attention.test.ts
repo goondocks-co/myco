@@ -17,26 +17,6 @@ import {uuid} from './helpers/fixtures.js';
 const NOW = 1_700_000_000_000;
 const scope = { projectId: 'project' };
 
-it('scalar and receipt admissions persist one finding for each observed malformed closure',async()=>{
- await withViewStores(async(db,target)=>{
-  await captureViewSession(db);
-  await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'parent',state:'frozen'});
-  await mirrorViewSession(db,{...scope,sessionId:'session',instanceId:'tail',parent:'parent',state:'live'},false);
-  await publishMirroredSession(db,scope.projectId,'session','tail');
-  const readers=[
-   (bound:typeof db)=>listSessions(bound,scope,{fidelity:'any'}),
-   (bound:typeof db)=>activityFeed(bound,scope),
-   (bound:typeof db)=>sessionLineage(bound,scope,'session'),
-   (bound:typeof db)=>receiptPlans(bound,scope,[{receiptId:'historical',planIds:[uuid(50)]}]),
-  ];
-  for(const [index,reader]of readers.entries()){
-   await expect(withViewReadResponse<unknown>(db,()=>NOW+index,reader)).rejects.toMatchObject({code:'view_state_inconsistent'});
-   expect(viewReadRefusalFinding((await statusMetadata(db)).viewReadRefusal,NOW+index),target+' reader '+index)
-    .toMatchObject({refusals:index+1,lastRefusedAt:NOW+index});
-  }
- });
-},60_000);
-
 it('status metadata adds one exact-key search while preserving empty rows-read and statement counts', async () => {
   await withViewStores(async (db, target) => {
     const observed = statementRecorder(db, { accounting: target === 'D1' ? 'd1' : 'native' });

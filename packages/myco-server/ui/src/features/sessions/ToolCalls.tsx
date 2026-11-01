@@ -1,6 +1,6 @@
 import { CheckCircle2, XCircle } from 'lucide-react';
 import { Button, Disclosure, ExternalLink, Skeleton } from '../../design';
-import { processedBodyUrl, useTurnToolCalls, type ToolCallRow } from '../../hooks/use-sessions';
+import { processedBodyUrl, useTurnToolCalls, type ToolCallRow, type ToolSummary as ToolSummaryRow } from '../../hooks/use-sessions';
 import { formatBytes, formatMillis } from '../../lib/format';
 import { count } from './words';
 
@@ -17,7 +17,7 @@ function firstFile(row: ToolCallRow): string | null {
 
 const block = 'max-h-[256px] overflow-auto whitespace-pre-wrap break-words rounded-control border border-line bg-page px-s3 py-s2 t-mono text-ink-2';
 
-function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow }) {
+function ToolCallItem({ projectId, sessionId, row }: { projectId: string; sessionId: string; row: ToolCallRow }) {
   const file = firstFile(row);
   const hasDetail = row.inputPreview !== null || row.inputBlobKey !== null || row.outputPreview !== null || row.outputBlobKey !== null || row.errorMessage !== null;
   return (
@@ -44,7 +44,7 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
               {row.inputPreview !== null && (
                 <pre className={block}>{row.inputPreview}{row.inputTruncated ? '…' : ''}</pre>
               )}
-              {(row.inputTruncated || row.inputBlobKey !== null) && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId })} className="w-fit t-small">Full input</ExternalLink>}
+              {(row.inputTruncated || row.inputBlobKey !== null) && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId, at: row.locator === undefined ? undefined : { ...row.locator, sessionId } })} className="w-fit t-small">Full input</ExternalLink>}
             </div>
           )}
           {(row.outputPreview !== null || row.outputBlobKey !== null) && (
@@ -66,11 +66,43 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
   );
 }
 
-/** The tool calls a prompt led to, folded away; nothing is read until they open. */
-export function ToolCalls({ projectId, sessionId, promptId, total }: { projectId: string; sessionId: string; promptId: string; total: number }) {
-  if (total === 0) return null;
+/** A prompt's tool calls in brief: Myco calls named, every failure shown with its error, and the files changed. */
+export function ToolSummary({ projectId, sessionId, summary }: { projectId: string; sessionId: string; summary: ToolSummaryRow }) {
+  if (summary.total === 0) return null;
   return (
-    <Disclosure summary={<span data-testid="tool-calls-toggle">{count(total, 'tool call')}</span>}>
+    <div className="flex flex-col gap-s2 t-small" data-testid="tool-summary">
+      {!summary.complete && <p className="text-muted">Covers the start of this turn. Open the tool calls for the rest.</p>}
+      {summary.myco.length > 0 && (
+        <ul className="flex flex-wrap gap-s2" aria-label="Myco tool calls">
+          {summary.myco.map((call) => (
+            <li key={`${call.tool}:${call.op ?? ''}`} className="rounded-control border border-line-strong bg-surface-2 px-s2 py-s1 t-mono text-ink">
+              {call.tool}{call.op !== null ? ` · ${call.op}` : ''}{call.count > 1 ? ` ×${call.count}` : ''}{call.failed > 0 ? ` · ${count(call.failed, 'failure')}` : ''}
+            </li>
+          ))}
+        </ul>
+      )}
+      {summary.failures.length > 0 && (
+        <ul className="flex flex-col gap-s1" aria-label="Failed tool calls">
+          {summary.failures.map((row) => <ToolCallItem key={row.toolCallId} projectId={projectId} sessionId={sessionId} row={row} />)}
+          {summary.failed > summary.failures.length && <li className="text-muted">{count(summary.failed - summary.failures.length, 'more failure')}</li>}
+        </ul>
+      )}
+      {summary.files.length > 0 && (
+        <Disclosure summary={<span>{count(summary.files.length, 'file')} changed</span>}>
+          <ul className="flex flex-col t-mono text-muted" aria-label="Files changed">
+            {summary.files.map((file) => <li key={file} className="truncate">{file}</li>)}
+          </ul>
+        </Disclosure>
+      )}
+    </div>
+  );
+}
+
+/** The tool calls a prompt led to, folded away; nothing is read until they open. `partial` keeps them reachable when `total` may miss some. */
+export function ToolCalls({ projectId, sessionId, promptId, total, partial = false }: { projectId: string; sessionId: string; promptId: string; total: number; partial?: boolean }) {
+  if (total === 0 && !partial) return null;
+  return (
+    <Disclosure summary={<span data-testid="tool-calls-toggle">{total === 0 ? 'Tool calls' : count(total, 'tool call')}</span>}>
       <ToolCallList projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} />
     </Disclosure>
   );
@@ -82,13 +114,13 @@ function ToolCallList({ projectId, sessionId, promptId, total }: { projectId: st
     <div className="flex flex-col gap-s2 rounded-control border border-line bg-surface-1 p-s1">
       {calls.isPending && (
         <div role="status" aria-label="Loading tool calls" className="flex flex-col gap-s2 p-s2">
-          {Array.from({ length: Math.min(total, 3) }).map((_, i) => <Skeleton key={i} className="h-s4 w-full" />)}
+          {Array.from({ length: Math.min(Math.max(total, 1), 3) }).map((_, i) => <Skeleton key={i} className="h-s4 w-full" />)}
         </div>
       )}
       {calls.error && <p className="p-s2 t-small text-bad">The tool calls could not be read.</p>}
       {calls.rows.length > 0 && (
         <ul aria-label="Tool calls" className="flex flex-col">
-          {calls.rows.map((row) => <ToolCallItem key={row.toolCallId} projectId={projectId} row={row} />)}
+          {calls.rows.map((row) => <ToolCallItem key={row.toolCallId} projectId={projectId} sessionId={sessionId} row={row} />)}
         </ul>
       )}
       {calls.hasMore && <Button size="sm" variant="ghost" className="w-fit" pending={calls.isFetchingMore} onClick={calls.more}>Show more</Button>}
