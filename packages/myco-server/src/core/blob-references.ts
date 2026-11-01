@@ -1,3 +1,4 @@
+import { eventPayloadFieldSql } from '../db/document-tables.js';
 /**
  * The blob reference catalogue and the held check every cleanup makes.
  *
@@ -59,7 +60,7 @@ export const BUNDLE_REFERENCES: readonly ReferenceColumns[] = [
 /** The stored key selected by one declared reference. */
 export function blobReferenceColumn(ref: ReferenceColumns, alias?: string): string {
   const column=alias===undefined?ref.column:`${alias}.${ref.column}`;
-  return ref.jsonField===undefined?column:`json_extract(${column},'$.${ref.jsonField}')`;
+  return ref.jsonField===undefined?column:eventPayloadFieldSql(ref.jsonField,alias===undefined?'':`${alias}.`);
 }
 export function referencedBlobValue(ref: ReferenceColumns, row: Readonly<Record<string,unknown>>): unknown {
   const value=row[ref.column];

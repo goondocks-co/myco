@@ -1,4 +1,4 @@
-import { RETIRED_CONTENT_TABLES } from '@myco-server-worker/db/schema-v117.js';
+import { RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -129,7 +129,10 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
-  '0117_v117.sql': '872069e44316d0527c3397369373407f000bb029d8a7a8bc4d8abb4139058261',
+  '0117_v117.sql': '4313249c52205cab295f9a9d94e88997859905169ef75fe76267ae51d43f8742',
+  '0118_v118.sql': 'f67d20715d48958b2fee095660203d95e11bd651fe7ae0670c1e6ea69a345dde',
+  '0119_v119.sql': 'd704b38c014b738c302c06b67627073ee1b2b33d569a3ed0c072c054a7a084db',
+  '0120_v120.sql': 'a5a857afc9369f5cad903cbdec47bdf90d6fbd68179a84a45bfe5c15d55be8e9',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -650,7 +653,7 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
-            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || SCHEMA_STEPS[n]!.version === 117 })
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -899,6 +902,17 @@ it('retires content storage only after documents are live, preserving the catalo
     expect(version(sqlite)).toBe('115');
     sqlite.run(`UPDATE session_documents SET state='live',generation=1 WHERE project_id='retirement'`);
     sqlite.run(`UPDATE raw_provenance_backfill SET source=5,cursor_project='retirement',cursor_id='old',complete=0 WHERE id=1`);
+    sqlite.run(`INSERT INTO view_instances(project_id,session_id,instance_id,parser_version,base,state,created_at) VALUES('retirement','session','instance',1,'full','live',1)`);
+    sqlite.run(`INSERT INTO view_checkpoints(project_id,session_id,instance_id,transcript_id,ordinal,start_offset,parsed_offset) VALUES('retirement','session','instance','transcript',0,0,10)`);
+    sqlite.run(`INSERT INTO view_checkpoint_chunks(project_id,session_id,instance_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload) VALUES('retirement','session','instance','transcript',10,0,1,'{}')`);
+    for(const sql of retirement.statements.filter(sql=>sql.startsWith('WITH backfill'))){
+      const explain=sqlite.prepare('EXPLAIN QUERY PLAN '+sql);
+      try {
+        const plan=explain.all().map(row=>(row as {detail:string}).detail).join('\n');
+        expect(plan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
+        expect(plan).not.toContain('CORRELATED');
+      }finally{explain.finalize();}
+    }
     step(sqlite, retirement);
     for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).toBeNull();
     expect(sqlite.query(`SELECT session_id FROM sessions WHERE project_id='retirement'`).get()).toEqual({session_id:'session'});

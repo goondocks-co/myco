@@ -1,4 +1,4 @@
-import { documentRecordIdSql, liveDocumentPromptSql, documentPromptUnreadSql, sessionDocumentUnreadSql } from './document-tables.js';
+import { documentRecordIdSql, eventPayloadFieldSql, liveDocumentPromptSql, documentPromptUnreadSql, sessionDocumentUnreadSql } from './document-tables.js';
 /** Content relations retired after every session has a live document. */
 export const RETIRED_CONTENT_TABLES = [
   "prompt_batches",
@@ -35,7 +35,7 @@ export const RETIRED_CONTENT_TABLES = [
   "view_instances"
 ] as const;
 
-const retiredTriggers = [
+export const RETIRED_CONTENT_TRIGGERS = [
   "clear_inline_parser_chunks",
   "extraction_acks_session_read_insert",
   "plans_legacy_class_insert",
@@ -69,34 +69,53 @@ const documentCounters = [
 
 /** Retained content must be published before its relational source can be removed. */
 export const V117_STATEMENTS: readonly string[] = [
-  `CREATE TABLE IF NOT EXISTS _v117_documents_guard (missing INTEGER NOT NULL CONSTRAINT documents_retirement_incomplete CHECK (missing=0))`,
+  `CREATE TABLE IF NOT EXISTS _v117_documents_guard (missing INTEGER NOT NULL CONSTRAINT "documents_retirement_incomplete: finish and verify conversion with the previous release before upgrading" CHECK (missing=0))`,
   `UPDATE session_documents SET state='live',generation=COALESCE(generation,1),due_at=0 WHERE state='convert' AND prompts=0 AND replies=0 AND tool_calls=0 AND plans=0 AND attachments=0
     AND NOT EXISTS(SELECT 1 FROM session_chunks c WHERE c.project_id=session_documents.project_id AND c.session_id=session_documents.session_id)
     AND NOT EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=session_documents.project_id AND p.session_id=session_documents.session_id)
     AND NOT EXISTS(SELECT 1 FROM responses r WHERE r.project_id=session_documents.project_id AND r.session_id=session_documents.session_id)
     AND NOT EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=session_documents.project_id AND t.session_id=session_documents.session_id)
     AND NOT EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=session_documents.project_id AND t.session_id=session_documents.session_id AND t.size>0)`,
-  `INSERT INTO _v117_documents_guard SELECT COUNT(*) FROM sessions s
-    WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)
-      AND (EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id=s.project_id AND p.session_id=s.session_id)
-        OR EXISTS (SELECT 1 FROM responses r WHERE r.project_id=s.project_id AND r.session_id=s.session_id)
-        OR EXISTS (SELECT 1 FROM tool_calls c WHERE c.project_id=s.project_id AND c.session_id=s.session_id)
-        OR EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id=s.project_id AND d.session_id=s.session_id AND d.state<>'live'))
-      AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id=s.project_id AND d.session_id=s.session_id AND d.state='live')`,
+  `INSERT INTO _v117_documents_guard
+    WITH retained AS (SELECT project_id,session_id FROM prompt_batches UNION SELECT project_id,session_id FROM responses
+      UNION SELECT project_id,session_id FROM tool_calls UNION SELECT project_id,session_id FROM session_documents WHERE state<>'live')
+    SELECT COUNT(*) FROM retained r WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=r.project_id AND t.session_id=r.session_id)
+      AND (NOT EXISTS (SELECT 1 FROM sessions s WHERE s.project_id=r.project_id AND s.session_id=r.session_id)
+        OR NOT EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id=r.project_id AND d.session_id=r.session_id AND d.state='live'))`,
+  `INSERT INTO _v117_documents_guard SELECT COUNT(*) FROM session_documents d
+    WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
+      AND (d.build IS NOT NULL AND NOT json_valid(d.build) OR EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_valid(d.build) THEN d.build ELSE '{}' END,'$.report.classes') c
+        WHERE c.value>0 AND (c.key IN ('unplaced','unresolved_prompt') OR c.key LIKE 'ids_differ:%'
+          OR c.key LIKE 'body_differs:%' OR c.key LIKE 'plan_not_promoted%')))`,
   `DROP TABLE _v117_documents_guard`,
-  `UPDATE events SET payload=json_set(payload,'$.promptId',(SELECT prompt_id FROM prompt_batches p WHERE p.project_id=events.project_id AND p.event_id=events.event_id))
-    WHERE kind='prompt' AND payload_format='archived' AND json_extract(payload,'$.promptId') IS NULL`,
-  `UPDATE events SET payload=json_set(payload,'$.responseId',(SELECT response_id FROM responses r WHERE r.project_id=events.project_id AND r.event_id=events.event_id))
-    WHERE kind='response' AND payload_format='archived' AND json_extract(payload,'$.responseId') IS NULL`,
-  `UPDATE events SET payload=json_set(payload,'$.toolCallId',(SELECT tool_call_id FROM tool_calls t WHERE t.project_id=events.project_id AND t.event_id=events.event_id))
-    WHERE kind IN ('tool.use','tool.failure') AND payload_format='archived' AND json_extract(payload,'$.toolCallId') IS NULL`,
-  `CREATE INDEX IF NOT EXISTS idx_events_record_identity ON events(project_id,${documentRecordIdSql()}) WHERE kind IN ('prompt','response','tool.use','tool.failure')`,
-  `CREATE INDEX IF NOT EXISTS idx_events_payload_blob ON events(project_id,json_extract(payload,'$.blob')) WHERE json_extract(payload,'$.blob') IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS idx_events_payload_output_blob ON events(project_id,json_extract(payload,'$.outputBlob')) WHERE json_extract(payload,'$.outputBlob') IS NOT NULL`,
-  ...retiredTriggers.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
+  ...[
+    {table:'prompt_batches',id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},
+    {table:'responses',id:'response_id',field:'responseId',blob:'blob_key',kinds:"'response'"},
+    {table:'tool_calls',id:'tool_call_id',field:'toolCallId',blob:'input_blob_key',kinds:"'tool.use','tool.failure'"},
+  ].map(({table,id,field,blob,kinds})=>`WITH backfill AS MATERIALIZED (
+      SELECT p.project_id,p.event_id,json_set(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
+        '$.${field}',COALESCE(${eventPayloadFieldSql(field,'e.')},p.${id}),
+        '$.blob',COALESCE(${eventPayloadFieldSql('blob','e.')},p.${blob})${table==='tool_calls'?`,
+        '$.outputBlob',COALESCE(${eventPayloadFieldSql('outputBlob','e.')},p.output_blob_key)`:''}) payload
+      FROM ${table} p CROSS JOIN events e
+      WHERE e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN (${kinds}) AND e.payload_format='archived')
+    UPDATE events AS e SET payload=b.payload FROM backfill b WHERE e.project_id=b.project_id AND e.event_id=b.event_id`),
+  ...RETIRED_CONTENT_TRIGGERS.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
   ...RETIRED_CONTENT_TABLES.map((name) => `DROP TABLE IF EXISTS ${name}`),
   `UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0`,
   'ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT',
   `CREATE INDEX IF NOT EXISTS idx_transcript_publication_failed ON transcript_publication(project_id,failure,updated_at) WHERE state='failed'`,
   ...documentCounters,
+];
+
+/** Each event index is built in its own migration transaction. */
+export const V118_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS idx_events_record_identity ON events(project_id,${documentRecordIdSql()}) WHERE kind IN ('prompt','response','tool.use','tool.failure')`,
+];
+export const V119_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS idx_events_payload_blob ON events(project_id,${eventPayloadFieldSql('blob')}) WHERE ${eventPayloadFieldSql('blob')} IS NOT NULL`,
+];
+export const V120_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS idx_events_payload_output_blob ON events(project_id,${eventPayloadFieldSql('outputBlob')}) WHERE ${eventPayloadFieldSql('outputBlob')} IS NOT NULL`,
 ];

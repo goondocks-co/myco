@@ -1,3 +1,6 @@
+import { ingestEvent } from '../packages/myco-server/src/ingest/events.js';
+import { publishDocuments } from '../packages/myco-server/src/ingest/publish.js';
+import { SERVER_PROTOCOL } from '../packages/myco-server/src/constants.js';
 /** Opt-in native low-tier title gate. All four harness homes must be inside MYCO_TITLING_SMOKE_ROOT. */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -84,8 +87,13 @@ try {
   await settingsWriter(deployment.env.db).setLeaf('agent.harnesses.claude-code.credential', 'worker-login', 'mem_title_smoke', now);
   const seed = new Database(databasePath);
   seed.run('INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [projectId, sessionId, 'machine_title_smoke', credential.tokenId, now, now, 'claude-code', 'main', now, now]);
-  seed.run('INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [projectId, sessionId, 'prompt_title_smoke', 'event_title_smoke', 'Add a bounded retry around a transient runner connection failure. The retry was implemented and its regression gate passed.', 'user', 'smoke', now, now, credential.tokenId, now]);
   seed.close();
+  const prompt = await ingestEvent(deployment.env.db, {projectId,machineId:'machine_title_smoke',tokenId:credential.tokenId,bodyBytes:0,now}, {
+    eventId:crypto.randomUUID(),sessionId,kind:'prompt',createdAt:now,channel:'cli',producer:{adapter:'claude',version:String(SERVER_PROTOCOL)},
+    payload:{promptId:crypto.randomUUID(),text:'Add a bounded retry around a transient runner connection failure. The retry was implemented and its regression gate passed.',origin:'user'},
+  },deployment.env);
+  assert(prompt.persisted, 'The native Deployment must admit the smoke prompt');
+  await publishDocuments(deployment.env,now,{calls:500,clock:Date.now,deadline:Date.now()+60_000});
   const origin = `http://127.0.0.1:${deployment.port}`;
   assert.equal((await titleSession(deployment.env, { projectId, sessionId, now, origin })).outcome, 'queued');
   const claimed = await claimNextRun(deployment.env, { tokenId: credential.tokenId, machineId: 'machine_title_smoke', harnesses: offerOf([{ id: 'claude-code', installed: true, authenticated: true }]).offered, capabilities: WORKER_CAPABILITIES, now: Date.now() });

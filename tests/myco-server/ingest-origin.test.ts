@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
  * Who the Deployment writes as, and what that changes.
  *
@@ -160,4 +161,16 @@ describe('planned writes', () => {
     expect(outcomes.every((o) => o.persisted)).toBe(true);
     expect(count(sqlite, 'events')).toBe(4);
   });
+});
+
+it('admits ordinary capture while import is disabled', async () => {
+  const r=await rig();
+  try {
+    await settingsWriter(r.db).setLeaf('import.enabled',false,'mem_machine_1',NOW);
+    await r.db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('proj_1',?,1,'text/plain',?,?,?)`).bind('b'.repeat(64),r.tokenId,NOW,uuid(998)).run();
+    const event=envelope({kind:'transcript.segment',payload:{transcriptId:'tx_'+'a'.repeat(32),agent:'cursor',blob:'b'.repeat(64),baseOffset:0,length:1}});
+    expect((await ingestEvent(r.db,ctxFor(r.tokenId),event)).persisted).toBe(true);
+    const refused=await ingestEvent(r.db,ctxFor(r.tokenId),{...event,eventId:uuid(999),sessionId:'imported',channel:'import',payload:{...(event.payload as Record<string,unknown>),transcriptId:'tx_'+'c'.repeat(32)}});
+    expect(refused).toMatchObject({persisted:false,code:'import_disabled'});
+  }finally{r.sqlite.close();}
 });

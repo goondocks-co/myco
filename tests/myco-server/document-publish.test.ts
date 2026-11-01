@@ -1,4 +1,8 @@
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
+import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
+import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
+import { blobHeld } from '@myco-server-worker/core/blob-references.js';
 import { stoppedTranscripts, rereadTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { expect, test } from 'bun:test';
@@ -26,7 +30,7 @@ import { documentPublicationStoppedFinding, documentPublishFailureFinding } from
 import { statusMetadata } from '@myco-server-worker/read/meta.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
-import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
+import { envelope, memoryBlobStore, uuid, readFixtureRecords } from './helpers/fixtures.js';
 
 const MIN = 60_000;
 const tx = 'tx_0123456789abcdef0123456789abcdef';
@@ -927,24 +931,38 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     const source = (await db.prepare(`SELECT * FROM sessions WHERE project_id='project' AND session_id='source'`).first<Record<string, unknown>>())!;
     const prompt = { project_id:'project', session_id:'restored', prompt_id:uuid(980), parent_prompt_id:null, text:'Retained artifact content',
       blob_key:null, origin:'user', created_at:100, received_at:100, content_hash:await sha256Hex('Retained artifact content') };
+    const plan = {project_id:'project',session_id:'restored',plan_key:'plan-one',prompt_id:prompt.prompt_id,event_id:'plan-event',
+      title:'Retained plan',content:'Plan body',content_hash:await sha256Hex('Plan body'),status:'active',source:'hook',
+      token_id:source.created_by_token_id,machine_id:source.machine_id,created_at:101,updated_at:101,received_at:101,updated_by:'fixture'};
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,10,'text/plain',?,100,?)`)
+      .bind('a'.repeat(64),source.created_by_token_id,uuid(99000)).run();
     const continuation = JSON.stringify({planPosition:3});
-    const rows = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},
+    const rows = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},{t:'plans',r:plan},
+      ...['a','b'].map((key,i)=>({t:'prompt_batches',r:{...prompt,prompt_id:uuid(981+i),text:'retained preview',blob_key:key.repeat(64)}})),
+      {t:'sessions',r:{...source,session_id:'later'}},{t:'prompt_batches',r:{...prompt,session_id:'later',prompt_id:uuid(983)}},
       {t:'transcripts',r:{project_id:'project',session_id:'restored',transcript_id:tx,machine_id:'machine',token_id:source.created_by_token_id,
         first_received_at:100,last_received_at:100,agent:'opencode',size:42,segment_count:0,parsed_offset:42,parse_segment_lines:1,
         prompt_identity_scheme:'stamp-or-offset-v1',record_identity_scheme:'legacy-session-v1',
         parser_context:JSON.stringify({mycoParserState:{chunked:true,digest:await sha256Hex(continuation)}})}},
       {t:'transcript_parser_state_chunks',r:{project_id:'project',transcript_id:tx,cursor_offset:42,chunk_index:0,chunk_count:1,payload:continuation}}];
     const header = {format:BACKUP_FORMAT,deploymentId:await deploymentId(db),schemaVersion:115,createdAt:100,producer:'test',
-      counts:{sessions:1,prompt_batches:1,transcripts:1,transcript_parser_state_chunks:1}};
+      counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
     const first = await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
-    expect(first.documents, name).toMatchObject({convert:1,merge:0});
-    expect(await counters(db,'restored'), name).toMatchObject({prompts:1,user_prompts:1});
+    expect(first.documents, name).toMatchObject({convert:2,merge:0});
+    expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
+    expect(await counters(db,'later'),name).toMatchObject({prompts:1});
+    expect(await db.prepare("SELECT state,restore_hold FROM session_documents WHERE session_id='restored'").first(),name).toEqual({state:'live',restore_hold:null});
+    const recovered=await readFixtureRecords({db,blobs},'project','restored');
+    expect(recovered.filter(record=>[uuid(981),uuid(982)].includes(record.id)).map(record=>record.text),name).toEqual(['retained preview','retained preview']);
+    expect((await readDocumentStatus(db)).differences,name).toEqual({body_missing:1,body_unreadable:1});
+    const plans=await documentTurnCollection({db,blobs},{projectId:'project'},'restored',prompt.prompt_id,'plans',undefined);
+    expect(plans,name).toMatchObject({rows:[{planKey:'plan-one'}]});
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE project_id='project' AND session_id='restored'`).first(),name)
       .toEqual({published_offset:42});
     await publishDocuments({db,blobs},Date.now(),limits());
     await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
-    expect(await counters(db,'restored'), name).toMatchObject({prompts:1,user_prompts:1});
+    expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
     expect(await db.prepare(`SELECT 1 FROM sqlite_master WHERE name='prompt_batches'`).first(), name).toBeNull();
   });
 });
@@ -954,7 +972,7 @@ test('portable backups restore published document bodies and frontiers into dest
   const body='retained document body '.repeat(16000);
   await withDocumentStores(async(db,name)=>{
     const blobs=memoryBlobStore();
-    const env=await captureDocumentTranscript(db,blobs,'portable',tx,user('portable-turn',body),Date.now(),0,'codex');
+    const env=await captureDocumentTranscript(db,blobs,'portable',tx,user('portable-turn',body)+reply('<proposed_plan>Retained portable plan</proposed_plan>'),Date.now(),0,'codex');
     for(let pass=0;pass<20;pass++)if(!(await publishDocuments(env,Date.now()+TRANSCRIPT_IDLE_MS*2,limits())).more)break;
     const prompt=await db.prepare(`SELECT prompt_id FROM session_prompts WHERE session_id='portable'`).first<{prompt_id:string}>();
     expect(prompt,name).not.toBeNull();
@@ -980,7 +998,7 @@ test('portable backups restore published document bodies and frontiers into dest
     const frontier=await db.prepare(`SELECT published_offset FROM transcript_publication WHERE session_id='portable'`).first();
     expect(frontier,name).not.toBeNull();
     await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
-    expect(await counters(db,'portable'),name).toMatchObject({prompts:1,user_prompts:1});
+    expect(await counters(db,'portable'),name).toMatchObject({prompts:1,user_prompts:1,plans:1});
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE session_id='portable'`).first(),name).toEqual(frontier);
   });
 });
@@ -997,4 +1015,35 @@ test('a stopped publication retains bounded diagnostics and reread clears them',
     expect(await stoppedTranscripts(db)).toEqual([]);
     expect(await db.prepare('SELECT diagnostic FROM transcript_publication WHERE transcript_id=?').bind(tx).first()).toEqual({diagnostic:null});
   });
+});
+
+test('retirement refuses missing records and preserves archived blob holders through safe event indexes', async () => {
+  await withDocumentStores(async (db,name) => {
+    const retire=SCHEMA_STEPS.find(step=>step.version===117)!;
+    const run=(step:typeof retire)=>db.batch(step.statements.map(sql=>db.prepare(sql)));
+    await db.prepare(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+      VALUES('project','orphan','orphan-prompt','orphan-event','held','user','hash',1,1,'token',1)`).run();
+    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES('project','orphan','live',1,1)`).run();
+    await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
+    await db.prepare('DELETE FROM prompt_batches').run();
+    await db.prepare("DELETE FROM session_documents WHERE session_id='orphan'").run();
+    await db.prepare(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','converted','token',1,1)`).run();
+    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at,build) VALUES('project','converted','live',1,1,?)`)
+      .bind(JSON.stringify({report:{classes:{unplaced:1}}})).run();
+    await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
+    await db.prepare('UPDATE session_documents SET build=NULL').run();
+    const output='b'.repeat(64);
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99001)).run();
+    await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
+      VALUES('project','archived','converted','token','tool.use','cli','{}','hash',1,1,'archived'),
+        ('project','invalid','converted','token','prompt','cli','not JSON','hash',1,1,'inline')`).run();
+    await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
+      VALUES('project','converted','tool','archived','Read',?,1,1,'token',1)`).bind(output).run();
+    for(const step of SCHEMA_STEPS.filter(step=>step.version>=117))await run(step);
+    expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
+    expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
+    expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
+    expect(await db.prepare(`SELECT json_extract(payload,'$.toolCallId') id FROM events WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
+    expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
+  },115);
 });

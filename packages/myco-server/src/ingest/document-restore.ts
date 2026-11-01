@@ -1,3 +1,4 @@
+import { materialRecord } from '../content/document-records.js';
 import { isTombstoned } from '../core/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
@@ -18,9 +19,10 @@ import type { RestoreDocuments } from '../core/backup.js';
 
 /** The legacy content tables a restore converts, in the order their records are placed: prompts before what names them. */
 const CONTENT = [
-  { table: 'prompt_batches', kind: 'prompt', id: 'prompt_id' },
-  { table: 'responses', kind: 'reply', id: 'response_id' },
-  { table: 'tool_calls', kind: 'tool', id: 'tool_call_id' },
+  { table: 'prompt_batches', kind: 'prompt' },
+  { table: 'responses', kind: 'reply' },
+  { table: 'tool_calls', kind: 'tool' },
+  { table: 'plans', kind: 'plan' },
 ] as const;
 type ContentKind = (typeof CONTENT)[number]['kind'];
 type Row = Record<string, unknown>;
@@ -106,12 +108,14 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
 export async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
   const legacy = new Set((byTable.get('fact_classes') ?? []).filter((row) => row.class === 'legacy')
     .map((row) => JSON.stringify([row.project_id, row.table_name, row.record_id])));
+  const documented = new Set((byTable.get('session_documents') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
   const sessions = new Map<string, SessionRef & { rows: { kind: ContentKind; table: string; id: string; row: Row }[] }>();
-  for (const { table, kind, id } of CONTENT) for (const row of byTable.get(table) ?? []) {
+  for (const { table, kind } of CONTENT) for (const row of byTable.get(table) ?? []) {
     if (typeof row.project_id !== 'string' || typeof row.session_id !== 'string') continue;
     const key = JSON.stringify([row.project_id, row.session_id]);
+    if (kind==='plan' && documented.has(key)) continue;
     const held = sessions.get(key) ?? { projectId: row.project_id, sessionId: row.session_id, rows: [] };
-    held.rows.push({ kind, table, id: String(row[id]), row });
+    held.rows.push({ kind, table, id: materialRecord(kind,row).id, row });
     sessions.set(key, held);
   }
   const snapshots=new Map<string,ArtifactDocument>();
@@ -237,13 +241,13 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const state = holder === undefined ? `state='live'` : `state='convert' AND restore_hold=?`;
   const owner = holder === undefined ? [] : [holder];
   const [docs, chunks, pages] = await db.batch([
-    db.prepare(`SELECT COALESCE(d.generation,1) generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, s.created_by_token_id token_id
+    db.prepare(`SELECT COALESCE(d.generation,1) generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, d.build, s.created_by_token_id token_id
       FROM session_documents d JOIN sessions s ON s.project_id = d.project_id AND s.session_id = d.session_id
       WHERE d.project_id = ?1 AND d.session_id = ?2 AND ${state}
         AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`).bind(session.projectId, session.sessionId, ...owner),
     ...directoryStatements(db, session.projectId, session.sessionId),
   ]);
-  const doc = docs!.results[0] as BatchDocument | undefined;
+  const doc = docs!.results[0] as (BatchDocument & { build: string | null }) | undefined;
   if (doc === undefined) throw new RestorePlanStale();
   const generation = holder === undefined ? doc.generation : null;
   const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
@@ -252,7 +256,14 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const order = new Map(CONTENT.map(({ kind }, index) => [kind, index]));
   const rows = [...session.rows].sort((a, b) => order.get(a.kind)! - order.get(b.kind)! || Number(a.row.created_at) - Number(b.row.created_at));
   const records:DocRecord[] = [...(session.snapshot?.records??[])];
-  for (const { kind, row } of rows) records.push(await legacyRecord(env, session.projectId, kind, row));
+  const build = doc.build === null ? {} : JSON.parse(doc.build) as { report?: { classes?: Record<string,number> } };
+  const classes = { ...build.report?.classes };
+  for (const { kind, row } of rows) {
+    const restored = await legacyRecord(env, session.projectId, kind, row);
+    records.push(restored.record);
+    for (const name of restored.classes) classes[name] = (classes[name] ?? 0) + 1;
+  }
+  const diagnostics = Object.keys(classes).length === 0 ? doc.build : JSON.stringify({ ...build, report: { ...build.report, classes } });
   await batch.place(records, null);
   await batch.commit(batch.writer.changed, 'live', now, (version) => ({
     sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND ${state} AND generation IS ?)
@@ -266,8 +277,8 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
       AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN session_chunks c ON c.project_id=? AND c.session_id=? AND c.generation=?
         AND c.chunk_no=json_extract(j.value,'$.n') WHERE c.blob_key IS NOT json_extract(j.value,'$.k'))`,
     [session.projectId, session.sessionId, ...owner, generation, doc.next_chunk, batch.expectedChunks(registered), session.projectId, session.sessionId, doc.generation]);
-    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), db.prepare(`UPDATE session_documents SET state='live',generation=?,restore_hold=NULL,due_at=0,${set.sql} WHERE project_id=? AND session_id=?`)
-      .bind(doc.generation, ...set.params, session.projectId, session.sessionId)] };
+    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), db.prepare(`UPDATE session_documents SET state='live',generation=?,restore_hold=NULL,due_at=0,build=?,${set.sql} WHERE project_id=? AND session_id=?`)
+      .bind(doc.generation, diagnostics, ...set.params, session.projectId, session.sessionId)] };
   });
 }
 
