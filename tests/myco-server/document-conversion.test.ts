@@ -313,9 +313,12 @@ test('a restore into a session mid-conversion exports the restored rows behind i
     await convertPage(env, 'project', 'session', now, limits());
     const base = (await db.prepare(ARTIFACT_TABLES.prompt_batches).all<Record<string, unknown>>()).results[0]!;
     const rows = [{ t: 'prompt_batches', r: { ...base, prompt_id: 'restored-earlier', created_at: 0, text: 'restored prompt' } }];
+    // A sealed page's locator from the discarded build must not name a page of the next one.
+    await db.prepare(`INSERT INTO session_sealed_records (project_id,session_id,generation,owner,k,record_id,page) VALUES ('project','session',1,'turn','tool','built',999)`).run();
     const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: now, producer: 'test', counts: { prompt_batches: 1 } };
     await restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, now, documents: restoreDocuments(env),
       text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' });
+    expect(await db.prepare(`SELECT COUNT(*) n FROM session_sealed_records WHERE session_id='session'`).first(), name).toEqual({ n: 0 });
     await convertDocuments(env, now, limits());
     expect((await documentIds(env, 'session')).prompt, name).toContain('restored-earlier');
   }));
