@@ -9,7 +9,6 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
-import { seedViewInstance } from './helpers/view-instances.js';
 
 const P = 'proj_release';
 const OTHER = 'proj_other';
@@ -39,14 +38,6 @@ function legacyDecision(db: RelationalStore, page: string, now: number): Prepare
 }
 
 const holderInserts = [
-  `INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,blob_key,content_hash,origin,created_at,updated_at,token_id,received_at)
-    VALUES(?,'prompt','session','event',?,'hash','user',1,1,'credential',1)`,
-  `INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input_blob_key,success,created_at,token_id,received_at)
-    VALUES(?,'input','session','event','Read',?,1,1,'credential',1)`,
-  `INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
-    VALUES(?,'output','session','event','Read',?,1,1,'credential',1)`,
-  `INSERT INTO responses(project_id,response_id,session_id,event_id,blob_key,content_hash,created_at,token_id,received_at)
-    VALUES(?,'response','session','event',?,'hash',1,'credential',1)`,
   `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,blob_key,content_hash,status,created_at,updated_at,token_id,received_at)
     VALUES(?,'plan','session','event','machine',?,'hash','active',1,1,'credential',1)`,
   `INSERT INTO attachments(project_id,attachment_id,session_id,event_id,blob_key,media_type,byte_size,created_at,token_id,received_at)
@@ -55,6 +46,10 @@ const holderInserts = [
     VALUES(?,'transcript',0,1,?,'segment',1,1,'credential')`,
   `INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,blob_key,created_at,received_at)
     VALUES(?,'compaction','session','credential','compaction.pre','cli','{}','hash',?,1,1)`,
+  `INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+    VALUES(?,'input','session','credential','tool.use','cli',json_object('blob',?),'hash',1,1)`,
+  `INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+    VALUES(?,'output','session','credential','tool.use','cli',json_object('outputBlob',?),'hash',1,1)`,
   `INSERT INTO archive_bundles(project_id,session_id,token_id,event_id,envelope_hash,archive_key,receipt_key,digest,size,version,entry_count)
     VALUES(?,'session','credential','event','hash',?,'other-receipt','digest',1,1,1)`,
   `INSERT INTO archive_bundles(project_id,session_id,token_id,event_id,envelope_hash,archive_key,receipt_key,digest,size,version,entry_count)
@@ -79,24 +74,21 @@ async function seed(db: RelationalStore): Promise<string[]> {
     ...Array.from({ length: holderInserts.length + 4 }, (_, n) => db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
       VALUES(?,?,1,'text/plain','credential',1,?)`).bind(P, key(n), GENERATION)),
     db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
-      VALUES(?,?,1,'text/plain','credential',1,?)`).bind(OTHER, key(13), GENERATION),
+      VALUES(?,?,1,'text/plain','credential',1,?)`).bind(OTHER, key(holderInserts.length + 0), GENERATION),
     ...holderInserts.map((sql, n) => db.prepare(sql).bind(P, key(n))),
-    db.prepare(holderInserts[5]).bind(OTHER, key(13)),
+    db.prepare(holderInserts[1]).bind(OTHER, key(holderInserts.length + 0)),
     db.prepare(`INSERT INTO attachments(project_id,attachment_id,session_id,event_id,blob_key,media_type,byte_size,created_at,token_id,received_at)
-      VALUES(?,'shared','deleted','event',?,'text/plain',1,1,'credential',1)`).bind(P, key(15)),
-    db.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input_blob_key,success,created_at,token_id,received_at)
-      VALUES(?,'shared','surviving','event','Read',?,1,1,'credential',1)`).bind(P, key(15)),
-    db.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input,input_bytes,input_bundle_id,input_bundle_entry,success,created_at,token_id,received_at)
-      VALUES(?,'packed','session','event','Read','preview',12000,(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),0,1,1,'credential',1)`).bind(P, P, key(8)),
+      VALUES(?,'shared','deleted','event',?,'text/plain',1,1,'credential',1)`).bind(P, key(holderInserts.length + 2)),
+    db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES(?,'shared','surviving','credential','tool.use','cli',json_object('blob',?),'hash',1,1)`).bind(P, key(holderInserts.length + 2)),
     db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,blob_key,created_at,received_at)
-      VALUES(?,'projected-tool','deleted','credential','tool.use','cli','{}','hash',?,1,1)`).bind(P, key(14)),
+      VALUES(?,'projected-tool','deleted','credential','transcript.segment','cli','{}','hash',?,1,1)`).bind(P, key(holderInserts.length + 1)),
     db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(0), OLD_GENERATION)),
-    db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(16), GENERATION)),
+    db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(holderInserts.length + 3), GENERATION)),
     db.prepare(`INSERT INTO recovery_holds(token,acquired_at,holder) VALUES('producer',1,'producer'),('operator',1,'operator')`),
   ]);
-  const viewKeys = await seedViewInstance(db, { projectId: P, sessionId: 'session', instanceId: 'release-view', state: 'retired' });
-  expect(holderInserts.length + viewKeys.length).toBe(BLOB_REFERENCES.length);
-  return viewKeys;
+  expect(Number(holderInserts.length)).toBe(Number(BLOB_REFERENCES.length));
+  return [];
 }
 
 async function snapshot(db: RelationalStore) {
@@ -107,10 +99,10 @@ async function snapshot(db: RelationalStore) {
   };
 }
 
-async function exercise(db: RelationalStore, decision: typeof blobDecisionStatements, viewKeys: string[]) {
+async function exercise(db: RelationalStore, decision: typeof blobDecisionStatements, extraKeys: string[]) {
   const pairs = [...Array.from({ length: holderInserts.length + 3 }, (_, n) => ({ projectId: P, key: key(n) })),
-    { projectId: OTHER, key: key(13) }, { projectId: P, key: key(13) }, { projectId: P, key: key(100) },
-    ...viewKeys.map(key => ({ projectId: P, key }))];
+    { projectId: OTHER, key: key(holderInserts.length + 0) }, { projectId: P, key: key(holderInserts.length + 0) }, { projectId: P, key: key(100) },
+    ...extraKeys.map(key => ({ projectId: P, key }))];
   const page = JSON.stringify(pairs.map(row => ({ p: row.projectId, k: row.key })));
   await db.prepare(`DELETE FROM attachments WHERE project_id=? AND attachment_id='shared'`).bind(P).run();
   await db.batch(recordBlobCandidates(db, pairs, 2));
@@ -120,21 +112,21 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
     outcomes.push({ result: await db.batch(decision(db, page, 4)), state: await snapshot(db) });
   }
   expect(outcomes[0]!.state).toEqual(outcomes[1]!.state);
-  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + viewKeys.length + 3);
-  expect(outcomes[2]!.state.blobs.filter(row => viewKeys.includes(String(row.key)))).toHaveLength(viewKeys.length);
+  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + extraKeys.length + 3);
+  expect(outcomes[2]!.state.blobs.filter(row => extraKeys.includes(String(row.key)))).toHaveLength(extraKeys.length);
   expect(outcomes[2]!.state.candidates).toEqual([]);
   expect(outcomes[2]!.state.journal.map(row => row.physical)).toEqual([
-    blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(13), GENERATION), blobObjectKey(P, key(14), GENERATION),
-    blobObjectKey(P, key(16), GENERATION),
+    blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(holderInserts.length + 0), GENERATION), blobObjectKey(P, key(holderInserts.length + 1), GENERATION),
+    blobObjectKey(P, key(holderInserts.length + 3), GENERATION),
   ]);
   expect((await db.prepare(`SELECT key FROM blobs WHERE project_id=? AND key IN (?,?) ORDER BY key`).bind(P, key(1), key(2)).all()).results)
     .toEqual([{ key: key(1) }, { key: key(2) }]);
-  expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(15)).first<{ key: string }>()).toEqual({ key: key(15) });
-  expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(16)).first<{ key: string }>()).toEqual({ key: key(16) });
+  expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(holderInserts.length + 2)).first<{ key: string }>()).toEqual({ key: key(holderInserts.length + 2) });
+  expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(holderInserts.length + 3)).first<{ key: string }>()).toEqual({ key: key(holderInserts.length + 3) });
   await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
-    VALUES(?,?,1,'text/plain','credential',1,?)`).bind(P, key(13), OLD_GENERATION).run();
+    VALUES(?,?,1,'text/plain','credential',1,?)`).bind(P, key(holderInserts.length + 0), OLD_GENERATION).run();
   outcomes.push({ result: await db.batch(decision(db, page, 5)), state: await snapshot(db) });
-  expect((await db.prepare('SELECT generation FROM blobs WHERE project_id=? AND key=?').bind(P, key(13)).first<{ generation: string }>())).toEqual({ generation: OLD_GENERATION });
+  expect((await db.prepare('SELECT generation FROM blobs WHERE project_id=? AND key=?').bind(P, key(holderInserts.length + 0)).first<{ generation: string }>())).toEqual({ generation: OLD_GENERATION });
   outcomes.push({ result: await db.batch(decision(db, '[]', 6)), state: await snapshot(db) });
   return outcomes.map(outcome => ({ ...outcome, result: outcome.result.map(row => ({ results: row.results, changes: row.meta.changes })) }));
 }
@@ -148,9 +140,9 @@ describe('blob release decision contract on native SQLite and local D1', () => {
     try {
       const stores = mf === null ? [sqliteRelationalStore(oldNative), sqliteRelationalStore(newNative)]
         : [await mf.getD1Database('OLD') as unknown as RelationalStore, await mf.getD1Database('NEW') as unknown as RelationalStore];
-      const viewKeys = await Promise.all(stores.map(seed));
-      const baseline = await exercise(stores[0]!, legacyDecision, viewKeys[0]!);
-      expect(await exercise(stores[1]!, blobDecisionStatements, viewKeys[1]!)).toEqual(baseline);
+      const extraKeys = await Promise.all(stores.map(seed));
+      const baseline = await exercise(stores[0]!, legacyDecision, extraKeys[0]!);
+      expect(await exercise(stores[1]!, blobDecisionStatements, extraKeys[1]!)).toEqual(baseline);
     } finally { oldNative.close(); newNative.close(); await mf?.dispose(); }
   }, 120_000);
 
@@ -167,7 +159,7 @@ describe('blob release decision contract on native SQLite and local D1', () => {
         const observer: RelationalStore = { ...store, prepare: sql => ({
           ...store.prepare(sql), bind: (...params) => { capture.push({ sql, params }); return store.prepare(sql).bind(...params); },
         }) };
-        blobDecisionStatements(observer, JSON.stringify([{ p: P, k: key(13) }]), 5);
+        blobDecisionStatements(observer, JSON.stringify([{ p: P, k: key(holderInserts.length + 0) }]), 5);
         const details = [];
         for (const statement of capture) details.push((await store.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`).bind(...statement.params)
           .all<{ detail: string }>()).results.map(row => row.detail));
@@ -177,8 +169,8 @@ describe('blob release decision contract on native SQLite and local D1', () => {
         expect(details[3]!.some(detail => detail.includes('SEARCH rc') && detail.includes('project_id=? AND key=?'))).toBe(true);
         const spec = KINDS.find(kind => kind.name === 'prompt')!;
         const check = sharedChecks(spec, { projectId: P, machineId: 'machine', tokenId: 'credential', now: 5, nonce: 'nonce', actor: null },
-          { eventId: 'event', sessionId: 'session', kind: 'prompt', createdAt: 1, channel: 'cli', producer: { adapter: 'test', version: '1' }, payload: { promptId: 'prompt', blob: key(13), origin: 'user' }, payloadJson: '{}', payloadBytes: new TextEncoder().encode('{}') },
-          { promptId: 'prompt', blob: key(13), origin: 'user' }, []).find(check => check.read.sql.startsWith('SELECT media_type'))!;
+          { eventId: 'event', sessionId: 'session', kind: 'prompt', createdAt: 1, channel: 'cli', producer: { adapter: 'test', version: '1' }, payload: { promptId: 'prompt', blob: key(holderInserts.length + 0), origin: 'user' }, payloadJson: '{}', payloadBytes: new TextEncoder().encode('{}') },
+          { promptId: 'prompt', blob: key(holderInserts.length + 0), origin: 'user' }, []).find(check => check.read.sql.startsWith('SELECT media_type'))!;
         const plan = (await store.prepare(`EXPLAIN QUERY PLAN ${check.read.sql}`).bind(...check.read.params).all<{ detail: string }>()).results;
         expect(plan.some(row => row.detail.includes('SEARCH blobs USING INDEX') && row.detail.includes('project_id=? AND key=?'))).toBe(true);
         expect(plan.filter(row => /^SCAN (blobs|a|p|r)\b/.test(row.detail))).toEqual([]);

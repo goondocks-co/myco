@@ -18,9 +18,11 @@ export const hookPlacement: ParityScenario = {
     // A prompt of this Project is captured and published into its session's document; another Project's is only a row there.
     const [mainThread, parallelThread] = [crypto.randomUUID(), crypto.randomUUID()];
     const prompt = async (id: string, ownSession = session, ownProject = target.projectId, thread = mainThread) => {
-      if (ownProject !== target.projectId) return target.sql(`INSERT INTO prompt_batches
-        (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,thread_id)
-        VALUES (${lit(ownProject)},${lit(ownSession)},${lit(id)},${lit(id)},'same text','user','same hash',100,100,'t',100,${lit(thread)})`);
+      if(ownProject!==target.projectId){
+        await target.sql(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(${lit(ownProject)},${lit(ownSession)},'live',1,1)`);
+        return target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+          VALUES(${lit(ownProject)},${lit(ownSession)},1,${lit(id)},${lit(id)},1,'user',100)`);
+      }
       const response = await fetch(target.url + '/events', { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
         body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: ownSession, kind: 'prompt', createdAt: 100, channel: 'cli',
           producer: { adapter: 'parity', version: '1' }, payload: { promptId: id, text: 'same text', origin: 'user', threadId: thread } }) });
@@ -71,8 +73,7 @@ export const hookPlacement: ParityScenario = {
     expect(new Set([...first.rows, ...second.rows].map(r => r.key)).size).toBe(6);
 
     for (const id of ['A', 'B', 'a', '\uE000', '\u{10000}']) {
-      await target.sql(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,success,created_at,token_id,received_at)
-        VALUES (${project},${lit(session)},${lit(id)},${lit(id)},'Read',1,1,'t',1)`);
+
     }
     const full = await read<{ rows: Row[] }>(base + '/unplaced');
     const paged: string[] = [];

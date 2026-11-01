@@ -17,7 +17,7 @@
  * journal is not held.
  */
 import type { BlobStore, PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { BLOB_REFERENCES, blobHeld, type BlobRef } from './blob-references.js';
+import { BLOB_REFERENCES, referencedBlobValue, blobHeld, type BlobRef } from './blob-references.js';
 import { blobObjectKeySql } from './blob-objects.js';
 import { within } from './recovery-inventory.js';
 import { backupRetentionPolicy, currentRetentionVictims } from './backup-retention.js';
@@ -208,9 +208,9 @@ export function referencedBlobsOf(table: string, row: Readonly<Record<string, un
   const projectId = row.project_id;
   if (typeof projectId !== 'string') return [];
   return BLOB_REFERENCES.filter((ref) => ref.table === table
-    && typeof row[ref.column] === 'string'
+    && typeof referencedBlobValue(ref,row) === 'string'
     && (ref.kinds === undefined || ref.kinds.includes(row.kind as string)))
-    .map((ref) => ({ projectId, key: row[ref.column] as string }));
+    .map((ref) => ({ projectId, key: referencedBlobValue(ref,row) as string }));
 }
 
 /**

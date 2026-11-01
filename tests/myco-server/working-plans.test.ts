@@ -6,7 +6,7 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { explainReadPlan } from './helpers/view-read-costs.js';
+import { explainReadPlan } from './helpers/prepared.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { endTurnStatement, startTurnStatement } from '@myco-server-worker/ingest/turns.js';

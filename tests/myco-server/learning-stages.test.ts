@@ -15,8 +15,8 @@ import { documentTurnInput } from '@myco-server-worker/content/turn-material.js'
 import type { BlobStore } from '@myco-server-worker/core/adapters.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { withViewStores } from './helpers/view-stores.js';
-import { beforeViewWriteBatch } from './helpers/view-instances.js';
+import { withDocumentStores } from './helpers/document-stores.js';
+import { beforeWriteBatch } from './helpers/prepared.js';
 import { envelope, memberHeaders, memoryBlobStore, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -113,7 +113,7 @@ const GOTCHAS: Turn[] = [
 ];
 
 it('cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice', async () => {
-  await withViewStores(async (db) => {
+  await withDocumentStores(async (db) => {
     await capture(db, 'session', GOTCHAS);
     const blobs = await ready(db);
     const due = NOW + HOUR;
@@ -167,7 +167,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
 });
 
 it('closes an all-mechanical session without a run and orders sessions newest first', async () => {
-  await withViewStores(async (db) => {
+  await withDocumentStores(async (db) => {
     await capture(db, 'quiet', [{ id: uuid(11), text: 'continue', at: 10 }, { id: uuid(12), text: 'check status', at: 20, tools: [{ name: 'TaskOutput', input: { id: 'x' } }] }]);
     await capture(db, 'older', [{ id: uuid(21), text: 'Fix the flaky test', at: 30, replies: ['Fixed by awaiting the batch.'] }]);
     await capture(db, 'newer', [{ id: uuid(31), text: 'Add the index', at: 40, replies: ['Added idx_turn_cards_due.'] }]);
@@ -208,7 +208,7 @@ it('triages only mechanical turns by rule', () => {
 });
 
 it('sends human requests and a turn whose failure comes after a hundred calls to the model, verbatim', async () => {
-  await withViewStores(async (db) => {
+  await withDocumentStores(async (db) => {
     await capture(db, 'human', [
       { id: uuid(70), text: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3; never retry a refused credential.', at: 10, replies: ['Set jobs.maxRetries to 3 and skipped refused credentials.'] },
       { id: uuid(71), text: 'Repair capture', at: 20, tools: [
@@ -227,7 +227,7 @@ it('sends human requests and a turn whose failure comes after a hundred calls to
 });
 
 it('pulls cards, then learning, at claim within the budget, and the learned spore cites its session', async () => {
-  await withViewStores(async (db) => {
+  await withDocumentStores(async (db) => {
     const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
     const env = serverEnvFromBindings(bindings as never, recordingDeferred());
     await capture(db, 'session', GOTCHAS);
@@ -267,7 +267,7 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await runs()).toEqual([{ task: 'turn-cards', subject: null, status: 'completed' }]);
 
     // The switch turned off after selection refuses the claim's write: no run, no priced attempt.
-    env.db = beforeViewWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'), async () => { await learning(false); }, true);
+    env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'), async () => { await learning(false); }, true);
     expect(await poll(at + 1)).toMatchObject({ claimed: false });
     expect(await db.prepare(`SELECT COUNT(*) AS n FROM agent_run_attempts WHERE run_id <> 'spent'`).first()).toEqual({ n: 0 });
     env.db = db;
@@ -316,7 +316,7 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
 });
 
 it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {
-  await withViewStores(async (db, name) => {
+  await withDocumentStores(async (db, name) => {
     const blobs = memoryBlobStore();
     const bindings = { MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
     const env = serverEnvFromBindings(bindings as never, recordingDeferred());

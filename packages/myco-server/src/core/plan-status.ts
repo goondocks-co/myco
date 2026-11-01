@@ -1,4 +1,4 @@
-import {planStatusStatement} from '../read/view-store.js';
+import {planStatusStatement} from '../read/catalog-store.js';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 

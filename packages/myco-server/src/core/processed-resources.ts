@@ -11,6 +11,12 @@ export const PROCESSED_FIELDS = {
   attachment: { table: 'attachments', id: 'attachment_id', text: null, blob: 'blob_key' },
 } as const;
 
+/** Relational processed fields retained by the current catalog. */
+export const LIVE_PROCESSED_FIELDS = {
+  plan: PROCESSED_FIELDS.plan,
+  attachment: PROCESSED_FIELDS.attachment,
+} as const;
+
 /** A projected field carries a verified upload or a server-parser reference. */
 export const processedReferenceSql = (alias: string, field: { blob: string }): string => `EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = ${alias}.project_id AND b.key = ${alias}.${field.blob}

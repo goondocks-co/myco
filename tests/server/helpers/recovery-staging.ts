@@ -37,8 +37,8 @@ export function stagingFixture(seed: (db: Database) => void = () => {}) {
   const body = "line; one\nquoted '🌱' /* text */ -- still text";
   source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title)
     VALUES ('proj_1','s_materialize','m_fixture','mt_fixture',1,1,'Recovered 🌱 title')`);
-  source.sqlite.run(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,success,duration_ms,created_at,token_id,received_at,input_blob_key)
-    VALUES ('proj_1','tc_1','s_materialize','evt_1','Bash',1,2592000000,1,'mt_fixture',1,?)`, [blobDigest]);
+  source.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+    VALUES('proj_1','evt_1','s_materialize','mt_fixture','tool.use','cli',json_object('toolCallId','tc_1','toolName','Bash','blob',?),'hash',1,1)`,[blobDigest]);
   const backupKey = 'backups/lineage__1__bk_pinned.jsonl';
   const backupBody = '{"format":"myco-backup/1"}\n';
   source.sqlite.run('INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256) VALUES (?,?,1,?,\'{}\',13,\'fixture\',1,?)',

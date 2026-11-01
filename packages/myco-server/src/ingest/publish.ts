@@ -42,15 +42,13 @@ import {
   publishedPromptScheme, PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
-import { convertDocuments } from './document-conversion.js';
-import { conversionBacklog } from './document-convertible.js';
 import { settleCards } from './card-settle.js';
 import { locatePrompts } from './document-locators.js';
 import {
   parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, type ParsePersistence, type ParseTarget, type PassLimits,
 } from './parse.js';
 import { promptOwners, type ParserState } from './parsers/index.js';
-import { admittedViewEvent, viewSourceReceipts } from './view-writer.js';
+import { admittedDocumentEvent, sourceReceipts } from './document-admission.js';
 import { isPromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Sessions one wake publishes. */
@@ -149,15 +147,7 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
     .bind(now, limit).all<DueSession>()).results;
 }
 
-/**
- * Publishes the due sessions within the wake's remaining budget, converts sessions that predate documents with what a
- * wake that published everything due has left, locates the prompts of documents written before page locators with
- * what conversion leaves, settles the turn cards due for it, then retires superseded chunk versions past their grace.
- * None of them spends the reserve the wake keeps for its later jobs.
- *
- * A session whose pass fails is recorded for the Deployment's health and does not hold the others: one that fails by
- * name waits out a bounded backoff, and a store fault is reported once conversion, locating and settlement have run.
- */
+/** Publishes due sessions, locates prompts, settles cards and retires superseded chunks within the wake budget. */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
   let changed = 0;
@@ -180,15 +170,11 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     }
   }
   if (!more) {
-    const converted = await convertDocuments(env, now, limits);
-    changed += converted.changed;
-    more ||= converted.more;
-    if (!converted.more) {
-      const located = await locatePrompts(env, limits);
-      changed += located.changed;
-      more ||= located.more;
-    }
+    const located = await locatePrompts(env, limits);
+    changed += located.changed;
+    more ||= located.more;
   }
+
   const cards = await settleCards(env, now, limits);
   changed += cards.settled;
   more ||= cards.more;
@@ -214,14 +200,10 @@ async function deferFailedSession(db: RelationalStore, ref: DueSession, named: s
   }
 }
 
-/**
- * The transcript-parse job: the publisher, within the job budget of the wake. While sessions wait for conversion, a wake
- * that moved the publisher on and left more asks for the next at `BACKLOG_CHAINED_WAKE_MS`.
- */
+/** The transcript-parse job publishes documents within the wake's declared job budget. */
 export async function runPublishWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
-  const converting = await conversionBacklog(env.db);
   const report = await publishDocuments(env, now, { calls: env.platform.jobBudget.calls, deadline: Date.now() + env.platform.jobBudget.wallMs, clock: Date.now });
-  return converting && report.more && report.changed > 0 ? { ...report, continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : report;
+  return report;
 }
 
 /** Releases the holders past their grace. */
@@ -373,10 +355,11 @@ class SessionPublication {
   private async publishTranscript(publication: Publication): Promise<void> {
     const t = publication.transcript;
     if (publication.state === 'failed' || (publication.state === 'awaiting' && t.size <= (publication.awaitedSize ?? -1))) return;
+    if (publication.offset === 0) this.batch.writer.states.delete(t.transcript_id);
     const receipts = new Map<number, number>();
     const claims = new Map<string, { thread: string; record: string }>();
     const persistence: ParsePersistence = {
-      sourceTimes: (offsets) => viewSourceReceipts(this.db, this.projectId, t.transcript_id, offsets, receipts),
+      sourceTimes: (offsets) => sourceReceipts(this.db, this.projectId, t.transcript_id, offsets, receipts),
       checkpoint: async () => { throw new Error('document_continuation_chunked'); },
       owners: async () => promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]),
       claim: async (incoming) => { for (const claim of incoming) claims.set(claim.key, { thread: claim.thread, record: claim.record }); },
@@ -391,7 +374,7 @@ class SessionPublication {
       },
       publish: async (window) => {
         const records = window.events.map((event) => {
-          const admitted = admittedViewEvent(event, this.now);
+          const admitted = admittedDocumentEvent(event, this.now);
           const known = typeof admitted.payload.toolName === 'string' && admitted.payload.toolName !== 'unknown';
           return documentRecord(admitted.kind, admitted.payload, admitted.createdAt, {
             src: [t.transcript_id, event.offset, event.sourceEnd ?? window.to],

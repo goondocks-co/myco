@@ -23,16 +23,13 @@ export const latestD1Upgrade: ParityScenario = {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
     for (const [table, column] of [
-      ['sessions', 'launch_parent_session_id'], ['tool_calls', 'result_reason'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
+      ['sessions', 'launch_parent_session_id'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
       ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
     ]) {
       const columns = await target.sql(`PRAGMA table_info(${table})`);
       expect(columns.some(c => c.name === column)).toBe(true);
       expect((await target.sql(`SELECT ${column} AS value FROM ${table}`)).every(row => row.value === null)).toBe(true);
     }
-    expect(await target.sql("SELECT claim, source_key, source_thread, source_record FROM prompt_batches WHERE project_id = 'proj_parity' LIMIT 1"))
-      .toEqual([{ claim: null, source_key: null, source_thread: null, source_record: null }]);
-    await expect(target.sql("UPDATE prompt_batches SET claim = 'guess' WHERE project_id = 'proj_parity'")).rejects.toThrow(/CHECK constraint failed/);
     expect(await target.sql('SELECT COUNT(*) AS n FROM prompt_identity_conflicts')).toEqual([{ n: 0 }]);
     expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
       .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: null }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: null }]);

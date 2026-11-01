@@ -1,4 +1,4 @@
-import { prepareExtractionAckItem, prepareRecordAcknowledgement } from '../read/view-store.js';
+import { prepareExtractionAckItem, prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import type { PreparedStatement,RelationalStore } from './adapters.js';
 import { commitAttributedWrite } from './runs.js';
 import { dispatchedBeforeLedger } from './served-material.js';

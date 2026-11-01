@@ -1,3 +1,5 @@
+import { readFixtureRecords } from '../myco-server/helpers/fixtures.js';
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 import { refuseImportAfter } from '../setup/fixtures/interruption.js';
 import { run as runImportCli, reportLines } from '@myco/cli/import.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -33,7 +35,7 @@ import { IMPORT_DEADLINE, runImport, importUntilSettled, isMemberStatePath, type
 import { attributeByPathSlug, attributeTranscript, rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { expandRoot, manifestTranscriptDiscovery } from '@myco/symbionts/transcript-discovery.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID } from './helpers/server.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
 import { resolveCredential } from '@myco/member/credential.js';
@@ -127,7 +129,7 @@ async function rig(cwds: readonly string[], perCwd = 2, prebuilt?: { home: strin
     (env.env.sqlite.query(`SELECT key FROM blobs ORDER BY key`).all() as Array<{ key: string }>).map((r) => r.key);
   const snapshot = () => ({
     events: env.rows('events'), segments: env.rows('transcript_segments'), blobs: env.rows('blobs'),
-    sessions: env.rows('sessions'), prompts: env.rows('prompt_batches'), keys: blobKeys(),
+    sessions: env.rows('sessions'), prompts: env.rows("events WHERE kind='prompt'"), keys: blobKeys(),
   });
   const restore = () => { if (held === undefined) delete process.env.HOME; else process.env.HOME = held; };
   const uploadCount = () => uploads;
@@ -594,14 +596,14 @@ describe('the stores Myco writes for a harness that keeps none', () => {
       expect(report.projects[0]?.agents.find((a) => a.agent === 'pi')?.imported).toBe(1);
 
       // The bytes are in; now the Deployment reads them. Rows, not just segments.
-      await parseTranscripts(r.env.env.serverEnv, Date.now());
-      const prompts = r.env.env.sqlite.query(`SELECT text FROM prompt_batches`).all() as Array<{ text: string | null }>;
+      await publishFixtureDocuments(r.env.env.serverEnv, Date.now());
+      const prompts = r.env.env.sqlite.query(`SELECT preview AS text FROM session_prompts`).all() as Array<{ text: string | null }>;
       // Rows, not segments: shipping bytes nothing can read would spend a
       // member's quota for no history. Pi's turn is nested a level down under
       // `message`, which no other parser reads.
       expect(prompts.length).toBeGreaterThan(0);
-      const responses = r.env.env.sqlite.query(`SELECT COUNT(*) AS n FROM responses`).get() as { n: number };
-      const calls = r.env.env.sqlite.query(`SELECT COUNT(*) AS n FROM tool_calls`).get() as { n: number };
+      const responses = {n:(await readFixtureRecords(r.env.env.serverEnv,'proj_1')).filter(row=>row.k==='reply').length} as { n: number };
+      const calls = {n:(await readFixtureRecords(r.env.env.serverEnv,'proj_1')).filter(row=>row.k==='tool').length} as { n: number };
       expect({ responses: responses.n > 0, calls: calls.n > 0 }).toEqual({ responses: true, calls: true });
     } finally {
       r.restore();
@@ -643,7 +645,7 @@ describe('the stores Myco writes for a harness that keeps none', () => {
 
       // What did land is coherent: the parse reaches the end of what is held
       // rather than waiting on bytes nothing will send.
-      await parseTranscripts(r.env.env.serverEnv, Date.now());
+      await publishFixtureDocuments(r.env.env.serverEnv, Date.now());
       const transcripts = r.env.env.sqlite.query(`SELECT size, parsed_offset, parse_error FROM transcripts`).all() as Array<{ size: number; parsed_offset: number; parse_error: string | null }>;
       for (const row of transcripts) expect({ complete: row.parsed_offset >= row.size, error: row.parse_error }).toEqual({ complete: true, error: null });
     } finally {

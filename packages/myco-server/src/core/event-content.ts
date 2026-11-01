@@ -1,8 +1,7 @@
 import { SHA256 } from '@stablelib/sha256';
 import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
 import { prepareArchiveBundle,bundleArchiveStatements,readBundleEntry,type PreparedBundle } from './archive-bundle.js';
-import { contentAssertion,
-  type DerivedContentSource, type VerifiedContent } from './registered-content.js';
+import { type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { TOOL_INPUT_PREVIEW_BYTES } from './tool-input.js';
 
 
@@ -20,14 +19,10 @@ export interface ContentRow {
   content_revision: number;
   bytes: number;
   received_at: number;
+  retained_bytes?: number;
   raw_revision?: number;
   raw_owner?: string | null;
   raw_provenance?: string | null;
-  input_bundle_id?: number | null;
-  input_bundle_entry?: number | null;
-  input_preview_bytes?: number;
-  input_archive_key?: string | null;
-  input_receipt_key?: string | null;
 }
 
 export interface PreparedArchive {
@@ -37,7 +32,7 @@ export interface PreparedArchive {
   bundle: PreparedBundle;
 }
 
-type SourceKind = 'event' | 'tool-input';
+type SourceKind = 'event';
 type ScanCheckpoint = ContentRow & { scanned_bytes: number; hash_state: string; preview_bytes: string };
 type HashSnapshot = { state: number[]; buffer: number[] | null; bufferLength: number; bytesHashed: number };
 
@@ -65,33 +60,23 @@ const sameSource = (held: ScanCheckpoint, row: ContentRow): boolean => held.sess
   && held.event_id === row.event_id && held.token_id === row.token_id && held.envelope_hash === row.envelope_hash
   && held.content_revision === row.content_revision && held.bytes === row.bytes;
 
-const sourceGuard = (kind: SourceKind, row: ContentRow): { sql: string; params: unknown[] } => kind === 'event'
-  ? { sql: `EXISTS (SELECT 1 FROM events e WHERE e.project_id=? AND e.event_id=? AND e.session_id=?
-      AND e.token_id=? AND e.envelope_hash=? AND e.content_revision=? AND e.payload_format='inline'
-      AND length(CAST(e.payload AS BLOB))=?)`,
-    params: [row.project_id,row.event_id,row.session_id,row.token_id,row.envelope_hash,row.content_revision,row.bytes] }
-  : { sql: `EXISTS (SELECT 1 FROM tool_calls t JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id
-      WHERE t.project_id=? AND t.tool_call_id=? AND t.session_id=? AND t.event_id=? AND t.token_id=?
-        AND t.content_revision=? AND length(CAST(t.input AS BLOB))=?
-        AND e.session_id=t.session_id AND e.envelope_hash=?)`,
-    params: [row.project_id,row.resource_id,row.session_id,row.event_id,row.token_id,row.content_revision,row.bytes,row.envelope_hash] };
+const sourceGuard = (row: ContentRow): { sql: string; params: unknown[] } => ({
+  sql: `EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND token_id=?
+    AND envelope_hash=? AND content_revision=? AND payload_format='inline' AND length(CAST(payload AS BLOB))=?)`,
+  params:[row.project_id,row.event_id,row.session_id,row.token_id,row.envelope_hash,row.content_revision,row.bytes],
+});
 
 /** One complete source revision, sought and sliced by UTF-8 bytes. */
-export function sourceBytes(db: RelationalStore, kind: 'event' | 'tool-input', row: ContentRow): () => ReadableStream<Uint8Array> {
-  const table = kind === 'event' ? 'events' : 'tool_calls';
-  const id = kind === 'event' ? 'event_id' : 'tool_call_id';
-  const field = kind === 'event' ? 'payload' : 'input';
-  const format = kind === 'event' ? " AND payload_format='inline' AND envelope_hash=?" : '';
+export function sourceBytes(db: RelationalStore, _kind: SourceKind, row: ContentRow): () => ReadableStream<Uint8Array> {
   return () => {
     let at = 0;
     return new ReadableStream({
       async pull(controller) {
         if (at >= row.bytes) { controller.close(); return; }
         const length = Math.min(CONTENT_SLICE_BYTES, row.bytes-at);
-        const held = await db.prepare(`SELECT substr(CAST(${field} AS BLOB),?,?) AS bytes FROM ${table}
-          WHERE project_id=? AND ${id}=? AND content_revision=?${format}`)
-          .bind(at+1, length, row.project_id, row.resource_id, row.content_revision,
-            ...(kind === 'event' ? [row.envelope_hash] : []))
+        const held = await db.prepare(`SELECT substr(CAST(payload AS BLOB),?,?) AS bytes FROM events
+          WHERE project_id=? AND event_id=? AND content_revision=? AND payload_format='inline' AND envelope_hash=?`)
+          .bind(at+1, length, row.project_id, row.resource_id, row.content_revision,row.envelope_hash)
           .first<{ bytes: Uint8Array | number[] }>();
         if (held === null) throw new Error('content_source_changed');
         const bytes = new Uint8Array(held.bytes);
@@ -168,15 +153,11 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
     }
     let next=at;
     const end=Math.min(row.bytes,at+CONTENT_SCAN_BYTES_PER_PASS);
-    const table=kind==='event'?'events':'tool_calls';
-    const id=kind==='event'?'event_id':'tool_call_id';
-    const field=kind==='event'?'payload':'input';
     while(next<end) {
       const length=Math.min(CONTENT_SLICE_BYTES,end-next);
-      const read=await db.prepare(`SELECT substr(CAST(${field} AS BLOB),?,?) AS bytes FROM ${table}
-        WHERE project_id=? AND ${id}=? AND content_revision=?${kind==='event'?" AND envelope_hash=? AND payload_format='inline'":''}`)
-        .bind(next+1,length,row.project_id,row.resource_id,row.content_revision,
-          ...(kind==='event'?[row.envelope_hash]:[])).first<{bytes:Uint8Array|number[]}>();
+      const read=await db.prepare(`SELECT substr(CAST(payload AS BLOB),?,?) AS bytes FROM events
+        WHERE project_id=? AND event_id=? AND content_revision=? AND envelope_hash=? AND payload_format='inline'`)
+        .bind(next+1,length,row.project_id,row.resource_id,row.content_revision,row.envelope_hash).first<{bytes:Uint8Array|number[]}>();
       if(read===null) throw new Error('content_source_changed');
       const bytes=new Uint8Array(read.bytes);
       if(bytes.byteLength!==length) throw new Error('content_source_changed');
@@ -184,7 +165,7 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
       if(preview.length<TOOL_INPUT_PREVIEW_BYTES) preview.push(...bytes.subarray(0,TOOL_INPUT_PREVIEW_BYTES-preview.length));
       next+=length;
     }
-    const guard=sourceGuard(kind,row);
+    const guard=sourceGuard(row);
     const state=JSON.stringify(snapshot(hash));
     const prefix=JSON.stringify(preview);
     const write=held===null

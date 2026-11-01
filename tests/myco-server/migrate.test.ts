@@ -1,3 +1,4 @@
+import { RETIRED_CONTENT_TABLES } from '@myco-server-worker/db/schema-v117.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -14,9 +15,6 @@ import { sqliteD1 } from './helpers/d1.js';
 import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { VIEW_SESSION_TABLES } from '@myco-server-worker/db/view-tables.js';
-import { captureViewSession } from './helpers/view-stores.js';
-import { seedViewInstance, seedViewState, seedViewWriterMetadata } from './helpers/view-instances.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
@@ -131,6 +129,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
+  '0117_v117.sql': 'aef310f340c6447cb503487b0a080ff36d5f63072970f827300c4d355b9af907',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -139,6 +138,8 @@ const shape = (sqlite: Database) =>
   sqlite.query(`SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`).all();
 const version = (sqlite: Database) => (sqlite.query(`SELECT value FROM schema_meta WHERE key='version'`).get() as any).value;
 const schemaVersionsFrom = (first: number) => SCHEMA_STEPS.filter((step) => step.version >= first).map((step) => step.version);
+const PRE_RETIREMENT_STEPS = SCHEMA_STEPS.filter(step => step.version < 117);
+const preRetirementVersionsFrom = (first: number) => PRE_RETIREMENT_STEPS.filter(step => step.version >= first).map(step => step.version);
 const fresh = () => { const s = new Database(':memory:'); s.exec('PRAGMA foreign_keys = ON'); return s; };
 
 /** Inventories accept only a canonical ordered prefix of schema steps. */
@@ -166,7 +167,7 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
       sqlite.close();
     }
   }
-  return columnInventories.get(steps.length)!;
+  return columnInventories.get(steps.at(-1)!.version)!;
 }
 
 /** Every index a prefix of the steps leaves standing, by the table it is on. An index a step drops must have been created by an earlier one, so a name absent here is a drop of nothing. */
@@ -353,13 +354,13 @@ describe('versioned schema steps', () => {
       session('no-transcript', null);
       session('already-named', 'cursor'); transcript('already-named', 'tx7', 'codex');
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(40));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual(preRetirementVersionsFrom(40));
       const after = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions ORDER BY session_id').all();
       const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
       expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
       // The v45 presentation columns arrive NULL on every existing session: a backfill would be history the parse has not read.
       expect(after.map((row) => ({ ...row, agent: null }))).toEqual(before.map((row) => ({ ...row, agent: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null })));
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual([]);
       expect(sqlite.query('SELECT * FROM sessions ORDER BY session_id').all()).toEqual(after);
     } finally { sqlite.close(); }
   });
@@ -371,9 +372,9 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary, titled_at, titled_by)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(39));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual(preRetirementVersionsFrom(39));
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null });
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual([]);
     } finally { sqlite.close(); }
   });
 
@@ -384,9 +385,9 @@ describe('versioned schema steps', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, ended_at, title, summary)
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(36));
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual(preRetirementVersionsFrom(36));
       expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null, launch_parent_session_id: null });
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+      expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual([]);
     } finally { sqlite.close(); }
   });
 
@@ -468,7 +469,7 @@ describe('versioned schema steps', () => {
   });
   it('stamps its version as the last statement of every step, in ascending order from 1', () => {
     SCHEMA_STEPS.forEach((step, i) => {
-      expect(step.version).toBe(i + 1);
+      expect(step.version).toBe(i < 115 ? i + 1 : i + 2);
       expect(step.statements[step.statements.length - 1]).toMatch(new RegExp(`^INSERT OR REPLACE INTO schema_meta \\(key, value\\) (VALUES \\('version', '${step.version}'\\)|SELECT 'version', '${step.version}' WHERE )`));
     });
     expect(SCHEMA_STEPS[SCHEMA_STEPS.length - 1].version).toBe(SERVER_SCHEMA_VERSION);
@@ -554,9 +555,9 @@ describe('versioned schema steps', () => {
         const before = sqlite.query('SELECT * FROM sessions').all();
         const retainedRelease = sqlite.query("SELECT * FROM knowledge_release_state WHERE namespace='sessions'").all();
         for (const table of retired) expect((sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
-        if (mode === 'native') for (const migration of SCHEMA_STEPS.filter(({ version }) => version >= 86)) sqlite.exec(renderMigrationFile(migration));
-        else expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(86));
-        expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+        if (mode === 'native') for (const migration of PRE_RETIREMENT_STEPS.filter(({ version }) => version >= 86)) sqlite.exec(renderMigrationFile(migration));
+        else expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual(preRetirementVersionsFrom(86));
+        expect(await applySchemaSteps(sqliteD1(sqlite), PRE_RETIREMENT_STEPS)).toEqual([]);
         sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
         expect(version(sqlite)).toBe('86');
         expect(sqlite.prepare('SELECT * FROM sessions').all()).toEqual(before.map((row) => ({ ...row as Record<string, unknown>, launch_parent_session_id: null })));
@@ -586,7 +587,7 @@ describe('versioned schema steps', () => {
     ]);
   });
 
-  it('keeps earlier tables and columns except the exact v86 retirement', () => {
+  it('keeps earlier tables and columns except declared retirements', () => {
     const retiredAt86 = new Set([
       'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
       ...['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `skill_records_fts${suffix}`),
@@ -599,7 +600,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (n === 85 && retiredAt86.has(table)) {
+        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === 117 && RETIRED_CONTENT_TABLES.some(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -622,7 +623,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = n === 85 && retiredAt86.has(dropped);
+          const allowedRetirement = (n === 85 && retiredAt86.has(dropped)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -649,7 +650,7 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
-            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) })
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || SCHEMA_STEPS[n]!.version === 117 })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -747,14 +748,8 @@ describe('versioned schema steps', () => {
       })).toMatchObject({ persisted: true, projected: true });
       await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
+      writerRows.set('learning_sessions', source.sqlite.query('SELECT * FROM learning_sessions').get() as Record<string, unknown>);
       writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
-      // The view seeds below write the session's learning row themselves.
-      source.sqlite.run('DELETE FROM learning_sessions');
-      await captureViewSession(source.db, 'proj_1', 'grammar-session');
-      await seedViewInstance(source.db, { projectId: 'proj_1', sessionId: 'grammar-session', instanceId: 'grammar-view', state: 'live' });
-      await seedViewState(source.db, 'proj_1', 'grammar-session', 'grammar-view');
-      await seedViewWriterMetadata(source.db, 'proj_1', 'grammar-session', 'grammar-view');
-      for (const table of VIEW_SESSION_TABLES) writerRows.set(table, source.sqlite.query(`SELECT * FROM ${table}`).get() as Record<string, unknown>);
     } finally { source.sqlite.close(); }
     const sqlite = fresh();
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
@@ -819,10 +814,9 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
-      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_publication', 'transcript_segments', 'transcripts',
-      'learning_init_queue', 'turn_cards',
-      ...VIEW_SESSION_TABLES,
+       'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
+      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
+      'learning_sessions', 'turn_cards',
     ].sort());
   });
 });
@@ -888,4 +882,26 @@ it('schema 107 installs the source-range path on empty and populated prompt stor
         index: { sql: 'CREATE INDEX idx_view_prompts_source_range ON view_prompts(project_id,instance_id,source_transcript_id,source_offset,source_end,prompt_id)' } });
     } finally { db.close(); }
   }
+});
+
+it('retires content storage only after documents are live, preserving the catalog and capture', () => {
+  const sqlite = fresh();
+  try {
+    for (const prior of SCHEMA_STEPS.filter(step => step.version < 117)) step(sqlite, prior);
+    sqlite.run(`INSERT INTO projects(project_id,name,created_at) VALUES('retirement','Retirement',0)`);
+    sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('retirement','session','machine','token',0,0)`);
+    sqlite.run(`INSERT INTO session_documents(project_id,session_id,state,updated_at) VALUES('retirement','session','convert',0)`);
+    const retirement = SCHEMA_STEPS.find(step => step.version === 117)!;
+    expect(() => step(sqlite, retirement)).toThrow('documents_retirement_incomplete');
+    expect(version(sqlite)).toBe('115');
+    sqlite.run(`UPDATE session_documents SET state='live',generation=1 WHERE project_id='retirement'`);
+    sqlite.run(`UPDATE raw_provenance_backfill SET source=5,cursor_project='retirement',cursor_id='old',complete=0 WHERE id=1`);
+    step(sqlite, retirement);
+    for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).toBeNull();
+    expect(sqlite.query(`SELECT session_id FROM sessions WHERE project_id='retirement'`).get()).toEqual({session_id:'session'});
+    expect(sqlite.query(`SELECT generation FROM session_documents WHERE project_id='retirement'`).get()).toEqual({generation:1});
+    expect(sqlite.query(`SELECT source,cursor_project,cursor_id,complete FROM raw_provenance_backfill WHERE id=1`).get())
+      .toEqual({source:0,cursor_project:'',cursor_id:'',complete:0});
+  } finally { sqlite.close(); }
 });

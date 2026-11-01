@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from 'bun:test';
-import { withViewStores } from './helpers/view-stores.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 import { V104_STATEMENTS } from '@myco-server-worker/db/schema-v104.js';
 import { assertThinLearningDrained, THIN_LEARNING_ADMISSION_SQL, admitThinLearningRemoval } from '@myco-server-worker/db/thin-learning-admission.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
@@ -89,7 +89,7 @@ for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pendin
 }
 
 it('admits only drained pre-pause extraction on native and D1, including equal and unknown dispatch boundaries', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     await db.prepare("UPDATE schema_meta SET value='100' WHERE key='learning_paused_at'").run();
     await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1)").run();
     for (const status of ['queued', 'pending', 'running']) for (const [queued, started] of [[99, 101], [100, 101], [null, 100], [null, null]]) {

@@ -1,1 +1,1 @@
-export { type core_embedding_selection_RetiringReceipt as RetiringReceipt, core_embedding_selection_retiringReceipt as retiringReceipt, core_embedding_selection_embeddingWakeAt as embeddingWakeAt } from "../../read/view-store.js";
+export { type core_embedding_selection_RetiringReceipt as RetiringReceipt, core_embedding_selection_retiringReceipt as retiringReceipt, core_embedding_selection_embeddingWakeAt as embeddingWakeAt } from "../../read/catalog-store.js";

@@ -255,7 +255,7 @@ async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   sqlite.run(`UPDATE sessions SET title = 'Automatic title', titled_at = 1 WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_LIVE]);
   sqlite.run(`UPDATE sessions SET title = 'Admin title', titled_at = 1, titled_by = 'mem_admin' WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_ADMIN]);
 
-  const tables = ['sessions', 'prompt_batches', 'responses', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs', 'session_tombstones'];
+  const tables = ['sessions', 'session_prompts', 'session_documents', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs', 'session_tombstones'];
   const snapshot = () => ({
     ...Object.fromEntries(tables.map((t) => [t, rig.rows(t)])),
     spores: rig.env.sqlite.query(`SELECT id, status, updated_at FROM spores ORDER BY id`).all(),
@@ -399,7 +399,7 @@ describe('importing a 1.4 vault', () => {
 
     // Prompts from the vault only where no transcript holds the session.
     const promptTexts = (sessionId: string) =>
-      (sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at`).all(PROJECT, sessionId) as Array<{ text: string | null }>).map((p) => p.text);
+      (sqlite.query(`SELECT preview AS text FROM session_prompts WHERE project_id = ? AND session_id = ? ORDER BY created_at`).all(PROJECT, sessionId) as Array<{ text: string | null }>).map((p) => p.text);
     expect(promptTexts(SESSION_PRUNED)).toEqual(['pruned prompt one', 'pruned prompt two']);
     expect(promptTexts(SESSION_TWICE)).toEqual(['earlier prompt']);
     expect(promptTexts(SESSION_ON_DISK).every((t) => t !== 'on disk prompt')).toBe(true);
@@ -488,7 +488,7 @@ describe('importing a 1.4 vault', () => {
     db.close();
     await f.run();
     expect(f.rig.env.sqlite.query(`SELECT session_id FROM sessions WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([{ session_id: SESSION_TWICE }]);
-    expect(f.rig.env.sqlite.query(`SELECT text FROM prompt_batches WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([]);
+    expect(f.rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([]);
   });
 
   it('never takes a transcript for a session whose prompts came from the vault, on a machine with no record of it', async () => {

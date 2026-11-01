@@ -1,3 +1,4 @@
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 /**
  * A session's lifecycle at its two projections: an end on any channel applies
  * only when it is not older than the newest captured human turn, a newer human
@@ -8,17 +9,21 @@
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
-import { envelope, uuid } from './helpers/fixtures.js';
+import { envelope, uuid, memoryBlobStore } from './helpers/fixtures.js';
 
 function rig() {
   const sqlite = seededSqlite();
   seedCredential(sqlite, { id: 'mt_1', machineId: 'machine_1', hash: 'h1' });
   const db = sqliteD1(sqlite);
+  const blobs=memoryBlobStore();
   const ctx = { projectId: 'proj_1', machineId: 'machine_1', tokenId: 'mt_1', bodyBytes: 100, now: 10_000 };
   let n = 100;
   /** One event of `kind` at caller time `at`, on `channel`; a distinct id unless one is given. */
-  const send = (kind: string, at: number, payload: Record<string, unknown>, over: { channel?: string; eventId?: string; actor?: string } = {}) =>
-    ingestEvent(db, over.actor === undefined ? ctx : { ...ctx, writeOrigin: 'server' as const, actor: over.actor }, envelope({ eventId: over.eventId ?? uuid(n++), sessionId: 'sess_1', kind, createdAt: at, channel: over.actor === undefined ? over.channel ?? 'cli' : 'http', payload }));
+  const send = async (kind: string, at: number, payload: Record<string, unknown>, over: { channel?: string; eventId?: string; actor?: string } = {}) => {
+    const result=await ingestEvent(db, over.actor === undefined ? ctx : { ...ctx, writeOrigin: 'server' as const, actor: over.actor }, envelope({ eventId: over.eventId ?? uuid(n++), sessionId: 'sess_1', kind, createdAt: at, channel: over.actor === undefined ? over.channel ?? 'cli' : 'http', payload }));
+    await publishDocuments({db,blobs},10000,{calls:500,deadline:Date.now()+60000,clock:Date.now});
+    return result;
+  };
   const end = (at: number, over: { channel?: string; eventId?: string; actor?: string } = {}) => send('session.end', at, { endedAt: at }, over);
   const prompt = (at: number, over: { channel?: string; origin?: string; eventId?: string; promptId?: string } = {}) =>
     send('prompt', at, { promptId: over.promptId ?? uuid(n++), text: `turn at ${at}`, origin: over.origin ?? 'user' }, over);
@@ -71,7 +76,7 @@ describe('a session\'s lifecycle', () => {
     await r.prompt(1_000, { eventId: uuid(1), promptId });
     await r.end(2_000, { eventId: uuid(3) });
     expect(await r.prompt(3_000, { eventId: uuid(4), promptId })).toMatchObject({ persisted: true });
-    expect(r.sqlite.query(`SELECT created_at AS at FROM prompt_batches WHERE prompt_id = ?`).all(promptId)).toEqual([{ at: 1_000 }]);
+    expect(r.sqlite.query(`SELECT MIN(created_at) AS at FROM events WHERE json_extract(payload,'$.promptId') = ?`).all(promptId)).toEqual([{ at: 1_000 }]);
     expect(r.row()).toMatchObject({ endedAt: 2_000, requestedAt: 2_000 });
     // The same id with other text is a conflict the row refuses; it moves nothing either.
     await r.send('prompt', 4_000, { promptId, text: 'not the same turn', origin: 'user' }, { eventId: uuid(5) });

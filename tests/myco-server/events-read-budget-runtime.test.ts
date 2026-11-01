@@ -190,8 +190,8 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
         const seq = `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<${size})`;
         await db.prepare(`${seq} INSERT OR IGNORE INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
           SELECT 'p',printf('session-%06d',i),'machine','token',i,i,i FROM n`).run();
-        await db.prepare(`${seq} INSERT OR IGNORE INTO prompt_batches(project_id,prompt_id,session_id,event_id,content_hash,created_at,updated_at,token_id,received_at,origin)
-          SELECT 'p',printf('prompt-%06d',i),printf('session-%06d',i),'event','hash',i,i,'token',i,'user' FROM n`).run();
+        await db.prepare(`${seq} INSERT OR IGNORE INTO session_prompts(project_id,prompt_id,session_id,generation,turn_key,created_at,ord,origin)
+          SELECT 'p',printf('prompt-%06d',i),printf('session-%06d',i),1,printf('prompt-%06d',i),i,i,'user' FROM n`).run();
         await db.prepare(`${seq} INSERT OR IGNORE INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at)
           SELECT 'p',printf('run-%06d',i),'agent','extract-curate','completed',i*2,i*2 FROM n`).run();
       }
@@ -255,8 +255,8 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       const seq = `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<${size})`;
       await db.prepare(`${seq} INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
         SELECT 'proj_history','session-'||i,'machine','credential',1,1 FROM n`).run();
-      await db.prepare(`${seq} INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,content_hash,created_at,updated_at,token_id,received_at,origin)
-        SELECT 'proj_history','prompt-'||i,'session-'||i,'event','hash',1,1,'credential',1,'user' FROM n`).run();
+      await db.prepare(`${seq} INSERT INTO session_prompts(project_id,prompt_id,session_id,generation,turn_key,created_at,ord,origin)
+        SELECT 'proj_history','prompt-'||i,'session-'||i,1,'prompt-'||i,1,i,'user' FROM n`).run();
       await db.prepare(`${seq} INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id)
         SELECT 'proj_history','transcript-'||i,'session-'||i,'machine',100,0,1,1,'credential' FROM n`).run();
       const measured = measuredStore(db);

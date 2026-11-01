@@ -12,6 +12,7 @@ const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
 const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'], 107: ['view_prompts'] };
 /** The seeded state a guarded step admits: for 114, every document converted, its publisher holding every byte received and its prompts located. */
 const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
+  117: "UPDATE session_documents SET state='live',generation=COALESCE(generation,1);",
   114: `UPDATE session_documents SET state = 'live', generation = COALESCE(generation, 1);
     UPDATE session_prompts SET page = 0 WHERE page IS NULL;
     DELETE FROM publish_queue;

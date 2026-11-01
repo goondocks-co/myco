@@ -1,5 +1,5 @@
 import { statementRecorder } from '../helpers/statement-recorder.js';
-import { prepareEmbeddingUnwritten, prepareEmbeddingSelection, prepareHubnessWork } from '@myco-server-worker/read/view-store.js';
+import { prepareEmbeddingUnwritten, prepareEmbeddingSelection, prepareHubnessWork } from '@myco-server-worker/read/catalog-store.js';
 import { describe, expect, test } from 'bun:test';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';

@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { explainReadPlan } from './helpers/view-read-costs.js';
+import { explainReadPlan } from './helpers/prepared.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
@@ -27,7 +27,7 @@ import { listPlans } from '@myco-server-worker/read/children.js';
 import { pageSpores } from '@myco-server-worker/core/spores.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
-import { listSessionActivity } from '@myco-server-worker/read/session-activity.js';
+
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
 

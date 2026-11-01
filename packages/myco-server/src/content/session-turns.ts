@@ -11,7 +11,7 @@ import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
 import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
-import { receiptPlans } from '../read/view-store.js';
+import { receiptPlans } from '../read/catalog-store.js';
 import { promptPlace, promptTurn } from '../read/document-catalog.js';
 import { SESSION_OWNER, type DocRecord, type Page as DocPage } from './document.js';
 import {

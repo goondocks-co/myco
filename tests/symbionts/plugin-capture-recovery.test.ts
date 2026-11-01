@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { snippetModule } from '../support/plugin-snippet.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { parseOnce } from '@myco-server-worker/ingest/parse.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { registerBlob } from '../myco-server/helpers/d1.js';
 
@@ -49,12 +49,12 @@ async function parse(text: string, agent: string) {
   let report;
   try {
     console.log = (line: string) => { diagnostics.push(JSON.parse(line)); };
-    report = await parseOnce(serverEnv, target, NOW, { calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
+    report = await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
   } finally { console.log = log; }
   const prompts = sqlite.query('SELECT text FROM prompt_batches').all();
   const state = sqlite.query('SELECT parsed_offset, parse_error FROM transcripts').get();
   // A retry with the committed cursor must derive nothing twice.
-  await parseOnce(serverEnv, { ...target, parsedOffset: bytes.length }, NOW, { calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
+  await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
   expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual(prompts);
   sqlite.close();
   return { report, prompts, state, diagnostics };

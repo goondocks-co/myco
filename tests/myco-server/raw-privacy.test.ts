@@ -1,10 +1,12 @@
+import { readFixtureRecords } from './helpers/fixtures.js';
+import { publishFixtureDocuments } from './helpers/fixtures.js';
 import { describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
 import { createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { assertRawPrivacy } from '../parity/scenarios/raw-privacy.js';
 import type { ParityTarget } from '../parity/harness.js';
 import { envelope, memberHeaders, memberPost, registeredObject, sqliteEnv } from './helpers/fixtures.js';
@@ -87,10 +89,10 @@ describe('raw capture privacy regression gate', () => {
 
       const uploads = e.sqlite.query(`SELECT key FROM blobs WHERE project_id = 'proj_raw_privacy' AND token_id = 'mt_raw_uploader'`).all() as { key: string }[];
       const bytesBefore = uploads.map(({ key }) => ({ key, bytes: e.bucket.objects.get(registeredObject(e.sqlite, 'proj_raw_privacy', key)!)!.bytes.slice() }));
-      await parseTranscripts(e.serverEnv, Date.now());
-      const transcript = e.sqlite.query(`SELECT parsed_offset, size, parse_error FROM transcripts WHERE project_id = 'proj_raw_privacy' AND machine_id = 'machine_raw_uploader'`).get() as { parsed_offset: number; size: number; parse_error: string | null };
+      await publishFixtureDocuments(e.serverEnv, Date.now());
+      const transcript = e.sqlite.query(`SELECT p.published_offset AS parsed_offset,t.size,p.failure AS parse_error FROM transcripts t JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id WHERE t.project_id = 'proj_raw_privacy' AND t.machine_id = 'machine_raw_uploader'`).get() as { parsed_offset: number; size: number; parse_error: string | null };
       expect(transcript).toEqual({ parsed_offset: transcript.size, size: transcript.size, parse_error: null });
-      expect(e.sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = 'proj_raw_privacy' AND text = 'processed prompt'`).all()).toEqual([{ text: 'processed prompt' }]);
+      expect((await readFixtureRecords(e.serverEnv,'proj_raw_privacy')).filter(row=>row.k==='prompt'&&row.text==='processed prompt').map(row=>({text:row.text}))).toEqual([{ text: 'processed prompt' }]);
 
       const provenanceBefore = e.sqlite.query<Record<string, unknown>, []>(`SELECT * FROM raw_resources ORDER BY rowid`).all();
       const backup = await createBackup(e.db, e.bucket, { producer: 'privacy regression', now: Date.now() });

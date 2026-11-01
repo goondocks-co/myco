@@ -12,7 +12,7 @@ it('upgrades populated v93 tool calls to nullable result reasons on native and D
   try {
     expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(94);
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) {
+    for (const step of SCHEMA_STEPS.filter(step=>step.version<=94)) {
       for (const sql of step.statements) fresh.exec(sql);
       if (step.version > 93) continue;
       for (const sql of step.statements) native.exec(sql);

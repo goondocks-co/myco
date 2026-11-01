@@ -1,9 +1,10 @@
+import { archivedEventMetadata } from '@myco-server-worker/db/document-tables.js';
 import { describe,expect,it } from 'bun:test';
-import { storageCleanup,storageCleanupPending,inputArchiveStatements } from '@myco-server-worker/core/storage-cleanup.js';
+import { storageCleanup, storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { eventContent,eventArchiveStatements,prepareArchive } from '@myco-server-worker/core/event-content.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
-import { processedBody } from '@myco-server-worker/read/processed.js';
+
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { eventOrderingTimeSql,resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
@@ -53,14 +54,10 @@ describe('archive-before-clear storage cleanup',()=>{
     const rig=sqliteEnv();
     try {
       const text=await oldEvent(rig);
-      const before=rig.sqlite.query('SELECT * FROM responses').all();
-      const beforeFts=rig.sqlite.query('SELECT rowid,text FROM responses_fts').all();
       await drain(rig);
       const row=rig.sqlite.query('SELECT payload,payload_format FROM events WHERE event_id=?').get(uuid(101));
-      expect(row).toEqual({payload:'{}',payload_format:'archived'});
+      expect(row).toEqual({payload:archivedEventMetadata(JSON.parse(text)),payload_format:'archived'});
       expect(await eventContent(rig.serverEnv,'proj_1',uuid(101))).toBe(text);
-      expect(rig.sqlite.query('SELECT * FROM responses').all()).toEqual(before);
-      expect(rig.sqlite.query('SELECT rowid,text FROM responses_fts').all()).toEqual(beforeFts);
       expect(await new RawResourceReader(rig.serverEnv,{projectId:'proj_1'},{kind:'member',memberId:'mem_machine_1'}).event(uuid(101))).toBe(text);
       for(const memberId of ['mem_machine_2','mem_machine_3','mem_machine_4']) expect(await new RawResourceReader(rig.serverEnv,{projectId:'proj_1'},{kind:'member',memberId}).event(uuid(101))).toBeNull();
       for(const kind of ['run','grant'] as const) expect(await new RawResourceReader(rig.serverEnv,{projectId:'proj_1'},{kind,id:'run'}).event(uuid(101))).toBeNull();
@@ -143,31 +140,11 @@ describe('archive-before-clear storage cleanup',()=>{
     }
   });
 
-  it('archives a legacy large input, retains complete facts and output bytes, and refuses a missing full proof',async()=>{
-    const rig=sqliteEnv();
-    try {
-      const id=uuid(150);
-      const output='out'.repeat(1300);
-      await ingestEvent(rig.db,{projectId:'proj_1',machineId:'machine_1',tokenId:await tokenId(rig),bodyBytes:0,now},envelope({eventId:id,kind:'tool.use',payload:{toolCallId:id,toolName:'Edit',input:{file_path:'whole.ts'},output,success:true}}),rig.serverEnv);
-      const input=JSON.stringify({text:'🦋'.repeat(4000),file_path:'late-path.ts'});
-      rig.sqlite.query('UPDATE tool_calls SET input=?,files_affected=? WHERE tool_call_id=?').run(input,JSON.stringify(['late-path.ts']),id);
-      const facts=rig.sqlite.query('SELECT tool_name,files_affected,output_preview,output_blob_key,success,token_id FROM tool_calls').get();
-      await drain(rig);
-      const row=rig.sqlite.query('SELECT input,input_blob_key,input_bytes FROM tool_calls').get() as {input:string;input_blob_key:string;input_bytes:number};
-      expect(new TextEncoder().encode(row.input).length).toBeLessThanOrEqual(2048);
-      expect(row.input_bytes).toBe(new TextEncoder().encode(input).length);
-      expect(await processedBody(rig.serverEnv,{projectId:'proj_1'},'tool-input',id)).toBe(input);
-      expect(rig.sqlite.query('SELECT tool_name,files_affected,output_preview,output_blob_key,success,token_id FROM tool_calls').get()).toEqual(facts);
-      rig.sqlite.query("DELETE FROM registered_content_proofs WHERE source_kind='bundle'").run();
-      await expect(processedBody(rig.serverEnv,{projectId:'proj_1'},'tool-input',id)).rejects.toThrow('event_content_reference_invalid');
-    }finally{rig.sqlite.close();}
-  });
-
   it('streams an oversized row under revision guards and completes only after an empty confirmation page',async()=>{
     const seen=new Set<string>();
     const rig=sqliteEnv({onSql(sql,sqlite){
       if(!/SELECT rowid AS source_rowid,project_id,(event_id|tool_call_id) AS resource_id/.test(sql))return;
-      seen.add(sql.includes('FROM tool_calls')?'tool_calls':'events');
+      seen.add('events');
       expect(sql).toContain('(project_id,session_id,created_at,rowid)>(?,?,?,?)');
       expect(sql).toMatch(/ORDER BY project_id,session_id,created_at,rowid LIMIT \?/);
       for(const cursor of [['','',-1,-1],['proj_1','s1',now-1000,1],['proj_1','s1',now,999]]){
@@ -185,7 +162,7 @@ describe('archive-before-clear storage cleanup',()=>{
       await drain(rig);
       expect(await eventContent(rig.serverEnv,'proj_1',uuid(101))).toBe(original);
       expect(rig.sqlite.query('SELECT complete FROM storage_cleanup_state').get()).toEqual({complete:1});
-      expect([...seen].sort()).toEqual(['events','tool_calls']);
+      expect([...seen].sort()).toEqual(['events']);
     }finally{rig.sqlite.close();}
   });
 
@@ -214,21 +191,6 @@ describe('archive-before-clear storage cleanup',()=>{
       await expect(rig.db.batch(eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
       expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
       expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
-    }finally{rig.sqlite.close();}
-  });
-  it('refuses a changed input event identity in the same clear transaction',async()=>{
-    const rig=sqliteEnv();
-    try{
-      const id=uuid(160);
-      await ingestEvent(rig.db,{projectId:'proj_1',machineId:'machine_1',tokenId:await tokenId(rig),bodyBytes:0,now},envelope({eventId:id,kind:'tool.use',payload:{toolCallId:id,toolName:'Read',input:{path:'x'},success:true}}),rig.serverEnv);
-      const full=JSON.stringify({body:'x'.repeat(3000)});
-      rig.sqlite.query('UPDATE tool_calls SET input=? WHERE tool_call_id=?').run(full,id);
-      const row=await cleanupCandidate(rig.db,{project_id:'proj_1',resource_kind:'tool-input',resource_id:id});
-      const writes=await inputArchiveStatements(rig.serverEnv,row!,now);
-      rig.sqlite.query('UPDATE events SET envelope_hash=? WHERE event_id=?').run('changed',id);
-      await expect(rig.db.batch(writes)).rejects.toThrow();
-      expect(rig.sqlite.query('SELECT input,input_blob_key FROM tool_calls').get()).toEqual({input:full,input_blob_key:null});
-      expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM processed_resources WHERE kind='tool-input'").get()).toEqual({n:0});
     }finally{rig.sqlite.close();}
   });
 

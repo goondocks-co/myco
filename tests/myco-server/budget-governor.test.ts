@@ -18,7 +18,7 @@ import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
 import { installPulledStages, queuedAdmissibleSql, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
-import { withViewStores } from './helpers/view-stores.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -486,7 +486,7 @@ it('reasserts level and capacity inside the write when they change during input 
     expect(queued.pulled()).toEqual([]);
     queued.nothingStray();
   }finally{queued.sqlite.close();}
-  await withViewStores(async(db,target)=>{
+  await withDocumentStores(async(db,target)=>{
     if(target!=='D1')return;
     await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)").run();
     await completeBudgetMigration(db,Date.now());

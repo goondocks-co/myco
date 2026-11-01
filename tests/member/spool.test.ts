@@ -91,7 +91,7 @@ describe('member spool', () => {
     expect(result).toMatchObject({ acked: 1, refused: 0, remaining: 0, endedBy: 'drained' });
     expect(payloads).toHaveLength(1);
     expect(payloads[0].resultReason).toBe(advertised ? 'reported' : undefined);
-    expect(rig.env.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: advertised ? 'reported' : null });
+    expect(rig.env.sqlite.query(`SELECT json_extract(payload,'$.resultReason') AS result_reason FROM events WHERE kind='tool.failure'`).get()).toEqual({ result_reason: advertised ? 'reported' : null });
   });
 
   it.each([false, true])('ships launchParentSessionId only to an advertising Deployment (advertised: %s)', async (advertised) => {

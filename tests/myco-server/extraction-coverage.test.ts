@@ -1,5 +1,5 @@
+import { memoryBlobStore } from './helpers/fixtures.js';
 import {statementRecorder} from '../helpers/statement-recorder.js';
-import {readTag} from '../helpers/view-read-contract.js';
 import { describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -18,7 +18,8 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { extractionSqlEnv as sqliteEnv, assertExtractionSql } from './helpers/extraction-sql.js';
 
 /** The destination registers every blob the source holds, as a restore requires: a backup carries no blob bytes. */
-function holdBlobs(from: Database, to: Database): void {
+function holdBlobs(from: Database, to: Database, source:ReturnType<typeof memoryBlobStore>, destination:ReturnType<typeof memoryBlobStore>): void {
+  for(const [key,value]of source.objects)destination.seed(key,value);
   for (const row of from.query('SELECT * FROM blobs').all() as Record<string, unknown>[]) {
     const columns = Object.keys(row);
     to.query(`INSERT OR IGNORE INTO blobs (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...(Object.values(row) as never[]));
@@ -55,7 +56,7 @@ async function fixture() {
   };
   const count = () => f.sqlite.query('SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id = ? AND session_id = ?').get('proj_1', 'session');
   const assertCounts = () => {
-    const prompts = f.sqlite.query('SELECT project_id,session_id,prompt_id,processed,origin FROM prompt_batches').all() as { project_id: string; session_id: string; prompt_id: string; processed: number; origin: string }[];
+    const prompts = f.sqlite.query('SELECT project_id,session_id,prompt_id,0 AS processed,origin FROM session_prompts').all() as { project_id: string; session_id: string; prompt_id: string; processed: number; origin: string }[];
     const acks = f.sqlite.query("SELECT project_id,record_id FROM extraction_acks WHERE kind = 'record'").all() as { project_id: string; record_id: string }[];
     const facts = f.sqlite.query('SELECT project_id,session_id,eligible_prompts FROM session_read_facts').all() as { project_id: string; session_id: string; eligible_prompts: number }[];
     for (const fact of facts) expect(fact.eligible_prompts).toBe(prompts.filter(p => p.project_id === fact.project_id && p.session_id === fact.session_id
@@ -85,8 +86,8 @@ describe('served extraction coverage', () => {
       f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
-      const options = { text, allowForeignLineage: true, authorization: { kind: 'recovery' as const } };
-      holdBlobs(f.sqlite, restored.sqlite);
+      const options = { text, blobs: f.env.blobs, allowForeignLineage: true, authorization: { kind: 'recovery' as const } };
+      holdBlobs(f.sqlite, restored.sqlite,f.bucket,restored.bucket);
       await restoreArtifact(restored.db, options);
       restored.sqlite.run("UPDATE session_read_facts SET eligible_prompts=18 WHERE project_id='proj_1'");
       await restoreArtifact(restored.db, options);
@@ -94,7 +95,7 @@ describe('served extraction coverage', () => {
       restored.sqlite.run("UPDATE session_read_facts SET eligible_prompts=18 WHERE project_id='proj_1'");
       let recounts = 0;
       const interrupted = statementRecorder(restored.db, {accounting:'native',prepared(event) {
-        if (event.operation === 'M46:prepareRestoredSessionUnread:0') { recounts++; throw new Error('interrupted recount'); }
+        if (event.sql.startsWith('UPDATE session_read_facts SET eligible_prompts')) { recounts++; throw new Error('interrupted recount'); }
       }}).db;
       await expect(restoreArtifact(interrupted, options)).rejects.toThrow('interrupted recount');
       expect(recounts).toBe(1);
@@ -102,7 +103,7 @@ describe('served extraction coverage', () => {
       expect(restored.sqlite.query("SELECT next_row FROM backup_restore_progress WHERE table_name LIKE 'extraction-session-counters:%'").all()).toEqual([{ next_row: 0 }]);
       const before = restored.prepared.length;
       await restoreArtifact(restored.db, options);
-      expect(restored.prepared.slice(before).filter(sql => readTag(sql)?.operation === 'M46:prepareRestoredSessionUnread:0')).toHaveLength(1);
+      expect(restored.prepared.slice(before).filter(sql => sql.startsWith('UPDATE session_read_facts SET eligible_prompts'))).toHaveLength(1);
       expect(restored.sqlite.query("SELECT eligible_prompts FROM session_read_facts WHERE project_id='proj_1' ORDER BY session_id").all()).toEqual([{ eligible_prompts: 1 }, { eligible_prompts: 1 }]);
       expect(restored.sqlite.query("SELECT next_row FROM backup_restore_progress WHERE table_name LIKE 'extraction-session-counters:%'").all()).toEqual([{ next_row: 1 }]);
     } finally { restored.sqlite.close(); f.sqlite.close(); }
@@ -126,7 +127,7 @@ describe('served extraction coverage', () => {
       f.assertCounts();
       for (const item of rest) expect(await next.call({ op: 'mark_processed', served_id: item.servedId })).toMatchObject({ marked: true });
       expect(f.count()).toEqual({ n: 0 });
-      expect(f.sqlite.query('SELECT DISTINCT processed FROM prompt_batches').all()).toEqual([{ processed: 0 }]);
+      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM session_prompts').get()).toEqual({n:3});
       expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type='run_write' AND tool_name='myco_run_prompts'").get()).toEqual({ n: 3 });
       f.assertCounts();
     } finally { f.sqlite.close(); }
@@ -199,7 +200,7 @@ describe('served extraction coverage', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('counts the first ack once across runs, prompt mutations, tombstones and additive restore', async () => {
+  it('counts the first ack once across runs, new capture, tombstones and additive restore', async () => {
     const f = await fixture();
     const restored = sqliteEnv();
     const restoredEnv = serverEnvFromBindings(restored.env);
@@ -218,24 +219,18 @@ describe('served extraction coverage', () => {
       expect(() => f.sqlite.run('UPDATE extraction_acks SET acknowledged_at=2')).toThrow('extraction acknowledgements are immutable');
       f.assertCounts();
       const c = await f.capture('session', 3);
-      for (const sql of [
-        `UPDATE prompt_batches SET origin='system' WHERE prompt_id='${b.promptId}'`,
-        `UPDATE prompt_batches SET origin='user' WHERE prompt_id='${b.promptId}'`,
-        `UPDATE prompt_batches SET text='Changed body',updated_at=2 WHERE prompt_id='${a.promptId}'`,
-        `DELETE FROM prompt_batches WHERE prompt_id='${c.promptId}'`,
-      ]) { f.sqlite.run(sql); f.assertCounts(); }
       f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
-      holdBlobs(f.sqlite, restored.sqlite);
+      holdBlobs(f.sqlite, restored.sqlite,f.bucket,restored.bucket);
       await restoreArtifact(restored.db, { text, blobs: restoredEnv.blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
       expect(restored.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks').get()).toEqual({ n: 2 });
-      expect(restored.sqlite.query("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id='proj_1' AND session_id='session'").get()).toEqual({ n: 1 });
+      expect(restored.sqlite.query("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id='proj_1' AND session_id='session'").get()).toEqual({ n: 2 });
       await restoreArtifact(restored.db, { text, blobs: restoredEnv.blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
-      expect(restored.sqlite.query("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id='proj_1' AND session_id='session'").get()).toEqual({ n: 1 });
+      expect(restored.sqlite.query("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id='proj_1' AND session_id='session'").get()).toEqual({ n: 2 });
       await tombstoneSession(f.env, f.scope, 'session', 'test', f.now);
       f.assertCounts();
-      holdBlobs(restored.sqlite, f.sqlite);
+      holdBlobs(restored.sqlite, f.sqlite,restored.bucket,f.bucket);
       await restoreArtifact(f.db, { text, blobs: f.env.blobs, authorization: { kind: 'recovery' } });
       expect(f.sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
       f.assertCounts();
@@ -265,8 +260,8 @@ describe('served extraction coverage', () => {
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
       const restored = sqliteEnv();
       try {
-        holdBlobs(f.sqlite, restored.sqlite);
-        await restoreArtifact(restored.db, { text, authorization: { kind: 'recovery' }, allowForeignLineage: true });
+        holdBlobs(f.sqlite, restored.sqlite,f.bucket,restored.bucket);
+        await restoreArtifact(restored.db, { text, blobs:restored.bucket, authorization: { kind: 'recovery' }, allowForeignLineage: true });
         expect(restored.sqlite.query('SELECT * FROM agent_runs').all()).toEqual([]);
         expect(restored.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks').get()).toEqual({ n: 2 });
         expect(restored.sqlite.query('SELECT SUM(eligible_prompts) AS n FROM session_read_facts').get()).toEqual({ n: 0 });

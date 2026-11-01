@@ -72,16 +72,17 @@ describe('a Codex turn', () => {
       ] },
       { turnId: 't2', items: [{ role: 'user', text: SECOND, order: 4 }, { role: 'assistant', text: 'No.', order: 5 }] },
     ]);
+    const awaitedRecords = await r.records(sessionId);
     const opener1 = s.id('t1', { opener: true });
     const steering = s.id('t1', { order: 2 });
     const opener2 = s.id('t2', { opener: true });
-    expect(r.rows(`SELECT prompt_id, origin FROM prompt_batches WHERE session_id = ? AND origin = 'user' ORDER BY created_at`, sessionId))
+    expect((await r.records(sessionId)).filter(p=>p.k==='prompt'&&p.origin==='user').map(p=>({prompt_id:p.id,origin:p.origin})))
       .toEqual([{ prompt_id: opener1, origin: 'user' }, { prompt_id: steering, origin: 'user' }, { prompt_id: opener2, origin: 'user' }]);
-    expect(r.rows(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND origin = 'system'`, sessionId)).toEqual([{ n: 1 }]);
+    expect([{n:(await r.records(sessionId)).filter(p=>p.k==='prompt'&&p.origin==='system').length}]).toEqual([{ n: 1 }]);
     expect(r.rows(`SELECT prompt_id, scope_reason FROM prompt_context_answers WHERE session_id = ? ORDER BY created_at, rowid`, sessionId)).toEqual([
       { prompt_id: opener1, scope_reason: null }, { prompt_id: null, scope_reason: 'steering' }, { prompt_id: opener2, scope_reason: null },
     ]);
-    expect(r.rows(`SELECT r.prompt_id, p.text FROM responses r JOIN prompt_batches p ON p.prompt_id = r.prompt_id WHERE r.session_id = ? ORDER BY r.created_at`, sessionId)
+    expect((await r.records(sessionId)).filter(p=>p.k==='reply').map(p=>({prompt_id:p.prompt_id,text:(awaitedRecords.find(x=>x.k==='prompt'&&x.id===p.prompt_id))?.text}))
       .map((row) => row.text)).toEqual([FIRST, STEER, SECOND]);
   });
 
@@ -104,6 +105,6 @@ describe('a Codex turn', () => {
     await s.prompt('t1', FIRST);
     await s.finish([{ turnId: 't1', items: [] }, { turnId: 't2', items: [{ role: 'user', text: SECOND, order: 1 }, { role: 'assistant', text: 'No.', order: 2 }] }]);
     expect(r.rows(`SELECT prompt_id FROM spore_injections WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: s.id('t1', { opener: true }) }]);
-    expect(r.rows(`SELECT prompt_id FROM prompt_batches WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: s.id('t2', { opener: true }) }]);
+    expect((await r.records(sessionId)).filter(p=>p.k==='prompt').map(p=>({prompt_id:p.id}))).toEqual([{ prompt_id: s.id('t2', { opener: true }) }]);
   });
 });

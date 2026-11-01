@@ -22,8 +22,6 @@ import { ownMachineNames } from '@myco-server-worker/read/capture.js';
 import { stoppedTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { grantsExpiringBy } from '@myco-server-worker/auth/grants.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
-import {emptyReadSql,legacyArmPlanViolations,partitionLegacyPlan} from './helpers/view-read-costs.js';
-import {readTag,type PlanRow} from '../helpers/view-read-contract.js';
 
 type Statement = { sql: string; params: unknown[] };
 
@@ -58,16 +56,8 @@ function emptyStore(): Database {
 const STORES = { unanalyzed: emptyStore(), stale: analyzedStore(PROFILES.stale), current: analyzedStore(PROFILES.current) };
 afterAll(() => { for (const store of Object.values(STORES)) store.close(); });
 
-const planOf = (db: Database, { sql, params }: Statement): PlanRow[] => {
-  const candidate=db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as PlanRow[];
-  const tag=readTag(sql);
-  if(tag===null)return candidate;
-  const original=emptyReadSql(sql),baseline=planOf(db,{sql:original,params});
-  const input={sql,original,operation:tag.operation,baseline,candidate};
-  const errors=legacyArmPlanViolations(input);
-  if(errors.length)throw new Error(errors.join('\n'));
-  return partitionLegacyPlan(input).legacy;
-};
+type PlanRow={id:number;parent:number;detail:string};
+const planOf = (db: Database, {sql,params}: Statement): PlanRow[] => db.query('EXPLAIN QUERY PLAN '+sql).all(...params as never[]) as PlanRow[];
 const planText=(db:Database,statement:Statement):string=>planOf(db,statement).map(row=>row.detail).join('\n');
 
 /** The statements `read` issues. */
@@ -335,7 +325,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   });
 
   it('needs the capture index named for an activity window: unnamed, the planner walks every session by its start', async () => {
-    const unnamed = (st: Statement): Statement => ({ ...st, sql: emptyReadSql(st.sql).replace(/ INDEXED BY \w+/g, '') });
+    const unnamed = (st: Statement): Statement => ({ ...st, sql: st.sql.replace(/ INDEXED BY \w+/g, '') });
     const [across] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000, agent: 'codex' }));
     const [one] = await captured((db) => listSessions(db, { projectId: 'proj_0' }, { limit: 50, fidelity: 'any', window: 'activity', since: 1_789_000_000_000 }));
     expect(planText(STORES.current, unnamed(across!))).toMatch(/SCAN s USING INDEX idx_sessions_occurred_deployment/);
@@ -343,7 +333,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   });
 
   it('needs the index named in the session and plan lists: under stale statistics the planner reads every row and sorts without it', async () => {
-    const unnamed = (s: Statement): Statement => ({ ...s, sql: emptyReadSql(s.sql).replace(/ INDEXED BY \w+/g, '') });
+    const unnamed = (s: Statement): Statement => ({ ...s, sql: s.sql.replace(/ INDEXED BY \w+/g, '') });
     const [sessions] = await captured((db) => listSessionsAcross(db, ALL, { limit: 50, agent: 'codex', fidelity: 'any' }));
     const [plansPage] = await captured((db) => pagePlansAcross(db, ALL, { limit: 50 }));
     for (const s of [sessions!, plansPage!]) {

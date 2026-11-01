@@ -11,7 +11,7 @@ import { endSession } from '@myco-server-worker/core/session-end.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { convertFixture, count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { publishFixture, count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 /** A little before the request clock the route reads, so seeded turns are older than the end it writes. */
 const NOW = Date.now() - 600_000;
@@ -33,20 +33,19 @@ describe('ending a session as a person', () => {
   it('ends an open session once through ingest, requesting a title and moving no receipt; a repeat is a no-op', async () => {
     const r = await rig();
     r.session('s1');
-    r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                  VALUES ('proj_1', 's1', 'p1', 'e1', 'first turn', 'user', 'h1', ?, ?, ?, ?)`, [NOW - 8_000, NOW - 8_000, r.tokenId, NOW - 8_000]);
-    await convertFixture(r);
+    r.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'s1' AS session_id,'p1' AS prompt_id,'e1' AS event_id,'first turn' AS text,'user' AS origin,'h1' AS content_hash,? AS created_at,? AS updated_at,? AS token_id,? AS received_at)`, [NOW - 8_000, NOW - 8_000, r.tokenId, NOW - 8_000]);
+    await publishFixture(r);
     const first = await r.post('s1');
     expect(first.status).toBe(200);
     const body = (await first.json()) as { outcome: string; endedAt: number };
     expect(body.outcome).toBe('ended');
     expect(r.row('s1')).toEqual({ endedAt: body.endedAt, endedBy: 'mem_machine_1', requestedAt: body.endedAt, lastReceivedAt: NOW - 5_000 });
-    expect(r.sqlite.query(`SELECT kind, channel, producer_adapter AS adapter, token_id AS tokenId FROM events`).all()).toEqual([{ kind: 'session.end', channel: 'http', adapter: 'deployment', tokenId: r.tokenId }]);
+    expect(r.sqlite.query(`SELECT kind, channel, producer_adapter AS adapter, token_id AS tokenId FROM events WHERE kind='session.end'`).all()).toEqual([{ kind: 'session.end', channel: 'http', adapter: 'deployment', tokenId: r.tokenId }]);
     expect((await listReadyTitleSessions(r.db, 10, NOW - 5_000)).map((s) => s.sessionId)).toEqual(['s1']);
 
     const again = await r.post('s1');
     expect(await again.json() as unknown).toEqual({ outcome: 'already_ended', endedAt: body.endedAt });
-    expect(count(r.sqlite, 'events')).toBe(1);
+    expect(count(r.sqlite, 'events')).toBe(2);
   });
 
   /** A store that runs `between` once, before the first batch the end writes: what lands between the read and the write. */

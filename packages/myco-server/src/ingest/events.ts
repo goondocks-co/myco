@@ -1,4 +1,5 @@
-import { measuredContentEnv } from '../core/content-budget.js';
+import { DOCUMENT_EVENT_KINDS } from '../db/document-tables.js';
+
 import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
@@ -20,7 +21,7 @@ import {
 } from './projections.js';
 import type { Delivery } from '../core/injection.js';
 import { prepareContextDelivery } from '../core/context-writes.js';
-import { TURN_KIND } from '@goondocks/myco-shared/member-protocol';
+
 import {
   CONTEXT_DELIVERED_KIND,
   isDeliveredSessionRecord,
@@ -29,9 +30,9 @@ import {
 } from '@goondocks/myco-shared/prompt-identity';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
-import { prepareArchiveBundle, discardArchiveBundle } from '../core/archive-bundle.js';
-import { toolInputPreview } from '../core/tool-input.js';
-import { materialFields, materialMerge, type PreparedMaterialEffect } from './material-mutation.js';
+
+
+import { materialFields, materialMerge } from './material-mutation.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -104,7 +105,7 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
  * own instant, in its own session, once, and only when this request stored the event.
  */
 function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload) {
-  if (e.kind !== CONTEXT_DELIVERED_KIND) return { statements: [], effects: [] };
+  if (e.kind !== CONTEXT_DELIVERED_KIND) return { statements: [] };
   const gate = { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
   const delivered: Omit<Delivery, 'id'> = {
     projectId: ctx.projectId,
@@ -126,7 +127,7 @@ function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEn
     ...(typeof p.answerId === 'string' ? [prepareContextDelivery(db, 'answer', to(p.answerId), gate)] : []),
     ...record,
   ];
-  return { statements: writes.map((write) => write.statement), effects: writes.map((write) => write.effect) };
+  return { statements: writes.map((write) => write.statement) };
 }
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the credential still live (`credentialLive`; never a volume: capture is not refused for the bytes a credential has stored), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no count; the byte count, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
@@ -138,33 +139,16 @@ export async function ingestEvent(
 ): Promise<IngestResult> {
   const planned = await planEventWrite(db, ctx, body, env);
   if (!planned.ok) return refused(ctx, planned);
-  let result: IngestResult;
-  try {
-    const results = await db.batch(planned.write.statements);
-    result = planned.write.interpret(results);
-  } catch (error) {
-    await planned.write.releaseUnlinked?.();
-    throw error;
-  }
-  await planned.write.releaseUnlinked?.();
-  return result;
+  const results = await db.batch(planned.write.statements);
+  return planned.write.interpret(results);
 }
 
 /** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
 export interface EventWrite {
-  material?: {
-    project: string;
-    effects: readonly PreparedMaterialEffect[];
-    admission: Fragment;
-    opportunity: Fragment;
-    applied: Fragment;
-  };
   proof: Fragment;
   replayAdmission?: Fragment;
   statements: PreparedStatement[];
   interpret(results: BatchResult[]): IngestResult;
-  releaseUnlinked?(): Promise<number>;
-  preparationCalls?: number;
 }
 
 export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
@@ -291,47 +275,9 @@ export async function planEventWrite(
     write.processing && e.kind === 'tool.failure' && p.resultReason !== undefined
       ? await replaySourceProof(db, write, e)
       : undefined;
-  const fullInput = spec.projection === 'tool_calls' && p.input !== undefined ? JSON.stringify(p.input) : null;
-  const inputDisplay = fullInput === null ? null : toolInputPreview(fullInput);
-  if (inputDisplay?.truncated && env === undefined)
-    throw new Error('Oversized tool input requires server blob storage');
-  const inputPreparation = env ? measuredContentEnv(env) : undefined;
-  const inputBundle =
-    inputDisplay?.truncated && inputPreparation
-      ? await prepareArchiveBundle(
-          inputPreparation.env,
-          [
-            {
-              kind: 'tool-input',
-              row: {
-                project_id: ctx.projectId,
-                session_id: e.sessionId,
-                event_id: e.eventId,
-                resource_id: p.toolCallId as string,
-                token_id: ctx.tokenId,
-                envelope_hash: digest,
-                content_revision: 0,
-                bytes: inputDisplay.bytes,
-                received_at: ctx.now,
-              },
-              text: fullInput!,
-            },
-          ],
-          ctx.now,
-          undefined,
-          (ctx.writeOrigin ?? 'member') === 'member' ? ctx.tokenId : undefined,
-        )
-      : undefined;
-  const preparedToolInput = inputBundle
-    ? {
-        ...inputBundle.body,
-        bundle: inputBundle,
-        preparationCalls: inputPreparation!.usage.statements + inputPreparation!.usage.blobCalls,
-      }
-    : undefined;
   let plan: KindPlan;
   try {
-    plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput, envelopeHash: digest });
+    plan = planKind(spec, { db, ctx: write, e, p, contentHash, envelopeHash: digest });
   } catch (error) {
     if (!(error instanceof RecordSchemeError) || error.code !== 'record_identity_scheme_unsupported') throw error;
     return { ok: false, ...refusal('Record identity scheme is unsupported', error.code) };
@@ -367,7 +313,6 @@ export async function planEventWrite(
     kind: 'event',
     table: 'events',
     keyColumn: 'event_id',
-    recordId: e.eventId,
     assignments: [],
     incoming: materialFields(
       {
@@ -507,12 +452,6 @@ export async function planEventWrite(
         ];
   const replayWrites = replayGate ? plan.replay!.project(replayGate) : [];
   const delivery = deliveryStatements(db, write, e, p);
-  const materialEffects = [
-    ...(plan.material ?? []),
-    ...(plan.replay?.material ?? []),
-    ...delivery.effects,
-    ...([TURN_KIND, 'subagent.start', 'subagent.stop'].includes(e.kind) ? [rawMaterial.effect] : []),
-  ];
   const incidental = [
     ...replayWrites,
     ...(plan.incidental ?? []),
@@ -563,7 +502,7 @@ export async function planEventWrite(
       }
       plan.landed?.(priorRows);
       emit({ kind: 'ingest_ok', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
-      return plan.projections.length > 0
+      return plan.projections.length > 0 || DOCUMENT_EVENT_KINDS.includes(e.kind)
         ? { persisted: true, projected: true, ...extra }
         : { persisted: true, ...extra };
     }
@@ -597,7 +536,6 @@ export async function planEventWrite(
     return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
   };
 
-  const releaseUnlinked = inputBundle && env ? () => discardArchiveBundle(env, inputBundle, ctx.now) : undefined;
   return {
     ok: true,
     write: {
@@ -605,27 +543,6 @@ export async function planEventWrite(
       replayAdmission: replayGate,
       statements,
       interpret,
-      releaseUnlinked,
-      material:
-        materialEffects.length === 0
-          ? undefined
-          : {
-              project: ctx.projectId,
-              effects: materialEffects,
-              admission: {
-                sql: admission.map((value) => `(${value.sql})`).join(' AND '),
-                params: admission.flatMap((value) => value.params),
-              },
-              opportunity: {
-                sql: `NOT EXISTS(SELECT 1 FROM events WHERE project_id=? AND event_id=?)${replayGate ? ` OR (${replayGate.sql})` : ''}`,
-                params: [ctx.projectId, e.eventId, ...(replayGate?.params ?? [])],
-              },
-              applied: {
-                sql: `(${RAW_ROW_GATE})${replayGate ? ` OR (${replayGate.sql})` : ''}`,
-                params: [ctx.projectId, e.eventId, write.nonce, ...(replayGate?.params ?? [])],
-              },
-            },
-      preparationCalls: (preparedToolInput?.preparationCalls ?? 0) + (replayChecks === undefined ? 0 : 1),
     },
   };
 }

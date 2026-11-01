@@ -33,7 +33,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { convertFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const NOW = Date.now();
@@ -111,8 +111,7 @@ async function setup() {
     e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, tags, created_at, updated_at)
                   VALUES ('proj_1', ?, 'myco-agent', 'gotcha', 'active', ?, 5, '[]', ?, ?)`, [id, content, NOW, NOW]);
   const prompt = (id: string, over: { origin?: string; session?: string; createdAt?: number } = {}) =>
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                  VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`,
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,? AS text,? AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`,
       [over.session ?? 'sess_1', id, `e_${id}`, `body of ${id}`, over.origin ?? 'user', `h_${id}`, over.createdAt ?? NOW, over.createdAt ?? NOW, NOW]);
 
   return { ...e, harness, member, dispatch, call, list, initialize, spore, prompt };
@@ -536,7 +535,7 @@ describe('a titling run reads and writes its own session', () => {
       expect(sqlite.query(`SELECT count(*) AS n FROM agent_run_events WHERE event_type = 'run_write'`).get()).toEqual({ n: 0 });
       prompt('second');
       sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
-      await convertFixture({ sqlite, serverEnv });
+      await publishFixture({ sqlite, serverEnv });
       expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(2);
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
     }
@@ -605,7 +604,7 @@ describe('a titling run reads and writes its own session', () => {
     expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: '', summary: 'x' })).result.ok).toBe(false);
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'off the surface' })).error?.message).toContain('Unknown tool');
     sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
-      await convertFixture({ sqlite, serverEnv });
+      await publishFixture({ sqlite, serverEnv });
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(1);
     const calls = (await runToolCalls(db, { projectId: 'proj_1' }, 'run_t')).map(({ tool, op, failure }) => ({ tool, op, failure }));
     expect(calls).toEqual([

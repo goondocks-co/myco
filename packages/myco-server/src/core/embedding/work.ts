@@ -1,4 +1,4 @@
-import { prepareEmbeddingUnwritten } from '../../read/view-store.js';
+import { prepareEmbeddingUnwritten } from '../../read/catalog-store.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';

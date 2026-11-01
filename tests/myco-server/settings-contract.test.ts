@@ -51,7 +51,7 @@ import { closureOf, codeOf, entryFiles, filesUnder, moduleKey, REPO_ROOT } from 
 import { readFileSync } from 'node:fs';
 import { seededSqlite } from './helpers/d1.js';
 import { indexFixture } from './helpers/vector-index.js';
-import { convertFixture, memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, asOwnerPut, MEMBER_PRINCIPAL, OWNER_ENV, seedMemberRoleAccount } from './helpers/owner.js';
 import type { Database } from 'bun:sqlite';
 
@@ -114,7 +114,7 @@ function seedWorld(r: Rig): void {
   }
   const at = NOW - 3_600_000;
   q(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, ended_at) VALUES ('proj_1', 's_clock', 'machine_1', 'tok_1', ?, ?, 'claude-code', ?)`, at, at, at);
-  q(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES ('proj_1', 's_clock', 'p_clock', 'e_clock', 'scheduled extraction input', 'user', 'h_clock', ?, ?, 'tok_1', ?, 0)`, at, at, at);
+  q(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'s_clock' AS session_id,'p_clock' AS prompt_id,'e_clock' AS event_id,'scheduled extraction input' AS text,'user' AS origin,'h_clock' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at,0 AS processed)`, at, at, at);
   seedMemberRoleAccount(r.sqlite);
 }
 
@@ -182,14 +182,14 @@ async function dispatched(r: Rig): Promise<number> {
 async function titlesQuietSession(r: Rig): Promise<number> {
   const quietSince = NOW - 3_600_000;
   r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 's_quiet', 'machine_1', 'tok_1', ?, ?, 'claude-code')`, [quietSince, quietSince]);
-  r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES ('proj_1', 's_quiet', 'p_quiet', 'e_quiet', 'a session gone quiet', 'user', 'h_quiet', ?, ?, 'tok_1', ?, 1)`, [quietSince, quietSince, quietSince]);
-  await convertFixture({ sqlite: r.sqlite, serverEnv: r.env });
+  r.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'s_quiet' AS session_id,'p_quiet' AS prompt_id,'e_quiet' AS event_id,'a session gone quiet' AS text,'user' AS origin,'h_quiet' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at,1 AS processed)`, [quietSince, quietSince, quietSince]);
+  await publishFixture({ sqlite: r.sqlite, serverEnv: r.env });
   try {
     await backfillTitles(r.env, NOW, 'idle');
     return (r.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE json_extract(run_context, '$.session_id') = 's_quiet'`).get() as { n: number }).n;
   } finally {
     r.sqlite.run(`DELETE FROM agent_runs`);
-    r.sqlite.run(`DELETE FROM prompt_batches WHERE session_id = 's_quiet'`);
+    r.sqlite.run(`DELETE FROM events WHERE session_id = 's_quiet'`);
     r.sqlite.run(`DELETE FROM sessions WHERE session_id = 's_quiet'`);
     r.sqlite.run(`UPDATE sessions SET titled_at = NULL`);
   }
@@ -464,16 +464,14 @@ describe('the settings contract', () => {
     const READERS = /\b(leafValues|settingTexts|storedSettings|storedEmbedding|leafOffChecks)\b/;
     const readers = filesUnder(SERVER_SRC).map((file) => {
       let source=readFileSync(file,'utf8');
-      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/view-store.ts') {
+      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/catalog-store.ts') {
         const parsed=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
         const factories=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='prepareSwitchedSettings');
         expect(factories).toHaveLength(1);
         const factory=factories[0]!;
         const body=factory.getText(parsed);
         expect(body).not.toMatch(/\.(?:first|all|run|batch)\s*\(/);
-        expect([...body.matchAll(/prepareViewRead\(db, "([^"]+)"/g)].map(match=>match[1])).toEqual([
-          'M35:prepareSwitchedSettings:0','M35:prepareSwitchedSettings:1','M35:prepareSwitchedSettings:2',
-        ]);
+        expect(body.match(/db\.prepare\(/g)).toHaveLength(3);
         const executors=filesUnder(SERVER_SRC).filter(other=>other!==file && /prepareSwitchedSettings\(db,/.test(readFileSync(other,'utf8')));
         expect(executors.map(other=>path.relative(SERVER_SRC,other).split(path.sep).join('/'))).toEqual(['core/settings.ts']);
         source=source.slice(0,factory.getStart(parsed))+source.slice(factory.end);

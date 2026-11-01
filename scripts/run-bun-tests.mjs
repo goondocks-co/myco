@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
-import { groupByDuration, parseShard, selectGroup, selectShard, VIEW_PROOF_FILES } from './test-shards.mjs';
+import { groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -736,9 +736,7 @@ function expandTargets(targets) {
   };
 }
 
-function viewProofPhase(file, options) {
-  return { label: `view proof ${file}`, args: [...options, file], isolate: true, kind: 'view-proof' };
-}
+
 
 /** Return isolated proof files, node isolation groups and optional DOM arguments. */
 function buildArgs() {
@@ -756,12 +754,10 @@ function buildArgs() {
     const nonDomTargets = [...expanded.nonDom, ...expanded.passthrough];
     const soloTargets = nonDomTargets.filter((file) => fileRequiresSoloNodeProcess(file));
     const soloTargetSet = new Set(soloTargets);
-    const proofTargets = nonDomTargets.filter(file => VIEW_PROOF_FILES.includes(file));
-    const isolatedTargets = nonDomTargets.filter((file) => !soloTargetSet.has(file) && !VIEW_PROOF_FILES.includes(file));
+    const isolatedTargets = nonDomTargets.filter((file) => !soloTargetSet.has(file));
     return {
       nonDomPhases: [
         ...soloTargets.map((file) => soloNodePhaseForFile(file, options)),
-        ...proofTargets.map(file => viewProofPhase(file, options)),
         ...(isolatedTargets.length > 0 ? [{
           label: 'node env',
           args: [...options, ...isolatedTargets, "--path-ignore-patterns=**/*.test.tsx"],
@@ -777,8 +773,7 @@ function buildArgs() {
     const nodeFiles = allTests
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file));
-    const proofFiles = nodeFiles.filter(file => VIEW_PROOF_FILES.includes(file));
-    const nonDomFiles = nodeFiles.filter(file => !VIEW_PROOF_FILES.includes(file));
+    const nonDomFiles = nodeFiles;
     const soloFiles = relativeUnique([
       ...SOLO_NODE_FILES,
       ...nonDomFiles.filter(fileRequiresSoloNodeProcess),
@@ -814,7 +809,6 @@ function buildArgs() {
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, sharedFiles, options),
         ...soloFiles.map((file) => soloNodePhaseForFile(file, options)),
         ...buildIsolatedNodePhases(isolatedTargets, options),
-        ...proofFiles.map(file => viewProofPhase(file, options)),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
     };
@@ -1524,7 +1518,7 @@ function stripDuplicateReact() {
 }
 
 const testKind = process.env.MYCO_TEST_KIND ?? 'all';
-if (!['all', 'node', 'dom', 'view-proof'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
+if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
 const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const groupLabel = process.env.MYCO_TEST_GROUP;
 delete process.env.MYCO_TEST_GROUP;
@@ -1569,15 +1563,12 @@ if (process.env.MYCO_RUNNER_PLAN_FILE) {
 
 if (process.env.MYCO_RUNNER_MATRIX_PLAN_FILE) {
   if (process.env.MYCO_RUNNER_DRY_RUN !== '1') throw new Error('Matrix plans require dry-run mode');
-  const proof = workflow.jobs['view-proof'];
   const matrix = {
     full: phaseManifest(selectPhases('all', { index: 1, count: 1 })),
     ordinary: workflow.jobs.tests.strategy.matrix.include.map(({ kind, shard }) => ({
       kind, shard, phases: phaseManifest(selectPhases(kind, parseShard(shard))),
     })),
-    proofs: proof.strategy.matrix.file.map(file => ({
-      file, phases: phaseManifest(selectPhases(proof.env.MYCO_TEST_KIND, { index: 1, count: 1 }, proof.env.MYCO_TEST_GROUP.replace('${{ matrix.file }}', file))),
-    })),
+
   };
   fs.writeFileSync(process.env.MYCO_RUNNER_MATRIX_PLAN_FILE, JSON.stringify(matrix) + '\n');
 }

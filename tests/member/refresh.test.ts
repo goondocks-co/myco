@@ -92,10 +92,10 @@ describe('member token rotation', () => {
     expect(tokenRow(rig, successor.tokenId!)).toMatchObject({ predecessor_id: rig.tokenId, lineage_root: rig.tokenId, revoked_at: null });
     expect(tokenRow(rig, successor.tokenId!).first_used_at).not.toBeNull();
     expect(tokenRow(rig, rig.tokenId).revoked_at).not.toBeNull();
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
 
     await prompt(spy.fetch, 'second');
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     // The successor's own window is a full TTL away: the second hook does not dial the refresh route.
     expect(refreshCalls(spy)).toBe(1);
   });
@@ -113,7 +113,7 @@ describe('member token rotation', () => {
     await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
     expect(hookLines(out.stderr)).toBe('');
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(refreshCalls(spy)).toBe(0);
     expect(rig.rows('member_credentials')).toBe(1);
     expect(readRegistryEntry(root, mycoHome)!.token).toBe(rig.token);
@@ -185,7 +185,7 @@ describe('member token rotation', () => {
     const out = await prompt(spy.fetch, 'after rotation');
 
     expect(eventCalls(spy)).toBe(2);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBe(0);
     expect(out.stderr).not.toContain('myco login');
     expect(refreshCalls(spy)).toBe(0);
@@ -339,11 +339,11 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect({ token: entry.token, nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ token: rig.token, nonRotating: true, refreshTerminal: false });
     expect(first.stderr).toContain('does not rotate');
     expect(first.stderr).not.toContain('Myco capture is not being delivered');
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
 
     const second = await prompt(spy.fetch, 'second');
     expect(hookLines(second.stderr)).toBe('');
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     expect((await refreshMemberCredential(root, { mycoHome, fetch: spy.fetch, budget: budget() })).status).toBe('non-rotating');
     expect(refreshCalls(spy)).toBe(1);
     expect(rig.rows('member_credentials')).toBe(1);
@@ -364,7 +364,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     const entry = readRegistryEntry(root, mycoHome)!;
     expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: false });
     expect(first.stderr).toContain('member token refused');
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
     // The next hook says so: the refusal was learned by the helper after this hook answered.
@@ -418,7 +418,7 @@ describe('a credential minted not to rotate (#1420)', () => {
 
     const next = await prompt(spy.fetch, 'after the proxy');
     expect(next.stderr).not.toContain('Myco capture is not being delivered');
-    expect(rig.rows('prompt_batches')).toBe(3);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(3);
     expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBe(0);
   });
 
@@ -432,7 +432,7 @@ describe('a credential minted not to rotate (#1420)', () => {
 
     await prompt(rig.fetch, 'accepted after all');
 
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     expect(readRegistryEntry(root, mycoHome)!.refusedAt).toBeNull();
     // The hook after the acknowledged send says nothing more.
     const next = await prompt(rig.fetch, 'and then');
@@ -492,7 +492,7 @@ describe('a credential minted not to rotate (#1420)', () => {
       // A credential from the environment delivers at the turn's end, in the hook.
       const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
 
-      expect({ ageMs, delivered: rig.rows('prompt_batches'), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
+      expect({ ageMs, delivered: rig.rows("events WHERE kind='prompt'"), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
         .toEqual({ ageMs, delivered, refreshes: 0, sends: true, refused: delivered === 0, rotation: false });
       expect(rig.rows('member_credentials')).toBe(1);
     }

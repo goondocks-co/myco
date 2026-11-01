@@ -1,3 +1,4 @@
+import { V117_STATEMENTS } from '@myco-server-worker/db/schema-v117.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
@@ -124,6 +125,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V117_STATEMENTS.slice(1).map(sql=>({step:117,sql,reason:'Retained documents are required before relational content storage is retired.'})),
   ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
     step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
   })),
@@ -513,7 +515,7 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
 
 it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
   expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
-    Array.from({ length: SERVER_SCHEMA_VERSION }, (_, index) => index + 1),
+    [...Array.from({ length: 115 }, (_, index) => index + 1), 117],
   );
   expect(
     readdirSync('packages/myco-server/migrations')

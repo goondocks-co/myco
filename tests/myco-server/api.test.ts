@@ -1,7 +1,7 @@
 import { registerBlob } from './helpers/d1.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
-import { convertFixture, sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost, seedMemberRoleAccount } from './helpers/owner.js';
@@ -109,10 +109,8 @@ describe('session turns', () => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at)
                   VALUES ('proj_1','s1','machine_1','tok_1',5,50,'claude-code','main',5), ('proj_1','s2','machine_1','tok_1',6,60,'codex','fix',6)`);
     e.sqlite.run(`UPDATE sessions SET ended_at = 70 WHERE session_id = 's2'`);
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
-                  VALUES ('proj_1',?,'s1','e1','user','first','h1',10,10,'tok_1',10), ('proj_1',?,'s1','e2','system','<system-reminder/>','h2',20,20,'tok_1',20)`, [P1, P2]);
-    e.sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, prompt_id, tool_name, success, created_at, token_id, received_at)
-                  VALUES ('proj_1','s1','tc1','ev1',?,'Read',1,11,'tok_1',11), ('proj_1','s1','tc2','ev2',?,'Bash',1,21,'tok_1',21)`, [P1, P2]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS prompt_id,'s1' AS session_id,'e1' AS event_id,'user' AS origin,'first' AS text,'h1' AS content_hash,10 AS created_at,10 AS updated_at,'tok_1' AS token_id,10 AS received_at) UNION ALL SELECT 'proj_1','e2','s1','tok_1','prompt','cli',json_object('promptId',?,'text','<system-reminder/>','origin','system'),'h2',20,20`, [P1, P2]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'tool.use','cli',json_object('toolCallId',tool_call_id,'promptId',prompt_id,'toolName',tool_name,'success',success),'hash',created_at,received_at FROM (SELECT 'proj_1' AS project_id,'s1' AS session_id,'tc1' AS tool_call_id,'ev1' AS event_id,? AS prompt_id,'Read' AS tool_name,1 AS success,11 AS created_at,'tok_1' AS token_id,11 AS received_at) UNION ALL SELECT 'proj_1','ev2','s1','tok_1','tool.use','cli',json_object('toolCallId','tc2','promptId',?,'toolName','Bash','success',1),'h2',21,21`, [P1, P2]);
   };
   const get = async (e: ReturnType<typeof sqliteEnv>, path: string) => worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
 
@@ -129,7 +127,7 @@ describe('session turns', () => {
   it('titles a session on an owner\'s ask, queuing the run for a worker, and finds nothing outside the scope', async () => {
     const e = sqliteEnv();
     seed(e);
-    await convertFixture(e);
+    await publishFixture(e);
     const asked = Date.now();
     const res = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);

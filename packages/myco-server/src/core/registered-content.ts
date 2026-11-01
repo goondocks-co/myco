@@ -14,7 +14,7 @@ export interface DerivedContentSource {
   eventId: string;
   tokenId: string;
   envelopeHash: string;
-  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle' | 'view' | 'document';
+  sourceKind: 'event' | 'tool-input' | 'receipt' | 'transcript' | 'bundle' | 'document';
   resourceId?: string;
   memberTokenId?: string;
 }
@@ -30,9 +30,6 @@ export interface ContentPublicationGuard { sql: string; params: readonly unknown
 
 /** An internal source still belongs to the live Project and untombstoned session. */
 const sourceLive = (source: DerivedContentSource) => {
-  if(source.sourceKind==='view')return {sql:`EXISTS(SELECT 1 FROM view_instances WHERE project_id=? AND session_id=? AND instance_id=?
-      AND state IN ('live','building')) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
-    params:[source.projectId,source.sessionId,source.eventId,source.projectId,source.sessionId]};
   const credential = source.memberTokenId === undefined ? { sql: '1', params: [] } : credentialLive(source.memberTokenId);
   // A server source may re-derive the transcript parser's own earlier event for its session; the replay gate decides whether it lands.
   const rederived = source.memberTokenId === undefined ? ` AND NOT (producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}' AND session_id=?)` : '';

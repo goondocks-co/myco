@@ -1,3 +1,5 @@
+import { readFixtureRecords } from '../myco-server/helpers/fixtures.js';
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * The retained hooks of every tier-1 harness, driven with stdin fixtures
  * through the in-process worker.
@@ -27,7 +29,7 @@ import { sessionStatePath, updateSessionState } from '@myco/member/session-state
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { resolveWorktreeRoot } from '@myco/project-root.js';
 import { readSessionState } from '@myco/member/session-state.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
 import { FEATURES_HEADER, MAX_ID_CHARS, MEMBER_FEATURES, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
@@ -81,14 +83,14 @@ const run = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, 
 /** The Deployment's parse over every transcript the hooks shipped, run to completion as the tick would. */
 async function parseAll(): Promise<void> {
   for (let pass = 0; pass < 20; pass += 1) {
-    if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
+    if ((await publishFixtureDocuments(rig.env.serverEnv, Date.now())).changed === 0) return;
   }
 }
 /** Kinds on the member's side of the wire, in arrival order; a turn's start and end are asserted on their own. */
 const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ kind: string }>).map((r) => r.kind);
 /** Captured rows the Deployment holds: every member event but a turn's start or end, which each hook adds. */
 const captured = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
-const texts = (table: string, column = 'text') => (rig.env.sqlite.query(`SELECT ${column} AS v FROM ${table} ORDER BY v`).all() as Array<{ v: string }>).map((r) => r.v);
+const texts = async (kind:'prompt'|'reply') => (await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k===kind).map(row=>String(row.text)).sort();
 
 describe('member hooks through the worker: claude-code, transcript-first', () => {
   it('registers, injects, ships the delta and ends the session; the parse writes the turns; no retired route is dialled', async () => {
@@ -104,18 +106,18 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const ups = await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'hello' });
     expect(ups.stdout).toContain(`Session:: \`${session}\``);
     // Injection only: no prompt row, nothing spooled, no receipt for a row the parse owns.
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     expect(readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session).promptId).toBeUndefined();
     await run('subagent-start', { hook_event_name: 'SubagentStart', transcript_path: tx, agent_id: 'a1', agent_type: 'Explore' });
 
     await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'The answer.' });
     expect(rig.rows('transcript_segments')).toBe(1);
-    expect(rig.rows('responses')).toBe(0);
+    expect(rig.rows("events WHERE kind='response'")).toBe(0);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['hello']);
-    expect(texts('responses')).toEqual(['The answer.']);
-    expect(rig.rows('tool_calls')).toBe(1);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect((await texts('prompt'))).toEqual(['hello']);
+    expect((await texts('reply'))).toEqual(['The answer.']);
+    expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k==='tool')).toHaveLength(1);
+    expect(await texts('prompt')).toHaveLength(1);
 
     await run('session-end', { hook_event_name: 'SessionEnd', transcript_path: tx });
     const sessionRow = rig.env.sqlite.query('SELECT origin_path, ended_at FROM sessions WHERE session_id = ?').get(session) as { origin_path: string; ended_at: number | null };
@@ -162,9 +164,9 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
     expect(memberKinds()).toEqual(['session.start', 'transcript.segment']);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['queued steer', 'typed prompt']);
+    expect((await texts('prompt'))).toEqual(['queued steer', 'typed prompt']);
     expect(rig.env.sqlite.query('SELECT title, content FROM plans').get()).toEqual({ title: 'Plan A', content: '# Plan A\n\nstep one' });
-    expect(texts('responses')).toEqual(['Here is a plan <ultraplan>\n# Plan A\n\nstep one\n</ultraplan> done', 'final words']);
+    expect((await texts('reply'))).toEqual(['Here is a plan <ultraplan>\n# Plan A\n\nstep one\n</ultraplan> done', 'final words']);
     const segment = rig.env.sqlite.query('SELECT base_offset, length FROM transcript_segments').get() as { base_offset: number; length: number };
     expect(segment).toEqual({ base_offset: 0, length: fs.statSync(tx).size });
     // A second Stop on an unchanged transcript emits nothing new and ships nothing.
@@ -179,7 +181,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(segments[1].base_offset).toBe(segments[0].length);
     expect(segments[0].length + segments[1].length).toBe(fs.statSync(tx).size);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['later', 'queued steer', 'typed prompt']);
+    expect((await texts('prompt'))).toEqual(['later', 'queued steer', 'typed prompt']);
     assertNoRetired();
   });
 
@@ -198,7 +200,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     await rig.postEvent(promptEvent(ctx, { promptId: parentPromptId, text: 'parent asks' }).envelope);
     const childCtx: EnvelopeContext = { ...ctx, sessionId: 'sess-child-thread', stage: spool.stagerFor('sess-child-thread') };
     await rig.postEvent(promptEvent(childCtx, { promptId: mintId(), text: 'child works', parentPromptId, threadId: deriveId('thread', 'thr_child'), threadLabel: 'Explorer' }).envelope);
-    const row = rig.env.sqlite.query('SELECT parent_prompt_id, thread_id, thread_label FROM prompt_batches WHERE text = ?').get('child works') as { parent_prompt_id: string; thread_id: string; thread_label: string };
+    const row = rig.env.sqlite.query(`SELECT json_extract(payload,'$.parentPromptId') AS parent_prompt_id,json_extract(payload,'$.threadId') AS thread_id,json_extract(payload,'$.threadLabel') AS thread_label FROM events WHERE kind='prompt' AND json_extract(payload,'$.text')=?`).get('child works') as { parent_prompt_id: string; thread_id: string; thread_label: string };
     expect(row).toEqual({ parent_prompt_id: parentPromptId, thread_id: deriveId('thread', 'thr_child'), thread_label: 'Explorer' });
 
     const declaring = Object.entries(HOOK_CONFIG).filter(([, entry]) => entry.subagentParentPath !== undefined).map(([name]) => name);
@@ -257,7 +259,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(asked.promptId).toBe(await promptIdFor(session, 'user_prompt', 'k-pasted'));
     const row = rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
     expect(row).toEqual({ plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: asked.promptId });
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     await run('user-prompt-submit', { transcript_path: tx, prompt: '<system-reminder>quoting <ultraplan>\n# Quoted\n</ultraplan></system-reminder>' });
     // The same plan pasted again is one plan.
     await run('user-prompt-submit', { transcript_path: tx, prompt: 'Again:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
@@ -281,7 +283,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(Object.keys(state.siblings)).toEqual([sibling]);
     expect(state.siblings[sibling].nextOffset).toBe(fs.statSync(sibling).size);
     await parseAll();
-    expect(texts('prompt_batches')).toContain('search the codebase for the retention leaf');
+    expect((await texts('prompt'))).toContain('search the codebase for the retention leaf');
     // Nothing new to ship on a second Stop.
     const before = captured();
     await run('stop', { transcript_path: tx, last_assistant_message: '' });
@@ -646,14 +648,15 @@ describe('member hooks through the worker: codex', () => {
     expect(ups.stdout).toContain(`Session:: \`${session}\``);
     // Codex 0.153 records tool calls in shapes the parser does not read yet, so the hook ships them.
     await run('post-tool-use', { hook_event_name: 'PostToolUse', transcript_path: tx, tool_name: 'shell', tool_input: { command: 'ls' }, tool_response: 'a.ts', cwd: '/repo' }, undefined, 'codex');
-    expect(rig.rows('tool_calls')).toBe(1);
+    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(1);
     await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'done', cwd: '/repo' }, undefined, 'codex');
     expect(memberKinds()).toEqual(['session.start', 'tool.use', 'transcript.segment']);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['summarise the ingest path']);
-    expect(rig.rows('responses')).toBe(1);
+    expect((await texts('prompt'))).toEqual(['summarise the ingest path']);
+    expect(await texts('reply')).toHaveLength(1);
     // The fixture's `function_call` is the shape the parser reads; it is a second call beside the hook's, not the same row.
-    expect((rig.env.sqlite.query(`SELECT producer_adapter a FROM events WHERE kind = 'tool.use' ORDER BY a`).all() as { a: string }[]).map((r) => r.a)).toEqual(['codex', 'transcript-parse']);
+    expect((rig.env.sqlite.query(`SELECT producer_adapter a FROM events WHERE kind = 'tool.use' ORDER BY a`).all() as { a: string }[]).map((r) => r.a)).toEqual(['codex']);
+    expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k==='tool')).toHaveLength(2);
     expect((rig.env.sqlite.query('SELECT agent FROM sessions').get() as { agent: string }).agent).toBe('codex');
     assertNoRetired();
   });
@@ -670,16 +673,16 @@ describe('member hooks through the worker: cursor', () => {
     await cursor('session-start', { hook_event_name: 'sessionStart' });
     await cursor('post-tool-use', { hook_event_name: 'postToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_output: 'contents' });
     await cursor('post-tool-use-failure', { hook_event_name: 'postToolUseFailure', tool_name: 'Shell', tool_input: { command: 'false' }, error: 'exit 1' });
-    expect(rig.rows('tool_calls')).toBe(2);
-    expect(rig.env.sqlite.query("SELECT result_reason, prompt_id FROM tool_calls WHERE success = 0").get()).toEqual({ result_reason: 'reported', prompt_id: null });
+    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(2);
+    expect(rig.env.sqlite.query("SELECT json_extract(payload,'$.resultReason') AS result_reason,json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind='tool.failure'").get()).toEqual({ result_reason: 'reported', prompt_id: null });
     // No prompt hook ran, and the parse derives its own prompt ids, so the calls name no turn.
-    expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').all() as Array<{ prompt_id: string | null }>).every((r) => r.prompt_id === null)).toBe(true);
+    expect((rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind IN ('tool.use','tool.failure')`).all() as Array<{ prompt_id: string | null }>).every((r) => r.prompt_id === null)).toBe(true);
     await cursor('stop', { hook_event_name: 'stop', last_assistant_message: 'Nothing was modified.' });
-    expect(rig.rows('responses')).toBe(0);
+    expect(rig.rows("events WHERE kind='response'")).toBe(0);
     await parseAll();
-    expect(texts('prompt_batches')).toEqual(['List the files in this directory and say how many there are. Do not modify anything.']);
-    expect(texts('responses')).toHaveLength(1);
-    expect(texts('responses').some((text) => text.endsWith('Nothing was modified.'))).toBe(true);
+    expect((await texts('prompt'))).toEqual(['List the files in this directory and say how many there are. Do not modify anything.']);
+    expect((await texts('reply'))).toHaveLength(1);
+    expect((await texts('reply')).some((text) => text.endsWith('Nothing was modified.'))).toBe(true);
     await cursor('session-end', { hook_event_name: 'sessionEnd' });
     expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end', 'session.end']);
     assertNoRetired();
@@ -692,7 +695,7 @@ describe('member hooks through the worker: hook-source agents', () => {
     const r = await run('post-tool-use', { hook_event_name: 'PostToolUse', transcript_path: tx, tool_input: { file_path: '/x' }, tool_output: 'body' });
     expect(r.stderr).toContain('post-tool-use dropped (no tool_name)');
     expect(dialled()).toEqual([]);
-    expect(rig.rows('tool_calls')).toBe(0);
+    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(0);
     expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
@@ -700,10 +703,10 @@ describe('member hooks through the worker: hook-source agents', () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const raw = { trajectory_id: session, tool_info: { transcript_path: tx, response: 'resp' } };
     await runHook('stop', raw, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'response'] });
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(rig.rows('transcript_segments')).toBe(0);
     await runHook('stop', raw, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'windsurf', argv: ['--phases', 'transcript'] });
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(rig.rows('transcript_segments')).toBe(1);
   });
 
@@ -715,11 +718,11 @@ describe('member hooks through the worker: hook-source agents', () => {
     await copilot('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'hello' });
     await copilot('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_response: 'contents' });
     await copilot('stop', { hook_event_name: 'Stop', last_assistant_message: 'The answer.' });
-    expect(rig.rows('prompt_batches')).toBe(1);
-    expect(rig.rows('tool_calls')).toBe(1);
-    expect(rig.rows('responses')).toBe(1);
-    const promptId = (rig.env.sqlite.query('SELECT prompt_id FROM prompt_batches').get() as { prompt_id: string }).prompt_id;
-    expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').get() as { prompt_id: string }).prompt_id).toBe(promptId);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
+    const promptId = (rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind='prompt'`).get() as { prompt_id: string }).prompt_id;
+    expect((rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind IN ('tool.use','tool.failure')`).get() as { prompt_id: string }).prompt_id).toBe(promptId);
   });
 });
 

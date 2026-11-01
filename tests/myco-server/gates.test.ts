@@ -48,7 +48,7 @@ const allFiles = (dir: string): string[] =>
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
 
 it('defines the extraction unread predicate once and never writes the historical processed flag', () => {
-  const owner = join(SRC, 'read/view-store.ts');
+  const owner = join(SRC, 'read/catalog-store.ts');
   const coverageDeclarations = new Set(['MATERIAL_READS', 'effectiveMaterial', 'effectiveStatement',
     'extraction_coverage_ACKNOWLEDGED_PROMPTS_SQL']);
   const historicalDdl = new Set([
@@ -105,7 +105,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 184;
+const EMIT_CALLS = 177;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -639,14 +639,17 @@ describe('gates', () => {
     } finally { sqlite.close(); }
   });
 
-  it('re-applies every schema statement but ADD COLUMN over an up-to-date database, so a half-applied migration can be re-run', () => {
+  it('re-applying numbered migrations leaves the current schema unchanged', async () => {
+    const { applySchemaSteps } = await import('./helpers/migrate.js');
+    const { sqliteRelationalStore } = await import('@myco-server-worker/platform/bun/sqlite.js');
     const db = new Database(':memory:');
-    for (const s of SCHEMA_DDL) db.exec(s);
-    for (const s of SCHEMA_DDL.filter((x) => !/ALTER TABLE \w+ ADD COLUMN/.test(x))) {
-      expect({ statement: s.slice(0, 60), threw: (() => { try { db.exec(s); return null; } catch (e) { return String((e as Error).message); } })() })
-        .toEqual({ statement: s.slice(0, 60), threw: null });
-    }
-    db.close();
+    try {
+      const store = sqliteRelationalStore(db);
+      await applySchemaSteps(store);
+      const before = db.query(`SELECT name,sql FROM sqlite_master ORDER BY name`).all();
+      expect(await applySchemaSteps(store)).toEqual([]);
+      expect(db.query(`SELECT name,sql FROM sqlite_master ORDER BY name`).all()).toEqual(before);
+    } finally { db.close(); }
   });
 
   it('keeps the committed migrations directory identical to the rendered steps', () => {
@@ -956,7 +959,7 @@ describe('gates', () => {
       // docstring that names a table in prose is not one. Scanning raw source made
       // the gate fire on its own explanation of what it protects.
       let source = stripComments(readFileSync(file, 'utf8'));
-      if (rel === join('read', 'view-store.ts')) {
+      if (rel === join('read', 'catalog-store.ts')) {
         const permitted = new Set(['core_embedding_reconcile_PASSED_OVER', 'core_embedding_reconcile_passedOverSources',
           'core_embedding_reconcile_embeddingFailureWakeAt', 'core_embedding_switch_store_BUILDING_SQL',
           'core_embedding_switch_store_completionStatements', 'prepareSwitchedSettings']);

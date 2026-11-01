@@ -11,7 +11,8 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { readAttention, SEARCH_BEHIND_MS, CAPABILITY_HOLD_MS, ACCESS_KEY_NOTICE_MS } from '@myco-server-worker/core/attention.js';
-import { PARSER_VERSION, PARSE_STOP_GENERATION } from '@myco-server-worker/ingest/parse.js';
+import { PARSER_VERSION } from '@myco-server-worker/constants.js';
+const PARSE_STOP_GENERATION=2;
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 
 const NOW = 1_700_000_000_000;

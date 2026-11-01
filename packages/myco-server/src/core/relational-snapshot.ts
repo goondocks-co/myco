@@ -1,3 +1,4 @@
+import { isArchivedEventMetadata } from '../db/document-tables.js';
 import type { ContentStore, RelationalStore } from './adapters.js';
 import { bundleContentEnv, readBundleEntry } from './archive-bundle.js';
 import { utf8 } from '../hash.js';
@@ -135,7 +136,7 @@ export function assertArchivedContentClosure(snapshot: ReadonlyMap<string, reado
   };
   for (const event of events.values()) {
     if (event.payload_format === 'archived') {
-      if (event.payload !== '{}' || !Number.isSafeInteger(event.bundle_id)) {
+      if (!isArchivedEventMetadata(event.payload) || !Number.isSafeInteger(event.bundle_id)) {
         throw new RelationalSnapshotError('the snapshot of events lacks an archived content locator; no artifact was published');
       }
       bundleOf(event, event.bundle_id, event.bundle_entry);

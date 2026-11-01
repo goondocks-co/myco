@@ -1,5 +1,5 @@
-import { prepareLeavingHubness, prepareJoiningHubness, prepareMissingHubness, prepareHubnessPublication, countCurrentSporeVectors } from '../../read/view-store.js';
-export { type core_embedding_hubness_MissingSporeVectors as MissingSporeVectors, core_embedding_hubness_missingSporeVectors as missingSporeVectors, core_embedding_hubness_calibrationPending as calibrationPending } from "../../read/view-store.js";
+import { prepareLeavingHubness, prepareJoiningHubness, prepareMissingHubness, prepareHubnessPublication, countCurrentSporeVectors } from '../../read/catalog-store.js';
+export { type core_embedding_hubness_MissingSporeVectors as MissingSporeVectors, core_embedding_hubness_missingSporeVectors as missingSporeVectors, core_embedding_hubness_calibrationPending as calibrationPending } from "../../read/catalog-store.js";
 import type { PreparedStatement, RelationalStore } from '../adapters.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from './provider.js';

@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
-import { expectPersisted, lit, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -61,20 +61,8 @@ export const storageCleanupParity: ParityScenario = {
     };
     await post('session.start', { agent: 'claude-code', startedAt: stamp });
     await post('prompt', { promptId, text: 'exercise complete tool input', origin: 'user' });
-    const archivedEvent = await post('response', { responseId, text: responseText }, 'import');
+    const archivedEvent = await post('response', { responseId, promptId, text: responseText }, 'import');
     await post('tool.use', { toolCallId, promptId, toolName: 'Edit', input, output, success: true });
-    const conflict=await fetch(`${target.url}/events`,{
-      method:'POST',headers:captureHeaders({'content-type':'application/json'}),
-      body:JSON.stringify({eventId:crypto.randomUUID(),sessionId,kind:'tool.use',createdAt:stamp,channel:'cli',
-        producer:{adapter:'claude-code',version:'parity'},payload:{toolCallId,toolName:'Edit',
-          input:{patch:'different input'.repeat(400)},success:true}}),
-    });
-    expect(conflict.status).toBe(200);
-    expect(await conflict.json()).toMatchObject({persisted:true,projected:false,code:'projection_conflict'});
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM archive_bundles
-      WHERE project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`)).toEqual([{n:1}]);
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM prepared_archive_bundles
-      WHERE project_id=${lit(target.projectId)}`)).toEqual([{n:0}]);
     const rawText = `${JSON.stringify({ type: 'system', message: { content: 'raw uploader only' }, timestamp: new Date(stamp).toISOString() })}\n`;
     const rawBytes = new TextEncoder().encode(rawText);
     const rawKey = await sha256HexOf(rawBytes);
@@ -87,25 +75,26 @@ export const storageCleanupParity: ParityScenario = {
     const event = lit(archivedEvent);
     const tool = lit(toolCallId);
     const transcript = lit(transcriptId);
-    const responseRows = () => target.sql(`SELECT response_id,text,blob_key FROM responses WHERE project_id=${project} AND response_id=${lit(responseId)}`);
-    const toolFacts = () => target.sql(`SELECT tool_name,output_preview,output_blob_key,success,error_message,files_affected FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
-    const counts = () => target.sql(`SELECT
-      (SELECT COUNT(*) FROM events WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS events,
-      (SELECT COUNT(*) FROM prompt_batches WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS prompts,
-      (SELECT COUNT(*) FROM responses WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS responses,
-      (SELECT COUNT(*) FROM tool_calls WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS tools`);
+    const base=`/api/projects/${target.projectId}/sessions/${sessionId}`;
+    const responseRows=async()=>{
+      const response=await ownerGet(`${base}/turns/${promptId}`);expect(response.status).toBe(200);
+      return ((await response.json()) as {responses:{responseId:string;text:string}[]}).responses.filter(row=>row.responseId===responseId);
+    };
+    const toolFacts=async()=>{
+      const response=await ownerGet(`${base}/turns/${promptId}/tool-calls`);expect(response.status).toBe(200);
+      return ((await response.json()) as {rows:Record<string,unknown>[]}).rows.filter(row=>row.toolCallId===toolCallId);
+    };
+    const counts=()=>target.sql(`SELECT (SELECT COUNT(*) FROM events WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS events,
+      prompts,replies AS responses,tool_calls AS tools FROM session_documents WHERE project_id=${project} AND session_id=${lit(sessionId)}`);
+    await documentsPublished(target,sessionId);
     const rawPath = `/api/projects/${target.projectId}/blobs/${rawKey}`;
     const transcriptPath = `/api/projects/${target.projectId}/sessions/${sessionId}/transcript`;
     const before = { responses: await responseRows(), tool: await toolFacts(), counts: await counts() };
     expect(before.responses).toHaveLength(1);
     expect((await rawGet(rawPath)).status).toBe(200);
     expect((await ownerGet(rawPath)).status).toBe(404);
-    const [freshInput]=await target.sql(`SELECT input FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
-    expect(new TextEncoder().encode(String(freshInput.input)).byteLength).toBeLessThanOrEqual(2048);
-    await target.sql(`DELETE FROM processed_resources WHERE project_id=${project} AND kind='tool-input' AND resource_id=${tool}`);
-    await target.sql(`UPDATE tool_calls SET input=${lit(fullInput)},input_blob_key=NULL,input_bytes=NULL,input_bundle_id=NULL,input_bundle_entry=NULL
-      WHERE project_id=${project} AND tool_call_id=${tool}`);
-
+    const [freshInput]=await toolFacts();
+    expect(new TextEncoder().encode(String(freshInput!.inputPreview)).byteLength).toBeLessThanOrEqual(2048);
     const control=async(paused:boolean)=>{
       const response=await fetch(`${target.url}/api/storage-cleanup`,{method:'PATCH',
         headers:{...target.ownerHeaders(),origin:target.url,'content-type':'application/json'},body:JSON.stringify({paused})});
@@ -123,24 +112,21 @@ export const storageCleanupParity: ParityScenario = {
     const afterPause=await pausedResponse.json() as {state:Record<string,unknown>};
     for(const field of ['phase','cursor_project','cursor_id','cursor_session','cursor_created','cursor_rowid','converted_rows'])
       expect(afterPause.state[field]).toEqual(pausedState[field]);
-    // Sparse inline inputs share the original uploader and session evidence.
-    const [toolIdentity]=await target.sql(`SELECT event_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
     const fixtureRows:string[]=[];
     for(let n=0;n<160;n++){
       const id=crypto.randomUUID();
-      fixtureRows.push(`(${project},${lit(id)},${lit(sessionId)},${lit(String(toolIdentity.event_id))},
-          'Read',${lit(n%10===0?fullInput:'small')},1,${stamp+n+1},${lit(uploaderTokenId)},${stamp})`);
+      fixtureRows.push(`(${project},${lit(id)},${lit(sessionId)},${lit(uploaderTokenId)},'response','import',
+        ${lit(JSON.stringify({responseId:id,promptId,text:n%10===0?fullInput:'small'}))},'fixture',${stamp+n+1},${stamp})`);
     }
-    for(let start=0;start<fixtureRows.length;start+=40)await target.sql(`INSERT INTO tool_calls
-      (project_id,tool_call_id,session_id,event_id,tool_name,input,success,created_at,token_id,received_at)
+    for(let start=0;start<fixtureRows.length;start+=40)await target.sql(`INSERT INTO events
+      (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
       VALUES ${fixtureRows.slice(start,start+40).join(',')}`);
-    before.counts=await counts();
     await control(false);
+    await documentsPublished(target,sessionId);
+    before.counts=await counts();
 
     // The fixture represents a processed transcript and an old raw source while keeping real HTTP upload provenance.
     const aged = stamp - 2 * DAY_MS;
-    await target.sql(`UPDATE transcripts SET parsed_offset=${rawBytes.byteLength},parser_context='{}',parse_error=NULL
-      WHERE project_id=${project} AND transcript_id=${transcript}`);
     await target.sql(`UPDATE transcript_segments SET received_at=${aged} WHERE project_id=${project} AND transcript_id=${transcript}`);
     await target.sql(`UPDATE raw_archive_refs SET received_at=${aged},eligible_at=${aged} WHERE project_id=${project}
       AND source_kind='transcript' AND transcript_id=${transcript}`);
@@ -152,23 +138,25 @@ export const storageCleanupParity: ParityScenario = {
     for (let pass = 0; pass < 16; pass += 1) {
       await wake();
       const [eventState] = await target.sql(`SELECT payload_format,payload,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-      const [toolState] = await target.sql(`SELECT input,input_bytes,input_bundle_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
       const [rawState] = await target.sql(`SELECT disposition FROM raw_archive_refs WHERE project_id=${project}
         AND source_kind='transcript' AND transcript_id=${transcript}`);
-      done = eventState?.payload_format === 'archived' && toolState?.input_bundle_id !== null && rawState?.disposition === 'archived';
+      done = eventState?.payload_format === 'archived' && rawState?.disposition === 'archived';
       if (done) break;
     }
     expect(done).toBe(true);
     const [eventState] = await target.sql(`SELECT payload,payload_format,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-    expect(eventState).toEqual({ payload: '{}', payload_format: 'archived', payload_bytes: 0 });
+    expect(eventState).toMatchObject({payload_format:'archived',payload_bytes:0});
+    expect(JSON.parse(String(eventState.payload))).toMatchObject({responseId});
     const [eventRef] = await target.sql(`SELECT a.archive_key,a.receipt_key,a.digest,a.size FROM archive_bundles a JOIN events e ON e.bundle_id=a.id WHERE e.project_id=${project} AND e.event_id=${event}`);
     expect(eventRef.archive_key).toBe(eventRef.digest);
-    expect(Number(eventRef.size)).toBeGreaterThan(new TextEncoder().encode(JSON.stringify({responseId,text:responseText})).byteLength);
+    expect(Number(eventRef.size)).toBeGreaterThan(new TextEncoder().encode(JSON.stringify({responseId,promptId,text:responseText})).byteLength);
     expect(typeof eventRef.receipt_key).toBe('string');
-    const [toolState] = await target.sql(`SELECT input,input_bytes,input_bundle_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
-    expect(Number(toolState.input_bytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
-    expect(new TextEncoder().encode(String(toolState.input)).byteLength).toBeLessThanOrEqual(2048);
-    expect(Number.isSafeInteger(toolState.input_bundle_id)).toBe(true);
+    const [toolState]=await toolFacts();
+    expect(Number(toolState!.inputBytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
+    const locator=toolState!.locator as {generation:number;owner:string;page:number};
+    const params=new URLSearchParams({session:sessionId,generation:String(locator.generation),owner:locator.owner,page:String(locator.page)});
+    const fullResponse=await ownerGet(`/api/projects/${target.projectId}/processed/tool-input/${toolCallId}?${params}`);
+    expect(fullResponse.status).toBe(200);expect(await fullResponse.text()).toBe(fullInput);
     expect(await responseRows()).toEqual(before.responses);
     expect(await toolFacts()).toEqual(before.tool);
     expect(await counts()).toEqual(before.counts);

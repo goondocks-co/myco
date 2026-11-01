@@ -1,5 +1,5 @@
 import type { JobBudget, RelationalStore } from './adapters.js';
-import { PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
+import { LIVE_PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
 import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from './raw-provenance.js';
 
 export const RAW_BACKFILL_BATCH = 500;
@@ -11,7 +11,7 @@ const RAW_SOURCES = [
   { table: 'transcripts', id: 'transcript_id', kind: 'transcript' },
   { table: 'events', id: 'event_id', kind: 'event' },
 ] as const;
-const SOURCES = [...RAW_SOURCES, ...Object.entries(PROCESSED_FIELDS).map(([kind, field]) => ({ ...field, kind }))];
+const SOURCES = [...RAW_SOURCES, ...Object.entries(LIVE_PROCESSED_FIELDS).map(([kind, field]) => ({ ...field, kind }))];
 
 /** One bounded source page and its checkpoint commit together; retries retain the first attribution. */
 async function rawBackfillPage(db: RelationalStore, now: number): Promise<{ changed: number; more: boolean }> {

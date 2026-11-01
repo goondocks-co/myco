@@ -1,3 +1,4 @@
+import { publishFixtureDocuments } from './helpers/fixtures.js';
 /**
  * A session working now (#1531): a turn opens when its prompt asks the Deployment for context and closes when the
  * turn's end reaches it, so a long turn that sends nothing until it stops still reads as working.
@@ -17,7 +18,7 @@ import { handlePromptContext } from '@myco-server-worker/api/recall.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { turnStartedAt } from '@myco-server-worker/ingest/turns.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { WORKING_CAP_MS } from '@myco-server-worker/read/sessions.js';
 import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
 import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -199,8 +200,8 @@ describe('a session working now', () => {
       { type: 'assistant', uuid: 'a1', sessionId: 'sess_1', timestamp: iso(at + 5_000), message: { role: 'assistant', content: [{ type: 'text', text: 'Running the loop now.' }, { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'sleep 150' } }], stop_reason: 'tool_use' } },
     ];
     await r.segment('sess_1', at + 10_000, false, 'cli', lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-    for (let pass = 0; pass < 5; pass += 1) if ((await parseTranscripts(r.e.serverEnv, Date.now())).changed === 0) break;
-    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM responses WHERE session_id = 'sess_1'`).get()).toEqual({ n: 0 });
+    for (let pass = 0; pass < 5; pass += 1) if ((await publishFixtureDocuments(r.e.serverEnv, Date.now())).changed === 0) break;
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess_1' AND kind='response'`).get()).toEqual({ n: 0 });
     const checkpoint = r.e.sqlite.query<{ parser_context: string }, []>('SELECT parser_context FROM transcripts').get();
     expect(JSON.parse(checkpoint!.parser_context).mycoParserState.reply.parts[0].text).toBe('Running the loop now.');
     expect(r.workingSince('sess_1')).toBe(at);

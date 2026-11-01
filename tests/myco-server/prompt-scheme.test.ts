@@ -1,3 +1,5 @@
+import { readFixtureRecords } from './helpers/fixtures.js';
+import { publishFixtureDocuments } from './helpers/fixtures.js';
 /**
  * Each transcript's prompt identity scheme is pinned once and read by everything that names its prompts.
  * - The segment that registers a transcript pins the scheme its agent declares; nothing else writes it, and a trigger
@@ -15,7 +17,7 @@ import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { parseTranscripts, rereadTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import {  rereadTranscripts, TRANSCRIPT_IDLE_MS  } from '@myco-server-worker/ingest/parse.js';
 import { promptIdAtOffset } from '@myco-server-worker/ingest/parsers/index.js';
 import { DECLARED_SCHEMES, restoreSchemeDecisions, schemeGroupKey } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
@@ -58,7 +60,7 @@ async function member() {
       VALUES ('proj_1', ?, 0, ?, ?, ?, ?, ?, ?)`, [transcriptId, bytes.length, key, `seg-${transcriptId}`, NOW, NOW, issued.tokenId]);
   };
   const parse = async () => {
-    for (const at of [NOW, NOW + TRANSCRIPT_IDLE_MS + 1]) for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(e.serverEnv, at)).changed === 0) break;
+    for (const at of [NOW, NOW + TRANSCRIPT_IDLE_MS + 1]) for (let pass = 0; pass < 20; pass += 1) if ((await publishFixtureDocuments(e.serverEnv, at)).changed === 0) break;
   };
   return { e, token: issued.token, ctx, ship, hold, parse };
 }
@@ -104,7 +106,7 @@ describe('a transcript\'s prompt identity scheme', () => {
     await m.parse();
     await m.ship(2, TX, codexReply(2, 'a reply'), 'codex');
     await m.parse();
-    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme, parsed_offset = size AS caught_up, segment_count FROM transcripts`))
+    expect(rows(m.e.sqlite, `SELECT t.prompt_identity_scheme,p.published_offset=t.size AS caught_up,t.segment_count FROM transcripts t JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id`))
       .toEqual([{ prompt_identity_scheme: 'codex-turn-v1', caught_up: 1, segment_count: 2 }]);
     expect(() => m.e.sqlite.run(`UPDATE transcripts SET prompt_identity_scheme = 'offset-v1'`)).toThrow(/prompt identity scheme never changes/);
     m.e.sqlite.run(`UPDATE transcripts SET prompt_identity_scheme = 'codex-turn-v1', parse_error = NULL`);
@@ -120,11 +122,11 @@ describe('a transcript\'s prompt identity scheme', () => {
     expect(DECLARED_SCHEMES.codex).toBe('codex-turn-v1');
     await m.hold(TX, text, 'codex', 'offset-v1');
     await m.parse();
-    const before = rows(m.e.sqlite, `SELECT prompt_id, text FROM prompt_batches ORDER BY created_at`);
+    const before = (await readFixtureRecords(m.e.serverEnv,'proj_1')).filter(row=>row.k==='prompt').map(row=>({prompt_id:row.id,text:row.text}));
     const offsets = text.split('\n').slice(0, -1).reduce<number[]>((acc, l, i, all) => [...acc, i === 0 ? 0 : acc[i - 1]! + utf8(all[i - 1]!).length + 1], []);
     expect(before).toEqual([
-      { prompt_id: await promptIdAtOffset('codex-prompt', SESSION, offsets[2]!), text: 'how long is the window' },
-      { prompt_id: await promptIdAtOffset('codex-prompt', SESSION, offsets[4]!), text: 'and plans' },
+      { prompt_id: await promptIdAtOffset('codex-prompt', SESSION, offsets[2]!,{transcriptId:TX,scheme:'offset-v2'}), text: 'how long is the window' },
+      { prompt_id: await promptIdAtOffset('codex-prompt', SESSION, offsets[4]!,{transcriptId:TX,scheme:'offset-v2'}), text: 'and plans' },
     ]);
     const log = spyOn(console, 'log');
     try {
@@ -133,8 +135,8 @@ describe('a transcript\'s prompt identity scheme', () => {
       const said = log.mock.calls.map(([first]) => String(first));
       expect(said.filter((s) => s.includes('transcript_row_conflict'))).toEqual([]);
     } finally { log.mockRestore(); }
-    expect(rows(m.e.sqlite, `SELECT prompt_id, text FROM prompt_batches ORDER BY created_at`)).toEqual(before);
-    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme, parsed_offset = size AS caught_up FROM transcripts`)).toEqual([{ prompt_identity_scheme: 'offset-v1', caught_up: 1 }]);
+    expect((await readFixtureRecords(m.e.serverEnv,'proj_1')).filter(row=>row.k==='prompt').map(row=>({prompt_id:row.id,text:row.text}))).toEqual(before);
+    expect(rows(m.e.sqlite, `SELECT t.prompt_identity_scheme,p.published_offset=t.size AS caught_up FROM transcripts t JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id`)).toEqual([{ prompt_identity_scheme: 'offset-v1', caught_up: 1 }]);
   });
 
   it('pins the transcripts a backup taken before the pin restores by their session: one read in it pins them all to the scheme that read it', async () => {
@@ -262,8 +264,8 @@ describe('one scheme for every transcript of one agent in one session', () => {
     await m.ship(2, `tx_${'6'.repeat(32)}`, line({ type: 'user', promptId: 'q', uuid: 'v', message: { content: 'one more' } }), 'claude-code');
     expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme FROM transcripts WHERE transcript_id = ?`, `tx_${'6'.repeat(32)}`)).toEqual([{ prompt_identity_scheme: null }]);
     await m.parse();
-    expect(rows(m.e.sqlite, `SELECT json_extract(parser_context, '$.mycoParserFailure.branch') AS branch FROM transcripts WHERE transcript_id = ?`, `tx_${'6'.repeat(32)}`))
-      .toEqual([{ branch: 'scheme_conflict' }]);
+    expect(rows(m.e.sqlite, `SELECT failure AS branch FROM transcript_publication WHERE transcript_id = ?`, `tx_${'6'.repeat(32)}`))
+      .toEqual([{ branch: 'parse' }]);
   });
 
   it('names an ask\'s prompt where the session is pinned to claude-v2 and the hook names it under claude-v1, the scheme it derives by', async () => {

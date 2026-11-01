@@ -4,4 +4,4 @@ export {
   search_sanitizeFtsQuery as sanitizeFtsQuery,
   search_searchProject as searchProject,
   search_searchAcross as searchAcross,
-} from './view-store.js';
+} from './catalog-store.js';
