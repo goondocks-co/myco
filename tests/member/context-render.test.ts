@@ -1,3 +1,4 @@
+import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * Context a hook serves from this machine alone (#1561 PR 3b): the member helper fetches what the hooks ask for, and
  * the next hook renders it.
@@ -583,7 +584,7 @@ describe('prompts a harness writes only to its transcript', () => {
     const tx = path.join(dir, 'transcript_full.jsonl');
     // The invocation's hook fires before the IDE writes its transcript.
     fs.writeFileSync(tx, '');
-    const invoke = () => runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' });
+    const invoke = async () => { const result = await runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' }); await publishFixture(rig.env); return result; };
     const startedAt = Date.now();
     await invoke();
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);

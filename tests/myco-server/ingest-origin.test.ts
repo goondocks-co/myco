@@ -92,7 +92,7 @@ describe('write origin', () => {
     await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(20), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(21), text: 'derived', origin: 'user' } }));
     const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
     expect(row.last_received_at).toBe(old);
-    expect(count(sqlite, 'prompt_batches')).toBe(1);
+    expect(count(sqlite, 'publish_queue')).toBe(1);
   });
 
   it('a member write still moves it, which is what the power depth reads', async () => {
@@ -109,7 +109,7 @@ describe('write origin', () => {
     const { sqlite, db, tokenId } = await rig();
     await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(24), sessionId: 'fresh', kind: 'prompt', payload: { promptId: uuid(25), text: 'derived', origin: 'user' } }));
     expect(count(sqlite, 'sessions')).toBe(1);
-    expect(count(sqlite, 'prompt_batches')).toBe(1);
+    expect(count(sqlite, 'publish_queue')).toBe(1);
   });
 
   it('holds every other admission for a server write: an archived Project still refuses it', async () => {

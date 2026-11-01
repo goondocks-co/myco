@@ -129,7 +129,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
-  '0117_v117.sql': 'aef310f340c6447cb503487b0a080ff36d5f63072970f827300c4d355b9af907',
+  '0117_v117.sql': '872069e44316d0527c3397369373407f000bb029d8a7a8bc4d8abb4139058261',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -892,6 +892,8 @@ it('retires content storage only after documents are live, preserving the catalo
     sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES('retirement','session','machine','token',0,0)`);
     sqlite.run(`INSERT INTO session_documents(project_id,session_id,state,updated_at) VALUES('retirement','session','convert',0)`);
+    sqlite.run(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,token_id,text,origin,created_at,updated_at,received_at,content_hash)
+      VALUES('retirement','prompt','session','event','token','retained body','user',1,1,1,'hash')`);
     const retirement = SCHEMA_STEPS.find(step => step.version === 117)!;
     expect(() => step(sqlite, retirement)).toThrow('documents_retirement_incomplete');
     expect(version(sqlite)).toBe('115');

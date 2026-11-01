@@ -8,7 +8,7 @@ import { snippetModule } from '../support/plugin-snippet.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { readFixtureRecords, sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { registerBlob } from '../myco-server/helpers/d1.js';
 
 const ROUTING_KEY = '0123456789abcdef/project';
@@ -51,11 +51,11 @@ async function parse(text: string, agent: string) {
     console.log = (line: string) => { diagnostics.push(JSON.parse(line)); };
     report = await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
   } finally { console.log = log; }
-  const prompts = sqlite.query('SELECT text FROM prompt_batches').all();
-  const state = sqlite.query('SELECT parsed_offset, parse_error FROM transcripts').get();
+  const prompts = (await readFixtureRecords(serverEnv,'proj_1','resumed')).filter(row=>row.k==='prompt').map(row=>({text:row.text}));
+  const state = sqlite.query('SELECT published_offset AS parsed_offset, failure AS parse_error FROM transcript_publication').get();
   // A retry with the committed cursor must derive nothing twice.
   await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
-  expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual(prompts);
+  expect((await readFixtureRecords(serverEnv,'proj_1','resumed')).filter(row=>row.k==='prompt').map(row=>({text:row.text}))).toEqual(prompts);
   sqlite.close();
   return { report, prompts, state, diagnostics };
 }

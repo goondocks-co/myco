@@ -1,3 +1,4 @@
+import { publishFixture } from './helpers/fixtures.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
@@ -1047,7 +1048,11 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('keeps titling on its dispatch session without requiring extraction citation authority', async () => {
-    const { harness, dispatch, call, sqlite, serve } = await runSetup();
+    const f = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = f;
+    sqlite.run('DELETE FROM session_prompts');
+    sqlite.run("INSERT OR IGNORE INTO publish_queue(project_id,session_id,event_id,rank,created_at) SELECT project_id,session_id,event_id,0,created_at FROM events WHERE kind='prompt'");
+    await publishFixture(f);
     await dispatch(harness, 'run_1', 'title-summary');
     sqlite.run(`UPDATE agent_runs SET run_context = ? WHERE id = 'run_1'`, [JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: 300 })]);
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result).toMatchObject({ session_id: 'sess_1', prompt_count: 1 });

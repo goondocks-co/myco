@@ -15,7 +15,7 @@ function missing(e: ReturnType<typeof sqliteEnv>, id: string, at: number, token 
   e.sqlite.run("INSERT OR IGNORE INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','history','lost-token',0,0)");
   e.sqlite.run(`INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation) VALUES ('proj_1',?,1,'text/plain',?,?,'00000000-0000-4000-8000-000000000001')`, [id, token, at]);
   e.sqlite.run(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-    VALUES ('proj_1',?,'history',?,'notification','cli','raw bytes','digest',?,?)`, [id, token, at, at]);
+    VALUES ('proj_1',?,'history',?,'notification','cli', '"raw bytes"' ,'digest',?,?)`, [id, token, at, at]);
   e.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id)
     VALUES ('proj_1',?,'history','lost-machine',0,?,?,?)`, [id, at, at, token]);
 }
@@ -129,7 +129,7 @@ describe('explicit owner claim of missing raw uploader', () => {
         expect(await reader(e, 'mem_machine_1').allows({ kind, id: 'ambiguous' }, 'read')).toBe(false);
       }
       expect(await reader(e, 'mem_machine_2').allows({ kind: 'blob', id: 'other-member' }, 'read')).toBe(true);
-      expect(await reader(e, 'mem_machine_1').event('missing-old')).toBe('raw bytes');
+      expect(await reader(e, 'mem_machine_1').event('missing-old')).toBe( '"raw bytes"' );
       expect((await claimUnknownRaw(e.db, 'mem_machine_1', preview.revision, 51)).claimId).toBeNull();
       expect(e.sqlite.query('SELECT COUNT(*) AS n FROM raw_claims').get()).toEqual({ n: 1 });
       missing(e, 'later', 60);
@@ -227,7 +227,7 @@ describe('explicit owner claim of missing raw uploader', () => {
         e.sqlite.run("INSERT OR IGNORE INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','history','source-missing',0,0)");
         e.sqlite.run(`INSERT INTO events
         (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-        VALUES ('proj_1',?,'history',?,'notification','cli','full raw bytes','digest',1,1)`, [id, token]);
+        VALUES ('proj_1',?,'history',?,'notification','cli', '"full raw bytes"' ,'digest',1,1)`, [id, token]);
       };
       event(source, 'source-claimed', 'source-missing');
       const preview = await rawClaimPreview(source.db, 'mem_machine_1');
@@ -240,7 +240,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       expect(await ownershipPreview(destination.db)).toMatchObject({ ownerMemberId: 'mem_machine_1', revision: '1' });
       expect(destination.sqlite.query('SELECT member_id,actor_id FROM deployment_ownership_audit').all())
         .toEqual([{ member_id: 'mem_machine_1', actor_id: 'mem_machine_1' }]);
-      expect(await reader(destination, 'mem_machine_1').event('source-claimed')).toBe('full raw bytes');
+      expect(await reader(destination, 'mem_machine_1').event('source-claimed')).toBe( '"full raw bytes"' );
       expect(await reader(destination, 'mem_machine_1').event('destination-unreviewed')).toBeNull();
       event(destination, 'new-after-recovery', 'source-missing');
       expect(await reader(destination, 'mem_machine_1').event('new-after-recovery')).toBeNull();

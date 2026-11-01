@@ -212,7 +212,7 @@ describe('myco cutover', () => {
     expect(sqlite.query(`SELECT title FROM sessions WHERE project_id = ?`).all(PROJECT)).toEqual([{ title: 'A 1.4 session' }]);
     expect(sqlite.query(`SELECT id FROM spores WHERE project_id = ?`).all(PROJECT)).toEqual([{ id: 'gotcha-1' }]);
 
-    const tables = ['sessions', 'prompt_batches', 'spores', 'events', 'transcripts'];
+    const tables = ['sessions', 'session_prompts', 'spores', 'events', 'transcripts'];
     const snapshot = () => Object.fromEntries(tables.map((t) => [t, m.rig.rows(t)]));
     const before = snapshot();
     const settingsAfter = fs.readFileSync(settingsFile(), 'utf8');

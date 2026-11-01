@@ -561,8 +561,10 @@ describe('a titling run reads and writes its own session', () => {
   });
 
   it('overwrites the standing title on a refresh of a session still open, and gives search and embedding the new text under a new revision', async () => {
-    const { harness, dispatch, call, sqlite, prompt } = await setup();
+    const f = await setup();
+    const { harness, dispatch, call, sqlite, prompt } = f;
     prompt('first');
+    await publishFixture(f);
     sqlite.run(`UPDATE sessions SET ended_at = NULL, title = 'Old title', summary = 'Old summary', titled_by = 'mem_asked' WHERE session_id = 'sess_1'`);
     const revision = () => (sqlite.query(`SELECT revision FROM embedding_versions WHERE type = 'session' AND record_id = 'sess_1'`).get() as { revision: string }).revision;
     const before = revision();

@@ -20,7 +20,7 @@ import { registeredObjectKeySql } from '../core/blob-objects.js';
 
 import { remainingInvocationBudget } from '../core/content-budget.js';
 
-import { MAX_BLOB_BYTES, SESSION_END_SETTLE_MS } from '../constants.js';
+import { MAX_BLOB_BYTES, SESSION_END_SETTLE_MS, PARSER_VERSION } from '../constants.js';
 
 const PARSER_CHECKPOINT_HEADROOM = 64;
 
@@ -82,7 +82,7 @@ export interface ParsePersistence {
     checkpoint(digest: unknown): Promise<ParserState>;
     owners(keys: ReadonlyMap<string, string>): Promise<PromptOwners | undefined>;
     claim(claims: readonly KeyClaim[]): Promise<void>;
-    stop(failure: ParseFailure, now: number): Promise<void>;
+    stop(failure: ParseFailure, now: number, diagnostic?: ParseDiagnostic): Promise<void>;
     awaitBytes(now: number): Promise<void>;
     header(metadata: Record<string, unknown>): Promise<void>;
     publish(window: {
@@ -194,6 +194,14 @@ export interface ParseDiagnostic {
 
 const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
 
+/** Admits only bounded, content-free parser diagnostics. */
+export function parseDiagnostic(value: unknown): ParseDiagnostic | undefined {
+  if (!isBlock(value) || !['malformed_lines','event_not_stored','no_progress','event_refused','blob_absent','record_too_large','scheme_unread','scheme_conflict','record_kind_undeclared','record_source_invalid','record_identity_scheme_unsupported'].includes(String(value.branch))
+    || !Number.isSafeInteger(value.offset) || Number(value.offset)<0) return undefined;
+  return { branch: value.branch as ParseDiagnostic['branch'], offset: Number(value.offset),
+    lineKind: typeof value.lineKind==='string' && (LINE_KINDS.has(value.lineKind)||value.lineKind==='tool_result') ? value.lineKind : 'unknown' };
+}
+
 function lineKind(line: ParsedLine | undefined): string {
     if (line === undefined)
         return 'unknown';
@@ -211,7 +219,7 @@ async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseF
 } | {
     constraint_detail: string;
 }, diagnostic: ParseDiagnostic = { branch: classifier === 'parse' ? 'no_progress' : classifier, offset: target.parsedOffset, lineKind: 'unknown' }): Promise<void> {
-    return target.persistence.stop(classifier, now);
+    return target.persistence.stop(classifier, now, diagnostic);
 }
 
 /**
@@ -594,10 +602,14 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
  const where = 'agent' in selector ? {sql:'t.agent=?',params:[selector.agent]}
   : {sql:'t.project_id=? AND t.session_id=?',params:[selector.projectId,selector.sessionId]};
  const rows = await db.batch([
-  db.prepare(`UPDATE transcript_publication AS p SET published_offset=0,segment_lines=0,open_prompt_id=NULL,
-    unfinished=0,reply_unfinished=0,reply_latest_at=NULL,state='active',failure=NULL,awaited_size=NULL
-    WHERE EXISTS (SELECT 1 FROM transcripts t JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id
-      AND d.state='live' AND d.generation=p.generation WHERE t.project_id=p.project_id AND t.transcript_id=p.transcript_id AND ${where.sql})
+  db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at)
+    SELECT t.project_id,t.transcript_id,d.generation,t.session_id,COALESCE((SELECT MIN(base_offset) FROM (
+      SELECT base_offset FROM transcript_segments WHERE project_id=t.project_id AND transcript_id=t.transcript_id
+      UNION ALL SELECT base_offset FROM raw_archive_refs WHERE project_id=t.project_id AND transcript_id=t.transcript_id AND source_kind='transcript' AND disposition='archived')),0),
+      COALESCE(t.record_identity_scheme,'legacy-session-v1'),0,0 FROM transcripts t JOIN session_documents d
+      ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live' WHERE ${where.sql}
+    ON CONFLICT(project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,segment_lines=0,open_prompt_id=NULL,
+      unfinished=0,reply_unfinished=0,reply_latest_at=NULL,state='active',failure=NULL,diagnostic=NULL,awaited_size=NULL,placed_records=NULL,placed_digest=NULL,parser_version=0
     RETURNING transcript_id`).bind(...where.params),
   db.prepare(`UPDATE session_documents AS d SET due_at=0 WHERE d.state='live' AND EXISTS (
     SELECT 1 FROM transcripts t WHERE t.project_id=d.project_id AND t.session_id=d.session_id AND ${where.sql})`).bind(...where.params),
@@ -634,14 +646,17 @@ export interface StoppedTranscripts {
 
 /** Failed current document publications, grouped by their authenticated Project. */
 export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTranscripts[]> {
- const rows=(await db.prepare(`SELECT p.project_id,p.failure,COUNT(*) n,MAX(p.updated_at) latest
-  FROM transcript_publication p JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id
+ const rows=(await db.prepare(`SELECT p.project_id,p.failure,p.diagnostic,COUNT(*) n,MAX(p.updated_at) latest
+  FROM transcript_publication p INDEXED BY idx_transcript_publication_failed JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id
     AND d.generation=p.generation AND d.state='live' JOIN projects pr ON pr.project_id=p.project_id AND pr.archived_at IS NULL
-  WHERE p.state='failed' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=p.project_id AND t.session_id=p.session_id)
-  GROUP BY p.project_id,p.failure`).all<{project_id:string;failure:string;n:number;latest:number}>()).results;
+  WHERE p.state='failed' AND p.parser_version=${PARSER_VERSION} AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=p.project_id AND t.session_id=p.session_id)
+  GROUP BY p.project_id,p.failure`).all<{project_id:string;failure:string;diagnostic:string|null;n:number;latest:number}>()).results;
  const projects=new Map<string,StoppedTranscripts>();
  for(const row of rows){const held=projects.get(row.project_id)??{projectId:row.project_id,transcripts:0,latestAt:null,reasons:{}};
-  held.transcripts+=Number(row.n);held.latestAt=Math.max(held.latestAt??0,row.latest);held.reasons[row.failure]=Number(row.n);projects.set(row.project_id,held);}
+  held.transcripts+=Number(row.n);held.latestAt=Math.max(held.latestAt??0,row.latest);held.reasons[row.failure]=Number(row.n);
+  const diagnostic=row.diagnostic===null?undefined:parseDiagnostic(JSON.parse(row.diagnostic));
+  if(row.latest===held.latestAt){if(diagnostic===undefined)delete held.latestDiagnostic;else held.latestDiagnostic=diagnostic;}
+  projects.set(row.project_id,held);}
  return [...projects.values()];
 }
 

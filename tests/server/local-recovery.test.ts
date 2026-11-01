@@ -29,11 +29,12 @@ import { createHash } from 'node:crypto';
 import { blobObjectKey, registeredObjectKeySql } from '../../packages/myco-server/src/core/blob-objects.js';
 import { migrateOnly, startDeployment } from '../../packages/myco-server/src/platform/bun/server-main.js';
 import { getBlob } from '../../packages/myco-server/src/read/blobs.js';
-import { processedBody } from '../../packages/myco-server/src/read/processed.js';
+import { SessionDocument } from '../../packages/myco-server/src/content/session-pages.js';
+import { publishFixture, readFixtureRecords } from '../myco-server/helpers/fixtures.js';
 import { ingestEvent } from '../../packages/myco-server/src/ingest/events.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
-import { asSchema41 } from './legacy-recovery-fixture.js';
+import { asSchema41, asHistoricalSchema } from './legacy-recovery-fixture.js';
 import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
 import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
 import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
@@ -134,6 +135,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
         input: RECOVERED_TOOL_INPUT, success: true } }), source.serverEnv))
       .toMatchObject({ persisted: true, projected: true });
   }
+  if(bundledInput)await publishFixture(source);
   const carriedToken = authority ? await issueMemberToken(source.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()) : null;
   if (authority) seedRecoveryAuthority(source.sqlite);
   if(learningSource!==null) {
@@ -154,25 +156,8 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     snapshot: async (file) => {
       source.sqlite.query('VACUUM INTO ?').run(file);
       if (legacy) asSchema41(file);
-      if(learningSource==='pre-pause') {
-        const snapshot=new Database(file);
-        try {snapshot.run("UPDATE schema_meta SET value='101' WHERE key='version'");}
-        finally {snapshot.close();}
-      }
-      if(budgetSource==='pre-budget') {
-        const snapshot=new Database(file);
-        try {
-          for(const sql of V103_STATEMENTS) {
-            const name=/CREATE TRIGGER IF NOT EXISTS (\w+)/.exec(sql)?.[1];
-            if(name)snapshot.exec(`DROP TRIGGER IF EXISTS ${name}`);
-          }
-          snapshot.exec('DROP INDEX IF EXISTS idx_attempts_claimed');
-          snapshot.exec('DROP INDEX IF EXISTS idx_agent_runs_queue_head');
-          for(const column of ['estimate_usd','cost_usd','cost_source','profile_json'])snapshot.exec(`ALTER TABLE agent_run_attempts DROP COLUMN ${column}`);
-          snapshot.exec('ALTER TABLE agent_runs DROP COLUMN origin');
-          snapshot.exec("DELETE FROM schema_meta WHERE key LIKE 'budget%'; UPDATE schema_meta SET value='102' WHERE key='version'");
-        }finally{snapshot.close();}
-      }
+      if(learningSource==='pre-pause') asHistoricalSchema(file,101);
+      if(budgetSource==='pre-budget') asHistoricalSchema(file,102);
       return { configuration, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
     blob: async (object) => {
@@ -274,22 +259,24 @@ it('preserves a native snapshot and its vectors without resetting their ready re
   } finally { f.cleanup(); }
 });
 
-it('serves a bundled tool input after native restore assigns a fresh object generation', async () => {
+it('serves a document tool input after native restore assigns a fresh object generation', async () => {
   const f = await fixture('local', { bundledInput: true });
   try {
     const sourceProof = f.source.sqlite.query(`SELECT generation FROM registered_content_proofs
-      WHERE source_kind='bundle' LIMIT 1`).get() as { generation: string };
+      WHERE source_kind='document' LIMIT 1`).get() as { generation: string };
     f.source.bucket.objects.clear();
     await f.restore();
     const db = new Database(f.paths.databasePath);
     try {
       const proof = db.query(`SELECT p.generation AS proof_generation,b.generation AS blob_generation
         FROM registered_content_proofs p JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key
-        WHERE p.source_kind='bundle' LIMIT 1`).get() as { proof_generation: string; blob_generation: string };
+        WHERE p.source_kind='document' LIMIT 1`).get() as { proof_generation: string; blob_generation: string };
       expect(proof.proof_generation).toBe(proof.blob_generation);
       expect(proof.blob_generation).not.toBe(sourceProof.generation);
-      expect(await processedBody({ db: sqliteRelationalStore(db), blobs: diskBlobStore(f.paths.blobDir) },
-        { projectId: 'proj_1' }, 'tool-input', RECOVERED_TOOL_ID)).toBe(JSON.stringify(RECOVERED_TOOL_INPUT));
+      const env={db:sqliteRelationalStore(db),blobs:diskBlobStore(f.paths.blobDir)};
+      const record=(await readFixtureRecords(env,'proj_1','sess_recovery_input')).find(record=>record.k==='tool'&&record.id===RECOVERED_TOOL_ID)!;
+      const doc=(await SessionDocument.open(env,'proj_1','sess_recovery_input'))!;
+      expect(await doc.body(record,'input')).toBe(JSON.stringify(RECOVERED_TOOL_INPUT));
     } finally { db.close(); }
   } finally { f.cleanup(); }
 });

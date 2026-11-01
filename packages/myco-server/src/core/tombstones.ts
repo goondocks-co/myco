@@ -45,12 +45,7 @@ function sessionRoute(table: string): SessionRoute {
 const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
   BLOB_REFERENCES.map((ref) => ({ ref, route: sessionRoute(ref.table) }));
 
-/** SQL naming a session that carries no tombstone. `alias` is the `sessions` alias in the query it joins. */
-export const notTombstonedSql = (alias: string): string =>
-  `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)`;
-
-/** The same predicate for a query that names its project and session by parameter rather than by alias. */
-export const NOT_TOMBSTONED_PARAMS = `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ? AND t.session_id = ?)`;
+export { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 
 /** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
 export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {

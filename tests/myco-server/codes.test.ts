@@ -131,8 +131,10 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     return r.post(r.t1.token, { payload: { promptId: uuid(2), text: 'other', origin: 'user' } });
   },
   projection_conflict: async (r) => {
-    expect((await json(await r.post(r.t1.token, {}))).persisted).toBe(true);
-    return r.post(r.t1.token, { eventId: uuid(5), createdAt: 2_000, payload: { promptId: uuid(2), text: 'rewritten', origin: 'user' } });
+    const blob = await r.upload(bytes);
+    const payload = { attachmentId: uuid(2), blob };
+    expect((await json(await r.post(r.t1.token, { kind: 'attachment', payload }))).persisted).toBe(true);
+    return r.post(r.t1.token, { eventId: uuid(5), kind: 'attachment', payload });
   },
   // #1147 — transcript-first ingest
   session_tombstoned: async (r) => {

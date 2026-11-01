@@ -1,3 +1,4 @@
+import { readDirectory, readPageChunk } from '@myco-server-worker/content/document-reader.js';
 import { publishFixtureDocuments } from './helpers/fixtures.js';
 /**
  * A session working now (#1531): a turn opens when its prompt asks the Deployment for context and closes when the
@@ -202,8 +203,11 @@ describe('a session working now', () => {
     await r.segment('sess_1', at + 10_000, false, 'cli', lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
     for (let pass = 0; pass < 5; pass += 1) if ((await publishFixtureDocuments(r.e.serverEnv, Date.now())).changed === 0) break;
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess_1' AND kind='response'`).get()).toEqual({ n: 0 });
-    const checkpoint = r.e.sqlite.query<{ parser_context: string }, []>('SELECT parser_context FROM transcripts').get();
-    expect(JSON.parse(checkpoint!.parser_context).mycoParserState.reply.parts[0].text).toBe('Running the loop now.');
+    const transcript = r.e.sqlite.query<{transcript_id:string},[]>('SELECT transcript_id FROM transcripts').get()!;
+    const directory = (await readDirectory(r.e.db,'proj_1','sess_1'))!;
+    const chunks = await Promise.all([...directory.chunks.values()].filter(row=>row.kind==='page').map(row=>readPageChunk(r.e.serverEnv,row)));
+    const checkpoint = chunks.flatMap(chunk=>[...chunk.states]).find(([id])=>id===transcript.transcript_id)![1];
+    expect((checkpoint.mycoParserState as {reply:{parts:{text:string}[]}}).reply.parts[0]!.text).toBe('Running the loop now.');
     expect(r.workingSince('sess_1')).toBe(at);
   });
 

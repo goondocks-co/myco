@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { PROJECT_ID } from './harness.ts';
 
@@ -10,7 +11,7 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
 const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'], 107: ['view_prompts'] };
-/** The seeded state a guarded step admits: for 114, every document converted, its publisher holding every byte received and its prompts located. */
+/** Guarded upgrades require converted session documents. */
 const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
   117: "UPDATE session_documents SET state='live',generation=COALESCE(generation,1);",
   114: `UPDATE session_documents SET state = 'live', generation = COALESCE(generation, 1);
@@ -22,6 +23,8 @@ const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
 };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
+  session_chunks: { kind: 'page', encoding: 'gzip-ndjson', state: 'live' },
+  extraction_acks: { kind: 'record', record_id: 'upgrade_prompt' },
   prompt_context_answers: { outcome: 'served', prompt_id: 'upgrade_prompt' },
   legacy_worker_audit: { action: 'forgotten' },
   agent_run_attempts: { owner_kind: 'runner' },
@@ -70,7 +73,7 @@ export function assertUpgradeState(databaseFile: string, version: number, expect
     const actualVersion = Number((db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as { value: string }).value);
     if (actualVersion !== version) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected schema ${version}, got ${actualVersion}`);
     const applied = Number((db.query('SELECT COUNT(*) AS count FROM d1_migrations').get() as { count: number }).count);
-    if (applied !== version) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected ${version} applied Wrangler migrations, got ${applied}`);
+    if (applied !== SCHEMA_STEPS.filter(step => step.version <= version).length) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected ${version} applied Wrangler migrations, got ${applied}`);
     const actual = schemaObjects(db);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       const first = actual.findIndex((item, index) => JSON.stringify(item) !== JSON.stringify(expected[index]));

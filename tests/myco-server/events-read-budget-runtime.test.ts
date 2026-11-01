@@ -1,3 +1,6 @@
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
+import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { preparePromptAcknowledgement } from './helpers/extraction.js';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -32,7 +35,7 @@ const DOCUMENT_DUE_WRITES = 2;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES,
-  'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
+  'publication-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -52,6 +55,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       VALUES(?,'session','machine','credential',1,1)`).bind(PROJECT).run();
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
       VALUES(?, ?,1,'text/plain','credential',1,'00000000-0000-4000-8000-000000000001')`).bind(PROJECT, BLOB).run();
+    await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'session','live',1,1)").bind(PROJECT).run();
     const reads: number[] = [];
     const media: { before: number[]; after: number[] } = { before: [], after: [] };
     const retention: { before: number[]; after: number[] } = { before: [], after: [] };
@@ -290,9 +294,12 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       for (let i = 0; i < 5; i++) await event('notification', { message: `n${i}` });
       await capture('transcripts insert', () => measured.db.prepare(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id)
         VALUES(?,?,?,'machine',100,0,1,1,'credential')`).bind(PROJECT, sessionId, sessionId).run());
-      for (let i = 1; i <= 5; i++) await capture('parse-progress UPDATE', () => measured.db.prepare(
-        'UPDATE transcripts SET parsed_offset=?,size=size+10 WHERE project_id=? AND transcript_id=?').bind(i * 10, PROJECT, sessionId).run());
+      await db.prepare("INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at) VALUES(?,?,1,?,0,'source-record-v1',1,1)").bind(PROJECT,sessionId,sessionId).run();
+      for (let i = 1; i <= 5; i++) await capture('publication-progress UPDATE', () => measured.db.prepare(
+        'UPDATE transcript_publication SET published_offset=? WHERE project_id=? AND transcript_id=?').bind(i * 10, PROJECT, sessionId).run());
       await event('session.end', { endedAt: now });
+      const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:memoryBlobStore(),SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
+      await publishDocuments({...configured,blobs:memoryBlobStore()},now,{calls:500,deadline:Infinity,clock:()=>now});
       const acknowledge = await preparePromptAcknowledgement(measured.db, { projectId: PROJECT }, promptIds[0]!);
       await capture('markPromptProcessed', async () => { expect(await acknowledge()).toBe(true); });
       for (const name of CAPTURE_WRITE_NAMES) captureWrites.get(name)!.push(writes.get(name)!);

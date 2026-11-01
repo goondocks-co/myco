@@ -93,7 +93,7 @@ interface DocumentRow {
 interface TranscriptRow {
   transcript_id: string; agent: string | null; role: string | null; size: number; machine_id: string; token_id: string;
   prompt_identity_scheme: string | null; imported_at: number | null; last_received_at: number;
-  published_offset: number | null; segment_lines: number | null; open_prompt_id: string | null; unfinished: number | null;
+  publication_parser_version: number | null; diagnostic: string | null; published_offset: number | null; segment_lines: number | null; open_prompt_id: string | null; unfinished: number | null;
   reply_unfinished: number | null; reply_latest_at: number | null; prompt_scheme: string | null; record_scheme: string | null;
   state: string | null; failure: string | null; awaited_size: number | null; updated_at: number | null;
   placed_records: number | null; placed_digest: string | null;
@@ -123,6 +123,7 @@ interface Publication {
   changed: boolean;
   /** A fault this pass met that can clear: the transcript waits at its frontier. */
   fault?: string;
+  diagnostic?: import('./parse.js').ParseDiagnostic;
 }
 
 /**
@@ -294,7 +295,7 @@ class SessionPublication {
         WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live' AND d.generation IS NOT NULL`).bind(this.projectId, this.sessionId),
       ...directoryStatements(db, this.projectId, this.sessionId),
       db.prepare(`SELECT t.transcript_id,t.agent,t.role,t.size,t.machine_id,t.token_id,t.prompt_identity_scheme,t.imported_at,t.last_received_at,
-          p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
+          p.parser_version AS publication_parser_version,p.diagnostic,p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
           p.state,p.failure,p.awaited_size,p.updated_at,p.placed_records,p.placed_digest
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
@@ -319,7 +320,7 @@ class SessionPublication {
         openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
         replyLatestAt: t.reply_latest_at, promptScheme: t.published_offset === null ? publishedPromptScheme(t.prompt_identity_scheme) : t.prompt_scheme,
         recordScheme: t.record_scheme ?? PUBLISHED_RECORD_SCHEME, state: (cleared ? 'active' : t.state ?? 'active') as Publication['state'],
-        failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
+        diagnostic: cleared || t.diagnostic===null ? undefined : JSON.parse(t.diagnostic), failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
         changed: cleared || t.published_offset === null,
       };
     });
@@ -355,7 +356,7 @@ class SessionPublication {
   private async publishTranscript(publication: Publication): Promise<void> {
     const t = publication.transcript;
     if (publication.state === 'failed' || (publication.state === 'awaiting' && t.size <= (publication.awaitedSize ?? -1))) return;
-    if (publication.offset === 0) this.batch.writer.states.delete(t.transcript_id);
+    if (publication.offset === 0 || t.publication_parser_version === 0) this.batch.writer.states.delete(t.transcript_id);
     const receipts = new Map<number, number>();
     const claims = new Map<string, { thread: string; record: string }>();
     const persistence: ParsePersistence = {
@@ -363,9 +364,9 @@ class SessionPublication {
       checkpoint: async () => { throw new Error('document_continuation_chunked'); },
       owners: async () => promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]),
       claim: async (incoming) => { for (const claim of incoming) claims.set(claim.key, { thread: claim.thread, record: claim.record }); },
-      stop: async (failure) => {
+      stop: async (failure, _now, diagnostic) => {
         if (CLEARABLE_FAILURES.has(failure)) this.recordFault(publication, failure);
-        else Object.assign(publication, { state: 'failed', failure, changed: true });
+        else Object.assign(publication, { diagnostic, state: 'failed', failure, changed: true });
       },
       awaitBytes: async () => { Object.assign(publication, { state: 'awaiting', awaitedSize: t.size, changed: true }); },
       header: async (metadata) => {
@@ -418,7 +419,7 @@ class SessionPublication {
         });
         Object.assign(publication, {
           offset: window.to, segmentLines: window.segmentLines, openPromptId: window.openPromptId, unfinished,
-          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', failure: null, awaitedSize: null,
+          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', diagnostic: undefined, failure: null, awaitedSize: null,
           placedRecords: null, placedDigest: null, changed: true,
         });
         this.continuationChanged = true;
@@ -545,7 +546,7 @@ class SessionPublication {
     if (publications.length > 0) after.push(publicationStatement(db, p, s, g, this.now, publications.map((pub) => ({
       t: pub.transcript.transcript_id, o: pub.offset, l: pub.segmentLines, p: pub.openPromptId, u: pub.unfinished, r: pub.replyUnfinished,
       a: pub.replyLatestAt, ps: pub.promptScheme, rs: pub.recordScheme, s: pub.state, f: pub.failure, w: pub.awaitedSize,
-      n: pub.placedRecords, d: pub.placedDigest,
+      n: pub.placedRecords, d: pub.placedDigest, diag: pub.diagnostic===undefined?null:JSON.stringify(pub.diagnostic),
     }))));
     if (this.consumed.length > 0) {
       after.push(db.prepare(`DELETE FROM publish_queue WHERE (project_id,session_id,rank,created_at,event_id) IN

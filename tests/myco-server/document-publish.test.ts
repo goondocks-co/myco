@@ -1,4 +1,6 @@
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { stoppedTranscripts, rereadTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
@@ -980,5 +982,19 @@ test('portable backups restore published document bodies and frontiers into dest
     await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(await counters(db,'portable'),name).toMatchObject({prompts:1,user_prompts:1});
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE session_id='portable'`).first(),name).toEqual(frontier);
+  });
+});
+
+test('a stopped publication retains bounded diagnostics and reread clears them', async () => {
+  await withDocumentStores(async db => {
+    const blobs = memoryBlobStore();
+    const now = Date.now();
+    const env = await captureDocumentTranscript(db,blobs,'diagnostic',tx,'{malformed\n'.repeat(TRANSCRIPT_PARSE_MALFORMED_LIMIT + 1),now);
+    await publishDocuments(env,now,{calls:500,deadline:Infinity,clock:()=>now,completeFile:true});
+    expect(await stoppedTranscripts(db)).toMatchObject([{projectId:'project',transcripts:1,
+      latestDiagnostic:{branch:'malformed_lines',offset:0,lineKind:'unknown'}}]);
+    expect(await rereadTranscripts(db,{projectId:'project',sessionId:'diagnostic'})).toBe(1);
+    expect(await stoppedTranscripts(db)).toEqual([]);
+    expect(await db.prepare('SELECT diagnostic FROM transcript_publication WHERE transcript_id=?').bind(tx).first()).toEqual({diagnostic:null});
   });
 });

@@ -1,3 +1,4 @@
+import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * Importing a Myco 1.4 vault into a Deployment, against the real worker.
  *
@@ -263,14 +264,19 @@ async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   });
   return {
     rig, mycoHome, home, root, vault, liveEnd,
-    run: (opts = {}) => runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
-      fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: opts.sleep ?? (async () => {}),
-    }),
+    run: async (opts = {}) => {
+      const result=await runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
+        fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: opts.sleep ?? (async () => {}),
+      });
+      if(!opts.dryRun)await publishFixture(rig.env);
+      return result;
+    },
     cli: async (opts = {}) => {
       const out: string[] = [];
       const ok = await runImportCli(['--legacy', vault, '--days', '3650', '--max', '1000', '--server', SERVER], {
         fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {}, stdout: (l) => out.push(l), stderr: () => {},
       });
+      await publishFixture(rig.env);
       return { ok, out };
     },
     bind: (home: string) => writeRegistryEntry({
@@ -614,7 +620,7 @@ describe('importing a 1.4 vault', () => {
     expect(again.projects[0].stillWriting).toEqual([]);
     expect(again.projects[0].sessions.transcriptsShipped).toBe(1);
     expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(SESSION_ACTIVE)).toEqual({ n: 1 });
-    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND text = 'active prompt from vault'`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM session_prompts WHERE session_id = ? AND preview = 'active prompt from vault'`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
   });
 
   it('stops once one step has waited out its limit, and reports the rest as not attempted', async () => {

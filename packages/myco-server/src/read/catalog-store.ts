@@ -69,9 +69,9 @@ import type { ProjectSet as sessions_import_ProjectSet } from "./scope.js";
 
 import type { ReadScope as sessions_import_ReadScope } from "./scope.js";
 
-import { notTombstonedSql as sessions_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as sessions_import_notTombstonedSql } from "../db/session-read-model.js";
 
-import { NOT_TOMBSTONED_PARAMS as sessions_import_NOT_TOMBSTONED_PARAMS } from "../core/tombstones.js";
+import { NOT_TOMBSTONED_PARAMS as sessions_import_NOT_TOMBSTONED_PARAMS } from "../db/session-read-model.js";
 
 import { sessionMaterialReadySql as sessions_import_sessionMaterialReadySql } from "./material-readiness.js";
 
@@ -85,7 +85,7 @@ import { sessionMaterialReadySql as children_import_sessionMaterialReadySql } fr
 
 import { titlingClaimAvailableSql as children_import_titlingClaimAvailableSql } from "./material-readiness.js";
 
-import { notTombstonedSql as children_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as children_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import { titleRunInFlightSql as children_import_titleRunInFlightSql } from "../db/session-read-model.js";
 
@@ -103,7 +103,7 @@ import type { ReadScope as children_import_ReadScope } from "./scope.js";
 
 import type { RelationalStore as lineage_import_RelationalStore } from "../core/adapters.js";
 
-import { notTombstonedSql as lineage_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as lineage_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import { inListChunks as lineage_import_inListChunks } from "./scope.js";
 
@@ -113,13 +113,13 @@ import type { RelationalStore as activity_import_RelationalStore } from "../core
 
 import type { ReadScope as activity_import_ReadScope } from "./scope.js";
 
-import { notTombstonedSql as activity_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as activity_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import type { ToolResultReason as session_activity_import_ToolResultReason } from "@goondocks/myco-shared/member-protocol";
 
 import type { RelationalStore as session_activity_import_RelationalStore } from "../core/adapters.js";
 
-import { notTombstonedSql as session_activity_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as session_activity_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import { occurredAt as session_activity_import_occurredAt } from "../db/session-dates.js";
 
@@ -177,7 +177,7 @@ import type { SearchOptions as embedding_import_SearchOptions } from "@goondocks
 
 import type { SearchResult as embedding_import_SearchResult } from "@goondocks/myco-shared/search-types";
 
-import { notTombstonedSql as embedding_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as embedding_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import { CURRENT_EMBEDDING_SOURCES as embedding_import_CURRENT_EMBEDDING_SOURCES } from "../db/embedding-sources.js";
 
@@ -203,7 +203,7 @@ import type { RelationalStore as prompts_import_RelationalStore } from "../core/
 
 import { READ_ORIGINS as prompts_import_READ_ORIGINS } from "./extraction-origins.js";
 
-import { notTombstonedSql as prompts_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as prompts_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import type { ReadScope as prompts_import_ReadScope } from "./scope.js";
 
@@ -227,7 +227,7 @@ import type { ReadScope as search_import_ReadScope } from "./scope.js";
 
 import { EmbeddingUnavailable as search_import_EmbeddingUnavailable } from "../core/embedding/provider.js";
 
-import { notTombstonedSql as search_import_notTombstonedSql } from "../core/tombstones.js";
+import { notTombstonedSql as search_import_notTombstonedSql } from "../db/session-read-model.js";
 
 import { SEARCH_TYPES as search_import_SEARCH_TYPES } from "@goondocks/myco-shared/search-types";
 

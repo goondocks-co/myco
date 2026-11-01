@@ -7,8 +7,8 @@ export const RETIRED_CONTENT_TABLES = [
   "transcript_parser_state_chunks",
   "prompt_key_owners",
   "view_visible",
-  "view_checkpoints",
   "view_checkpoint_chunks",
+  "view_checkpoints",
   "view_key_owners",
   "view_prompts",
   "view_responses",
@@ -70,6 +70,12 @@ const documentCounters = [
 /** Retained content must be published before its relational source can be removed. */
 export const V117_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS _v117_documents_guard (missing INTEGER NOT NULL CONSTRAINT documents_retirement_incomplete CHECK (missing=0))`,
+  `UPDATE session_documents SET state='live',generation=COALESCE(generation,1),due_at=0 WHERE state='convert' AND prompts=0 AND replies=0 AND tool_calls=0 AND plans=0 AND attachments=0
+    AND NOT EXISTS(SELECT 1 FROM session_chunks c WHERE c.project_id=session_documents.project_id AND c.session_id=session_documents.session_id)
+    AND NOT EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=session_documents.project_id AND p.session_id=session_documents.session_id)
+    AND NOT EXISTS(SELECT 1 FROM responses r WHERE r.project_id=session_documents.project_id AND r.session_id=session_documents.session_id)
+    AND NOT EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=session_documents.project_id AND t.session_id=session_documents.session_id)
+    AND NOT EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=session_documents.project_id AND t.session_id=session_documents.session_id AND t.size>0)`,
   `INSERT INTO _v117_documents_guard SELECT COUNT(*) FROM sessions s
     WHERE NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)
       AND (EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id=s.project_id AND p.session_id=s.session_id)
@@ -85,10 +91,12 @@ export const V117_STATEMENTS: readonly string[] = [
   `UPDATE events SET payload=json_set(payload,'$.toolCallId',(SELECT tool_call_id FROM tool_calls t WHERE t.project_id=events.project_id AND t.event_id=events.event_id))
     WHERE kind IN ('tool.use','tool.failure') AND payload_format='archived' AND json_extract(payload,'$.toolCallId') IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_events_record_identity ON events(project_id,${documentRecordIdSql()}) WHERE kind IN ('prompt','response','tool.use','tool.failure')`,
-  `CREATE INDEX IF NOT EXISTS idx_events_payload_blob ON events(project_id,json_extract(payload,'$.blob'))`,
-  `CREATE INDEX IF NOT EXISTS idx_events_payload_output_blob ON events(project_id,json_extract(payload,'$.outputBlob'))`,
+  `CREATE INDEX IF NOT EXISTS idx_events_payload_blob ON events(project_id,json_extract(payload,'$.blob')) WHERE json_extract(payload,'$.blob') IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_events_payload_output_blob ON events(project_id,json_extract(payload,'$.outputBlob')) WHERE json_extract(payload,'$.outputBlob') IS NOT NULL`,
   ...retiredTriggers.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
   ...RETIRED_CONTENT_TABLES.map((name) => `DROP TABLE IF EXISTS ${name}`),
   `UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0`,
+  'ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT',
+  `CREATE INDEX IF NOT EXISTS idx_transcript_publication_failed ON transcript_publication(project_id,failure,updated_at) WHERE state='failed'`,
   ...documentCounters,
 ];

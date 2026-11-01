@@ -145,7 +145,7 @@ async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promi
     for(const [key,state]of session.snapshot.states)batch.writer.states.set(key,state);
     for(const [key,owner]of session.snapshot.owners??[])batch.writer.owners.set(key,owner);
     return session.snapshot.frontiers.map(row=>({t:row.transcript_id,o:row.published_offset,l:row.segment_lines,p:row.open_prompt_id,
-      u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,s:row.state,f:row.failure,w:row.awaited_size}));
+      u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
   }
   for(const row of session.transcripts ?? []){
     let context = typeof row.parser_context==='string' ? JSON.parse(row.parser_context) as Row : null;

@@ -194,7 +194,7 @@ describe('external grants', () => {
     };
     expect(writes()).toBe(false);
 
-    for (const statement of SCHEMA_DDL.filter((x) => !/ALTER TABLE \w+ ADD COLUMN/.test(x))) e.sqlite.exec(statement);
+    for (const statement of SCHEMA_DDL.filter(x => /INSERT INTO agents/.test(x) && /FROM external_grants/.test(x))) e.sqlite.exec(statement);
     expect(agentOf(e, grant.id)).toEqual({ id: grant.id, name: 'legacy bot', source: GRANT_AGENT_SOURCE, enabled: 1 });
     expect(writes()).toBe(true);
   });

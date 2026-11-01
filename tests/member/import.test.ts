@@ -646,7 +646,7 @@ describe('the stores Myco writes for a harness that keeps none', () => {
       // What did land is coherent: the parse reaches the end of what is held
       // rather than waiting on bytes nothing will send.
       await publishFixtureDocuments(r.env.env.serverEnv, Date.now());
-      const transcripts = r.env.env.sqlite.query(`SELECT size, parsed_offset, parse_error FROM transcripts`).all() as Array<{ size: number; parsed_offset: number; parse_error: string | null }>;
+      const transcripts = r.env.env.sqlite.query(`SELECT t.size,p.published_offset AS parsed_offset,p.failure AS parse_error FROM transcripts t JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation`).all() as Array<{ size: number; parsed_offset: number; parse_error: string | null }>;
       for (const row of transcripts) expect({ complete: row.parsed_offset >= row.size, error: row.parse_error }).toEqual({ complete: true, error: null });
     } finally {
       r.restore();

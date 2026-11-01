@@ -305,7 +305,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('reads what Needs you composes through existing indexes, scanning only the parse backlog', async () => {
+  it('reads what Needs you composes through existing indexes, scanning only failed document publications', async () => {
     const read = await plans(async (db) => {
       await failingOutcomes(db, ['extract-curate', 'canopy-map'], 0);
       await capabilityHolds(db, ['repository-checkout'], 0);
@@ -314,13 +314,12 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       await grantsExpiringBy(db, 0, 1);
     });
     expect(read).toHaveLength(5 * 3);
-    // Every stopped transcript still has bytes past its cursor, so the read walks the backlog's partial index and never
-    // the transcripts already read.
-    for (const { store, plan } of reading(read, 'transcripts')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SCAN transcripts USING INDEX idx_transcripts_backlog/) });
+    for (const { store, plan } of reading(read, 'transcript_publication')) {
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SCAN p USING INDEX idx_transcript_publication_failed/) });
     }
-    for (const { store, sql, plan } of read.filter(({ sql }) => !/FROM transcripts\b/.test(sql))) {
-      expect({ store, sql, scans: tableScans(plan), plan }).toEqual({ store, sql, scans: [], plan });
+    for (const { store, sql, plan } of read) {
+      const scans=tableScans(plan).filter(scan=>!/SCAN p USING INDEX idx_transcript_publication_failed/.test(scan));
+      expect({ store, sql, scans, plan }).toEqual({ store, sql, scans: [], plan });
     }
   });
 

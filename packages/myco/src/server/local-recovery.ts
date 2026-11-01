@@ -28,13 +28,14 @@ import {
  * move to the keys the database now registers, so the volume published is the layout its rows name. Answers the schema
  * version the prepared volume holds.
  */
-async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined, tenantMode: RecoveryTenantMode, recovery: PrivateRecoveryCopy): Promise<number> {
+async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined, tenantMode: RecoveryTenantMode, recovery: PrivateRecoveryCopy, rebuildEmbeddings: boolean): Promise<number> {
   migrateOnly(staging.databasePath, native, recovery);
   const db = new Database(staging.databasePath);
   let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
     await assertThinLearningDrained(store);
+    if(rebuildEmbeddings)for(const project of db.query<{project_id:string},[]>('SELECT project_id FROM projects').all())await resetEmbeddingIndex(store,project.project_id);
     await prepareRecoveredTenant(store, tenantMode, Date.now());
     await resetRecoveryLedger(store);
     await assignRestoreGeneration(store, crypto.randomUUID());
@@ -86,12 +87,10 @@ export async function restoreLocalDeployment(options: {
           rebuildEmbeddings = manifest.source.target === 'cloudflare'
             || db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_vectors'").get() === null;
           if (rebuildEmbeddings) {
-            const projects = db.query<{ project_id: string }, []>('SELECT project_id FROM projects').all();
-            for (const project of projects) await resetEmbeddingIndex(store, project.project_id);
             options.report?.('Embedding rebuild required before semantic search is ready');
           }
         } finally { db.close(); }
-        const schemaVersion = await prepareRestoredObjects({ ...staging, databasePath: copy.databasePath }, options.native, options.tenantMode ?? 'replacement', copy);
+        const schemaVersion = await prepareRestoredObjects({ ...staging, databasePath: copy.databasePath }, options.native, options.tenantMode ?? 'replacement', copy, rebuildEmbeddings);
         fs.renameSync(copy.databasePath, staging.databasePath);
         return { schemaVersion, rebuildEmbeddings };
       });

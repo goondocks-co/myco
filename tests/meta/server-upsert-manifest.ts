@@ -1,6 +1,7 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'ingest/parse.ts#rereadTranscripts': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'core/attention-state.ts#recordDocumentPublishFailure': [{ tables: ['schema_meta'], order: 'unverified' }],
   'core/attempt-accounting.ts#restoreAttemptStatement': [
     { tables: ['agent_run_attempts'], order: 'unverified' },

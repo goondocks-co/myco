@@ -174,9 +174,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       const latestVersion = latest === undefined ? NaN : Number(/^\d+_v(\d+)\.sql$/.exec(latest.name)?.[1]);
       const preceding = files.at(-2);
       const step = SCHEMA_STEPS.at(-1);
+      const previousVersion = SCHEMA_STEPS.at(-2)?.version;
       if (latest === undefined || preceding === undefined || step === undefined || latestVersion !== step.version
-        || Number(/^\d+_v(\d+)\.sql$/.exec(preceding.name)?.[1]) !== latestVersion - 1
-        || step.statements.length < 2) throw new Error(`unsupported D1 upgrade fixture: expected contiguous previous and latest migration with a removable statement; latest is ${latest?.name ?? 'missing'}`);
+        || Number(/^\d+_v(\d+)\.sql$/.exec(preceding.name)?.[1]) !== previousVersion
+        || step.statements.length < 2) throw new Error(`unsupported D1 upgrade fixture: expected previous and latest migration with a removable statement; latest is ${latest?.name ?? 'missing'}`);
       const previousDir = path.join(root, 'previous-migrations');
       fs.mkdirSync(previousDir);
       for (const file of files.slice(0, -1)) fs.writeFileSync(path.join(previousDir, file.name), file.sql);
@@ -187,7 +188,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       const previous = new Database(previousFile);
       const previousRows = tableRows(previous, touched);
       previous.close();
-      assertUpgradeState(previousFile, latestVersion - 1, expectedSchema(files.slice(0, -1)), previousRows);
+      assertUpgradeState(previousFile, previousVersion!, expectedSchema(files.slice(0, -1)), previousRows);
       const expectedFile = path.join(root, 'expected-upgrade.sqlite');
       fs.copyFileSync(previousFile, expectedFile);
       const expectedDb = new Database(expectedFile);
