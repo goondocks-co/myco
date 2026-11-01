@@ -379,6 +379,8 @@
   "packages/myco-server/src/ingest/document-batch.ts": {
     "directoryStatements": "W",
     "held": "W",
+    "locateSealed": "W",
+    "sealStatements": "W",
     "statements": "W",
     "commit": "W",
     "releaseHolders": "W",

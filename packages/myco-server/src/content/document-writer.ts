@@ -2,10 +2,15 @@
  * Changes to one generation of a session document, held in memory until they are written as new chunk versions.
  *
  * Records are placed by owner: a new record goes on its owner's last page while it fits, else on a new page. A record
- * arriving under an id its owner already holds is merged in place, and when the page it sits on no longer fits, the
- * owner's pages from that page on are refilled by encoded size. Every chunk holding a changed page is rewritten whole;
- * pages that no longer fit their chunk, and new pages, fill the session's last page chunk and then new chunks. The
- * last page chunk written carries the continuation.
+ * arriving under an id its owner already holds is merged in place, and when the page it sits on no longer fits, that
+ * record moves to the owner's last page. Every chunk holding a changed page is rewritten whole; pages that no longer
+ * fit their chunk, and new pages, fill the session's last page chunk and then new chunks. The last page chunk written
+ * carries the continuation.
+ *
+ * What a placement reads is bounded by the owner's open pages. A commit seals the older pages of an owner whose open
+ * pages span more than `OWNER_OPEN_CHUNKS` chunks: their record ids go to `session_sealed_records`, so a record is
+ * looked for on the owner's open pages and on the one sealed page, if any, that catalog names for it. An owner's last
+ * page is never sealed.
  */
 import {
   DOCUMENT_CHUNK_BYTES, DOCUMENT_PAGE_BYTES, fitRecord, pageBytes, pageHeaderBytes, recordBytes, SESSION_OWNER,
@@ -13,6 +18,7 @@ import {
 } from './document.js';
 import { mergeRecord } from './document-records.js';
 import type { ChunkRow, Directory } from './document-reader.js';
+import { TURN_PAGES } from './session-pages.js';
 
 export interface PageChunkWrite { chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
 export interface BodyChunkWrite { chunkNo: number; text: string; ref: BodyRef }
@@ -23,10 +29,21 @@ export type Upsert = { outcome: 'inserted'; record: DocRecord } | { outcome: 'me
 
 /** The writer's changes as they stood at a mark, restored by `undo`. */
 export interface WriterMark {
-  pages: Map<Page, DocRecord[]>; dirty: Set<number>; touched: Set<string>; plans: Set<string>; fresh: number; bodies: number; nextChunk: number;
+  pages: Map<Page, DocRecord[]>; dirty: Set<number>; touched: Set<string>; plans: Set<string>; fresh: number; bodies: number; nextChunk: number; moved: number;
 }
 
+/** Chunks an owner's open pages may span before a commit seals the oldest of them. */
+export const OWNER_OPEN_CHUNKS = 6;
+/** Chunks at the end of an owner whose pages stay open when it seals. */
+export const OWNER_TAIL_CHUNKS = 2;
+/** Leading pages read to settle a turn whose pages are not all held; its last page is read with them. */
+export const TURN_HEAD_PAGES = TURN_PAGES - 1;
+
 const pageKey = (owner: string, page: number): string => `${owner}\u0000${page}`;
+const sealedKey = (owner: string, kind: string, id: string): string => `${owner}\u0000${kind}\u0000${id}`;
+
+/** A row of `session_sealed_records`, named by the writer that sealed or moved its record. */
+export interface SealedRecord { o: string; k: string; i: string }
 
 export class DocumentWriter {
   /** Each transcript's parser continuation, written to the last page chunk. */
@@ -39,7 +56,11 @@ export class DocumentWriter {
   readonly touched = new Set<string>();
   /** Blob store reads this writer made. */
   reads = 0;
+  /** Records that left a sealed page, whose catalog rows the commit removes. */
+  readonly moved: SealedRecord[] = [];
   private readonly rows = new Map<string, number[]>();
+  private readonly sealedPages = new Map<string, Set<number>>();
+  private readonly sealedRecords = new Map<string, number>();
   private readonly loaded = new Map<number, DecodedChunk>();
   private readonly located = new Map<string, { page: Page; chunk: number | null }>();
   private readonly dirty = new Set<number>();
@@ -61,6 +82,7 @@ export class DocumentWriter {
       const pages = this.rows.get(row.owner) ?? [];
       pages[row.page] = row.chunk_no;
       this.rows.set(row.owner, pages);
+      if (row.sealed === 1) this.sealedPages.set(row.owner, (this.sealedPages.get(row.owner) ?? new Set()).add(row.page));
     }
     const pageChunks = [...directory.chunks.values()].filter((row) => row.kind === 'page').map((row) => row.chunk_no);
     this.lastPageChunk = pageChunks.length === 0 ? null : Math.max(...pageChunks);
@@ -87,19 +109,81 @@ export class DocumentWriter {
     return decoded;
   }
 
-  /** An owner's pages in order, reading every chunk that holds one. */
-  async pagesOf(owner: string): Promise<Page[]> {
-    const chunks = new Set((this.rows.get(owner) ?? []).filter((chunk) => chunk !== undefined));
-    for (const chunk of chunks) await this.chunk(chunk);
+  /** The chunks holding an owner's open pages, oldest page first. */
+  private openChunks(owner: string): number[] {
+    const sealed = this.sealedPages.get(owner);
+    const chunks = new Set<number>();
+    (this.rows.get(owner) ?? []).forEach((chunk, page) => { if (!sealed?.has(page)) chunks.add(chunk); });
+    return [...chunks];
+  }
+
+  /** The pages of an owner read so far, in order. */
+  heldPages(owner: string): Page[] {
     return [...this.located.values()].filter((held) => held.page.owner === owner).map((held) => held.page)
       .sort((a, b) => a.page - b.page);
+  }
+
+  /** An owner's open pages, and any other of its pages read so far, in order. */
+  async pagesOf(owner: string): Promise<Page[]> {
+    for (const chunk of this.openChunks(owner)) await this.chunk(chunk);
+    return this.heldPages(owner);
+  }
+
+  /** Whether any page of this owner is sealed, so a search for one of its records asks the catalog. */
+  hasSealed(owner: string): boolean {
+    return this.sealedPages.has(owner);
+  }
+
+  /** Records the sealed page the catalog names for a record of this owner. */
+  noteSealed(owner: string, kind: string, id: string, page: number): void {
+    this.sealedRecords.set(sealedKey(owner, kind, id), page);
+  }
+
+  /** Whether the catalog named a sealed page for this record of this owner. */
+  sealedHolds(owner: string, kind: string, id: string): boolean {
+    return this.sealedRecords.has(sealedKey(owner, kind, id));
+  }
+
+  /** Reads what settling a turn needs beyond its open pages: its leading pages. */
+  async readTurnHead(owner: string): Promise<void> {
+    const rows = this.rows.get(owner) ?? [];
+    for (let page = 0; page < TURN_HEAD_PAGES && page < rows.length; page += 1) if (rows[page] !== undefined) await this.chunk(rows[page]!);
+  }
+
+  /** The pages a turn settles from: every page once all are held, else its leading pages and its last, and which of the two. */
+  async turnPages(owner: string): Promise<{ pages: Page[]; complete: boolean }> {
+    await this.readTurnHead(owner);
+    const pages = await this.pagesOf(owner);
+    const rows = this.rows.get(owner) ?? [];
+    if (rows.every((chunk) => this.loaded.has(chunk))) return { pages, complete: true };
+    const last = pages.at(-1);
+    return { pages: pages.filter((page) => page.page < TURN_HEAD_PAGES || page === last), complete: false };
+  }
+
+  /**
+   * The pages a commit seals, each with its chunk: the read pages of every owner whose open pages span more than
+   * `OWNER_OPEN_CHUNKS` chunks, oldest first, outside the owner's last `OWNER_TAIL_CHUNKS` chunks.
+   */
+  sealing(): { page: Page; chunk: number }[] {
+    const sealing: { page: Page; chunk: number }[] = [];
+    for (const [owner, rows] of this.rows) {
+      if (this.openChunks(owner).length <= OWNER_OPEN_CHUNKS) continue;
+      const sealed = this.sealedPages.get(owner);
+      const tail = new Set<number>();
+      for (let page = rows.length - 1; page >= 0 && tail.size < OWNER_TAIL_CHUNKS; page -= 1) if (rows[page] !== undefined) tail.add(rows[page]!);
+      rows.forEach((chunk, page) => {
+        const held = this.located.get(pageKey(owner, page));
+        if (!sealed?.has(page) && !tail.has(chunk) && held?.chunk != null) sealing.push({ page: held.page, chunk: held.chunk });
+      });
+    }
+    return sealing;
   }
 
   /** Starts recording changes so that `undo` can restore the writer as it stands now. */
   mark(): WriterMark {
     this.marked = {
       pages: new Map(), dirty: new Set(this.dirty), touched: new Set(this.touched), plans: new Set(this.plans),
-      fresh: this.fresh.length, bodies: this.bodies.length, nextChunk: this.nextChunk,
+      fresh: this.fresh.length, bodies: this.bodies.length, nextChunk: this.nextChunk, moved: this.moved.length,
     };
     return this.marked;
   }
@@ -110,6 +194,7 @@ export class DocumentWriter {
     for (const [page, records] of mark.pages) page.records = records;
     for (const page of this.fresh.splice(mark.fresh)) this.located.delete(pageKey(page.owner, page.page));
     this.bodies.splice(mark.bodies);
+    this.moved.splice(mark.moved);
     this.nextChunk = mark.nextChunk;
     for (const [into, from] of [[this.dirty, mark.dirty], [this.touched, mark.touched], [this.plans, mark.plans]] as const) {
       (into as Set<unknown>).clear();
@@ -148,56 +233,44 @@ export class DocumentWriter {
     });
   }
 
-  /** Refills an owner's pages from `from` on by encoded size, in record order. */
-  private reflow(pages: Page[], from: number): void {
-    const records = pages.slice(from).flatMap((page) => page.records);
-    let at = from;
-    let page = pages[at]!;
-    this.keep(page);
-    page.records = [];
-    for (const record of records) {
-      if (page.records.length > 0 && pageBytes(page) + recordBytes(record) > DOCUMENT_PAGE_BYTES) {
-        at += 1;
-        page = pages[at] ?? this.addPage(page.owner, page.page + 1, []);
-        this.keep(page);
-        page.records = [];
-      }
-      page.records.push(record);
-      this.markDirty(page);
-    }
-    for (const rest of pages.slice(at + 1)) {
-      this.keep(rest);
-      rest.records = [];
-      this.markDirty(rest);
-    }
+  /** Puts a record on the owner's last page while it fits, else on a new page. */
+  private append(owner: string, pages: readonly Page[], record: DocRecord): void {
+    const last = pages.at(-1);
+    if (last !== undefined && pageBytes(last) + recordBytes(record) <= DOCUMENT_PAGE_BYTES) {
+      this.keep(last);
+      last.records.push(record);
+      this.markDirty(last);
+    } else this.addPage(owner, last === undefined ? 0 : last.page + 1, [record]);
   }
 
   /** Places a record on `owner`'s pages, or merges it into the version a page already holds under its id. */
   async upsert(record: DocRecord, owner: string): Promise<Upsert> {
     const searched = record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner];
     for (const candidate of searched) {
+      const named = this.sealedRecords.get(sealedKey(candidate, record.k, record.id));
+      const namedChunk = named === undefined ? undefined : this.rows.get(candidate)?.[named];
+      if (namedChunk !== undefined) await this.chunk(namedChunk);
       const pages = await this.pagesOf(candidate);
-      for (const [index, page] of pages.entries()) {
+      for (const page of pages) {
         const at = page.records.findIndex((held) => held.k === record.k && held.id === record.id);
         if (at < 0) continue;
         const held = page.records[at]!;
         const merged = mergeRecord(held, record);
         if (JSON.stringify(merged) === JSON.stringify(held)) return { outcome: 'unchanged' };
         this.keep(page);
-        page.records[at] = this.fit(merged);
+        const fitted = this.fit(merged);
+        page.records[at] = fitted;
         this.markDirty(page);
-        if (pageBytes(page) > DOCUMENT_PAGE_BYTES) this.reflow(pages, index);
-        return { outcome: 'merged', record: page.records[at] ?? merged, held };
+        if (pageBytes(page) > DOCUMENT_PAGE_BYTES) {
+          page.records.splice(at, 1);
+          if (this.sealedPages.get(candidate)?.has(page.page)) this.moved.push({ o: candidate, k: record.k, i: record.id });
+          this.append(candidate, pages, fitted);
+        }
+        return { outcome: 'merged', record: fitted, held };
       }
     }
     const fitted = this.fit(record);
-    const pages = await this.pagesOf(owner);
-    const last = pages.at(-1);
-    if (last !== undefined && pageBytes(last) + recordBytes(fitted) <= DOCUMENT_PAGE_BYTES) {
-      this.keep(last);
-      last.records.push(fitted);
-      this.markDirty(last);
-    } else this.addPage(owner, last === undefined ? 0 : last.page + 1, [fitted]);
+    this.append(owner, await this.pagesOf(owner), fitted);
     return { outcome: 'inserted', record: fitted };
   }
 

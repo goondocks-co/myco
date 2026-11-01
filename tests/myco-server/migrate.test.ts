@@ -130,6 +130,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0113_v113.sql': '389e1a4b4c92de6df94e7a4f66e7e2c14e769fcb9d9937721ab2ffd77baaed12',
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
+  '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -818,7 +819,7 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_tombstones',
+      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_init_queue', 'turn_cards',
       ...VIEW_SESSION_TABLES,
