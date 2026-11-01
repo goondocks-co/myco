@@ -12,9 +12,9 @@ import { learningSessionStatement, pendingCardsStatement, sessionProgressStateme
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
-import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord } from '../content/document.js';
+import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
-import { DocumentWriter, type DocumentLayout, type WriterMark } from '../content/document-writer.js';
+import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -24,6 +24,10 @@ export const SESSION_PATHS_LIMIT = 500;
 /** Statements and blob calls a pass keeps for its registration and commit, above the wake's reserve for later jobs. */
 export const PASS_CLOSING_STATEMENTS = 64;
 export const PASS_CLOSING_BLOB_CALLS = 12;
+
+/** Sealed record rows one statement carries, and one commit: a bound JSON parameter stays well under a store's value limit. */
+const SEALED_ROWS_PER_STATEMENT = 5_000;
+const SEALED_ROWS_PER_COMMIT = 40_000;
 
 /** Statements one chunk version's registration may spend, and its blob calls: a store or durability check, then its verifying read. */
 export const VERSION_STATEMENTS = 12;
@@ -152,6 +156,8 @@ function sessionRowStatements(db: RelationalStore, projectId: string, sessionId:
   return statements;
 }
 
+interface TurnAdded { tools: number; replies: number; children: number; plans: number }
+
 export class DocumentBatch {
   readonly writer: DocumentWriter;
   readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0 };
@@ -165,6 +171,10 @@ export class DocumentBatch {
   unresolved = 0;
   /** The kind and id of every record this batch added. */
   readonly inserted: (readonly [string, string])[] = [];
+  /** What this batch added to each turn, the summary of a turn whose pages are not all read. */
+  private readonly added = new Map<string, TurnAdded>();
+  /** The pages this batch's commit seals. */
+  private sealed: { page: Page; chunk: number }[] = [];
   private readonly passId = crypto.randomUUID();
   private readonly db: RelationalStore;
   /** Each prompt's turn key, null for a prompt no turn holds; absent when unknown. */
@@ -308,13 +318,14 @@ export class DocumentBatch {
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
+    added: Map<string, TurnAdded>;
     resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
     transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
-      newPrompts: this.newPrompts.length, turns: new Map(this.turns), resolved: new Set(this.resolved), paths: new Map(this.paths),
+      newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
       mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
     };
   }
@@ -326,7 +337,7 @@ export class DocumentBatch {
       unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
-    for (const [into, from] of [[this.turns, mark.turns], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
+    for (const [into, from] of [[this.turns, mark.turns], [this.added, mark.added], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
       [this.transcriptPlans, mark.transcriptPlans]] as const) {
       (into as Map<string, unknown>).clear();
       for (const [key, value] of from) (into as Map<string, unknown>).set(key, value);
@@ -335,13 +346,47 @@ export class DocumentBatch {
     for (const id of mark.resolved) this.resolved.add(id);
   }
 
+  /** Reads the sealed pages the catalog names for these records, for the owners that have any. */
+  private async locateSealed(records: readonly DocRecord[]): Promise<void> {
+    const wanted: SealedRecord[] = [];
+    for (const record of records) {
+      const owner = this.ownerOf(record);
+      for (const candidate of record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner]) {
+        if (!this.writer.hasSealed(candidate)) continue;
+        wanted.push({ o: candidate, k: record.k, i: record.id });
+        if (record.k === 'plan') wanted.push({ o: candidate, k: record.k, i: planKeyOf(record) });
+      }
+    }
+    if (wanted.length === 0) return;
+    const held = (await this.db.prepare(`SELECT r.owner,r.k,r.record_id,r.page FROM json_each(?4) j CROSS JOIN session_sealed_records r
+        ON r.project_id=?1 AND r.session_id=?2 AND r.generation=?3 AND r.owner=json_extract(j.value,'$.o') AND r.k=json_extract(j.value,'$.k')
+          AND r.record_id=json_extract(j.value,'$.i')`).bind(this.projectId, this.sessionId, this.doc.generation, JSON.stringify(wanted))
+      .all<{ owner: string; k: string; record_id: string; page: number }>()).results;
+    this.calls += 1;
+    for (const row of held) this.writer.noteSealed(row.owner, row.k, row.record_id, row.page);
+  }
+
+  /** Whether this owner already holds an appearance of this plan, on a page read or a sealed page the catalog names. */
+  private async planHeld(owner: string, key: string): Promise<boolean> {
+    return this.writer.sealedHolds(owner, 'plan', key)
+      || (await this.writer.pagesOf(owner)).some((page) => page.records.some((record) => record.k === 'plan' && planKeyOf(record) === key));
+  }
+
+  private addToTurn(owner: string, field: keyof TurnAdded): void {
+    const held = this.added.get(owner) ?? { tools: 0, replies: 0, children: 0, plans: 0 };
+    held[field] += 1;
+    this.added.set(owner, held);
+  }
+
   private async placeAll(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
     await this.resolve(records);
     this.assignPrompts(records);
+    await this.locateSealed(records);
     const reads = this.writer.reads;
     const out: (DocRecord | null)[] = [];
     for (const record of records) {
       const owner = this.ownerOf(record);
+      const newPlan = record.k === 'plan' && !(await this.planHeld(owner, planKeyOf(record)));
       const placed = await this.writer.upsert(record, owner);
       out.push(placed.outcome === 'unchanged' ? null : placed.record);
       if (placed.outcome === 'unchanged') continue;
@@ -360,6 +405,12 @@ export class DocumentBatch {
         continue;
       }
       this.inserted.push([record.k, record.k === 'plan' ? planKeyOf(record) : record.id]);
+      if (owner !== SESSION_OWNER) {
+        if (record.k === 'tool') this.addToTurn(owner, 'tools');
+        else if (record.k === 'reply') this.addToTurn(owner, 'replies');
+        else if (record.k === 'prompt' && record.id !== owner) this.addToTurn(owner, 'children');
+        else if (newPlan) this.addToTurn(owner, 'plans');
+      }
       if (owner === SESSION_OWNER) {
         this.unplaced += 1;
         if (record.k === 'prompt' ? record.parent_prompt_id != null : record.prompt_id !== null) this.unresolved += 1;
@@ -389,24 +440,34 @@ export class DocumentBatch {
         }
       }
     }
+    for (const owner of this.writer.touched) if (owner !== SESSION_OWNER) await this.writer.readTurnHead(owner);
     this.calls += this.writer.reads - reads;
     return out;
   }
 
-  /** The summary and card input hash of every turn this batch changed, read from its pages. */
+  /**
+   * The summary and card input hash of every turn this batch changed. A turn with every page read is summarized from
+   * its records. A wider turn's hash and preview come from its leading pages and its last, and its counts grow by what
+   * this batch added.
+   */
   async settledTurns(): Promise<Record<string, unknown>[]> {
     const settled: Record<string, unknown>[] = [];
     for (const owner of this.writer.touched) {
       if (owner === SESSION_OWNER) continue;
-      const records = (await this.writer.pagesOf(owner)).flatMap((page) => page.records);
+      const { pages, complete } = await this.writer.turnPages(owner);
+      const records = pages.flatMap((page) => page.records);
       const input = turnInput(owner, records);
-      if (input === null) continue;
+      const added = this.added.get(owner) ?? { tools: 0, replies: 0, children: 0, plans: 0 };
+      if (input === null) {
+        if (!complete) settled.push({ id: owner, added });
+        continue;
+      }
       const trimmed = trimTurn(input);
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
         id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
-        tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length,
+        ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
         input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
       });
     }
@@ -436,7 +497,50 @@ export class DocumentBatch {
 
   /** The chunk keys a commit expects to replace, for its guard: the previous key, or null for a new chunk. */
   expectedChunks(registered: readonly ChunkVersion[]): string {
-    return JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.previous?.blob_key ?? null })));
+    return JSON.stringify([
+      ...registered.map((row) => ({ n: row.chunkNo, k: row.previous?.blob_key ?? null })),
+      ...[...new Set(this.sealed.map((held) => held.chunk))].map((n) => ({ n, k: this.writer.directory.chunks.get(n)?.blob_key ?? null })),
+    ]);
+  }
+
+  /** The statements that record the record ids of the pages this commit seals, and drop those of records that left a sealed page. */
+  private sealStatements(): PreparedStatement[] {
+    const db = this.db;
+    const p = this.projectId, s = this.sessionId, g = this.doc.generation;
+    const statements: PreparedStatement[] = [];
+    const rows = this.sealed.flatMap(({ page }) => page.records.flatMap((record) => [
+      { o: page.owner, k: record.k, i: record.id, p: page.page },
+      ...(record.k === 'plan' && planKeyOf(record) !== record.id ? [{ o: page.owner, k: record.k, i: planKeyOf(record), p: page.page }] : []),
+    ]));
+    for (let at = 0; at < rows.length; at += SEALED_ROWS_PER_STATEMENT) {
+      statements.push(db.prepare(`INSERT INTO session_sealed_records (project_id,session_id,generation,owner,k,record_id,page)
+        SELECT ?,?,?,json_extract(value,'$.o'),json_extract(value,'$.k'),json_extract(value,'$.i'),json_extract(value,'$.p') FROM json_each(?) WHERE true
+        ON CONFLICT (project_id,session_id,generation,owner,k,record_id) DO UPDATE SET page=excluded.page`)
+        .bind(p, s, g, JSON.stringify(rows.slice(at, at + SEALED_ROWS_PER_STATEMENT))));
+    }
+    if (this.sealed.length > 0) {
+      statements.push(db.prepare(`UPDATE session_pages SET sealed=1 WHERE project_id=? AND session_id=? AND generation=?
+        AND (owner,page) IN (SELECT json_extract(value,'$.o'),json_extract(value,'$.p') FROM json_each(?))`)
+        .bind(p, s, g, JSON.stringify(this.sealed.map(({ page }) => ({ o: page.owner, p: page.page })))));
+    }
+    if (this.writer.moved.length > 0) {
+      statements.push(db.prepare(`DELETE FROM session_sealed_records WHERE project_id=? AND session_id=? AND generation=?
+        AND (owner,k,record_id) IN (SELECT json_extract(value,'$.o'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`)
+        .bind(p, s, g, JSON.stringify(this.writer.moved)));
+    }
+    return statements;
+  }
+
+  /** The pages this commit seals, as many as its rows allow, oldest first. */
+  private pagesToSeal(): { page: Page; chunk: number }[] {
+    let rows = 0;
+    const taken: { page: Page; chunk: number }[] = [];
+    for (const held of this.writer.sealing()) {
+      rows += held.page.records.length * 2;
+      if (rows > SEALED_ROWS_PER_COMMIT) break;
+      taken.push(held);
+    }
+    return taken;
   }
 
   /** The directory, prompt, turn, path and Myco-call statements of a commit. */
@@ -494,9 +598,10 @@ export class DocumentBatch {
     }
     if (settled.length > 0) statements.push(...this.cardStatements(settled, chunkState === 'building', now));
     if (settled.length > 0) {
-      statements.push(db.prepare(`UPDATE session_prompts SET preview=json_extract(j.value,'$.preview'),text_chars=json_extract(j.value,'$.text_chars'),
-          tools=json_extract(j.value,'$.tools'),replies=json_extract(j.value,'$.replies'),children=json_extract(j.value,'$.children'),
-          plans=json_extract(j.value,'$.plans'),input_hash=json_extract(j.value,'$.input_hash'),input_chars=json_extract(j.value,'$.input_chars')
+      const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field}+COALESCE(json_extract(j.value,'$.added.${field}'),0))`;
+      const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
+      statements.push(db.prepare(`UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
+          ${count('plans')},${kept('input_hash')},${kept('input_chars')}
         FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
         .bind(JSON.stringify(settled), p, s, g));
     }
@@ -518,19 +623,20 @@ export class DocumentBatch {
           id: record.id, tool: record.myco_tool, op: record.myco_op ?? null, ok: record.success, at: record.created_at, harness: record.harness,
         })))));
     }
+    statements.push(...this.sealStatements());
     return statements;
   }
 
   /**
    * The card state of the turns this batch settled, run before their new input hashes are stored. A turn whose input
    * hash changed, or that has no card, is pending and waits to be settled: at once when it is closed, and once quiet
-   * when it is the open turn. A new open turn brings the pending turns before it forward. A building generation adds
-   * only the cards missing, so the cards of a converted session carry over by key.
+   * when it is the open turn. A new open turn brings the pending turns before it forward. A turn whose prompt is on none
+   * of the pages read has no hash, and its card stands. A building generation adds only the cards missing, so the cards of a converted session carry over by key.
    */
   private cardStatements(settled: readonly Record<string, unknown>[], building: boolean, now: number): PreparedStatement[] {
     const db = this.db;
     const p = this.projectId, s = this.sessionId;
-    const turns = JSON.stringify(settled.map((turn) => ({
+    const turns = JSON.stringify(settled.filter((turn) => turn.input_hash !== undefined).map((turn) => ({
       id: turn.id, hash: turn.input_hash, at: turn.at, settle: turn.id === this.openTurn ? Number(turn.last) + TURN_QUIET_MS : now,
     })));
     return [
@@ -566,6 +672,7 @@ export class DocumentBatch {
    */
   async commit(write: boolean, chunkState: 'building' | 'live', now: number, guard: (version: ChunkVersion) => ContentPublicationGuard,
     statements: (versions: readonly ChunkVersion[]) => Commit | Promise<Commit>): Promise<number> {
+    this.sealed = this.pagesToSeal();
     const layout = write ? this.writer.layout() : null;
     const settled = write ? await this.settledTurns() : [];
     const encoded = layout === null ? [] : await this.encode(layout);
@@ -607,13 +714,14 @@ export function publishedPromptScheme(pinned: unknown): PromptIdScheme | null {
 export function publicationStatement(db: RelationalStore, projectId: string, sessionId: string, generation: number, now: number,
   rows: readonly Record<string, unknown>[]): PreparedStatement {
   return db.prepare(`INSERT INTO transcript_publication (project_id,transcript_id,generation,session_id,published_offset,segment_lines,
-      open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,parser_version,state,failure,awaited_size,updated_at)
+      open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,parser_version,state,failure,awaited_size,updated_at,
+      placed_records,placed_digest)
     SELECT ?,json_extract(value,'$.t'),?,?,json_extract(value,'$.o'),json_extract(value,'$.l'),json_extract(value,'$.p'),json_extract(value,'$.u'),
       json_extract(value,'$.r'),json_extract(value,'$.a'),json_extract(value,'$.ps'),json_extract(value,'$.rs'),?,json_extract(value,'$.s'),
-      json_extract(value,'$.f'),json_extract(value,'$.w'),? FROM json_each(?) WHERE true
+      json_extract(value,'$.f'),json_extract(value,'$.w'),?,json_extract(value,'$.n'),json_extract(value,'$.d') FROM json_each(?) WHERE true
     ON CONFLICT (project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,segment_lines=excluded.segment_lines,
       open_prompt_id=excluded.open_prompt_id,unfinished=excluded.unfinished,reply_unfinished=excluded.reply_unfinished,
       reply_latest_at=excluded.reply_latest_at,parser_version=excluded.parser_version,state=excluded.state,failure=excluded.failure,
-      awaited_size=excluded.awaited_size,updated_at=excluded.updated_at`)
+      awaited_size=excluded.awaited_size,updated_at=excluded.updated_at,placed_records=excluded.placed_records,placed_digest=excluded.placed_digest`)
     .bind(projectId, generation, sessionId, PARSER_VERSION, now, JSON.stringify(rows));
 }

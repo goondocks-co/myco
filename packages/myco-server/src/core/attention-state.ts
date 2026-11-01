@@ -64,6 +64,22 @@ export interface DocumentPublishFailureFinding {
   failure: string;
 }
 
+export interface DocumentPublicationStoppedFinding {
+  kind: 'document_publication_stopped';
+  tone: 'warn';
+  transcripts: number;
+  lastStoppedAt: number;
+  failure: string;
+}
+
+/** Transcripts whose document publication stands stopped. A stop that can clear leaves once its session's next pass resumes it. */
+export async function documentPublicationStoppedFinding(db: RelationalStore): Promise<DocumentPublicationStoppedFinding | null> {
+  const row = await db.prepare(`SELECT COUNT(*) AS n, MAX(updated_at) AS at, MIN(failure) AS failure FROM transcript_publication WHERE state = 'failed'`)
+    .first<{ n: number; at: number | null; failure: string | null }>();
+  if (row === null || row.n === 0) return null;
+  return { kind: 'document_publication_stopped', tone: 'warn', transcripts: row.n, lastStoppedAt: Number(row.at), failure: row.failure ?? 'unknown' };
+}
+
 /** One bounded record of failed document passes; a later successful pass never clears it. */
 export async function recordDocumentPublishFailure(db: RelationalStore, sample: DocumentPublishFailureSample, now: number): Promise<void> {
   if (sample.projectId.length > 64 || sample.sessionId.length > MAX_ID_CHARS || !/^[a-z][a-z0-9_]{0,63}$/.test(sample.failure)) {

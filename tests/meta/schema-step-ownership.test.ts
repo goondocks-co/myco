@@ -14,6 +14,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  {step:116,object:'idx_transcript_publication_failed',table:'transcript_publication',reason:'Status counts the publications stopped for good without reading the others.'},
   {step:113,object:'idx_session_prompts_unlocated',table:'session_prompts',reason:'The locator backfill finds the prompts it has yet to locate without reading the located ones.'},
   {step:114,object:'idx_session_prompts_prompt',table:'session_prompts',reason:'A prompt cited by id alone is found in its Project without knowing its session.'},
   {step:114,object:'idx_session_prompts_created',table:'session_prompts',reason:'Prompt measures read a window of prompt times, not every prompt.'},
@@ -317,6 +318,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: 'Activation requires a valid pause boundary and drained thin extraction dispatches.' },
   { step: 104, sql: 'DROP TABLE _v104_guard_thin_learning',
     reason: 'The temporary admission guard is released after validation.' },
+  { step: 116, sql: `UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
+    (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'))`, reason: 'A quiet session whose publication stands stopped on a fault that can clear is due again, so the publisher reads that stop as a fault to retry.' },
+  { step: 116, sql: 'ALTER TABLE transcript_publication ADD COLUMN placed_records INTEGER', reason: 'A line too wide for one commit keeps the count of its records already placed, so every pass advances.' },
+  { step: 116, sql: 'ALTER TABLE transcript_publication ADD COLUMN placed_digest TEXT', reason: 'A resumed line skips its placed records only while the derivation still holds what was placed.' },
+  { step: 116, sql: 'ALTER TABLE session_pages ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0', reason: 'A page whose record ids the catalog holds leaves the search for a record, so placing into a wide owner stays bounded.' },
   { step: 113, sql: 'ALTER TABLE session_prompts ADD COLUMN page INTEGER', reason: 'A prompt read by name opens the page of its owner that holds its record.' },
   { step: 113, sql: 'ALTER TABLE session_documents ADD COLUMN locate_after INTEGER', reason: 'The locator backfill resumes after the last page chunk it read.' },
   { step: 114, sql: 'ALTER TABLE session_documents ADD COLUMN restore_hold TEXT', reason: 'A restore holds the sessions it converts from conversion, and from other restores, under its own identity.' },

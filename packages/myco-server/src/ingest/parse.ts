@@ -207,7 +207,11 @@ export interface ParsePersistence {
   stop(failure:ParseFailure,now:number):Promise<void>;
   awaitBytes(now:number):Promise<void>;
   header(metadata:Record<string,unknown>):Promise<void>;
-  publish(window:{events:DerivedEvent[];state:ParserState;metadata:Record<string,unknown>|undefined;to:number;segmentLines:number;openPromptId:string|null;now:number;fidelity:string}):Promise<number>;
+  /**
+   * Publishes a window and returns the calls it spent, or null when it cannot take the whole window: the pass then
+   * offers a shorter one, and a window of fewer than two `lines` leaves the cursor where it stands.
+   */
+  publish(window:{events:DerivedEvent[];state:ParserState;metadata:Record<string,unknown>|undefined;to:number;lines:number;segmentLines:number;openPromptId:string|null;now:number;fidelity:string}):Promise<number|null>;
 }
 
 /** The transcript a pass works on. */
@@ -847,9 +851,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // decide (`prompt_key_owners`), and a window that lost a claim to another transcript of the session is read again
   // under the owner that won, so its record is derived as the reuse it is.
   if(target.persistence)lines=lines.map((line,i)=>({...line,sourceEnd:lines![i+1]?.offset??windowEnd}));
-  const keys = await parser.claimKeys?.(lines, scheme, target.sessionId) ?? new Map<string, string>();
+  let keys: ReadonlyMap<string, string> = new Map<string, string>();
   const readOwners = () => target.persistence ? target.persistence.owners(keys) : storedOwners(env.db, target, keys, () => { calls += 1; });
-  let owners = await readOwners();
+  let owners: PromptOwners | undefined;
   const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
     const state: ParserState = structuredClone(initialState);
     const input: ParserInput = { ...(target.persistence?{view:true,identities:new Map<string,readonly string[]>()}:{}), lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
@@ -866,33 +870,50 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       return null;
     }
   };
-  let derivation = await admittedDerive();
-  if (derivation === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' };
-  for (let round = 0; round < CLAIM_ROUNDS; round += 1) {
-    const claims = keyClaims(derivation.parsed, keys, owners);
-    if (claims.length === 0) break;
-    // A claim and the reread after it are admitted only with the room the pass needs to publish and close behind them.
-    if (pages(claims.length) + pages(keys.size) + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM > statementRoom())
-      return { derived: 0, calls, nextOffset: null, failure: null };
-    if(target.persistence)await target.persistence.claim(claims);
-    else await claimKeys(env.db, target, claims, now);
-    calls += 1;
+  /** The current lines' derivation with their key claims admitted, or the report that ends the pass. */
+  const claimedDerivation = async () => {
+    keys = await parser.claimKeys?.(lines!, scheme, target.sessionId) ?? new Map<string, string>();
     owners = await readOwners();
-    if (claims.every((claim) => owners?.get(claim.key)?.record === claim.record)) break;
-    derivation = await admittedDerive();
-    if (derivation === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' };
-  }
-  const { state, input, parsed: parsedEvents } = derivation;
-  if(target.persistence){
+    let claimed = await admittedDerive();
+    if (claimed === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' } satisfies PassReport;
+    for (let round = 0; round < CLAIM_ROUNDS; round += 1) {
+      const claims = keyClaims(claimed.parsed, keys, owners);
+      if (claims.length === 0) break;
+      // A claim and the reread after it are admitted only with the room the pass needs to publish and close behind them.
+      if (pages(claims.length) + pages(keys.size) + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM > statementRoom())
+        return { derived: 0, calls, nextOffset: null, failure: null } satisfies PassReport;
+      if(target.persistence)await target.persistence.claim(claims);
+      else await claimKeys(env.db, target, claims, now);
+      calls += 1;
+      owners = await readOwners();
+      if (claims.every((claim) => owners?.get(claim.key)?.record === claim.record)) break;
+      claimed = await admittedDerive();
+      if (claimed === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' } satisfies PassReport;
+    }
+    return claimed;
+  };
+  let derivation = await claimedDerivation();
+  if ('derived' in derivation) return derivation;
+  // A window the writer cannot take is derived again over its first half of lines, from the state it began with: any
+  // line boundary is a place the next pass can resume from, and the lines are already held.
+  while(target.persistence){
     for(const event of derivation.parsed){
       const id=event.payload[event.kind==='tool.use'||event.kind==='tool.failure'?'toolCallId':event.kind==='plan'?'planKey':event.kind+'Id'];
       event.identity=derivation.input.identities?.get(String(id));
       event.sourceEnd??=lines.find(line=>line.offset>event.offset)?.offset??windowEnd;
     }
     const toPrompt=derivation.parsed.reduce((held,event)=>event.kind==='prompt'&&event.opensTurn!==false?turnOf(event):held,target.openPromptId);
-    const used=await target.persistence.publish({events:derivation.parsed,state,metadata:transcriptMeta,to:windowEnd,segmentLines:segmentLinesAt(windowEnd,held),openPromptId:toPrompt,now,fidelity:parser.fidelity});
-    return {derived:derivation.parsed.length,calls:calls+used,nextOffset:windowEnd,failure:null};
+    const used=await target.persistence.publish({events:derivation.parsed,state:derivation.state,metadata:transcriptMeta,to:windowEnd,lines:lines.length,segmentLines:segmentLinesAt(windowEnd,held),openPromptId:toPrompt,now,fidelity:parser.fidelity});
+    if(used!==null)return {derived:derivation.parsed.length,calls:calls+used,nextOffset:windowEnd,failure:null};
+    if(lines.length<2)return {derived:0,calls,nextOffset:null,failure:null};
+    const kept=lines.length>>1;
+    windowEnd=lines[kept]!.offset;
+    lines=lines.slice(0,kept);
+    const shorter=await claimedDerivation();
+    if('derived' in shorter)return shorter;
+    derivation=shorter;
   }
+  const { state, input, parsed: parsedEvents } = derivation;
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
   const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
   const terminalProofs: { eventId: string; hash: string; evidence: Fragment }[] = [];

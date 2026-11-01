@@ -91,7 +91,7 @@ export async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, 
 }
 
 /** The catalog tables a conversion fills before its flip. */
-const BUILT = ['session_chunks', 'session_pages', 'session_prompts', 'session_paths', 'myco_tool_calls', 'transcript_publication'] as const;
+const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'myco_tool_calls', 'transcript_publication'] as const;
 
 /**
  * Restarts the conversion of every session the plan converts that `holder` may hold, in one batch that first refuses

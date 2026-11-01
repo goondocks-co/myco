@@ -14,6 +14,17 @@
  * that adopts it removes that row, and its proof is registered only while that row stands. A version whose pass never
  * committed is therefore released like a superseded one: its row, past its grace or when its own pass gives up, takes
  * its proofs with it, unless a live `session_chunks` row names its source.
+ *
+ * A transcript stops for good only on a failure its own bytes repeat. A segment whose object or receipt cannot be read
+ * is a fault that can clear: the transcript keeps its frontier, the session's other input publishes, and the session
+ * comes due again after a backoff. A cursor no segment covers waits the same way: the frontier never passes unread bytes.
+ *
+ * A window that cannot be placed and committed within the pass's budget is offered again shorter, down to one line, and
+ * a line that still does not fit commits the leading records that do. The publication then keeps its offset and parser
+ * state and records how many of the records derived from there are placed, with a digest of what they hold. The next pass
+ * derives from the same state and places only the rest, so every pass over unchanged input advances. A derivation whose
+ * leading records hold anything else, such as a real result where a close placed a failure, places them all again, and
+ * each merges into the record it already is.
  */
 import type { ContentStore, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { contentAssertion, readVerifiedContentText } from '../core/registered-content.js';
@@ -21,6 +32,7 @@ import { blobObjectKey } from '../core/blob-objects.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { eventContent } from '../core/event-content.js';
 import { emit } from '../telemetry.js';
+import { sha256Hex } from '../hash.js';
 import { BACKLOG_CHAINED_WAKE_MS } from '../core/tick.js';
 import { type DocRecord } from '../content/document.js';
 import { documentRecord } from '../content/document-records.js';
@@ -68,6 +80,8 @@ const PUBLISH_FAILURES: Readonly<Record<string, string>> = {
   view_source_receipt_absent: 'receipt_absent',
   view_parser_absent: 'parser_absent',
 };
+/** Stops that can clear on the same bytes. A publication holding one, however it came to, is retried. */
+const CLEARABLE_FAILURES: ReadonlySet<string | null> = new Set(['blob_absent', 'receipt_absent']);
 const failureOf = (error: unknown): string | undefined => {
   if (!(error instanceof Error)) return undefined;
   if (error.message.startsWith('view_record_refused:')) return 'event_refused';
@@ -83,7 +97,8 @@ interface TranscriptRow {
   prompt_identity_scheme: string | null; imported_at: number | null; last_received_at: number;
   published_offset: number | null; segment_lines: number | null; open_prompt_id: string | null; unfinished: number | null;
   reply_unfinished: number | null; reply_latest_at: number | null; prompt_scheme: string | null; record_scheme: string | null;
-  state: string | null; failure: string | null; awaited_size: number | null;
+  state: string | null; failure: string | null; awaited_size: number | null; updated_at: number | null;
+  placed_records: number | null; placed_digest: string | null;
 }
 interface QueuedRow {
   event_id: string; rank: number; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
@@ -104,19 +119,24 @@ interface Publication {
   state: 'active' | 'awaiting' | 'failed';
   failure: string | null;
   awaitedSize: number | null;
+  /** The leading records derived from `offset` already placed, and the digest of what they hold. */
+  placedRecords: number | null;
+  placedDigest: string | null;
   changed: boolean;
+  /** A fault this pass met that can clear: the transcript waits at its frontier. */
+  fault?: string;
 }
 
 /**
  * A session's publication input and progress as a pass finds it. Every write that changes them moves one part on: an
  * enqueue raises the newest queued event's row (the events table keeps the rows of consumed events, so a new one sorts
  * above every earlier one), a consume lowers the queued count, a transcript write raises its transcript count or bytes,
- * and a commit raises the generation's published offsets.
+ * and a commit raises the generation's published offsets or the records placed of a line.
  */
 const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0) FROM publish_queue q
     JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id)
   ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)
-  ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0) FROM transcript_publication p
+  ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0)||':'||COALESCE(SUM(p.placed_records),0) FROM transcript_publication p
     WHERE p.project_id=${table}.project_id AND p.session_id=${table}.session_id AND p.generation IS ${table}.generation)`;
 
 interface DueSession { project_id: string; session_id: string; revision: string }
@@ -248,6 +268,9 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
   return payload;
 }
 
+/** What a run of records holds, in order. */
+const recordsDigest = (records: readonly DocRecord[]): Promise<string> => sha256Hex(JSON.stringify(records));
+
 /** One pass over one session: its transcripts from their frontiers, then its queued events, committed together. */
 class SessionPublication {
   private readonly db: RelationalStore;
@@ -276,8 +299,8 @@ class SessionPublication {
   }
 
   /**
-   * Publishes what the pass can pay for and commits it. A pass that leads its wake and can place nothing fails as
-   * `document_pass_unaffordable`: every later pass on the same input would stop at the same place.
+   * Publishes what the pass can pay for and commits it. A pass that leads its wake and cannot place even one record
+   * fails as `document_pass_unaffordable`: every later pass on the same input would stop at the same place.
    */
   async run(leads = false): Promise<{ records: number; more: boolean }> {
     const db = this.db;
@@ -290,7 +313,7 @@ class SessionPublication {
       ...directoryStatements(db, this.projectId, this.sessionId),
       db.prepare(`SELECT t.transcript_id,t.agent,t.role,t.size,t.machine_id,t.token_id,t.prompt_identity_scheme,t.imported_at,t.last_received_at,
           p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
-          p.state,p.failure,p.awaited_size
+          p.state,p.failure,p.awaited_size,p.updated_at,p.placed_records,p.placed_digest
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
         .bind(this.projectId, this.sessionId),
@@ -307,16 +330,20 @@ class SessionPublication {
     this.batch.calls += 1;
     await this.batch.open();
     this.batch.admitted = true;
-    this.publications = (transcripts!.results as TranscriptRow[]).map((t) => ({
-      transcript: t, held: t.published_offset, offset: t.published_offset ?? 0, segmentLines: t.segment_lines ?? 0,
-      openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
-      replyLatestAt: t.reply_latest_at, promptScheme: t.published_offset === null ? publishedPromptScheme(t.prompt_identity_scheme) : t.prompt_scheme,
-      recordScheme: t.record_scheme ?? PUBLISHED_RECORD_SCHEME, state: (t.state ?? 'active') as Publication['state'],
-      failure: t.failure, awaitedSize: t.awaited_size, changed: t.published_offset === null,
-    }));
+    this.publications = (transcripts!.results as TranscriptRow[]).map((t) => {
+      const cleared = t.state === 'failed' && CLEARABLE_FAILURES.has(t.failure);
+      return {
+        transcript: t, held: t.published_offset, offset: t.published_offset ?? 0, segmentLines: t.segment_lines ?? 0,
+        openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
+        replyLatestAt: t.reply_latest_at, promptScheme: t.published_offset === null ? publishedPromptScheme(t.prompt_identity_scheme) : t.prompt_scheme,
+        recordScheme: t.record_scheme ?? PUBLISHED_RECORD_SCHEME, state: (cleared ? 'active' : t.state ?? 'active') as Publication['state'],
+        failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
+        changed: cleared || t.published_offset === null,
+      };
+    });
     for (const publication of this.publications) await this.publishTranscript(publication);
     await this.publishQueued(queued!.results as QueuedRow[]);
-    const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0;
+    const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0 || this.batch.writer.sealing().length > 0;
     if (leads && this.full && !placed) throw new Error('document_pass_unaffordable');
     const written = await this.batch.commit(this.batch.writer.changed || this.continuationChanged, 'live', this.now, (version) => ({
       sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)
@@ -324,6 +351,8 @@ class SessionPublication {
       params: [this.projectId, this.sessionId, doc.generation, this.projectId, this.sessionId, version.key, version.sourceId],
     }), (versions) => this.frontier(versions));
     if (written > 0) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.batch.records, chunks: written });
+    const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault;
+    if (fault !== undefined) await recordDocumentPublishFailure(db, { projectId: this.projectId, sessionId: this.sessionId, failure: fault }, this.now);
     return { records: this.batch.records, more: this.more };
   }
 
@@ -351,7 +380,10 @@ class SessionPublication {
       checkpoint: async () => { throw new Error('document_continuation_chunked'); },
       owners: async () => promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]),
       claim: async (incoming) => { for (const claim of incoming) claims.set(claim.key, { thread: claim.thread, record: claim.record }); },
-      stop: async (failure) => { Object.assign(publication, { state: 'failed', failure, changed: true }); },
+      stop: async (failure) => {
+        if (CLEARABLE_FAILURES.has(failure)) this.recordFault(publication, failure);
+        else Object.assign(publication, { state: 'failed', failure, changed: true });
+      },
       awaitBytes: async () => { Object.assign(publication, { state: 'awaiting', awaitedSize: t.size, changed: true }); },
       header: async (metadata) => {
         this.batch.writer.states.set(t.transcript_id, metadata);
@@ -368,9 +400,29 @@ class SessionPublication {
             outcome: { ordinal: 0, offset: event.outcomeOffset ?? event.offset, origin: event.outcomeOrigin ?? 'reported' },
           });
         }).filter((record): record is DocRecord => record !== null);
-        await this.batch.place(records, t.agent);
-        for (const [key, owner] of claims) if (!this.batch.writer.owners.has(key)) this.batch.writer.owners.set(key, owner);
-        claims.clear();
+        const placed = await this.placedOf(publication, records);
+        const rest = records.slice(placed);
+        const adoptClaims = () => {
+          for (const [key, owner] of claims) if (!this.batch.writer.owners.has(key)) this.batch.writer.owners.set(key, owner);
+          claims.clear();
+        };
+        if (!await this.placeable(rest, t.agent)) {
+          this.full = this.more = true;
+          if (window.lines < 2) {
+            const taken = await this.placeLeading(rest, t.agent);
+            if (taken > 0) {
+              adoptClaims();
+              Object.assign(publication, {
+                placedRecords: placed + taken, placedDigest: await recordsDigest(records.slice(0, placed + taken)),
+                state: 'active', failure: null, awaitedSize: null, changed: true,
+              });
+              this.continuationChanged = true;
+            }
+          }
+          claims.clear();
+          return null;
+        }
+        adoptClaims();
         const state: ParserState = window.state;
         delete state.findings;
         delete state.unattributed;
@@ -383,7 +435,8 @@ class SessionPublication {
         });
         Object.assign(publication, {
           offset: window.to, segmentLines: window.segmentLines, openPromptId: window.openPromptId, unfinished,
-          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', failure: null, awaitedSize: null, changed: true,
+          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', failure: null, awaitedSize: null,
+          placedRecords: null, placedDigest: null, changed: true,
         });
         this.continuationChanged = true;
         return 0;
@@ -406,17 +459,53 @@ class SessionPublication {
         if (report.nextOffset === null || publication.state !== 'active') return;
         if (publication.offset === from && (from < t.size || publication.unfinished === wasUnfinished)) return;
       } catch (error) {
-        if (error instanceof DocumentPassFull) {
-          this.full = this.more = true;
-          return;
-        }
         const failure = failureOf(error);
         if (failure === undefined) throw error;
+        if (CLEARABLE_FAILURES.has(failure)) {
+          this.recordFault(publication, failure);
+          return;
+        }
         Object.assign(publication, { state: 'failed', failure, changed: true });
         emit({ kind: 'document_transcript_failed', projectId: this.projectId, transcriptId: t.transcript_id, failure });
         return;
       }
     }
+  }
+
+  /** How many of a derivation's leading records are placed: the publication's count while they hold what its digest names. */
+  private async placedOf(publication: Publication, records: readonly DocRecord[]): Promise<number> {
+    const placed = publication.placedRecords;
+    if (placed === null || placed > records.length) return 0;
+    return await recordsDigest(records.slice(0, placed)) === publication.placedDigest ? placed : 0;
+  }
+
+  /** Places these records, or leaves the batch unchanged and answers false when its commit could not be paid. */
+  private async placeable(records: readonly DocRecord[], harness: string | null): Promise<boolean> {
+    try {
+      await this.batch.place(records, harness);
+      return true;
+    } catch (error) {
+      if (error instanceof DocumentPassFull) return false;
+      throw error;
+    }
+  }
+
+  /** Places a leading run of these records, in steps that halve while the commit stays payable, and returns its length. */
+  private async placeLeading(records: readonly DocRecord[], harness: string | null): Promise<number> {
+    let taken = 0;
+    for (let step = records.length >> 1; step > 0; step >>= 1) if (await this.placeable(records.slice(taken, taken + step), harness)) taken += step;
+    return taken;
+  }
+
+  private recordFault(publication: Publication, failure: string): void {
+    publication.fault = failure;
+    emit({ kind: 'document_transcript_fault', projectId: this.projectId, transcriptId: publication.transcript.transcript_id, failure });
+  }
+
+  /** When a transcript waiting out a fault is tried again: the time from its last advance, within the session backoff. */
+  private faultDue(publication: Publication): number {
+    const since = this.now - (publication.transcript.updated_at ?? this.now);
+    return this.now + Math.min(Math.max(since, PUBLISH_BACKOFF_MIN_MS), PUBLISH_BACKOFF_MAX_MS);
   }
 
   /**
@@ -473,6 +562,7 @@ class SessionPublication {
     if (publications.length > 0) after.push(publicationStatement(db, p, s, g, this.now, publications.map((pub) => ({
       t: pub.transcript.transcript_id, o: pub.offset, l: pub.segmentLines, p: pub.openPromptId, u: pub.unfinished, r: pub.replyUnfinished,
       a: pub.replyLatestAt, ps: pub.promptScheme, rs: pub.recordScheme, s: pub.state, f: pub.failure, w: pub.awaitedSize,
+      n: pub.placedRecords, d: pub.placedDigest,
     }))));
     if (this.consumed.length > 0) {
       after.push(db.prepare(`DELETE FROM publish_queue WHERE (project_id,session_id,rank,created_at,event_id) IN
@@ -480,10 +570,13 @@ class SessionPublication {
         .bind(p, s, consumed));
     }
     const sizes = Object.fromEntries(this.publications.map((pub) => [pub.transcript.transcript_id, pub.transcript.size]));
-    const behind = this.publications.some((pub) => pub.state === 'active' && pub.offset < pub.transcript.size);
-    const terminalDue = this.publications.filter((pub) => pub.state !== 'failed' && pub.unfinished === 1)
-      .map((pub) => pub.transcript.last_received_at + TRANSCRIPT_IDLE_MS);
-    const dueAt = behind || this.more ? 0 : terminalDue.length === 0 ? null : Math.min(...terminalDue);
+    const behind = this.publications.some((pub) => pub.state === 'active' && pub.fault === undefined && pub.offset < pub.transcript.size);
+    const laterDue = [
+      ...this.publications.filter((pub) => pub.state !== 'failed' && pub.fault === undefined && pub.unfinished === 1)
+        .map((pub) => pub.transcript.last_received_at + TRANSCRIPT_IDLE_MS),
+      ...this.publications.filter((pub) => pub.fault !== undefined).map((pub) => this.faultDue(pub)),
+    ];
+    const dueAt = behind || this.more ? 0 : laterDue.length === 0 ? null : Math.min(...laterDue);
     const set = this.batch.documentSet(this.now);
     after.push(db.prepare(`UPDATE session_documents SET ${set.sql},
         due_at=CASE WHEN EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id=? AND t.session_id=?
