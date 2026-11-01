@@ -126,9 +126,6 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
     step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
   })),
-  ...V114_STATEMENTS.filter((sql) => sql.startsWith('INSERT INTO _v114_guard_documents') || sql.startsWith('DROP TABLE _v114_guard_documents')).map((sql) => ({
-    step: 114, sql, reason: 'Readers move to documents only once every session is converted and its publisher holds every byte and event received.',
-  })),
   ...V114_STATEMENTS.filter((sql) => sql.includes('turn_cards_fts USING fts5') || sql.startsWith("INSERT INTO turn_cards_fts(turn_cards_fts)")).map((sql) => ({
     step: 114, sql, reason: 'Card search is an external-content index over the cards already written.',
   })),

@@ -3,7 +3,6 @@ import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { PRE_DOCUMENTS_STEPS } from './helpers/migrate.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
@@ -56,7 +55,7 @@ async function verify(db: RelationalStore) {
   ];
   for (const sql of initial) await db.prepare(sql).run();
   await db.batch(READ_BUDGET_SESSION_STATEMENTS.map((sql) => db.prepare(sql)));
-  for (const step of PRE_DOCUMENTS_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+  for (const step of SCHEMA_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await assertProjection(db);
   await db.batch([
     db.prepare('UPDATE session_read_facts SET eligible_prompts=99'),
