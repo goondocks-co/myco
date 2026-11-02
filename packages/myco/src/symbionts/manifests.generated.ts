@@ -107,6 +107,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "mutates": false
         },
         {
+          "tool": "replace_file_content",
+          "pathField": "TargetFile",
+          "pathKind": "file",
+          "mutates": true
+        },
+        {
+          "tool": "multi_replace_file_content",
+          "pathField": "TargetFile",
+          "pathKind": "file",
+          "mutates": true
+        },
+        {
           "tool": "write_to_file",
           "pathField": "TargetFile",
           "pathKind": "file",

@@ -6,7 +6,7 @@ export const SESSION_PATHS_LIMIT = 500;
 /** Session-owned document catalog rows, each carrying `session_id`. */
 export const DOCUMENT_SESSION_TABLES = [
   'session_documents', 'session_chunks', 'retired_objects', 'session_pages', 'session_sealed_records', 'session_prompts',
-  'transcript_publication', 'publish_queue', 'session_paths', 'session_edit_paths', 'myco_tool_calls',
+  'transcript_publication', 'publish_queue', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls',
 ] as const;
 
 /** Immutable document directories and publisher frontiers carried by portable backups. */

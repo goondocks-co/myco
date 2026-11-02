@@ -128,6 +128,12 @@ capabilities:
     # Current Antigravity app (PascalCase args)
     - tool: view_file
       pathField: AbsolutePath
+    - tool: replace_file_content
+      pathField: TargetFile
+      mutates: true
+    - tool: multi_replace_file_content
+      pathField: TargetFile
+      mutates: true
     - tool: write_to_file
       pathField: TargetFile
       mutates: true

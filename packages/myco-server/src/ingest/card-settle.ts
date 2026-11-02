@@ -16,6 +16,7 @@ import { pendingCardsStatement, sessionProgressStatements } from '../core/learni
 import { SessionDocument } from '../content/session-pages.js';
 import { documentTurn } from '../content/turn-material.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached } from './document-batch.js';
+import { deferDocumentReadFailure } from './document-read-failures.js';
 import type { PassLimits } from './parse.js';
 
 /** Turns one wake settles at most. */
@@ -33,9 +34,13 @@ export async function settleCards(env: Pick<ServerEnv, 'db' | 'blobs'>, now: num
   for (const row of results.slice(0, SETTLE_TURNS_PER_WAKE)) {
     if (limits.clock() >= limits.deadline || reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { settled, more: true };
     const key = JSON.stringify([row.projectId, row.sessionId]);
-    if (!documents.has(key)) documents.set(key, SessionDocument.open(env, row.projectId, row.sessionId));
-    await settleTurn(env, row, await documents.get(key)!, now);
-    settled += 1;
+    try {
+      if (!documents.has(key)) documents.set(key, SessionDocument.open(env, row.projectId, row.sessionId));
+      await settleTurn(env, row, await documents.get(key)!, now);
+      settled += 1;
+    } catch (error) {
+      await deferDocumentReadFailure(env.db, { project_id: row.projectId, session_id: row.sessionId, turnKey: row.turnKey }, error, now);
+    }
   }
   return { settled, more: results.length > SETTLE_TURNS_PER_WAKE };
 }
