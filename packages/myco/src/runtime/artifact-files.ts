@@ -9,6 +9,10 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o700;
 const MODE_BITS = 0o777;
 const VERSION_DIRECTORY = /^[a-f0-9]{64}$/;
+const LAST_START_FILE = 'last-start';
+const MAX_UNUSED_MS = 30 * 24 * 60 * 60 * 1000;
+const PRIVATE_MARKER_MODE = 0o600;
+const temporaryDirectories = new Set<string>();
 const UNAVAILABLE_HOME = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOENT', 'ENOTDIR']);
 const UNSUPPORTED_DIRECTORY_SYNC = new Set(['EINVAL', 'ENOTSUP', 'ENOSYS', 'EPERM', 'EACCES', 'EISDIR', 'EBADF']);
 
@@ -51,7 +55,31 @@ function cacheRoot(): string {
 }
 
 function temporaryCache(): string {
-  return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'myco-native-'));
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'myco-native-'));
+  if (temporaryDirectories.size === 0) process.once('exit', () => {
+    for (const temporary of temporaryDirectories) {
+      try { fs.rmSync(temporary, { recursive: true, force: true }); }
+      catch (error) { console.error(`myco: temporary native cache cleanup failed: ${String(error)}`); }
+    }
+  });
+  temporaryDirectories.add(directory);
+  return directory;
+}
+
+function markLastStart(directory: string, now: number): void {
+  const file = path.join(directory, LAST_START_FILE);
+  const existing = statIfPresent(file);
+  if (existing !== null) {
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new UntrustedArtifactPath(`Native cache start marker must be a regular file: ${file}`);
+    owner(existing, file);
+  }
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0), PRIVATE_MARKER_MODE);
+  try {
+    const opened = fs.fstatSync(fd);
+    owner(opened, file);
+    if (!opened.isFile() || opened.nlink !== 1) throw new UntrustedArtifactPath(`Native cache start marker must be a private regular file: ${file}`);
+    fs.futimesSync(fd, new Date(now), new Date(now));
+  } finally { fs.closeSync(fd); }
 }
 
 function matches(file: string, bytes: Uint8Array): boolean {
@@ -93,6 +121,9 @@ export class NativeArtifactCache {
       privateLeaf(this.root);
       this.location = path.join(this.root, createHash('sha256').update(version).digest('hex'));
       privateLeaf(this.directory);
+      const now = Date.now();
+      markLastStart(this.directory, now);
+      this.prune(now);
     } catch (error) {
       if (!UNAVAILABLE_HOME.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
       this.root = null;
@@ -103,6 +134,7 @@ export class NativeArtifactCache {
   /** Correct existing bytes are reused, including a concurrent publisher's completed file. */
   materialize(name: string, bytes: Uint8Array): string {
     if (path.basename(name) !== name || name === '.' || name === '..') throw new Error('Artifact name must be a filename');
+    if (name === LAST_START_FILE) throw new Error('Artifact name is reserved for native cache metadata');
     try { return this.publish(name, bytes); }
     catch (error) {
       if (this.root === null || !UNAVAILABLE_HOME.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
@@ -133,30 +165,23 @@ export class NativeArtifactCache {
       catch (error) { if (!busy(error) || !matches(file, bytes)) throw error; }
       if (!matches(file, bytes)) throw new Error(`Published artifact bytes differ from embedded bytes: ${file}`);
       if (process.platform !== 'win32') syncDirectory(this.directory);
-      this.prune();
       return file;
     } finally { fs.rmSync(staging, { recursive: true, force: true }); }
   }
 
-  private prune(): void {
+  private prune(now: number): void {
     if (this.root === null) return;
     for (const entry of fs.readdirSync(this.root)) {
       const file = path.join(this.root, entry);
       if (!VERSION_DIRECTORY.test(entry) || file === this.directory) continue;
       const stat = statIfPresent(file);
       if (stat === null || stat.isSymbolicLink() || !stat.isDirectory() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) continue;
+      const started = statIfPresent(path.join(file, LAST_START_FILE));
+      if (started === null || started.isSymbolicLink() || !started.isFile() || started.nlink !== 1
+        || (typeof process.getuid === 'function' && started.uid !== process.getuid())
+        || Math.round(started.mtimeMs) >= now - MAX_UNUSED_MS) continue;
       try { fs.rmSync(file, { recursive: true, force: true }); }
       catch (error) { if (!busy(error)) throw error; }
     }
   }
-}
-
-/** Remove only this user's admitted native cache; other home contents are preserved. */
-export function removeNativeArtifactCache(): void {
-  let root: string;
-  try { root = cacheRoot(); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
-  if (statIfPresent(root) === null) return;
-  privateLeaf(root);
-  fs.rmSync(root, { recursive: true, force: true });
 }

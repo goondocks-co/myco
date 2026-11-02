@@ -82,17 +82,21 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
-  it('prunes prior native cache versions at publication and removes the cache during member removal', async () => {
+  it('preserves cached native files across publication and member removal', async () => {
     member();
     const old = new NativeArtifactCache('prior');
     old.materialize('native', Buffer.from('prior artifact'));
     const current = new NativeArtifactCache('current');
     current.materialize('native', Buffer.from('current artifact'));
-    expect(fs.existsSync(old.directory)).toBe(false);
+    expect(fs.existsSync(old.directory)).toBe(true);
     expect(fs.existsSync(current.directory)).toBe(true);
     await run(['--yes'], deps());
-    expect(fs.existsSync(path.dirname(current.directory))).toBe(false);
+    expect(fs.existsSync(old.directory)).toBe(true);
+    expect(fs.existsSync(current.directory)).toBe(true);
     expect(fs.existsSync(path.join(home, 'member', 'spool', 'captured.jsonl'))).toBe(true);
+    await run(['--purge', '--yes'], deps());
+    expect(fs.existsSync(old.directory)).toBe(true);
+    expect(fs.existsSync(current.directory)).toBe(true);
   });
 
   for (const purge of [false, true]) it(`${purge ? 'purges' : 'preserves'} this installation's automatic update preference`, async () => {

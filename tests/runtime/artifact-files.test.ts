@@ -65,9 +65,14 @@ const {Database}=await import('bun:sqlite');
 const native=await import(${JSON.stringify(path.join(SRC, 'runtime/native-deps.ts'))});
 const embeds=['sqlite','vec','rg'].map(name=>{const file=path.join(process.env.HOME,name);fs.writeFileSync(file,'embedded '+name);return file;});
 Database.setCustomSQLite=file=>{assert.ok(file.startsWith(cache.directory.slice(0,cache.directory.lastIndexOf(path.sep))));assert.equal(fs.readFileSync(file,'utf8'),'embedded sqlite');};
-await native.registerEmbeddedNativeDeps({version:'wired',libsqliteEmbed:embeds[0],vec0Embed:embeds[1],ripgrepEmbed:embeds[2]});
+const parameters={version:'wired',libsqliteEmbed:embeds[0],vec0Embed:embeds[1],ripgrepEmbed:embeds[2]};
+await native.registerEmbeddedNativeDeps(parameters);
 for(const [file,expected] of [[native.getLibsqlitePath(),'embedded sqlite'],[native.getVec0Path(),'embedded vec'],[native.getRipgrepPath(),'embedded rg']]){assert.ok(file.startsWith(fs.realpathSync(process.env.HOME)));assert.equal(fs.readFileSync(file,'utf8'),expected);}
 
+const outside=path.join(process.env.HOME,'outside'); fs.writeFileSync(outside,'preserve');
+fs.unlinkSync(native.getLibsqlitePath()); fs.symlinkSync(outside,native.getLibsqlitePath());
+await assert.rejects(native.registerEmbeddedNativeDeps(parameters),/regular file/);
+assert.equal(fs.readFileSync(outside,'utf8'),'preserve');
 assert.equal(fs.statSync(fs.realpathSync(process.env.HOME)).mode & 0o777,0o775);
 assert.equal(os.tmpdir(),process.env.TMPDIR);
 console.log('install, update, source, checkout and cache passed');
@@ -169,10 +174,13 @@ for(const version of ['readonly','missing']) {
 }
 assert.equal(new Set(paths).size,paths.length);
 assert.equal(os.tmpdir(),process.env.TMPDIR);
-for(const file of paths)fs.rmSync(file,{recursive:true,force:true});
+console.log(JSON.stringify(paths));
 `);
     const child=spawnSync(process.execPath,['--no-env-file',script],{cwd:f.root,env:sandboxChildEnv(f.root,{HOME:f.home,TMPDIR:temp}),encoding:'utf8',timeout:15_000});
     expect({status:child.status,stderr:child.stderr}).toEqual({status:0,stderr:''});
+    const paths: string[] = JSON.parse(child.stdout.trim());
+    expect(paths).toHaveLength(3);
+    for (const directory of paths) expect(fs.existsSync(directory)).toBe(false);
   } finally {if(fs.existsSync(f.home))fs.chmodSync(f.home,0o700);f.dispose();}
 });
 
@@ -197,4 +205,46 @@ it('accepts a verified concurrent publisher after EPERM or EBUSY and tolerates u
       expect(fs.readFileSync(destination)).toEqual(bytes);
     } finally {unsupported.mockRestore();}
   } finally {f.dispose();}
+});
+
+
+it('retains recent native files and prunes only version directories last started more than 30 days ago', () => {
+  const f = fixture();
+  const now = Date.now();
+  const clock = spyOn(Date, 'now').mockReturnValue(now);
+  const day = 24 * 60 * 60 * 1000;
+  try {
+    const active = new NativeArtifactCache('active');
+    const native = active.materialize('vec0', bytes);
+    const publisher = new NativeArtifactCache('publisher');
+    const expired = new NativeArtifactCache('expired');
+    const boundary = new NativeArtifactCache('boundary');
+    const restarted = new NativeArtifactCache('restarted');
+    const legacy = new NativeArtifactCache('legacy');
+    const root = path.dirname(active.directory);
+    const unrelated = path.join(root, 'notes');
+    fs.mkdirSync(unrelated);
+    fs.writeFileSync(path.join(unrelated, 'last-start'), '');
+    const mark = (directory: string, days: number) => {
+      const date = new Date(now - days * day);
+      fs.utimesSync(path.join(directory, 'last-start'), date, date);
+    };
+    mark(expired.directory, 31);
+    mark(boundary.directory, 30);
+    mark(restarted.directory, 31);
+    mark(unrelated, 31);
+    fs.unlinkSync(path.join(legacy.directory, 'last-start'));
+    fs.utimesSync(legacy.directory, new Date(now - 31 * day), new Date(now - 31 * day));
+    expect(() => publisher.materialize('last-start', bytes)).toThrow('reserved');
+    publisher.materialize('native', bytes);
+    expect(fs.existsSync(expired.directory)).toBe(true);
+    expect(fs.readFileSync(native)).toEqual(bytes);
+    new NativeArtifactCache('restarted');
+    expect(fs.existsSync(expired.directory)).toBe(false);
+    for (const directory of [active.directory, publisher.directory, boundary.directory, restarted.directory, legacy.directory, unrelated]) {
+      expect(fs.existsSync(directory)).toBe(true);
+    }
+    expect(fs.readFileSync(native)).toEqual(bytes);
+    expect(Math.round(fs.statSync(path.join(restarted.directory, 'last-start')).mtimeMs)).toBe(now);
+  } finally { clock.mockRestore(); f.dispose(); }
 });

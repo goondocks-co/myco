@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: sec3 N1/N2 recheck, pinned Bun1.4.0 darwin-arm64 with frozen hash-checked Worker prerequisite. Four focused files passed93 tests at umask022 in24873ms and umask002 in24736ms runner. Native artifact bodies totaled2230.86ms at umask002;6000ms covers twice measured body plus1000ms startup rounded up. Removal preservation through plain remove and purge measured889.19ms;10000ms retains7500ms prior calibration plus twice growth from64.36ms and500ms startup, rounded up. Retention covers exact30-day boundary, restart refresh, unknown-name/marker preservation and publication without deletion; fallback folders disappear at process exit. Eight current mutations were caught and restored, including unrelated pruning names and direct unverified native-deps writes. No new test file or parity scenario; parity weights unchanged.",
     "local: sec3 correction2, pinned Bun1.4.0 darwin-arm64 with isolated homes and the frozen hash-checked Worker prerequisite. Eight focused files passed186 cases at umask022 in26355ms and umask002 in24469ms runner. The final cache/compiled-env pair passed7 cases in2775ms runner; native artifact cases measured437.27/571.76/3.14/5.89/73.90/8.32ms bodies (1100.28ms sum), so the file weight is4000ms. Native cache pruning/removal measured64.36ms in remove.test.ts; its prior7159ms CI allowance plus twice added body rounds to7500ms. Checkout-env4000ms retains allowance for1405.26ms body including the real compiler-argument AST and compiled hook. Nineteen source mutations failed through test assertions and were restored. No new test file or parity scenario; parity weights unchanged.",
     "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
     "local: split117 CI/review correction, pinned Bun 1.4.0. Nine focused files passed 118 cases in 42.64s. Session lifecycle now includes the native/Miniflare D1 archived-prompt regression; the file measured 1986ms and its weight is 4000ms. The single object-lifecycle parity scenario passed both targets before and after: fresh Cloudflare migration setup measured 25049ms with numbered files at schema 178 and 1470ms with one fresh-store SQL import at schema 250; total runs 32.42s and 7.40s. Upgrade probes keep numbered migrations and all deadlines are unchanged.",
@@ -209,7 +210,7 @@
     "tests/cli/member-settings-leaves.test.ts": 1748,
     "tests/cli/member-setup-refresh.test.ts": 2076,
     "tests/cli/open.test.ts": 693,
-    "tests/cli/remove.test.ts": 7500,
+    "tests/cli/remove.test.ts": 10000,
     "tests/cli/retired-verbs.test.ts": 3416,
     "tests/cli/runner-compiled.test.ts": 22180,
     "tests/cli/runner-detect.test.ts": 947,
@@ -843,7 +844,7 @@
     "tests/runner/update-idle.test.ts": 1338,
     "tests/runner/update-report-order.test.ts": 675,
     "tests/runner/update.test.ts": 4525,
-    "tests/runtime/artifact-files.test.ts": 4000,
+    "tests/runtime/artifact-files.test.ts": 6000,
     "tests/runtime/binary-resolution-adoption.test.ts": 920,
     "tests/runtime/binary-resolution-cjs-agreement.test.ts": 931,
     "tests/runtime/binary-resolution.test.ts": 606,
