@@ -11,7 +11,7 @@ import { sessionLineage } from '@myco-server-worker/read/lineage.js';
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -20,7 +20,9 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
-import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
+import { displayPrompt, promptDisplay, replyDisplay } from '@goondocks/myco-shared/prompt-text';
+import { useTurnCollection } from '../../packages/myco-server/ui/src/hooks/use-turn-collection';
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { parseCard } from '../../packages/myco-server/ui/src/features/sessions/card-text';
 import { renderCard } from '@myco-server-worker/core/turn-cards.js';
@@ -996,6 +998,112 @@ describe('the session reading page', () => {
     expect(screen.getAllByText('Merge plan 1')).toHaveLength(1);
     expect(screen.getByText('Merge plan 1').closest('[data-plan-line]')?.getAttribute('data-plan-line')).toBe('completed');
     expect(screen.getByTestId('turn-plans').children).toHaveLength(51);
+  });
+
+  it('reads on through a wide turn\'s pages for one ask, at most four of them, and says when the bound stopped it', async () => {
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const plan = { planKey: 'mid', promptId: P1, title: 'Mid-turn plan', status: 'active', content: null, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW };
+    const wide = (planAt: number) => {
+      const reads: Record<string, () => Response> = {};
+      for (let at = 1; at <= 8; at += 1) reads[`${turnPath}?collection=plans&cursor=p${at}`] = () => page(at === planAt ? [plan] : [], `p${at + 1}`);
+      return routes({
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 1, toolCallCount: 240 })]),
+        [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'A wide turn', blobKey: null, origin: 'user', createdAt: NOW }, responses: [], attachments: [], children: [], plans: [], injection: null, toolCounts: { total: 240, shown: 18 }, cursors: { plans: 'p1' } }),
+        ...reads,
+      });
+    };
+    const planReads = (requested: string[]) => requested.filter((path) => path.includes('collection=plans')).length;
+    const near = server(wide(3));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Mid-turn plan')).toBeTruthy();
+    expect(planReads(near.requested)).toBe(3);
+    expect(screen.queryByRole('button', { name: 'Show more plans' })).toBeNull();
+    cleanup();
+
+    const far = server(wide(6));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Still reading this turn…')).toBeTruthy();
+    expect(planReads(far.requested)).toBe(4);
+    expect(screen.queryByText('Mid-turn plan')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Mid-turn plan')).toBeTruthy();
+    expect(planReads(far.requested)).toBe(6);
+    expect(screen.queryByText('Still reading this turn…')).toBeNull();
+  });
+
+  it('hides a plan envelope only once the page shows that plan, and shows the reply as written until then', async () => {
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const reply = (id: string, text: string) => ({ responseId: id, promptId: P1, text, blobKey: null, createdAt: NOW, orderedAt: NOW });
+    const plan = (key: string, content: string) => ({ planKey: key, promptId: P1, title: key, status: 'active', content, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW });
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 2, responseCount: 2, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'Plan it', blobKey: null, origin: 'user', createdAt: NOW }, attachments: [], children: [], injection: null,
+        responses: [reply('only', '<ultraplan>\n# Shown plan\n</ultraplan>'), reply('said', 'Looking now.\n\n<ultraplan>\n# Shown plan\n</ultraplan>\n\n<ultraplan>\n# Later plan\n</ultraplan>\n\nDone <ultraplan>unclosed')],
+        plans: [plan('Shown', '# Shown plan')], cursors: { plans: 'next' } }),
+      [`${turnPath}?collection=plans&cursor=next`]: () => page([plan('Later', '# Later plan')]),
+    }));
+    mount('/p/x/sessions/s1');
+    const said = await screen.findByTestId('turn-response');
+    expect(said.textContent).toContain('Looking now.');
+    expect(said.textContent).toContain('Done <ultraplan>unclosed');
+    expect(said.textContent).not.toContain('# Shown plan');
+    expect(said.textContent).toContain('# Later plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more plans' }));
+    expect(await within(await screen.findByTestId('turn-plans')).findByText('Later')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('turn-response').textContent).not.toContain('# Later plan'));
+    fireEvent.click(screen.getByRole('button', { name: '1 earlier reply' }));
+    expect(await screen.findByText('This reply is a plan.')).toBeTruthy();
+  });
+
+  it('keeps a plan tag written as an example in code, with or without a plan of that body', () => {
+    const plans = ['steps', 'sample'];
+    for (const text of ['Use `<proposed_plan>steps</proposed_plan>` in the example.', '```xml\n<proposed_plan>sample</proposed_plan>\n```', '~~~\n<proposed_plan>sample</proposed_plan>\n', 'Example:\n\n    <proposed_plan>sample</proposed_plan>\n\nEnd.', 'The literal string "<proposed_plan>sample</proposed_plan>" is the example.', '<proposed_plan>sample</proposed_plan> is the example.'])
+      expect(replyDisplay(text, 'codex', plans)).toBe(text);
+    expect(replyDisplay('Before\n\n<proposed_plan>\n```sh\nrun\n```\n</proposed_plan>', 'codex', ['```sh\nrun\n```'])).toBe('Before');
+    expect(replyDisplay('Before\n<proposed_plan>sample</proposed_plan>  \nAfter', 'codex', plans)).toBe('Before\n  \nAfter');
+    expect(replyDisplay('<proposed_plan>sample</proposed_plan>', 'cursor', plans)).toBe('<proposed_plan>sample</proposed_plan>');
+  });
+
+  it('shows an envelope split across assistant messages as written, since the parser made no plan of it', async () => {
+    const lines = [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Show an envelope' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '<proposed_plan>\n# Sample' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Body\n</proposed_plan>' }] },
+    ].map((payload, i) => ({ offset: i * 100, value: { type: 'response_item', timestamp: '2026-01-01T00:00:00Z', payload } }));
+    const events = await PARSERS.codex!.parse({ transcriptId: 'tx_split', recordScheme: 'legacy-session-v1', scheme: 'offset-v1', sessionId: 's1', now: NOW, lines } as never);
+    expect(events.filter((event) => event.kind === 'plan')).toHaveLength(0);
+    const replied = events.find((event) => event.kind === 'response')!.payload.text as string;
+    expect(replyDisplay(replied, 'codex', [])).toBe(replied);
+  });
+
+  it('keeps an ask and its stop to the turn they were made on when the reader is reused', async () => {
+    const reads: string[] = [];
+    let release = () => {};
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      reads.push(path);
+      if (path.includes('/turns/held?')) await new Promise<void>((resolve) => { release = resolve; });
+      return Response.json({ rows: [], cursor: 'next' });
+    }) as typeof fetch;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const none: Array<{ id: string }> = [];
+    const rowKey = (row: { id: string }) => row.id;
+    const { result, rerender } = renderHook(({ id }) => useTurnCollection('x', 's1', id, 'plans', none, 'next', rowKey), { initialProps: { id: 'held' }, wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
+    const readsOf = (id: string) => reads.filter((path) => path.includes(`/turns/${id}?`)).length;
+    act(() => result.current.more());
+    await waitFor(() => expect(readsOf('held')).toBe(1));
+    rerender({ id: 'next' });
+    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(readsOf('next')).toBe(0);
+    act(() => result.current.more());
+    await waitFor(() => expect(result.current.stalled).toBe(true));
+    expect(readsOf('next')).toBe(4);
+    rerender({ id: 'other' });
+    expect(result.current.stalled).toBe(false);
+    expect(readsOf('other')).toBe(0);
+    client.clear();
   });
 
   it('offers a wide turn\'s unread pages only for what the turn holds', async () => {

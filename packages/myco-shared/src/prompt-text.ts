@@ -70,6 +70,58 @@ function interpretPrompt(text: string, agent: string | null, preserveUnclosed: b
   return { text: [...person, rest].filter(Boolean).join('\n\n'), envelopes };
 }
 
+/** A plan-tag envelope's body, non-greedy so consecutive envelopes stay separate; the optional newline either side is the member's own shape (`packages/myco/src/plans/tag-envelopes.ts`). */
+export const planEnvelope = (tag: string): RegExp => new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
+
+/** The plan envelopes of a reply that are real ones, in order: each opens at the start of its line and closes at the end of one. A fence or a code span opened before a tag holds it as an example, and a closed envelope holds whatever code is inside it. */
+function realEnvelopes(text: string, tags: readonly string[]): Array<{ from: number; to: number; body: string }> {
+  const found: Array<{ from: number; to: number; body: string }> = [];
+  const token = new RegExp(`^ {0,3}(\`{3,}(?=[^\`\\n]*$)|~{3,})|(\`+)|<(${tags.join('|')})>`, 'gm');
+  const closing = (pattern: string, flags: string) => {
+    const close = new RegExp(pattern, flags);
+    close.lastIndex = token.lastIndex;
+    return close.exec(text);
+  };
+  for (let at = token.exec(text); at !== null; at = token.exec(text)) {
+    if (at[1] !== undefined) {
+      const close = closing(`^ {0,3}${at[1][0]}{${at[1].length},}[ \\t]*$`, 'gm');
+      if (close === null) break;
+      token.lastIndex = close.index + close[0].length;
+    } else if (at[2] !== undefined) {
+      const close = closing(`(?<!\`)\`{${at[2].length}}(?!\`)`, 'g');
+      if (close !== null) token.lastIndex = close.index + close[0].length;
+    } else {
+      const envelope = planEnvelope(at[3]!);
+      envelope.lastIndex = at.index;
+      const held = envelope.exec(text);
+      if (held === null || held.index !== at.index || (at.index > 0 && text[at.index - 1] !== '\n')) continue;
+      const lineEnd = /[ \t\r]*(?:\n|$)/y;
+      lineEnd.lastIndex = envelope.lastIndex;
+      if (!lineEnd.test(text)) continue;
+      found.push({ from: at.index, to: envelope.lastIndex, body: held[1]!.trim() });
+      token.lastIndex = envelope.lastIndex;
+    }
+  }
+  return found;
+}
+
+/**
+ * A reply as a reader sees it: without each real plan envelope its agent declares whose body is one of `shownPlans`,
+ * the plans on the page. Any other envelope stays as written, and stored replies keep them all.
+ */
+export function replyDisplay(text: string, agent: string | null, shownPlans: readonly string[]): string {
+  const tags = CAPTURE_RULE_BUNDLES.find((item) => item.name === agent)?.planTags ?? [];
+  if (tags.length === 0) return text;
+  let shown = '';
+  let kept = 0;
+  for (const { from, to, body } of realEnvelopes(text, tags)) {
+    if (!shownPlans.includes(body)) continue;
+    shown += text.slice(kept, from);
+    kept = to;
+  }
+  return kept === 0 ? text : (shown + text.slice(kept)).trim();
+}
+
 /** Plain labels use the same envelope interpretation as the conversation. */
 export function displayPrompt(text: string, agent: string | null): string {
   const shown = interpretPrompt(text, agent, false);
