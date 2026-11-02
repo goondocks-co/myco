@@ -998,6 +998,17 @@ describe('the session reading page', () => {
     expect(screen.getByTestId('turn-plans').children).toHaveLength(51);
   });
 
+  it('offers a wide turn\'s unread pages only for what the turn holds', async () => {
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ responseCount: 1, toolCallCount: 320 })]),
+      [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'A wide turn', blobKey: null, origin: 'user', createdAt: NOW }, responses: [{ responseId: 'closing', promptId: P1, text: 'The closing reply', blobKey: null, createdAt: NOW, orderedAt: NOW }], attachments: [], children: [], plans: [], injection: null, toolCounts: { total: 320, shown: 28 }, cursors: { responses: 'next', plans: 'next', children: 'next', attachments: null, answers: null } }),
+    }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('The closing reply')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Show more/ })).toBeNull();
+  });
+
   it('gate 1643.3: an initial turn-body failure offers a manual retry that reads the body', async () => {
     let failed = true;
     const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;

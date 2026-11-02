@@ -182,8 +182,8 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <CountButton value={counts.prompts} onClick={() => openFilter('all')}>{counts.prompts === 1 ? 'turn' : 'turns'}</CountButton>
               <CountButton value={counts.userPrompts} onClick={() => openFilter('you')}>from you</CountButton>
               <CountButton value={counts.toolCalls}>{counts.toolCalls === 1 ? 'tool call' : 'tool calls'}</CountButton>
-              <CountButton value={counts.failedTools} tone="bad" onClick={() => openFilter('failed')}>failed</CountButton>
-              <CountButton value={counts.mycoCalls} tone="primary" onClick={() => openFilter('myco')}>{counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls'}</CountButton>
+              <CountButton value={counts.failedTools} tone={counts.failedTools > 0 ? 'bad' : undefined} onClick={() => openFilter('failed')}>failed</CountButton>
+              <CountButton value={counts.mycoCalls} tone={counts.mycoCalls > 0 ? 'primary' : undefined} onClick={() => openFilter('myco')}>{counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls'}</CountButton>
               <CountButton value={answer.filesEdited} onClick={() => setTab('files')}>{answer.filesEdited === 1 ? 'file edited' : 'files edited'}</CountButton>
               <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
             </div>

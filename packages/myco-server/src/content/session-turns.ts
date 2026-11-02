@@ -269,9 +269,10 @@ const turnChild = (body: DocumentTurnDetail): DocumentTurnChild => ({
 });
 
 /**
- * One prompt's body, or null when no prompt of that id sits in the session's live document. The read opens
- * `TURN_PAGES` of its turn's pages from the page the catalog records for the prompt's record, or from the turn's first
- * page when it records none or found no page holding it; the rest are reached through the collection cursors.
+ * One prompt's body, or null when no prompt of that id sits in the session's live document. The read opens at most
+ * `TURN_PAGES` of its turn's pages: those from the page the catalog records for the prompt's record, or from the turn's
+ * first page when it records none or found no page holding it, and the turn's last page for its closing replies and
+ * plans. The pages between are reached through the collection cursors.
  */
 export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string): Promise<DocumentTurnDetail | null> {
   const place = await promptPlace(env.db, scope, sessionId, promptId);
@@ -279,11 +280,16 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
   if (doc === null) return null;
   const from = place.page !== null && place.page >= 0 ? place.page : 0;
-  const read = await doc.ownerPages(place.turn ?? SESSION_OWNER, from, TURN_PAGES);
-  const records = located(read.pages, doc.generation);
+  const owner = place.turn ?? SESSION_OWNER;
+  const head = await doc.ownerPages(owner, from, TURN_PAGES - 1);
+  const last = head.more ? await doc.lastPage(owner) : null;
+  const tail = last === null ? [] : located((await doc.ownerPages(owner, last, 1)).pages, doc.generation);
+  const after = from + head.pages.length;
+  const whole = !head.more || last === after;
+  const records = [...located(head.pages, doc.generation), ...(whole ? tail : tail.filter(({ record }) => record.k === 'reply' || record.k === 'plan'))];
   const top = records.find(({ record }) => record.k === 'prompt' && record.id === promptId);
   if (top === undefined) return null;
-  const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: read.more ? from + read.pages.length : null })).body(top, 0);
+  const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
     const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card FROM session_prompts p
       JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
@@ -292,7 +298,7 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
       .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null }>();
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
-    const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), !read.more, catalog?.agent ?? null, calls);
+    const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
     body.card = catalog?.card ?? null;

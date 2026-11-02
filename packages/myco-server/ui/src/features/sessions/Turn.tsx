@@ -33,16 +33,19 @@ export function promptPreview(turn: Pick<TurnRow, 'preview' | 'textChars' | 'blo
   return cut.length < line.length || (turn.textChars !== null && turn.textChars > turn.preview.length) ? (cut.endsWith('…') ? cut : `${cut}…`) : cut;
 }
 
-function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, rowKey, label, children, unloaded = false }: {
+function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, rowKey, label, children, unloaded = false, held }: {
   projectId: string; sessionId: string; promptId: string; collection: TurnCollection; initial: T[]; cursor?: string | null;
   rowKey: (row: T) => string; label: string; unloaded?: boolean; children: (rows: T[]) => ReactNode;
+  /** How many rows the turn holds, when known: pages past them are not offered. */
+  held?: number;
 }) {
   const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor, rowKey, unloaded);
+  const hasMore = pages.hasMore && (held === undefined || pages.rows.length < held);
   return <>
     {unloaded && pages.pending && pages.rows.length === 0 && <p role="status" className="t-small text-muted">Reading {label}…</p>}
     {children(pages.rows)}
     {pages.error && <p role="alert" className="t-small text-bad">More {label} could not be read. The items above are still available.</p>}
-    {(pages.hasMore || pages.error) && <Button variant="secondary" className="w-fit" onClick={pages.error ? pages.retry : pages.more} disabled={pages.pending}>
+    {(hasMore || pages.error) && <Button variant="secondary" className="w-fit" onClick={pages.error ? pages.retry : pages.more} disabled={pages.pending}>
       {pages.pending ? `Reading more ${label}…` : pages.error ? `Retry reading ${label}` : `Show more ${label}`}
     </Button>}
   </>;
@@ -81,9 +84,10 @@ function Reply({ projectId, sessionId, reply }: { projectId: string; sessionId: 
 
 /** The last reply in view, with those before it folded above it. */
 function Replies({ projectId, sessionId, responses }: { projectId: string; sessionId: string; responses: ResponseRow[] }) {
-  const last = responses.at(-1);
+  const inOrder = [...responses].sort((a, b) => a.orderedAt - b.orderedAt);
+  const last = inOrder.at(-1);
   if (last === undefined) return null;
-  const earlier = responses.slice(0, -1);
+  const earlier = inOrder.slice(0, -1);
   return (
     <div className="flex flex-col gap-s3">
       {earlier.length > 0 && (
@@ -215,9 +219,11 @@ function PromptBubble({ origin, thread, at, steering = false, children }: { orig
 }
 
 /** What a body holds besides its prompt and its card: steering prompts, replies, plans and tool use, each read a page at a time. */
-function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, total, failed, rollup, deferChildren = 0 }: {
+function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, total, failed, rollup, held, deferChildren = 0 }: {
   projectId: string; sessionId: string; promptId: string; agent: string | null; contexts?: Record<string, { subagents: number }>;
   body: TurnDetail; total: number; failed: number; rollup: TurnRow['toolRollup'];
+  /** How many of each the turn holds, when its row is known. */
+  held?: { replies: number; children: number; plans: number };
   /** Child prompts read only on request, beyond what the body embeds. */
   deferChildren?: number;
 }) {
@@ -237,7 +243,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
     {deferChildren > 0 && !showChildren
       ? <Button variant="secondary" className="w-fit" onClick={() => setShowChildren(true)}>Show child prompts ({deferChildren})</Button>
       : (
-        <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="children" unloaded={deferChildren > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
+        <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="children" unloaded={deferChildren > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts" held={held?.children}>
           {(rows) => rows.length > 0 && (
             <ol className="flex flex-col gap-s4 border-l-2 border-line-strong pl-s4" aria-label="Child prompts">
               {rows.map((child) => <ChildTurn key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} agent={agent} contexts={contexts} child={child} />)}
@@ -245,7 +251,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
           )}
         </TurnPages>
       )}
-    <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies">
+    <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies" held={held?.replies}>
       {(rows) => rows.length > 0 && (
         <section aria-label="Reply" className="flex flex-col gap-s2">
           <h2 className="t-h3 text-ink">Reply</h2>
@@ -253,7 +259,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
         </section>
       )}
     </TurnPages>
-    <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="plans" initial={body.plans} cursor={body.cursors?.plans} rowKey={(row) => row.planKey} label="plans">
+    <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="plans" initial={body.plans} cursor={body.cursors?.plans} rowKey={(row) => row.planKey} label="plans" held={held?.plans}>
       {(rows) => rows.length > 0 && <div className="flex flex-col gap-s2" data-testid="turn-plans">
         {rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={Date.now()} />)}
       </div>}
@@ -332,7 +338,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
             {(rows) => <Attachments projectId={projectId} attachments={rows} />}
           </TurnPages>
           <WhatHappened card={read.card} />
-          <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} />
+          <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} held={{ replies: turn.responseCount, children: turn.childCount, plans: turn.planCount }} />
         </>}
       </ReadState>
     </article>

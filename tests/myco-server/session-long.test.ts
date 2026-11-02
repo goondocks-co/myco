@@ -37,6 +37,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
         : { type: 'function_call', call_id: `c${i}`, name, arguments: JSON.stringify({ op: 'save', path: i === 1 ? 'read.ts' : i === 150 ? 'late-read.ts' : undefined, padding: 'x'.repeat(56_000) }) });
       if (i !== 3 && i !== 159) text += output(`c${i}`);
     }
+    text += line('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'closing reply past the head pages' }] });
     text += user('middle') + user('last');
     const transcript = 'tx_' + 'a'.repeat(32);
     const env = await captureDocumentTranscript(db, blobs, 'long', transcript, text, now, 0, 'codex');
@@ -68,6 +69,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     expect(detail.toolCounts.total, target).toBe(161);
     expect(detail.toolCounts.shown, target).toBeLessThan(161);
     expect(detail.tools, target).toMatchObject({ total: 161, failed: 3, complete: false, files: ['edited.ts'], filesNamed: 3 });
+    expect(detail.responses.map(reply => reply.text), target).toEqual(['closing reply past the head pages']);
     for (const filter of ['failed', 'myco']) expect((await get<{ rows: CatalogTurnRow[] }>('/turns?filter=' + filter)).rows.map(r => r.promptId), target).toEqual([first]);
     expect((await get<{ rows: CatalogTurnRow[] }>('/turns?around=' + prompts[1]!.prompt_id + '&limit=3')).rows.map(r => r.promptId), target).toEqual(prompts.map(r => r.prompt_id));
     const around = await get<{ rows: CatalogTurnRow[]; cursor: string }>('/turns?around=' + prompts[1]!.prompt_id + '&limit=2&order=desc');
