@@ -515,3 +515,20 @@ it('truncates an oversized reply with an emoji exactly across the character cut'
   expect(chunk!.text.isWellFormed()).toBe(true);
   expect(chunk!.text).not.toMatch(/[\uD800-\uDFFF]/);
 });
+
+it('plugin source submission links survive interleaved prompts and parser continuation', async () => {
+  const state: import('@myco-server-worker/ingest/parsers/index.js').ParserState = {};
+  const source = [
+    { type: 'prompt', submissionId: 'S', text: 'first' },
+    { type: 'prompt', submissionId: 'T', text: 'second' },
+    { type: 'response', submissionId: 'S', text: 'late reply' },
+    { type: 'prompt', submissionId: 'S', text: 'first' },
+  ];
+  const lines = linesOfText(source.map(row => JSON.stringify({ v: 1, ...row })).join('\n') + '\n');
+  const input = { transcriptId: 'plugin-source', recordScheme: 'legacy-session-v1' as const, scheme: 'stamp-or-offset-v1' as const, sessionId: SESSION, now: NOW, state };
+  const first = await PARSERS.cline.parse({ ...input, lines: lines.slice(0, 2) });
+  const resumed = await PARSERS.cline.parse({ ...input, lines: lines.slice(2), openPromptId: first[1]!.payload.promptId as string, terminal: 'complete_file' });
+  expect(first.filter(row => row.kind === 'prompt')).toHaveLength(2);
+  expect(resumed.filter(row => row.kind === 'prompt')).toHaveLength(0);
+  expect(resumed.find(row => row.kind === 'response')?.payload.promptId).toBe(first[0]!.payload.promptId);
+});

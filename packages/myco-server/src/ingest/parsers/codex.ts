@@ -25,7 +25,7 @@ import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { canonicalPromptId, promptKeyHash, type PromptIdScheme, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import {
-  promptIdentity, callForResult, recordId, recordSource, optionalRecordSource, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  promptIdentity, callForResult, recordId, recordSource, optionalRecordSource, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, pastedPlansInPrompt, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ParserState, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -150,6 +150,7 @@ export const codexParser: TranscriptParser = {
           }
           events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text: decision.prompt, origin: opensTurn ? 'user' : decision.origin, promptKind: 'message',
             ...(scheme === 'codex-turn-v1' ? { promptKeyHash: await promptKeyHash(sha256Hex, decision.prompt) } : {}) }, createdAt, offset, opensTurn });
+          if (opensTurn) events.push(...await pastedPlansInPrompt(decision.prompt, this.planTags, input, this.agent, value, { promptId: capturedPromptId, offset, createdAt }));
           continue;
         }
         if (str(payload.role) !== 'assistant') continue;

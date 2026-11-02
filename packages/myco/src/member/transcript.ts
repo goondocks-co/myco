@@ -170,7 +170,7 @@ export function unreadTranscriptLines(transcriptPath: string, pointer: Transcrip
 
 /**
  * The events the transcript holds that hooks never delivered, for an agent
- * whose hooks write its turn rows: prompts not yet captured (by text hash),
+ * whose hooks write its turn rows: prompts not yet captured by canonical id,
  * plan-tag plans from assistant turns, and images. `state` is READ — the
  * receipts come back in `record` for the caller to apply with the append. A
  * transcript whose size is unchanged since the last parse yields nothing.
@@ -186,7 +186,8 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   } catch {
     return noop;
   }
-  const capturedPrompts: Array<[string, string]> = [];
+  const capturedPrompts = new Map<string, string>();
+  const knownPrompts = new Set(Object.values(state.prompts));
   const capturedPlans: Array<[string, string]> = [];
   const capturedAttachments: string[] = [];
   let planTagCount = state.planTagCount;
@@ -200,11 +201,11 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   // Prompts the hook path did not capture — queued/steering commands, transcript-only prompts.
   const { records } = extractUserPromptRecordsWithDrops(agent, owned, transcriptPath, meta);
   records.forEach((record, position) => {
-    const hash = sha256Text(record.text);
-    if (state.prompts[hash]) return;
     const promptId = canonicalPromptId(deriveId, { scheme: 'member-transcript-v1', sessionId, dedupeKey: record.dedupeKey, position });
+    if (knownPrompts.has(promptId)) return;
+    knownPrompts.add(promptId);
     events.push(promptEvent(ctx, { promptId, text: record.text, origin: record.origin }));
-    capturedPrompts.push([hash, promptId]);
+    capturedPrompts.set(promptId, promptId);
   });
 
   // Plan-tag plans from assistant turns, and images from user turns.
@@ -216,8 +217,9 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   const planTags = HOOK_CONFIG[agent]?.planTags ?? [];
   let lastAssistantText: string | undefined;
   for (const turn of turns) {
-    const promptHash = sha256Text(turn.prompt);
-    const promptId = state.prompts[promptHash] ?? capturedPrompts.find(([hash]) => hash === promptHash)?.[1];
+    const sourcePrompt = turn.submissionKey === undefined ? undefined
+      : canonicalPromptId(deriveId, { scheme: 'member-transcript-v1', sessionId, dedupeKey: turn.submissionKey, position: 0 });
+    const promptId = sourcePrompt !== undefined && (knownPrompts.has(sourcePrompt) || capturedPrompts.has(sourcePrompt)) ? sourcePrompt : undefined;
     if (turn.aiResponse) {
       lastAssistantText = turn.aiResponse;
       for (const tag of planTags) {
@@ -252,7 +254,7 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   }
 
   const record = (next: SessionState): void => {
-    for (const [hash, promptId] of capturedPrompts) next.prompts[hash] = promptId;
+    for (const promptId of capturedPrompts.values()) next.prompts[promptId] = promptId;
     for (const [hash, planKey] of capturedPlans) next.planHashes[hash] = planKey;
     for (const key of capturedAttachments) if (!next.attachmentKeys.includes(key)) next.attachmentKeys.push(key);
     next.planTagCount = Math.max(next.planTagCount, planTagCount);

@@ -1,3 +1,4 @@
+import { recoverPluginCapture } from './plugin-capture.js';
 import { rootKeyFor } from './auto-join.js';
 /**
  * The one capture path every hook runs (#1561): read the normalized input, resolve the declared credential, build the
@@ -283,6 +284,9 @@ export async function runMemberHook(
     };
 
     if (input.transcriptPath !== undefined) assertMemberTranscriptDestination(input.transcriptPath, credential, mycoHome, rootKeyFor(resolveMemberProjectRoot(cwd), mycoHome));
+    if (input.transcriptPath !== undefined) recoverPluginCapture(spool, now, {
+      path: input.transcriptPath, route: credential, pendingRootKey: rootKeyFor(resolveMemberProjectRoot(cwd), mycoHome),
+    });
     const outcome = await handle(run);
     response = outcome.response ?? {};
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);

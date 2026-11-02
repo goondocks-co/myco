@@ -19,6 +19,8 @@ export interface TranscriptImage {
 
 /** A single conversation turn extracted from an agent's transcript */
 export interface TranscriptTurn {
+  /** The harness-assigned identity of the human submission. */
+  submissionKey?: string;
   prompt: string;
   toolCount: number;
   /** Per-tool call counts (e.g., { Read: 5, Edit: 3 }). Populated from buffer events. */

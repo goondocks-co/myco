@@ -55,12 +55,14 @@ describe('readPromptsFromTranscript', () => {
     expect(readPromptsFromTranscript('antigravity', transcriptPath)).toEqual(['hello']);
   });
 
-  it('dedups byte-identical USER_INPUT re-emissions within one logical turn', () => {
+  it('deduplicates re-emitted step indexes and preserves equal text at later submission indexes', () => {
     writeTranscript(transcriptPath, [
       { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>only prompt</USER_REQUEST>', created_at: 't1' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', content: 'first reply' },
       { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>only prompt</USER_REQUEST>', created_at: 't2' },
-      { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>only prompt</USER_REQUEST>', created_at: 't3' },
+      { step_index: 199, type: 'USER_INPUT', content: '<USER_REQUEST>only prompt</USER_REQUEST>', created_at: 't3' },
+      { step_index: 199, type: 'USER_INPUT', content: '<USER_REQUEST>only prompt</USER_REQUEST>', created_at: 't4' },
     ]);
-    expect(readPromptsFromTranscript('antigravity', transcriptPath)).toEqual(['only prompt']);
+    expect(readPromptsFromTranscript('antigravity', transcriptPath)).toEqual(['only prompt', 'only prompt']);
   });
 });
