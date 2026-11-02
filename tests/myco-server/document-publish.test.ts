@@ -24,6 +24,8 @@ import { prepareDerivedStream } from '@myco-server-worker/core/registered-conten
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { archivedEventPayloadSql } from '@myco-server-worker/db/document-tables.js';
+import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
@@ -1075,5 +1077,66 @@ test('retirement refuses missing records and preserves archived blob holders thr
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
     expect(await db.prepare(`SELECT json_extract(payload,'$.toolCallId') id FROM events WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
+  },116);
+});
+
+
+test('partitioned retirement backfills each archived row once and resumes safely across the index boundary', async () => {
+  await withDocumentStores(async (db, name) => {
+    await captureDocumentSession(db, 'project', 'partitioned');
+    const event = (id: string, kind: string, payload = '{}', format = 'archived') => db.prepare(`INSERT INTO events
+      (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
+      VALUES('project',?,'partitioned','token',?,'cli',?,'hash',1,1,?)`).bind(id,kind,payload,format);
+    for (let rowid=1; rowid<=65; rowid+=1) {
+      await db.batch([event(`partition-${rowid}`, 'tool.use'),
+        db.prepare(`INSERT INTO tool_calls(rowid,project_id,session_id,tool_call_id,event_id,tool_name,input_blob_key,output_blob_key,success,created_at,token_id,received_at)
+          VALUES(?,'project','partitioned',?,?,'Read',?,?,1,1,'token',1)`).bind(rowid,`tool-${rowid}`,`partition-${rowid}`,`input-${rowid}`,`output-${rowid}`)]);
+    }
+    await db.batch([db.prepare('DELETE FROM tool_calls WHERE rowid=17'),db.prepare("DELETE FROM events WHERE event_id='partition-17'"),
+      event('partition-prompt','prompt'),event('partition-reply','response'),
+      db.prepare(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+        VALUES('project','partitioned','prompt','partition-prompt','held','user','hash',1,1,'token',1)`),
+      db.prepare(`INSERT INTO responses(project_id,session_id,response_id,event_id,text,content_hash,created_at,token_id,received_at)
+        VALUES('project','partitioned','reply','partition-reply','held','hash',1,'token',1)`)]);
+    await db.prepare(`UPDATE events SET payload='{"toolCallId":"tool-1","blob":"preferred"}' WHERE event_id='partition-1'`).run();
+    await db.prepare('CREATE TABLE partition_updates(event_id TEXT PRIMARY KEY,n INTEGER NOT NULL)').run();
+    await db.prepare(`CREATE TRIGGER count_partition_updates AFTER UPDATE OF payload ON events WHEN NEW.event_id LIKE 'partition-%'
+      BEGIN INSERT INTO partition_updates VALUES(NEW.event_id,1) ON CONFLICT(event_id) DO UPDATE SET n=n+1; END`).run();
+    const output='c'.repeat(64);
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+      VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99100)).run();
+    await db.batch([event('late-archive','tool.use',JSON.stringify({toolCallId:'late',outputBlob:output}),'inline'),
+      db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
+        VALUES('project','partitioned','late','late-archive','Read',?,1,1,'token',1)`).bind(output)]);
+    const advance = async (through: number) => {
+      const held=await readSchemaVersion(db);
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>held&&step.version<=through))await db.batch(step.statements.map(sql=>db.prepare(sql)));
+    };
+    const partitions=SCHEMA_STEPS.filter(step=>step.statements.some(sql=>sql.includes('p.rowid % 32')));
+    expect(partitions, name).toHaveLength(32);
+    await advance(partitions[5]!.version);
+    expect(await readSchemaVersion(db),name).toBe(partitions[5]!.version);
+    await expect(db.prepare(`UPDATE events SET payload='{}',payload_format='archived' WHERE event_id='late-archive'`).run())
+      .rejects.toThrow('retirement_archive_metadata_required');
+    await db.prepare(`UPDATE events SET payload=${archivedEventPayloadSql()},payload_format='archived' WHERE event_id='late-archive'`).run();
+    const lastIndex=SCHEMA_STEPS.filter(step=>step.version>=117&&step.statements.some(sql=>sql.startsWith('CREATE INDEX'))).at(-1)!;
+    await advance(lastIndex.version);
+    expect(await one(db,'SELECT COUNT(*) n,MIN(n) least,MAX(n) most FROM partition_updates'),name).toEqual({n:66,least:1,most:1});
+    const rows=(await db.prepare("SELECT event_id,payload FROM events WHERE event_id LIKE 'partition-%'").all<{event_id:string;payload:string}>()).results;
+    for(const row of rows){
+      const payload=JSON.parse(row.payload);
+      if(row.event_id==='partition-prompt')expect(payload,name).toMatchObject({promptId:'prompt'});
+      else if(row.event_id==='partition-reply')expect(payload,name).toMatchObject({responseId:'reply'});
+      else {const id=Number(row.event_id.slice('partition-'.length));expect(payload,name).toEqual({toolCallId:`tool-${id}`,blob:id===1?'preferred':`input-${id}`,outputBlob:`output-${id}`});}
+    }
+    await db.prepare('UPDATE session_documents SET build=?').bind(JSON.stringify({report:{classes:{'body_differs:tool':1}}})).run();
+    await expect(advance(SERVER_SCHEMA_VERSION)).rejects.toThrow('documents_retirement_incomplete');
+    expect(await one(db,"SELECT name FROM sqlite_master WHERE name='tool_calls'"),name).not.toBeNull();
+    await db.prepare('UPDATE session_documents SET build=NULL').run();
+    await advance(SERVER_SCHEMA_VERSION);
+    expect(await readSchemaVersion(db),name).toBe(SERVER_SCHEMA_VERSION);
+    expect(await one(db,`SELECT ${blobHeld("'project'",'?1')} held`,output),name).toEqual({held:1});
+    expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
+    expect(await one(db,"SELECT name FROM sqlite_master WHERE name='tool_calls'"),name).toBeNull();
   },116);
 });

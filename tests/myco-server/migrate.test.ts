@@ -1,4 +1,4 @@
-import { RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
+import { RETIREMENT_SCHEMA_STEPS, RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -129,10 +129,62 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
-  '0117_v117.sql': '5f6c5d01777141d0667aa52d1f5e8acab6116db33c7630e196a2b24604866e9d',
-  '0118_v118.sql': 'f67d20715d48958b2fee095660203d95e11bd651fe7ae0670c1e6ea69a345dde',
-  '0119_v119.sql': 'd704b38c014b738c302c06b67627073ee1b2b33d569a3ed0c072c054a7a084db',
-  '0120_v120.sql': 'a5a857afc9369f5cad903cbdec47bdf90d6fbd68179a84a45bfe5c15d55be8e9',
+  '0117_v117.sql': '065e133348b33ca116e59c4169d0b29e47f400be2f56f89c7d6a541830dc519d',
+  '0118_v118.sql': '476b42a15e6d59b0d3ee65f68e39bf767e7fa537f5c9ff7ca42800582cef9336',
+  '0119_v119.sql': '56d9db7cbe31eb86072bb7b60380c96639387537cb017588e9de64a0f3ab4126',
+  '0120_v120.sql': '56a72f12f0a546f5863c51fbad49e2d5c1f1177d180864a1a9a5af501fed2f13',
+  '0121_v121.sql': '4097146e16fa4c138c290b5474f0b4b66edcf5223ab8e6b8d2790e057ccc4774',
+  '0122_v122.sql': '8dd4293c263de325018f9d8a83f5cd37ce5d725998c8159e19f1eea3745a0774',
+  '0123_v123.sql': '841dfd93909be1e900be591e09c0ad6329567314e4b061279babf673191517fb',
+  '0124_v124.sql': 'cb1d3ff8b32da6ddbebc99365379417b933731307018aa9394e379e34a1d0bfe',
+  '0125_v125.sql': '4794bdb808c74bd5a1ba1078884051cda22d29b02bbed28fa8ddc56c9399944d',
+  '0126_v126.sql': '8e42ee71029203d09623d35f25e5414968dc8bd29a003b6aff9312e9efa1331f',
+  '0127_v127.sql': '4b179dddeb22b293852ade129edfbe3b77aef0be13aefbc786f496d7f932c54a',
+  '0128_v128.sql': '9c11068bdbf7cb8e68742a0b43316214e15e80b3935db0237bf59b921b8b951b',
+  '0129_v129.sql': '54696d5704aac514385d21116fd638ff3d0ad31e054f3c4fff31124acee4c2fd',
+  '0130_v130.sql': '9a8947e2af8dca7371fcb85b21a4248ae3431dd92df6ce06c4de7481ed57a69d',
+  '0131_v131.sql': '1f03ada24186a621050b87c75c8c228c5dce2b6df57386ddea65dea753cf4a81',
+  '0132_v132.sql': '39c5da1f8dc634441072cf651b8dbe42731e6b82cff8c26a49d248479d425541',
+  '0133_v133.sql': 'bdeeaf87cc5633c71133c13bcc9f9aacc10c316140c23e683d65be8f946510af',
+  '0134_v134.sql': 'fbf07f0dffad9a2a50172cd15ee1d2ddd1c8f5545994119500a3878901243f93',
+  '0135_v135.sql': 'ded779be909ef748b33dca06b6511498ec9605009bd803e8f6b620b9aa0e20dc',
+  '0136_v136.sql': '76b6d564fcf3eb6cef52e0461495f71dc41da66d7cf1f2b0fdd54d8d8f964528',
+  '0137_v137.sql': '06144af0edc41075d9e7757b26fa207e4e366fee937cc96fd7ebce1b9df91584',
+  '0138_v138.sql': '46c10961518757d6b6677707912bee7c02dd6a55202d80c6dc607200d33158da',
+  '0139_v139.sql': '58042083c1cfa258cfaa97b73d779d48ba6530d0f9cf43774ba07538e0aaf98a',
+  '0140_v140.sql': '1871800115d4e880240ac127cdc67eadcce6695413733c51b1c5543519d3afe7',
+  '0141_v141.sql': '51e46c7684e823f72b323a0f43b7524c1ec18596fc8a76d615ce45aaefd6e1bc',
+  '0142_v142.sql': 'd870abc76c2c088b707d390bb16cfb5a00c62bb8d70279992149078c17aced63',
+  '0143_v143.sql': 'cea7d47effd48426fa0a0c698381c83f62381cf010ff0176259492df3c806db4',
+  '0144_v144.sql': '51d9f3352a585b783ecdd59cdfd074a1023649219b0b31d465637ded81d21ffd',
+  '0145_v145.sql': 'd9b73c4c033b610f4cdb990f5db79b6895ce4f57b83d1914b3459c514c2c56ee',
+  '0146_v146.sql': '56642c00c44da845051f0fe32526be98f9fd988c2789db706411a2da9e65f34d',
+  '0147_v147.sql': 'e97581a01a68adccf3d0d843ca9998dbe5694149f88fc79db32b3a37c6b78c22',
+  '0148_v148.sql': 'dfe45e876f26bab07938057f470d301a38c08822da78cbfbfcb82ba39816d9b1',
+  '0149_v149.sql': 'ce988a57bc4a89b1d12ae65a77f0565bb897e2368e75cf7964d7d8a95153b1f3',
+  '0150_v150.sql': '53a585040a829882207b896e484f23a00875a07102213dd6a30ae2353cd06752',
+  '0151_v151.sql': 'c9cd85b6c6a9ee88c797fa0d7a3a65f210629f1ba5adf08750c91364162f137f',
+  '0152_v152.sql': '1edfcfd6cd2774b32722980d174893196c73875ca73c6ed1c88e3cf609a88567',
+  '0153_v153.sql': '94d17b4b07047dfd4113711ed3bc0480bc45e5121fe066e97c009722be777c74',
+  '0154_v154.sql': '8971df3e6822cfa049bdab5adaab70fd0893ab6aaa9aab67dd641639cf63eb65',
+  '0155_v155.sql': 'a63156133deaab2e353ca3ce6083c441996f3f390eb0a7b7a98b999868efd2f2',
+  '0156_v156.sql': 'e5ee280f67e7d0509892b9abb704c29aa4cd01438983835967476885a19815b5',
+  '0157_v157.sql': '9169e6ef9114207951aeadf9d17503a74ef43a559b9a65f5efdcbb0f389eeeeb',
+  '0158_v158.sql': '535463af5993a63e6a07ed152f5ec3535725db075f9fa41989b542f4cfcfd594',
+  '0159_v159.sql': '0854d43708582cce2561163b2f61d8e40c4fb4fc710a07f06b367f51931f88ff',
+  '0160_v160.sql': '36c6420f2e1a65d6cd49319b4945ef0259dcc12924cd592e41beb42710684b89',
+  '0161_v161.sql': '945b022fa833f30061b6bf1c85d7cc88079aa7d1d2aed8a632ae3baa77c4e304',
+  '0162_v162.sql': 'e08709955440a741a55918bd47f57fc836007eef7fb0bbbbdf093c9447d01aa1',
+  '0163_v163.sql': '8d5e83ea165aa1e268536d5a0f3c5f4f434b312d5c93247f0cb39838400a8cb2',
+  '0164_v164.sql': '08bf3b82c012acbbeef65dbeadf7358f30cbd4390117d60d84437d3c0db750a4',
+  '0165_v165.sql': '2df3bdd2a33f1421cc9c861bba1fd04e7655470d0a7b4d5dab5a3ee2431ee7d5',
+  '0166_v166.sql': '92e70583fef8eabf7a1f588fe3c46eb232d9afcd0f3e1fb347333eff8537b8b9',
+  '0167_v167.sql': 'd4b4a546c16d7d08df9200be06fd53e118faa827a111a6aecb2e3f9b55f9cb16',
+  '0168_v168.sql': 'df5bc1bda9f05b08f362e180fb511a3e7d1d969a363943dd02df4fae319014ae',
+  '0169_v169.sql': '2e2aff7cd08a6e068d14af28add16e7468f5ba2a43a2b14468f8c5acee796ff3',
+  '0170_v170.sql': '5cb5a04fea4a0643a39d4c9d95ac44071c1b3834e57b39c7860efbbdab7f00a8',
+  '0171_v171.sql': 'b93d591eb7e5ce888caafccaef13f1a3a1cd1dd1a5ec2a25689097c17342eb78',
+  '0172_v172.sql': '1b4c5ce205dc5af0b256bdb90d709b773d96df46a443dff482ada8b234c13b14',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -600,10 +652,12 @@ describe('versioned schema steps', () => {
       'skill_records_embedding_ai', 'skill_records_embedding_au', 'skill_records_embedding_ad',
     ]);
     for (let n = 2; n < SCHEMA_STEPS.length; n++) {
+      const retirement = RETIREMENT_SCHEMA_STEPS.some(step => step.version === SCHEMA_STEPS[n]!.version);
+      const drops = SCHEMA_STEPS[n]!.statements.filter(sql => sql.startsWith('DROP TABLE IF EXISTS ')).map(sql => sql.slice('DROP TABLE IF EXISTS '.length));
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === 117 && RETIRED_CONTENT_TABLES.some(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')))) {
+        if ((n === 85 && retiredAt86.has(table)) || (retirement && RETIRED_CONTENT_TABLES.some(name => drops.includes(name) && (table === name || name.endsWith('_fts') && table.startsWith(name + '_'))))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -626,7 +680,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = (n === 85 && retiredAt86.has(dropped)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
+          const allowedRetirement = (n === 85 && retiredAt86.has(dropped)) || (retirement && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -653,7 +707,7 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
-            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger)) })
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (retirement && ((RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger) || droppedTrigger === 'retirement_archive_metadata')) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -905,7 +959,7 @@ it('retires content storage only after documents are live, preserving the catalo
     sqlite.run(`INSERT INTO view_instances(project_id,session_id,instance_id,parser_version,base,state,created_at) VALUES('retirement','session','instance',1,'full','live',1)`);
     sqlite.run(`INSERT INTO view_checkpoints(project_id,session_id,instance_id,transcript_id,ordinal,start_offset,parsed_offset) VALUES('retirement','session','instance','transcript',0,0,10)`);
     sqlite.run(`INSERT INTO view_checkpoint_chunks(project_id,session_id,instance_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload) VALUES('retirement','session','instance','transcript',10,0,1,'{}')`);
-    for(const sql of retirement.statements.filter(sql=>sql.startsWith('WITH backfill'))){
+    for(const sql of RETIREMENT_SCHEMA_STEPS.flatMap(step=>step.statements).filter(sql=>sql.startsWith('WITH backfill'))){
       const explain=sqlite.prepare('EXPLAIN QUERY PLAN '+sql);
       try {
         const plan=explain.all().map(row=>(row as {detail:string}).detail).join('\n');
@@ -913,11 +967,15 @@ it('retires content storage only after documents are live, preserving the catalo
         expect(plan).not.toContain('CORRELATED');
       }finally{explain.finalize();}
     }
-    step(sqlite, retirement);
+    for (const next of SCHEMA_STEPS.filter(step => step.version >= 117)) step(sqlite, next);
     for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).toBeNull();
     expect(sqlite.query(`SELECT session_id FROM sessions WHERE project_id='retirement'`).get()).toEqual({session_id:'session'});
     expect(sqlite.query(`SELECT generation FROM session_documents WHERE project_id='retirement'`).get()).toEqual({generation:1});
     expect(sqlite.query(`SELECT source,cursor_project,cursor_id,complete FROM raw_provenance_backfill WHERE id=1`).get())
       .toEqual({source:0,cursor_project:'',cursor_id:'',complete:0});
   } finally { sqlite.close(); }
+});
+
+it('keeps event backfills and index builds out of table-drop transactions', () => {
+  for (const {statements} of RETIREMENT_SCHEMA_STEPS) if (statements.some(sql => sql.startsWith('DROP TABLE'))) expect(statements.join('\n')).not.toMatch(/UPDATE events|CREATE (?:UNIQUE )?INDEX/);
 });
