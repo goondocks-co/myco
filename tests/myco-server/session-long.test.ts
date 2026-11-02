@@ -306,3 +306,27 @@ test('catch-up backs off broken documents and progresses past an active document
 
   });
 }, 120_000);
+
+test('active four-chunk catch-up completes in the pass that reads its tail', async () => {
+  await withDocumentStores(async (db, target) => {
+    const blobs = memoryBlobStore(), now = Date.now() - 3_600_000;
+    let text = user('active tail');
+    for (let i = 0; i < 62; i += 1) text += line('response_item', { type: 'function_call', call_id: 'tail' + i, name: 'Read',
+      arguments: JSON.stringify({ path: 'tail.ts', padding: 'q'.repeat(60_000) }) }) + output('tail' + i);
+    const env = await captureDocumentTranscript(db, blobs, 'tail', 'tx_' + '7'.repeat(32), text, now, 0, 'codex');
+    for (let pass = 0; pass < 10; pass += 1) if (!(await publishDocuments(env, now + 1_800_000, limits())).more) break;
+    expect(await db.prepare("SELECT COUNT(*) n FROM session_chunks WHERE session_id='tail' AND kind='page'").first(), target).toEqual({ n: 4 });
+    await db.prepare("UPDATE session_documents SET rollup_after=-1,rollup_page=0,rollup_record=0,myco_build=0,paths_build=NULL WHERE session_id='tail'").run();
+    await db.prepare("UPDATE session_prompts SET tool_state=NULL,tool_rollup=NULL,rollup_build=NULL WHERE session_id='tail'").run();
+    const prompt = (await db.prepare("SELECT prompt_id FROM session_prompts WHERE session_id='tail' LIMIT 1").first<{ prompt_id: string }>())!.prompt_id;
+    const token = (await db.prepare("SELECT created_by_token_id id FROM sessions WHERE session_id='tail'").first<{ id: string }>())!.id;
+    for (let wake = 0; wake < 2; wake += 1) {
+      await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: token, bodyBytes: 1, now },
+        envelope({ eventId: uuid(22000 + wake), sessionId: 'tail', kind: 'tool.use', createdAt: now + wake,
+          payload: { toolCallId: uuid(23000 + wake), promptId: prompt, toolName: 'Bash', input: {}, success: true } }), env);
+      await publishDocuments(env, now + 2_000_000 + wake * 60_000, limits());
+      expect(await db.prepare("SELECT rollup_after,rollup_epoch FROM session_documents WHERE session_id='tail'").first(), target)
+        .toEqual({ rollup_after: null, rollup_epoch: 0 });
+    }
+  });
+});

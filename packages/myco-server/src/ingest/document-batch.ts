@@ -657,17 +657,18 @@ export class DocumentBatch {
         ON CONFLICT (project_id,session_id,generation,owner,page) DO UPDATE SET chunk_no=excluded.chunk_no,records=excluded.records,bytes=excluded.bytes`)
         .bind(p, s, g, JSON.stringify(layout.pages)));
     }
-    if (this.newPrompts.length > 0) {
+    const prompts = this.newPrompts.map(({ record, turnKey }, index) => ({
+      id: record.id, turn: turnKey, parent: record.parent_prompt_id ?? null, ord: this.doc.prompts + index, origin: record.origin ?? null, kind: record.prompt_kind ?? null,
+      label: record.thread_label ?? null, at: record.created_at, claim: record.claim ?? null, source: record.source_key ?? null,
+      hash: record.prompt_key_hash ?? null, preview: preview(record.text), chars: typeof record.text === 'string' ? record.text.length : 0,
+    }));
+    for (const page of jsonPages(prompts)) {
       statements.push(db.prepare(`INSERT OR IGNORE INTO session_prompts (project_id,session_id,generation,prompt_id,turn_key,parent_hint,ord,origin,
           prompt_kind,thread_label,created_at,claim,source_key,prompt_key_hash,preview,text_chars)
-        SELECT ?,?,?,json_extract(value,'$.id'),json_extract(value,'$.turn'),json_extract(value,'$.parent'),?+key,json_extract(value,'$.origin'),
+        SELECT ?,?,?,json_extract(value,'$.id'),json_extract(value,'$.turn'),json_extract(value,'$.parent'),json_extract(value,'$.ord'),json_extract(value,'$.origin'),
           json_extract(value,'$.kind'),json_extract(value,'$.label'),json_extract(value,'$.at'),json_extract(value,'$.claim'),
           json_extract(value,'$.source'),json_extract(value,'$.hash'),json_extract(value,'$.preview'),json_extract(value,'$.chars') FROM json_each(?)`)
-        .bind(p, s, g, this.doc.prompts, JSON.stringify(this.newPrompts.map(({ record, turnKey }) => ({
-          id: record.id, turn: turnKey, parent: record.parent_prompt_id ?? null, origin: record.origin ?? null, kind: record.prompt_kind ?? null,
-          label: record.thread_label ?? null, at: record.created_at, claim: record.claim ?? null, source: record.source_key ?? null,
-          hash: record.prompt_key_hash ?? null, preview: preview(record.text), chars: typeof record.text === 'string' ? record.text.length : 0,
-        })))));
+        .bind(p, s, g, JSON.stringify(page)));
     }
     const placed = layout === null ? [] : layout.pageChunks.flatMap((write) => write.chunk.pages.flatMap((page) =>
       page.records.filter((record) => record.k === 'prompt').map((record) => ({ id: record.id, page: page.page }))));

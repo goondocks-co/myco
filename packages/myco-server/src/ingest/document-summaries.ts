@@ -36,29 +36,31 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
     if (doc === null) break;
     try {
     const key = [doc.project_id, doc.session_id, doc.generation];
-    const row = await db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
+    const rows = (await db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
         ${registeredObjectKeySql('c.project_id', 'c.blob_key')} AS object_key
       FROM session_chunks c INDEXED BY idx_session_chunks_pages
       WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.kind='page' AND c.chunk_no>?4
-      ORDER BY c.chunk_no LIMIT 1`).bind(...key, doc.rollup_after).first<ChunkRow>();
+      ORDER BY c.chunk_no LIMIT 2`).bind(...key, doc.rollup_after).all<ChunkRow>()).results;
+    const row = rows[0] ?? null;
     const paths = doc.paths_build === null
       ? (await db.prepare(`SELECT path FROM session_paths WHERE project_id=? AND session_id=? AND generation=? ORDER BY path LIMIT ?`)
         .bind(...key, SESSION_PATHS_LIMIT).all<{ path: string }>()).results.map(({ path }) => ({ path, calls: 0, edits: 0, at: 0, turn: null } as PathBuild))
       : (await db.prepare(`SELECT path,calls,edits,at,turn FROM session_path_build
         WHERE project_id=? AND session_id=? AND generation=? ORDER BY path LIMIT ?`).bind(...key, SESSION_PATHS_LIMIT).all<PathBuild>()).results;
     const pathMap = new Map(paths.map(path => [path.path, path]));
+    const changedPaths = new Set(doc.paths_build === null ? paths.map(path => path.path) : []);
     if (row !== null) read += 1;
     const decoded = row === null ? [] : (await readPageChunk(env, row)).pages;
 
     const pages = decoded.slice(doc.rollup_page, doc.rollup_page + SUMMARY_PAGES);
-    const held = pages.length === 0 ? [] : (await db.prepare(`SELECT p.owner,p.page,sp.tool_state,sp.rollup_build,
+    const held = pages.length === 0 ? [] : (await db.prepare(`SELECT p.owner,p.page,sp.tool_state,sp.rollup_build,sp.tool_revision,
         (SELECT tail.page FROM session_pages tail WHERE tail.project_id=?1 AND tail.session_id=?2 AND tail.generation=?3
           AND tail.owner=p.owner ORDER BY tail.page DESC LIMIT 1) AS last_page
       FROM json_each(?4) j CROSS JOIN session_pages p
         ON p.project_id=?1 AND p.session_id=?2 AND p.generation=?3 AND p.owner=json_extract(j.value,'$.owner') AND p.page=json_extract(j.value,'$.page')
       LEFT JOIN session_prompts sp ON sp.project_id=p.project_id AND sp.session_id=p.session_id AND sp.generation=p.generation AND sp.prompt_id=p.owner
       WHERE p.chunk_no=?5`).bind(...key, JSON.stringify(pages.map(page => ({ owner: page.owner, page: page.page }))), row!.chunk_no)
-      .all<{ owner: string; page: number; tool_state: string | null; rollup_build: string | null; last_page: number }>()).results;
+      .all<{ owner: string; page: number; tool_state: string | null; rollup_build: string | null; tool_revision: number | null; last_page: number }>()).results;
     const builds = new Map<string, Build & { lastPage: number }>();
     const edited: string[] = [];
     const statistics = new Map<string, StatisticsChange>();
@@ -115,6 +117,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
             paths.push(held); pathMap.set(path, held);
           }
           if (held === undefined) { capped = true; continue; }
+          changedPaths.add(path);
           held.calls += 1;
           if (edits.includes(path)) held.edits += 1;
           if (record.created_at >= held.at) { held.at = record.created_at; held.turn = page.owner === SESSION_OWNER ? null : page.owner; }
@@ -130,15 +133,22 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
       return { id, build: complete ? null : JSON.stringify({ epoch: build.epoch, pages: build.pages, state: parseToolState(scalar) }),
         ...(complete ? { state: scalar, failed: build.state.failed, myco: build.state.mycoCalls } : {}) };
     });
-    const finished = row === null;
     const completeChunk = pageAt >= decoded.length;
+    const finished = row === null || (completeChunk && rows.length === 1);
+    const revisions = [...new Map(held.filter(row => row.tool_revision !== null).map(row => [row.owner, { id: row.owner, revision: row.tool_revision }])).values()];
     const writes = [
       ...contentAssertion(db, `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND generation=? AND state='live'
         AND rollup_epoch=? AND rollup_after=? AND rollup_page=? AND rollup_record=?)`, [...key, doc.rollup_epoch, doc.rollup_after, doc.rollup_page, doc.rollup_record]),
       ...contentAssertion(db, row === null
         ? `NOT EXISTS (SELECT 1 FROM session_chunks WHERE project_id=? AND session_id=? AND generation=? AND kind='page' AND chunk_no>?)`
-        : `EXISTS (SELECT 1 FROM session_chunks WHERE project_id=? AND session_id=? AND generation=? AND chunk_no=? AND blob_key=?)`,
-        row === null ? [...key, doc.rollup_after] : [...key, row.chunk_no, row.blob_key]),
+        : `EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=? AND c.session_id=? AND c.generation=? AND c.chunk_no=? AND c.blob_key=?
+            AND (?=0 OR NOT EXISTS (SELECT 1 FROM session_chunks tail WHERE tail.project_id=c.project_id AND tail.session_id=c.session_id
+              AND tail.generation=c.generation AND tail.kind='page' AND tail.chunk_no>c.chunk_no)))`,
+        row === null ? [...key, doc.rollup_after] : [...key, row.chunk_no, row.blob_key, finished ? 1 : 0]),
+      ...jsonPages(revisions).flatMap(page => contentAssertion(db, `NOT EXISTS (
+        SELECT 1 FROM json_each(?4) j LEFT JOIN session_prompts p ON p.project_id=?1 AND p.session_id=?2 AND p.generation=?3
+          AND p.prompt_id=json_extract(j.value,'$.id') WHERE p.tool_revision IS NOT json_extract(j.value,'$.revision'))`,
+        [...key, JSON.stringify(page)])),
       ...sessionEditStatements(db, doc.project_id, doc.session_id, doc.generation, edited),
       ...jsonPages(updates).map(page => db.prepare(`UPDATE session_prompts SET rollup_build=json_extract(j.value,'$.build'),
           tool_state=COALESCE(json_extract(j.value,'$.state'),tool_state),tool_revision=tool_revision+1,
@@ -148,7 +158,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
         .bind(...key, JSON.stringify(page))),
       ...turnStatisticsStatements(db, key, [...statistics.values()], updates.filter(update => update.state !== undefined).map(update => update.id)),
       ...(doc.paths_build === null ? [db.prepare('DELETE FROM session_path_build WHERE project_id=? AND session_id=? AND generation=?').bind(...key)] : []),
-      ...jsonPages(paths).map(page => db.prepare(`INSERT INTO session_path_build(project_id,session_id,generation,path,calls,edits,at,turn)
+      ...jsonPages(paths.filter(path => changedPaths.has(path.path))).map(page => db.prepare(`INSERT INTO session_path_build(project_id,session_id,generation,path,calls,edits,at,turn)
         SELECT ?1,?2,?3,json_extract(value,'$.path'),json_extract(value,'$.calls'),json_extract(value,'$.edits'),
           json_extract(value,'$.at'),json_extract(value,'$.turn') FROM json_each(?4) WHERE true
         ON CONFLICT(project_id,session_id,generation,path) DO UPDATE SET calls=excluded.calls,edits=excluded.edits,at=excluded.at,turn=excluded.turn`).bind(...key, JSON.stringify(page))),
