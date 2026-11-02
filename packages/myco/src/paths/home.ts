@@ -10,7 +10,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readTrustedPin, type PinRefusalReporter, type PinTrustOptions } from './pin-trust.js';
+import { readTrustedPin, reportPinRefusal, resetPinRefusalReports, type PinRefusalReporter, type PinTrustOptions } from './pin-trust.js';
 
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 
@@ -111,7 +111,7 @@ export function findProjectHomePin(options: MycoHomeOptions = {}): { home: strin
   let dir = path.resolve(options.cwd);
   while (true) {
     const pinPath = path.join(dir, MYCO_DIRNAME, RUNTIME_HOME_FILENAME);
-    const home = readHomePin(pinPath, options);
+    const home = readHomePin(pinPath, { ...options, projectPin: pinPath !== machineHomePinPath(options) });
     if (home) return { home, pinPath };
     const parent = path.dirname(dir);
     if (parent === dir) return null;
@@ -157,27 +157,12 @@ export function readHomePin(pinPath: string, options: MycoHomeOptions = {}): str
   return path.resolve(expanded);
 }
 
-/**
- * One stderr line per refused pin file per process. The home is resolved on
- * nearly every path through the binary, so an unconditional line would repeat
- * a refusal hundreds of times in one hook run and drown the reason it names.
- */
-const refusalsReported = new Set<string>();
+/** One stderr line per launch, shared with program-pin resolution. */
+const reportPinRefusalOnce = reportPinRefusal;
 
-function reportPinRefusalOnce(pinPath: string, reason: string): void {
-  const key = `${pinPath} ${reason}`;
-  if (refusalsReported.has(key)) return;
-  refusalsReported.add(key);
-  try {
-    process.stderr.write(`[myco] ignoring runtime home pin (${reason}): ${pinPath}\n`);
-  } catch {
-    // stderr unavailable
-  }
-}
-
-/** Test seam: forget which refusals have already been reported this process. */
+/** Test seam: forget the refusal reported by this process. */
 export function _resetPinRefusalReports(): void {
-  refusalsReported.clear();
+  resetPinRefusalReports();
 }
 
 /**

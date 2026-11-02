@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -226,6 +227,7 @@ describe('checkMemberMcpResolution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
+    trustProjectPin(path.join(root, '.myco', 'runtime.home'));
     member(root, mycoHome, 'proj_1');
 
     const checks = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);

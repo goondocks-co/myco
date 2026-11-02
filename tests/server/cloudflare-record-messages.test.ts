@@ -14,6 +14,7 @@ import { resolveSignInTarget } from '@myco/server/github-app.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { stageCloudflareDeploy } from '@myco/server/cloudflare-stage.js';
 import { renderDeployConfig } from '@myco/server/deploy-config.js';
+import { writeApprovedProjectPin } from '../support/project-runtime-pin.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 let root: string;
@@ -135,8 +136,13 @@ it.skipIf(process.platform === 'win32').each(['project', 'machine'])('explains t
   const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   fs.writeFileSync(wrapper, `#!/bin/sh\nexec ${quote(process.execPath)} --no-env-file ${quote(path.join(repository, 'packages/myco/src/cli.ts'))} "$@"\n`, { mode: 0o700 });
   const pinnedHome = path.join(root, 'pinned-home');
-  fs.writeFileSync(path.join(pinDirectory, 'runtime.command'), wrapper, { mode: 0o600 });
-  fs.writeFileSync(path.join(pinDirectory, 'runtime.home'), pinnedHome, { mode: 0o600 });
+  if (scope === 'project') {
+    writeApprovedProjectPin(workingDirectory, 'runtime.command', wrapper);
+    writeApprovedProjectPin(workingDirectory, 'runtime.home', pinnedHome);
+  } else {
+    fs.writeFileSync(path.join(pinDirectory, 'runtime.command'), wrapper, { mode: 0o600 });
+    fs.writeFileSync(path.join(pinDirectory, 'runtime.home'), pinnedHome, { mode: 0o600 });
+  }
   const env = { ...process.env };
   delete env.MYCO_HOME;
   delete env.MYCO_REDIRECTED;

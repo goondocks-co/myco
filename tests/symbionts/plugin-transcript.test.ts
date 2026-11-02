@@ -1,3 +1,4 @@
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -473,6 +474,7 @@ describe('one instance speaks for a session', () => {
     fs.mkdirSync(path.join(dir, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.myco', 'runtime.home'), pinnedHome);
     fs.chmodSync(path.join(dir, '.myco', 'runtime.home'), 0o644);
+    trustProjectPin(path.join(dir, '.myco', 'runtime.home'), sandbox.HOME);
 
     // A GUI-launched harness carries no MYCO_HOME: the project's pin decides.
     const pinned: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];

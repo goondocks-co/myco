@@ -4,6 +4,7 @@
  * A `runtime.command` pin names a binary to exec and a `runtime.home` pin names
  * the home a credential is read from, so a pin owned by another user or
  * writable by group/other is refused with a named reason rather than followed.
+ * Project pins also require approval stored outside the checkout in the user's home.
  *
  * A leaf: Node built-ins only, so the home resolver (`paths/home.ts`) and the
  * binary resolver (`runtime/binary-resolution.ts`) share ONE implementation of
@@ -12,6 +13,8 @@
  * tests/runtime/binary-resolution-cjs-agreement.test.ts.
  */
 import fs from 'node:fs';
+import { readApprovedProjectPin } from '../../scripts/project-pin-trust.mjs';
+export { trustProjectPin, writeTrustedProjectPin, preflightProjectPinWrite, projectPinTrustFiles, removeProjectPinTrust } from '../../scripts/project-pin-trust.mjs';
 
 /** Permission bits that make a pin writable by someone other than its owner. */
 export const PIN_INSECURE_MODE_MASK = 0o022;
@@ -24,6 +27,8 @@ export type PinTrust = { ok: true } | { ok: false; reason: string };
 /** Injectable host facts so the whole trust matrix is testable without a real pin file. */
 export interface PinTrustOptions {
   platform?: NodeJS.Platform;
+  homeDir?: string;
+  projectPin?: boolean;
   getuid?: (() => number) | undefined;
 }
 
@@ -81,14 +86,29 @@ export function readTrustedPin(
     return null;
   }
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    const raw = options.projectPin ? readApprovedProjectPin(filePath, options.homeDir) : fs.readFileSync(filePath, 'utf-8').trim();
+    if (options.projectPin && raw === null) {
+      report(filePath, 'project pin has no matching approval; run myco member trust-pins');
+      return null;
+    }
     return raw || null;
   } catch {
     return null;
   }
 }
 
+const PIN_REFUSAL_REPORTED_ENV = 'MYCO_PIN_REFUSAL_REPORTED';
+let refusalReported = false;
+
+export function resetPinRefusalReports(): void {
+  refusalReported = false;
+  delete process.env[PIN_REFUSAL_REPORTED_ENV];
+}
+
 export function reportPinRefusal(pinPath: string, reason: string): void {
+  if (refusalReported || process.env[PIN_REFUSAL_REPORTED_ENV] === '1') return;
+  refusalReported = true;
+  process.env[PIN_REFUSAL_REPORTED_ENV] = '1';
   try {
     process.stderr.write(`[myco] ignoring runtime pin (${reason}): ${pinPath}\n`);
   } catch {
