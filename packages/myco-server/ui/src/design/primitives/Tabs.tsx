@@ -9,7 +9,7 @@ export const Tabs = TabsPrimitive.Root;
 /** The row of tabs: an underline across the content's width. */
 export const TabsList = forwardRef<ElementRef<typeof TabsPrimitive.List>, ComponentPropsWithoutRef<typeof TabsPrimitive.List>>(
   ({ className, ...props }, ref) => (
-    <TabsPrimitive.List ref={ref} className={cn('flex gap-s6 overflow-x-auto border-b border-line', className)} {...props} />
+    <TabsPrimitive.List ref={ref} className={cn('flex gap-s6 overflow-x-auto border-b border-line pb-px', className)} {...props} />
   ),
 );
 TabsList.displayName = 'TabsList';

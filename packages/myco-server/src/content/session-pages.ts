@@ -1,3 +1,4 @@
+import { recordMycoFields } from './tool-rollup.js';
 /**
  * Request-time reads of a session's live document. Every read names the pages or chunks it wants through bounded
  * directory statements, so a request costs a fixed number of catalog rows and blob GETs whatever the session's size. A chunk
@@ -136,8 +137,8 @@ export function toolCallRow(record: DocRecord, at: PageLocator) {
   const input = typeof record.input === 'string' ? toolInputPreview(record.input) : null;
   const files = Array.isArray(record.files_affected) ? record.files_affected.filter((path): path is string => typeof path === 'string') : [];
   return {
-    toolCallId: record.id, promptId: record.prompt_id, toolName: str(record.tool_name) ?? 'unknown', mycoTool: str(record.myco_tool),
-    mycoOp: str(record.myco_op), inputPreview: input?.preview ?? null,
+    toolCallId: record.id, promptId: record.prompt_id, toolName: str(record.tool_name) ?? 'unknown', mycoTool: recordMycoFields(record).tool,
+    mycoOp: recordMycoFields(record).op, inputPreview: input?.preview ?? null,
     inputBytes: typeof record.input_bytes === 'number' ? record.input_bytes : null,
     inputTruncated: (input?.truncated ?? false) || record.bodies?.input !== undefined, inputBlobKey: record.bodies?.input?.digest ?? null,
     outputPreview: str(record.output_preview), outputBlobKey: null, success: record.success !== 0, errorMessage: str(record.error_message),

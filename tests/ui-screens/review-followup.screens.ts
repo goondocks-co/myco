@@ -28,7 +28,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
     });
     let inserted = false;
     let unavailable = finding === 4;
-    const turn = { promptId: 'review-turn', origin: 'user', promptKind: null, threadLabel: null, preview: 'A reply arrived while this view was closed', blobKey: null, textChars: 45, createdAt: now - 100000, orderedAt: now - 100000, responseCount: 61, toolCallCount: 0, childCount: 0, attachmentCount: 0, planCount: 0 };
+    const turn = { promptId: 'review-turn', origin: 'user', promptKind: null, threadLabel: null, preview: 'A reply arrived while this view was closed', blobKey: null, textChars: 45, createdAt: now - 100000, orderedAt: now - 100000, responseCount: 61, toolCallCount: 0, childCount: 0, attachmentCount: 0, planCount: finding === '1-plans' ? 51 : 0 };
     const reply = (i: number) => ({ responseId: `reply-${i}`, promptId: turn.promptId, text: `Reply ${i}`, blobKey: null, createdAt: now - 10000 + i, orderedAt: now - 10000 + i });
     const extra = { ...reply(25.5), text: 'Inserted reply: the missing detail is now captured.' };
     const plan = (i: number) => ({ planKey: `plan-${i}`, promptId: turn.promptId, title: `Plan ${i}`, status: 'active', content: null, blobKey: null, originPath: null, updatedBy: null, progress: null, createdAt: now - 10000 + i, updatedAt: now - 10000 + i, orderedAt: now - 10000 + i });
@@ -74,6 +74,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
       await page.getByRole('tab', { name: /^Spores/ }).click();
       inserted = true;
       await page.getByRole('tab', { name: /^Conversation/ }).click();
+      await page.getByRole('button', { name: /earlier replies$/ }).click();
       await expect(page.getByText('Reply 50', { exact: true })).toHaveCount(before ? 2 : 1);
       await expect(page.getByText(extra.text, { exact: true })).toHaveCount(before ? 0 : 1);
       await page.getByText('Reply 25', { exact: true }).scrollIntoViewIfNeeded();
@@ -93,7 +94,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
     if (finding === 4 && !before) {
       unavailable = false;
       await page.getByRole('button', { name: 'Retry', exact: true }).click();
-      await expect(page.getByText('Reply 1', { exact: true })).toBeVisible();
+      await expect(page.getByText('Reply 50', { exact: true })).toBeVisible();
       await page.screenshot({ path: path.join(report, 'review-4-retry-success.png') });
     }
     await context.close();

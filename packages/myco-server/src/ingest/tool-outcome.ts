@@ -19,6 +19,7 @@ const callFields = [
   'myco_tool',
   'myco_op',
   'files_affected',
+  'harness',
   'canopy_injection_tokens',
 ] as const;
 const outcomeFields = [

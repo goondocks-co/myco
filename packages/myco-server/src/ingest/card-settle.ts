@@ -10,12 +10,13 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { trimTurn, triageTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import {
-  cardStatements, forgetTurnStatement, modelDueStatement, NONE_CARD, renderCard, reusableCard, turnMaterial, type DueTurn,
+  cardOutline, cardStatements, forgetTurnStatement, modelDueStatement, NONE_CARD, renderCard, reusableCard, turnMaterial, type DueTurn, type CardMarks,
 } from '../core/turn-cards.js';
 import { pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { SessionDocument } from '../content/session-pages.js';
 import { documentTurn } from '../content/turn-material.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached } from './document-batch.js';
+import { deferDocumentReadFailure } from './document-read-failures.js';
 import type { PassLimits } from './parse.js';
 
 /** Turns one wake settles at most. */
@@ -33,9 +34,13 @@ export async function settleCards(env: Pick<ServerEnv, 'db' | 'blobs'>, now: num
   for (const row of results.slice(0, SETTLE_TURNS_PER_WAKE)) {
     if (limits.clock() >= limits.deadline || reserveReached(env.db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { settled, more: true };
     const key = JSON.stringify([row.projectId, row.sessionId]);
-    if (!documents.has(key)) documents.set(key, SessionDocument.open(env, row.projectId, row.sessionId));
-    await settleTurn(env, row, await documents.get(key)!, now);
-    settled += 1;
+    try {
+      if (!documents.has(key)) documents.set(key, SessionDocument.open(env, row.projectId, row.sessionId));
+      await settleTurn(env, row, await documents.get(key)!, now);
+      settled += 1;
+    } catch (error) {
+      await deferDocumentReadFailure(env.db, { project_id: row.projectId, session_id: row.sessionId, turnKey: row.turnKey }, error, now);
+    }
   }
   return { settled, more: results.length > SETTLE_TURNS_PER_WAKE };
 }
@@ -63,7 +68,8 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: SettleRow, 
     return;
   }
   const card = prior !== null
-    ? { text: prior.card, signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
-    : { text: renderCard(NONE_CARD(rule!)), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
+    ? { text: prior.card, outline: prior.headline === null || prior.marks === null ? cardOutline(prior.card) : { headline: prior.headline, marks: JSON.parse(prior.marks) as CardMarks },
+      signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
+    : { text: renderCard(NONE_CARD(rule!)), outline: cardOutline(NONE_CARD(rule!)), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
   await db.batch([...cardStatements(db, p, s, turn, card, now, material), ...sessionProgressStatements(db, p, s, now)]);
 }

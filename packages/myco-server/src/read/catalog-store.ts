@@ -115,8 +115,6 @@ import type { ReadScope as activity_import_ReadScope } from "./scope.js";
 
 import { notTombstonedSql as activity_import_notTombstonedSql } from "../db/session-read-model.js";
 
-import type { ToolResultReason as session_activity_import_ToolResultReason } from "@goondocks/myco-shared/member-protocol";
-
 import type { RelationalStore as session_activity_import_RelationalStore } from "../core/adapters.js";
 
 import { notTombstonedSql as session_activity_import_notTombstonedSql } from "../db/session-read-model.js";
@@ -1813,7 +1811,7 @@ const session_activity_EDGE_SOURCES = [
 
 type session_activity_EdgeKey = 'child' | 'continued_by' | 'continues';
 
-export const SESSION_ACTIVITY_TYPES = ['failure', 'no_result', 'child_session', 'continuation'] as const;
+export const SESSION_ACTIVITY_TYPES = ['child_session', 'continuation'] as const;
 
 type session_activity_SessionActivityType = typeof SESSION_ACTIVITY_TYPES[number];
 
@@ -1823,21 +1821,14 @@ interface session_activity_SessionActivityRow {
   title: string;
   detail: string;
   at: number;
-  promptId: string | null;
-  /** The tool a tool row records; null on a session row. */
-  toolName: string | null;
-  resultReason: session_activity_import_ToolResultReason | null;
-  failed: boolean;
-  /** The related session a session row opens; null on a tool row and for a session this Project does not hold. */
+  /** The related session a row opens; null for a session this Project does not hold. */
   sessionId: string | null;
-  /** The related session's agent; null on a tool row. */
+  /** The related session's agent. */
   agent: string | null;
 }
 
 interface session_activity_SessionActivityOptions {
   type?: session_activity_SessionActivityType;
-  tool?: string;
-  failed?: boolean;
   limit?: number;
   cursor?: string;
 }
@@ -1874,7 +1865,7 @@ async function session_activity_edgeRows(db: session_activity_import_RelationalS
     id: row.id, type: row.type, at: row.at,
     title: row.related === null ? session_activity_NOT_CAPTURED_TITLE : sessions_relatedSessionLabel(row.title, row.first_prompt, row.agent),
     detail: [session_activity_EDGE_DETAILS[row.edge], row.reason].filter(Boolean).join(' · '),
-    promptId: null, toolName: null, resultReason: null, failed: false, sessionId: row.related, agent: row.agent,
+    sessionId: row.related, agent: row.agent,
   }));
 }
 

@@ -180,17 +180,31 @@ export const MAX_FILES_AFFECTED = 100;
 export const MAX_FILE_PATH_CHARS = 1024;
 
 const FILE_KEYS = ['file_path', 'path', 'notebook_path'] as const;
+const MYCO_TOOL_FIELD_CHARS = 64;
+
+/** Myco tool metadata from a bare or MCP-prefixed name and its input. */
+export function mycoToolFields(toolName: string, input: unknown): { mycoTool?: string; mycoOp?: string } {
+  const leaf = toolName.split('__').pop() ?? toolName;
+  if (!/^myco_[a-z_]+$/.test(leaf)) return {};
+  const op = input !== null && typeof input === 'object' ? (input as Record<string, unknown>).op : undefined;
+  return { mycoTool: leaf.slice(0, MYCO_TOOL_FIELD_CHARS), ...(typeof op === 'string' ? { mycoOp: op.slice(0, MYCO_TOOL_FIELD_CHARS) } : {}) };
+}
 
 /** The file paths a tool input names under its conventional path keys, or undefined when it names none. */
 export function filesNamedByToolInput(toolInput: unknown): string[] | undefined {
-  if (!toolInput || typeof toolInput !== 'object') return undefined;
-  const record = toolInput as Record<string, unknown>;
+  const record = typeof toolInput === 'object' && toolInput !== null ? toolInput as Record<string, unknown> : {};
   const files: string[] = [];
   for (const key of FILE_KEYS) {
     const v = record[key];
     if (typeof v === 'string' && v.length > 0 && v.length <= MAX_FILE_PATH_CHARS) files.push(v);
   }
-  return files.length > 0 ? files.slice(0, MAX_FILES_AFFECTED) : undefined;
+  const patch = typeof toolInput === 'string' ? toolInput : record.patch ?? record.input;
+  if (typeof patch === 'string' && patch.startsWith('*** Begin Patch')) {
+    for (const match of patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)) {
+      if (match[1]!.length <= MAX_FILE_PATH_CHARS) files.push(match[1]!);
+    }
+  }
+  return files.length > 0 ? [...new Set(files)].slice(0, MAX_FILES_AFFECTED) : undefined;
 }
 
 /**

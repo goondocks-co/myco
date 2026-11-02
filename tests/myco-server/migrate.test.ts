@@ -267,6 +267,16 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0252_v252.sql': 'e18155953d1bcded2e09fa8abccc63bff22b8ea997194f85cb0e63a5bfa48c55',
   '0253_v253.sql': 'a9dc0f8663b1c60f2e5a63dc4ebc18411eaab195f795f327cdb591cb02f9d6e1',
   '0254_v254.sql': '078208242ef739fc47cc50a6c2bb6850d75fff96683662f3e5e4a2a64a75a5c6',
+  '0255_v255.sql': '30087fa3ef48adfcaf021caec0a06324742a62767bea7835122d5efe516365b2',
+  '0256_v256.sql': 'ccfe8787ad1aaa45586b30396d00ff0063789923f0b61749a877e786608af9d8',
+  '0257_v257.sql': 'b146d03f118789ab6e653f574d69337bcd916dacb462e707263142557de90ead',
+  '0258_v258.sql': '9ec46bdb8eb7bd3e92d4e569eee03a82bcaed96a3888cb5cd11827308331bae8',
+  '0259_v259.sql': '6377f0b3bf9d28760232fbbd43333982363efbbcecf9c5a17bc1d3c67cffe128',
+  '0260_v260.sql': '9128f2cefcf5f42371855a23e3af78536420118efd26a4818d2a204c380e2229',
+  '0261_v261.sql': 'f8345840fd0f591d9a23b58043ccaef7d671b1fe453f669ff55c127997ad3aed',
+  '0262_v262.sql': '71aa35803e21bf5fdd9cd9a953cec09147e5c1acfc1eb260e747b6c5c0db7303',
+  '0263_v263.sql': 'e811f8ac1ca6cebe6bc43eedf1028acf21a1c139b2402a27c29e486eab3ac4e0',
+  '0264_v264.sql': '8a2933b14bb5051d1bb1fc044b5c5ead2f4f81b4865fb1b378b3382e4d351cd8',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -954,7 +964,7 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-       'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
+       'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards',
     ].sort());

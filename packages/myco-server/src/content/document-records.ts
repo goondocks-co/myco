@@ -8,7 +8,7 @@
  * A plan record is one appearance of a plan: its id is the member event that carried it, or the transcript record
  * the parser minted, and `plan_key` names the canonical plan.
  */
-import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
+import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/member-protocol';
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
 import { DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
@@ -69,9 +69,10 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
   }
   const input = text(p.input);
   const failed = p.success === false || kind === 'tool.failure';
+  const myco = mycoToolFields(str(p.toolName) ?? '', p.input);
   return {
     k, id: String(p.toolCallId), prompt_id: str(p.promptId), ...origin,
-    tool_name: str(p.toolName) ?? 'unknown', myco_tool: str(p.mycoTool), myco_op: str(p.mycoOp),
+    tool_name: str(p.toolName) ?? 'unknown', myco_tool: str(p.mycoTool) ?? myco.mycoTool ?? null, myco_op: str(p.mycoOp) ?? myco.mycoOp ?? null,
     summary: toolSummary(p.input), input, input_bytes: new TextEncoder().encode(input).length,
     files_affected: Array.isArray(p.filesAffected) ? p.filesAffected : filesNamedByToolInput(p.input),
     success: failed ? 0 : 1, output_preview: preview(p.output), error_message: preview(p.errorMessage),

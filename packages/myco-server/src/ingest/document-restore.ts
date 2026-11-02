@@ -181,7 +181,7 @@ async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promi
 }
 
 /** The catalog tables a conversion fills before its flip. */
-const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'myco_tool_calls', 'transcript_publication'] as const;
+const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls', 'transcript_publication'] as const;
 
 /**
  * Restarts the conversion of every session the plan converts that `holder` may hold, in one batch that first refuses
@@ -209,12 +209,12 @@ async function restartConversions(db: Pick<ServerEnv, 'db'>['db'], plan: Documen
       ...BUILT.map((table) => db.prepare(`DELETE FROM ${table} WHERE ${converting}`).bind(refs, ...own)),
       heldUntil === null
         ? db.prepare(`UPDATE session_documents SET generation = NULL, build = NULL, due_at = NULL, restore_hold = NULL,
-            prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, first_prompt = NULL,
+            prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, paths_count = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0, first_prompt = NULL,
             last_record_at = NULL, open_turn_key = NULL, next_chunk = 0, updated_at = ? WHERE ${converting}`).bind(now, refs, holder)
         : db.prepare(`INSERT INTO session_documents (project_id, session_id, state, due_at, restore_hold, updated_at)
             SELECT json_extract(value,'$.projectId'), json_extract(value,'$.sessionId'), 'convert', ?, ?, ? FROM json_each(?) WHERE true
             ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'convert', generation = NULL, build = NULL, due_at = excluded.due_at,
-              restore_hold = excluded.restore_hold, prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0,
+              restore_hold = excluded.restore_hold, prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, paths_count = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0,
               first_prompt = NULL, last_record_at = NULL, open_turn_key = NULL, next_chunk = 0, updated_at = excluded.updated_at
               WHERE session_documents.state = 'convert'`).bind(heldUntil, holder, now, refs),
     ]);
@@ -248,13 +248,13 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const state = holder === undefined ? `state='live'` : `state='convert' AND restore_hold=?`;
   const owner = holder === undefined ? [] : [holder];
   const [docs, chunks, pages] = await db.batch([
-    db.prepare(`SELECT COALESCE(d.generation,1) generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, d.build, s.created_by_token_id token_id
+    db.prepare(`SELECT COALESCE(d.generation,1) generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, d.build, s.created_by_token_id token_id,s.agent
       FROM session_documents d JOIN sessions s ON s.project_id = d.project_id AND s.session_id = d.session_id
       WHERE d.project_id = ?1 AND d.session_id = ?2 AND ${state}
         AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`).bind(session.projectId, session.sessionId, ...owner),
     ...directoryStatements(db, session.projectId, session.sessionId),
   ]);
-  const doc = docs!.results[0] as (BatchDocument & { build: string | null }) | undefined;
+  const doc = docs!.results[0] as (BatchDocument & { build: string | null; agent: string | null }) | undefined;
   if (doc === undefined) throw new RestorePlanStale();
   const generation = holder === undefined ? doc.generation : null;
   const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
@@ -271,7 +271,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
     for (const name of restored.classes) classes[name] = (classes[name] ?? 0) + 1;
   }
   const diagnostics = Object.keys(classes).length === 0 ? doc.build : JSON.stringify({ ...build, report: { ...build.report, classes } });
-  await batch.place(records, null);
+  await batch.place(records, doc.agent);
   await batch.commit(batch.writer.changed, 'live', now, (version) => ({
     sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND ${state} AND generation IS ?)
       AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,

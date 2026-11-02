@@ -4,6 +4,9 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/event-references.ts#eventReferenceStatement': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#captureReferences': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#fillReferences': [{tables:['event_refs'],order:'unverified'}],
+  'content/tool-statistics.ts#turnStatisticsStatements': [{ tables: ['session_turn_entries'], order: 'unverified' }],
+  'ingest/document-summaries.ts#catchUpSummaries': ['session_path_build', 'session_paths']
+    .map(table => ({ tables: [table], order: 'unverified' as const })),
   'ingest/parse.ts#rereadTranscripts': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'core/attention-state.ts#recordDocumentPublishFailure': [{ tables: ['schema_meta'], order: 'unverified' }],
   'core/attempt-accounting.ts#restoreAttemptStatement': [

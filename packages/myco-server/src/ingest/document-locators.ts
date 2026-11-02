@@ -10,6 +10,8 @@ import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached } from './document-batch.js';
 import type { PassLimits } from './parse.js';
+import { catchUpSummaries } from './document-summaries.js';
+import { deferDocumentReadFailure } from './document-read-failures.js';
 
 /** Page chunks one wake reads to locate prompts. */
 export const LOCATE_CHUNKS_PER_WAKE = 4;
@@ -20,13 +22,18 @@ interface Unlocated { project_id: string; session_id: string; generation: number
 export async function locatePrompts(env: Pick<ServerEnv, 'db' | 'blobs'>, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const db = env.db;
   let read = 0, changed = 0;
+  const now = limits.clock();
   while (read < LOCATE_CHUNKS_PER_WAKE) {
     if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { changed, more: true };
     const doc = await db.prepare(`SELECT p.project_id, p.session_id, p.generation, d.locate_after
       FROM session_prompts p INDEXED BY idx_session_prompts_unlocated
       JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id AND d.generation = p.generation AND d.state = 'live'
-      WHERE p.page IS NULL LIMIT 1`).first<Unlocated>();
-    if (doc === null) return { changed, more: false };
+      WHERE p.page IS NULL AND d.rollup_due<=? LIMIT 1`).bind(now).first<Unlocated>();
+    if (doc === null) {
+      const summaries = await catchUpSummaries(env, limits, LOCATE_CHUNKS_PER_WAKE - read);
+      return { changed: changed + summaries.changed, more: summaries.more };
+    }
+    try {
     const share = LOCATE_CHUNKS_PER_WAKE - read;
     const rows = (await db.prepare(`SELECT c.chunk_no, c.blob_key, c.kind, c.bytes, c.source_id,
         ${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key
@@ -35,11 +42,11 @@ export async function locatePrompts(env: Pick<ServerEnv, 'db' | 'blobs'>, limits
     const chunks = rows.slice(0, share);
     const placed: { id: string; page: number }[] = [];
     for (const row of chunks) {
+      read += 1;
       for (const page of (await readPageChunk(env, row)).pages) {
         for (const record of page.records) if (record.k === 'prompt') placed.push({ id: record.id, page: page.page });
       }
     }
-    read += chunks.length;
     const finished = rows.length <= share;
     const where = 'project_id = ? AND session_id = ? AND generation = ?';
     const key = [doc.project_id, doc.session_id, doc.generation];
@@ -54,6 +61,7 @@ export async function locatePrompts(env: Pick<ServerEnv, 'db' | 'blobs'>, limits
     ]);
     changed += placed.length;
     if (!finished) return { changed, more: true };
+    } catch (error) { await deferDocumentReadFailure(db, doc, error, now); read += 1; }
   }
   return { changed, more: true };
 }
