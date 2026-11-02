@@ -19,10 +19,10 @@ export const DOCUMENT_ID_FIELDS: Readonly<Record<string,string>> = {prompt:'prom
 export const eventPayloadFieldSql = (field: string, alias = ''): string => `json_extract(CASE WHEN json_valid(${alias}payload) THEN ${alias}payload END,'$.${field}')`;
 export const documentRecordIdSql = (alias = ''): string => `CASE ${alias}kind WHEN 'prompt' THEN ${eventPayloadFieldSql('promptId',alias)} WHEN 'response' THEN ${eventPayloadFieldSql('responseId',alias)} ELSE ${eventPayloadFieldSql('toolCallId',alias)} END`;
 
-export const DOCUMENT_IDENTITIES_SQL = `(SELECT project_id,session_id,${documentRecordIdSql()} record_id FROM events WHERE kind IN ('prompt','response','tool.use','tool.failure'))`;
+export const DOCUMENT_IDENTITIES_SQL = `(SELECT project_id,session_id,record_id FROM event_refs WHERE kind IN ('prompt','response','tool.use','tool.failure'))`;
 
 export const ARCHIVED_EVENT_FIELDS = ['promptId','responseId','toolCallId','blob','outputBlob'] as const;
-export const archivedEventPayloadSql = (): string => `json_object(${ARCHIVED_EVENT_FIELDS.map(field=>`'${field}',${eventPayloadFieldSql(field)}`).join(',')})`;
+export const archivedEventPayloadSql = (alias = ''): string => `json_object(${ARCHIVED_EVENT_FIELDS.map(field=>`'${field}',${eventPayloadFieldSql(field,alias)}`).join(',')})`;
 export function archivedEventMetadata(payload: Record<string,unknown>): string {
   return JSON.stringify(Object.fromEntries(ARCHIVED_EVENT_FIELDS.map(field=>[field,typeof payload[field]==='string'?payload[field]:null])));
 }

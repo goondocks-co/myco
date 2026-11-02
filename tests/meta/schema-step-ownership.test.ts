@@ -1,4 +1,4 @@
-import { V117_STATEMENTS } from '@myco-server-worker/db/schema-v117.js';
+import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
@@ -16,9 +16,6 @@ interface Exception {
 }
 const LISTED: readonly Exception[] = [
   {step:116,object:'idx_transcript_publication_failed',table:'transcript_publication',reason:'Status counts the publications stopped for good without reading the others.'},
-  {step:118,object:'idx_events_record_identity',table:'events',reason:'Canonical prompt and tool ownership is resolved through event identity metadata.'},
-  {step:119,object:'idx_events_payload_blob',table:'events',reason:'Raw input blob holders are resolved through event metadata.'},
-  {step:120,object:'idx_events_payload_output_blob',table:'events',reason:'Raw output blob holders are resolved through event metadata.'},
   {step:113,object:'idx_session_prompts_unlocated',table:'session_prompts',reason:'The locator backfill finds the prompts it has yet to locate without reading the located ones.'},
   {step:114,object:'idx_session_prompts_prompt',table:'session_prompts',reason:'A prompt cited by id alone is found in its Project without knowing its session.'},
   {step:114,object:'idx_session_prompts_created',table:'session_prompts',reason:'Prompt measures read a window of prompt times, not every prompt.'},
@@ -128,7 +125,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
-  ...V117_STATEMENTS.slice(1).map(sql=>({step:117,sql,reason:'Retained documents are required before relational content storage is retired.'})),
+  ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
   ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
     step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
   })),
@@ -518,7 +515,7 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
 
 it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
   expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
-    Array.from({ length: 120 }, (_, index) => index + 1),
+    Array.from({ length: 254 }, (_, index) => index + 1),
   );
   expect(
     readdirSync('packages/myco-server/migrations')

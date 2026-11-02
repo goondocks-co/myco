@@ -17,9 +17,9 @@ const REFERENCES = [
   'plans.blob_key',
   'attachments.blob_key',
   'transcript_segments.blob_key',
+  'event_refs.blob',
+  'event_refs.output_blob',
   'events.blob_key (prompt, tool.use, tool.failure, response, compaction.pre, compaction.post)',
-  'events.payload.blob',
-  'events.payload.outputBlob',
   'archive_bundles.archive_key',
   'archive_bundles.receipt_key',
   'raw_archive_refs.archive_key',
@@ -50,7 +50,7 @@ describe('the blob reference catalogue', () => {
       for (const ref of BLOB_REFERENCES) {
         const scanned = details.filter((d) => d.startsWith(`SCAN ${ref.table}`));
         expect({ ref: referenceLabel(ref), scanned }).toEqual({ ref: referenceLabel(ref), scanned: [] });
-        expect(details.some((d) => d.startsWith(`SEARCH ${ref.table} USING`) && (ref.jsonField !== undefined || d.includes(ref.column)))).toBe(true);
+        expect(details.some((d) => d.startsWith(`SEARCH ${ref.table} USING`) && d.includes(ref.column))).toBe(true);
       }
     } finally { sqlite.close(); }
   });

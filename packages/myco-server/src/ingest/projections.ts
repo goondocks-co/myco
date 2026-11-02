@@ -478,10 +478,10 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
  * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
  */
 const LATEST_USER_TURN_SQL = `MAX(COALESCE((SELECT MAX(first_at) FROM (
-  SELECT MIN(p.created_at) first_at FROM events p
+  SELECT MIN(p.created_at) first_at FROM events p LEFT JOIN event_refs r ON r.project_id=p.project_id AND r.event_id=p.event_id
   WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.kind='prompt'
     AND CASE WHEN p.payload_format='archived' THEN p.archived_prompt_origin ELSE json_extract(p.payload,'$.origin') END='user'
-  GROUP BY json_extract(p.payload,'$.promptId'))),0),COALESCE((SELECT MAX(p.created_at) FROM session_prompts p
+  GROUP BY COALESCE(r.record_id,p.event_id))),0),COALESCE((SELECT MAX(p.created_at) FROM session_prompts p
     JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
     WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.origin='user'),0))`;
 

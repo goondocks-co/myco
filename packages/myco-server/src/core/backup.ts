@@ -1,3 +1,7 @@
+import { contentAssertion } from './registered-content.js';
+import { RETIRED_CONTENT_TABLES } from '../db/schema-v117.js';
+import { eventReferenceStatement } from '../db/event-references.js';
+import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
 import { assertThinLearningDrained, THIN_LEARNING_REMOVAL_VERSION } from '../db/thin-learning-admission.js';
 import { estimateInvalidationStatements } from './budget-estimates.js';
@@ -60,7 +64,7 @@ const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'runners', 'device_decision_audit', 'device_requests', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
-  'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'processed_resources', 'plans',
+  'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'event_refs', 'processed_resources', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
@@ -98,6 +102,8 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  ...RETIRED_CONTENT_TABLES,
+  ...RETIRED_CONTENT_TABLES.filter(table=>table.endsWith('_fts')).flatMap(table=>['_data','_idx','_docsize','_config'].map(suffix=>table+suffix)),
   'learning_sessions', 'plan_promotions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks',
@@ -358,7 +364,7 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
     if (line.length === 0) continue;
     const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
     artifactTable(row.t);
-    if (EXCLUDED_TABLES.has(row.t)) continue;
+    if (EXCLUDED_TABLES.has(row.t) && !LEGACY_DOCUMENT_TABLES.includes(row.t)) continue;
     const namespace = row.t === 'knowledge_release_state' ? row.r.namespace : undefined;
     const retiredTable = retiredBackupTable(row.t) ?? retiredBackupTable(namespace);
     if (retiredTable !== undefined) {
@@ -801,6 +807,17 @@ export async function restoreArtifact(
       outcome.tables[table] = { rows: rows.length, inserted };
       continue;
     }
+    if (table === 'event_refs') {
+      let inserted=0;
+      for(const row of rows) {
+        const result=await db.batch([registeredBlobsGuard(db,referencedBlobsOf(table,row)),
+          ...contentAssertion(db,'EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND kind=?)',
+            [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,false)]);
+        inserted+=result.at(-1)!.results.length;
+      }
+      outcome.tables[table]={rows:rows.length,inserted};
+      continue;
+    }
     if (table === 'processed_resources') {
       rows = rows.filter(row => row.kind !== 'tool-input');
       if (rows.length === 0) {
@@ -943,6 +960,7 @@ export async function restoreArtifact(
     if (restored === undefined) throw new BackupApplyError('documents', 'a restored input has no verified bundle');
     row.input_bundle_id = restored;
   }
+  await restoreLegacyEventReferences(db,byTable);
   await documents?.apply(restoredAt);
   return outcome;
 }

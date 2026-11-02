@@ -1,4 +1,4 @@
-import { RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
+import { RETIREMENT_SCHEMA_STEPS, RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -129,10 +129,144 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
-  '0117_v117.sql': '5f6c5d01777141d0667aa52d1f5e8acab6116db33c7630e196a2b24604866e9d',
-  '0118_v118.sql': 'f67d20715d48958b2fee095660203d95e11bd651fe7ae0670c1e6ea69a345dde',
-  '0119_v119.sql': 'd704b38c014b738c302c06b67627073ee1b2b33d569a3ed0c072c054a7a084db',
-  '0120_v120.sql': 'a5a857afc9369f5cad903cbdec47bdf90d6fbd68179a84a45bfe5c15d55be8e9',
+  '0117_v117.sql': '7f80b23f585d4263317b13a2694ac6677303fbfc8cb04be18effb649d6c37799',
+  '0118_v118.sql': 'b4a974a787dd5e727d33e6ef83c6b633c46ed4896d58245d71031c7802975f46',
+  '0119_v119.sql': '4e202e151717581e2d2d12d883ad4326a1088d4c1bf491c896ff48bb595c338e',
+  '0120_v120.sql': 'ecb8af6b333f2f4ce5ded2b0e1f1907580ea943f26c0cdcbc783b4ddd0c7534b',
+  '0121_v121.sql': '326c509a393e505d00f30264d38757f7e8b4e48dd3d51bb5c09024a7cbeffa45',
+  '0122_v122.sql': '9b9f4479194ab3aad8dccf962a4e6a313be1c4cd0313ec7b56d027d228859abe',
+  '0123_v123.sql': 'b16d25c1c330d1fc510a6b6757048b214e9bf9a29c2312c841eab8a064dce85a',
+  '0124_v124.sql': '3c12683d83a99acc3e05859e614b0796b9eaec27b6faf2b7b6b67ae867d5e839',
+  '0125_v125.sql': '03b772fd571a989ed49ab665d78c6bdb97417b20c139821c979076b883dba770',
+  '0126_v126.sql': '901aa8fd3c957a56e9cac7e0b401f3892bd2d54de9cc475d76da0acda3ea2ee2',
+  '0127_v127.sql': '9860f42aaaaf1018b0d915b0ceb547bc3e70eadb55b6f7b4699aff4084cabf39',
+  '0128_v128.sql': '1dd14683fbbe5c16332534ebefa1b0d3a75c480db7b419ab2cd4e6341363fbf8',
+  '0129_v129.sql': 'ebe599b5a0e64996a6930aa0f2c3cfd5f38852e3b5e2b0c0774c620fbc717f17',
+  '0130_v130.sql': '08be413268ae7a9a8f6e68724eb3801412be959d2e7ff5cb360b6f50430fbdc4',
+  '0131_v131.sql': '0aea8ce82e60e258a7040d388bd55892240ce7f35db8d6c1ddc5f4cf41361485',
+  '0132_v132.sql': '95fc1f9ff6d12b38c991fd9db4f143151a93fb367b004f713ce65ee9a479c63f',
+  '0133_v133.sql': 'ae21c455be6c6d8a42f6dcf3b2c349f7ef343454a65537baf3e49553027544be',
+  '0134_v134.sql': '150d7cdd88b32dec40124133800a6759ec11578db2fa4441f5a335fa484041e0',
+  '0135_v135.sql': '4230b9f21ca62a0c529d42d21a16d185cb0a166ef41846744eb41d06b70375b2',
+  '0136_v136.sql': 'c9aa382a5bd4725e646a0e1e6546f1f549004193d493ff4c9eea974fd009821e',
+  '0137_v137.sql': '7154feb5503d31201eb19d1431fe01b1028d56a03eb0910303c454b70144b41b',
+  '0138_v138.sql': '396ef583313e4653847fb25b60e1d7f03c7104c5d1f3614b70ec2822dd9a4d21',
+  '0139_v139.sql': 'd616edf187e1216328fcde5a97e596024f2f99d9d0d8ce860b4a810062448ee2',
+  '0140_v140.sql': 'ec1843a5e5e77b450c75b8377b3ee5de63867b72e237b0681e40d0548c384927',
+  '0141_v141.sql': '93ad9b6bf22215ce7c1a125ad0c84e030cd3bd4fa4cf0d6c026e1b95d740bbbb',
+  '0142_v142.sql': '1ac56c2f3b1d2dd093dd3a65a8254b972543c13c53d0c1579649e53c1221fe01',
+  '0143_v143.sql': 'de8fdcb40f00073d989b094b8266a88c115c57950d3eb6ebc2da456442f78d69',
+  '0144_v144.sql': '5df779f9708ae29f51ed0aa9c18797c64176d7f3f13f3699ccf199453108fb41',
+  '0145_v145.sql': '223e3ea26b65c626317af6ce704929fc904cabb6ccb7979e5da1f980d99dd2b4',
+  '0146_v146.sql': 'ce876bb9c7562ef919eba95740d74edaf8080937daf7d935a1083e51bf38104f',
+  '0147_v147.sql': '3ede91c34157da66103d0fe4958deb6a5f149a1f9d534b018998d18b56618c6e',
+  '0148_v148.sql': 'c2fddaf2aa0d793d9899b4aae8205dc7891ebb3f75caca3ec3cce52900058d59',
+  '0149_v149.sql': 'a4c024c1c2b7f9c3cae6336b444775ee1a30fca10a66dc314222216c7354dda6',
+  '0150_v150.sql': '0a07c651a010e535003db916ef3718cbe3b5b4d6ddd6f2f57b2a8199718bdffc',
+  '0151_v151.sql': 'b00aab57d266576899989b2a3e87791608caca3a965b36214be000c78f846c75',
+  '0152_v152.sql': '4f7c7ca4ce34229e7741d2b2faaf8111fb480ae901423355ff3cd95055a25787',
+  '0153_v153.sql': '770bf2d8ca8ee78023a55721d92fc87fe7bcccfa184c145e9c790f082569f4e0',
+  '0154_v154.sql': '91923e89809609dbff755af9b4e81374327d3301a73b8e362bf8fa2ca4aefc36',
+  '0155_v155.sql': '042825f58dfbaa89e7abd7e336ecc071f9015d5b4406dfb46ba472dae97c2582',
+  '0156_v156.sql': '296b8bf0cfc1e1136cce0705d0d7f35ddc90f1b47acf3d1d53a7769cbcb75c57',
+  '0157_v157.sql': '5c112f748217ffd09421c92edda87f4c295d5c6c5002e889115c857274c728e8',
+  '0158_v158.sql': '9984b6b94f0c4b4f02dbcfcaa7c17416832cfc6eb9c66d3e2cd8165706d6ad53',
+  '0159_v159.sql': 'def7101010786be62b9a891cc177db24286a6dcca550e33b841c365747492e29',
+  '0160_v160.sql': '411becaf4d1844bd7eaac16465d24ca21fe00057ece61e32def82e3862fc3e05',
+  '0161_v161.sql': '8b8b8095cf6e3e74106670aa351c92d94e01dfa279b0652de47f643e7e8eae8b',
+  '0162_v162.sql': 'c3e0826f9e57ca5330270381101b74761af323e785c7892d99742c21866a1145',
+  '0163_v163.sql': '5adab192e80a5da80f1a162c50d6fe1cfc975d20ef6e596ef0621855fb0130cf',
+  '0164_v164.sql': '8a3105cb261617bda9cbd16e602ea72596c24077c0a5c55306a33f0ba369a6c3',
+  '0165_v165.sql': 'fa6069ece5d238b0cafbd3f299fdd01051c0e5417b22132feebe71d6ac041934',
+  '0166_v166.sql': '53b8d79b4136b80fe886046056cfa5f97d26b1a4738c5eaea9ae26044a2271ba',
+  '0167_v167.sql': 'e372e0259f1e077b1d8ffd4499c0e289eb945667a2c9c55472eaf513221e11f3',
+  '0168_v168.sql': 'f891d15394eed2002fa1ac290e1bd43550e04be680b22aed5fff00ec744a7e4b',
+  '0169_v169.sql': 'e5a6fffcc53f94a67a066fb06c22ea5955313f85074a4f3078be6a740915b1bc',
+  '0170_v170.sql': '71b5a331d874a8b2ee0acdaea4848029de34cba09c98217765ef5bde1715a9ec',
+  '0171_v171.sql': '496377b46781059df1e297e4d292c940af60f48290bb555dfd1c762377852019',
+  '0172_v172.sql': 'c0c7e91cba23b978ea3155eb4ee414fa82f55ab94b77e3714b026eed9f23feee',
+  '0173_v173.sql': '10acd6f16c3192112cda7aca9e9979d58f56c80e8d8ca2ca84e1b9b8df5a8ede',
+  '0174_v174.sql': 'b9a42d2bfd83cd0e4ef8cfe54280580cd3869fe6e1e29da6840f6b500396d55f',
+  '0175_v175.sql': '602d01b2a157bac78edb921464fd4b9ea20c595243a6686e3ce0e889ebaf5037',
+  '0176_v176.sql': 'aaeaf2032762099c9d0b52ccf7ba7da810fdbbaea91073d7901c7284d3a7d6b5',
+  '0177_v177.sql': '8f7e7c7ae18e7caa6ac8828599098d55c573d530d650e03af9fc05b14ea8e10b',
+  '0178_v178.sql': '3d5997a3797c2aed55d4802a50d072e47c952617b2e8db9a2107034b4fe23ee3',
+  '0179_v179.sql': 'd8021a6251feef56c0d6685a3fe992fc4b801d875b7f6bbb72392f83f905344e',
+  '0180_v180.sql': 'e3d540b5b6e08709d10d2d37ecf435cd304fa93d094a21996d1d46f96489bc35',
+  '0181_v181.sql': '263a76d020cedb5b6bd3676cc25e0d4cdb7a9d5ab4376e20b215bbfac852c9ce',
+  '0182_v182.sql': '1901d61bb0de8f4f17597d8dad1ab2191b2e989f7e900d0f9bb6ec7962324fc7',
+  '0183_v183.sql': 'c104a0ad78bf12d7da1b0f546389cb57249ee288b6a7045110d7edcd83b5a57e',
+  '0184_v184.sql': 'c81da4db2a9cfd4b2460e12d163a8ccf866362641fef04e507ca728b7c4d2e4d',
+  '0185_v185.sql': 'f3bb5b30cfdb7cf236f796d5f37c363d8f6bc1be75a0812b36dc73969228e65b',
+  '0186_v186.sql': 'e1653911b8c2ec90e9be5851c9ea458252896632fd1640f9461cd63a6f9704dc',
+  '0187_v187.sql': '709a7a9e3fdc93f8724458ade8fc0759b190712d36ea571a28f8fb7566331687',
+  '0188_v188.sql': '4f4ef0a1025b3b05a65d8c16915b998131c06a11cfffcae0e0b86be12fe86e4e',
+  '0189_v189.sql': '0fcacaa1e09fc51d5484dca7db4d247e107b04b157f145884f4d5726d8829ce9',
+  '0190_v190.sql': 'e0f652fd542977faab3ca313dc4b35430a92b6672f69b2a73f3c9b0ebaec2486',
+  '0191_v191.sql': '5e47878447c2edd7c77452ce412ed2da71643d34f5114caef57c5bf12dc7c196',
+  '0192_v192.sql': 'f8cda8129929e09f5ae6f641c0a45d3bc3e364388ab77b3a9eb97e9203900b86',
+  '0193_v193.sql': '38eb900ee437a5f0845855d60fa897e0aa2299c43faca51d93d744efd639b233',
+  '0194_v194.sql': 'a94d12ed2db101520eacd16edd9dd1c9bbc2d3a7daaccaa3de4121f585d68220',
+  '0195_v195.sql': '2564572321f67da7b698233ae1b603b149a10744164c3746506246e2348ee596',
+  '0196_v196.sql': 'a8c28c091d106206a3e2161d80c5ece164399383d69ff98b248151b7e3e9a996',
+  '0197_v197.sql': '4e53bada7156da19215fd20b3616da180e1adda6d69999f6c8c017ebedabb771',
+  '0198_v198.sql': 'ee1b155e328394399b0d029ffcec29815f4e735fa48f4f9089e8e620939566bb',
+  '0199_v199.sql': 'a19f9508f1827f39ac11db87536875ace10a249abda5107d5610add7fab2fccd',
+  '0200_v200.sql': '4d3fa4eed110b360ef16755f4db0cdc933a5ed1df3af23b4e354de92600d64be',
+  '0201_v201.sql': '49dcc5f51d74bada41e6611aa26af0fbbbb67fe658fa9bf5eeafda3c20476bb6',
+  '0202_v202.sql': '8cd129af1ed55df44dd2bb027c6947f160c0bc78206f74a2fb9a1853ce5d5a2d',
+  '0203_v203.sql': '28067eaaf62186ee20b6a19c40f80be9f352831f0645dcc7dfc6e80056e47e4b',
+  '0204_v204.sql': 'ca6275d90b545e2db66f5be7b87758451538c1921505247cfbe99118b54bc8c8',
+  '0205_v205.sql': '5743ac521138b3cc922aa559113698324e09c2011f19b0a96b67c86e0c95b6ad',
+  '0206_v206.sql': '61b1abe43d931578e2b1c8d0a62a48ef995e56869019026e32568f2c3087952a',
+  '0207_v207.sql': '3dceda2b7a58396540cf56bbade95e5b5b1347af898a64ff41bc579f0c29184b',
+  '0208_v208.sql': '767c1cf12e65392262b1e07d95a4a26190599c3a75b29cd269989edd8b45d103',
+  '0209_v209.sql': '6b710f5c68d90ba63ad3833db44b3694aa8a0eb62b6b20061be74e96eb2e8113',
+  '0210_v210.sql': '0f989f38e39ff1b89bfc921202c5e3cdec8d1afb540b650071640dac57418e47',
+  '0211_v211.sql': '7ab363820bca0f72ca7b8afa0b03cbb1ee98c0dd71925b697510650f53daeb67',
+  '0212_v212.sql': '5b753b8c4c037790abb1e3f94734365c50ad87ee642acff3d2a08ba74215b935',
+  '0213_v213.sql': 'c5b97dc0161475554dfea128731e544822c9bce53b4127ca3875680d3214ad09',
+  '0214_v214.sql': '53bb2b6e1466d80d61602e02a33f6aedc95efff573ef01c01cdbae268467315b',
+  '0215_v215.sql': '353cec71eb18003cad079e3eadd5d1de7bdd4c056c08ed2a9c737ae8552972ac',
+  '0216_v216.sql': 'b6f2a856ed9478d4d322443909187fc146b70cc33b9055ca369301d17fe120d0',
+  '0217_v217.sql': '1ab0f48b9724018218c677ed9280a4621e57727491323573974d02ef9f84d048',
+  '0218_v218.sql': 'fe22d8f4276d5246f123ea881bec8cf81bfa8abe58a74caf94d04725a575fe3b',
+  '0219_v219.sql': 'ce5500d9d6640537f56605cd0c59407dd92da8a4b8598616195ef4eae020bf2e',
+  '0220_v220.sql': 'b33a459d39b1e45482f920e71f84b0010517531569c96aa20120c16180277843',
+  '0221_v221.sql': '3bc4508b96026fecbf04572b4887522298fc5a48c0477aaaeedfb101e6f70d71',
+  '0222_v222.sql': 'dabcb2da58a5ffe725b5456cd9809ecef4ef3db8cce664498939b64bbf16fce8',
+  '0223_v223.sql': 'eb845f7276a42aa5891c6593a1efbe27a14f661fe610ee3156205163c231a84e',
+  '0224_v224.sql': '14d575ffc7f132e1e348f7e93d542190c5b0a35cf97ecc2706959383a1e7721d',
+  '0225_v225.sql': '14cac4dabdef173a1b50ee72c1814ef439446a47ab20d2f77764ba5f2ae24742',
+  '0226_v226.sql': '99b2645a4eaa7daaadc73fea698b49ca6462e3293912358d5e0043cdf0b4090d',
+  '0227_v227.sql': '5ebf523d1260cbdd7d9824bd4ed6c407765a74063e2e1da6ba5401474b5f3096',
+  '0228_v228.sql': '453b66f43fdba68aba5e28438671f7616c1c50400e89b0ecf8b9db6ed5ee1a0f',
+  '0229_v229.sql': 'd89869a9257d39991fe66b122ccb18623227b9f1c8dc8ea971f27ab36df34144',
+  '0230_v230.sql': 'ede2d862438b645a8f01d6a62e1eefa9856b3a1260258c58b91878162dfeb4cb',
+  '0231_v231.sql': 'd82555ba09524760f3f3b9a9cbd4520161d1aafdbc2ffad0411159c9a77bd978',
+  '0232_v232.sql': 'eeed694ab99de94b36ebc6cdf46e6400887c46f877c875795bb9ef39b5f02250',
+  '0233_v233.sql': 'bc4a3980b206f23bec196675f9c6ffc14652ea0ed6493b032ed38cb2aad7a93d',
+  '0234_v234.sql': 'a0830c7d55aa2d1757f7abe18db98150c3207360a5c2a2b4723666b079a4f7f2',
+  '0235_v235.sql': '6d288c5e160cfdaf6691abe3e7accab1fb088d9d396a6e91b348b1418fe90d60',
+  '0236_v236.sql': 'c065d63b931838c2e398b335cdc7e0fe5c093fb750ded24f259eb8fac6983271',
+  '0237_v237.sql': '39826a6ec330e403729e334892f7e50014321e5a08e0fe95e973e859a0753be0',
+  '0238_v238.sql': '4dbbea39cbb60bb758383b0b55cf0e36dcdcc0f14144051600ff9cdfcfb19a6b',
+  '0239_v239.sql': '1de9be673b14702ec99e1584336b04007d9c1c2180664aa15688ca782ca7f9b3',
+  '0240_v240.sql': '64649ab5fa8d13cb391d5909aafecd0fe14321a7dafc9a40ad0de457e0c3f3b3',
+  '0241_v241.sql': 'be9c0d386be7eba3b8d84180948e2bf012af38ee0764bdf01adc5e3e5f9bd1fc',
+  '0242_v242.sql': 'dbf94d439c793f14946ec42b24be5db1b8f0b6b892105b9dead3b262fb5d98f3',
+  '0243_v243.sql': 'f0ce233e8cd344c43ebff8b54b1d8808cc54d6572e505ffb7cb35aa97925fdc6',
+  '0244_v244.sql': '38c7b4e8068774bda12cb4f94008e9e051be491cf1bc69e5a87b7b945177ed3f',
+  '0245_v245.sql': '6b76fd7cc2b2e2df69baae368be43f3352005b8e470e253840cd659ce4e4a894',
+  '0246_v246.sql': '435c1880a30242f0f102f5ae78e60344b304f274753c915f5cccecaafd391dc4',
+  '0247_v247.sql': '65344ba57580b9d56a50b66cbc8248f4744b0505706e66f8b21a4010883b275e',
+  '0248_v248.sql': '259d7db12025ad8a21438ef14ac061be63c4e8f3ef19477e828a6fdbdbbd5e44',
+  '0249_v249.sql': '1665f99c645e3009dcb5fd7498796e8b16fdf7844c4c74933ea0b288099f1798',
+  '0250_v250.sql': 'f401d27fef9b4544a93b70fe579f97d47cd1d14ca2e43903e09ea386d19878ee',
+  '0251_v251.sql': '4b0d262dd64af0101810bde1c523e90a3c3056d068a45e2fce6972ba72164632',
+  '0252_v252.sql': 'e18155953d1bcded2e09fa8abccc63bff22b8ea997194f85cb0e63a5bfa48c55',
+  '0253_v253.sql': 'a9dc0f8663b1c60f2e5a63dc4ebc18411eaab195f795f327cdb591cb02f9d6e1',
+  '0254_v254.sql': '078208242ef739fc47cc50a6c2bb6850d75fff96683662f3e5e4a2a64a75a5c6',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -600,10 +734,13 @@ describe('versioned schema steps', () => {
       'skill_records_embedding_ai', 'skill_records_embedding_au', 'skill_records_embedding_ad',
     ]);
     for (let n = 2; n < SCHEMA_STEPS.length; n++) {
+      const retirement = RETIREMENT_SCHEMA_STEPS.some(step => step.version === SCHEMA_STEPS[n]!.version);
+      const drops = SCHEMA_STEPS[n]!.statements.filter(sql => sql.startsWith('DROP TABLE IF EXISTS ')).map(sql => sql.slice('DROP TABLE IF EXISTS '.length));
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === 117 && RETIRED_CONTENT_TABLES.some(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')))) {
+        if (table==='_v117_reference_ranges' && SCHEMA_STEPS[n]!.statements.includes('DROP TABLE _v117_reference_ranges')) { expect(after.has(table)).toBe(false); continue; }
+        if ((n === 85 && retiredAt86.has(table)) || (retirement && RETIRED_CONTENT_TABLES.some(name => drops.includes(name) && (table === name || name.endsWith('_fts') && table.startsWith(name + '_'))))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -626,7 +763,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = (n === 85 && retiredAt86.has(dropped)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
+          const allowedRetirement = dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (retirement && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -653,7 +790,7 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
-            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (SCHEMA_STEPS[n]!.version === 117 && (RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger)) })
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (retirement && ((RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger))) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -765,7 +902,7 @@ describe('versioned schema steps', () => {
     for (const t of tables) {
       const cols = sqlite.query(`PRAGMA table_info(${t})`).all() as { name: string; type: string; notnull: number; dflt_value: string | null }[];
       if (!cols.some((c) => c.name === 'project_id')) continue;
-      if (t === 'member_tokens' || t === 'sessions' || t === 'events') continue;
+      if (t === 'member_tokens' || t === 'sessions' || t === 'events' || (RETIRED_CONTENT_TABLES as readonly string[]).includes(t)) continue;
       sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
         const specimen = writerRows.get(t);
@@ -815,7 +952,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
@@ -905,19 +1042,19 @@ it('retires content storage only after documents are live, preserving the catalo
     sqlite.run(`INSERT INTO view_instances(project_id,session_id,instance_id,parser_version,base,state,created_at) VALUES('retirement','session','instance',1,'full','live',1)`);
     sqlite.run(`INSERT INTO view_checkpoints(project_id,session_id,instance_id,transcript_id,ordinal,start_offset,parsed_offset) VALUES('retirement','session','instance','transcript',0,0,10)`);
     sqlite.run(`INSERT INTO view_checkpoint_chunks(project_id,session_id,instance_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload) VALUES('retirement','session','instance','transcript',10,0,1,'{}')`);
-    for(const sql of retirement.statements.filter(sql=>sql.startsWith('WITH backfill'))){
-      const explain=sqlite.prepare('EXPLAIN QUERY PLAN '+sql);
-      try {
-        const plan=explain.all().map(row=>(row as {detail:string}).detail).join('\n');
-        expect(plan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
-        expect(plan).not.toContain('CORRELATED');
-      }finally{explain.finalize();}
-    }
-    step(sqlite, retirement);
-    for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).toBeNull();
+    for (const next of SCHEMA_STEPS.filter(step => step.version >= 117)) step(sqlite, next);
+    for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).not.toBeNull();
     expect(sqlite.query(`SELECT session_id FROM sessions WHERE project_id='retirement'`).get()).toEqual({session_id:'session'});
     expect(sqlite.query(`SELECT generation FROM session_documents WHERE project_id='retirement'`).get()).toEqual({generation:1});
     expect(sqlite.query(`SELECT source,cursor_project,cursor_id,complete FROM raw_provenance_backfill WHERE id=1`).get())
       .toEqual({source:0,cursor_project:'',cursor_id:'',complete:0});
   } finally { sqlite.close(); }
+});
+
+it('backfills only the reference catalog and retains content tables', () => {
+  for (const {statements} of RETIREMENT_SCHEMA_STEPS) for(const sql of statements) {
+    expect(sql).not.toMatch(/UPDATE events|CREATE (?:UNIQUE )?INDEX[^;]* ON events/i);
+    const dropped=/^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(sql)?.[1];
+    if(dropped!==undefined)expect(['_v117_documents_guard','_v117_reference_ranges']).toContain(dropped);
+  }
 });

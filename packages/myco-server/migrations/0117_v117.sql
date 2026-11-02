@@ -28,175 +28,37 @@ DROP TABLE _v117_documents_guard;
 UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
     (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'));
 
-WITH backfill AS MATERIALIZED (
-      SELECT p.project_id,p.event_id,json_set(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
-        '$.promptId',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.promptId'),p.prompt_id),
-        '$.blob',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.blob'),p.blob_key)) payload
-      FROM prompt_batches p CROSS JOIN events e
-      WHERE e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN ('prompt') AND e.payload_format='archived')
-    UPDATE events AS e SET payload=b.payload FROM backfill b WHERE e.project_id=b.project_id AND e.event_id=b.event_id;
+CREATE TABLE IF NOT EXISTS event_refs (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),event_id TEXT NOT NULL,session_id TEXT NOT NULL,kind TEXT NOT NULL,
+    record_id TEXT,blob TEXT,output_blob TEXT,PRIMARY KEY(project_id,event_id));
 
-WITH backfill AS MATERIALIZED (
-      SELECT p.project_id,p.event_id,json_set(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
-        '$.responseId',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.responseId'),p.response_id),
-        '$.blob',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.blob'),p.blob_key)) payload
-      FROM responses p CROSS JOIN events e
-      WHERE e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN ('response') AND e.payload_format='archived')
-    UPDATE events AS e SET payload=b.payload FROM backfill b WHERE e.project_id=b.project_id AND e.event_id=b.event_id;
+CREATE INDEX IF NOT EXISTS idx_event_refs_identity ON event_refs(project_id,record_id,session_id,kind) WHERE record_id IS NOT NULL;
 
-WITH backfill AS MATERIALIZED (
-      SELECT p.project_id,p.event_id,json_set(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
-        '$.toolCallId',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.toolCallId'),p.tool_call_id),
-        '$.blob',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.blob'),p.input_blob_key),
-        '$.outputBlob',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.outputBlob'),p.output_blob_key)) payload
-      FROM tool_calls p CROSS JOIN events e
-      WHERE e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN ('tool.use','tool.failure') AND e.payload_format='archived')
-    UPDATE events AS e SET payload=b.payload FROM backfill b WHERE e.project_id=b.project_id AND e.event_id=b.event_id;
+CREATE INDEX IF NOT EXISTS idx_event_refs_blob ON event_refs(project_id,blob) WHERE blob IS NOT NULL;
 
-DROP TRIGGER IF EXISTS clear_inline_parser_chunks;
+CREATE INDEX IF NOT EXISTS idx_event_refs_output_blob ON event_refs(project_id,output_blob) WHERE output_blob IS NOT NULL;
 
-DROP TRIGGER IF EXISTS extraction_acks_session_read_insert;
+CREATE INDEX IF NOT EXISTS idx_event_refs_session ON event_refs(project_id,session_id,kind,record_id);
 
-DROP TRIGGER IF EXISTS plans_legacy_class_insert;
+CREATE TRIGGER IF NOT EXISTS events_refs_insert AFTER INSERT ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob')
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure')
+    ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
+      record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
 
-DROP TRIGGER IF EXISTS plans_legacy_class_update;
+CREATE TRIGGER IF NOT EXISTS events_refs_update AFTER UPDATE OF payload ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,COALESCE(CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,CASE OLD.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.toolCallId') END),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob')),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob'))
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure')
+    ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
+      record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
 
-DROP TRIGGER IF EXISTS tags_plan_legacy_class_insert;
+CREATE TRIGGER IF NOT EXISTS events_refs_delete AFTER DELETE ON events BEGIN DELETE FROM event_refs WHERE project_id=OLD.project_id AND event_id=OLD.event_id; END;
 
-DROP TRIGGER IF EXISTS tags_plan_legacy_class_delete;
+CREATE TABLE IF NOT EXISTS _v117_reference_ranges (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID;
 
-DROP TABLE IF EXISTS prompt_batches;
+INSERT INTO _v117_reference_ranges SELECT 'tool_calls',COALESCE(MAX(rowid),0) FROM tool_calls;
 
-DROP TABLE IF EXISTS tool_calls;
+INSERT INTO _v117_reference_ranges SELECT 'prompt_batches',COALESCE(MAX(rowid),0) FROM prompt_batches;
 
-DROP TABLE IF EXISTS responses;
+INSERT INTO _v117_reference_ranges SELECT 'responses',COALESCE(MAX(rowid),0) FROM responses;
 
-DROP TABLE IF EXISTS transcript_parser_state_chunks;
-
-DROP TABLE IF EXISTS prompt_key_owners;
-
-DROP TABLE IF EXISTS view_visible;
-
-DROP TABLE IF EXISTS view_checkpoint_chunks;
-
-DROP TABLE IF EXISTS view_checkpoints;
-
-DROP TABLE IF EXISTS view_key_owners;
-
-DROP TABLE IF EXISTS view_prompts;
-
-DROP TABLE IF EXISTS view_responses;
-
-DROP TABLE IF EXISTS view_tool_calls;
-
-DROP TABLE IF EXISTS view_plans;
-
-DROP TABLE IF EXISTS view_content_proofs;
-
-DROP TABLE IF EXISTS view_findings;
-
-DROP TABLE IF EXISTS fact_classes;
-
-DROP TABLE IF EXISTS plan_promotions;
-
-DROP TABLE IF EXISTS view_prompts_fts;
-
-DROP TABLE IF EXISTS view_responses_fts;
-
-DROP TABLE IF EXISTS view_plans_fts;
-
-DROP TABLE IF EXISTS material_versions;
-
-DROP TABLE IF EXISTS view_publication_material;
-
-DROP TABLE IF EXISTS view_build_work;
-
-DROP TABLE IF EXISTS view_legacy_ack_feed;
-
-DROP TABLE IF EXISTS view_flip_calibrations;
-
-DROP TABLE IF EXISTS view_work_samples;
-
-DROP TABLE IF EXISTS learning_init_queue;
-
-DROP TABLE IF EXISTS cutover_progress;
-
-DROP TABLE IF EXISTS prompt_batches_fts;
-
-DROP TABLE IF EXISTS responses_fts;
-
-DROP TABLE IF EXISTS session_views;
-
-DROP TABLE IF EXISTS view_instances;
-
-UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0;
-
-ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT;
-
-CREATE TRIGGER IF NOT EXISTS session_prompts_unread_insert AFTER INSERT ON session_prompts BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts+(1)
-  WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=NEW.project_id AND d.session_id=NEW.session_id AND d.generation=NEW.generation AND d.state='live') AND (NEW.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=NEW.project_id AND a.record_id=NEW.prompt_id
-    AND a.kind='record')); END;
-
-CREATE TRIGGER IF NOT EXISTS session_prompts_unread_delete AFTER DELETE ON session_prompts BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts+(-1)
-  WHERE project_id=OLD.project_id AND session_id=OLD.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=OLD.project_id AND d.session_id=OLD.session_id AND d.generation=OLD.generation AND d.state='live') AND (OLD.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=OLD.project_id AND a.record_id=OLD.prompt_id
-    AND a.kind='record')); END;
-
-CREATE TRIGGER IF NOT EXISTS session_prompts_unread_update AFTER UPDATE OF project_id,session_id,generation,prompt_id,origin ON session_prompts
-    BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts+(-1)
-  WHERE project_id=OLD.project_id AND session_id=OLD.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=OLD.project_id AND d.session_id=OLD.session_id AND d.generation=OLD.generation AND d.state='live') AND (OLD.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=OLD.project_id AND a.record_id=OLD.prompt_id
-    AND a.kind='record')); UPDATE session_read_facts SET eligible_prompts=eligible_prompts+(1)
-  WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=NEW.project_id AND d.session_id=NEW.session_id AND d.generation=NEW.generation AND d.state='live') AND (NEW.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=NEW.project_id AND a.record_id=NEW.prompt_id
-    AND a.kind='record')); END;
-
-CREATE TRIGGER IF NOT EXISTS session_documents_unread_insert AFTER INSERT ON session_documents BEGIN UPDATE session_read_facts SET eligible_prompts=(SELECT COUNT(*) FROM session_prompts p
-  WHERE p.project_id=NEW.project_id AND p.session_id=NEW.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record')))
-  WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;
-
-CREATE TRIGGER IF NOT EXISTS session_documents_unread_delete AFTER DELETE ON session_documents BEGIN UPDATE session_read_facts SET eligible_prompts=(SELECT COUNT(*) FROM session_prompts p
-  WHERE p.project_id=OLD.project_id AND p.session_id=OLD.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record')))
-  WHERE project_id=OLD.project_id AND session_id=OLD.session_id; END;
-
-CREATE TRIGGER IF NOT EXISTS session_documents_unread_update AFTER UPDATE OF generation,state ON session_documents BEGIN UPDATE session_read_facts SET eligible_prompts=(SELECT COUNT(*) FROM session_prompts p
-  WHERE p.project_id=NEW.project_id AND p.session_id=NEW.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record')))
-  WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;
-
-CREATE TRIGGER IF NOT EXISTS extraction_acks_session_read_insert AFTER INSERT ON extraction_acks WHEN NEW.kind='record'
-    BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts-1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id
-      AND EXISTS (SELECT 1 FROM session_prompts p WHERE p.project_id=NEW.project_id AND p.session_id=NEW.session_id AND p.prompt_id=NEW.record_id
-        AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record' AND a.ack_id<>NEW.ack_id))); END;
-
-CREATE TRIGGER IF NOT EXISTS extraction_acks_session_read_delete AFTER DELETE ON extraction_acks WHEN OLD.kind='record'
-    BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts+1 WHERE project_id=OLD.project_id AND session_id=OLD.session_id
-      AND EXISTS (SELECT 1 FROM session_prompts p WHERE p.project_id=OLD.project_id AND p.session_id=OLD.session_id AND p.prompt_id=OLD.record_id
-        AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record'))); END;
-
-UPDATE session_read_facts SET eligible_prompts=(SELECT COUNT(*) FROM session_prompts p
-  WHERE p.project_id=session_read_facts.project_id AND p.session_id=session_read_facts.session_id AND EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live') AND (p.origin IN ('user','unknown')
-  AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id
-    AND a.kind='record')));
+INSERT INTO _v117_reference_ranges SELECT 'events',COALESCE(MAX(rowid),0) FROM events;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '117');

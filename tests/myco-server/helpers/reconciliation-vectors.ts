@@ -165,6 +165,7 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
 }
 
 export const RECONCILIATION_FIXTURE = [
+  'CREATE TABLE event_refs(project_id TEXT,event_id TEXT,session_id TEXT,kind TEXT,record_id TEXT,blob TEXT,output_blob TEXT,PRIMARY KEY(project_id,event_id))',
   'CREATE TABLE events(project_id TEXT,event_id TEXT,ingest_nonce TEXT,session_id TEXT,kind TEXT,payload TEXT,payload_format TEXT,archived_prompt_origin TEXT,created_at INTEGER,PRIMARY KEY(project_id,event_id))',
   'CREATE TABLE projects(project_id TEXT PRIMARY KEY,name TEXT)',
   "INSERT INTO projects VALUES ('p','p')",
