@@ -3009,8 +3009,8 @@ async function core_embedding_selection_retiringReceipt(db: core_embedding_selec
 /** Source work starts at the version index; eligibility is a point lookup in its owning source table. */
 function core_embedding_selection_unwrittenQuery(projectId: string, model: string, now: number): core_embedding_selection_EmbeddingQuery {
   return {
-    sql: `SELECT 1 AS pending FROM embedding_versions s WHERE s.project_id = ? AND ${core_embedding_source_state_eligibleSource('s')}
-    AND NOT ${core_embedding_reconcile_SOURCE_HELD} AND NOT ${core_embedding_reconcile_PASSED_OVER} LIMIT 1`, binds: [projectId, model, ...core_embedding_reconcile_passedOverBinds(model, now)]
+    sql: `SELECT 1 AS pending FROM embedding_versions s WHERE s.project_id = ? AND NOT ${core_embedding_reconcile_SOURCE_HELD}
+    AND ${core_embedding_source_state_eligibleSource('s')} AND NOT ${core_embedding_reconcile_PASSED_OVER} LIMIT 1`, binds: [projectId, model, ...core_embedding_reconcile_passedOverBinds(model, now)]
   };
 }
 
@@ -3018,7 +3018,7 @@ function core_embedding_selection_unwrittenQuery(projectId: string, model: strin
 function core_embedding_selection_sourceSelectionQuery(projectId: string, type: string, model: string, now: number, stale: boolean): core_embedding_selection_EmbeddingQuery {
   return {
     sql: `SELECT s.record_id, s.revision FROM embedding_versions s
-    WHERE s.project_id = ? AND s.type = ? AND ${core_embedding_source_state_eligibleSource('s')} AND NOT ${core_embedding_reconcile_SOURCE_HELD} AND NOT ${core_embedding_reconcile_PASSED_OVER}
+    WHERE s.project_id = ? AND s.type = ? AND NOT ${core_embedding_reconcile_SOURCE_HELD} AND ${core_embedding_source_state_eligibleSource('s')} AND NOT ${core_embedding_reconcile_PASSED_OVER}
       AND ${stale ? '' : 'NOT '}EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id)
     ORDER BY s.attempted_at, s.record_id LIMIT 1`, binds: [projectId, type, model, ...core_embedding_reconcile_passedOverBinds(model, now)]
   };
@@ -3183,9 +3183,8 @@ async function core_embedding_hubness_missingSporeVectors(db: core_embedding_hub
   const row = await db.prepare(`SELECT COALESCE(SUM(r.ready = 0 OR (r.updated_at <= ? AND r.rewrites < ${core_embedding_hubness_import_VECTOR_REWRITE_LIMIT})), 0) AS rewriting,
       COALESCE(SUM(r.ready = 1 AND r.updated_at > ?), 0) AS waiting,
       COALESCE(SUM(r.ready = 1 AND r.updated_at <= ? AND r.rewrites >= ${core_embedding_hubness_import_VECTOR_REWRITE_LIMIT}), 0) AS abandoned
-    FROM embedding_receipts r JOIN embedding_sources s
-      ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-    WHERE r.project_id = ? AND r.model_key = ? AND r.rewrites > 0 AND r.ready >= 0 AND r.type = 'spore'`)
+    FROM embedding_receipts r
+    WHERE r.project_id = ? AND r.model_key = ? AND r.rewrites > 0 AND r.ready >= 0 AND r.type = 'spore' AND ${core_embedding_source_state_currentSource('r')}`)
     .bind(now - core_embedding_hubness_import_VECTOR_LOST_MS, now - core_embedding_hubness_import_VECTOR_LOST_MS, now - core_embedding_hubness_import_VECTOR_LOST_MS, projectId, model).first<core_embedding_hubness_MissingSporeVectors>();
   return { rewriting: row?.rewriting ?? 0, waiting: row?.waiting ?? 0, abandoned: row?.abandoned ?? 0 };
 }
