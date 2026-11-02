@@ -9,6 +9,7 @@ import { publishDocuments, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS } from
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
+import { assertSessionMaterialReady } from '@myco-server-worker/read/material-readiness.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
@@ -36,6 +37,68 @@ async function queuedTurn(db: RelationalStore) {
   ]) expect((await ingestEvent(db, ctx, event, env)).persisted).toBe(true);
   return { now, env, blobs, key, bytes, ctx };
 }
+
+async function queuedChild(db: RelationalStore, tie: boolean, spillChild = false) {
+  const fixture = await queuedTurn(db);
+  for (const event of [
+    envelope({ eventId: uuid(0), sessionId: 'session', kind: 'prompt', createdAt: tie ? 1 : 0,
+      payload: { promptId: uuid(22), parentPromptId: uuid(20), ...(spillChild ? { blob: fixture.key } : { text: 'child prompt' }), origin: 'user' } }),
+    envelope({ eventId: uuid(5), sessionId: 'session', kind: 'prompt',
+      payload: { promptId: uuid(21), text: 'later prompt', origin: 'user' } }),
+  ]) expect((await ingestEvent(db, fixture.ctx, event, fixture.env)).persisted).toBe(true);
+  return fixture;
+}
+
+test('a queued child preceding its parent publishes under that parent for either timestamp ordering', async () => {
+  for (const tie of [false, true]) await withDocumentStores(async (db, target) => {
+    const { env, now } = await queuedChild(db, tie);
+    if (tie) await db.prepare(`UPDATE publish_queue SET retry_at=? WHERE session_id='session'`).bind(now + PUBLISH_BACKOFF_MAX_MS).run();
+    await publishDocuments(env, now, limits());
+    expect(await db.prepare(`SELECT prompts FROM session_documents WHERE session_id='session'`).first(), target).toEqual({ prompts: 2 });
+    for (let pass = 1; pass < 4; pass++) await publishDocuments(env, now + pass * PUBLISH_BACKOFF_MAX_MS, limits());
+    expect(await db.prepare(`SELECT prompts,replies,tool_calls,first_prompt,open_turn_key,due_at FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: 3, replies: 1, tool_calls: 1, first_prompt: 'retained prompt', open_turn_key: uuid(21), due_at: null });
+    expect((await readPage(env, 'project', 'session', uuid(20), 0))!.map(record => record.id).sort(), target)
+      .toEqual([20, 22, 30, 40].map(uuid).sort());
+    await assertSessionMaterialReady(db, 'project', 'session');
+  });
+});
+
+test('a queued child and its ancestor recover from a transient read fault without an ancestor order hold', async () => {
+  for (const childFails of [false, true]) await withDocumentStores(async (db, target) => {
+    const { env, now, blobs, key } = await queuedChild(db, true, childFails), get = blobs.get.bind(blobs);
+    let fail = true;
+    blobs.get = async physical => { if (fail && physical.includes(key)) { fail = false; throw new Error('prompt store unavailable'); } return get(physical); };
+    await expect(publishDocuments(env, now, limits())).rejects.toThrow('prompt store unavailable');
+    expect(await db.prepare(`SELECT prompts FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: childFails ? 2 : 0 });
+    blobs.get = get;
+    for (let pass = 1; pass < 5; pass++) await publishDocuments(env, now + pass * PUBLISH_BACKOFF_MAX_MS, limits());
+    expect(await db.prepare(`SELECT prompts,replies,first_prompt,open_turn_key,due_at FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: 3, replies: 1, first_prompt: 'retained prompt', open_turn_key: uuid(21), due_at: null });
+    expect((await readPage(env, 'project', 'session', uuid(20), 0))!.map(record => record.id).sort(), target)
+      .toEqual([20, 22, 30, 40].map(uuid).sort());
+    await assertSessionMaterialReady(db, 'project', 'session');
+  });
+});
+
+test('queued self-parent and multi-prompt cycles publish without holding later turns', async () => {
+  for (const size of [1, 2]) await withDocumentStores(async (db, target) => {
+    const { env, now, ctx } = await queuedTurn(db);
+    const events = [envelope({ eventId: uuid(101), sessionId: 'cycle', kind: 'session.start', payload: { agent: 'claude-code' } }),
+      ...Array.from({ length: size }, (_, i) => envelope({ eventId: uuid(102 + i), sessionId: 'cycle', kind: 'prompt',
+        payload: { promptId: uuid(41 + i), parentPromptId: uuid(41 + (i + 1) % size), text: 'cyclic prompt ' + i, origin: 'user' } })),
+      envelope({ eventId: uuid(110), sessionId: 'cycle', kind: 'prompt', payload: { promptId: uuid(43), text: 'later turn', origin: 'user' } }),
+      envelope({ eventId: uuid(111), sessionId: 'cycle', kind: 'response', payload: { responseId: uuid(44), promptId: uuid(41), text: 'cycle reply' } })];
+    for (const event of events) expect((await ingestEvent(db, ctx, event, env)).persisted, target).toBe(true);
+    for (let pass = 0; pass < 4; pass++) await publishDocuments(env, now + pass * PUBLISH_BACKOFF_MAX_MS, limits());
+    expect(await db.prepare(`SELECT prompts,replies,first_prompt,open_turn_key,due_at FROM session_documents WHERE session_id='cycle'`).first(), target)
+      .toEqual({ prompts: size + 1, replies: 1, first_prompt: 'later turn', open_turn_key: uuid(43), due_at: null });
+    expect((await readPage(env, 'project', 'cycle', '', 0))!.map(record => record.id).sort(), target)
+      .toEqual([...Array.from({ length: size }, (_, i) => uuid(41 + i)), uuid(44)].sort());
+    await assertSessionMaterialReady(db, 'project', 'cycle');
+  });
+});
 
 test('a transient queued prompt holds its descendants, then preserves turn ownership', async () => {
   await withDocumentStores(async (db, target) => {
@@ -83,11 +146,13 @@ test('queued prompts retain their turn order, first prompt and open turn across 
     expect(await db.prepare(`SELECT prompts,first_prompt,open_turn_key FROM session_documents WHERE session_id='session'`).first(), target)
       .toEqual({ prompts: 0, first_prompt: null, open_turn_key: null });
     blobs.get = get;
-    await publishDocuments(env, now + PUBLISH_BACKOFF_MAX_MS, limits());
+    const retry = (await db.prepare(`SELECT retry_at FROM publish_queue WHERE event_id=?`).bind(uuid(2)).first<{ retry_at: number }>())!.retry_at;
+    expect((await prompt(10, 24, 'fourth prompt', retry)).persisted, target).toBe(true);
+    await publishDocuments(env, retry, limits());
     expect((await db.prepare(`SELECT prompt_id,ord FROM session_prompts WHERE session_id='session' ORDER BY ord`).all()).results, target)
-      .toEqual([20, 21, 23].map((id, ord) => ({ prompt_id: uuid(id), ord })));
+      .toEqual([20, 21, 23, 24].map((id, ord) => ({ prompt_id: uuid(id), ord })));
     expect(await db.prepare(`SELECT prompts,first_prompt,open_turn_key FROM session_documents WHERE session_id='session'`).first(), target)
-      .toEqual({ prompts: 3, first_prompt: 'retained prompt', open_turn_key: uuid(23) });
+      .toEqual({ prompts: 4, first_prompt: 'retained prompt', open_turn_key: uuid(24) });
     expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 0 });
   });
 });

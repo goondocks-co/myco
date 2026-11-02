@@ -549,6 +549,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0533_v533.sql': '702652d08c9b36f9e83227f5640dbbd47d305d19756e9fb11b440edb641b1461',
   '0534_v534.sql': '7734d757bd883f684b4657d7726206646a61ea2d6775ad9e0efc69536dcb3e5b',
   '0535_v535.sql': 'b99897b1179cc34cd730f53fe830e7ebc9f5956fbe617765b47382041e1662c7',
+  '0536_v536.sql': 'f0b34bfd0c49982b96f64ee4951507cc125c1f25b287ee20808cdc4a3a40fdf8',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1164,6 +1165,7 @@ describe('versioned schema steps', () => {
         eventId: crypto.randomUUID(), sessionId: 'grammar-session', kind: 'prompt', createdAt: 1, channel: 'cli',
         producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId, text: 'Grammar fixture', origin: 'user' },
       })).toMatchObject({ persisted: true, projected: true });
+      writerRows.set('publish_queue', source.sqlite.query('SELECT * FROM publish_queue LIMIT 1').get() as Record<string, unknown>);
       await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('learning_sessions', source.sqlite.query('SELECT * FROM learning_sessions').get() as Record<string, unknown>);

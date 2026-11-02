@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #2056 blocking recheck F1/N2, pinned Bun1.4.0 darwin-arm64 through canonical npm test, native SQLite and local Miniflare D1. Final schema536 pass-line timing sums: publication-review9 cases22916.51ms and migrate31 cases13661.53ms; retained60000ms weights exceed twice measured bodies plus startup. Recovery49000ms and exact CI contracts34000ms floors retained. No new test file or parity scenario. Four restored publication mutations failed their named regressions on both stores (8/8); an active queue-total mutation failed the terminal-hold regression on each store (2/2). Both duration catalogs and all main measurement notes retained during rebase.",
     "local: PR2061 review correction on pinned Bun1.4.0 darwin-arm64. The three failed CI files reproduced16 failing cases, then passed102 tests in15300ms after explicit fixture approval. Review contracts passed292 cases in66750ms; project-pin-trust bodies3110.45ms and final12-case wall7720ms use18000ms weight. New purge bodies59.71/105.73ms extend the7159ms CI file floor to8000ms; cutover preflight211.39ms extends78112ms to80000ms including the private-mode preservation variant; standalone layering2.92ms extends931ms to1000ms. No new test file or parity scenario, deadline or assertion reduction. Six restored mutations caught guard, layered CJS, worktree backlink, cutover approval, value binding and publication rollback removals.",
     "local: #1944 project pin approval, pinned Bun1.4.0 darwin-arm64 via npm test -- tests/cli/project-pin-trust.test.ts: three dispatch/approval contracts measured888ms Bun wall and912ms runner. New file weight3000ms covers twice measured runtime plus startup. Added mirror agreement contract measured90.41ms; existing plugin-home-agreement weight grows from1134ms to1500ms for twice that body plus startup. No new parity scenario; member routing only.",
     "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
@@ -665,7 +666,7 @@
     "tests/myco-server/member-status.test.ts": 44,
     "tests/myco-server/member-write-store.test.ts": 104,
     "tests/myco-server/membership-migration.test.ts": 59,
-    "tests/myco-server/migrate.test.ts": 45000,
+    "tests/myco-server/migrate.test.ts": 60000,
     "tests/myco-server/model-catalog-availability.test.ts": 177,
     "tests/myco-server/native-blob-durability.test.ts": 371,
     "tests/myco-server/non-rotating.test.ts": 868,
@@ -1027,7 +1028,7 @@
     "tests/myco-server/review-permissions.test.ts": 5000,
     "tests/myco-server/document-publication-recovery.test.ts": 49000,
     "tests/myco-server/publication-ci-contracts.test.ts": 34000,
-    "tests/myco-server/publication-review.test.ts": 50000
+    "tests/myco-server/publication-review.test.ts": 60000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

@@ -64,7 +64,7 @@ const RETIRE_PAGE = 100;
 const STEP_STATEMENTS = 24;
 const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
 /** What reading one queued event may spend: its row, its bundle and its spilled body, and resolving its prompt. */
-const QUEUED_STATEMENTS = 7;
+const QUEUED_STATEMENTS = 8;
 const QUEUED_BLOB_CALLS = 4;
 /** How long a failed session pass waits before retrying: the time from its last advance, within bounds. */
 export const PUBLISH_BACKOFF_MIN_MS = 60_000;
@@ -105,7 +105,7 @@ interface TranscriptRow {
   placed_records: number | null; placed_digest: string | null;
 }
 interface QueuedRow {
-  event_id: string; rank: number; retry_at: number; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
+  event_id: string; rank: number; retry_at: number; retry_cause: string | null; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
   received_at: number;
 }
 
@@ -231,7 +231,7 @@ function spilledInput(text: string): unknown {
 }
 
 /** A queued event's complete payload, read from its original evidence and verified text references. */
-async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
+async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow, observe: (payload: Record<string, unknown>) => void): Promise<Record<string, unknown>> {
   const body = row.payload_format === 'inline' ? row.payload : await eventContent(env, projectId, row.event_id);
   if (body === null) throw new Error('document_event_body_missing');
   let payload: Record<string, unknown>;
@@ -240,6 +240,7 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('document_event_payload_invalid');
     payload = parsed as Record<string, unknown>;
   } catch (error) { throw new Error('document_event_payload_invalid', { cause: error }); }
+  observe(payload);
   for (const [reference, field] of Object.entries(DOCUMENT_TEXT_FIELDS[row.kind] ?? {})) {
     const key = payload[reference];
     if (typeof key !== 'string') continue;
@@ -250,8 +251,9 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
   return payload;
 }
 
-interface QueuedRef { r: number; c: number; e: string; t: number }
-interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; error?: unknown }
+interface QueuedRef { r: number; c: number; e: string; t: number; w: string | null }
+type QueuedWaitCause = { kind: 'read'; parentId: string | null } | { kind: 'prompt' | 'order'; eventId: string };
+interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; cause: QueuedWaitCause | null; error?: unknown }
 interface QueuedRecord { consumed: QueuedRef; record: DocRecord | null; failure?: QueuedFailure }
 interface PublicationReport { records: number; more: boolean; failure?: { error: unknown; propagate: boolean } }
 
@@ -309,8 +311,8 @@ class SessionPublication {
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
         .bind(this.projectId, this.sessionId),
-      db.prepare(`SELECT q.event_id,q.rank,q.retry_at,q.created_at queued_created_at,e.kind,e.payload,e.payload_format,e.created_at,e.received_at
-        FROM (SELECT rank,created_at,event_id,retry_at FROM publish_queue WHERE project_id=?1 AND session_id=?2 AND failure IS NULL AND retry_at<=?3
+      db.prepare(`SELECT q.event_id,q.rank,q.retry_at,q.retry_cause,q.created_at queued_created_at,e.kind,e.payload,e.payload_format,e.created_at,e.received_at
+        FROM (SELECT rank,created_at,event_id,retry_at,retry_cause FROM publish_queue WHERE project_id=?1 AND session_id=?2 AND failure IS NULL AND (retry_at<=?3 OR retry_cause IS NULL)
           ORDER BY rank,created_at,event_id LIMIT ${PUBLISH_QUEUE_PER_PASS}) q
         JOIN events e ON e.project_id=?1 AND e.event_id=q.event_id ORDER BY q.rank,q.created_at,q.event_id`)
         .bind(this.projectId, this.sessionId, this.now),
@@ -520,15 +522,20 @@ class SessionPublication {
       const group: QueuedRecord[] = [];
       for (const row of rows.slice(at, at + size)) {
         if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
-        const ref = { r: row.rank, c: row.queued_created_at, e: row.event_id, t: row.retry_at };
+        const ref = { r: row.rank, c: row.queued_created_at, e: row.event_id, t: row.retry_at, w: row.retry_cause };
+        const origin = { ev: row.event_id, received_at: row.received_at };
+        let parentId: string | null = null;
         try {
-          const payload = await hydratedPayload(content, this.projectId, row);
-          group.push({ consumed: ref, record: documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at }) });
+          const payload = await hydratedPayload(content, this.projectId, row, payload => {
+            const header = row.kind === 'prompt' ? documentRecord(row.kind, payload, row.created_at, origin) : null;
+            parentId = header?.k === 'prompt' && typeof header.parent_prompt_id === 'string' ? header.parent_prompt_id : null;
+          });
+          group.push({ consumed: ref, record: documentRecord(row.kind, payload, row.created_at, origin) });
         } catch (error) {
           const outcome = publicationOutcome(error);
           const delay = Math.min(Math.max(row.retry_at - row.received_at, PUBLISH_BACKOFF_MIN_MS), PUBLISH_BACKOFF_MAX_MS);
           group.push({ consumed: ref, record: null, failure: { ...ref, failure: outcome.terminal ? outcome.failure : null,
-            retry: this.now + delay, code: outcome.failure, error } });
+            retry: this.now + delay, code: outcome.failure, cause: outcome.terminal ? null : { kind: 'read', parentId }, error } });
         }
       }
       let take = group.length, ready: QueuedRecord[] = [];
@@ -552,82 +559,116 @@ class SessionPublication {
     }
   }
 
-  /** Queued prompts retain their order; references wait until their prompt can place in the same payable group or an earlier group. */
+  /** Dependency cycles publish as unrooted session content. */
+  private async cyclicQueued(heads: readonly { head: string; start: string }[], outcomes: readonly Pick<QueuedFailure, 'e' | 'failure' | 'retry' | 'cause'>[]): Promise<ReadonlySet<string>> {
+    if (heads.length === 0) return new Set();
+    const cause = 'COALESCE(o.cause,q.retry_cause)';
+    const result = await this.db.prepare(`WITH RECURSIVE
+      staged AS MATERIALIZED (SELECT json_extract(value,'$.e') e,json_extract(value,'$.failure') failure,json_extract(value,'$.cause') cause FROM json_each(?4)),
+      walk(head,id) AS (
+        SELECT json_extract(value,'$.head'),json_extract(value,'$.start') FROM json_each(?3)
+        UNION
+        SELECT w.head,json_extract(${cause},'$.eventId') FROM walk w CROSS JOIN events e CROSS JOIN publish_queue q
+          LEFT JOIN staged o ON o.e=q.event_id
+        WHERE e.project_id=?1 AND e.event_id=w.id AND q.project_id=?1 AND q.session_id=?2 AND q.rank=0
+          AND q.created_at=e.created_at AND q.event_id=w.id AND q.failure IS NULL AND o.failure IS NULL
+          AND json_extract(${cause},'$.kind')='prompt' AND json_extract(${cause},'$.eventId') IS NOT NULL
+      )
+      SELECT w.head,MAX(w.id=w.head) closes,MIN(CASE WHEN q.event_id IS NOT NULL AND q.failure IS NULL AND o.failure IS NULL
+        AND json_extract(${cause},'$.kind')='prompt' THEN 1 ELSE 0 END) cycle
+      FROM walk w LEFT JOIN events e ON e.project_id=?1 AND e.event_id=w.id
+        LEFT JOIN publish_queue q ON q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=w.id
+        LEFT JOIN staged o ON o.e=q.event_id GROUP BY w.head`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(heads), JSON.stringify(outcomes))
+      .all<{ head: string; closes: number; cycle: number }>();
+    this.batch.calls += 1;
+    return new Set(result.results.filter(row => row.closes === 1 || row.cycle === 1).map(row => row.head));
+  }
+
+  /** Read faults can hold turn order; parent waits retain their own dependency. */
   private async readyQueued(rows: readonly QueuedRecord[]): Promise<QueuedRecord[]> {
     const parentOf = (record: DocRecord): unknown => record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
+    const independent = (record: DocRecord | null): boolean => record?.k === 'prompt' && typeof parentOf(record) !== 'string';
     const ids = [...new Set(rows.flatMap(({ record }) => {
       const id = record === null ? null : parentOf(record);
       return typeof id === 'string' && !this.placedPrompts.has(id) ? [id] : [];
     }))];
-    if (ids.length === 0 && !rows.some(row => row.record?.k === 'prompt')) return [...rows];
-    const outcomes = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])]
-      .map(({ e, failure, retry }) => ({ e, failure, retry }));
-    const held = ids.length === 0 ? [] : (await this.db.prepare(`SELECT j.value id,(SELECT COALESCE(
-        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at)
+    if (ids.length === 0 && !rows.some(row => independent(row.record))) return [...rows];
+    const faults = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])];
+    const outcomes = faults.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause }));
+    const held = ids.length === 0 ? [] : (await this.db.prepare(`WITH held AS MATERIALIZED (
+      SELECT j.value id,(SELECT json_object('e',q.event_id,'retry',COALESCE(
+        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at))
       FROM event_refs r CROSS JOIN events e CROSS JOIN publish_queue q
       WHERE r.project_id=?1 AND r.session_id=?2 AND r.kind='prompt' AND r.record_id=j.value AND r.record_id IS NOT NULL
         AND e.project_id=r.project_id AND e.event_id=r.event_id
         AND q.project_id=r.project_id AND q.session_id=r.session_id AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=r.event_id
         AND q.failure IS NULL AND NOT EXISTS (SELECT 1 FROM json_each(?4)
-          WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL) LIMIT 1) retry
+          WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL)
+        ORDER BY q.created_at,q.event_id LIMIT 1) wait
       FROM json_each(?3) j WHERE NOT EXISTS (SELECT 1 FROM session_prompts p
-        WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value)`)
+        WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value))
+      SELECT id,json_extract(wait,'$.e') event_id,json_extract(wait,'$.retry') retry FROM held`)
       .bind(this.projectId, this.sessionId, JSON.stringify(ids), JSON.stringify(outcomes), this.doc.generation)
-      .all<{ id: string; retry: number | null }>()).results;
+      .all<{ id: string; event_id: string | null; retry: number | null }>()).results;
     this.batch.calls += Number(ids.length > 0);
-    const pending = new Map(held.flatMap(row => row.retry === null ? [] : [[row.id, row.retry] as const]));
+    const pending = new Map(held.flatMap(row => row.event_id === null || row.retry === null ? [] : [[row.id, { eventId: row.event_id, retry: row.retry }] as const]));
+    const heads = rows.flatMap(row => {
+      const id = row.record === null ? null : parentOf(row.record), parent = typeof id === 'string' ? pending.get(id) : undefined;
+      return parent === undefined ? [] : [{ head: row.consumed.e, start: parent.eventId }];
+    });
+    const cyclic = await this.cyclicQueued(heads, outcomes);
     const prompts = new Map<string, DocRecord>();
     for (const { record } of rows) if (record?.k === 'prompt' && !prompts.has(record.id)) prompts.set(record.id, record);
-    const waitingFor = (id: string, seen = new Set<string>()): number | null => {
-      if (this.placedPrompts.has(id) || !pending.has(id)) return null;
+    const waitingFor = (id: string, head: string, seen = new Set<string>()): { eventId: string; retry: number } | null => {
+      if (cyclic.has(head) || this.placedPrompts.has(id) || !pending.has(id) || seen.has(id)) return null;
       const prompt = prompts.get(id);
-      if (prompt === undefined || seen.has(id)) return Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!);
+      if (prompt === undefined) return { ...pending.get(id)!, retry: Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!.retry) };
       const parent = parentOf(prompt);
       if (typeof parent !== 'string') return null;
       seen.add(id);
-      return waitingFor(parent, seen);
+      return waitingFor(parent, head, seen);
     };
-    const defer = (row: QueuedRecord, retry: number): QueuedRecord => ({ consumed: row.consumed, record: null,
-      failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending' } });
+    const defer = (row: QueuedRecord, retry: number, cause: QueuedWaitCause): QueuedRecord => ({ consumed: row.consumed, record: null,
+      failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending', cause } });
     const dependencies = (row: QueuedRecord): QueuedRecord => {
       const id = row.record === null ? null : parentOf(row.record);
-      const retry = typeof id === 'string' ? waitingFor(id) : null;
-      return retry === null ? row : defer(row, retry);
+      const wait = typeof id === 'string' ? waitingFor(id, row.consumed.e) : null;
+      return wait === null ? row : defer(row, wait.retry, { kind: 'prompt', eventId: wait.eventId });
     };
     let ready = rows.map(dependencies);
-    if (!ready.some(row => row.record?.k === 'prompt')) return ready;
+    if (!ready.some(row => independent(row.record))) return ready;
     const skipped = [...this.consumed.filter(row => row.r === 0).map(row => row.e),
       ...rows.flatMap(row => row.record?.k === 'prompt' ? [row.consumed.e] : [])];
     const outside = await this.db.prepare(`SELECT q.created_at c,q.event_id e,COALESCE(
         (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at) retry
       FROM publish_queue q WHERE q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.failure IS NULL
+        AND json_extract(q.retry_cause,'$.kind')='read' AND json_extract(q.retry_cause,'$.parentId') IS NULL
         AND NOT EXISTS (SELECT 1 FROM json_each(?3) WHERE value=q.event_id)
-        AND NOT EXISTS (SELECT 1 FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id
+          AND (json_extract(value,'$.failure') IS NOT NULL OR json_extract(value,'$.cause.kind') IS NOT 'read' OR json_extract(value,'$.cause.parentId') IS NOT NULL))
       ORDER BY q.created_at,q.event_id LIMIT 1`)
       .bind(this.projectId, this.sessionId, JSON.stringify(skipped), JSON.stringify(outcomes))
       .first<{ c: number; e: string; retry: number }>();
     this.batch.calls += 1;
+    const roots = faults.flatMap(row => row.r === 0 && row.cause?.kind === 'read' && row.cause.parentId === null
+      ? [{ c: row.c, e: row.e, retry: row.retry }] : []);
     const earlier = (left: Pick<QueuedRef, 'c' | 'e'>, right: Pick<QueuedRef, 'c' | 'e'>) => left.c < right.c || (left.c === right.c && left.e < right.e);
-    // Order holds propagate through prompt dependencies within this payable group.
-    for (let remaining = prompts.size; remaining >= 0; remaining -= 1) {
-      const waits = ready.flatMap(row => row.consumed.r === 0 && row.failure?.failure === null
-        ? [{ ...row.consumed, retry: row.failure.retry }] : []);
-      const first = [...(outside === null ? [] : [outside]), ...waits]
-        .reduce<{ c: number; e: string; retry: number } | null>((first, row) => first === null || earlier(row, first) ? row : first, null);
-      if (first === null) break;
-      const retry = Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, first.retry);
-      const ordered = ready.map(row => row.record?.k === 'prompt' && earlier(first, row.consumed) ? defer(row, retry) : row);
-      if (ordered.every((row, index) => row === ready[index])) break;
-      const readyPrompts = new Set(ordered.flatMap(row => row.record?.k === 'prompt' ? [row.record.id] : []));
-      for (const [index, row] of ordered.entries()) {
-        const original = rows[index]!.record;
-        if (original?.k === 'prompt' && row.failure?.failure === null && !readyPrompts.has(original.id)) {
-          prompts.delete(original.id);
-          pending.set(original.id, row.failure.retry);
-        }
+    const first = [...(outside === null ? [] : [outside]), ...roots]
+      .reduce<{ c: number; e: string; retry: number } | null>((first, row) => first === null || earlier(row, first) ? row : first, null);
+    if (first === null) return ready;
+    const retry = first.retry > this.now ? first.retry : this.now + PUBLISH_BACKOFF_MIN_MS;
+    const ordered = ready.map(row => independent(row.record) && earlier(first, row.consumed)
+      ? defer(row, retry, { kind: 'order', eventId: first.e }) : row);
+    const readyPrompts = new Set(ordered.flatMap(row => row.record?.k === 'prompt' ? [row.record.id] : []));
+    for (const [index, row] of ordered.entries()) {
+      const original = rows[index]!.record;
+      if (original?.k === 'prompt' && row.failure?.failure === null && !readyPrompts.has(original.id)) {
+        prompts.delete(original.id);
+        pending.set(original.id, { eventId: row.consumed.e, retry: row.failure.retry });
       }
-      ready = ordered.map(dependencies);
     }
+    ready = ordered.map(dependencies);
     return ready;
   }
 
@@ -638,7 +679,7 @@ class SessionPublication {
     const publications = this.publications.filter((publication) => publication.changed);
     const expectedOffsets = publications.map((publication) => ({ t: publication.transcript.transcript_id, o: publication.held }));
     const consumed = JSON.stringify(this.consumed);
-    const settled = JSON.stringify([...this.consumed, ...this.failedQueued].map(({ r, c, e, t }) => ({ r, c, e, t })));
+    const settled = JSON.stringify([...this.consumed, ...this.failedQueued].map(({ r, c, e, t, w }) => ({ r, c, e, t, w })));
     const before = contentAssertion(db, `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=? AND next_chunk=?)
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN session_chunks c ON c.project_id=? AND c.session_id=? AND c.generation=?
           AND c.chunk_no=json_extract(j.value,'$.n') WHERE c.blob_key IS NOT json_extract(j.value,'$.k'))
@@ -646,7 +687,7 @@ class SessionPublication {
           AND t.transcript_id=json_extract(j.value,'$.t') WHERE t.published_offset IS NOT json_extract(j.value,'$.o'))
         AND (SELECT COUNT(*) FROM json_each(?) j JOIN publish_queue q ON q.project_id=? AND q.session_id=? AND q.rank=json_extract(j.value,'$.r')
           AND q.created_at=json_extract(j.value,'$.c') AND q.event_id=json_extract(j.value,'$.e')
-          AND q.failure IS NULL AND q.retry_at=json_extract(j.value,'$.t'))=?`,
+          AND q.failure IS NULL AND q.retry_at=json_extract(j.value,'$.t') AND q.retry_cause IS json_extract(j.value,'$.w'))=?`,
       [p, s, g, this.doc.next_chunk, this.batch.expectedChunks(versions), p, s, g, JSON.stringify(expectedOffsets), p, g,
         settled, p, s, this.consumed.length + this.failedQueued.length]);
     const after: PreparedStatement[] = [];
@@ -662,9 +703,10 @@ class SessionPublication {
     }
     if (this.failedQueued.length > 0) after.push(db.prepare(`UPDATE publish_queue SET
         failure=(SELECT json_extract(value,'$.failure') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
-        retry_at=(SELECT json_extract(value,'$.retry') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id)
+        retry_at=(SELECT json_extract(value,'$.retry') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
+        retry_cause=(SELECT json_extract(value,'$.cause') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id)
       WHERE project_id=?1 AND session_id=?2 AND event_id IN (SELECT json_extract(value,'$.e') FROM json_each(?3))`)
-      .bind(p, s, JSON.stringify(this.failedQueued.map(({ e, failure, retry }) => ({ e, failure, retry })))));
+      .bind(p, s, JSON.stringify(this.failedQueued.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause })))));
     const sizes = Object.fromEntries(this.publications.map((pub) => [pub.transcript.transcript_id, pub.transcript.size]));
     const behind = this.publications.some((pub) => pub.state === 'active' && pub.fault === undefined && pub.offset < pub.transcript.size);
     const laterDue = [
