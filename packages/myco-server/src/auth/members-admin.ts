@@ -1,3 +1,4 @@
+import { isSystemMember, personMemberSql } from './member-kind.js';
 /**
  * Members, as the dashboard administers them.
  *
@@ -64,7 +65,7 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
     revokedBy: (r.revoked_by as string | null) ?? null,
     awaitingAdmission: r.revoked_at !== null && r.revoked_by === FOREIGN_LINEAGE_REVOKER,
     liveCredentials: Number(r.live_credentials),
-    system: r.id === HARNESS_MEMBER_ID,
+    system: isSystemMember(String(r.id)),
   }));
 }
 
@@ -134,7 +135,7 @@ export async function memberState(db: RelationalStore, memberId: string): Promis
   return row.revoked_at === null ? 'live' : 'revoked';
 }
 
-export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin' | 'active_owner' | 'not_owner';
+export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin' | 'active_owner' | 'not_owner' | 'system_member';
 export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusal };
 
 /**
@@ -151,7 +152,7 @@ export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMembe
 export async function revokeMember(db: RelationalStore, memberId: string, actor: string, nowMs: number): Promise<RevokeMemberResult> {
   const outcome = await memberWriteOutcome(() => db.batch([
     db.prepare(`UPDATE members SET revoked_at = ?, revoked_by = ?
-                 WHERE id = ? AND revoked_at IS NULL
+                 WHERE id = ? AND revoked_at IS NULL AND ${personMemberSql('id')}
                    AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
                    AND ${removableAdministratorSql('members')}
                    AND (role <> 'admin' OR ${deploymentOwnerSql('?')})
@@ -169,6 +170,7 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
     emit({ kind: 'member_revoked', memberId, actor });
     return { ok: true };
   }
+  if (isSystemMember(memberId)) return { ok: false, reason: 'system_member' };
   const state = await memberState(db, memberId);
   if (state !== 'live') return { ok: false, reason: state === 'absent' ? 'absent' : 'already_revoked' };
   const protectedOwner = await db.prepare('SELECT 1 FROM deployment_ownership WHERE id = 1 AND member_id = ?').bind(memberId).first();

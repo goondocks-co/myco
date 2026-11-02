@@ -18,9 +18,9 @@ import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
  * four weeks old.
  *
  * Capture goes through the real `/events` ingest and spores through the real
- * `myco_spores` tool, so the pages read rows written the way production writes
- * them. Only what has no public write path is seeded in SQL: members, machine
- * claims and credentials before the server starts, and runs, what they wrote,
+ * `myco_spores` tool or the historical import route, so the pages read rows
+ * written the way production writes them. Only what has no public write path
+ * is seeded in SQL: members, machine claims and credentials before the server starts, and runs, what they wrote,
  * a worker contact and the backup after it.
  */
 import { Database } from 'bun:sqlite';
@@ -361,11 +361,22 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   for (const spore of SPORES) {
     const session = SESSIONS[spore.session]!;
     if (session.project !== spore.project) throw new Error(`spore ${spore.type} names a session in another project`);
+    if (spore.line === null) {
+      const res = await fetch(`${url}/spores/save`, {
+        method: 'POST', headers: memberHeaders(session.machine, spore.project),
+        body: JSON.stringify({ channel: 'import', id: crypto.randomUUID(), agentId: 'user',
+          observationType: spore.type, content: spore.content, sessionId: sessionIds[spore.session] }),
+      });
+      const body = await expectOk(res, `import spore ${spore.type}`) as { persisted?: boolean; spore?: { id: string; agentLine: string | null } };
+      if (body.persisted !== true || !body.spore?.id || body.spore.agentLine !== null) throw new Error(`import spore ${spore.type}: ${JSON.stringify(body).slice(0, 300)}`);
+      sporeIds.push(body.spore.id);
+      continue;
+    }
     const res = await fetch(`${url}/mcp`, {
       method: 'POST',
       headers: memberHeaders(session.machine, spore.project),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: {
-        op: 'save', type: spore.type, content: spore.content, ...(spore.line === null ? {} : { agent_line: spore.line }), session_id: sessionIds[spore.session], project: idOf(spore.project),
+        op: 'save', type: spore.type, content: spore.content, agent_line: spore.line, session_id: sessionIds[spore.session], project: idOf(spore.project),
       } } }),
     });
     const body = await expectOk(res, `spore ${spore.type}`) as { result?: { structuredContent?: { result?: { id?: string; error?: string } } } };

@@ -69,7 +69,7 @@ beforeAll(async () => {
   // A spore saved through the served tool an agent calls.
   const upstream = resolveDeploymentUpstream('env', { env: { [ENV_SERVER_URL]: loopback, [ENV_MEMBER_TOKEN]: token, [ENV_PROJECT]: PROJECT } })!;
   const saved = await callTool(deploymentTransport(upstream), 'myco_spores', {
-    op: 'save', project: PROJECT, type: 'gotcha', content: 'the quokka migration must run before the index rebuild',
+    op: 'save', project: PROJECT, type: 'gotcha', agent_line: 'the quokka migration must run before the index rebuild', content: 'the quokka migration must run before the index rebuild',
   });
   expect(saved.ok).toBe(true);
 });

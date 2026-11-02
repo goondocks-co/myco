@@ -42,7 +42,7 @@ export const search: ParityScenario = {
     await post('prompt', { promptId: prompt, blob: key, origin: 'user' });
     await post('response', { responseId: response, promptId: prompt, blob: key });
     await post('plan', { planKey: plan, promptId: prompt, title: `${word} titleword`, blob: key, status: 'active' });
-    const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', type: 'decision', content: `${word} advice`, project: target.projectId });
+    const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', agent_line: 'When using this fixture, retain its evidence.', type: 'decision', content: `${word} advice`, project: target.projectId });
     await target.sql(`UPDATE sessions SET title = ${lit(word)} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
     // A prompt and its replies are found through their turn's card.
     await target.sql(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at)

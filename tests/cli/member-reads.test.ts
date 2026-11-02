@@ -106,7 +106,7 @@ async function seedSession(rig: MemberRig, sessionId: string, text: string): Pro
 /** A spore on the Deployment, saved through the same served tool an agent calls. */
 async function seedSpore(fetchImpl: FetchLike, content: string): Promise<void> {
   const upstream = resolveDeploymentUpstream('registry', { cwd: checkout, env: process.env, mycoHome })!;
-  const saved = await callTool(deploymentTransport(upstream, {}, fetchImpl), 'myco_spores', { op: 'save', project: PROJECT, type: 'discovery', content });
+  const saved = await callTool(deploymentTransport(upstream, {}, fetchImpl), 'myco_spores', { op: 'save', project: PROJECT, type: 'discovery', agent_line: content, content });
   expect(saved.ok).toBe(true);
 }
 

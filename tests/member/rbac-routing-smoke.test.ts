@@ -166,7 +166,7 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
         await client.connect(new StdioClientTransport({ command: emitted.command, args: emitted.args, cwd, env, stderr: 'pipe' }), { timeout: 10_000 });
         if (agent === 'codex') {
           const saved = await client.callTool({ name: 'myco_spores', arguments: {
-            op: 'save', project: PROJECT, type: 'gotcha', content: `routing marker ${index} for the same project`,
+            op: 'save', project: PROJECT, type: 'gotcha', agent_line: `routing marker ${index} for the same project`, content: `routing marker ${index} for the same project`,
           } });
           expect(saved.isError).not.toBe(true);
           const plan = await client.callTool({ name: 'myco_plans', arguments: {

@@ -54,8 +54,15 @@ async function envFor(token: string, opts: EnvOpts = {}) {
   return {
     MYCO_DB: {
       prepare: (sql: string) => statement(sql),
-      // The credential is live: the one row a capture's admission reads back answers so.
-      batch: async (stmts: { sql?: string }[]) => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return stmts.map((st) => ({ results: st.sql?.includes(' AS live') ? [{ live: 1 }] : [], meta: { changes: 1 } })); },
+      batch: async (stmts: { sql?: string }[]) => {
+        if (opts.writeThrows) throw new Error('D1_ERROR: boom');
+        return stmts.map(({ sql }) => ({
+          results: sql?.includes(' AS live') ? [{ live: 1 }]
+            : sql?.startsWith('SELECT p.project_id AS projectId') ? [{ projectId: 'proj_1', name: 'Fixture', archivedAt: null }]
+              : sql?.endsWith(' AS allowed') ? [{ allowed: 1 }] : [],
+          meta: { changes: 1 },
+        }));
+      },
     },
     BUCKET: memoryBlobStore(),
     SOURCE_LIMIT: opts.sourceLimitThrows ? { limit: async () => { throw new Error('limiter down'); } } : createIngestThrottle(opts.sourceLimit ?? 100, 60_000, 100, () => 0),

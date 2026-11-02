@@ -1,18 +1,9 @@
-/**
- * Releasing what a dispatched run holds once it is terminal.
- *
- * Two callers land a run terminal: the runtime's own status write through the
- * update route, and the stale-run sweep on the tick for a runtime that went
- * away without one. Both release the same two things — the container hold,
- * so the instance drains, and the dispatch-minted credential, which exists for
- * its run alone — through this one function, so a run released by the sweep
- * looks exactly like a run that finished. A run claimed under a person's own
- * credential carries it in the same column; that credential is the person's,
- * and a release leaves it alone.
- */
+import { runUpdateStatement, isTerminalRunStatus, type RunCaller, type RunUpdate } from './runs.js';
+import type { RunErrorCode } from './reader-codes.js';
+import { emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { revokeCredentialOfMember } from '../auth/tokens.js';
+import { revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
 import { drainQueue, HARNESS_MEMBER_ID } from './harness.js';
 
 export interface ReleasableRun {
@@ -31,4 +22,18 @@ export async function releaseRun(env: ServerEnv, _scope: ReadScope, run: Releasa
   if (options.drain) {
     try { await drainQueue(env, now); } catch { /* the next wake drains */ }
   }
+}
+
+/** A runtime ending and retirement of its dispatch credential commit in the same transaction. */
+export async function commitRunUpdate(env: ServerEnv, scope: ReadScope, runId: string, update: RunUpdate,
+  options: { caller: RunCaller; now: number; errorCode: RunErrorCode; context?: Readonly<Record<string, string>>; replaced?: boolean },
+): Promise<number> {
+  const statement = runUpdateStatement(env.db, scope, runId, update, undefined, options.errorCode, options.context, options.caller, options.replaced === true && update.status === 'failed');
+  if (statement === null) return 0;
+  const terminal = isTerminalRunStatus(update.status);
+  const [changed, retired] = await env.db.batch([statement, ...(terminal ? [
+    revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, options.caller.tokenId, options.now, { sql: 'changes() = 1', params: [] }),
+  ] : [])]);
+  if (retired !== undefined) emit({ kind: 'credential_revoked', tokenId: options.caller.tokenId, revokedBy: HARNESS_MEMBER_ID, revoked: retired.meta.changes === 1 });
+  return changed!.meta.changes;
 }

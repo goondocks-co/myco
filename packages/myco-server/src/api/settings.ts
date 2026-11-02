@@ -139,7 +139,7 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   });
   if (!redacted) return { leaves, taskTiers, embedding };
   const redact = <T>(value: T): T => JSON.parse(JSON.stringify(value), (_key, v: unknown) => (typeof v === 'string' ? withoutUrlSecrets(v) : v)) as T;
-  return { leaves: redact(leaves), taskTiers, embedding: redact(embedding) };
+  return redact({ leaves, taskTiers, embedding });
 }
 
 /** One harness's models as a machine's worker last listed them, as Settings offers them: the models, how and when. */
@@ -156,18 +156,56 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
   return ok({ persisted: true, ...await deploymentSettings(env, !admin), ...(models === undefined ? {} : { models }) });
 }
 
-/** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
-const URL_TOKEN = /^(?:[a-z][\w+.-]*:)?\/\/|^[^:/@]+:[^/@]*@[\w.-]+[:/]/i;
-/** The userinfo of a URL token, with the scheme and `//` it follows kept in group 1. */
-const USERINFO = /^((?:[a-z][\w+.-]*:)?\/\/)?[^/@?#]*@/i;
+/** Query and fragment secrets are removed while surrounding closing punctuation is retained. */
+function withoutUrlTailSecrets(value: string): string {
+  const query = value.search(/[?#]/);
+  return query < 0 ? value : value.slice(0, query) + (value.match(/["'\])},;]+$/)?.[0] ?? '');
+}
 
-/**
- * A string with every URL inside it — whole, embedded in prose, or inside a
- * JSON-encoded value — stripped of its userinfo, query and fragment. Tokens
- * are split at whitespace, quotes, brackets, commas and backslashes.
- */
-const withoutUrlSecrets = (value: string): string =>
-  value.replace(/[^\s"'<>(),\\]+/g, (token) => (URL_TOKEN.test(token) ? token.replace(USERINFO, '$1').replace(/[?#].*$/, '') : token));
+const REDACTED_URL = '[REDACTED]';
+
+/** Userinfo is admitted only in the authority; ambiguous password and query boundaries hide the whole candidate. */
+function withoutCredentialToken(token: string): string {
+  const scheme = /^(?:[a-z][\w+.-]*:)?\/\//i.exec(token)?.[0] ?? '';
+  const body = token.slice(scheme.length);
+  const tail = body.search(/[?#]/);
+  const head = tail < 0 ? body : body.slice(0, tail);
+  const slash = head.indexOf('/');
+  const authorityEnd = slash < 0 ? head.length : slash;
+  const colon = head.indexOf(':');
+  const password = colon >= 0 && colon < authorityEnd;
+  const at = head.lastIndexOf('@');
+  const closing = token.match(/[\])}>,;]+$/)?.[0] ?? '';
+  if (scheme !== '' && /[a-z][\w+.-]*:\/\//i.test(body) && body.includes('@')) return REDACTED_URL + closing;
+  if (password && tail >= 0 && body.slice(tail).includes('@')) return REDACTED_URL + closing;
+  const firstAt = head.indexOf('@');
+  if (at >= authorityEnd && (password || (firstAt >= 0 && firstAt < authorityEnd))) return REDACTED_URL + closing;
+  if (at < 0 || at >= authorityEnd) return scheme === '' ? token : withoutUrlTailSecrets(token);
+  return withoutUrlTailSecrets(scheme + body.slice(at + 1));
+}
+
+/** Quoted values retain their surrounding text; unquoted credential passwords may contain punctuation. */
+function withoutUrlSecrets(value: string): string {
+  const starts = /(?:[a-z][\w+.-]*:)?\/\/|[^\s"'<>()[\]{},\\/@:=]+:/gi;
+  const pieces: string[] = [];
+  let copied = 0;
+  for (let match; (match = starts.exec(value)) !== null;) {
+    const start = match.index;
+    const quote = value[start - 1] === '"' || value[start - 1] === "'" ? value[start - 1] : null;
+    let end = start;
+    let escaped = false;
+    while (end < value.length && !/\s/.test(value[end]!)) {
+      const char = value[end]!;
+      if (quote !== null && char === quote && !escaped) break;
+      escaped = char === '\\' && !escaped;
+      end += 1;
+    }
+    pieces.push(value.slice(copied, start), withoutCredentialToken(value.slice(start, end)));
+    copied = end;
+    starts.lastIndex = end;
+  }
+  return pieces.join('') + value.slice(copied);
+}
 
 /**
  * The same leaves to a member credential, Deployment-wide, over a member json

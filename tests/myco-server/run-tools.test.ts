@@ -95,6 +95,7 @@ async function setup() {
   };
 
   const call = async (token: string, name: string, args: Record<string, unknown> = {}) => {
+    if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
     const res = await worker.fetch(post(token, rpc('tools/call', { name, arguments: args })), e.env);
     const body = await res.json() as any;
     return { status: res.status, result: body.result?.structuredContent?.result, error: body.error };

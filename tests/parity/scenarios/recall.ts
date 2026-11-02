@@ -18,6 +18,7 @@ export const recall: ParityScenario = {
       return { status: res.status, body: (await res.json()) as T };
     };
     const mcp = async (args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
       const res = await fetch(`${target.url}/mcp`, {
         method: 'POST',
         headers: { ...target.memberHeaders(), 'content-type': 'application/json' },

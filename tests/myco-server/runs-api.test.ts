@@ -366,6 +366,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
       const f = await dispatchedRun();
       await f.dispatch('receipt-nonfailure', f.minted);
       const refusal = await f.post(f.minted.token, '/runs/claim', { id: 'receipt-nonfailure', agentId: '', task: 'embedding-reconcile', capability: 'cortex' });
+      if (status === 'completed') expect(await f.post(f.minted.token, '/runs/claim', { id: 'receipt-nonfailure', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' })).toMatchObject({ claimed: true });
       expect(await f.post(f.minted.token, '/runs/update', { runId: 'receipt-nonfailure', refusalId: refusal.refusalId,
         update: { ...(status === undefined ? {} : { status }), error: 'the server refused run control (parse)' } })).toMatchObject({ persisted: true, applied: true });
       expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('receipt-nonfailure')).toEqual({ error_code: 'agent_failed' });

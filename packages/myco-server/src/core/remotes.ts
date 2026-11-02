@@ -1,3 +1,4 @@
+import { admitProject, type ProjectCreator } from './project-creation.js';
 /**
  * Git remotes as Project names: the middle leg of Project Resolution.
  *
@@ -79,27 +80,10 @@ export type RepositoryResolution =
  */
 export async function resolveRepository(
   db: RelationalStore, repository: { remote: string | null; name: string; allowCreate: boolean; projectId: string; now: number; maxProjects: number },
+  actor: ProjectCreator = { kind: 'operator' },
 ): Promise<RepositoryResolution> {
-  const { remote, name, allowCreate, projectId, now, maxProjects } = repository;
-  const capacity = `(SELECT COUNT(*) FROM projects WHERE archived_at IS NULL) < ?`;
-  if (remote === null) {
-    if (!allowCreate) return { resolved: false, reason: 'auto_create_off' };
-    const made = await db.prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at) SELECT ?, ?, ? WHERE ${capacity}`)
-      .bind(projectId, name, now, maxProjects).run();
-    return made.meta.changes === 1 ? { resolved: true, projectId, name, created: true } : { resolved: false, reason: 'refused' };
-  }
-  const [, , held] = await db.batch([
-    db.prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at)
-                  SELECT ?, ?, ? WHERE ? = 1 AND NOT EXISTS (SELECT 1 FROM project_remotes WHERE remote = ?) AND ${capacity}`)
-      .bind(projectId, name, now, allowCreate ? 1 : 0, remote, maxProjects),
-    db.prepare(`INSERT OR IGNORE INTO project_remotes (remote, project_id, first_seen_at)
-                  SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM projects WHERE project_id = ?)`)
-      .bind(remote, projectId, now, projectId),
-    db.prepare(`SELECT p.project_id AS projectId, p.name, p.archived_at AS archivedAt
-                  FROM projects p WHERE p.project_id = (SELECT r.project_id FROM project_remotes r WHERE r.remote = ?)`).bind(remote),
-  ]);
-  const row = held!.results[0] as { projectId: string; name: string; archivedAt: number | null } | undefined;
-  if (row === undefined) return { resolved: false, reason: allowCreate ? 'refused' : 'auto_create_off' };
-  if (row.archivedAt !== null) return { resolved: false, reason: 'archived' };
-  return { resolved: true, projectId: row.projectId, name: row.name, created: row.projectId === projectId };
+  const result = await admitProject(db, repository, actor);
+  if (!result.resolved) return { resolved: false, reason: result.reason === 'invalid_field' ? 'refused' : result.reason };
+  if (result.archived) return { resolved: false, reason: 'archived' };
+  return { resolved: true, projectId: result.projectId, name: result.name, created: result.created };
 }

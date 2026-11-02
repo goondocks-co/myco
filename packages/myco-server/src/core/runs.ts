@@ -717,11 +717,13 @@ export function runUpdateStatement(
   errorCode: RunErrorCode = 'run_failed',
   context?: Readonly<Record<string, string>>,
   caller?: RunCaller,
+  replaced = false,
 ): PreparedStatement | null {
+  if ('status' in update && !isTerminalRunStatus(update.status)) throw new Error('run updates require a terminal status');
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return null;
   const guarded = 'status' in update;
-  const guard = guarded ? ` AND status NOT IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')})` : '';
+  const guard = guarded ? ` AND ${IN_FLIGHT_RUN_STATUSES} AND (? <> 'completed' OR status = 'running')` : '';
   const authority = lease === undefined ? null : workerLeaseAuthority(lease.worker, lease.now, lease.dispatchedBy, true);
   const leaseGuard = authority === null ? '' : ` AND ${authority.sql}`;
   // A terminal transition ends the worker's lease and keeps the worker it
@@ -739,11 +741,15 @@ export function runUpdateStatement(
   const codeSet = coded ? `, error_code = ${issuedCode}` : '';
   const callerGuard = runCallerGuard(caller);
   // Context additions retain any non-object source verbatim under unparsedRunContext.
-  const contextJson = context === undefined || Object.keys(context).length === 0 ? null : JSON.stringify(context);
-  const contextSet = contextJson === null ? '' : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
+  const hasContext = context !== undefined && Object.keys(context).length > 0;
+  const contextJson = !hasContext && !replaced ? null : JSON.stringify({ ...context, ...(replaced ? { replaced: true } : {}) });
+  const contextSet = contextJson === null ? '' : replaced && !hasContext
+    ? `, run_context = CASE WHEN run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object'
+        THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`
+    : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
   return db
     .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`)
-    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
+    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
       ...(authority?.params ?? []), ...callerGuard.params);
 }
 

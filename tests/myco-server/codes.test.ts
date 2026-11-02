@@ -68,7 +68,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   stale: async (r) => {
     r.e.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES ('stale','stale','built-in',1,1)");
     r.e.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES ('proj_1','stale','stale','gotcha','obsolete','retired',1)");
-    return r.fetch(memberPost(r.t1.token, { eventId: 'stale', agentId: 'stale', sporeId: 'stale', action: 'obsolete', status: 'obsolete' }, '/spores/resolve'));
+    return r.fetch(memberPost(r.t1.token, { eventId: 'stale', agentId: 'stale', sporeId: 'stale', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }, '/spores/resolve'));
   },
   refused: (r) => r.fetch(memberPost(r.t1.token, '[]', '/tokens/refresh')),
   invalid_field: (r) => r.post(r.t1.token, { createdAt: -1 }),
