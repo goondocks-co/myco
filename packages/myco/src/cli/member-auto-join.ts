@@ -24,7 +24,7 @@ import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import {
-  clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, markSweepDone, placeRepository, queueImport,
+  clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, pendingImportWork, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
   autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
@@ -43,6 +43,10 @@ import { openDeploymentRequests } from './deployment-reader.js';
 import type { MemberCliDeps } from './member.js';
 import { reconcileProjectMcp } from './member-repair.js';
 import { joinSentences } from '@myco/utils/sentences.js';
+import { wakePendingImports } from '@myco/member/auto-join-hook.js';
+import { refreshMemberCredential } from '@myco/member/refresh.js';
+import { deadlineBudget, unboundedBudget } from '@myco/member/budget.js';
+import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 
 async function settleAutoJoin(entry: RegistryEntry, deps: MemberCliDeps & { mycoHome: string; now: () => number }): Promise<{ moved: number; toolsPending?: true }> {
   let mcpReady: string[] | undefined;
@@ -95,7 +99,7 @@ const STATE_TIMEOUT_MS = 10_000;
  * many records moved.
  */
 export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: string; now: () => number; fetch?: FetchLike; tell: boolean; explicitJoin?: boolean; packageRoot?: string;
-  stderr?: (line: string) => void; onTools?: (ready: string[] | undefined) => void }): Promise<number> {
+  stderr?: (line: string) => void; onTools?: (ready: string[] | undefined) => void; spawn?: DetachedSpawn }): Promise<number> {
   const rootKey = rootKeyFor(entry.root, opts.mycoHome);
   withRegistryLock(() => {
     const held = readRegistryEntryResult(entry.root, opts.mycoHome);
@@ -108,10 +112,12 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
     clearLeft(rootKey, opts.mycoHome);
   }, opts.mycoHome);
   dropJoinRequest(rootKey, opts.mycoHome, entry.serverUrl);
+  let resumed = false;
   if (opts.explicitJoin) {
     for (const pending of listPendingImports(opts.mycoHome)) {
       if (pending.rootKey === rootKey && pending.projectId === entry.projectId && deploymentUrl(pending.serverUrl) === deploymentUrl(entry.serverUrl) && pending.terminal !== undefined) {
         queueImport({ ...pending, terminal: undefined, retryAt: undefined, attempts: 0, at: opts.now() }, opts.mycoHome);
+        resumed = true;
       }
     }
   }
@@ -132,6 +138,7 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
       'Inspect agent configuration with `myco doctor`; run `myco member provision --refresh` after resolving it.'));
   }
   opts.onTools?.(mcpReady);
+  if (resumed) wakePendingImports({ mycoHome: opts.mycoHome, now: opts.now(), spawn: opts.spawn });
   return moved;
 }
 
@@ -265,23 +272,30 @@ async function bringHistory(pending: import('../member/auto-join.js').PendingImp
   const { mycoHome, now } = deps;
   const err = (line: string) => process.stderr.write(`[myco] helper: ${line}\n`);
   let report: Awaited<ReturnType<typeof runImport>> | null = null;
+  let reason: string | null = null;
   try {
-    const entry = readRegistryEntry(pending.root, mycoHome);
+    const renewed = await refreshMemberCredential(pending.root, { mycoHome, fetch: deps.fetch, now,
+      budget: deadline === undefined ? unboundedBudget() : deadlineBudget(deadline) });
+    const entry = renewed.entry;
     if (entry === null) throw new Error('The history import membership is unavailable');
-    report = await runImport({ project: pending.projectId, serverUrl: pending.serverUrl, until: deadline }, {
-      fetch: deps.fetch, now, cwd: pending.root, mycoHome,
-      machineId: entry.machineId, progress: err,
-    });
+    if (renewed.status === 'busy' || renewed.status === 'retry' || renewed.status === 'protocol') throw new Error(`history credential renewal ${renewed.status}`);
+    if (renewed.status === 'unauthorized' || renewed.status === 'terminal' || renewed.status === 'lineage-expired') reason = renewed.status;
+    else {
+      report = await runImport({ project: pending.projectId, serverUrl: pending.serverUrl, until: deadline }, {
+        fetch: deps.fetch, now, cwd: pending.root, mycoHome,
+        machineId: entry.machineId, progress: err,
+      });
+    }
   } catch (error) { err(`auto-join ${pending.root}: history import failed: ${error instanceof Error ? error.message : String(error)}`); }
   if (report !== null && importCompleted(report)) {
     clearPendingImport(pending.rootKey, mycoHome, pending);
     err(`auto-join ${pending.root}: imported ${importedBy(report)} past session(s)`);
   } else {
-    const reason = report === null ? null : importTerminalReason(report);
+    reason ??= report === null ? null : importTerminalReason(report);
     const attempts = (pending.attempts ?? 0) + (report !== null && importDeadlineReached(report) ? 0 : 1);
     queueImport({ ...pending, attempts, retryAt: report !== null && importDeadlineReached(report) ? undefined : nextAttemptAfter(now(), attempts),
       ...(reason === null ? {} : { terminal: { at: now(), reason } }) }, mycoHome);
-    if (report !== null) err(`auto-join ${pending.root}: history import incomplete: ${reason ?? report.stoppedBy ?? report.projects.map(p => p.endedBy).filter(Boolean).join(', ')}; ${reason === null ? 'will retry' : 'held for review; run myco member join here after resolving the refusal'}`);
+    if (report !== null || reason !== null) err(`auto-join ${pending.root}: history import incomplete: ${reason ?? report?.stoppedBy ?? report?.projects.map(p => p.endedBy).filter(Boolean).join(', ')}; ${reason === null ? 'will retry' : 'held for review; run myco member join here after resolving the refusal'}`);
   }
   return report;
 }
@@ -361,12 +375,9 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
         if (result.result !== 'busy' && result.result !== 'binding-unavailable' && !('toolsPending' in result && result.toolsPending)) clearJoinRequest(request, mycoHome);
       });
     }
-    for (const pending of listPendingImports(mycoHome)) {
+    for (const { pending, entry } of pendingImportWork(mycoHome)) {
       if (now() >= deadline) return { more: true };
       const remaining = await isolateRepository(pending.root, err, async () => {
-        const binding = readRegistryEntryResult(pending.root, mycoHome, { upgrade: true });
-        if (binding.status === 'unavailable') return;
-        const entry = binding.status === 'present' ? binding.entry : null;
         // Left, or connected elsewhere since: its history is not this join's to bring.
         if (entry === null || entry.projectId !== pending.projectId || deploymentUrl(entry.serverUrl) !== deploymentUrl(pending.serverUrl)) {
           clearPendingImport(pending.rootKey, mycoHome, pending);

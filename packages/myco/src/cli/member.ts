@@ -21,7 +21,7 @@ export { MemberRepairBusyError } from './member-repair.js';
  */
 import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
-import { autoJoinIdentityIssues, listAutoJoinStates } from '../member/auto-join.js';
+import { autoJoinIdentityIssues, listAutoJoinStates, pendingImportHolds } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
@@ -1166,6 +1166,7 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
   const held = readDefaultDeployment(mycoHome);
   out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
   const mine = (root: string): boolean => selection.all || (selection.root !== null && canonicalRootIdentity(root) === canonicalRootIdentity(selection.root));
+  for (const held of pendingImportHolds(mycoHome).filter(held => mine(held.root))) out(held.message);
   for (const state of listAutoJoinStates(mycoHome).filter((s) => s.outcome !== 'joined' && mine(s.root))) {
     const why = state.outcome === 'outside_folders' ? 'outside the folders this machine captures'
       : state.outcome === 'unreachable' ? `the Deployment could not be reached (${state.detail ?? 'no answer'}); tried again at the next hook`

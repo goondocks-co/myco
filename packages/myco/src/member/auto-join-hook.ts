@@ -56,6 +56,11 @@ export function connectedToolsNotice(opts: { root: string; hookName: string; age
 /** A repository left with `myco member leave`: its hooks capture, hold and say nothing. */
 export const LEFT_ALONE = 'left';
 
+/** Wake actionable history through the detached join bucket, after a hook's capture or an explicit resume. */
+export function wakePendingImports(opts: { mycoHome: string; now: number; spawn?: DetachedSpawn }): void {
+  if (pendingImportsDue(opts.mycoHome, opts.now)) kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now });
+}
+
 /**
  * The hold for a hook at `root`; {@link LEFT_ALONE} for a repository left with `myco member leave`; or null where
  * auto-join has no hold: a connected repository, no default Deployment, or a repository the machine never captures.
@@ -69,12 +74,7 @@ export function autoJoinHold(opts: {
   later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
   const binding = readRegistryEntryResult(opts.root, opts.mycoHome);
-  if (binding.status !== 'missing') {
-    if (binding.status === 'present' && pendingImportsDue(opts.mycoHome, opts.now)) {
-      opts.later(() => kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now }));
-    }
-    return null;
-  }
+  if (binding.status !== 'missing') return null;
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);

@@ -85,6 +85,13 @@ function readLinuxUnit(text: string): { args: string[] | null; home: string | un
   return { args: command === undefined ? null : systemdWords(command), home: systemdEnvironment(text)?.MYCO_HOME };
 }
 
+function readWindowsUnit(text: string): { executor: 'runner' | 'legacy-member' | undefined; binaryPath: string | undefined; serverUrl: string | undefined; home: string | undefined } {
+  const command = /(?:^| && )("[^"]+"|[^\s"]+) (runner run|worker) --server ("[^"]+"|[^\s"]+) >> /.exec(text);
+  const literal = (word: string | undefined): string | undefined => word?.startsWith('"') ? word.slice(1, -1) : word;
+  return { executor: command === null ? undefined : command[2] === 'runner run' ? 'runner' : 'legacy-member',
+    binaryPath: literal(command?.[1]), serverUrl: literal(command?.[3]), home: /set "MYCO_HOME=([^"]+)"/.exec(text)?.[1] };
+}
+
 /** Read the installed runner unit's program, refusing an unreadable or foreign unit. */
 export function installedRunnerTarget(target: WorkerServiceTarget): WorkerServiceTarget {
   const platform = target.platform ?? process.platform;
@@ -109,11 +116,10 @@ export function installedRunnerTarget(target: WorkerServiceTarget): WorkerServic
     }
     home = recordedHome;
   } else if (platform === 'win32') {
-    const command = /(?:^| && )(\S+) runner run --server (\S+) >> /.exec(text);
-    binaryPath = command?.[1]; serverUrl = command?.[2];
-    home = /set "MYCO_HOME=([^"]+)"/.exec(text)?.[1];
+    const task = readWindowsUnit(text);
+    if (task.executor === 'runner') ({ binaryPath, serverUrl, home } = task);
   }
-  if (binaryPath === undefined || !path.isAbsolute(binaryPath) || home !== target.mycoHome || serverUrl !== target.serverUrl) {
+  if (binaryPath === undefined || !(platform === 'win32' ? path.win32 : path).isAbsolute(binaryPath) || home !== target.mycoHome || serverUrl !== target.serverUrl) {
     throw new Error(`runner unit ${file} does not name this Deployment and home with an absolute runner program`);
   }
   return { ...target, binaryPath };
@@ -143,10 +149,11 @@ export function listWorkerUnits(home: string, platform: NodeJS.Platform = proces
     const raw = fs.readFileSync(unitFile, 'utf8');
     const text = platform === 'linux' ? raw : unescapeXml(raw);
     const linux = platform === 'linux' ? readLinuxUnit(text) : null;
+    const windows = platform === 'win32' ? readWindowsUnit(text) : null;
     const serverIndex = linux?.args?.indexOf('--server') ?? -1;
-    const serverUrl = linux === null ? /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null
+    const serverUrl = windows !== null ? windows.serverUrl ?? null : linux === null ? /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null
       : serverIndex < 0 ? null : linux.args?.[serverIndex + 1] ?? null;
-    const mycoHome = linux === null ? /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null : linux.home ?? null;
+    const mycoHome = windows !== null ? windows.home ?? null : linux === null ? /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null : linux.home ?? null;
     found.push({
       executor, unitFile, serverUrl, mycoHome,
       spec: { ...probe, unit: unitWithId(id, serverUrl ?? 'https://unit.invalid', executor) },

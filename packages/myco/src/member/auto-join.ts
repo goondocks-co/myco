@@ -35,7 +35,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, withRegistryLock } from './registry.js';
+import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, readRegistryEntryResult, withRegistryLock, type RegistryEntry } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -590,8 +590,21 @@ export interface PendingImport {
 
 /** Connected hooks wake due history work through the same join bucket as unconnected hooks. */
 export function pendingImportsDue(mycoHome: string, now: number): boolean {
-  const pending = latestByRoute([...pendingImportRecords(mycoHome)].map(record => record.value), true);
-  return pending.some(record => record.terminal === undefined && (record.retryAt === undefined || record.retryAt <= now));
+  return pendingImportWork(mycoHome).some(({ pending }) => pending.terminal === undefined && (pending.retryAt === undefined || pending.retryAt <= now));
+}
+
+/** Verified history records with a readable binding decision: work a join pass can attempt or retire. */
+export function pendingImportWork(mycoHome: string): Array<{ pending: PendingImport; entry: RegistryEntry | null }> {
+  return listPendingImports(mycoHome).flatMap(pending => {
+    const binding = readRegistryEntryResult(pending.root, mycoHome, { upgrade: true });
+    return binding.status === 'unavailable' ? [] : [{ pending, entry: binding.status === 'present' ? binding.entry : null }];
+  });
+}
+
+/** The persisted refusal and explicit action that resumes a held history import. */
+export function pendingImportHolds(mycoHome: string): Array<{ root: string; message: string }> {
+  return listPendingImports(mycoHome).flatMap(pending => pending.terminal === undefined ? [] : [{ root: pending.root,
+    message: `history import: ${pending.root} on ${pending.serverUrl} is held (${pending.terminal.reason}); resolve the refusal, then run \`myco member join\` in this repository` }]);
 }
 
 const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'>): string =>
