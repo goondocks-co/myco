@@ -221,7 +221,7 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
         if (sql.includes('r.ready >= 0')) expect(details).toContain('idx_embedding_receipts_retire');
       }
       expect(plans.some((details) => details.includes('idx_embedding_receipts_spore'))).toBe(true);
-      expect(plans.some((details) => details.includes('idx_embedding_receipts_identity'))).toBe(true);
+      expect(plans.some((details) => details.includes('idx_embedding_due_next'))).toBe(true);
       let liveSql = '';
       await hasLiveTaskRunAnywhere({ ...db, prepare: (sql) => { liveSql = sql; return db.prepare(sql); } }, 'embedding-reconcile');
       const livePlan = await db.prepare(`EXPLAIN QUERY PLAN ${liveSql}`).bind('embedding-reconcile').all<{ detail: string }>();

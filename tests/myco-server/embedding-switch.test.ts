@@ -471,6 +471,26 @@ describe('what never holds a switch back', () => {
     expect(t.models.calls.get(t.otherSize.model)).toBe(asked + 1);
   });
 
+  it('cancels a held switch and restarts the same model without retaining its provider hold', async () => {
+    for(const make of [hosted,selfHosted]) {
+      const t=await built(make);
+      const started=await json(await t.fetch(await asOwnerPost(t.env().db,'/api/embedding/switch',{...t.otherSize,confirm:true})));
+      const id=(started.switch as EmbeddingSwitchStatus).id;
+      t.models.failing.set(t.otherSize.model,{status:404,words:'model missing'});
+      await t.step(2_000);
+      expect(await status(t)).toMatchObject(make===hosted ? {state:'building',retryAt:62_000} : {state:'paused'});
+      t.models.failing.delete(t.otherSize.model);
+      expect((await t.fetch(await asOwnerDelete(t,`/api/embedding/switch/${id}`))).status).toBe(200);
+      expect(await status(t)).toBeNull();
+      await t.fetch(await asOwnerPost(t.env().db,'/api/embedding/switch',{...t.otherSize,confirm:true}));
+      const asked=t.models.calls.get(t.otherSize.model) ?? 0;
+      for(let i=0;i<30 && (await status(t))!==null;i++) await t.step(2_100+i);
+      expect(t.models.calls.get(t.otherSize.model)).toBeGreaterThan(asked);
+      expect(await status(t)).toBeNull();
+      expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
+    }
+  });
+
   it('grows its estimate as sources are added, from the tokens each read when it started', async () => {
     const t = await built(selfHosted);
     const started = (await json(await t.fetch(await asOwnerPost(t.env().db, '/api/embedding/switch', { ...t.otherSize, confirm: true })))).switch as EmbeddingSwitchStatus;

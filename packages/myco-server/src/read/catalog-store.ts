@@ -1,3 +1,5 @@
+import { INPUT_REFUSAL_RETRY_MS as EMBEDDING_INPUT_REFUSAL_RETRY_MS } from '../db/embedding-due.js';
+import { eligibleEmbeddingSource as core_embedding_source_state_eligibleSource } from '../db/embedding-sources.js';
 import { sessionDocumentUnreadSql } from '../db/document-tables.js';
 import { placedPromptSql } from './document-catalog.js';
 
@@ -2878,11 +2880,6 @@ export async function injectedPromptRecord(db: sessions_import_RelationalStore, 
 
 export { processed_processedField };
 
-/** A version's source is eligible, read through the source table's identity index. */
-const core_embedding_source_state_eligibleSource = (row: string): string => `(${core_embedding_source_state_import_CURRENT_EMBEDDING_SOURCES.map((source) =>
-  `(${row}.type = '${source.type}' AND EXISTS (SELECT 1 FROM ${source.table}
-    WHERE project_id = ${row}.project_id AND ${source.id} = ${row}.record_id AND (${source.eligible})))`).join(' OR ')})`;
-
 /** A receipt names an eligible source's current revision. */
 const core_embedding_source_state_currentSource = (row: string): string => `EXISTS (SELECT 1 FROM embedding_versions v
   WHERE v.project_id = ${row}.project_id AND v.type = ${row}.type AND v.record_id = ${row}.record_id
@@ -2897,7 +2894,7 @@ const core_embedding_source_state_currentHubnessMember = (row: string): string =
 const core_embedding_reconcile_ANY_MODEL = '';
 
 /** How long a source a model's provider refused as input is passed over before that model is asked again. */
-const core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS = 24 * 60 * 60_000;
+const core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS = EMBEDDING_INPUT_REFUSAL_RETRY_MS;
 
 /**
  * Source `s`'s current revision is one embedding passes over under a model: its stored text cannot be read, or the model
@@ -3005,13 +3002,11 @@ function core_embedding_selection_unwrittenQuery(projectId: string, model: strin
   };
 }
 
-/** New sources precede stale sources; each arm follows the attempted-at index in source order. */
+/** Due identities are maintained with source and receipt changes; both arms seek the model's pending partition. */
 function core_embedding_selection_sourceSelectionQuery(projectId: string, type: string, model: string, now: number, stale: boolean): core_embedding_selection_EmbeddingQuery {
   return {
-    sql: `SELECT s.record_id, s.revision FROM embedding_versions s
-    WHERE s.project_id = ? AND s.type = ? AND NOT ${core_embedding_reconcile_SOURCE_HELD} AND ${core_embedding_source_state_eligibleSource('s')} AND NOT ${core_embedding_reconcile_PASSED_OVER}
-      AND ${stale ? '' : 'NOT '}EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id)
-    ORDER BY s.attempted_at, s.record_id LIMIT 1`, binds: [projectId, type, model, ...core_embedding_reconcile_passedOverBinds(model, now)]
+    sql: `SELECT record_id, revision FROM embedding_due WHERE project_id=? AND model_key=? AND type=? AND stale=? AND retry_at<=?
+      ORDER BY retry_at,attempted_at,record_id LIMIT 1`, binds: [projectId, model, type, stale ? 1 : 0, now]
   };
 }
 
@@ -3189,19 +3184,32 @@ function core_embedding_hubness_hubnessQueries(projectId: string, model: string,
   return [
     ...['<', '>'].map((op) => ({ sql: `SELECT 1 FROM embedding_hubness_members WHERE project_id = ? AND model_key ${op} ? LIMIT 1`, binds: [projectId, model] })),
     { sql: 'SELECT 1 FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND state > 0 LIMIT 1', binds: [projectId, model] },
+    { sql: 'SELECT 1 FROM embedding_cursors WHERE project_id = ? AND hubness_cursor IS NOT NULL', binds: [projectId] },
     { sql: `SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ? AND m.state = 0 AND NOT ${core_embedding_source_state_currentHubnessMember('m')} LIMIT 1`, binds: [projectId, model] },
     { sql: `${core_embedding_hubness_UNCOVERED} LIMIT 1`, binds: [projectId, model] },
     { sql: `${core_embedding_hubness_MISSING} AND NOT ${core_embedding_hubness_ABANDONED} LIMIT 1`, binds: [projectId, model, now - core_embedding_hubness_import_VECTOR_LOST_MS] },
-    { sql: 'SELECT 1 FROM embedding_cursors WHERE project_id = ? AND hubness_cursor IS NOT NULL', binds: [projectId] },
     { sql: `SELECT 1 FROM (${core_embedding_hubness_MISCOUNTED}) WHERE miscounted = 1`, binds: [projectId, model] },
   ];
 }
 
 async function core_embedding_hubness_recordedHubness(db: core_embedding_hubness_import_RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
-  const hasPair = async () => (await db.prepare(`${core_embedding_hubness_SPORE_VECTORS} LIMIT 2`).bind(projectId, model).all()).results.length === 2;
+  const hasPair = async () => {
+    const population = await db.prepare(`SELECT total FROM embedding_hubness_population p WHERE p.project_id=? AND p.model_key=?
+      AND p.revision=COALESCE((SELECT revision FROM embedding_hubness_revision WHERE project_id=?),0)`)
+      .bind(projectId,model,projectId).first<{total:number}>();
+    return population === null ? (await db.prepare(`${core_embedding_hubness_SPORE_VECTORS} LIMIT 2`).bind(projectId,model).all()).results.length === 2 : population.total>=2;
+  };
   return core_embedding_hubness_import_recordedWork(db, projectId, model, 'hubness', JSON.stringify({ predicate: core_embedding_hubness_import_WORK_PREDICATE_VERSION }), now, async () => {
     if (!(await hasPair())) return { pending: false };
-    for (const statement of prepareHubnessWork(db, projectId, model, now)) if (await statement.first() !== null) return { pending: true };
+    for (const statement of prepareHubnessWork(db, projectId, model, now)) {
+      const found = await statement.first<{updated_at?:number}>();
+      if (found === null) continue;
+      if (found.updated_at === undefined) return {pending:true};
+      const retry = await db.prepare(`SELECT MIN(r.updated_at)+? AS at FROM (${core_embedding_hubness_sporeVectors('r.*')}) r
+        WHERE r.updated_at>? AND ${core_embedding_hubness_NOT_MEMBER}`).bind(core_embedding_hubness_import_VECTOR_LOST_MS,projectId,model,now-core_embedding_hubness_import_VECTOR_LOST_MS)
+        .first<{at:number|null}>();
+      return { pending:true,wakeAt:retry?.at ?? null };
+    }
     return { pending: false };
   }, (cursor) => core_embedding_work_sweep_hubnessSweep(db, projectId, model, now, cursor, true));
 }
@@ -3238,7 +3246,7 @@ const core_embedding_switch_store_completionCondition = (sw: EmbeddingSwitch, no
 /** The statement that ends a completed switch, carrying `completionCondition`. The sources it passed over stay recorded. */
 const core_embedding_switch_store_completionStatements = (db: core_embedding_switch_store_import_RelationalStore, sw: EmbeddingSwitch, now: number): core_embedding_switch_store_import_PreparedStatement[] => {
   const condition = core_embedding_switch_store_completionCondition(sw, now);
-  return [db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND ${condition.sql}`).bind(...condition.params)];
+  return [db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND ${condition.sql} RETURNING id`).bind(...condition.params)];
 };
 
 /** The counted sources, and those holding an indexed vector under the switch's model. */
@@ -3300,14 +3308,23 @@ export function prepareMissingHubness(db: sessions_import_RelationalStore, proje
   return db.prepare(`${core_embedding_hubness_MISSING} ORDER BY ${core_embedding_hubness_ABANDONED}, ${core_embedding_hubness_ABANDONED} AND r.id <= ?, r.id LIMIT ?`).bind(projectId, model, lostBefore, lostBefore, probe, limit);
 }
 
-export function prepareHubnessPublication(db: sessions_import_RelationalStore, projectId: string, model: string) {
-  return db.prepare(`SELECT NOT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ?
-      AND m.state <> ${core_embedding_hubness_import_MEMBER.leaving} AND NOT ${core_embedding_source_state_currentHubnessMember('m')}) AND NOT EXISTS (${core_embedding_hubness_UNCOVERED}) AS complete`).bind(projectId, model, projectId, model);
-}
-
 export async function countCurrentSporeVectors(db: sessions_import_RelationalStore, projectId: string, model: string, covered: boolean) {
   const sql = covered ? core_embedding_hubness_CURRENT_SPORE_VECTORS : core_embedding_hubness_SPORE_VECTORS;
   return (await db.prepare("SELECT COUNT(*) AS n FROM (" + sql + ")").bind(projectId, model).first<{ n: number }>())!.n;
+}
+
+/** One population snapshot per source revision; page commits fence that revision through the calibration token. */
+export function prepareHubnessPopulation(db: sessions_import_RelationalStore, projectId: string, model: string) {
+  return db.prepare(`INSERT OR REPLACE INTO embedding_hubness_population(project_id,model_key,revision,total,covered,members,miscounted,complete)
+    SELECT ?,?,COALESCE((SELECT revision FROM embedding_hubness_revision WHERE project_id=?),0),
+      (SELECT COUNT(*) FROM (${core_embedding_hubness_SPORE_VECTORS})),
+      (SELECT COUNT(*) FROM (${core_embedding_hubness_CURRENT_SPORE_VECTORS})),
+      (SELECT COUNT(*) FROM embedding_hubness_members WHERE project_id=? AND model_key=?),
+      (SELECT miscounted FROM (${core_embedding_hubness_MISCOUNTED})),
+      NOT EXISTS(SELECT 1 FROM embedding_hubness_members m WHERE m.project_id=? AND m.model_key=?
+        AND m.state<>${core_embedding_hubness_import_MEMBER.leaving} AND NOT ${core_embedding_source_state_currentHubnessMember('m')})
+        AND NOT EXISTS(${core_embedding_hubness_UNCOVERED}) RETURNING revision,total,covered,members,miscounted,complete`)
+    .bind(projectId,model,projectId,projectId,model,projectId,model,projectId,model,projectId,model,projectId,model,projectId,model);
 }
 
 export function prepareSwitchedSettings(db: sessions_import_RelationalStore, choice: SwitchSettings, actor: string, nowMs: number, sw: EmbeddingSwitch, stamps: ReadonlyMap<string, string>) {

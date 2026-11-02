@@ -749,7 +749,7 @@ export async function writeSwitchedEmbedding(
   const { stamps } = await embeddingRows(db);
   const statements = prepareSwitchedSettings(db, choice, actor, nowMs, sw, stamps);
   const results = await db.batch([...statements, ...end]);
-  return results[statements.length]!.meta.changes === 1;
+  return results[statements.length]!.results.length === 1;
 }
 
 /** A Project accepting new intelligence work, with any additional admission bound inside the same read. */

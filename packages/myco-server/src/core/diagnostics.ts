@@ -150,7 +150,7 @@ export interface DeploymentDiagnostics {
   /** Null when the store could not be questioned. */
   projects: ProjectFacts[] | null;
   /** Null when the store could not be questioned. */
-  ingestBacklog: { pendingTranscripts: number; pendingImportedTranscripts: number; pendingBytes: number; pendingImportedBytes: number } | null;
+  ingestBacklog: { limited?: true; pendingTranscripts: number; pendingImportedTranscripts: number; pendingBytes: number; pendingImportedBytes: number } | null;
   /**
    * Each Project with spores left out of relevance calibration under the configured embedding model while the vector
    * store does not return their vectors, as the embedding run reports them. Null when the store could not be
@@ -258,7 +258,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       projects: projects.map(projectFacts),
       ingestBacklog: await (async () => {
         const backlog = await pendingTranscripts(env.db);
-        return { pendingTranscripts: backlog.transcripts, pendingImportedTranscripts: backlog.imported.transcripts, pendingBytes: backlog.bytes, pendingImportedBytes: backlog.imported.bytes };
+        return { pendingTranscripts: backlog.transcripts, pendingImportedTranscripts: backlog.imported.transcripts, pendingBytes: backlog.bytes, pendingImportedBytes: backlog.imported.bytes, ...(backlog.limited ? {limited:true as const} : {}) };
       })(),
       missingSporeVectors: await missingAcross(env, projects, now),
     };
