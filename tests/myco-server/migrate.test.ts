@@ -278,7 +278,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0262_v262.sql': '71aa35803e21bf5fdd9cd9a953cec09147e5c1acfc1eb260e747b6c5c0db7303',
   '0263_v263.sql': 'e811f8ac1ca6cebe6bc43eedf1028acf21a1c139b2402a27c29e486eab3ac4e0',
   '0264_v264.sql': '8a2933b14bb5051d1bb1fc044b5c5ead2f4f81b4865fb1b378b3382e4d351cd8',
-  '0265_v265.sql': '879f7e6df5e229083c7ba3c7bce0528b2c757d2f84e962ff88b0f0e8793b8b0b',
+  '0265_v265.sql': '8146cce34ea6434eed9bd7a5421f790a1e4b925fe6880eac4b5d8d39f673a783',
   '0266_v266.sql': 'c7cf35cf88fba4115c6fd3851a4eedd6b43b9a7245354663524e2d497ddecbef',
   '0267_v267.sql': '542dde134cacb6bde502164202b75123b08c83d275434227d8ea1ef8d7d34938',
   '0268_v268.sql': 'a8a16d8828047b6c5df4edf0c8aed0872bc468701a24c755f194eaf384d7073b',
@@ -471,7 +471,13 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0455_v455.sql': '8f66b5e9ab56a78b00c6ee2858e927fa3a9e8221ebbec0927c9e6cc98c09fb5a',
   '0456_v456.sql': 'b951ab8429cc49da60d799644433a3bb7c40e4d4969bb7f8382d4a1db697d389',
   '0457_v457.sql': '886c39f423513a305691822e9c5ba0281717715e2b7f81f85295db9fec060a4b',
-  '0458_v458.sql': '25afb43e849df4a7d57ea357bbe61f75249c2140579731d2a0afb8b2b8de842b',
+  '0458_v458.sql': 'cfd2365816634b598cfb2d622691a7ede1e490d377534e9f17bdaf27f307e27c',
+  '0459_v459.sql': '179de8be2f2754276fced0dde0520d34b1eeab1b5f7c400a96a7039100d8dd13',
+  '0460_v460.sql': 'dabce2a2027c90e4a5b6e18ac548f14a4ac7e5bdbdee24f40e27bb05cd96b3da',
+  '0461_v461.sql': 'fbf58818a099d2c2bb721e75299404d3b2dcb8a738dd2562418209242e104e43',
+  '0462_v462.sql': 'dbe70dd7f0e89229e852e05691d8326c9cedeafca8b5a8fca50a181be644075c',
+  '0463_v463.sql': '9bb7a86837e9443352f642a7dbceda559eb5cf093ccc7f2af5d1d3c3a2d3a92b',
+  '0464_v464.sql': '45d940f08c5feda6e953f84d47e2010996bfa5c7fa3cbabe4e6294f98b28e1fe',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1272,7 +1278,7 @@ it('backfills only the reference catalog and retains content tables', () => {
   }
 });
 
-describe('content storage removal, steps 265 to 458', () => {
+describe('content storage removal, steps 265 to 464', () => {
   const objectsOf = (sqlite: Database) => sqlite.query(`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`).all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
   const shadow = (name: string) => DROPPED_CONTENT.has(name.replace(/_(data|idx|docsize|config)$/, ''));
   const dataTables = (sqlite: Database) => objectsOf(sqlite).filter(o => o.type === 'table' && o.name !== 'schema_meta' && !o.name.endsWith('_fts') && !/_fts_(data|idx|docsize|config)$/.test(o.name)).map(o => o.name);

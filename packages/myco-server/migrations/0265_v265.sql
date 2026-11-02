@@ -88,20 +88,20 @@ DROP TRIGGER IF EXISTS view_responses_fts_au;
 
 CREATE TABLE IF NOT EXISTS _v265_drop_ranges (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID;
 
-INSERT INTO _v265_drop_ranges SELECT 'tool_calls',COALESCE(MAX(rowid),0) FROM tool_calls;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'tool_calls',COALESCE(MAX(rowid),0) FROM tool_calls;
 
-INSERT INTO _v265_drop_ranges SELECT 'view_tool_calls',COALESCE(MAX(rowid),0) FROM view_tool_calls;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'view_tool_calls',COALESCE(MAX(rowid),0) FROM view_tool_calls;
 
-INSERT INTO _v265_drop_ranges SELECT 'responses',COALESCE(MAX(rowid),0) FROM responses;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'responses',COALESCE(MAX(rowid),0) FROM responses;
 
-INSERT INTO _v265_drop_ranges SELECT 'prompt_batches',COALESCE(MAX(rowid),0) FROM prompt_batches;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'prompt_batches',COALESCE(MAX(rowid),0) FROM prompt_batches;
 
-INSERT INTO _v265_drop_ranges SELECT 'view_prompts',COALESCE(MAX(rowid),0) FROM view_prompts;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'view_prompts',COALESCE(MAX(rowid),0) FROM view_prompts;
 
-INSERT INTO _v265_drop_ranges SELECT 'view_responses',COALESCE(MAX(rowid),0) FROM view_responses;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'view_responses',COALESCE(MAX(rowid),0) FROM view_responses;
 
-INSERT INTO _v265_drop_ranges SELECT 'fact_classes',COALESCE(MAX(rowid),0) FROM fact_classes;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'fact_classes',COALESCE(MAX(rowid),0) FROM fact_classes;
 
-INSERT INTO _v265_drop_ranges SELECT 'material_versions',COALESCE(MAX(rowid),0) FROM material_versions;
+INSERT OR IGNORE INTO _v265_drop_ranges SELECT 'material_versions',COALESCE(MAX(rowid),0) FROM material_versions;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '265');

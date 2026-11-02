@@ -69,12 +69,13 @@ const range = (table: string, parts: number, partition: number) => {
   return `rowid > (${limit} / ${parts}) * ${partition}${partition === parts - 1 ? '' : ` AND rowid <= (${limit} / ${parts}) * ${partition + 1}`}`;
 };
 const SEARCH_TABLES = ['prompt_batches_fts', 'responses_fts', 'view_prompts_fts', 'view_responses_fts', 'view_plans_fts'];
-const EMPTIED_TABLES = [...RANGE_SOURCES.map(({ table }) => table), 'view_content_proofs'];
-/** The small tables, each ahead of every table it references; `view_instances` last. */
+/** Whole tables dropped one per step: the emptied ones, then the small ones carrying payload text, each ahead of every table it references. */
+const EMPTIED_TABLES = [...RANGE_SOURCES.map(({ table }) => table), 'view_content_proofs',
+  'transcript_parser_state_chunks', 'view_work_samples', 'view_checkpoint_chunks', 'view_checkpoints', 'view_plans', 'view_findings'];
+/** The small tables without payload, each ahead of every table it references; `view_instances` last. */
 const SMALL_TABLES = [
-  'transcript_parser_state_chunks', 'prompt_key_owners', 'plan_promotions', 'view_publication_material', 'view_legacy_ack_feed', 'view_flip_calibrations',
-  'view_work_samples', 'learning_init_queue', 'cutover_progress', 'view_visible', 'view_checkpoint_chunks', 'view_checkpoints', 'view_key_owners',
-  'view_plans', 'view_findings', 'view_build_work', 'session_views', 'view_instances',
+  'prompt_key_owners', 'plan_promotions', 'view_publication_material', 'view_legacy_ack_feed', 'view_flip_calibrations', 'learning_init_queue',
+  'cutover_progress', 'view_visible', 'view_key_owners', 'view_build_work', 'session_views', 'view_instances',
 ];
 const dropIndexes = (tables: readonly string[]) => tables.flatMap((table) => DROPPED_CONTENT_INDEXES[table]!.map((index) => `DROP INDEX IF EXISTS ${index}`));
 const dropTables = (tables: readonly string[]) => tables.map((table) => `DROP TABLE IF EXISTS ${table}`);
@@ -83,7 +84,7 @@ const steps: readonly (readonly string[])[] = [
   [
     ...DROPPED_CONTENT_TRIGGERS.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
     `CREATE TABLE IF NOT EXISTS ${DROP_RANGES_TABLE} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
-    ...RANGE_SOURCES.map(({ table }) => `INSERT INTO ${DROP_RANGES_TABLE} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`),
+    ...RANGE_SOURCES.map(({ table }) => `INSERT OR IGNORE INTO ${DROP_RANGES_TABLE} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`),
   ],
   ...ONE_INDEX_PER_STEP.flatMap((table) => dropIndexes([table]).map((sql) => [sql])),
   ...ONE_TABLE_PER_STEP.map((table) => dropIndexes([table])),

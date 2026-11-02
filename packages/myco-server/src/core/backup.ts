@@ -7,6 +7,7 @@ import { estimateInvalidationStatements } from './budget-estimates.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
+import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -73,6 +74,12 @@ export const BACKUP_TABLES: readonly string[] = [
 
 /** Input-only tables whose artifact rows are converted directly to documents. */
 const LEGACY_DOCUMENT_TABLES = ['prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'transcript_parser_state_chunks', 'prompt_key_owners'];
+
+/** Artifact names of the content storage schema steps 265 to 464 dropped; their rows are skipped unless they are legacy document input. */
+export const RETIRED_INPUT_TABLES: ReadonlySet<string> = new Set([
+  ...DROPPED_CONTENT_TABLES,
+  ...DROPPED_CONTENT_TABLES.filter(table => table.endsWith('_fts')).flatMap(table => ['_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
+]);
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
 export const RETIRED_TABLES: ReadonlyMap<string, number> = new Map(
@@ -342,7 +349,7 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
 
 /** Admit every table named by the artifact before any restore write. */
 function artifactTable(table: string): void {
-  if (!BACKUP_TABLES.includes(table) && !LEGACY_DOCUMENT_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
+  if (!BACKUP_TABLES.includes(table) && !LEGACY_DOCUMENT_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_INPUT_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
     throw new BackupApplyError(table, 'unknown artifact table');
   }
 }
@@ -361,7 +368,7 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
     if (line.length === 0) continue;
     const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
     artifactTable(row.t);
-    if (EXCLUDED_TABLES.has(row.t) && !LEGACY_DOCUMENT_TABLES.includes(row.t)) continue;
+    if ((EXCLUDED_TABLES.has(row.t) || RETIRED_INPUT_TABLES.has(row.t)) && !LEGACY_DOCUMENT_TABLES.includes(row.t)) continue;
     const namespace = row.t === 'knowledge_release_state' ? row.r.namespace : undefined;
     const retiredTable = retiredBackupTable(row.t) ?? retiredBackupTable(namespace);
     if (retiredTable !== undefined) {

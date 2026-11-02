@@ -36,6 +36,10 @@ process.on('exit', () => {
   }
 });
 
+/** A local migration apply spends about an eighth of a second per file on top of the SQL, and the seeded upgrade applies every file. */
+const MIGRATIONS_APPLY_TIMEOUT_MS = 600_000;
+const COMMAND_TIMEOUT_MS = 120_000;
+
 async function wrangler(args: string[], env: Record<string, string | undefined> = {}): Promise<string> {
   const proc = Bun.spawn(['node', WRANGLER, ...args], {
     cwd: os.tmpdir(),
@@ -44,7 +48,7 @@ async function wrangler(args: string[], env: Record<string, string | undefined> 
     env: { ...process.env, ...env },
   });
   SPAWNED.add(proc);
-  const timer = setTimeout(() => { proc.kill(); }, 120_000);
+  const timer = setTimeout(() => { proc.kill(); }, args[0] === 'd1' && args[1] === 'migrations' ? MIGRATIONS_APPLY_TIMEOUT_MS : COMMAND_TIMEOUT_MS);
   let code: number, out: string, err: string;
   try {
     [code, out, err] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);

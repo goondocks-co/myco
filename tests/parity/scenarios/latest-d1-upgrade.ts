@@ -14,7 +14,7 @@ import type { ParityScenario } from '../harness.ts';
 export const latestD1Upgrade: ParityScenario = {
   name: 'D1: latest migration upgrades seeded previous schema to expected state',
   only: 'cloudflare',
-  dedicated: { cloudflare: { latestSchemaUpgrade: true }, timeoutMs: 240_000 },
+  dedicated: { cloudflare: { latestSchemaUpgrade: true }, timeoutMs: 600_000 },
   async run(target) {
     const version=SCHEMA_STEPS.at(-1)!.version;
     const status=await fetch(`${target.url}/api/status`,{headers:target.ownerHeaders()});
