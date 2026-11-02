@@ -15,7 +15,16 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
-import { invitationExpiry } from '../../packages/myco-server/ui/src/features/admin/people/words';
+import { invitationExpiry, loginCommand } from '../../packages/myco-server/ui/src/features/admin/people/words';
+
+it('copies a validated invitation as a literal argument accepted by cmd and POSIX shells', async () => {
+  const { parseJoinCode } = await import('@myco/member/join-code.js');
+  const key = 'k'.repeat(43);
+  const command = loginCommand(key, 'https://myco.example');
+  expect(command).toBe(`myco login https://myco.example/join#${key}`);
+  expect(parseJoinCode(command.slice('myco login '.length))).toMatchObject({ serverUrl: 'https://myco.example', key });
+  expect(loginCommand(key, 'http://[::1]:8787')).toBe(`myco login "http://[::1]:8787/join#${key}"`);
+});
 import { rawIdsIn } from '../helpers/raw-ids';
 import { machineRows } from './machine-fixtures';
 
@@ -165,7 +174,7 @@ describe('invitations', () => {
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
-    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login '${window.location.origin}/join#${'k'.repeat(43)}'`));
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'k'.repeat(43)}`));
     dialog = screen.getByRole('dialog');
     expect(dialog.textContent).toContain('On their machine, run:');
     expect(dialog.textContent).toMatch(/shown only now/);
@@ -194,7 +203,7 @@ describe('invitations', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: /^How\ long\ the\ link\ works(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'For a day' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
-    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login '${window.location.origin}/join#${'m'.repeat(43)}'`));
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'m'.repeat(43)}`));
     dialog = screen.getByRole('dialog');
     expect(dialog.textContent).toContain('On the machine you want to add, run:');
     expect(posts).toEqual([{ path: '/api/enrollment', body: { memberId: LIN, ttlMinutes: 1440 } }]);

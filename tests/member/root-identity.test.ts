@@ -324,7 +324,7 @@ it.skipIf(!caseAliases)('leave discards old-key held capture across Deployments 
   expect(fs.existsSync(pendingDir(held.repo.rootKey, mycoHome, 'https://work.invalid'))).toBe(false);
   expect(fs.readFileSync(keptFile)).toEqual(keptBytes);
   writeRegistryEntry(entry(root), { mycoHome });
-  expect(await settleConnection(readRegistryEntry(root, mycoHome)!, { mycoHome, now: () => held.opts.now, tell: false })).toBe(0);
+  expect(await settleConnection(readRegistryEntry(root, mycoHome)!, { mycoHome, now: () => held.opts.now, tell: false, explicitJoin: true })).toBe(0);
 });
 
 async function aliasGate(spellings: string[]): Promise<void> {
@@ -702,7 +702,7 @@ it('an in-place legacy binding rewrite invalidates the proof before an expanded-
   finally { fs.realpathSync.native = native; }
 });
 
-it('explicit connection replacement and leave resolve only the selected repository conflict', () => {
+it('explicit connection replacement and leave resolve only the selected repository conflict', async () => {
   oldBinding(root);
   oldBinding(alias, 'https://work.invalid', 'proj_work');
   const unrelated = path.join(base, 'Unrelated');
@@ -713,7 +713,7 @@ it('explicit connection replacement and leave resolve only the selected reposito
   expect(readRegistryEntry(root, mycoHome)?.projectId).toBe('proj_personal');
   expect(readRegistryEntry(unrelated, mycoHome)?.projectId).toBe('proj_unrelated');
   oldBinding(alias, 'https://work.invalid', 'proj_work');
-  expect(runLeave([], { cwd: root, mycoHome, stdout: () => {}, stderr: () => {} })).toBe(true);
+  expect(await runLeave([], { cwd: root, mycoHome, fetch: async () => new Response('{}', { status: 503 }), stdout: () => {}, stderr: () => {} })).toBe(true);
   expect(readRegistryEntryResult(root, mycoHome).status).toBe('missing');
   expect(readRegistryEntry(unrelated, mycoHome)?.projectId).toBe('proj_unrelated');
 });
@@ -746,8 +746,7 @@ it('an orphaned connection for this alias stays local and cannot throw through t
   cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [key]: 'proj_old' } } }, mycoHome);
   const held = autoJoinHold({ root: alias, hookName: 'session-end', agent: 'claude-code', sessionId: 'local-choice', mycoHome, now: 2,
     env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('must not join'); } });
-  expect(held).not.toBe(LEFT_ALONE);
-  expect(held !== null && typeof held === 'object' && held.spool !== null).toBe(true);
+  expect(held).toBe(LEFT_ALONE);
   const lines: string[] = [];
   runStatus([], { cwd: other, mycoHome, stdout: line => lines.push(line), stderr: line => lines.push(line) });
   const checks = await homeReport(mycoHome, { cwd: other, fetch: (async () => new Response('{}', { status: 503 })) as import('@myco/member/transport.js').FetchLike });

@@ -181,9 +181,9 @@ describe('myco member join / leave', () => {
     const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://server.example' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-keep.jsonl'), '{}\n');
     const out: string[] = [];
-    const deps = { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {} };
+    const deps = { mycoHome, cwd: projectRoot, fetch: rig.fetch, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {} };
 
-    expect(runLeave([], deps)).toBe(true);
+    expect(await runLeave([], deps)).toBe(true);
     expect(readRegistryEntry(projectRoot, mycoHome)).toBeNull();
     expect(fs.existsSync(path.join(spool.dir, 'sess-keep.jsonl'))).toBe(true);
     expect(out.join('\n')).toContain('spool kept');
@@ -193,7 +193,7 @@ describe('myco member join / leave', () => {
     out.length = 0;
     fs.mkdirSync(joinRefusalsDir(mycoHome), { recursive: true });
     fs.writeFileSync(path.join(joinRefusalsDir(mycoHome), 'refused.json'), '{}');
-    expect(runLeave(['--purge'], deps)).toBe(true);
+    expect(await runLeave(['--purge'], deps)).toBe(true);
     expect(fs.existsSync(spool.dir)).toBe(false);
     expect(fs.existsSync(joinRefusalsDir(mycoHome))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, MEMBER_TARGET))).toBe(false);
@@ -225,7 +225,7 @@ describe('myco member join / leave', () => {
     }
     const before = [...platform.running];
     platform.commands.length = 0;
-    expect(runLeave([], { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {}, worker })).toBe(true);
+    expect(await runLeave([], { mycoHome, cwd: projectRoot, fetch: rig.fetch, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {}, worker })).toBe(true);
     expect(platform.commands).toEqual([]);
     expect([...platform.running]).toEqual(before);
   });

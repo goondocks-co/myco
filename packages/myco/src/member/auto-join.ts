@@ -583,7 +583,16 @@ export function dropJoinRequest(rootKey: string, mycoHome: string, serverUrl?: s
 }
 
 /** A joined repository's past sessions, still to bring: the helper's join pass brings them a step at a time. */
-export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number; retryAt?: number }
+export interface PendingImport {
+  root: string; rootKey: string; projectId: string; serverUrl: string; at: number; retryAt?: number; attempts?: number;
+  terminal?: { at: number; reason: string };
+}
+
+/** Connected hooks wake due history work through the same join bucket as unconnected hooks. */
+export function pendingImportsDue(mycoHome: string, now: number): boolean {
+  const pending = latestByRoute([...pendingImportRecords(mycoHome)].map(record => record.value), true);
+  return pending.some(record => record.terminal === undefined && (record.retryAt === undefined || record.retryAt <= now));
+}
 
 const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'>): string =>
   scopedFile(IMPORTS_DIRNAME, rootKey, mycoHome, route?.serverUrl, route?.projectId);
@@ -595,27 +604,29 @@ export function queueImport(record: PendingImport, mycoHome: string): void {
   writePrivateFileAtomic(file, `${JSON.stringify({ ...record, root: canonicalPath(record.root), serverUrl: deploymentUrl(record.serverUrl) })}\n`);
 }
 
+/** Stored import records, read without resolving repository paths. */
+function* pendingImportRecords(mycoHome: string): Generator<{ file: string; value: PendingImport }> {
+  for (const file of listedFiles(IMPORTS_DIRNAME, mycoHome, true)) {
+    const read = readPrivateJson<PendingImport>(file);
+    if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
+    if (!read.ok) continue;
+    const value = read.value;
+    if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+      && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
+      && (value.retryAt === undefined || Number.isFinite(value.retryAt))
+      && (value.attempts === undefined || (Number.isSafeInteger(value.attempts) && value.attempts >= 0))
+      && (value.terminal === undefined || (value.terminal !== null && Number.isFinite(value.terminal.at) && typeof value.terminal.reason === 'string'))
+      && path.basename(file) === `${value.rootKey}.json`
+      && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
+        || (path.basename(path.dirname(file)) === value.projectId
+          && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) yield { file, value };
+    else reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
+  }
+}
+
 /** Every joined repository whose past sessions are still to bring, the oldest joined first. */
 export function listPendingImports(mycoHome: string): PendingImport[] {
-  const rows = listedFiles(IMPORTS_DIRNAME, mycoHome, true)
-    .map((file) => {
-      const read = readPrivateJson<PendingImport>(file);
-      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
-      return { file, read };
-    })
-    .flatMap(({ file, read }) => {
-      if (!read.ok) return [];
-      const value = read.value;
-      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
-        && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
-        && (value.retryAt === undefined || Number.isFinite(value.retryAt))
-        && path.basename(file) === `${value.rootKey}.json`
-        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
-          || (path.basename(path.dirname(file)) === value.projectId
-            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return verifiedRootRecord(value, file, 'pending import', mycoHome);
-      reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
-      return [];
-    });
+  const rows = [...pendingImportRecords(mycoHome)].flatMap(({ file, value }) => verifiedRootRecord(value, file, 'pending import', mycoHome));
   return latestByRoute(rows, true);
 }
 
@@ -782,6 +793,12 @@ function leftStanding(rootKey: string, mycoHome: string, connectTo: string | nul
 }
 
 export const isLeft = (rootKey: string, mycoHome: string): boolean => leftStanding(rootKey, mycoHome, null) === 'left';
+
+/** Capture decisions distinguish a durable opt-out from unreadable opt-out evidence. */
+export function readOptOutStatus(rootKey: string, mycoHome: string): { status: 'left' | 'absent' } | { status: 'unavailable'; message: string } {
+  try { return { status: isLeft(rootKey, mycoHome) ? 'left' : 'absent' }; }
+  catch (error) { return { status: 'unavailable', message: error instanceof Error ? error.message : String(error) }; }
+}
 
 export function clearLeft(rootKey: string, mycoHome: string): void {
   for (const key of compatibleRootKeys(rootKey, mycoHome)) fs.rmSync(leftPath(key, mycoHome), { force: true });

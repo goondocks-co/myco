@@ -677,6 +677,15 @@ export function importCompleted(report: ImportReport): boolean {
   return report.refused === undefined && report.stoppedBy === undefined && report.projects.every(project => project.endedBy === undefined);
 }
 
+/** Refusals requiring changed authority, source data or protocol are held for explicit intervention. */
+export function importTerminalReason(report: ImportReport): string | null {
+  if (report.refused !== undefined) return report.refused;
+  const terminal = new Set(['refused', 'unauthorized', 'protocol', 'parked']);
+  const project = report.projects.find(project => project.endedBy !== undefined && terminal.has(project.endedBy));
+  if (project !== undefined) return project.stoppedBy ?? project.endedBy!;
+  return report.stoppedBy !== undefined && terminal.has(report.stoppedBy) ? report.stoppedBy : null;
+}
+
 /** Discovery and per-Project passes share the import deadline. */
 export function importDeadlineReached(report: ImportReport): boolean {
   return report.stoppedBy === IMPORT_DEADLINE || report.projects.some(project => project.endedBy === IMPORT_DEADLINE);

@@ -18,7 +18,7 @@ export const DEFAULT_VALIDITY = '60';
 /** The command that redeems an invitation, run on the machine joining. */
 export function loginCommand(key: string, origin: string = window.location.origin): string {
   if (!ENROLLMENT_KEY_PATTERN.test(key)) throw new Error('This link does not carry an invitation key');
-  return commandLine(['myco', 'login', `${new URL(origin).origin}${JOIN_PATH}#${key}`]);
+  return commandLine(['myco', 'login', `${new URL(origin).origin}${JOIN_PATH}#${key}`], 'portable');
 }
 
 /** When an open invitation stops working. The list holds only unexpired ones, so a past one has lapsed since it loaded. */

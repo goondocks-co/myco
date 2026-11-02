@@ -2,6 +2,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { systemdEnvironment, systemdWords } from '@goondocks/myco-shared/shell-command';
 import { deploymentUrl } from '../member/registry.js';
 import { HARNESSES } from './harnesses.js';
 import { locate, offerOf, type DetectedHarness } from './detect.js';
@@ -79,13 +80,21 @@ const UNIT_FILE = {
 const unescapeXml = (value: string): string =>
   value.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
+function readLinuxUnit(text: string): { args: string[] | null; home: string | undefined } {
+  const command = /^ExecStart=(.*)$/m.exec(text)?.[1];
+  return { args: command === undefined ? null : systemdWords(command), home: systemdEnvironment(text)?.MYCO_HOME };
+}
+
 /** Read the installed runner unit's program, refusing an unreadable or foreign unit. */
 export function installedRunnerTarget(target: WorkerServiceTarget): WorkerServiceTarget {
   const platform = target.platform ?? process.platform;
   const spec = workerServiceSpec({ ...target, executor: 'runner' }, []);
   const file = servicePaths(spec, platform).unitFile;
   let text: string;
-  try { text = unescapeXml(fs.readFileSync(file, 'utf8')); }
+  try {
+    text = fs.readFileSync(file, 'utf8');
+    if (platform !== 'linux') text = unescapeXml(text);
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target; throw error; }
   let binaryPath: string | undefined, serverUrl: string | undefined, home: string | undefined;
   if (platform === 'darwin') {
@@ -94,9 +103,11 @@ export function installedRunnerTarget(target: WorkerServiceTarget): WorkerServic
     if (args[1] === 'runner' && args[2] === 'run' && args[3] === '--server') { binaryPath = args[0]; serverUrl = args[4]; }
     home = /<key>MYCO_HOME<\/key>\s*<string>([\s\S]*?)<\/string>/.exec(text)?.[1];
   } else if (platform === 'linux') {
-    const command = /^ExecStart=(\S+) runner run --server (\S+)\s*$/m.exec(text);
-    binaryPath = command?.[1]; serverUrl = command?.[2];
-    home = /^Environment=MYCO_HOME=(.+)$/m.exec(text)?.[1];
+    const { args, home: recordedHome } = readLinuxUnit(text);
+    if (args?.length === 5 && args[1] === 'runner' && args[2] === 'run' && args[3] === '--server') {
+      binaryPath = args[0]; serverUrl = args[4];
+    }
+    home = recordedHome;
   } else if (platform === 'win32') {
     const command = /(?:^| && )(\S+) runner run --server (\S+) >> /.exec(text);
     binaryPath = command?.[1]; serverUrl = command?.[2];
@@ -129,9 +140,13 @@ export function listWorkerUnits(home: string, platform: NodeJS.Platform = proces
     const executor = match[1] === 'runner' ? 'runner' : 'legacy-member';
     const id = match[2]!;
     const unitFile = path.join(dir, name);
-    const text = unescapeXml(fs.readFileSync(unitFile, 'utf8'));
-    const serverUrl = /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null;
-    const mycoHome = /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null;
+    const raw = fs.readFileSync(unitFile, 'utf8');
+    const text = platform === 'linux' ? raw : unescapeXml(raw);
+    const linux = platform === 'linux' ? readLinuxUnit(text) : null;
+    const serverIndex = linux?.args?.indexOf('--server') ?? -1;
+    const serverUrl = linux === null ? /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null
+      : serverIndex < 0 ? null : linux.args?.[serverIndex + 1] ?? null;
+    const mycoHome = linux === null ? /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null : linux.home ?? null;
     found.push({
       executor, unitFile, serverUrl, mycoHome,
       spec: { ...probe, unit: unitWithId(id, serverUrl ?? 'https://unit.invalid', executor) },

@@ -276,7 +276,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, explicitJoin: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
@@ -394,7 +394,7 @@ async function connectFolder(
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, explicitJoin: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   clearMissingMembership(root, mycoHome);
@@ -926,7 +926,7 @@ function relinquish(remove: () => boolean, removed: string, subject: string, out
 }
 
 /** Forget this project's membership. The spool survives unless `--purge` is given, which also strips the hooks provisioning wrote. */
-export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boolean {
+export async function runLeave(args: readonly string[], deps: MemberCliDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);
@@ -944,7 +944,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     return false;
   }
   // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+  await optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
     .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry?.serverUrl ?? 'Myco')} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   for (const manifest of loadManifests()) {
@@ -1559,7 +1559,7 @@ export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
                      fall back to what is installed for all your projects. Runner and legacy worker
                      services are kept. The spool is kept unless
                      --purge is given, which also removes the hooks this project was provisioned with.`,
-    run: async (rest, deps) => { runLeave(rest, deps); },
+    run: async (rest, deps) => { await runLeave(rest, deps); },
   },
   'routing-key': {
     help: `  routing-key --credential registry|env [--root <dir>]

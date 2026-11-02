@@ -221,7 +221,11 @@ export const WHITESPACE_PATH_REFUSAL =
 
 function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   if (/\s/.test(binaryPath)) throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
-  assertBareCommandArgument(binaryPath);
+  try { assertBareCommandArgument(binaryPath); }
+  catch (cause) {
+    throw new MemberProvisionConflictError(`Refusing binary path "${binaryPath}": it contains shell syntax.`,
+      'Move Myco to a path without shell metacharacters, then provision again.', { cause });
+  }
 }
 
 function hookCommandsIn(raw: string): string[] {

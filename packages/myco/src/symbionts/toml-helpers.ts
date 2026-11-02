@@ -4,10 +4,8 @@ const TOML_SECTION_RE = /^\[([^\]]+)\]/;
 /**
  * Find where a named TOML section ends.
  *
- * Walks forward from `searchStart` until it hits a section header that is
- * NEITHER the named section itself NOR any of its subtables (headers that
- * start with `${sectionName}.`). Returns `raw.length` if the section extends
- * to the end of the file.
+ * Includes the named section's subtables and leaves trailing comments and
+ * whitespace with the following table, or at the end of the file.
  */
 export function findTomlSectionEnd(
   raw: string,
@@ -17,14 +15,18 @@ export function findTomlSectionEnd(
   const subsectionPrefix = `${sectionName}.`;
   const rawLines = raw.slice(searchStart).split('\n');
   let offset = searchStart;
+  let trailing: number | undefined;
   for (const line of rawLines) {
+    const start = offset;
     offset += line.length + 1;
     const m = line.match(TOML_SECTION_RE);
     if (m && !m[1].startsWith(subsectionPrefix) && m[1] !== sectionName) {
-      return offset - line.length - 1;
+      return trailing ?? start;
     }
+    if (/^\s*(?:#.*)?$/.test(line)) trailing ??= start;
+    else trailing = undefined;
   }
-  return raw.length;
+  return trailing ?? raw.length;
 }
 
 /** Format a single TOML key = value line from a JS value. Skips unsupported types. */
@@ -65,13 +67,7 @@ export function upsertTomlSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    // findTomlSectionEnd returns the index of the next section header;
-    // the slice starts with `[...]`. Normalize so the concatenation
-    // always inserts a blank line between the rewritten block and the
-    // following section header — without this, a section whose body
-    // ends without a trailing newline (a one-liner like `hooks = true`)
-    // collides with the next `[section]` and produces malformed TOML
-    // like `hooks = true[notice.model_migrations]`.
+    // A blank line separates the replacement from the following table and its leading comments.
     const after = raw.slice(endIdx).replace(/^\s+/, '');
     const beforeSeparator = before ? '\n\n' : '';
     const afterSeparator = after ? '\n\n' : '';
@@ -320,13 +316,7 @@ export function buildTomlMcpSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    // findTomlSectionEnd returns the offset of the next section header. Strip
-    // leading whitespace from `after` and insert an explicit blank line between
-    // our rewritten block and that header — otherwise a block whose final line
-    // lacks a trailing newline (the common case here: lines.join('\n') leaves
-    // none) collides with the following `[mcp_servers.x]` and writes invalid
-    // TOML like `url = "..."[mcp_servers.node_repl]`. Same normalization as
-    // upsertTomlSection.
+    // A blank line separates the replacement from the following table and its leading comments.
     const after = raw.slice(endIdx).replace(/^\s+/, '');
     const beforeSeparator = before ? '\n\n' : '';
     const afterSeparator = after ? '\n\n' : '';

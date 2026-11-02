@@ -593,7 +593,7 @@ describe('/join', () => {
     mount('/join');
     expect(await screen.findByRole('heading', { name: 'Connect a machine to Myco' })).toBeTruthy();
     expect(screen.getByText('On the machine you want to connect, run:')).toBeTruthy();
-    const command = `myco login 'http://localhost/join#${KEY}'`;
+    const command = `myco login http://localhost/join#${KEY}`;
     expect(screen.getByText(command)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     await waitFor(() => expect(copied).toEqual([command]));

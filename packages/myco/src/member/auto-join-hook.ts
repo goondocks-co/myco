@@ -7,7 +7,7 @@
  */
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import {
-  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone, readAutoJoinState, sessionMetUnconnected,
+  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone, readAutoJoinState, sessionMetUnconnected, pendingImportsDue, readOptOutStatus,
 } from './auto-join.js';
 import { kickHelper } from './helper.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
@@ -58,8 +58,8 @@ export const LEFT_ALONE = 'left';
 
 /**
  * The hold for a hook at `root`; {@link LEFT_ALONE} for a repository left with `myco member leave`; or null where
- * auto-join has no say: no default Deployment, or a repository the machine never captures. The notice reaches the
- * agent in the hook's answer, and nothing is written to stderr.
+ * auto-join has no hold: a connected repository, no default Deployment, or a repository the machine never captures.
+ * Notices reach the agent in the hook's answer; unavailable connection decisions are reported on stderr.
  *
  * Asking for a join, and kicking the helper's join bucket, are handed to `later`, never done here: the hook runs them
  * once its own capture is appended, so a request that cannot be written costs the join a hook, never the capture.
@@ -68,7 +68,13 @@ export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
   later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
-  if (readRegistryEntryResult(opts.root, opts.mycoHome).status !== 'missing') return null;
+  const binding = readRegistryEntryResult(opts.root, opts.mycoHome);
+  if (binding.status !== 'missing') {
+    if (binding.status === 'present' && pendingImportsDue(opts.mycoHome, opts.now)) {
+      opts.later(() => kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now }));
+    }
+    return null;
+  }
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);
@@ -89,7 +95,9 @@ export function autoJoinHold(opts: {
   let current: ReturnType<typeof joinStanding>;
   try { current = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now); }
   catch (error) {
-    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+    const optOut = readOptOutStatus(rootKey, opts.mycoHome);
+    if (optOut.status === 'left') return LEFT_ALONE;
+    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}${optOut.status === 'unavailable' ? '; ' + optOut.message : ''}\n`);
     return hold(null);
   }
   const { standing, leaves, state } = current;

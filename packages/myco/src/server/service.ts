@@ -27,7 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import nodeFs from 'node:fs';
 const { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
-import { commandArgument, commandLine } from '@goondocks/myco-shared/shell-command';
+import { commandArgument, commandLine, systemdEnvironment, systemdWords } from '@goondocks/myco-shared/shell-command';
 import { homedir } from 'node:os';
 import { canonicalHomePath } from '../paths/home.js';
 
@@ -171,13 +171,19 @@ export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions 
   if (!existsSync(paths.unitFile)) return 'absent';
   if (expected === undefined) return 'same';
   const source = readFileSync(paths.unitFile, 'utf8');
+  if (platform === 'linux') {
+    const environment = systemdEnvironment(source);
+    if (environment === null) return 'unknown';
+    const home = environment.MYCO_HOME ?? (!source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : undefined);
+    return home === undefined || !path.isAbsolute(home) ? 'unknown'
+      : canonicalHomePath(home) === canonicalHomePath(expected) ? 'same' : 'foreign';
+  }
   const pattern = platform === 'darwin' ? /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g
-    : platform === 'linux' ? /^Environment=MYCO_HOME=(.*)$/gm
-      : /set &quot;MYCO_HOME=(.*?)&quot;/g;
+    : /set &quot;MYCO_HOME=(.*?)&quot;/g;
   const homes = [...source.matchAll(pattern)].map(match => match[1]);
   const same = (target: string): 'same' | 'foreign' | 'unknown' => !path.isAbsolute(target) ? 'unknown'
     : canonicalHomePath(target) === canonicalHomePath(expected) ? 'same' : 'foreign';
-  if (homes.length === 1) return same(platform === 'linux' ? homes[0] : xmlUnescape(homes[0]));
+  if (homes.length === 1) return same(xmlUnescape(homes[0]));
   if (homes.length === 0 && !source.includes('MYCO_HOME')) return same(path.join(spec.home, '.myco'));
   return 'unknown';
 }
@@ -247,7 +253,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${commandLine([spec.binaryPath, ...spec.unit.args], 'systemd')}
-${environmentOf(spec).map(([key, value]) => `Environment=${commandArgument(`${key}=${value}`, 'systemd')}`).join('\n')}
+${environmentOf(spec).map(([key, value]) => `Environment=${commandArgument(`${key}=${value}`, 'systemd-environment')}`).join('\n')}
 Restart=${spec.unit.restart === 'never' ? 'no' : 'on-failure'}
 RestartSec=${spec.unit.restartDelaySeconds}
 StandardOutput=append:${paths.outLog}
@@ -445,7 +451,10 @@ export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions
 function withoutPath(unit: string): string {
   return unit
     .replace(/(<key>PATH<\/key><string>)[^<]*(<\/string>)/, '$1$2')
-    .replace(/^Environment=PATH=.*$/m, 'Environment=PATH=')
+    .replace(/^Environment=(.*)$/gm, (line, value: string) => {
+      const words = systemdWords(value, 'systemd-environment');
+      return words === null ? line : `Environment=${words.map(word => commandArgument(word.startsWith('PATH=') ? 'PATH=' : word, 'systemd-environment')).join(' ')}`;
+    })
     .replace(/set &quot;PATH=.*?&quot; &amp;&amp; /, '');
 }
 

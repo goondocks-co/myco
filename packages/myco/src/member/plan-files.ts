@@ -263,12 +263,12 @@ export function planWritesInLines(agent: string, lines: ReadonlyArray<Record<str
 }
 
 /** The plan events for every plan file the lines record a write into, read now from disk; one event per file whose content differs from what last shipped. */
-export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPaths: readonly string[]): PlanFileCapture & { captured: string[] } {
+export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPaths: readonly string[], promptId?: string): PlanFileCapture & { captured: string[] } {
   const events: OutboundEvent[] = [];
   const records: Array<(state: SessionState) => void> = [];
   const captured: string[] = [];
   for (const absPath of absPaths) {
-    const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath);
+    const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath, promptId);
     records.push(capture.record);
     captured.push(normalizePlanPath(projectRoot, absPath));
     events.push(...capture.events);

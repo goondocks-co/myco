@@ -144,12 +144,14 @@ export function updateProvisionRecord(mycoHome: string, update: (record: Provisi
 /** Clear a joined Deployment's pending logouts under the provision record lease. */
 export function clearJoinedProvisionLogouts(mycoHome: string, serverUrl: string): void {
   if (!fs.existsSync(provisionRecordPath(mycoHome))) return;
-  updateProvisionRecord(mycoHome, record => {
+  try { updateProvisionRecord(mycoHome, record => {
     if (record?.pendingLogout === undefined) return;
     const pendingLogout = Object.fromEntries(Object.entries(record.pendingLogout).flatMap(([agent, urls]) => {
       const kept = urls.filter(url => url !== serverUrl);
       return kept.length === 0 ? [] : [[agent, kept]];
     }));
     if (JSON.stringify(pendingLogout) !== JSON.stringify(record.pendingLogout)) return { ...record, pendingLogout };
-  });
+  }); } catch (error) {
+    process.stderr.write(`myco: joined ${serverUrl}; agent logout reconciliation remains pending: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }

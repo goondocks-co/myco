@@ -72,6 +72,7 @@ describe('runner harness detection', () => {
     fs.chmodSync(credential, OWNER_NO_ACCESS);
     const found = await detectHarnessesAsync([fileHarness.id]);
     expect(found).toEqual([{ id: fileHarness.id, installed: true, authenticated: false, error: expect.stringContaining('EACCES') }]);
+    expect(detectHarnesses([fileHarness.id])).toEqual(found);
   });
 
   it('takes an empty or absent credential file as logged out', async () => {

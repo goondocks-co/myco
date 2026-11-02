@@ -58,7 +58,7 @@ if (process.env.MYCO_FIXTURE_HOME_DOCTOR === '1') {
   assert(output.some(line => line.includes('mcp_servers.myco')));
 }
 clean('doctor');
-assert(runLeave([], deps));
+assert(await runLeave([], deps));
 await new Promise<void>(resolve => setImmediate(resolve));
 clean('leave');
 await logoutDeployment('https://server.example', { mode: 'local-only' }, { ...deps, home });
