@@ -54,6 +54,8 @@ test('hosted launch executes automatic and manual embedding through authenticate
 
 test('hosted provider failure persists a failed run and permits a subsequent automatic retry', async () => {
   const f = await fixture();
+  let now=Date.now();
+  const clock=spyOn(Date,'now').mockImplementation(()=>now);
   try {
     f.server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => { throw new Error('provider unavailable'); } });
     expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
@@ -61,11 +63,11 @@ test('hosted provider failure persists a failed run and permits a subsequent aut
     expect((await f.server.env.db.prepare('SELECT status FROM agent_runs').first())?.status).toBe('failed');
     expect((await f.server.env.db.prepare('SELECT ready FROM embedding_receipts').first())?.ready).toBe(0);
     f.server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] });
-    expect(await dispatchEmbeddingWork(f.server.env, Date.now() + 60_000)).toBe(1);
+    expect(await dispatchEmbeddingWork(f.server.env, (now+=60_000))).toBe(1);
     await f.settle();
     expect((await f.server.env.db.prepare('SELECT ready FROM embedding_receipts').first())?.ready).toBe(1);
     expect((await f.server.env.db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE status='completed'").first())?.n).toBe(1);
-  } finally { await f.close(); }
+  } finally { clock.mockRestore(); await f.close(); }
 });
 
 test('hosted response work yields before starting another step without a full request window', async () => {

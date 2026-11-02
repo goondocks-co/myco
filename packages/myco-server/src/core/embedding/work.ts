@@ -1,3 +1,4 @@
+import { embeddingProviderReady } from './provider-state.js';
 import { prepareEmbeddingUnwritten } from '../../read/catalog-store.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
@@ -24,8 +25,10 @@ export interface EmbeddingWorkScope {
  * its due deletions alone.
  */
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number, scope: EmbeddingWorkScope = {}): Promise<boolean> {
-  const writes = scope.retireOnly === true ? [] : [model, ...(scope.building == null ? [] : [scope.building])];
-  const retained = [...new Set([model, ...writes, ...(scope.retain ?? [])])].sort();
+  const candidates = scope.retireOnly === true ? [] : [model, ...(scope.building == null ? [] : [scope.building])];
+  const writes: string[] = [];
+  for (const key of candidates) if (await embeddingProviderReady(db,key,now)) writes.push(key);
+  const retained = [...new Set([model, ...candidates, ...(scope.retain ?? [])])].sort();
   const pending = await recordedWork(db, projectId, model, 'embedding', JSON.stringify({ predicate: WORK_PREDICATE_VERSION, writes, retained }), now, async () => {
     for (const key of writes) {
       if (await prepareEmbeddingUnwritten(db, projectId, key, now).first() !== null) return { pending: true };

@@ -2,8 +2,9 @@
 export const UNRELATED_PROCESSED_LINES = {
   "embeddingWorkCounts": {
     "core/embedding/hubness.ts": [
-      "if (await tally(SPORE_VECTORS) < 2) return { phase: 'settled', processed: 0 };",
+      "if (population.total < 2) return { phase: 'settled', processed: 0 };",
       "return { phase: 'hubness', processed: done ? 1 : 0 };",
+      "return {phase:'hubness',processed:done ? 1 : 0};",
       "if (!started) return { phase: 'hubness', processed: 0 };",
       "if (joining.length > 0) return { phase: 'visibility', processed: 0 };",
       "if (visible.length === 0) return { phase: 'visibility', processed: 1 };",
@@ -15,7 +16,9 @@ export const UNRELATED_PROCESSED_LINES = {
       "changed += 'processed' in step ? step.processed : 0;"
     ],
     "core/embedding/reconcile.ts": [
-      "export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }",
+      "if (!due.ready) return {phase:'scan',processed:1};",
+      "return scanning ? { phase: 'scan', processed: 1 } : null;",
+      "export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled' | 'scan'; processed: number }",
       "if (claimed === null) return { phase: 'orphans', processed: 0 };",
       "return { phase: 'orphans', processed: 1 };",
       "if (context.retireOnly === true) return { phase: 'settled', processed: 0 };",

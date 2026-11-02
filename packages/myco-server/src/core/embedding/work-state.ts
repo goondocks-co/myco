@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../adapters.js';
 
 export const WORK_SWEEP_PAGE = 256;
-export const WORK_PREDICATE_VERSION = 1;
+export const WORK_PREDICATE_VERSION = 2;
 export const WORK_SWEEP_CONTINUE_MS = 30_000;
 export const WORK_SWEEP_MIN_MS = 5 * 60_000;
 export const WORK_SWEEP_MAX_MS = 30 * 60_000;
@@ -46,14 +46,15 @@ export async function recordedWork(
   }
   const dirty = row.revision !== row.checked_revision;
   const due = row.wake_at !== null && row.wake_at <= now;
-  if (!dirty && !due && row.pending === 0 && row.sweep_at > now) return false;
+  if (!dirty && !due && row.sweep_at > now) return row.pending === 1;
 
-  const scanning = !dirty && !due && row.pending === 0;
+  const scanning = !dirty && !due;
   const result: { pending: boolean; wakeAt?: number | null; cursor?: string | null } = scanning ? await sweep(row.sweep_cursor) : await probe();
   const cursor = result.cursor ?? null;
+  if (scanning && cursor !== null && row.pending === 1) result.pending = true;
   const rounds = result.pending || dirty ? 0 : cursor === null ? Math.min(row.idle_rounds + 1, 4) : row.idle_rounds;
   const interval = cursor === null ? Math.min(WORK_SWEEP_MAX_MS, WORK_SWEEP_MIN_MS * 2 ** rounds) : WORK_SWEEP_CONTINUE_MS;
-  const wakeAt = 'wakeAt' in result ? result.wakeAt ?? null : row.wake_at;
+  const wakeAt = 'wakeAt' in result ? result.wakeAt ?? null : row.wake_at !== null && row.wake_at > now ? row.wake_at : null;
   const committed = await db.prepare(`UPDATE embedding_work_state SET revision=revision+1,checked_revision=revision+1,
     pending=?,wake_at=?,sweep_at=?,sweep_cursor=?,idle_rounds=?
     WHERE project_id=? AND model_key=? AND kind=? AND scope=? AND revision=?`)

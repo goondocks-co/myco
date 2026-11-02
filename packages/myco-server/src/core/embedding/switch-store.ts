@@ -72,23 +72,23 @@ export async function readSwitch(db: RelationalStore): Promise<EmbeddingSwitch |
 /** Record a new switch, unless one stands. Answers whether it is recorded. */
 export async function insertSwitch(db: RelationalStore, sw: Omit<EmbeddingSwitch, 'state' | 'reason' | 'retryAt' | 'failures' | 'progressedAt'>, now: number): Promise<boolean> {
   const inserted = await db.prepare(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, state, reason, progressed_at, started_at, started_by, updated_at)
-    VALUES ('deployment', ?, ?, ?, ?, ?, ?, ?, ?, 'building', NULL, ?, ?, ?, ?) ON CONFLICT(slot) DO NOTHING`)
-    .bind(sw.id, sw.provider, sw.model, sw.endpoint, sw.modelKey, sw.fromModelKey ?? NONE, sw.estimatedTokens, sw.estimatedSources, sw.startedAt, sw.startedAt, sw.startedBy, now).run();
-  return inserted.meta.changes === 1;
+    VALUES ('deployment', ?, ?, ?, ?, ?, ?, ?, ?, 'building', NULL, ?, ?, ?, ?) ON CONFLICT(slot) DO NOTHING RETURNING id`)
+    .bind(sw.id, sw.provider, sw.model, sw.endpoint, sw.modelKey, sw.fromModelKey ?? NONE, sw.estimatedTokens, sw.estimatedSources, sw.startedAt, sw.startedAt, sw.startedBy, now).first<{id:string}>();
+  return inserted !== null;
 }
 
 /** Pause the building switch `id`, saying why. Answers whether it had been building. */
 export async function pauseSwitch(db: RelationalStore, id: string, reason: string, now: number): Promise<boolean> {
   const result = await db.prepare(`UPDATE embedding_switches SET state = 'paused', reason = ?, retry_at = NULL, updated_at = ?
-    WHERE slot = 'deployment' AND id = ? AND state = 'building'`).bind(reason, now, id).run();
-  return result.meta.changes === 1;
+    WHERE slot = 'deployment' AND id = ? AND state = 'building' RETURNING id`).bind(reason, now, id).first<{id:string}>();
+  return result !== null;
 }
 
 /** Hold the building switch `id` off its model until `until`, saying why, and count the failure. Answers whether it is building. */
 export async function waitSwitch(db: RelationalStore, id: string, until: number, reason: string, now: number): Promise<boolean> {
   const result = await db.prepare(`UPDATE embedding_switches SET retry_at = ?, reason = ?, failures = failures + 1, updated_at = ?
-    WHERE slot = 'deployment' AND id = ? AND state = 'building'`).bind(until, reason, now, id).run();
-  return result.meta.changes === 1;
+    WHERE slot = 'deployment' AND id = ? AND state = 'building' RETURNING id`).bind(until, reason, now, id).first<{id:string}>();
+  return result !== null;
 }
 
 /** Record that the switch `id`'s model wrote a vector: when, and that its failures in a row are over. */
@@ -100,14 +100,14 @@ export async function recordSwitchProgress(db: RelationalStore, id: string, now:
 /** Resume the switch `id`, paused or held off its model: its model is asked at once. Answers whether it is resumed. */
 export async function resumeSwitch(db: RelationalStore, id: string, now: number): Promise<boolean> {
   const result = await db.prepare(`UPDATE embedding_switches SET state = 'building', reason = NULL, retry_at = NULL, failures = 0, updated_at = ?
-    WHERE slot = 'deployment' AND id = ? AND (state = 'paused' OR retry_at IS NOT NULL)`).bind(now, id).run();
-  return result.meta.changes === 1;
+    WHERE slot = 'deployment' AND id = ? AND (state = 'paused' OR retry_at IS NOT NULL) RETURNING id`).bind(now, id).first<{id:string}>();
+  return result !== null;
 }
 
 /** End the switch `id` without moving search. Answers whether a switch of that id ended. */
 export async function deleteSwitch(db: RelationalStore, id: string): Promise<boolean> {
-  const ended = await db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND id = ?`).bind(id).run();
-  return ended.meta.changes === 1;
+  const ended = await db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND id = ? RETURNING id`).bind(id).first<{id:string}>();
+  return ended !== null;
 }
 
 /** Why a recovered copy of a server holds the switch it carries: the admin who confirmed it confirmed it on the original. */
