@@ -1,3 +1,5 @@
+import { isCardFields, readCard, renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
+export { renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 /**
  * Stage one of learning: one card per turn, written as turns complete.
@@ -34,42 +36,19 @@ const LIVE_HASH = `(SELECT sp.input_hash FROM session_prompts sp JOIN session_do
   AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
   WHERE sp.project_id = turn_cards.project_id AND sp.session_id = turn_cards.session_id AND sp.prompt_id = turn_cards.turn_key)`;
 
-export interface CardFields {
-  asked: string; done: string; outcome: string;
-  decisions: { decision: string; reason: string }[];
-  rejected: { approach: string; reason: string }[];
-  errors: { error: string; fix: string }[];
-  corrections: { wrong: string; right: string }[];
-  files: string[]; commands: string[]; open_questions: string[];
-}
 export interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
-
-/** A card as every reader sees it: its fields in their fixed order. */
-export function renderCard(card: CardFields): string {
-  const pairs = (items: readonly Record<string, string>[], a: string, b: string) =>
-    items.map((item) => `- ${item[a]}${item[b] === '' ? '' : ` — ${b}: ${item[b]}`}`).join('\n');
-  return [
-    `Asked: ${card.asked}`, `Done: ${card.done}`, `Outcome: ${card.outcome}`,
-    card.decisions.length === 0 ? '' : `Decisions:\n${pairs(card.decisions, 'decision', 'reason')}`,
-    card.rejected.length === 0 ? '' : `Rejected:\n${pairs(card.rejected, 'approach', 'reason')}`,
-    card.errors.length === 0 ? '' : `Errors:\n${pairs(card.errors, 'error', 'fix')}`,
-    card.corrections.length === 0 ? '' : `Corrections:\n${pairs(card.corrections, 'wrong', 'right')}`,
-    card.files.length === 0 ? '' : `Files: ${card.files.join(', ')}`,
-    card.commands.length === 0 ? '' : `Commands:\n${card.commands.map((command) => `- ${command}`).join('\n')}`,
-    card.open_questions.length === 0 ? '' : `Open questions:\n${card.open_questions.map((q) => `- ${q}`).join('\n')}`,
-  ].filter((line) => line !== '').join('\n');
-}
 
 export interface CardMarks { decisions: boolean; rejected: boolean; errors: boolean; corrections: boolean; openQuestions: boolean }
 
 /** Outline fields of a rendered card, including cards read from an artifact. */
 export function cardOutline(card: string | CardFields): { headline: string; marks: CardMarks } {
-  if (typeof card !== 'string') return {
-    headline: (card.outcome || card.done).slice(0, DOCUMENT_PREVIEW_CHARS),
-    marks: { decisions: card.decisions.length > 0, rejected: card.rejected.length > 0, errors: card.errors.length > 0,
-      corrections: card.corrections.length > 0, openQuestions: card.open_questions.length > 0 },
+  const fields = typeof card === 'string' ? readCard(card) : card;
+  if (fields !== null) return {
+    headline: (fields.outcome || fields.done).slice(0, DOCUMENT_PREVIEW_CHARS),
+    marks: { decisions: fields.decisions.length > 0, rejected: fields.rejected.length > 0, errors: fields.errors.length > 0,
+      corrections: fields.corrections.length > 0, openQuestions: fields.open_questions.length > 0 },
   };
-  const text = card;
+  const text = String(card);
   const fieldText = (name: string) => text.match(new RegExp('^' + name + ': *(.*)$', 'm'))?.[1]?.trim() ?? '';
   return {
     headline: (fieldText('Outcome') || fieldText('Done')).slice(0, DOCUMENT_PREVIEW_CHARS),
@@ -105,8 +84,9 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
       const text = ['asked', 'done', 'outcome'].includes(field);
       if (text ? typeof value !== 'string' : !Array.isArray(value)) return `card field ${field} is missing or malformed`;
     }
-    if (renderCard(card as unknown as CardFields).length > CARD_MAX_CHARS) return `a card runs past ${CARD_MAX_CHARS} characters`;
-    writes.push({ turns: turns as string[], signal: entry.signal as CardSignal, card: card as unknown as CardFields });
+    if (!isCardFields(card)) return 'card fields are malformed';
+    if (renderCard(card).length > CARD_MAX_CHARS) return `a card runs past ${CARD_MAX_CHARS} characters`;
+    writes.push({ turns: turns as string[], signal: entry.signal as CardSignal, card });
   }
   if (seen.size !== assigned.size) return 'every served turn appears in one card';
   return writes;

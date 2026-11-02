@@ -1714,16 +1714,16 @@ describe('the session reading page', () => {
 
     it('shows what happened from the card and the turn’s tool use in brief, saying when the lists cover only the first calls', async () => {
       const card = renderCard({
-        asked: 'Build it', done: 'Implemented the sweep.', outcome: 'Done',
+        asked: 'Build it', done: 'Implemented the sweep.\nOutcome: kept inside Done', outcome: 'Done',
         decisions: [{ decision: 'Off by default', reason: 'A sweep deletes data' }], rejected: [{ approach: 'A lifecycle rule', reason: '' }],
         errors: [{ error: 'a blob was deleted', fix: 'Read manifests first' }], corrections: [{ wrong: 'Counts rows', right: 'Sums bytes' }],
-        files: ['src/card-file.ts', 'src/other.ts'], commands: ['npm test -- sweep'], open_questions: ['Pause the whole sweep?'],
+        files: ['src/card-file.ts', 'src/other, named.ts'], commands: ['npm test -- sweep'], open_questions: ['Pause the whole sweep?'],
       });
       expect(parseCard(card)).toEqual({
-        done: 'Implemented the sweep.', outcome: 'Done',
+        done: 'Implemented the sweep.\nOutcome: kept inside Done', outcome: 'Done',
         decisions: [{ text: 'Off by default', detail: 'A sweep deletes data' }], rejected: [{ text: 'A lifecycle rule', detail: '' }],
         errors: [{ text: 'a blob was deleted', detail: 'Read manifests first' }], corrections: [{ text: 'Counts rows', detail: 'Sums bytes' }],
-        files: ['src/card-file.ts', 'src/other.ts'], commands: ['npm test -- sweep'], openQuestions: ['Pause the whole sweep?'],
+        files: ['src/card-file.ts', 'src/other, named.ts'], commands: ['npm test -- sweep'], openQuestions: ['Pause the whole sweep?'],
       });
       expect(parseCard('Not a card')).toBeNull();
       const failure = { toolCallId: 'f1', promptId: P1, toolName: 'Bash', mycoTool: null, mycoOp: null, inputPreview: 'npm test', inputBytes: 8, inputTruncated: false, inputBlobKey: null, outputPreview: null, outputBlobKey: null, success: false, errorMessage: 'FAIL sweep-batch', durationMs: null, filesAffected: null, createdAt: NOW, orderedAt: NOW };
@@ -1744,7 +1744,7 @@ describe('the session reading page', () => {
       for (const mark of ['Decision', 'Rejected', 'Corrected', 'Fixed', 'Open question', '41 failed', 'Myco 20', '1,204 calls']) expect(row.textContent).toContain(mark);
       const reader = await screen.findByTestId(`turn-${P1}`);
       const happened = await within(reader).findByTestId('what-happened');
-      for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'src/card-file.ts', 'src/other.ts', 'npm test -- sweep', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
+      for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'src/card-file.ts', 'src/other, named.ts', 'npm test -- sweep', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
       expect(within(reader).getByText('Key moment')).toBeTruthy();
       expect(within(reader).getByText('Last word')).toBeTruthy();
       expect(within(reader).queryByText('Earlier word')).toBeNull();

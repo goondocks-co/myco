@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, patchJson, postJson } from '../lib/api';
 import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
+import { useIdentityMutation } from './use-me';
 import { MACHINE_LIST_KEY } from '../features/admin/machines';
 export { usePaged } from './use-paged';
 
@@ -52,8 +53,8 @@ export function useAccessActions() {
   const client = useQueryClient();
   const refresh = (...keys: string[]) => Promise.all(keys.map((k) => client.invalidateQueries({ queryKey: [k] })));
   return {
-    revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials', 'machines') }),
-    changeRole: useMutation({
+    revokeMember: useIdentityMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials', 'machines') }),
+    changeRole: useIdentityMutation({
       mutationFn: ({ memberId, role, expectedRevision }: { memberId: string; role: 'admin' | 'member'; expectedRevision: string }) =>
         postJson<{ memberId: string; role: 'admin' | 'member'; roleRevision: string }>(`/api/members/${encodeURIComponent(memberId)}/role`, { member_id: memberId, role, expected_revision: expectedRevision }),
       onSettled: () => refresh('members', 'ownership'),
@@ -68,7 +69,7 @@ export function useAccessActions() {
      * Each is asked for on its own and every answer is kept, so a failure part
      * way through says which stopped and which did not.
      */
-    revokeCredentials: useMutation({
+    revokeCredentials: useIdentityMutation({
       mutationFn: async (ids: readonly string[]): Promise<RevokeOutcome> => {
         const outcome: RevokeOutcome = { stopped: [], failed: [] };
         for (const id of ids) {
@@ -83,7 +84,7 @@ export function useAccessActions() {
       },
       onSettled: () => refresh('credentials', 'members'),
     }),
-    stopMachine: useMutation({
+    stopMachine: useIdentityMutation({
       mutationFn: (machineId: string) => postJson<{ revoked: number; revokedBy: string }>(`/api/machines/${encodeURIComponent(machineId)}/stop`),
       onSettled: () => refresh('machines', 'members', 'status'),
     }),

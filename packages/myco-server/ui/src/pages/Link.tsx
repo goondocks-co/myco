@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { Button, buttonVariants, Card } from '../design';
-import { useMe } from '../hooks/use-me';
+import { useIdentityMutation, useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
 import { memberLabel } from '../lib/member-name';
 import { clearPendingLink, holdPendingLink, readPendingLink } from '../lib/pending-link';
@@ -31,6 +31,7 @@ const memberWords = (member: Member): string => memberLabel(member) ?? 'the memb
 export function LinkPage() {
   const [key] = useState<string | null>(takeKeyFromFragment);
   const me = useMe();
+  const link = useIdentityMutation({ mutationFn: (key: string) => postJson<Linked>('/auth/link', { key, confirm: true }) });
   const [preview, setPreview] = useState<Member | null>(null);
   const [outcome, setOutcome] = useState<{ kind: 'linked'; member: Member } | { kind: 'refused'; text: string } | null>(null);
   const [pending, setPending] = useState(false);
@@ -51,7 +52,7 @@ export function LinkPage() {
     if (key === null) return;
     setPending(true);
     try {
-      const r = await postJson<Linked>('/auth/link', { key, confirm: true });
+      const r = await link.mutateAsync(key);
       setOutcome({ kind: 'linked', member: r.member });
     } catch (err: unknown) {
       setOutcome({ kind: 'refused', text: refusalText(err) });

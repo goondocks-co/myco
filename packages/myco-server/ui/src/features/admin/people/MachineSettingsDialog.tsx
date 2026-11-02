@@ -155,10 +155,10 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
       return answers;
     },
     // A saved list is read back before its edit is let go, so the list never shows the value it replaced.
-    onSuccess: async (answers) => {
+    onSuccess: async (answers, writes) => {
       await client.invalidateQueries({ queryKey: ['machine-settings', machine.id] });
-      const saved = new Set(answers.filter((a) => a.refused === null).map((a) => a.leaf));
-      setEdits((current) => Object.fromEntries(Object.entries(current).filter(([leaf]) => !saved.has(leaf))));
+      const saved = new Map(writes.filter(write => answers.some(answer => answer.leaf === write.leaf && answer.refused === null)).map(write => [write.leaf, write.value]));
+      setEdits((current) => Object.fromEntries(Object.entries(current).filter(([leaf, value]) => saved.get(leaf) !== value)));
       setRefusals(Object.fromEntries(answers.flatMap((a) => (a.refused === null ? [] : [[a.leaf, a.refused]]))));
     },
   });
@@ -182,7 +182,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
               stored={stored}
               folders={foldersOf(field.leaf, stored)}
               refusedSave={refusals[field.leaf] ?? null}
-              onChange={(next) => setEdits({ ...edits, [field.leaf]: next })}
+              onChange={(next) => setEdits(current => ({ ...current, [field.leaf]: next }))}
               onClear={() => clear.mutate(field.leaf)}
             />
           ))}

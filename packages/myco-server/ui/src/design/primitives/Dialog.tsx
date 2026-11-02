@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type HTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, useRef, type ComponentPropsWithoutRef, type ElementRef, type HTMLAttributes, type ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -18,9 +18,11 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
   hideClose?: boolean;
 }
 
-/** A centred dialog over a scrim. Radix traps focus inside it and returns focus to the trigger on close. */
+/** A centred dialog traps focus and returns it to its connected opener or the page. */
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, title, description, hideClose = false, children, ...props }, ref) => (
+  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+    const opener = useRef<HTMLElement | null>(null);
+    return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
       <DialogPrimitive.Content
@@ -32,6 +34,22 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
           className,
         )}
         {...props}
+        onOpenAutoFocus={(event) => {
+          opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          onOpenAutoFocus?.(event);
+        }}
+        onCloseAutoFocus={(event) => {
+          onCloseAutoFocus?.(event);
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          const target = opener.current?.isConnected && opener.current !== document.body
+            ? opener.current
+            : document.querySelector<HTMLElement>('main, [role="main"]')
+              ?? document.querySelector<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]')
+              ?? document.body;
+          if (target.tabIndex < 0 && !target.hasAttribute('tabindex')) target.tabIndex = -1;
+          target.focus();
+        }}
       >
         <div className="flex flex-col gap-s1 pr-s8">
           <DialogPrimitive.Title className="t-h2 text-ink">{title}</DialogPrimitive.Title>
@@ -48,7 +66,8 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         )}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
-  ),
+    );
+  },
 );
 DialogContent.displayName = 'DialogContent';
 
