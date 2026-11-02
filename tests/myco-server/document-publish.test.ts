@@ -11,7 +11,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
-import { SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
+import { DOCUMENT_PAGE_BYTES, pageBytes, encodePageChunk, SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import type { ChunkRow, PageRow } from '@myco-server-worker/content/document-reader.js';
 import { DocumentBatch, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
@@ -22,7 +22,7 @@ import { bundleArchiveStatements } from '@myco-server-worker/core/archive-bundle
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
-import { sha256Hex } from '@myco-server-worker/hash.js';
+import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { DOCUMENT_IDENTITIES_SQL } from '@myco-server-worker/db/document-tables.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
@@ -516,13 +516,15 @@ test('a turn wider than one wake can read takes new records and a late result, a
 
     // One turn over more page chunks than a wake has blob calls, with a call whose result has not arrived on its first page.
     const late = uuid(30000);
+    let firstPadding = 0;
     const fill = (i: number) => documentRecord('tool.use', { toolCallId: uuid(31000 + i), promptId: turn, toolName: 'shell',
-      input: { command: 'fill', env: 'x'.repeat(i === 0 ? 260_000 : 250_000) }, success: true }, t0, { received_at: t0 })!;
+      input: { command: 'fill', env: 'x'.repeat(i === 0 ? firstPadding : 250_000) }, success: true }, t0, { received_at: t0 })!;
+    const lateRecord = documentRecord('tool.use', { toolCallId: late, promptId: turn, toolName: 'unknown', input: {}, success: true }, t0, { received_at: t0, call: null })!;
+    const head = (await readPage({ db, blobs }, 'project', 'wide', turn, 0))!;
+    const fitted = (record: DocRecord) => ({ ...record, harness: 'codex', files_affected: [] });
+    firstPadding = DOCUMENT_PAGE_BYTES - pageBytes({ owner: turn, page: 0, records: [...head, fitted(lateRecord), fitted(fill(0))] }) - 1_000;
     const seeded = 260;
-    await seedRecords(env, 'wide', [
-      documentRecord('tool.use', { toolCallId: late, promptId: turn, toolName: 'unknown', input: {}, success: true }, t0, { received_at: t0, call: null })!,
-      ...Array.from({ length: seeded }, (_, i) => fill(i)),
-    ], t0 + MIN);
+    await seedRecords(env, 'wide', [lateRecord, ...Array.from({ length: seeded }, (_, i) => fill(i))], t0 + MIN);
     const width = Number((await one(db, `SELECT COUNT(DISTINCT chunk_no) n FROM session_pages WHERE session_id='wide' AND owner=?`, turn))!.n);
     expect(width, name).toBeGreaterThan(CONTENT_BLOB_LIMIT);
     const hash = await one(db, `SELECT input_hash FROM session_prompts WHERE prompt_id=?`, turn);
@@ -1060,21 +1062,25 @@ test('admission refuses missing records and preserves archived blob holders in t
     await db.prepare('UPDATE session_documents SET build=?').bind(JSON.stringify({report:{classes:{'ids_differ:reply':1}}})).run();
     await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
     const doc=await one(db, `SELECT d.*,s.created_by_token_id token_id FROM session_documents d JOIN sessions s USING(project_id,session_id) WHERE d.session_id='converted'`);
-    const batch=new DocumentBatch({db,blobs},'project','converted',doc as never,[],[]);
-    await batch.open();
     const records=[
       documentRecord('response',{responseId:uuid(98000),text:'unplaced reply'},1,{received_at:1})!,
       documentRecord('response',{responseId:uuid(98001),promptId:uuid(98999),text:'unresolved reply'},2,{received_at:2})!,
     ];
     for(const record of records)await db.prepare(`INSERT INTO responses(project_id,session_id,response_id,prompt_id,event_id,text,content_hash,created_at,token_id,received_at)
       VALUES('project','converted',?,?,?,?,?,?,?,?)`).bind(record.id,record.prompt_id,record.id,record.text,await sha256Hex(String(record.text)),record.created_at,doc!.token_id,record.received_at).run();
-    await batch.place(records,null);
-    expect({unplaced:batch.unplaced,unresolved:batch.unresolved},name).toEqual({unplaced:2,unresolved:1});
-    await batch.commit(true,'live',3,()=>({sql:'1',params:[]}),()=>{
-      const set=batch.documentSet(3);
-      const build=JSON.stringify({report:{classes:{unplaced:batch.unplaced,unresolved_prompt:batch.unresolved}}});
-      return {before:[],after:[db.prepare(`UPDATE session_documents SET build=?,${set.sql} WHERE project_id='project' AND session_id='converted'`).bind(build,...set.params)]};
-    });
+    const bytes=new Uint8Array(await encodePageChunk({pages:[{owner:SESSION_OWNER,page:0,records}],states:new Map(),owners:[]}));
+    const key=await sha256HexOf(bytes),source='retirement-page';
+    await prepareDerivedStream({db,blobs},{projectId:'project',sessionId:'converted',tokenId:String(doc!.token_id),
+      sourceKind:'document',eventId:source,resourceId:source,envelopeHash:source},
+      {size:bytes.length,digest:key,stream:()=>new Blob([bytes]).stream()},3,{sql:'1',params:[]});
+    await db.batch([
+      db.prepare(`INSERT INTO session_chunks(project_id,session_id,generation,chunk_no,blob_key,kind,encoding,bytes,source_id,state)
+        VALUES('project','converted',1,0,?,'page','gzip-ndjson',?,?,'live')`).bind(key,bytes.length,source),
+      db.prepare(`INSERT INTO session_pages(project_id,session_id,generation,owner,page,chunk_no,records,bytes)
+        VALUES('project','converted',1,'',0,0,2,?)`).bind(bytes.length),
+      db.prepare(`UPDATE session_documents SET next_chunk=1,build=? WHERE project_id='project' AND session_id='converted'`)
+        .bind(JSON.stringify({report:{classes:{unplaced:2,unresolved_prompt:1}}})),
+    ]);
     const output='b'.repeat(64),input='d'.repeat(64);
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99001)).run();
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(input,uuid(99002)).run();

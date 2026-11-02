@@ -1,10 +1,12 @@
 /** Characters a catalog preview of a prompt keeps. */
 export const DOCUMENT_PREVIEW_CHARS = 160;
+/** Distinct named paths retained in one session generation. */
+export const SESSION_PATHS_LIMIT = 500;
 
 /** Session-owned document catalog rows, each carrying `session_id`. */
 export const DOCUMENT_SESSION_TABLES = [
   'session_documents', 'session_chunks', 'retired_objects', 'session_pages', 'session_sealed_records', 'session_prompts',
-  'transcript_publication', 'publish_queue', 'session_paths', 'myco_tool_calls',
+  'transcript_publication', 'publish_queue', 'session_paths', 'session_edit_paths', 'myco_tool_calls',
 ] as const;
 
 /** Immutable document directories and publisher frontiers carried by portable backups. */

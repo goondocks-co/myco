@@ -10,6 +10,7 @@ import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached } from './document-batch.js';
 import type { PassLimits } from './parse.js';
+import { catchUpSummaries } from './document-summaries.js';
 
 /** Page chunks one wake reads to locate prompts. */
 export const LOCATE_CHUNKS_PER_WAKE = 4;
@@ -26,7 +27,10 @@ export async function locatePrompts(env: Pick<ServerEnv, 'db' | 'blobs'>, limits
       FROM session_prompts p INDEXED BY idx_session_prompts_unlocated
       JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id AND d.generation = p.generation AND d.state = 'live'
       WHERE p.page IS NULL LIMIT 1`).first<Unlocated>();
-    if (doc === null) return { changed, more: false };
+    if (doc === null) {
+      const summaries = await catchUpSummaries(env, limits, LOCATE_CHUNKS_PER_WAKE - read);
+      return { changed: changed + summaries.changed, more: summaries.more };
+    }
     const share = LOCATE_CHUNKS_PER_WAKE - read;
     const rows = (await db.prepare(`SELECT c.chunk_no, c.blob_key, c.kind, c.bytes, c.source_id,
         ${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key

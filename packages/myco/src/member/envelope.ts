@@ -1,3 +1,4 @@
+import { mycoToolFields } from '@goondocks/myco-shared/member-protocol';
 /**
  * The member envelope: normalized hook input → one phase-1 capture event per
  * kind in the server's closed catalogue. Every builder returns the complete
@@ -196,16 +197,6 @@ function envelope(ctx: EnvelopeContext, kind: WireKind, payload: Record<string, 
 /** Hook-rule origins map onto the wire's: `human` is the wire's `user`; the others keep their name. */
 export function wireOrigin(origin: PromptOrigin | undefined): WirePromptOrigin {
   return origin === undefined || origin === 'human' ? 'user' : origin;
-}
-
-const MYCO_TOOL_PATTERN = /^myco_[a-z_]+$/;
-
-/** `mycoTool`/`mycoOp` for a `myco_*` tool call (bare or MCP-prefixed `mcp__<server>__myco_*`), from the tool name and its `op` argument. */
-function mycoToolFields(toolName: string, toolInput: unknown): { mycoTool?: string; mycoOp?: string } {
-  const leaf = toolName.split('__').pop() ?? toolName;
-  if (!MYCO_TOOL_PATTERN.test(leaf)) return {};
-  const op = toolInput && typeof toolInput === 'object' ? (toolInput as Record<string, unknown>).op : undefined;
-  return { mycoTool: trunc(leaf, BOUNDS.mycoTool), mycoOp: trunc(op, BOUNDS.mycoOp) };
 }
 
 /** A tool's output as text: a string as it is, a structured result as compact JSON, nothing for an absent one. */

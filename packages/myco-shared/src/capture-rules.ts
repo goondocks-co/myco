@@ -14,6 +14,7 @@ export interface CaptureRuleBundle {
   promptIdentity: PromptIdentityDeclaration;
   recordIdentity?: RecordIdentityDeclaration;
   toolResult?: ToolResultDeclaration;
+  fileTools?: readonly { tool: string; pathField: string; mutates?: boolean; extract?: 'patch' }[];
 }
 
 /** What rule evaluation reads of a bundle. */

@@ -1,0 +1,154 @@
+import type { ServerEnv } from '../core/adapters.js';
+import { cardOutline } from '../core/turn-cards.js';
+import { sessionEditStatement } from './session-edits.js';
+import { contentAssertion } from '../core/registered-content.js';
+import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { readBodyChunk, readPageChunk, type ChunkRow } from '../content/document-reader.js';
+import { SESSION_OWNER } from '../content/document.js';
+import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, rollupOf, toolFiles, type ToolState } from '../content/tool-rollup.js';
+import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached, SESSION_PATHS_LIMIT } from './document-batch.js';
+import type { PassLimits } from './parse.js';
+
+const SUMMARY_PAGES = 50;
+interface Build { epoch: number; pages: number; state: ToolState }
+interface PathBuild { path: string; calls: number; edits: number; at: number; turn: string | null }
+interface Pending {
+  project_id: string; session_id: string; generation: number; rollup_after: number; rollup_page: number; rollup_epoch: number;
+  paths_build: string | null; agent: string | null;
+  myco_build: number; rollup_record: number;
+}
+
+/** Catches up catalog summaries on the publisher's remaining locator share. */
+export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, limits: PassLimits, chunks: number) {
+  const db = env.db;
+  let changed = 0;
+  for (let pass = 0, read = 0; pass < chunks && read < chunks; pass += 1) {
+    if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { changed, more: true };
+    const doc = await db.prepare(`SELECT d.project_id,d.session_id,d.generation,d.rollup_after,d.rollup_page,d.rollup_epoch,d.paths_build,d.myco_build,d.rollup_record,s.agent
+      FROM session_documents d INDEXED BY idx_session_documents_rollup
+      JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
+      WHERE d.rollup_after IS NOT NULL AND d.state='live' LIMIT 1`).first<Pending>();
+    if (doc === null) break;
+    const key = [doc.project_id, doc.session_id, doc.generation];
+    const row = await db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
+        ${registeredObjectKeySql('c.project_id', 'c.blob_key')} AS object_key
+      FROM session_chunks c INDEXED BY idx_session_chunks_pages
+      WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.kind='page' AND c.chunk_no>?4
+      ORDER BY c.chunk_no LIMIT 1`).bind(...key, doc.rollup_after).first<ChunkRow>();
+    const paths = doc.paths_build === null
+      ? (await db.prepare(`SELECT path FROM session_paths WHERE project_id=? AND session_id=? AND generation=? ORDER BY path LIMIT ?`)
+        .bind(...key, SESSION_PATHS_LIMIT).all<{ path: string }>()).results.map(({ path }) => ({ path, calls: 0, edits: 0, at: 0, turn: null } as PathBuild))
+      : JSON.parse(doc.paths_build) as PathBuild[];
+    const pathMap = new Map(paths.map(path => [path.path, path]));
+    const decoded = row === null ? [] : (await readPageChunk(env, row)).pages;
+    if (row !== null) read += 1;
+    const pages = decoded.slice(doc.rollup_page, doc.rollup_page + SUMMARY_PAGES);
+    const held = pages.length === 0 ? [] : (await db.prepare(`SELECT p.owner,p.page,sp.tool_state,sp.rollup_build,
+        (SELECT tail.page FROM session_pages tail WHERE tail.project_id=?1 AND tail.session_id=?2 AND tail.generation=?3
+          AND tail.owner=p.owner ORDER BY tail.page DESC LIMIT 1) AS last_page
+      FROM json_each(?4) j CROSS JOIN session_pages p
+        ON p.project_id=?1 AND p.session_id=?2 AND p.generation=?3 AND p.owner=json_extract(j.value,'$.owner') AND p.page=json_extract(j.value,'$.page')
+      LEFT JOIN session_prompts sp ON sp.project_id=p.project_id AND sp.session_id=p.session_id AND sp.generation=p.generation AND sp.prompt_id=p.owner
+      WHERE p.chunk_no=?5`).bind(...key, JSON.stringify(pages.map(page => ({ owner: page.owner, page: page.page }))), row!.chunk_no)
+      .all<{ owner: string; page: number; tool_state: string | null; rollup_build: string | null; last_page: number }>()).results;
+    const builds = new Map<string, Build & { lastPage: number }>();
+    const edited: string[] = [];
+    const harnesses = new Map<string, string | null>();
+    let mycoCalls = doc.myco_build;
+    let pageAt = doc.rollup_page, recordAt = doc.rollup_record;
+    let paused = false;
+    for (const page of pages) {
+      const prior = held.find(held => held.owner === page.owner && held.page === page.page);
+      if (prior === undefined) { pageAt += 1; recordAt = 0; continue; }
+      let build = builds.get(page.owner);
+      if (page.owner !== SESSION_OWNER && prior.tool_state === null && build === undefined) {
+        const saved = prior.rollup_build === null ? null : JSON.parse(prior.rollup_build) as Build;
+        build = { ...(saved?.epoch === doc.rollup_epoch ? saved : { epoch: doc.rollup_epoch, pages: 0, state: emptyToolState() }), lastPage: prior.last_page };
+        builds.set(page.owner, build);
+      }
+      for (; recordAt < page.records.length; recordAt += 1) {
+        if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) { paused = true; break; }
+        let record = page.records[recordAt]!;
+        let harness = typeof record.harness === 'string' ? record.harness : doc.agent;
+        if (record.k === 'tool' && !Object.hasOwn(record, 'harness') && record.src !== undefined) {
+          const transcript = record.src[0];
+          if (!harnesses.has(transcript)) {
+            const source = await db.prepare('SELECT agent FROM transcripts WHERE project_id=? AND transcript_id=?')
+              .bind(doc.project_id, transcript).first<{ agent: string | null }>();
+            if (source === null) throw new Error('document_transcript_missing');
+            harnesses.set(transcript, source.agent);
+          }
+          harness = harnesses.get(transcript)!;
+        }
+        const ref = record.k === 'tool' ? record.bodies?.input : undefined;
+        if (ref !== undefined) {
+          if (read >= chunks || limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) { paused = true; break; }
+          const body = await db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
+              ${registeredObjectKeySql('c.project_id', 'c.blob_key')} AS object_key
+            FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.chunk_no=?4`)
+            .bind(...key, ref.chunk).first<ChunkRow>();
+          if (body === null || body.blob_key !== ref.digest || body.bytes !== ref.bytes) throw new Error('document_body_reference');
+          record = { ...record, input: await readBodyChunk(env, body) };
+          read += 1;
+        }
+        if (build !== undefined) adjustToolState(build.state, record, harness, 1);
+        if (record.k !== 'tool') continue;
+        if (recordMycoFields(record).tool !== null) mycoCalls += 1;
+        const edits = editedFiles(record, harness);
+        edited.push(...edits);
+        for (const path of toolFiles(record, harness)) {
+          let held = pathMap.get(path);
+          if (held === undefined && paths.length < SESSION_PATHS_LIMIT) {
+            held = { path, calls: 0, edits: 0, at: 0, turn: null };
+            paths.push(held); pathMap.set(path, held);
+          }
+          if (held === undefined) continue;
+          held.calls += 1;
+          if (edits.includes(path)) held.edits += 1;
+          if (record.created_at >= held.at) { held.at = record.created_at; held.turn = page.owner === SESSION_OWNER ? null : page.owner; }
+        }
+      }
+      if (paused) break;
+      if (build !== undefined) build.pages += 1;
+      pageAt += 1; recordAt = 0;
+    }
+    const updates = [...builds].map(([id, build]) => ({ id, build: build.pages === build.lastPage + 1 ? null : JSON.stringify(build),
+      ...(build.pages === build.lastPage + 1 ? { state: JSON.stringify(build.state), rollup: JSON.stringify(rollupOf(build.state)), failed: build.state.failed, myco: build.state.mycoCalls, named: build.state.named.length } : {}) }));
+    const finished = row === null;
+    const completeChunk = pageAt >= decoded.length;
+    await db.batch([
+      ...contentAssertion(db, `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND generation=? AND state='live'
+        AND rollup_epoch=? AND rollup_after=? AND rollup_page=? AND rollup_record=?)`, [...key, doc.rollup_epoch, doc.rollup_after, doc.rollup_page, doc.rollup_record]),
+      sessionEditStatement(db, doc.project_id, doc.session_id, doc.generation, edited),
+      db.prepare(`UPDATE session_prompts SET rollup_build=json_extract(j.value,'$.build'),
+          tool_state=COALESCE(json_extract(j.value,'$.state'),tool_state),tool_rollup=COALESCE(json_extract(j.value,'$.rollup'),tool_rollup),
+          failed_tools=COALESCE(json_extract(j.value,'$.failed'),failed_tools),myco_calls=COALESCE(json_extract(j.value,'$.myco'),myco_calls),files_named=COALESCE(json_extract(j.value,'$.named'),files_named)
+        FROM json_each(?4) j WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND prompt_id=json_extract(j.value,'$.id')
+          AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?4))`)
+        .bind(...key, JSON.stringify(updates)),
+      ...(finished ? [db.prepare(`INSERT INTO session_paths(project_id,session_id,generation,path,tool_calls,edits,last_at,last_turn)
+        SELECT ?1,?2,?3,json_extract(value,'$.path'),json_extract(value,'$.calls'),json_extract(value,'$.edits'),
+          json_extract(value,'$.at'),json_extract(value,'$.turn') FROM json_each(?4) WHERE true
+        ON CONFLICT(project_id,session_id,generation,path) DO UPDATE SET tool_calls=excluded.tool_calls,edits=excluded.edits,
+          last_at=excluded.last_at,last_turn=excluded.last_turn`).bind(...key, JSON.stringify(paths))] : []),
+      db.prepare(`UPDATE session_documents SET rollup_after=?,rollup_page=?,rollup_record=?,paths_build=?,myco_build=?,myco_calls=CASE WHEN ? THEN ? ELSE myco_calls END
+        WHERE project_id=? AND session_id=? AND generation=?`)
+        .bind(finished ? null : completeChunk ? row!.chunk_no : doc.rollup_after, completeChunk ? 0 : pageAt, completeChunk ? 0 : recordAt,
+          finished ? null : JSON.stringify(paths), finished ? 0 : mycoCalls, finished ? 1 : 0, mycoCalls, ...key),
+    ]);
+    changed += updates.length;
+  }
+  if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { changed, more: true };
+  const cards = (await db.prepare(`SELECT project_id,session_id,turn_key,card FROM turn_cards INDEXED BY idx_turn_cards_headline
+    WHERE card IS NOT NULL AND headline IS NULL LIMIT ?`).bind(SUMMARY_PAGES)
+    .all<{ project_id: string; session_id: string; turn_key: string; card: string }>()).results;
+  if (cards.length > 0) await db.batch(cards.map(card => {
+    const outline = cardOutline(card.card);
+    return db.prepare(`UPDATE turn_cards SET headline=?,marks=? WHERE project_id=? AND session_id=? AND turn_key=? AND card=? AND headline IS NULL`)
+      .bind(outline.headline, JSON.stringify(outline.marks), card.project_id, card.session_id, card.turn_key, card.card);
+  }));
+  changed += cards.length;
+  const pending = await db.prepare(`SELECT 1 AS pending FROM session_documents INDEXED BY idx_session_documents_rollup
+    WHERE rollup_after IS NOT NULL AND state='live' LIMIT 1`).first();
+  return { changed, more: pending !== null || cards.length === SUMMARY_PAGES };
+}
