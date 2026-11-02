@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
     "local: split117 CI/review correction, pinned Bun 1.4.0. Nine focused files passed 118 cases in 42.64s. Session lifecycle now includes the native/Miniflare D1 archived-prompt regression; the file measured 1986ms and its weight is 4000ms. The single object-lifecycle parity scenario passed both targets before and after: fresh Cloudflare migration setup measured 25049ms with numbered files at schema 178 and 1470ms with one fresh-store SQL import at schema 250; total runs 32.42s and 7.40s. Upgrade probes keep numbered migrations and all deadlines are unchanged.",
     "local: event reference catalog rework, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. Eleven focused files passed 139 cases in 127.99s. The 45000ms migration and 145000ms publication weights remain above the measured file case totals; no new test file or parity scenario.",
     "local: split retirement into steps 117-172, pinned Bun 1.4.0 via npm test. Migration cases measured 22024ms in the final focused run and 41587ms in the first run under host load; migrate.test.ts weight increases to 45000ms. Publication keeps its 145000ms weight. No new test file or parity scenario.",
@@ -665,6 +666,7 @@
     "tests/myco-server/raw-claims.test.ts": 3461,
     "tests/myco-server/raw-ownership-migration.test.ts": 814,
     "tests/myco-server/raw-privacy.test.ts": 531,
+    "tests/myco-server/raw-proof-plan.test.ts": 1500,
     "tests/myco-server/raw-restore-conflicts.test.ts": 2239,
     "tests/myco-server/read-plans.test.ts": 3242,
     "tests/myco-server/read.test.ts": 2498,
