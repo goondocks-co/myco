@@ -276,7 +276,34 @@ test('settings remove complete userinfo with reserved password separators', asyn
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks',?,0,'test')", [JSON.stringify({ nested })]);
     const result = await f.post('/members/settings', {});
     const value = result.leaves.find((leaf: any) => leaf.leaf === 'agent.tasks').value.nested;
-    expect(value).toEqual(separators.flatMap(() => ['postgres://host/db', 'host/db', 'DATABASE_URL=postgres://host/db']));
+    expect(value).toEqual(separators.flatMap(separator => separator === '/' || separator === '?' || separator === '#'
+      ? ['[REDACTED]', '[REDACTED]', 'DATABASE_URL=[REDACTED]']
+      : ['postgres://host/db', 'host/db', 'DATABASE_URL=postgres://host/db']));
+  } finally { f.sqlite.close(); }
+});
+
+test('settings preserve URL boundaries and withhold ambiguous credentials', async () => {
+  const f = await rig();
+  try {
+    const shapes = [
+      ['https://host/db?user=me@x.com&password=hunter2', 'https://host/db'],
+      ['postgres://host/db?user=me@x.com&sslpassword=hunter2', 'postgres://host/db'],
+      ['https://u:p@host/db?user=me@x.com&password=hunter2', '[REDACTED]'],
+      ['https://host/#a@b&token=hunter2', 'https://host/'],
+      ['host:5432/db?user=me@x.com&password=hunter2', '[REDACTED]'],
+      ['https://host/db?token=abc@def', 'https://host/db'],
+      ['{"url":"https://reader:hunter2@h.example/p?key=secret"}', '{"url":"https://h.example/p"}'],
+      ['{"contact":"a@b.com","url":"https://x/y"}', '{"contact":"a@b.com","url":"https://x/y"}'],
+      ['https://registry.npmjs.org/@scope/pkg', 'https://registry.npmjs.org/@scope/pkg'],
+      ['https://reader@host/path@scope', '[REDACTED]'],
+      ['https://host:8080/path@scope', '[REDACTED]'],
+      ['https://docs.example/path,https://reader:hunter2@host/p', '[REDACTED]'],
+    ];
+    f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks',?,0,'test')", [JSON.stringify({ nested: shapes.map(([stored]) => stored) })]);
+    const result = await f.post('/members/settings', {});
+    const shown = result.leaves.find((leaf: any) => leaf.leaf === 'agent.tasks').value.nested;
+    expect(shown).toEqual(shapes.map(([, expected]) => expected));
+    for (const secret of ['hunter2', 'abc@def', 'sslpassword', '&password']) expect(JSON.stringify(shown)).not.toContain(secret);
   } finally { f.sqlite.close(); }
 });
 

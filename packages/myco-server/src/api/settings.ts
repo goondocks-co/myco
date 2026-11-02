@@ -162,18 +162,50 @@ function withoutUrlTailSecrets(value: string): string {
   return query < 0 ? value : value.slice(0, query) + (value.match(/["'\])},;]+$/)?.[0] ?? '');
 }
 
-/** Credential-bearing host tokens retain their scheme, host and path across prose and assignment prefixes. */
-const withoutUrlSecrets = (value: string): string => value.replace(/\S+/g, token => {
-  const uri = /(?:[a-z][\w+.-]*:)?\/\//i.exec(token);
-  const userinfoEnd = token.lastIndexOf('@');
-  const colon = token.indexOf(':');
-  if (uri === null && (userinfoEnd < 0 || colon < 0 || colon > userinfoEnd)) return token;
-  if (userinfoEnd < 0) return token.slice(0, uri!.index) + withoutUrlTailSecrets(token.slice(uri!.index));
-  const prefix = uri !== null && !token.slice(0, uri.index).includes(':')
-    ? token.slice(0, uri.index) + uri[0]
-    : token.match(/^[("'`\[{<]+/)?.[0] ?? '';
-  return withoutUrlTailSecrets(prefix + token.slice(userinfoEnd + 1));
-});
+const REDACTED_URL = '[REDACTED]';
+
+/** Userinfo is admitted only in the authority; ambiguous password and query boundaries hide the whole candidate. */
+function withoutCredentialToken(token: string): string {
+  const scheme = /^(?:[a-z][\w+.-]*:)?\/\//i.exec(token)?.[0] ?? '';
+  const body = token.slice(scheme.length);
+  const tail = body.search(/[?#]/);
+  const head = tail < 0 ? body : body.slice(0, tail);
+  const slash = head.indexOf('/');
+  const authorityEnd = slash < 0 ? head.length : slash;
+  const colon = head.indexOf(':');
+  const password = colon >= 0 && colon < authorityEnd;
+  const at = head.lastIndexOf('@');
+  const closing = token.match(/[\])}>,;]+$/)?.[0] ?? '';
+  if (scheme !== '' && /[a-z][\w+.-]*:\/\//i.test(body) && body.includes('@')) return REDACTED_URL + closing;
+  if (password && tail >= 0 && body.slice(tail).includes('@')) return REDACTED_URL + closing;
+  const firstAt = head.indexOf('@');
+  if (at >= authorityEnd && (password || (firstAt >= 0 && firstAt < authorityEnd))) return REDACTED_URL + closing;
+  if (at < 0 || at >= authorityEnd) return scheme === '' ? token : withoutUrlTailSecrets(token);
+  return withoutUrlTailSecrets(scheme + body.slice(at + 1));
+}
+
+/** Quoted values retain their surrounding text; unquoted credential passwords may contain punctuation. */
+function withoutUrlSecrets(value: string): string {
+  const starts = /(?:[a-z][\w+.-]*:)?\/\/|[^\s"'<>()[\]{},\\/@:=]+:/gi;
+  const pieces: string[] = [];
+  let copied = 0;
+  for (let match; (match = starts.exec(value)) !== null;) {
+    const start = match.index;
+    const quote = value[start - 1] === '"' || value[start - 1] === "'" ? value[start - 1] : null;
+    let end = start;
+    let escaped = false;
+    while (end < value.length && !/\s/.test(value[end]!)) {
+      const char = value[end]!;
+      if (quote !== null && char === quote && !escaped) break;
+      escaped = char === '\\' && !escaped;
+      end += 1;
+    }
+    pieces.push(value.slice(copied, start), withoutCredentialToken(value.slice(start, end)));
+    copied = end;
+    starts.lastIndex = end;
+  }
+  return pieces.join('') + value.slice(copied);
+}
 
 /**
  * The same leaves to a member credential, Deployment-wide, over a member json
