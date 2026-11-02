@@ -54,8 +54,7 @@ function readPinAt(filePath, traceRefusal, projectPin = false) {
     return null;
   }
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8').trim();
-    if (projectPin && raw && !resolution.projectPinIsTrusted(filePath)) return null;
+    const raw = projectPin ? resolution.readApprovedProjectPin(filePath) : fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
   } catch {
     return null;

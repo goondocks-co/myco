@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { resolveMycoHome, resolveHomeDir, canonicalHomePath, defaultMycoHome } from '../paths/home.js';
+import { projectPinTrustFiles, removeProjectPinTrust } from '../paths/pin-trust.js';
 import { parseStrictFlags } from './args.js';
 import { confirmDestructive } from './confirm.js';
 import { isMemberHome, legacyVaultFiles } from '../member/home-role.js';
@@ -167,6 +168,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     entry === 'member' && preserveReceipt
       ? fs.readdirSync(path.join(home, entry)).filter(file => file !== 'cutover.json').map(file => path.join(entry, file))
       : [entry]);
+  const approvals = purge ? projectPinTrustFiles(canonical) : [];
   const losses = deploymentLosses(home);
   if (purge) assertDedicatedHome(canonical, deletions);
   if (purge && losses.length > 0 && !allowLoss) {
@@ -176,7 +178,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     return;
   }
   const summary = `Remove this home's member registrations and worker/runner services. `
-    + (purge ? `Delete only these 2.0 entries (including member credentials and buffered capture):\n${deletions.map(entry => `DELETE ${path.join(home, entry)}`).join('\n')}\n${losses.join('\n')}` : `Preserve data at ${home}.`);
+    + (purge ? `Delete only these 2.0 entries (including member credentials and buffered capture):\n${[...deletions.map(entry => path.join(home, entry)), ...approvals].map(file => `DELETE ${file}`).join('\n')}\n${losses.join('\n')}` : `Preserve data at ${home}.`);
   if (!parsed.has('--yes') && !await (deps.confirm ?? confirmDestructive)(summary)) {
     console.error('Aborted — nothing was removed.');
     process.exitCode = 1;
@@ -241,6 +243,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       });
     }
     if (problems.size > 0) return;
+    if (purge) removeProjectPinTrust(canonical);
     if (purge && fs.existsSync(canonical)) {
       for (const entry of deletions.filter(entry => entry !== 'install.json')) {
         if (losses.length > 0 && entry === 'server') {

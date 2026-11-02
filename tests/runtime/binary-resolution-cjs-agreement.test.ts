@@ -127,3 +127,22 @@ describe('runnable + bare name agreement', () => {
     }
   });
 });
+
+
+it('requires approval before the standalone layered resolver chooses a project program', () => {
+  const project = tmpdir();
+  const home = tmpdir();
+  fs.mkdirSync(path.join(project, '.myco'));
+  const pin = path.join(project, '.myco/runtime.command');
+  fs.writeFileSync(pin, '/approved/project-program', { mode: 0o600 });
+  fs.writeFileSync(path.join(home, 'runtime.command'), '/machine-program', { mode: 0o600 });
+  const previous = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = home;
+  try {
+    expect(cjs.readLayeredPin(project)?.pin).toBe('/machine-program');
+    trustProjectPin(pin);
+    expect(cjs.readLayeredPin(project)?.pin).toBe('/approved/project-program');
+  } finally {
+    if (previous === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previous;
+  }
+});

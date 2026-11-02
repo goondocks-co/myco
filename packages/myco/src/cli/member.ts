@@ -27,11 +27,11 @@ import { defaultMembership, readDefaultDeployment } from '../member/default-depl
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
-import { trustProjectPin } from '../paths/pin-trust.js';
+import { trustProjectPin, writeTrustedProjectPin } from '../paths/pin-trust.js';
 import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { canonicalRootIdentity } from '../utils/git-files.js';
+import { canonicalRootIdentity, readRepoLayout } from '../utils/git-files.js';
 import { readInstallation } from '@myco/install/installation.js';
 import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
@@ -1242,8 +1242,8 @@ function reportMissedCapture(out: (line: string) => void, selection: { root: str
 type PinOutcome =
   | { kind: 'written'; pinPath: string }
   | { kind: 'settled' }
-  | { kind: 'conflict'; pinPath: string; pinned: string }
-  | { kind: 'unwritable'; pinPath: string };
+  | { kind: 'conflict'; pinPath: string; pinned: string; trusted: boolean }
+  | { kind: 'unwritable'; pinPath: string; reason: string };
 
 /**
  * Pin the project at the home this membership lives in, when that is not the
@@ -1263,39 +1263,37 @@ type PinOutcome =
 function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   const pinPath = path.join(root, '.myco', RUNTIME_HOME_FILENAME);
   const home = path.resolve(mycoHome);
-  const existing = readHomePin(pinPath, { projectPin: true });
-  if (existing !== null && existing !== home) return { kind: 'conflict', pinPath, pinned: existing };
-  if (existing === home || pathsEquivalentHome(home, defaultMycoHome())) return { kind: 'settled' };
+  const existing = readHomePin(pinPath);
+  if (existing !== null && existing !== home) return { kind: 'conflict', pinPath, pinned: existing, trusted: readHomePin(pinPath, { projectPin: true }) === existing };
   try {
-    fs.mkdirSync(path.dirname(pinPath), { recursive: true });
+    if (existing === home) {
+      ensureGitIgnored(root, pinPath);
+      trustProjectPin(pinPath, undefined, mycoHome);
+      return { kind: 'settled' };
+    }
+    if (pathsEquivalentHome(home, defaultMycoHome())) return { kind: 'settled' };
     ensureGitIgnored(root, pinPath);
-    createHomePin(pinPath, home);
-    trustProjectPin(pinPath);
+    writeTrustedProjectPin(pinPath, `${home}\n`, { ownerHome: mycoHome });
     return { kind: 'written', pinPath };
-  } catch {
-    // A read-only checkout still holds the membership; only the pin is missing.
-    return { kind: 'unwritable', pinPath };
+  } catch (error) {
+    return { kind: 'unwritable', pinPath, reason: (error as Error).message };
   }
 }
 
-/**
- * What a join says about the pin. A conflict is reported and the exit status
- * is set: the membership IS recorded, but until the pin is settled this
- * project's agents capture into the home the pin names, not this one.
- */
+/** Report the pin outcome after membership persistence. */
 function reportPin(outcome: PinOutcome, mycoHome: string, out: (l: string) => void, err: (l: string) => void): void {
   switch (outcome.kind) {
     case 'written':
       out(`pinned this project to ${path.resolve(mycoHome)}, so agents launched with no environment capture here`);
       return;
     case 'conflict':
-      err(`myco member join: ${outcome.pinPath} already pins this project to ${outcome.pinned}; the membership is recorded, but agents here capture into ${outcome.pinned}`);
+      err(`myco member join: ${outcome.pinPath} already pins this project to ${outcome.pinned}; the membership is recorded; ${outcome.trusted ? `agents here capture into ${outcome.pinned}` : 'this unapproved pin is ignored'}`);
       err(`  keep that home: run \`MYCO_HOME=${outcome.pinned} myco member join\` instead`);
       err(`  move to this one: \`myco member leave --purge\` in the pinned home first`);
       process.exitCode = 2;
       return;
     case 'unwritable':
-      err(`myco member join: could not write ${outcome.pinPath}; agents launched with no environment will not find this membership`);
+      err(`myco member join: could not write ${outcome.pinPath} or approve it: ${outcome.reason}`);
       process.exitCode = 2;
       return;
     case 'settled':
@@ -1512,17 +1510,31 @@ const memberHelpCommand: MemberCommandRegistration = {
 
 export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
   'trust-pins': {
-    help: `  trust-pins [--root <dir>]  Approve this folder's runtime pin paths on this machine.`,
+    help: `  trust-pins [--root <dir>]  Approve the nearest project runtime pin values on this machine.`,
     run: async (rest, deps) => {
       if (rest.length !== 0 && (rest.length !== 2 || rest[0] !== '--root')) throw new Error('usage: myco member trust-pins [--root <dir>]');
       const root = rest.length === 2 ? rest[1] : (deps.cwd ?? process.cwd());
       if (!root) throw new Error('trust-pins requires a folder');
-      for (const name of ['runtime.home', 'runtime.command']) {
-        const pin = path.join(root, '.myco', name);
-        if (!fs.existsSync(pin)) continue;
-        trustProjectPin(pin);
-        (deps.stdout ?? console.log)(`trusted ${pin}`);
+      const ownerHome = homeFor(deps, root);
+      const pending = new Set(['runtime.home', 'runtime.command']);
+      const layout = readRepoLayout(root, deps.env ?? process.env, { layoutOnly: true });
+      const boundary = layout !== null && typeof layout !== 'symbol' ? path.resolve(layout.top) : path.resolve(root);
+      let directory = path.resolve(root);
+      let found = false;
+      while (true) {
+        for (const name of pending) {
+          const pin = path.join(directory, '.myco', name);
+          if (!fs.existsSync(pin)) continue;
+          trustProjectPin(pin, undefined, ownerHome);
+          pending.delete(name);
+          found = true;
+          (deps.stdout ?? console.log)(`trusted ${pin}`);
+        }
+        const parent = path.dirname(directory);
+        if (pending.size === 0 || directory === boundary || parent === directory) break;
+        directory = parent;
       }
+      if (!found) throw new Error(`no project runtime pins found for ${root}`);
     },
   },
   '--help': memberHelpCommand,

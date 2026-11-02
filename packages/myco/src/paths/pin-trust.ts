@@ -13,8 +13,8 @@
  * tests/runtime/binary-resolution-cjs-agreement.test.ts.
  */
 import fs from 'node:fs';
-import { projectPinIsTrusted } from '../../scripts/project-pin-trust.mjs';
-export { trustProjectPin } from '../../scripts/project-pin-trust.mjs';
+import { readApprovedProjectPin } from '../../scripts/project-pin-trust.mjs';
+export { trustProjectPin, writeTrustedProjectPin, preflightProjectPinWrite, projectPinTrustFiles, removeProjectPinTrust } from '../../scripts/project-pin-trust.mjs';
 
 /** Permission bits that make a pin writable by someone other than its owner. */
 export const PIN_INSECURE_MODE_MASK = 0o022;
@@ -86,8 +86,8 @@ export function readTrustedPin(
     return null;
   }
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8').trim();
-    if (raw && options.projectPin && !projectPinIsTrusted(filePath, options.homeDir)) {
+    const raw = options.projectPin ? readApprovedProjectPin(filePath, options.homeDir) : fs.readFileSync(filePath, 'utf-8').trim();
+    if (options.projectPin && raw === null) {
       report(filePath, 'project pin has no matching approval; run myco member trust-pins');
       return null;
     }

@@ -1,3 +1,4 @@
+import { projectPinIsTrusted, trustProjectPin } from '../../packages/myco/scripts/project-pin-trust.mjs';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -108,6 +109,31 @@ describe('member-only remove', () => {
     expect(process.exitCode).toBe(0);
     expect(fs.existsSync(preference)).toBe(!purge);
     if (!purge) expect(fs.readFileSync(preference, 'utf8')).toBe(before);
+  });
+
+  it.each(['default', 'custom'] as const)("purges %s home pin approvals while preserving another installation's approvals", async scope => {
+    if (scope === 'default') {
+      home = path.join(user, '.myco');
+      fs.mkdirSync(home, { recursive: true });
+      process.env.MYCO_HOME = home;
+    }
+    member();
+    const pins = ['ours', 'other'].map(name => {
+      const pin = path.join(root, name, '.myco/runtime.home');
+      fs.mkdirSync(path.dirname(pin), { recursive: true });
+      fs.writeFileSync(pin, home, { mode: 0o600 });
+      return pin;
+    });
+    trustProjectPin(pins[0], user, home);
+    if (scope === 'custom') trustProjectPin(pins[1], user, path.join(root, 'other-home'));
+    else fs.rmSync(path.join(home, 'backups'), { recursive: true, force: true });
+    let prompt = '';
+    await run(['--purge'], { ...deps(), confirm: async summary => { prompt = summary; return true; } });
+    expect(process.exitCode).toBe(0);
+    expect(prompt).toContain(`DELETE ${path.join(user, '.myco/project-pin-trust')}`);
+    expect(projectPinIsTrusted(pins[0], user)).toBe(false);
+    expect(projectPinIsTrusted(pins[1], user)).toBe(scope === 'custom');
+    if (scope === 'default') expect(fs.existsSync(home)).toBe(false);
   });
 
   it('retains a registered agent after repeated retired-settings parse refusals', async () => {

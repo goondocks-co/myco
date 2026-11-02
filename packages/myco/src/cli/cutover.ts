@@ -46,7 +46,7 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isSafeProjectRoot } from '../project-root.js';
-import { trustProjectPin } from '../paths/pin-trust.js';
+import { writeTrustedProjectPin, preflightProjectPinWrite } from '../paths/pin-trust.js';
 import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, resolveMachineIdPath, type ResolvedMycoHome } from '../paths/home.js';
 import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
@@ -512,6 +512,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
     const legacy = legacyHomes.some((home) => underHome(first, home)) && !underHome(first, mycoHome);
     return legacy ? [{ pin, command }] : [];
   });
+  for (const { pin } of runtimePins) {
+    try { preflightProjectPinWrite(pin, homeDir); }
+    catch (error) { blockers.push(`${pin}: ${(error as Error).message}`); }
+  }
   const foreign = scan.findings.filter((f) => f.verdict === 'foreign' && (f.location.scope === 'project'
     ? roots.some((root) => path.resolve(f.file) === path.resolve(root, f.location.path))
     : f.serversPath?.[0] === 'projects' ? roots.includes(f.serversPath[1]) : true));
@@ -600,8 +604,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       would: `would point ${pin} (now \`${command}\`, a 1.4 binary) at ${binary2}`, outcomes: [`runtime ${pin}`],
       run: async () => {
         if (!earlierCopyHolds(mycoHome, pin)) backup.take(pin);
-        rewriteKeepingMode(pin, `${binary2}\n`);
-        trustProjectPin(pin);
+        writeTrustedProjectPin(pin, `${binary2}\n`, { homeDir, ownerHome: mycoHome, replace: true });
         return { lines: [`pointed ${pin} at ${binary2}`], made: fs.readFileSync(pin, 'utf8').trim() === binary2 ? [`runtime ${pin}`] : [] };
       },
     }))] },

@@ -212,12 +212,12 @@ The Compose lifecycle target and harness image are retired. `myco server create 
 
 ### Runtime pins for source development
 
-An explicit `MYCO_HOME` takes precedence. Otherwise a project can select a home with `.myco/runtime.home` and a program with `.myco/runtime.command` only after you approve those pin paths on this machine:
+An explicit `MYCO_HOME` takes precedence. Otherwise a project can select a home with `.myco/runtime.home` and a program with `.myco/runtime.command` only after you approve their values for this local repository on this machine:
 
 ```bash
 myco member trust-pins --root /absolute/path/to/repository
 ```
 
-Review both files before approving them. Approval is stored under `~/.myco/project-pin-trust/`, outside the checkout and independent of the selected Myco home. Registered Git worktrees share that approval and can select their own build and home paths; separate clones require approval. `myco member join` records approval when it creates a project home pin, and cutover records approval when it rewrites a project program pin. Source installation itself creates no project pins.
+Review both files before approving them. Approval is stored under `~/.myco/project-pin-trust/`, separate from the project and independent of the selected Myco home. If the user home is a Git checkout, approvals live in its protected Git metadata (`.git/myco-project-pin-trust/` for an ordinary home repository), outside versioned working files. Registered Git worktrees share approval for the same values. A different build or home path needs explicit approval; a new clone requires approval even at the same filesystem path. Submodules, separate Git directories and dotfiles repositories are supported. `myco member join` approves an existing same-home pin or publishes a new home pin with its approval. Cutover validates approval destinations before changing registrations and publishes its program pin with approval. A failed approval leaves the prior pin intact. Source installation itself creates no project pins.
 
-An unapproved or unreadable pin is ignored. Capture continues through the machine pin or default home, with at most one warning on stderr. To stop using an override, remove its project pin files. For an isolated source test, use the absolute build artifact and scratch home variables described in the dogfood-worktree skill.
+An unapproved or unreadable pin is ignored. Capture continues through the machine pin or default home, with at most one warning on stderr. To stop using an override, remove its project pin files. `myco remove --purge` also removes this installation's approvals from the shared user store and preserves other installations' approvals. For an isolated source test, use the absolute build artifact and scratch home variables described in the dogfood-worktree skill.
