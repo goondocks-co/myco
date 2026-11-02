@@ -1,26 +1,9 @@
-/**
- * Native-dep path resolution for both dev mode and compiled binaries.
- *
- * Three native artifacts Myco needs at runtime:
- *   1. `libsqlite3` with SQLITE_ENABLE_LOAD_EXTENSION — for sqlite-vec.
- *   2. `vec0` extension — the sqlite-vec shared library.
- *   3. `rg` — the ripgrep binary for exploration-tools.
- *
- * In compiled binaries (Phase 2 wires this up), each target ships its own
- * copies embedded via `import X from './path' with { type: "file" }`. At
- * startup, `registerNativeDeps()` materializes the embedded files to a
- * version-keyed temp dir so `dlopen`/exec can read real filesystem paths.
- *
- * In dev mode (`bun run src/entries/cli.ts`), the artifacts live in
- * `node_modules` and the system package dirs. This module detects those
- * locations so dev runs work without any pre-registration.
- */
-
+/** Native dependency paths from verified embedded artifacts or the development installation. */
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { NativeArtifactCache } from './artifact-files.js';
 
 const require_ = createRequire(import.meta.url);
 
@@ -50,12 +33,11 @@ export async function registerEmbeddedNativeDeps(params: {
   ripgrepEmbed: string;
   version: string;
 }): Promise<void> {
-  const cacheDir = path.join(os.tmpdir(), 'myco-runtime', params.version);
-  fs.mkdirSync(cacheDir, { recursive: true });
+  const cache = new NativeArtifactCache(params.version);
 
-  const libsqlite = await materialize(params.libsqliteEmbed, path.join(cacheDir, libsqliteFilename()));
-  const vec0 = await materialize(params.vec0Embed, path.join(cacheDir, vec0Filename()));
-  const ripgrep = await materialize(params.ripgrepEmbed, path.join(cacheDir, ripgrepFilename()));
+  const libsqlite = cache.materialize(libsqliteFilename(), new Uint8Array(await Bun.file(params.libsqliteEmbed).arrayBuffer()));
+  const vec0 = cache.materialize(vec0Filename(), new Uint8Array(await Bun.file(params.vec0Embed).arrayBuffer()));
+  const ripgrep = cache.materialize(ripgrepFilename(), new Uint8Array(await Bun.file(params.ripgrepEmbed).arrayBuffer()));
 
   Database.setCustomSQLite(libsqlite);
   resolved = { libsqlite, vec0, ripgrep };
@@ -113,14 +95,6 @@ export function getLibsqlitePath(): string | null {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
-
-async function materialize(embedPath: string, targetPath: string): Promise<string> {
-  if (!fs.existsSync(targetPath)) {
-    await Bun.write(targetPath, Bun.file(embedPath));
-    fs.chmodSync(targetPath, 0o755);
-  }
-  return targetPath;
-}
 
 function targetKey(): string {
   if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';

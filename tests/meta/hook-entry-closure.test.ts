@@ -19,7 +19,7 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const at = (rel: string): string => path.join(SRC, rel);
 
 /** What runs before the hook's own chunk: the dispatcher's static imports. */
-const DISPATCH_STATIC = ['../cli/env-file.js', '../cli/loopback-proxy.js'];
+const DISPATCH_STATIC = ['../cli/loopback-proxy.js'];
 /** The only dynamic imports the dispatcher makes: the hook's chunk, and the CLI for every other verb. */
 const DISPATCH_DYNAMIC = ['../hooks/entry.js', '../cli.js'];
 
