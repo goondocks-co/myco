@@ -157,7 +157,7 @@ describe('search leads a spore with its line', () => {
 describe('a written spore answers in the shape a write answers', () => {
   it('carries no author kind, written fresh or held already; the reads carry it', async () => {
     const h = harness();
-    const body = { id: 'sp_written', agentId: 'myco-agent', observationType: 'gotcha', content: 'imported body' };
+    const body = { channel: 'import', id: 'sp_written', agentId: 'myco-agent', observationType: 'gotcha', content: 'imported body' };
     const fresh = await h.save(body);
     expect(fresh).toMatchObject({ persisted: true, spore: { id: 'sp_written' } });
     expect(fresh.spore).not.toHaveProperty('authorKind');

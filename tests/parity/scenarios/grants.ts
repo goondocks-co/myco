@@ -45,7 +45,7 @@ export const grants: ParityScenario = {
     const stamp = Date.now();
     const saved = await asGrant(key, 'tools/call', {
       name: 'myco_spores',
-      arguments: { op: 'save', type: 'discovery', content: `the reviewer found a dangling index ${stamp}`, provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' },
+      arguments: { op: 'save', agent_line: 'When using this fixture, retain its evidence.', type: 'discovery', content: `the reviewer found a dangling index ${stamp}`, provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' },
     });
     const spore = saved.body.result.structuredContent.result as { id: string; status: string };
     expect(spore.status).toBe('active');

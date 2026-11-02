@@ -19,6 +19,7 @@ async function setup(options?: Parameters<typeof sqliteEnv>[0]) {
   f.sqlite.run("UPDATE agent_runs SET status = 'running' WHERE id = 'target'");
   const server = createServer({ now: Date.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
   const call = async (name: string, args: Record<string, unknown>) => {
+    if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
     const res = await server.handleRequest(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(holder.token),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }), f.serverEnv);
     return await res.json() as { error?: unknown; result?: unknown };

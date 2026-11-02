@@ -1,3 +1,4 @@
+import { personMemberSql } from './member-kind.js';
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
@@ -168,7 +169,7 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
  */
 export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
   return db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`}`)
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`}`)
     .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor, controlActor]));
 }
 
@@ -191,7 +192,7 @@ export async function revokeMachineCredentialsAsMember(
   if (!authorize(await memberSubject(db, actor.id, 'http'), 'edit', await machineResource(db, 'credential', machineId))) return { revoked: 0, revokedBy: actor.id };
   const result = await db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
       WHERE machine_id = ? AND revoked_at IS NULL
-        AND ${OWNER_CONTROL_CREDENTIAL_WRITE}
+        AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE}
         AND ${memberWritePredicate('?', 'member_credentials.member_id')}
         AND EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id
           AND mc.member_id = member_credentials.member_id)`)

@@ -491,7 +491,7 @@ describe('an External Agent grant reads the same on both stores', () => {
     // read here is what the row says about who wrote it.
     const recorded = new Map<Target, string>();
     for (const t of TARGETS) {
-      const res = await t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'the reviewer found it' } })));
+      const res = await t.fetch(over(t, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'the reviewer found it' } })));
       recorded.set(t, ((await res.json()) as any).result.structuredContent.result.id as string);
     }
     const attributed = await Promise.all(TARGETS.map(async (t) => {

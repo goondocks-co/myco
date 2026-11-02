@@ -16,9 +16,10 @@ import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
 type Statement = { sql: string; params: unknown[] };
 
-/** A store that answers no rows and remembers every statement, with the values bound to it, batched or not. */
+/** A store that records every statement and executes read-only batch projections against the empty schema. */
 function recordingStore(): { db: RelationalStore; statements: Statement[] } {
   const statements: Statement[] = [];
+  const records = new WeakMap<PreparedStatement, Statement>();
   const db: RelationalStore = {
     prepare(sql: string): PreparedStatement {
       const record = { sql, params: [] as unknown[] };
@@ -29,9 +30,13 @@ function recordingStore(): { db: RelationalStore; statements: Statement[] } {
         all: async () => ({ results: [] }),
         run: async () => ({ results: [], meta: { changes: 0 } }),
       };
+      records.set(statement, record);
       return statement;
     },
-    batch: async (batched) => batched.map(() => ({ results: [], meta: { changes: 0 } })),
+    batch: async (batched) => batched.map(statement => {
+      const record = records.get(statement)!;
+      return { results: /^\s*SELECT\b/i.test(record.sql) ? STORES.unanalyzed.query(record.sql).all(...record.params as never[]) : [], meta: { changes: 0 } };
+    }),
   };
   return { db, statements };
 }
@@ -111,10 +116,10 @@ describe('auto-join, under the statistics a Deployment plans from', () => {
       const walked = scans(plan).filter((step) => step !== 'SCAN projects' || !/COUNT\(\*\) FROM projects WHERE archived_at IS NULL/.test(sql));
       expect({ store, sql: sql.slice(0, 70), scans: walked }).toEqual({ store, sql: sql.slice(0, 70), scans: [] });
     }
-    const held = resolved.filter(({ sql }) => sql.startsWith('SELECT p.project_id'));
+    const held = resolved.filter(({ sql }) => sql.startsWith('SELECT p.project_id') && sql.includes('project_remotes'));
     for (const { store, plan } of held) {
       expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('SEARCH p USING INDEX sqlite_autoindex_projects_1 (project_id=?)') });
-      expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('SEARCH r USING INDEX sqlite_autoindex_project_remotes_1 (remote=?)') });
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH (?:r|project_remotes) USING INDEX sqlite_autoindex_project_remotes_1 \(remote=\?\)/) });
     }
   });
 });

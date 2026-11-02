@@ -44,17 +44,18 @@ export const spores: ParityScenario = {
 
     await documentsPublished(target, session);
     // A save cites its session and stores no prompt.
-    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, prompt_id: p1, project: target.projectId });
+    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, agent_line: 'When selecting context, rank observations by recency.', session_id: session, prompt_id: p1, project: target.projectId });
     const oldId = String(first.id);
     const saved = (await target.sql(`SELECT session_id, prompt_id, status FROM spores WHERE id = ${lit(oldId)}`))[0]!;
     expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, null, 'active']);
 
     // A session the caller's machine does not hold is one refusal, whatever the cause.
-    const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', session_id: `no-such-${stamp}`, project: target.projectId });
+    const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', agent_line: 'When citing evidence, name the session that holds it.', session_id: `no-such-${stamp}`, project: target.projectId });
     expect(refused.error).toBe('session_id not found');
 
     // A supersede reads as lineage from both ends, through the tool and the owner route.
-    const second = await mcp({ op: 'save', type: 'decision', content: `recency with a cap ${stamp}`, session_id: session, project: target.projectId });
+    const replacementLine = `When selecting context, cap the recency window ${stamp}.`;
+    const second = await mcp({ op: 'save', type: 'decision', content: `recency with a cap ${stamp}`, agent_line: replacementLine, session_id: session, project: target.projectId });
     const newId = String(second.id);
     expect((await target.sql(`SELECT prompt_id FROM spores WHERE id = ${lit(newId)}`))[0]!.prompt_id).toBeNull();
     expect(await mcp({ op: 'supersede', old_spore_id: oldId, new_spore_id: newId, reason: 'narrowed', session_id: session, project: target.projectId }))
@@ -81,7 +82,7 @@ export const spores: ParityScenario = {
     expect(served.status).toBe(200);
     expect(served.body.injection?.sporeIds).toEqual([newId]);
     expect(served.body.injection?.createdAt).toBe(stamp + 3);
-    expect(served.body.injection?.spores).toEqual([{ id: newId, observationType: 'decision', preview: `recency with a cap ${stamp}` }]);
+    expect(served.body.injection?.spores).toEqual([{ id: newId, observationType: 'decision', preview: replacementLine }]);
 
     // The selecting prompt, delivered nothing, answers null rather than an empty shape.
     expect((await owner<Turn>(`${base}/turns/${p1}`)).body.injection).toBeNull();
@@ -120,6 +121,7 @@ export const guardedSpores: ParityScenario = {
     const now = Date.now();
     const scope = `project_id = ${lit(target.projectId)}`;
     const call = async (token: string, name: string, args: Record<string, unknown>) => {
+      if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
       const response = await fetch(`${target.url}/mcp`, {
         method: 'POST', headers: memberHeadersFor(token, target.projectId, { 'content-type': 'application/json' }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: target.projectId, ...args } } }),

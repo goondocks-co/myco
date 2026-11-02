@@ -1,3 +1,4 @@
+import { SPORE_READ_STATE_PREFIX } from '../../constants.js';
 /**
  * `myco_run_spores`: the inventory a run surveys by, and one body in full.
  *
@@ -44,7 +45,7 @@ function preview(row: SporeRow, window: ReadWindow): Record<string, unknown> {
 /** Count one full read against this run's budget and answer the running total. */
 async function spendFullRead(ctx: ToolContext, runId: string, agentId: string): Promise<number> {
   let spent = 0;
-  await mutateState(ctx.env.db, { projectId: ctx.projectId }, agentId, `spore_reads:${runId}`, (current) => {
+  await mutateState(ctx.env.db, { projectId: ctx.projectId }, agentId, `${SPORE_READ_STATE_PREFIX}${runId}`, (current) => {
     const held = Number(current ?? 0);
     spent = (Number.isSafeInteger(held) && held > 0 ? held : 0) + 1;
     return String(spent);

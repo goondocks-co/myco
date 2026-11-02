@@ -754,7 +754,7 @@ describe('importing a 1.4 vault', () => {
     await f.run();
     const resolve = (eventId: string, extra: Record<string, unknown>) => f.rig.fetch('https://s/spores/resolve', {
       method: 'POST', headers: f.rig.headers({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ eventId, agentId: 'user', sporeId: 'decision-user', action: 'obsolete', status: 'obsolete', createdAt: 1_000, ...extra }),
+      body: JSON.stringify({ eventId, agentId: 'user', sporeId: 'decision-user', action: 'obsolete', status: 'obsolete', reason: 'Retire this fixture', createdAt: 1_000, ...extra }),
     });
     expect((await (await resolve('res_plain', {})).json() as { resolved: boolean }).resolved).toBe(true);
     expect((await (await resolve('res_imported', { channel: 'import', expectStatus: 'obsolete' })).json() as { resolved: boolean }).resolved).toBe(true);
@@ -1050,7 +1050,7 @@ it('keeps another member’s spore once and completes subsequent imports', async
     db.run("DELETE FROM spores WHERE id = 'gotcha-new'");
     const saved = await f.rig.fetch(SERVER + '/spores/save', {
       method: 'POST', headers: f.rig.headers({ authorization: `Bearer ${other.token}`, 'content-type': 'application/json' }),
-      body: JSON.stringify({ id: 'gotcha-new', agentId: source.agent_id, observationType: 'gotcha', content: 'another member’s observation', sessionId: SESSION_LIVE }),
+      body: JSON.stringify({ id: 'gotcha-new', agentId: source.agent_id, observationType: 'gotcha', content: 'another member’s observation', agentLine: 'When using this fixture, retain its evidence.', sessionId: null }),
     });
     expect((await saved.json() as { persisted: boolean }).persisted).toBe(true);
     const ledger = new LegacyLedger(f.mycoHome, SERVER, PROJECT);

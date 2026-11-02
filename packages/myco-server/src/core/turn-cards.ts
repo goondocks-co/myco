@@ -78,7 +78,7 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
     }
     if (!(CARD_SIGNALS as readonly unknown[]).includes(entry.signal)) return 'signal must be none, low or high';
     const card = entry.card as Record<string, unknown> | undefined;
-    if (card === undefined || typeof card !== 'object') return 'each card carries its fields';
+    if (card === undefined || card === null || typeof card !== 'object' || Array.isArray(card)) return 'each card carries its fields';
     for (const field of CARD_FIELDS) {
       const value = card[field];
       const text = ['asked', 'done', 'outcome'].includes(field);

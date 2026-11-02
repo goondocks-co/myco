@@ -1,3 +1,4 @@
+import { isSystemMember } from '../auth/member-kind.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { ENROLLMENT_TTL_MS, EnrollmentAuthorizationError, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority } from '../auth/enrollment.js';
@@ -40,7 +41,7 @@ export async function handleRevokeMember(env: ServerEnv, ctx: OwnerContext): Pro
  */
 export async function handleIssueMemberLink(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const memberId = ctx.params.memberId;
-  if (memberId === HARNESS_MEMBER_ID) return Response.json({ error: 'member_is_runtime' }, { status: 409 });
+  if (isSystemMember(memberId)) return Response.json({ error: 'member_is_runtime' }, { status: 409 });
   const state = await memberLinkState(env.db, memberId);
   if (state === 'absent') return notFound();
   if (state === 'revoked') return Response.json({ error: 'member_revoked' }, { status: 409 });

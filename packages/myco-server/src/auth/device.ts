@@ -216,7 +216,8 @@ async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, d
   const pending = pendingDevice(row.id, ctx.now, decision === 'approved' ? 'member' : undefined);
   const update = env.db.prepare(`UPDATE device_requests SET decision = ?, decided_by = ?, decided_at = ?
     WHERE id = ? AND ${pending.sql}
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at IS NULL AND role IN ('admin','member'))
+      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at IS NULL AND role IN ('admin','member')
+        AND (role = 'admin' OR EXISTS (SELECT 1 FROM device_requests d WHERE d.id = device_requests.id AND d.subject = 'member')))
       ${decision === 'approved' ? 'AND EXISTS (SELECT 1 FROM enrollment_authorities WHERE id = ? AND created_by_member = ?)' : ''}`)
     .bind(decision, ctx.member.id, ctx.now, row.id, ...pending.params, ctx.member.id,
       ...(decision === 'approved' ? [row.id, ctx.member.id] : []));

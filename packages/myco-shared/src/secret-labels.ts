@@ -4,7 +4,7 @@ const SECRET_COMPONENTS: ReadonlySet<string> = new Set(SECRET_COMPONENT_TABLE);
 const TOKEN_QUANTITIES: ReadonlySet<string> = new Set(TOKEN_QUANTITY_TABLE);
 const MAX_COMPONENT_CHARS = Math.max(...[...SECRET_COMPONENTS].map((name) => name.length));
 const LABEL_CHAR = /^[A-Za-z0-9_-]+$/;
-const JOINT_WORDS: ReadonlySet<string> = new Set(['is', 'was', 'are']);
+const JOINT_WORDS: ReadonlySet<string> = new Set(['is', 'was', 'were', 'are']);
 const ELISION = '…';
 
 const URL_OPEN = /[A-Za-z][A-Za-z0-9+.-]*:\/\//y;
@@ -101,11 +101,18 @@ export function maskSecretLabels(input: string, replacement: string, options: { 
     let valueAt = at;
     if (/^["']$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     while (/^[ \t]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
-    if (/^[:=|]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
-    else {
+    let connected = false;
+    while (/^[:=|]$/.test(character(text, valueAt).comparison)) {
+      connected = true;
+      valueAt = character(text, valueAt).end;
+      while (/^[ \t]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
+    }
+    if (!connected) {
       const jointAt = valueAt;
       while (/^[A-Za-z]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
-      if (valueAt - jointAt > 3 || !JOINT_WORDS.has(text.slice(jointAt, valueAt).normalize('NFKC').toLowerCase()) || !/^\s$/.test(text[valueAt] ?? '')) continue;
+      if (!JOINT_WORDS.has(text.slice(jointAt, valueAt).normalize('NFKC').toLowerCase())
+        || !/^[\s:=|,;]$/.test(character(text, valueAt).comparison)) continue;
+      while (/^[\s:=|,;]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     }
     while (/^\s$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     if (valueAt === text.length || text[valueAt] === '|') continue;

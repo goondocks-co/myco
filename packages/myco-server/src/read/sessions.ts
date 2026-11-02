@@ -178,11 +178,4 @@ export async function renameProject(db: RelationalStore, projectId: string, name
 }
 
 
-/** Insert a project, answering false when one already carries the id. */
-export async function createProject(db: RelationalStore, projectId: string, name: string, nowMs: number): Promise<boolean> {
-  const result = await db
-    .prepare(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`)
-    .bind(projectId, name, nowMs)
-    .run();
-  return result.meta.changes === 1;
-}
+export { createProject } from '../core/project-creation.js';

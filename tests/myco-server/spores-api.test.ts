@@ -20,7 +20,7 @@ async function harness() {
 }
 
 const save = (id: string, over: Record<string, unknown> = {}) =>
-  ({ id, agentId: AGENT, observationType: 'gotcha', content: `content of ${id}`, ...over });
+  ({ id, agentId: AGENT, agentLine: 'When using this fixture, retain its evidence.', observationType: 'gotcha', content: `content of ${id}`, ...over });
 
 describe('POST /spores', () => {
   it('saves and reads back a spore with its lineage', async () => {
@@ -61,11 +61,13 @@ describe('POST /spores', () => {
     expect(await post('/spores/resolve', { eventId: 're1', agentId: AGENT, sporeId: 'sp1', action: 'supersede', status: 'superseded', newSporeId: 'sp2' }))
       .toEqual({ persisted: true, resolved: true });
     expect((await post('/spores/get', { id: 'sp1' })).supersededBy).toEqual(['sp2']);
+    await post('/spores/save', save('sp3'));
+    expect(await post('/spores/resolve', { eventId: 're2', agentId: AGENT, sporeId: 'sp2', action: 'consolidate', status: 'consolidated', newSporeId: 'sp3' })).toEqual({ persisted: true, resolved: true });
   });
 
   it('reports resolved:false for a spore this Project does not hold', async () => {
     const { post } = await harness();
-    expect(await post('/spores/resolve', { eventId: 're1', agentId: AGENT, sporeId: 'absent', action: 'obsolete', status: 'obsolete' }))
+    expect(await post('/spores/resolve', { eventId: 're1', agentId: AGENT, sporeId: 'absent', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }))
       .toEqual({ persisted: true, resolved: false });
   });
 
@@ -74,7 +76,7 @@ describe('POST /spores', () => {
     await post('/spores/save', save('sp1'));
     for (const body of [
       { eventId: 're1', agentId: AGENT, sporeId: 'sp1', action: 'invented', status: 'obsolete' },
-      { eventId: 're2', agentId: AGENT, sporeId: 'sp1', action: 'obsolete', status: 'invented' },
+      { eventId: 're2', agentId: AGENT, sporeId: 'sp1', action: 'obsolete', reason: 'retire fixture', status: 'invented' },
     ]) {
       expect((await post('/spores/resolve', body)).persisted).toBe(false);
     }
@@ -86,7 +88,7 @@ it('member resolution defaults active, names stale and admits explicit editorial
   const { post, sqlite } = await harness();
   try {
     await post('/spores/save', save('guard'));
-    const request = { eventId: 'guard-one', agentId: AGENT, sporeId: 'guard', action: 'obsolete', status: 'obsolete', expectRevision: 0 };
+    const request = { eventId: 'guard-one', agentId: AGENT, sporeId: 'guard', action: 'obsolete', reason: 'retire fixture', status: 'obsolete', expectRevision: 0 };
     expect(await post('/spores/resolve', request)).toEqual({ persisted: true, resolved: true });
     expect(await post('/spores/resolve', { ...request, eventId: 'guard-two', expectRevision: 1 }))
       .toMatchObject({ persisted: false, code: 'stale', status: 'obsolete', revision: 1 });
@@ -101,17 +103,17 @@ it('member resolution defaults active, names stale and admits explicit editorial
 it('import history admits final or active status, checks revisions and refuses other states with the comparison', async () => {
   const { post, sqlite } = await harness();
   try {
-    const request = { channel: 'import', agentId: AGENT, action: 'obsolete', status: 'obsolete', expectStatus: 'obsolete' };
+    const request = { channel: 'import', agentId: AGENT, action: 'obsolete', reason: 'retire fixture', status: 'obsolete', expectStatus: 'obsolete' };
     await post('/spores/save', save('import-active'));
     expect(await post('/spores/resolve', { ...request, eventId: 'wrong-revision', sporeId: 'import-active', expectRevision: 1 }))
       .toMatchObject({ persisted: false, code: 'stale', status: 'active', revision: 0,
         reason: 'source is active at revision 0; expected obsolete or active at revision 1' });
     expect(await post('/spores/resolve', { ...request, eventId: 'later-retirement', sporeId: 'import-active', expectRevision: 0 }))
       .toEqual({ persisted: true, resolved: true });
-    await post('/spores/save', { ...save('import-terminal'), status: 'obsolete' });
+    await post('/spores/save', { ...save('import-terminal'), channel: 'import', status: 'obsolete' });
     expect(await post('/spores/resolve', { ...request, expectStatus: undefined, eventId: 'fresh-history', sporeId: 'import-terminal' }))
       .toEqual({ persisted: true, resolved: true });
-    await post('/spores/save', { ...save('import-other'), status: 'superseded' });
+    await post('/spores/save', { ...save('import-other'), channel: 'import', status: 'superseded' });
     expect(await post('/spores/resolve', { ...request, eventId: 'other-state', sporeId: 'import-other' }))
       .toMatchObject({ persisted: false, code: 'stale', status: 'superseded', revision: 0,
         reason: 'source is superseded at revision 0; expected obsolete or active' });

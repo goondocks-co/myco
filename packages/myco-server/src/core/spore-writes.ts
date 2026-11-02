@@ -66,7 +66,7 @@ export async function planSporeResolution(
   const newSporeId = request.newSporeId;
   if (sporeId === undefined) return { ok: false, reason: `${names.spore} is required for op: ${request.action}` };
   if (newSporeId === undefined) return { ok: false, reason: `${names.successor} is required for op: ${request.action}` };
-  if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: `${names.spore} not found` };
+  if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: 'spore_id not found' };
   if ((await getSpore(db, scope, newSporeId)) === null) return { ok: false, reason: `${names.successor} not found` };
   return {
     ok: true,
