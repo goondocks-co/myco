@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 /**
  * A run's attempts, and the step log each attempt's worker delivers.
  *
@@ -19,7 +20,7 @@ import { getRunDetail, getRunSteps } from '@myco-server-worker/read/runs.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { MAX_RUN_STEPS, stepPages, type WorkerStep } from '@goondocks/myco-shared/worker-steps';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 
 const NOW = 1_800_000_000_000;

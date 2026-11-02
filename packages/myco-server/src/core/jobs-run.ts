@@ -1,5 +1,6 @@
 import { refreshEstimates } from './budget-estimates.js';
-import { BUDGET_WINDOW_MS } from './budget-policy.js';
+import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { budgetActivation, budgetQueueOpenedAt, BUDGET_ENABLED, BUDGET_QUEUE_OPENED_SQL } from '../db/budget-activation.js';
 import { dailyBudget,effectiveBudgetSql } from './settings.js';
 import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
 import { runPublishWake } from '../ingest/publish.js';
@@ -175,6 +176,10 @@ export function queueExpiredError(heldBy: string | null): string {
 export async function runStaleSweep(env: ServerEnv, now: number): Promise<number> {
   let changed = 0;
   const budget=await dailyBudget(env.db);
+  const activation = await budgetActivation(env.db);
+  const opened = activation.active ? await budgetQueueOpenedAt(env.db) : null;
+  const openedAt = Number(opened ?? 0);
+  if (!Number.isSafeInteger(openedAt) || openedAt < 0) throw new Error('Budget queue admission time is invalid');
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
@@ -182,13 +187,15 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
-  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
+  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH, activation.active ? [] : BUDGET_WORKER_TASKS)) {
+    const automatic = queued.origin === 'automatic' && queued.task !== null && BUDGET_WORKER_TASKS.includes(queued.task);
     const budgetHeld=queued.heldBy==='budget';
     const quote=queued.budgetQuoteUsd;
     const tooSmall=budgetHeld&&typeof quote==='number'&&quote>budget;
     const maximumAge=budgetHeld?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
-    if (!tooSmall && now - queued.queuedAt < maximumAge) continue;
-    const guard={sql:`held_by IS ? AND queued_at IS ?${tooSmall?` AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}`:''}`,params:[queued.heldBy,queued.queuedAt,...(tooSmall?[quote]:[])]};
+    const ageFrom = automatic ? Math.max(queued.queuedAt, openedAt) : queued.queuedAt;
+    if (!tooSmall && now - ageFrom < maximumAge) continue;
+    const guard={sql:`held_by IS ? AND queued_at IS ?${automatic ? ` AND EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${BUDGET_QUEUE_OPENED_SQL} IS ?` : ''}${tooSmall?` AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}`:''}`,params:[queued.heldBy,queued.queuedAt,...(automatic?[opened]:[]),...(tooSmall?[quote]:[])]};
     const failed=tooSmall?`the last estimate $${quote} exceeds the daily budget`:budgetHeld?'the budget window did not free before the queued run expired':queueExpiredError(queued.heldBy);
     if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed,errorCode:tooSmall?'budget_too_small':budgetHeld?'budget_wait_expired':'machine_did_not_start',guard }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });

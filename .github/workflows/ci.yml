@@ -430,7 +430,10 @@ jobs:
           set -eu
           docker buildx build --platform linux/amd64 \
             -f packages/myco-server/Dockerfile -t myco-server:native --load .
+          docker volume create myco-ci-data
+          docker run --rm -v myco-ci-data:/data myco-server:native --bootstrap-only
           docker run -d --name myco-ci \
+            -v myco-ci-data:/data \
             -p 127.0.0.1:18787:18787 -e MYCO_PORT=18787 -e MYCO_BIND=all myco-server:native
 
           for _ in $(seq 1 30); do
@@ -464,6 +467,7 @@ jobs:
           [ "$named" = "421" ] || { echo "localhost was $named, expected 421"; exit 1; }
 
           docker rm -f myco-ci
+          docker volume rm myco-ci-data
 
       - name: Preserve relational and blob data across container replacement
         run: node scripts/smoke-container-persistence.mjs myco-server:native
@@ -477,6 +481,7 @@ jobs:
         if: always()
         run: |
           docker rm -f myco-ci 2>/dev/null || true
+          docker volume rm myco-ci-data 2>/dev/null || true
 
   windows-native:
     runs-on: windows-latest

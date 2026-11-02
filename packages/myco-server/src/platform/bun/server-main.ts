@@ -36,7 +36,7 @@ import type { StaticAssets } from './static.js';
 import type { NativeSqlite } from './native.js';
 import type { BunServerEnv } from './env.js';
 import type { TrustedProxyConfig } from './source.js';
-import { openDatabase } from './database.js';
+import { openExistingDatabase } from './database.js';
 
 class StartupError extends Error {}
 
@@ -110,7 +110,7 @@ export interface StartedDeployment {
  */
 export function migrateOnly(databasePath: string, native?: NativeSqlite, recovery?: PrivateRecoveryCopy): number {
   if (recovery !== undefined) assertPrivateRecoveryCopy(recovery, databasePath);
-  const sqlite = openDatabase(databasePath, native);
+  const sqlite = openExistingDatabase(databasePath, native);
   try {
     sqlite.exec('PRAGMA foreign_keys = ON');
 

@@ -3,6 +3,9 @@ export const ENSURE_SOON_MS = 1_000;
 export const CONTINUATION_FLOOR_MS = 2_000;
 export const WAKE_FAILURE_MIN_MS = 30_000;
 export const WAKE_FAILURE_MAX_MS = 5 * 60_000;
+const MAX_FAILURES = Math.ceil(Math.log2(WAKE_FAILURE_MAX_MS / WAKE_FAILURE_MIN_MS)) + 1;
+export interface WakeRetryState { failures: number; retryAt: number }
+const failureDelay = (failures: number): number => Math.min(WAKE_FAILURE_MIN_MS * 2 ** failures, WAKE_FAILURE_MAX_MS);
 
 /** The sooner requested deadline; an idle clock cannot cancel a continuation. */
 export function soonestWake(tickMs: number | null, continuationMs: number | null): number | null {
@@ -16,14 +19,21 @@ export function wakePolicy() {
   let failures = 0;
   let retryAt = 0;
   return {
+    snapshot: (): WakeRetryState => ({ failures, retryAt }),
+    restore: (state: WakeRetryState): void => {
+      if (!Number.isSafeInteger(state.failures) || state.failures < 0 || state.failures > MAX_FAILURES
+        || !Number.isSafeInteger(state.retryAt) || state.retryAt < 0) throw new Error('Invalid persisted wake retry state');
+      ({ failures, retryAt } = state);
+    },
     remaining: (now: number): number => Math.max(0, retryAt - now),
     workAt: (now: number, delayMs = ENSURE_SOON_MS): number => Math.max(now + delayMs, retryAt),
     failed: (now: number): number => {
-      const delay = Math.min(WAKE_FAILURE_MIN_MS * 2 ** failures, WAKE_FAILURE_MAX_MS);
-      failures = Math.min(failures + 1, Math.ceil(Math.log2(WAKE_FAILURE_MAX_MS / WAKE_FAILURE_MIN_MS)));
+      const delay = failureDelay(failures);
+      failures = Math.min(failures + 1, MAX_FAILURES);
       retryAt = now + delay;
       return delay;
     },
+    retryFrom: (now: number): void => { retryAt = now + failureDelay(Math.max(0, failures - 1)); },
     succeeded: (): void => { failures = 0; retryAt = 0; },
   };
 }

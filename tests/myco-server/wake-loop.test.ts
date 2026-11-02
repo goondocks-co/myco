@@ -24,8 +24,10 @@ describe('the wake loop', () => {
 
   it('wakes soon on ensure unless a wake is already due sooner, and runs a tick that arrived mid-tick once more', async () => {
     let ticks = 0;
+    const requests: boolean[] = [];
     let release: () => void = () => {};
-    const loop = startWakeLoop(async () => {
+    const loop = startWakeLoop(async requested => {
+      requests.push(requested);
       ticks += 1;
       if (ticks === 1) await new Promise<void>((resolve) => { release = resolve; });
       return { nextWakeMs: 10_000 };
@@ -39,6 +41,7 @@ describe('the wake loop', () => {
     release();
     await settle(20);
     expect(ticks).toBe(2);
+    expect(requests).toEqual([false, true]);
     loop.stop();
   });
 

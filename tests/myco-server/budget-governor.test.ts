@@ -47,6 +47,26 @@ it('holds automatic work through activation refusal and resumes under the preser
   } finally { f.sqlite.close(); }
 });
 
+it('starts automatic queue expiry at successful activation while manual expiry remains bounded', async () => {
+  const f = await budgetFixture(false);
+  try {
+    const candidate = f.queue('activation-wait');
+    for (let index = 0; index < 1_001; index++) f.queue(`a-prefix-${index}`);
+    await pollBudget(f, f.now);
+    f.queue('manual-wait', 'manual');
+    const later = f.now + 3 * BUDGET_WINDOW_MS;
+    await runStaleSweep(f.serverEnv, later);
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE origin='automatic' AND status='failed'").get()).toEqual({ n: 0 });
+    expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='activation-wait'").get()).toEqual({ status: 'queued' });
+    expect(f.sqlite.query("SELECT status,error_code FROM agent_runs WHERE id='manual-wait'").get()).toEqual({ status: 'failed', error_code: 'machine_did_not_start' });
+    expect(await completeBudgetMigration(f.db, later)).toMatchObject({ active: true });
+    await runStaleSweep(f.serverEnv, later + 1);
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE origin='automatic' AND status='failed'").get()).toEqual({ n: 0 });
+    expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='activation-wait'").get()).toEqual({ status: 'queued' });
+    expect(await f.claim(candidate, later + 2)).not.toBeNull();
+  } finally { f.sqlite.close(); }
+});
+
 it('governs across Projects atomically and lets manual work spend past the budget',async()=>{
   const f=await budgetFixture();
   try {

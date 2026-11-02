@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -14,7 +15,7 @@ import { SERVER_FEATURES, WORKER_LEASE_MS } from '@myco-server-worker/constants.
 import { EFFORT_UNAPPLIED, MAX_REFUSAL_REASON_CHARS, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { readWork } from '@myco-server-worker/read/work.js';
 import { listRuns } from '@myco-server-worker/read/runs.js';
-import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { BASE64_SECRET, OPENAI_KEY } from '../helpers/secret-corpus.ts';
 
 const NOW = 1_800_000_000_000;

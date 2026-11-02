@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
 import { readDeploymentRecord, updateDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
-import { createCloudflareDeployment, updateCloudflareDeployment, rollbackCloudflareDeployment, destroyCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
+import { cloudflareDeploymentStatus, createCloudflareDeployment, updateCloudflareDeployment, rollbackCloudflareDeployment, destroyCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { stageCloudflareDeploy } from '@myco/server/cloudflare-stage.js';
 
 const record = { accountId: 'fixture', workerName: 'fixture', databaseName: 'fixture', bucketName: 'fixture', versionId: null, deployedAt: 'fixture' };
@@ -27,6 +27,8 @@ it('holds ownership across asynchronous provisioning and refuses every competing
       await expect(command({ mycoHome, accountId: 'fixture', runner })).rejects.toThrow('in use');
     }
     expect(readDeploymentRecord(mycoHome)).toEqual(record);
+    const status = await cloudflareDeploymentStatus({ mycoHome, accountId: 'fixture', runner: { run: async () => ({ code: 0, stdout: '', stderr: '' }) } });
+    expect(status?.record).toEqual(record);
     release();
     await held;
     expect(readDeploymentRecord(mycoHome)?.fleet).toBe(2);

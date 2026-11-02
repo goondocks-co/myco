@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { runRouteFixture } from './helpers/run-routes.js';
 /**
@@ -16,7 +17,7 @@ import { TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditio
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { publishFixture, memberHeaders, memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { publishFixture, memberHeaders, memberPost, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { OWNER_ENV } from './helpers/owner.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';

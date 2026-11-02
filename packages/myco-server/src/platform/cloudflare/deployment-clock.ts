@@ -11,7 +11,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { runTick, tickPacer, type TickReport } from '../../core/tick.js';
 import { serialGate } from '../../core/serial-gate.js';
-import { CONTINUATION_FLOOR_MS, ENSURE_SOON_MS, soonestWake, wakePolicy } from '../../core/wake-policy.js';
+import { CONTINUATION_FLOOR_MS, ENSURE_SOON_MS, soonestWake, wakePolicy, type WakeRetryState } from '../../core/wake-policy.js';
 export { CONTINUATION_FLOOR_MS, soonestWake } from '../../core/wake-policy.js';
 import { WAKE_CONTINUATIONS } from '../../core/jobs.js';
 import { classify, emit } from '../../telemetry.js';
@@ -66,6 +66,7 @@ export async function armNextWake(
  * work ends.
  */
 export const LAUNCHED_WORK_WAKE_MS = 30_000;
+const RETRY_STATE_KEY = 'tick-retry';
 
 export async function armFloor(storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number): Promise<void> {
   if (!clockArmsAlarms(bindings)) return;
@@ -151,6 +152,8 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
   /** What this clock keeps between its wakes: which of them run every job, and which only drain (`TickPacer`). */
   private readonly pacer = tickPacer();
   private readonly timing = wakePolicy();
+  private timingLoaded = false;
+  private workRequested = false;
   /** Work a tick launched that is still running: kept alive by this object, never by the wake that launched it. */
   private readonly launched = new Set<Promise<void>>();
 
@@ -179,7 +182,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
 
   /** One tick over this object's bindings, paced by what this clock kept from its last wakes. */
   protected tick(now: number): Promise<TickReport> {
-    return runTick(this.clockEnv(), now, { wake: 'clock', pacer: this.pacer });
+    return runTick(this.clockEnv(), now, { wake: 'clock', pacer: this.pacer, workRequested: this.workRequested });
   }
 
   /**
@@ -196,11 +199,19 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return this.gate.exclusive(() => this.wakeOnce());
   }
 
+  private async loadTiming(): Promise<void> {
+    if (this.timingLoaded) return;
+    const stored = await this.ctx.storage.get<WakeRetryState>(RETRY_STATE_KEY);
+    if (stored !== undefined) this.timing.restore(stored);
+    this.timingLoaded = true;
+  }
+
   private async schedule(nextInMs: number | null): Promise<void> {
     await this.alarms.exclusive(async () => {
       const now = Date.now();
       const requested = this.requestedAt === null ? null : Math.max(0, this.timing.workAt(now, this.requestedAt - now) - now);
-      await armNextWake(this.ctx.storage, this.env, now, soonestWake(nextInMs, requested));
+      const next = soonestWake(nextInMs, requested);
+      await armNextWake(this.ctx.storage, this.env, now, this.launched.size > 0 ? soonestWake(next, LAUNCHED_WORK_WAKE_MS) : next);
     });
   }
 
@@ -214,6 +225,8 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     // Armed before anything that can throw: the continuation below can leave the Deployment's own database
     // unreadable, which makes the tick throw, and an unarmed clock stays dark until the cron floor.
     await this.alarms.exclusive(async () => {
+      await this.loadTiming();
+      this.workRequested ||= this.requestedAt !== null;
       this.requestedAt = null;
       await armFloor(this.ctx.storage, this.env, now);
     });
@@ -228,17 +241,31 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
       await this.schedule(soonestWake(retryInMs, continuation.nextInMs));
       return { ticked: false, heldBy: 'tick_backoff', retryInMs };
     }
+    const reserved = await this.alarms.exclusive(async () => {
+      const delay = this.timing.failed(Date.now());
+      await this.ctx.storage.put(RETRY_STATE_KEY, this.timing.snapshot());
+      return delay;
+    });
+    await this.schedule(soonestWake(reserved, continuation.nextInMs));
     let report: TickReport;
     try { report = await this.tick(now); }
     catch (error) {
       emit({ kind: 'wake_failed', error_class: classify(error) });
-      const retryInMs = this.timing.failed(Date.now());
+      await this.alarms.exclusive(async () => {
+        this.timing.retryFrom(Date.now());
+        await this.ctx.storage.put(RETRY_STATE_KEY, this.timing.snapshot());
+      });
+      const retryInMs = this.timing.remaining(Date.now());
       await this.schedule(soonestWake(retryInMs, continuation.nextInMs));
       throw new ScheduledTickFailure(error);
     }
-    this.timing.succeeded();
+    await this.alarms.exclusive(async () => {
+      await this.ctx.storage.delete(RETRY_STATE_KEY);
+      this.timing.succeeded();
+      this.workRequested = false;
+    });
     const next = soonestWake(report.nextWakeMs, continuation.nextInMs);
-    await this.schedule(this.launched.size > 0 ? soonestWake(next, LAUNCHED_WORK_WAKE_MS) : next);
+    await this.schedule(next);
     return { ticked: true, report };
   }
 
@@ -250,7 +277,8 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
         return;
       }
       const now = Date.now();
-      const requested = this.timing.workAt(now);
+      await this.loadTiming();
+      const requested = now + ENSURE_SOON_MS;
       this.requestedAt = this.requestedAt === null ? requested : Math.min(this.requestedAt, requested);
       await armSoon(this.ctx.storage, this.env, now, this.timing.workAt(now));
     });

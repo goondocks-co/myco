@@ -12,12 +12,16 @@ import { CHAINED_WAKE_MS, WAKE_INTERVALS, type TickReport } from '@myco-server-w
 /** The alarm and waitUntil a Durable Object is given, held where a test can read them. */
 function state() {
   let alarm: number | null = null;
+  const stored = new Map<string, unknown>();
   const kept: Promise<unknown>[] = [];
   return {
     kept,
     alarm: () => alarm,
     ctx: {
       storage: {
+        get: async <T,>(key: string) => stored.get(key) as T | undefined,
+        put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
+        delete: async (key: string) => stored.delete(key),
         getAlarm: async () => alarm,
         setAlarm: async (at: number) => { alarm = at; },
         deleteAlarm: async () => { alarm = null; },
@@ -26,6 +30,75 @@ function state() {
     },
   };
 }
+
+it('keeps the launched-work wake cap throughout failed ticks and their backoff wakes', async () => {
+  const held = state();
+  const env = { MYCO_ORIGIN: 'https://myco.example' };
+  let ticks = 0;
+  class BusyClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      if (ticks++ > 0) throw new Error('fixture tick failure');
+      this.clockEnv().afterResponse(() => new Promise<void>(() => {}));
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new BusyClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await clock.alarm();
+    for (let wake = 0; wake < 12; wake++) {
+      expect(held.alarm()! - now).toBeLessThanOrEqual(LAUNCHED_WORK_WAKE_MS);
+      now = held.alarm()!;
+      await clock.alarm();
+    }
+    expect(ticks).toBeGreaterThan(3);
+  } finally { Date.now = realNow; }
+});
+
+it('retains retry deadlines and escalation across object resets and an interrupted tick', async () => {
+  const held = state();
+  const env = {};
+  class FaultClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> { throw new Error('fixture tick failure'); }
+  }
+  const fresh = () => {
+    const clock = new FaultClock(held.ctx as never, env as never);
+    Object.assign(clock, { ctx: held.ctx, env });
+    return clock;
+  };
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await fresh().alarm();
+    const first = held.alarm()!;
+    now += 1_000;
+    await fresh().ensure();
+    expect(held.alarm()).toBe(first);
+    expect(await fresh().wake()).toMatchObject({ ticked: false, heldBy: 'tick_backoff' });
+    now = first;
+    await fresh().alarm();
+    expect(held.alarm()).toBe(now + 60_000);
+    now = held.alarm()!;
+    let began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    class InterruptedClock extends DeploymentClock {
+      protected override async tick(): Promise<TickReport> { began(); return new Promise(() => {}); }
+    }
+    const interrupted = new InterruptedClock(held.ctx as never, env as never);
+    Object.assign(interrupted, { ctx: held.ctx, env });
+    void interrupted.wake();
+    await started;
+    const retry = held.alarm()!;
+    expect(retry).toBe(now + 120_000);
+    now += 1_000;
+    await fresh().ensure();
+    expect(held.alarm()).toBe(retry);
+  } finally { Date.now = realNow; }
+});
 
 it('advances a later alarm for new work while retaining an earlier deadline', async () => {
   const held = state();

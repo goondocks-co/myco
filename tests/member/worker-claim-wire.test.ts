@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from '../myco-server/helpers/running-env.js';
 /**
  * The shipped worker against the real server pipeline.
  *
@@ -33,7 +34,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
-import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
+import { turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.ts';
 import { MODEL_CATALOG_FEATURE } from '@goondocks/myco-shared/execution-profile';
@@ -68,12 +69,13 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
     await ensureMember(e.db, id, NOW, role, id);
     return (await issueMemberToken(e.db, { memberId: id, machineId: id }, NOW)).token;
   };
+  let queuedAt = NOW;
   const queueRun = (id: string) => {
     e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
        VALUES (?, ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
-      [PROJECT_ID, id, NOW, JSON.stringify({ serverUrl: 'https://s', params:{session_id:'wire-session',mode:'claim'}, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+      [PROJECT_ID, id, queuedAt++, JSON.stringify({ serverUrl: 'https://s', params:{session_id:'wire-session',mode:'claim'}, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
   };
   const runRow = (id: string) => e.sqlite.query(`SELECT status, harness, error FROM agent_runs WHERE id = ?`).get(id) as { status: string; harness: string | null; error: string | null } | null;

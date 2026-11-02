@@ -136,7 +136,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
 
 export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void>; env: BunServerEnv; handleInProcess: BunHandler['handleInProcess'] }> {
   const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
-  const allowsHost = loopbackOnly ? loopbackHostAdmission(options.origin) : null;
+  const allowsHost = loopbackOnly ? loopbackHostAdmission(options.bind === 'all' ? options.origin : undefined) : null;
   const handler = await createBunHandler(options);
 
   // Resolved after the first bind. Port 0 asks the kernel to choose, and the

@@ -65,16 +65,19 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' |
 
 /** Admit the held Deployment's account before a lifecycle command can reach a provider. */
 function lifecycleOperation<Options extends LifecycleOptions, Result>(
+  verb: 'create' | 'update' | 'rollback' | 'status' | 'destroy',
   operation: (options: Options, record: DeploymentRecord | null) => Promise<Result>,
 ): (options: Options) => Promise<Result> {
-  return cloudflareOperation(async (supplied: Options) => {
+  const admitted = async (supplied: Options) => {
     const options = { ...supplied };
-    const record = readDeploymentRecord(options.mycoHome);
+    const record = verb === 'status' ? peekDeploymentRecord(options.mycoHome) : readDeploymentRecord(options.mycoHome);
     if (record !== null && options.accountId !== record.accountId) {
-      throw new Error('Cloudflare operation refused: selected account does not match the deployment record');
+      const label = verb === 'create' || verb === 'update' ? 'schema update' : verb;
+      throw new Error(`${label} refused: selected account does not match the deployment record`);
     }
     return operation(options, record);
-  });
+  };
+  return verb === 'status' ? admitted : cloudflareOperation(admitted);
 }
 
 /**
@@ -201,7 +204,7 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
  * record's ids are kept, and a re-run converges on the same Deployment —
  * which also makes this the adopt path for resources created by hand.
  */
-export const createCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions & { url?: string }, existing): Promise<CreateResult> => {
+export const createCloudflareDeployment = lifecycleOperation('create', async (options: LifecycleOptions & { url?: string }, existing): Promise<CreateResult> => {
   await preflight(options);
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
@@ -317,7 +320,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   return lines;
 }
 
-export const updateCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions, held): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
+export const updateCloudflareDeployment = lifecycleOperation('update', async (options: LifecycleOptions, held): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
   const summary: CloudflareUpdateSummary = {
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
     schema: 'not attempted', worker: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
@@ -400,7 +403,7 @@ export const updateCloudflareDeployment = lifecycleOperation(async (options: Lif
  * already recorded the bad version, and that caller passes the pre-deploy
  * version it captured.
  */
-export const rollbackCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
+export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
   await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
   const target = options.versionId ?? record.versionId ?? '';
@@ -419,7 +422,7 @@ export interface CloudflareDeploymentStatus {
   schemaError: string | null;
 }
 
-export const cloudflareDeploymentStatus = lifecycleOperation(async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
+export const cloudflareDeploymentStatus = lifecycleOperation('status', async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
   await preflight(options);
   if (record === null) return null;
   const [worker, schema] = await Promise.allSettled([
@@ -439,7 +442,7 @@ export const cloudflareDeploymentStatus = lifecycleOperation(async (options: Lif
  * stand: the Worker is re-creatable from the binary, the data is not, and
  * data removal stays a by-hand act this command refuses to own.
  */
-export const destroyCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions, record): Promise<{ kept: string[] }> => {
+export const destroyCloudflareDeployment = lifecycleOperation('destroy', async (options: LifecycleOptions, record): Promise<{ kept: string[] }> => {
   await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to destroy.`);
   const resources = cloudflareResources(record);

@@ -29,7 +29,7 @@ export interface WakeLoopOptions {
 
 export const WAKE_FLOOR_MS = 15 * 60_000;
 
-export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>, options: WakeLoopOptions): WakeLoop {
+export function startWakeLoop(tick: (workRequested: boolean) => Promise<{ nextWakeMs: number | null }>, options: WakeLoopOptions): WakeLoop {
   const soonMs = options.soonMs ?? ENSURE_SOON_MS;
   const timing = wakePolicy();
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -37,6 +37,7 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
   let running: Promise<unknown> | null = null;
   let again = false;
   let stopped = false;
+  let workRequested = false;
 
   const arm = (delayMs: number): void => {
     if (stopped) return;
@@ -55,12 +56,15 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
     if (stopped) return;
     if (running !== null) { again = true; return; }
     let nextWakeMs: number | null = options.floorMs;
-    const ticking = Promise.resolve().then(tick);
+    const requested = workRequested;
+    workRequested = false;
+    const ticking = Promise.resolve().then(() => tick(requested));
     running = ticking;
     try {
       nextWakeMs = (await ticking).nextWakeMs;
       timing.succeeded();
     } catch (error) {
+      workRequested ||= requested;
       nextWakeMs = timing.failed(Date.now());
       emit({ kind: 'wake_failed', error_class: classify(error) });
       if (timer !== null) clearTimeout(timer);
@@ -77,7 +81,7 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
   else arm(options.floorMs);
 
   return {
-    ensure: async () => { arm(soonMs); },
+    ensure: async () => { workRequested = true; arm(soonMs); },
     stop: async () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);

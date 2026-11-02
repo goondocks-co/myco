@@ -19,6 +19,9 @@ async function ready(container) {
       const response = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(3_000) });
       if (response.status === 200) return;
     } catch { /* The listener may not have bound yet. */ }
+    if (docker('inspect', '--format', '{{.State.Running}}', container) === 'false') {
+      throw new Error(`${container} stopped before readiness:\n${docker('logs', container)}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, READY_INTERVAL_MS));
   }
   throw new Error(`${container} did not become ready:\n${docker('logs', container)}`);
@@ -84,6 +87,7 @@ async function main() {
   let failure;
   if (!dataDir) docker('volume', 'create', volume);
   try {
+    docker('run', '--rm', '-v', `${mount}:/data`, image, '--bootstrap-only');
     start(first, image);
     containers.add(first);
     await ready(first);

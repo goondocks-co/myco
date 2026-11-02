@@ -2,6 +2,15 @@ import { IN_FLIGHT_RUN_STATUSES } from './run-statuses.js';
 import type { RelationalStore } from '../core/adapters.js';
 
 export const BUDGET_ENABLED = 'budget_enabled_at';
+export const BUDGET_QUEUE_OPENED_AT = 'budget_queue_opened_at';
+export const BUDGET_QUEUE_OPENED_SQL = `COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_QUEUE_OPENED_AT}'),(SELECT value FROM schema_meta WHERE key='${BUDGET_ENABLED}'))`;
+
+/** The queue's activation instant, including the stamp of an already active governor. */
+export async function budgetQueueOpenedAt(db: RelationalStore): Promise<string | null> {
+  const row = await db.prepare(`SELECT ${BUDGET_QUEUE_OPENED_SQL} AS at`).first<{ at: string | null }>();
+  return row?.at ?? null;
+}
+
 export const BUDGET_REFUSAL = 'budget_activation_refusal';
 const BUDGET_STARTED = 'budget_activation_started_at';
 export const BUDGET_INDEX_ROW_LIMIT = 100_000;
@@ -41,7 +50,7 @@ export function* budgetMigration(now: number): Generator<BudgetMigrationStatemen
       const value=rows[0]?.n;
       const count=typeof value==='number'||(typeof value==='string'&&value.trim()!=='')?Number(value):NaN;
       if (rows.length!==1||!Number.isSafeInteger(count)||count<0) throw new Error(`${table}: budget preflight returned no valid count`);
-      if (count > BUDGET_INDEX_ROW_LIMIT) refusal = `${table}: ${count} rows exceeds index preflight threshold ${BUDGET_INDEX_ROW_LIMIT}`;
+      if (count > BUDGET_INDEX_ROW_LIMIT) refusal = `${table}: ${count} rows exceeds index preflight threshold ${BUDGET_INDEX_ROW_LIMIT}; review agent.run_retention_days, allow terminal-run retention to finish, then retry myco server update`;
     }
   }
   if (refusal !== null) {
@@ -54,6 +63,7 @@ export function* budgetMigration(now: number): Generator<BudgetMigrationStatemen
   const origins = yield { sql: `SELECT 1 AS missing FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${IN_FLIGHT_RUN_STATUSES} AND origin IS NULL LIMIT 1`, read: true };
   if (origins.length > 0) throw new Error('Budget activation requires classified live run origins');
   yield { sql: `DELETE FROM schema_meta WHERE key='${BUDGET_REFUSAL}'`, read: false };
+  yield { sql: `INSERT OR REPLACE INTO schema_meta(key,value) VALUES('${BUDGET_QUEUE_OPENED_AT}',${literal(String(now))})`, read: false };
   enabled=undefined;
   yield { sql: `INSERT OR IGNORE INTO schema_meta(key,value) SELECT '${BUDGET_ENABLED}',value FROM schema_meta WHERE key='${BUDGET_STARTED}'`, read: false };
   enabled=true;

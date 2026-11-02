@@ -12,6 +12,11 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from '../../support/fenced-fs.mjs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { sandboxChildEnv } from '../../../scripts/test-environment.mjs';
 
 const SERVER = fileURLToPath(new URL('../../../packages/myco-server/', import.meta.url));
 const dockerfile = (): string => readFileSync(`${SERVER}Dockerfile`, 'utf8');
@@ -46,6 +51,38 @@ describe('the image hands PID 1 to the entrypoint as root', () => {
 });
 
 describe('the entrypoint takes the secrets and then drops', () => {
+  it('creates storage only for explicit bootstrap and then migrates and serves that same volume', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(path.join(tmpdir(), 'container-bootstrap-'));
+    try {
+      const bin = path.join(root, 'bin');
+      mkdirSync(bin);
+      writeFileSync(path.join(bin, 'id'), '#!/bin/sh\nprintf 10001\n', { mode: 0o700 });
+      writeFileSync(path.join(bin, 'bun'), '#!/bin/sh\nshift 2\nexec "$TEST_BUN" --no-env-file run "$TEST_MAIN" "$@"\n', { mode: 0o700 });
+      const served = path.join(root, 'served');
+      const command = path.join(bin, 'serve');
+      writeFileSync(command, '#!/bin/sh\nprintf served > "$TEST_SERVED"\n', { mode: 0o700 });
+      const databasePath = path.join(root, 'myco.sqlite');
+      const env = sandboxChildEnv(root, {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        TEST_BUN: process.execPath,
+        TEST_MAIN: path.join(SERVER, 'src/platform/bun/server-main.ts'),
+        TEST_SERVED: served,
+        MYCO_DATABASE: databasePath,
+      });
+      const run = (...args: string[]) => spawnSync('/bin/sh', [path.join(SERVER, 'docker-entrypoint.sh'), ...args], { env, encoding: 'utf8' });
+      expect(run(command).status).toBe(1);
+      expect(existsSync(databasePath)).toBe(false);
+      expect(existsSync(served)).toBe(false);
+      const initialized = run('--bootstrap-only');
+      expect({ status: initialized.status, stderr: initialized.stderr }).toEqual({ status: 0, stderr: '' });
+      expect(existsSync(databasePath)).toBe(true);
+      expect(existsSync(served)).toBe(false);
+      expect(run(command).status).toBe(0);
+      expect(readFileSync(served, 'utf8')).toBe('served');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('copies every mounted secret to one the runtime user owns, read-only', () => {
     const script = entrypoint();
     expect(script).toContain('/run/secrets');
