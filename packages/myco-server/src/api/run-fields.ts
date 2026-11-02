@@ -40,7 +40,7 @@ const text = (value: unknown) => value === null ? null : typeof value === 'strin
 
 /** Each column a run's own update accepts, with its wire validator. */
 export const RUN_UPDATE_FIELDS = {
-  status: unchanged, completed_at: number, tokens_used: number, error: text, usage_data: record,
+  status: (value: unknown) => isTerminalRunStatus(value) ? value : undefined, completed_at: number, tokens_used: number, error: text, usage_data: record,
   cost_usd: number, actual_cost_usd: number, estimated_cost_usd: number, cost_source: nameOrNull, cost_data: record,
 } as const;
 

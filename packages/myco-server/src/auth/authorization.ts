@@ -1,3 +1,4 @@
+import { isSystemMember, personMemberSql } from './member-kind.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MEMBER_ROLES_SQL } from './roles.js';
 
@@ -166,7 +167,7 @@ export async function enrollmentResource(db: RelationalStore, memberId: string |
   const row = await db.prepare(`SELECT m.role, m.revoked_at, o.member_id AS owner FROM members m
     LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?`).bind(memberId)
     .first<{ role: string; revoked_at: number | null; owner: string | null }>();
-  resource.exists = row !== null && row.revoked_at === null && (row.role === 'admin' || row.role === 'member');
+  resource.exists = !isSystemMember(memberId) && row !== null && row.revoked_at === null && (row.role === 'admin' || row.role === 'member');
   resource.targetRevoked = row !== null && row.revoked_at !== null;
   resource.ownerMemberId = memberId;
   resource.grantedRole = row?.owner === memberId ? 'owner' : row?.role === 'admin' ? 'admin' : row?.role === 'member' ? 'member' : undefined;
@@ -175,7 +176,8 @@ export async function enrollmentResource(db: RelationalStore, memberId: string |
 
 /** Every enrollment write resolves issuer, recipient and ownership authority at SQL execution. Null issuer denotes operator issuance. */
 export function enrollmentAuthorityPredicate(alias: string): string {
-  return `${alias}.role IN (${MEMBER_ROLES_SQL})
+  return `(${alias}.member_id IS NULL OR ${personMemberSql(`${alias}.member_id`)})
+    AND ${alias}.role IN (${MEMBER_ROLES_SQL})
     AND (${alias}.member_id IS NULL OR EXISTS (SELECT 1 FROM members recipient
       WHERE recipient.id = ${alias}.member_id AND recipient.revoked_at IS NULL AND recipient.role IN (${MEMBER_ROLES_SQL})))
     AND (${alias}.created_by_member IS NULL OR EXISTS (SELECT 1 FROM members issuer

@@ -104,7 +104,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 178;
+const EMIT_CALLS = 177;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -742,7 +742,7 @@ describe('gates', () => {
       'POST /spores/save': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `sp_${runSeq++}`, agentId: 'agent_gate', observationType: 'gotcha', content: 'c' }) }),
+        wellFormed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `sp_${runSeq++}`, agentId: 'agent_gate', observationType: 'gotcha', content: 'c', agentLine: 'When using this fixture, retain its evidence.' }) }),
       },
       'POST /spores/list': {
         shape: 'persisted',
@@ -757,7 +757,7 @@ describe('gates', () => {
       'POST /spores/resolve': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', status: 'obsolete' }) }),
+        wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }) }),
       },
       'POST /context/prompt': {
         shape: 'persisted',

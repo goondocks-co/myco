@@ -4,6 +4,7 @@ export const SERVER_SCHEMA_VERSION = 534;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** State keys owned by the Deployment and read-only to run tools. */
 export const SERVER_STATE_PREFIX = 'server.';
+export const SPORE_READ_STATE_PREFIX = 'spore_reads:';
 
 /** Derived transcript output version; lower retained versions are read again. */
 export const PARSER_VERSION = 6;

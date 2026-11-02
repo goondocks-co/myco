@@ -248,6 +248,11 @@ async function recordRunRoute(
   await recordRunCall(env.db, { projectId: held.projectId }, { runId: held.id, toolName: path, op: null, durationMs: null, recordedAt: now });
 }
 
+/** Every worker route reports a subject that lost authority as an unheld lease. */
+function workerLivenessAnswer(path: string): Response {
+  return Response.json({ persisted: true, [path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
+}
+
 function refuse(auth: MemberAuth, shape: Shape, reason: string, classifier: Classifier, named: Record<string, string> = {}): Response {
   emit({ kind: shape === 'stored' ? 'blob_refused' : shape === 'answered' ? 'mcp_refused' : 'ingest_refused', memberId: auth.memberId, tokenId: auth.tokenId, reason: classifier, ...named });
   return refusalResponse(shape, classifier, reason, 'terminal');
@@ -628,12 +633,13 @@ export function createServer(deps: ServerDeps) {
      */
     const resolved = async (): Promise<Response | null> => {
       if ('createProject' in route && route.createProject === false) return null;
-      const resolution = await resolveProject(env.db, projectId, now);
+      const resolution = await resolveProject(env.db, projectId, now, { kind: 'member', memberId: auth.memberId });
       if (resolution.resolved) {
         if (captureRoute(route) && resolution.archived) return refuse(auth, shapeOf(route), PROJECT_ARCHIVED, 'project_archived');
         return null;
       }
-      emit({ kind: 'project_limit_reached', memberId: auth.memberId, tokenId: auth.tokenId });
+      const kind = resolution.reason === 'auto_create_off' ? 'project_creation_disabled' : 'project_limit_reached';
+      emit({ kind, memberId: auth.memberId, tokenId: auth.tokenId });
       // 503 with retry-after, NOT a terminal refusal. The ceiling is the Deployment's
       // and only an operator can clear it — nothing the member sends differs next time,
       // which is the definition of the retryable side of this route's contract. A
@@ -720,7 +726,7 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       const subject = await memberSubject(env.db, auth.memberId, 'http');
       if (!await authorizeHttp(env, route.authorization, subject, { machineId, tokenId: auth.tokenId, body: body.text })) {
-        if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
+        if (!subject.live && route.path.startsWith('/worker/')) return workerLivenessAnswer(route.path);
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
       const worker: WorkerPrincipal = { kind: 'member', tokenId: auth.tokenId, machineId };
@@ -789,7 +795,7 @@ export function createServer(deps: ServerDeps) {
     const expiry = route.auth === 'runner' && route.admitsLapsed === true ? 'lapsed' : 'live';
     const subject = await runnerSubject(env.db, auth, now, expiry);
     if (!await authorizeHttp(env, route.authorization, subject, { body: body.text, params })) {
-      if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
+      if (!subject.live && route.path.startsWith('/worker/')) return workerLivenessAnswer(route.path);
       return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
     }
     const guarded = { ...env, db: runnerWriteStore(env.db, auth.credentialId, expiry) };

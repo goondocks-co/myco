@@ -40,7 +40,7 @@ import { backupRetentionPolicy } from './backup-retention.js';
 import { cadenceOf, MAINTENANCE_CHECKS, MAINTENANCE_SETTINGS } from './store-maintenance.js';
 import { importPolicy } from './import-policy.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
-import { autoCreateProjects } from '../api/member-projects.js';
+import { autoCreateProjects } from './project-creation.js';
 import { keepsEmbeddingWhileIdle } from './embedding/jobs.js';
 import { embeddingResolution, type EmbeddingPlatform } from './embedding/configured-provider.js';
 import { SWITCH_REFUSAL, resolveEmbedding, selectionChangeRefusal, tooLargeRefusal, type HeldPartition } from './embedding/policy.js';

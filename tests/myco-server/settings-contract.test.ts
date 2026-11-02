@@ -40,7 +40,7 @@ import { backupRetentionPolicy, currentRetentionVictims } from '@myco-server-wor
 import { maintenanceDue } from '@myco-server-worker/core/store-maintenance.js';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { handleMemberStatus } from '@myco-server-worker/api/status.js';
-import { mayCreateProjects } from '@myco-server-worker/api/member-projects.js';
+import { mayCreateProjects } from '@myco-server-worker/core/project-creation.js';
 import { embeddingKeepsAwake } from '@myco-server-worker/core/embedding/jobs.js';
 import { configuredEmbeddingProvider } from '@myco-server-worker/core/embedding/configured-provider.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
@@ -367,7 +367,7 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     ];
   })),
   'capture.auto_create_projects': {
-    consumer: at('api/member-projects.ts', mayCreateProjects), value: () => false, invalid: () => 0, observe: (r) => mayCreateProjects(r.env.db, MEMBER_PRINCIPAL.id),
+    consumer: at('core/project-creation.ts', mayCreateProjects), value: () => false, invalid: () => 0, observe: (r) => mayCreateProjects(r.env.db, MEMBER_PRINCIPAL.id),
   },
   'import.enabled': { consumer: at('api/import.ts', handleImportPlan), value: () => false, invalid: () => 0, observe: importPlan },
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },

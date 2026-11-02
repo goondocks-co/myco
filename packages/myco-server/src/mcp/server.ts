@@ -1,3 +1,4 @@
+import { projectExternal, externalFilter } from './external-projection.js';
 import { SERVER_INSTRUCTIONS, FIRST_MODERN_REVISION, servedMcpVersions } from '@goondocks/myco-shared/mcp-protocol';
 /**
  * The MCP protocol server for one request.
@@ -313,7 +314,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   if (admits !== undefined && !admits(name, op)) throw unknownTool(name);
   if (!(await authorizeTool(scoped, entry.authorization, input))) throw unknownTool(name);
   admitted?.({ tool: name as AnyTool, op });
-  try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }
+  try { return { tool: name as AnyTool, op, result: externalFilter(scoped.principal.kind, input) ? { ok: false, error: 'identity filters are not available' } : projectExternal(scoped.principal.kind, await entry.handler(input, scoped)) }; }
   catch (error) {
     if (error instanceof RunWriteExpired) throw new ToolError('tool_call_failed', error.message);
     if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);

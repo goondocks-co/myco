@@ -1,3 +1,4 @@
+import { importEnabledChecks } from './import-policy.js';
 /**
  * Spores and their supersession lineage, server-side.
  *
@@ -55,6 +56,7 @@ export interface SporeProvenance {
 }
 
 export interface SporeInsert {
+  channel?: 'import';
   id: string;
   agentId: string;
   sessionId: string | null;
@@ -161,18 +163,30 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
   return sporeInsert(db, scope, row, true).first<SporeRow>();
 }
 
+export type SporeAuthority = { kind: 'grant'; grantId: string } | { kind: 'member' | 'run' };
+
+/** Grant lifecycle sources and replacements must all carry the authenticated grant as author. */
+function grantSources(scope: ReadScope, authority: SporeAuthority | undefined, ids: readonly string[]): { sql: string; params: unknown[] } {
+  return authority?.kind !== 'grant' ? { sql: '1', params: [] } : {
+    sql: `NOT EXISTS (SELECT 1 FROM json_each(?) requested LEFT JOIN spores owned
+      ON owned.project_id = ? AND owned.id = requested.value AND owned.author = ? WHERE owned.id IS NULL)`,
+    params: [JSON.stringify(ids), scope.projectId, authority.grantId],
+  };
+}
+
 /** Every new spore stores only its session citation. */
-function sporeInsert(db: RelationalStore, scope: ReadScope, row: SporeInsert, ignoreConflict = false): PreparedStatement {
+function sporeInsert(db: RelationalStore, scope: ReadScope, row: SporeInsert, ignoreConflict = false, guard = { sql: '1', params: [] as unknown[] }): PreparedStatement {
+  const imported = row.channel === 'import' ? importEnabledChecks().admission : { sql: '1', params: [] };
   return db.prepare(`INSERT INTO spores
       (project_id, id, agent_id, session_id, observation_type, status, content, context,
        importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 WHERE ${guard.sql} AND ${imported.sql}
       ${ignoreConflict ? 'ON CONFLICT (project_id, id) DO NOTHING' : ''}
       RETURNING ${COLUMNS}`)
     .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
       row.tags, row.contentHash, row.properties, row.author,
-      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt);
+      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt, ...guard.params, ...imported.params);
 }
 
 /** Fill absent import provenance only when the original spore and its stored source agree. */
@@ -383,14 +397,16 @@ function expectedResolutionStatus(status: SporeStatus, event: ResolutionEventIns
 /** The status move and its event are adjacent; changes() counts only that move, excluding trigger writes. */
 function resolutionStatements(
   db: RelationalStore, scope: ReadScope, status: SporeStatus, event: ResolutionEventInsert,
-  now: number, expect: SporeExpectation,
+  now: number, expect: SporeExpectation, authority?: SporeAuthority,
 ): PreparedStatement[] {
+  const owned = grantSources(scope, authority, [event.sporeId, ...(event.newSporeId === null ? [] : [event.newSporeId])]);
+  const imported = event.channel === 'import' ? importEnabledChecks().admission : { sql: '1', params: [] };
   return [
     db.prepare(`UPDATE spores SET status = ?, revision = revision + 1, updated_at = ?
       WHERE project_id = ? AND id = ? AND (status = ?${event.channel === 'import' ? " OR status = 'active'" : ''})${expect.revision === undefined ? '' : ' AND revision = ?'}
-        AND NOT EXISTS (SELECT 1 FROM resolution_events WHERE project_id = ? AND id = ?) RETURNING id`)
+        AND NOT EXISTS (SELECT 1 FROM resolution_events WHERE project_id = ? AND id = ?) AND ${owned.sql} AND ${imported.sql} RETURNING id`)
       .bind(status, now, scope.projectId, event.sporeId, expectedResolutionStatus(status, event, expect),
-        ...(expect.revision === undefined ? [] : [expect.revision]), scope.projectId, event.id),
+        ...(expect.revision === undefined ? [] : [expect.revision]), scope.projectId, event.id, ...owned.params, ...imported.params),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
@@ -403,12 +419,13 @@ function resolutionStatements(
 /** Move a spore and record its event atomically; replayed event ids change nothing. */
 export async function resolveSpore(
   db: RelationalStore, scope: ReadScope, status: SporeStatus, event: ResolutionEventInsert,
-  now: number, expect: SporeExpectation = {},
+  now: number, expect: SporeExpectation = {}, authority?: SporeAuthority,
 ): Promise<boolean | 'duplicate' | StaleSpore> {
+  const owned = grantSources(scope, authority, [event.sporeId, ...(event.newSporeId === null ? [] : [event.newSporeId])]);
   const [held, moved, , current] = await db.batch([
-    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.id),
-    ...resolutionStatements(db, scope, status, event, now, expect),
-    db.prepare(`SELECT status, revision FROM spores WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.sporeId),
+    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ? AND ${owned.sql}`).bind(scope.projectId, event.id, ...owned.params),
+    ...resolutionStatements(db, scope, status, event, now, expect, authority),
+    db.prepare(`SELECT status, revision FROM spores WHERE project_id = ? AND id = ? AND ${owned.sql}`).bind(scope.projectId, event.sporeId, ...owned.params),
   ]);
   if (held!.results.length === 1) return 'duplicate';
   if (moved!.results.length === 1) return true;
@@ -481,14 +498,15 @@ export async function consolidateSpores(
   wisdom: SporeInsert,
   sources: readonly (string | SporeSource)[],
   event: Omit<ResolutionEventInsert, 'id' | 'sporeId' | 'action' | 'newSporeId'>,
-  now: number,
+  now: number, authority?: SporeAuthority,
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
-  const insert = sporeInsert(db, scope, wisdom);
+  const owned = grantSources(scope, authority, sources.map(source => typeof source === 'string' ? source : source.id));
+  const insert = sporeInsert(db, scope, wisdom, false, owned);
   const moves = sources.flatMap(source => {
     const { id, revision } = typeof source === 'string' ? { id: source, revision: undefined } : source;
     return resolutionStatements(db, scope, 'consolidated', {
       ...event, id: crypto.randomUUID(), sporeId: id, action: 'consolidate', newSporeId: wisdom.id,
-    }, now, { revision });
+    }, now, { revision }, authority);
   });
   const results = await db.batch([insert, ...moves]);
   const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].results.length === 1).length;

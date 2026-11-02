@@ -15,17 +15,15 @@ import type { CredentialContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { MAX_PROJECTS } from '../constants.js';
 import { HELD_STATES, type HeldState } from '@goondocks/myco-shared/member-protocol';
-import { createNamedProject } from '../ingest/projects.js';
+import { admitProject, PROJECT_NAME_MAX } from '../core/project-creation.js';
+export { PROJECT_NAME_MAX, AUTO_CREATE_LEAF, autoCreateProjects, mayCreateProjects } from '../core/project-creation.js';
 import { MAX_REMOTE_CHARS, normalizeRemote, resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
 import { settingTexts, ROOT_KEY } from '../core/settings.js';
 import { clearUncapturedStatement, heldUncapturedStatement, isUncapturedReason, recordUncapturedStatement, type UncapturedReason } from '../ingest/uncaptured.js';
-import { isLiveAdmin } from '../auth/members-admin.js';
 import { listVisibleProjects, ok, parseJsonObject } from './scope.js';
 import { emit } from '../telemetry.js';
 
-/** The longest name a project carries, as the dashboard's own rename admits. */
-export const PROJECT_NAME_MAX = 200;
 
 /** A fresh project id in the `proj_<32 hex>` form every project a machine has named uses. */
 const freshProjectId = (): string => `proj_${[...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
@@ -43,31 +41,19 @@ export const handleMemberProjectList = emptyBodyRoute(async (env: ServerEnv, ctx
  */
 export async function handleCreateMemberProject(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
-  const name = typeof body?.name === 'string' ? body.name.trim() : '';
-  if (name.length === 0 || name.length > PROJECT_NAME_MAX) return ok({ persisted: false, code: 'invalid_field', reason: `name is required, at most ${PROJECT_NAME_MAX} characters` });
-  if (!(await mayCreateProjects(env.db, ctx.memberId))) return ok({ persisted: false, code: 'auto_create_off', reason: 'this server creates projects only on the dashboard; an admin connects this repository' });
+  const name = typeof body?.name === 'string' ? body.name : '';
   const projectId = freshProjectId();
-  if (!(await createNamedProject(env.db, projectId, name, ctx.now))) return ok({ persisted: false, code: 'refused', reason: `this server already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard` });
-  emit({ kind: 'project_created', projectId, actor: ctx.memberId });
-  return ok({ persisted: true, projectId, name });
+  const result = await admitProject(env.db, { projectId, name, now: ctx.now }, { kind: 'member', memberId: ctx.memberId });
+  if (!result.resolved && result.reason === 'invalid_field') return ok({ persisted: false, code: result.reason, reason: `name is required, at most ${PROJECT_NAME_MAX} characters` });
+  if (!result.resolved && result.reason === 'auto_create_off') return ok({ persisted: false, code: result.reason, reason: 'this server creates projects only on the dashboard; an admin connects this repository' });
+  if (!result.resolved) return ok({ persisted: false, code: 'refused', reason: `this server already holds ${MAX_PROJECTS} projects; an admin can archive one from the dashboard` });
+  return ok({ persisted: true, projectId, name: result.name });
 }
 
-/** The Deployment leaf that lets a member's machine create a project for a repository no project holds. */
-export const AUTO_CREATE_LEAF = 'capture.auto_create_projects';
 /** The longest folder name a repository is reported under. */
 const LABEL_MAX = 128;
 /** A folder name: no path separator and no control character. */
 const LABEL = /^[^/\\\p{Cc}]{1,128}$/u;
-
-/** Whether this Deployment lets a member's machine create projects; on unless an admin turned it off. */
-export async function autoCreateProjects(db: RelationalStore): Promise<boolean> {
-  return (await settingTexts(db, [AUTO_CREATE_LEAF])).get(AUTO_CREATE_LEAF) !== JSON.stringify(false);
-}
-
-/** Whether `memberId` may create a project from a machine: an admin always, any other member while the switch is on. */
-export async function mayCreateProjects(db: RelationalStore, memberId: string): Promise<boolean> {
-  return await autoCreateProjects(db) || await isLiveAdmin(db, memberId);
-}
 
 /** A repository as a member's machine names it: its key, its folder name, and its remote where it has one. */
 /** The most sessions one report counts. */
@@ -121,8 +107,8 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
   }
   if (remote === null && told === null) return miss('no_remote', 'a repository with no remote joins only when it is connected from "Needs you"');
   const resolved = await resolveRepository(env.db, {
-    remote, name: label, allowCreate: await mayCreateProjects(env.db, ctx.memberId), projectId: freshProjectId(), now: ctx.now, maxProjects: MAX_PROJECTS,
-  });
+    remote, name: label, allowCreate: true, projectId: freshProjectId(), now: ctx.now, maxProjects: MAX_PROJECTS,
+  }, { kind: 'member', memberId: ctx.memberId });
   if (!resolved.resolved) {
     const detail = resolved.reason === 'auto_create_off' ? 'this server creates projects only on the dashboard; an admin connects this repository'
       : resolved.reason === 'archived' ? 'the project this repository belongs to is archived'
@@ -135,7 +121,6 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
     if (!written.applied) return Response.json({ persisted: false, code: written.reason, reason: written.detail ?? 'the connections changed; retry the edit' }, { status: written.reason === 'conflict' ? 409 : 400 });
   }
   await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
-  if (resolved.created) emit({ kind: 'project_created', projectId: resolved.projectId, actor: ctx.memberId });
   return ok({ persisted: true, projectId: resolved.projectId, name: resolved.name, created: resolved.created } satisfies RepositoryAnswer);
 }
 

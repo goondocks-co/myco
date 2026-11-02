@@ -247,13 +247,14 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (foreign !== null) return foreign;
   const settled = guarded ? endedAnswer(before?.status, runUpdate.status) : null;
   if (settled !== null) return settled;
+  const replaced = asksReplaced(body, runUpdate.status);
   let context: Record<string, string> | undefined;
   if (before !== null && (runUpdate.status === 'completed' || runUpdate.status === 'failed')) {
     const reportedError = typeof runUpdate.error === 'string' ? runUpdate.error : null;
     const ending = await decideRunEnd(env.db, scope, before, runUpdate.status, reportedError);
     context = runEndingContext(ending.endedNote, reportedError);
     if (ending.unmet !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { replaced: asksReplaced(body, 'failed'), errorCode: closeErrorCode(ending.unmet), context });
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { errorCode: closeErrorCode(ending.unmet), context });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;
@@ -261,7 +262,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     }
     runUpdate = { ...runUpdate, status: ending.status, ...(ending.endedNote === null ? {} : { error: null }) };
   }
-  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: asksReplaced(body, runUpdate.status), refusalId: body.refusalId, context });
+  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: replaced && runUpdate.status === 'failed', refusalId: body.refusalId, context });
   if ('refused' in written) return written.refused;
   const changed = written.changed;
   if (changed === 1) return Response.json({ persisted: true, changed, applied: true });

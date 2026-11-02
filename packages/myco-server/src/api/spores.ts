@@ -1,91 +1,48 @@
-/**
- * The spore surface.
- *
- * Reads and writes only; the meaning of a spore lives in `core/spores.ts`. A
- * resolution is one call rather than a status write followed by an event write,
- * so a caller cannot leave a spore superseded by nothing.
- */
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import {
-  countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersedingSporeIds, resolveSpore,
-  MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT, RESOLUTION_ACTIONS, SPORE_STATUSES,
-  type ResolutionAction, type SporeStatus,
-} from '../core/spores.js';
-import { refusal } from '../telemetry.js';
+import { countSpores, getSpore, listSpores, listSupersedingSporeIds, MAX_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS } from '../core/spores.js';
+import { writeSpore } from '../core/spore-admission.js';
 import { refused } from '../ingest/events.js';
-import { ensureAgent } from '../core/runs.js';
-import { HARNESS_AGENT_ID } from '../core/harness.js';
-
-import { sporeExpectations } from '../core/spore-writes.js';
-
+import { refusal } from '../telemetry.js';
+import { parseJsonObject } from './scope.js';
 export { MAX_SPORE_CONTENT_BYTES };
-const MAX_ID_CHARS = 192;
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const str = (v: unknown, max = MAX_ID_CHARS): string | null => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
-const orNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined => (v === undefined || v === null ? null : str(v, max) ?? undefined);
-const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
-
-function parseBody(body: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
+const parseBody = parseJsonObject;
+const str = (v: unknown, max = 192): string | null => typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
+const int = (v: unknown): number | undefined => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
 const BAD_BODY = refusal('body is not an object', 'parse');
-/** The channel an import names on a write that carries the time it happened. */
-const IMPORT_CHANNEL = 'import';
 
-/** The agent row a write attributed to Myco's own agent names, made present before the write, which can precede the Deployment's first dispatch. */
-async function ensureNamedAgent(env: ServerEnv, agentId: string, now: number): Promise<void> {
-  if (agentId !== HARNESS_AGENT_ID) return;
-  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: null, model: null, enabled: true }, now);
+async function write(env: ServerEnv, ctx: RouteContext, body: Record<string, unknown>, op: unknown): Promise<Response> {
+  const input = { op, id: body.id ?? body.sporeId, old_spore_id: body.sporeId, new_spore_id: body.newSporeId,
+    type: body.observationType, content: body.content, agent_line: body.agentLine, session_id: body.sessionId, prompt_id: body.promptId,
+    tags: typeof body.tags === 'string' ? body.tags.split(',').map(tag => tag.trim()) : body.tags,
+    provenance_kind: body.provenanceKind, provenance_ref: body.provenanceRef, reason: body.reason,
+    expect_status: body.expectStatus, expect_revision: body.expectRevision,
+    channel: body.channel, agent_id: body.agentId, created_at: body.createdAt, status: body.status,
+    event_id: body.eventId, context: body.context, file_path: body.filePath, content_hash: body.contentHash, properties: body.properties, importance: body.importance };
+  const outcome = await writeSpore(input, { env, projectId: ctx.projectId, now: ctx.now, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId } }) as Record<string, unknown>;
+  if (outcome.ok === false) {
+    if (op !== 'save' && outcome.error === 'spore_id not found') return Response.json({ persisted: true, resolved: false });
+    return Response.json({ ...refused(ctx, refusal(String(outcome.reason ?? outcome.error), outcome.error === 'stale' ? 'stale' : 'invalid_field')),
+      ...(outcome.status === undefined ? {} : { status: outcome.status, revision: outcome.revision }) });
+  }
+  if (op !== 'save') return Response.json({ persisted: true, resolved: outcome.resolved !== false, ...(outcome.duplicate ? { duplicate: true } : {}) });
+  const held = await getSpore(env.db, { projectId: ctx.projectId }, String(outcome.id));
+  const { authorKind: _kind, ...spore } = held ?? {};
+  return Response.json({ persisted: true, spore: held === null ? null : spore, ...(outcome.duplicate ? { duplicate: true } : {}), ...(outcome.sourceKept ? { sourceKept: true } : {}) });
 }
 
 export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
+  if (body === null) return Response.json(refused(ctx, BAD_BODY));
+  if (str(body.id) === null) return Response.json(refused(ctx, refusal('id is required', 'parse')));
+  return write(env, ctx, body, 'save');
+}
 
-  const id = str(body.id);
-  const agentId = str(body.agentId);
-  const observationType = str(body.observationType);
-  const content = str(body.content, MAX_SPORE_CONTENT_BYTES);
-  const context = orNull(body.context, MAX_SPORE_CONTENT_BYTES);
-  const sessionId = orNull(body.sessionId, 384);
-  const promptId = orNull(body.promptId);
-  const filePath = orNull(body.filePath, 4096);
-  const tags = orNull(body.tags, 4096);
-  const contentHash = orNull(body.contentHash);
-  const properties = orNull(body.properties, MAX_SPORE_CONTENT_BYTES);
-  const status = body.status === undefined ? 'active' : (SPORE_STATUSES as readonly string[]).includes(body.status as string) ? body.status as SporeStatus : null;
-
-  if (id === null || agentId === null || observationType === null || content === null || status === null
-    || context === undefined || sessionId === undefined || promptId === undefined
-    || filePath === undefined || tags === undefined || contentHash === undefined || properties === undefined) {
-    return Response.json(refused(ctx, refusal('a spore requires id, agentId, observationType and content, and a known status when given', 'parse')));
-  }
-
-  await ensureNamedAgent(env, agentId, ctx.now);
-  const scope = { projectId: ctx.projectId };
-  const spore = await insertSpore(env.db, scope, {
-    id, agentId, sessionId, observationType, status, content, context,
-    importance: int(body.importance) ?? 5, filePath, tags, contentHash, properties, author: ctx.memberId,
-    createdAt: int(body.createdAt) ?? ctx.now,
-  });
-  if (spore !== null) return Response.json({ persisted: true, spore });
-  // Duplicate saves return the held row without its author kind.
-  const source = body.channel === IMPORT_CHANNEL ? await repairImportedSporeSource(env.db, scope, { id, agentId, content, sessionId, author: ctx.memberId, createdAt: int(body.createdAt) }) : undefined;
-  if (source === 'pending') {
-    return Response.json(refused(ctx, refusal('the existing spore source could not be restored; keep the original vault and ask its operator to review the source links', 'invalid_field')));
-  }
-  const held = await getSpore(env.db, scope, id);
-  if (held === null) return Response.json({ persisted: true, duplicate: true, spore: null });
-  const { authorKind: _authorKind, ...row } = held;
-  return Response.json({ persisted: true, duplicate: true, spore: row, ...(source === 'kept' ? { sourceKept: true } : {}) });
+export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  if (body === null) return Response.json(refused(ctx, BAD_BODY));
+  if (str(body.eventId) === null || str(body.sporeId) === null || !(RESOLUTION_ACTIONS as readonly unknown[]).includes(body.action)) return Response.json(refused(ctx, refusal('resolution requires eventId, sporeId and a known action', 'parse')));
+  return write(env, ctx, body, body.action);
 }
 
 export async function handleListSpores(env: ServerEnv, ctx: RouteContext): Promise<Response> {
@@ -121,47 +78,4 @@ export async function handleGetSpore(env: ServerEnv, ctx: RouteContext): Promise
     spore,
     supersededBy: spore === null ? [] : await listSupersedingSporeIds(env.db, scope, id),
   });
-}
-
-/**
- * Move a spore and record its event atomically. An absent source answers
- * `resolved: false`; an existing event id answers `duplicate` without a move.
- * Ordinary writes default `expectStatus` to active; `expectRevision` is checked
- * when given. Import history admits `expectStatus` (the final status when
- * omitted) or active and keeps `createdAt`. A guard mismatch answers `stale` with the current status,
- * revision and the comparison that refused it.
- */
-export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-
-  const eventId = str(body.eventId);
-  const agentId = str(body.agentId);
-  const sporeId = str(body.sporeId);
-  const action = (RESOLUTION_ACTIONS as readonly string[]).includes(body.action as string) ? body.action as ResolutionAction : null;
-  const status = (SPORE_STATUSES as readonly string[]).includes(body.status as string) ? body.status as SporeStatus : null;
-  const newSporeId = orNull(body.newSporeId);
-  const reason = orNull(body.reason, MAX_SPORE_CONTENT_BYTES);
-  const sessionId = orNull(body.sessionId, 384);
-
-  if (eventId === null || agentId === null || sporeId === null || action === null || status === null
-    || newSporeId === undefined || reason === undefined || sessionId === undefined) {
-    return Response.json(refused(ctx, refusal('a resolution requires eventId, agentId, sporeId, a known action and a known status', 'parse')));
-  }
-  // A supersession that names no successor is a status change wearing the wrong
-  // name: the lineage it claims to record would be unreadable.
-  if (action === 'supersede' && newSporeId === null) {
-    return Response.json(refused(ctx, refusal('a supersede resolution requires newSporeId', 'refused')));
-  }
-
-  const expectations = await sporeExpectations(env.db, { projectId: ctx.projectId }, { expect_status: body.expectStatus, expect_revision: body.expectRevision });
-  if (!expectations.ok) return Response.json(refused(ctx, refusal(expectations.reason, 'invalid_field')));
-  const at = body.channel === IMPORT_CHANNEL ? int(body.createdAt) ?? ctx.now : ctx.now;
-  await ensureNamedAgent(env, agentId, ctx.now);
-  const outcome = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
-    id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: at,
-    ...(body.channel === IMPORT_CHANNEL ? { channel: IMPORT_CHANNEL } : {}),
-  }, at, expectations.expect);
-  if (typeof outcome === 'object') return Response.json({ ...refused(ctx, refusal(outcome.reason, 'stale')), status: outcome.status, revision: outcome.revision });
-  return Response.json({ persisted: true, resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) });
 }

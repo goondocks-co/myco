@@ -1,6 +1,7 @@
+import { isSystemMember, personMemberSql } from '../auth/member-kind.js';
 import type { DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
 import type { RelationalStore, PreparedStatement } from './adapters.js';
-import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
+import { FOREIGN_LINEAGE_REVOKER } from '../constants.js';
 import type { MemberRole } from '../auth/roles.js';
 import { memberWriteOutcome } from '../auth/member-write-refusal.js';
 
@@ -17,7 +18,7 @@ export const deploymentOwnerSql = (member: string): string => `EXISTS (SELECT 1 
   WHERE owner_record.id = 1 AND owner_record.member_id = ${member} AND owner_member.revoked_at IS NULL AND owner_member.role = 'admin')`;
 
 export const linkedHumanAdminSql = (alias: string): string => `${alias}.revoked_at IS NULL AND ${alias}.role = 'admin'
-  AND ${alias}.github_id IS NOT NULL AND ${alias}.id <> '${HARNESS_MEMBER_ID}'`;
+  AND ${alias}.github_id IS NOT NULL AND ${personMemberSql(`${alias}.id`)}`;
 
 /** Protected membership mutations retain the active owner and another recoverable administrator. */
 export const removableAdministratorSql = (alias: string): string => `NOT EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = ${alias}.id)
@@ -77,13 +78,13 @@ export async function changeMemberRole(db: RelationalStore, actor: string, membe
   const before = await db.prepare('SELECT role,role_revision,revoked_at,revoked_by FROM members WHERE id = ?').bind(memberId)
     .first<{ role: MemberRole; role_revision: number; revoked_at: number | null; revoked_by: string | null }>();
   const held = before !== null && before.revoked_at !== null && before.revoked_by === FOREIGN_LINEAGE_REVOKER;
-  if (before === null || (before.revoked_at !== null && !held) || memberId === HARNESS_MEMBER_ID) throw new OwnershipRefusal('invalid_member');
+  if (before === null || (before.revoked_at !== null && !held) || isSystemMember(memberId)) throw new OwnershipRefusal('invalid_member');
   if (String(before.role_revision) !== revision) throw new OwnershipRefusal('revision_conflict');
   if (before.role === role && !held) return { memberId, role, roleRevision: revision };
   if (memberId === actor && role === 'member') throw new OwnershipRefusal('active_owner');
   const results = await db.batch([
     db.prepare(`UPDATE members SET role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL
-      WHERE id = ? AND (revoked_at IS NULL OR (? = 1 AND revoked_by = ?)) AND role_revision = ? AND role = ?
+      WHERE id = ? AND ${personMemberSql('id')} AND (revoked_at IS NULL OR (? = 1 AND revoked_by = ?)) AND role_revision = ? AND role = ?
         AND ${deploymentOwnerSql('?')} AND (? = 'admin' OR (${removableAdministratorSql('members')}))`)
       .bind(role, memberId, held ? 1 : 0, FOREIGN_LINEAGE_REVOKER, revision, before.role, actor, role),
     db.prepare(`INSERT INTO member_role_audit (member_id,revision,previous_role,role,actor_id,created_at)

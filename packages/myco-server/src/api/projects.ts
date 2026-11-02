@@ -1,12 +1,9 @@
+import { admitProject, PROJECT_NAME_MAX } from '../core/project-creation.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { archiveProject, createProject, renameProject, unarchiveProject } from '../read/sessions.js';
+import { archiveProject, renameProject, unarchiveProject } from '../read/sessions.js';
 import { emit } from '../telemetry.js';
 import { readJsonObject, badRequest, listVisibleProjects, notFound, ok } from './scope.js';
-
-/** The project-id grammar the schema enforces (`db/schema.ts:5`), applied before a write reaches a CHECK constraint. */
-const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
-const RESERVED = new Set(['.', '..']);
 
 /** `GET /api/projects`: the projects that accept capture; `?include=archived` lists the archived ones too. */
 export async function handleProjects(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -36,7 +33,7 @@ export async function handleRenameProject(env: ServerEnv, ctx: OwnerContext): Pr
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   const name = typeof body.name === 'string' ? body.name.trim() : null;
-  if (name === null || name.length === 0 || name.length > 200) return badRequest('name is required');
+  if (name === null || name.length === 0 || name.length > PROJECT_NAME_MAX) return badRequest('name is required');
   if ((await renameProject(env.db, ctx.params.projectId, name)) === 'absent') return notFound();
   emit({ kind: 'project_renamed', projectId: ctx.params.projectId, actor: ctx.member.id });
   return ok({ projectId: ctx.params.projectId, name });
@@ -48,10 +45,11 @@ export async function handleCreateProject(env: ServerEnv, ctx: OwnerContext): Pr
   if (body === null) return badRequest('body must be a JSON object');
   const projectId = body.projectId;
   const name = body.name;
-  if (typeof projectId !== 'string' || !PROJECT_ID.test(projectId) || RESERVED.has(projectId)) {
+  if (typeof projectId !== 'string') {
     return badRequest('projectId must match the project-id grammar');
   }
-  if (typeof name !== 'string' || name.length === 0 || name.length > 200) return badRequest('name is required');
-  if (!(await createProject(env.db, projectId, name, ctx.now))) return badRequest('project already exists');
-  return Response.json({ projectId, name, createdAt: ctx.now }, { status: 201 });
+  if (typeof name !== 'string') return badRequest('name is required');
+  const result = await admitProject(env.db, { projectId, name, now: ctx.now }, { kind: 'member', memberId: ctx.member.id });
+  if (!result.resolved || !result.created) return badRequest(result.resolved ? 'project already exists' : result.reason);
+  return Response.json({ projectId, name: result.name, createdAt: ctx.now }, { status: 201 });
 }

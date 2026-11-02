@@ -1,3 +1,4 @@
+import { personMemberSql } from './member-kind.js';
 import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /**
  * Identity link authorities — the proof that binds a GitHub account to a member.
@@ -79,7 +80,7 @@ export const linkedAdmin = (alias: string): string =>
  * write, so no read decides it ahead of the write it guards.
  */
 const linkAdmitted = (issuer: string, member: string): string =>
-  `(((${issuer}) IS NULL
+  `(${personMemberSql(`(${member})`)}) AND (((${issuer}) IS NULL
       AND EXISTS (SELECT 1 FROM members lt WHERE lt.id = (${member}) AND lt.role = '${ADMIN}')
       AND NOT EXISTS (SELECT 1 FROM members la WHERE ${linkedAdmin('la')}))
     OR EXISTS (SELECT 1 FROM members la WHERE la.id = (${issuer}) AND ${linkedAdmin('la')}))`;
@@ -115,7 +116,7 @@ export async function identityLinkStatements(
   const insert = db
     .prepare(`INSERT INTO identity_link_authorities (id, key_hash, member_id, created_at, expires_at, used_at, used_by, revoked_at, issued_by)
               SELECT ?, ?, ?, ?, ?, NULL, NULL, NULL, ? WHERE ${linkAdmitted('?', '?')}`)
-    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt, issuedBy, issuedBy, memberId, issuedBy);
+    .bind(id, await sha256Hex(key), memberId, nowMs, expiresAt, issuedBy, memberId, issuedBy, memberId, issuedBy);
   const replace = options.replaceUnspent
     ? [db.prepare(`UPDATE identity_link_authorities SET revoked_at = ?
                     WHERE member_id = ? AND id <> ? AND used_at IS NULL AND revoked_at IS NULL

@@ -529,7 +529,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         },
         "agent_line": {
           "type": "string",
-          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters.`
+          "description": `Required for op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters.`
         },
         "provenance_kind": {
           "type": "string",
