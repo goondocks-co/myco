@@ -321,11 +321,11 @@ export const blobUrl = (projectId: string, key: string) => `${project(projectId)
 
 export type ProcessedBodyKind = 'prompt' | 'response' | 'plan' | 'tool-input' | 'tool-output' | 'attachment';
 /** Where a session document holds a record: its generation and its owner's page. */
-export interface RecordLocator { generation: number; owner: string; page: number }
+export interface RecordLocator { generation: number; owner: string; page: number; revision?: string }
 /** A body to read: its kind and id, and for a prompt, reply or tool record the session and page that hold it. */
 export interface ProcessedBodyRef { kind: ProcessedBodyKind; id: string; at?: RecordLocator & { sessionId: string } }
 export const processedBodyUrl = (projectId: string, ref: ProcessedBodyRef) => `${project(projectId)}/processed/${ref.kind}/${seg(ref.id)}${ref.at === undefined ? ''
-  : `?${new URLSearchParams({ session: ref.at.sessionId, generation: String(ref.at.generation), owner: ref.at.owner, page: String(ref.at.page) })}`}`;
+  : `?${new URLSearchParams({ session: ref.at.sessionId, generation: String(ref.at.generation), owner: ref.at.owner, page: String(ref.at.page), ...(ref.at.revision === undefined ? {} : { revision: ref.at.revision }) })}`}`;
 
 /** What the table asks the list for; each narrows the list on the server. */
 export interface SessionListFilters {

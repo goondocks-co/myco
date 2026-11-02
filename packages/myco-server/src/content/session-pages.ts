@@ -19,12 +19,15 @@ const CHUNK_COLUMNS = `c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,${regist
 const LIVE = `FROM session_documents d JOIN session_chunks c ON c.project_id=d.project_id AND c.session_id=d.session_id AND c.generation=d.generation`;
 
 /** Where a record sits: its owner's page, in the live generation. */
-export interface PageLocator { generation: number; owner: string; page: number }
+export interface PageLocator { generation: number; owner: string; page: number; revision?: string }
+
+/** A page and the immutable chunk version that published its location. */
+export interface LocatedPage extends Page { revision: string }
 
 export class SessionDocument {
   /** Blob GETs this request made. */
   gets = 0;
-  private readonly chunks = new Map<number, Promise<Page[]>>();
+  private readonly chunks = new Map<number, Promise<LocatedPage[]>>();
 
   private constructor(private readonly env: ContentStore, readonly projectId: string, readonly sessionId: string, readonly generation: number) {}
 
@@ -35,11 +38,11 @@ export class SessionDocument {
     return row?.generation == null ? null : new SessionDocument(env, projectId, sessionId, row.generation);
   }
 
-  private pagesIn(row: ChunkRow): Promise<Page[]> {
+  private pagesIn(row: ChunkRow): Promise<LocatedPage[]> {
     let held = this.chunks.get(row.chunk_no);
     if (held === undefined) {
       this.gets += 1;
-      held = readPageChunk(this.env, row).then((chunk) => chunk.pages);
+      held = readPageChunk(this.env, row).then((chunk) => chunk.pages.map(page => ({ ...page, revision: row.source_id })));
       this.chunks.set(row.chunk_no, held);
     }
     return held;
@@ -53,12 +56,12 @@ export class SessionDocument {
   }
 
   /** An owner's pages from `from` on, at most `limit`, each with its records; `more` says whether pages remain. */
-  async ownerPages(owner: string, from: number, limit: number): Promise<{ pages: Page[]; more: boolean }> {
+  async ownerPages(owner: string, from: number, limit: number): Promise<{ pages: LocatedPage[]; more: boolean }> {
     const rows = (await this.env.db.prepare(`SELECT p.page,${CHUNK_COLUMNS} ${LIVE}
         JOIN session_pages p ON p.project_id=c.project_id AND p.session_id=c.session_id AND p.generation=c.generation AND p.chunk_no=c.chunk_no
       WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND p.owner=? AND p.page>=? ORDER BY p.page LIMIT ?`)
       .bind(this.projectId, this.sessionId, this.generation, owner, from, limit + 1).all<ChunkRow & { page: number }>()).results;
-    const pages: Page[] = [];
+    const pages: LocatedPage[] = [];
     for (const row of rows.slice(0, limit)) {
       const page = (await this.pagesIn(row)).find((held) => held.owner === owner && held.page === row.page);
       if (page === undefined) throw new Error('document_page_missing');
@@ -68,7 +71,7 @@ export class SessionDocument {
   }
 
   /** The page chunks after `after`, in chunk order, at most `limit`, each with its pages. */
-  async chunksAfter(after: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: Page[] }[]; more: boolean }> {
+  async chunksAfter(after: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: LocatedPage[] }[]; more: boolean }> {
     const rows = (await this.env.db.prepare(`SELECT ${CHUNK_COLUMNS} ${LIVE}
       WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND c.kind='page' AND c.chunk_no>? ORDER BY c.chunk_no LIMIT ?`)
       .bind(this.projectId, this.sessionId, this.generation, after, limit + 1).all<ChunkRow>()).results;
@@ -78,7 +81,7 @@ export class SessionDocument {
   }
 
   /** The page chunks before `before`, newest first, at most `limit`, each with its pages. */
-  async chunksBefore(before: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: Page[] }[]; more: boolean }> {
+  async chunksBefore(before: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: LocatedPage[] }[]; more: boolean }> {
     const rows = (await this.env.db.prepare(`SELECT ${CHUNK_COLUMNS} ${LIVE}
       WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND c.kind='page' AND c.chunk_no<? ORDER BY c.chunk_no DESC LIMIT ?`)
       .bind(this.projectId, this.sessionId, this.generation, before, limit + 1).all<ChunkRow>()).results;
@@ -114,7 +117,7 @@ export function readPageCursor(cursor: string | undefined, generation: number): 
 }
 
 const str = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-const locatorOf = (at: PageLocator) => ({ generation: at.generation, owner: at.owner, page: at.page });
+const locatorOf = (at: PageLocator) => ({ generation: at.generation, owner: at.owner, page: at.page, revision: at.revision });
 
 /** A prompt record as the wire carries it; `blobKey` names a body held in its own chunk. */
 export function promptRow(record: DocRecord, at: PageLocator) {
@@ -158,8 +161,8 @@ export const isDocumentBodyKind = (kind: string): kind is DocumentBodyKind => Ob
 
 /**
  * The complete body of one record the session's live document holds, found on the page its locator names: a prompt's
- * or reply's text, or a tool's input. A tool's output is its kept preview. Null when the page holds no such record;
- * `stale` when the locator names a generation no longer live.
+ * or reply's text, or a tool's input. A tool's output is its kept preview. Null when no live document or current revision holds the record;
+ * `stale` when the locator's generation or location revision is no longer live.
  */
 export async function documentBody(env: ContentStore, projectId: string, sessionId: string, kind: DocumentBodyKind, id: string,
   at: PageLocator): Promise<string | null | 'stale'> {
@@ -168,6 +171,8 @@ export async function documentBody(env: ContentStore, projectId: string, session
   if (doc.generation !== at.generation) return 'stale';
   const [recordKind, field] = BODY_FIELD[kind];
   const read = await doc.ownerPages(at.owner, at.page, 1);
-  const record = read.pages[0]?.records.find((held) => held.k === recordKind && held.id === id);
-  return record === undefined ? null : doc.body(record, field);
+  const page = read.pages.find(page => page.page === at.page);
+  if (at.revision !== undefined && page?.revision !== at.revision) return 'stale';
+  const record = page?.records.find((held) => held.k === recordKind && held.id === id);
+  return record === undefined ? at.revision === undefined ? 'stale' : null : doc.body(record, field);
 }

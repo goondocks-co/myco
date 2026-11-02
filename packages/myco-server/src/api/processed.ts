@@ -42,7 +42,8 @@ export async function handleProcessedBody(env: ServerEnv, ctx: OwnerContext): Pr
     const generation = Number(search.get('generation')), page = Number(search.get('page'));
     if (sessionId === null || owner === null || !Number.isSafeInteger(generation) || !Number.isSafeInteger(page)) return notFound();
     if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
-    const text = await documentBody(env, scope.projectId, sessionId, kind, id, { generation, owner, page });
+    const revision = search.get('revision') ?? undefined;
+    const text = await documentBody(env, scope.projectId, sessionId, kind, id, { generation, owner, page, revision });
     if (text === 'stale') return Response.json({ error: 'stale_cursor' }, { status: 409 });
     if (text === null) return notFound();
     return new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8', ...PROCESSED_SECURITY } });

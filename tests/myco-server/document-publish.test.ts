@@ -65,7 +65,8 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
       +(SELECT COUNT(*) FROM registered_content_proofs WHERE source_kind='document') n`), name).toEqual({ n: 0 });
 
     // The next pass resumes from the same frontier; the idle turn closes with its unanswered call recorded.
-    await publishDocuments(env, t0 + 11 * MIN, limits());
+    const retryAt = Number((await counters(db, 'session'))!.due_at);
+    await publishDocuments(env, retryAt, limits());
     const closed = await counters(db, 'session');
     expect(closed, name).toMatchObject({ prompts: 1, user_prompts: 1, replies: 1, tool_calls: 1, failed_tools: 1, due_at: null });
     const turn = String(closed!.open_turn_key);
@@ -78,8 +79,8 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
       .toEqual({ published_offset: first.length, state: 'active' });
 
     // The result arrives after the turn closed, with the next prompt: the same call is upgraded in its own page.
-    await captureDocumentTranscript(db, blobs, 'session', tx, output + user('turn-2', 'ship it'), t0 + 12 * MIN, first.length, 'codex');
-    await publishDocuments(env, t0 + 12 * MIN + 1, limits());
+    await captureDocumentTranscript(db, blobs, 'session', tx, output + user('turn-2', 'ship it'), retryAt + MIN, first.length, 'codex');
+    await publishDocuments(env, retryAt + MIN + 1, limits());
     const upgraded = (await readPage({ db, blobs }, 'project', 'session', turn, 0))!;
     expect(upgraded.filter((record) => record.k === 'tool'), name).toEqual([expect.objectContaining({ id: page[2]!.id, success: 1, output_preview: 'ok' })]);
     expect(await counters(db, 'session'), name).toMatchObject({ prompts: 2, tool_calls: 1, failed_tools: 0 });
@@ -87,7 +88,7 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
 
     // A superseded chunk version stays held through the reader grace, then its holder and proofs go.
     expect(Number((await one(db, `SELECT COUNT(*) n FROM retired_objects`))!.n), name).toBeGreaterThan(0);
-    await publishDocuments(env, t0 + 12 * MIN + RETIRED_OBJECT_GRACE_MS + 2, limits());
+    await publishDocuments(env, retryAt + MIN + RETIRED_OBJECT_GRACE_MS + 2, limits());
     expect(await one(db, `SELECT COUNT(*) n FROM retired_objects`), name).toEqual({ n: 0 });
     expect(await one(db, `SELECT COUNT(*) n FROM registered_content_proofs p WHERE p.source_kind='document'
       AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=p.project_id AND c.source_id=p.source_id)`), name).toEqual({ n: 0 });
@@ -807,7 +808,8 @@ test('a line part placed survives a failed commit, a derivation that no longer m
     blobs.failNextPut = 'store unavailable';
     await expect(pass(), name).rejects.toThrow('store unavailable');
     expect(await frontier(), name).toEqual(started);
-    expect(await counters(db, 'resume'), name).toEqual(counted);
+    expect(await counters(db, 'resume'), name).toEqual({ ...counted, due_at: expect.any(Number) });
+    expect(Number((await counters(db, 'resume'))!.due_at), name).toBeGreaterThan(Number(counted!.due_at));
 
     // A count whose digest does not name what the line derives skips nothing.
     await db.prepare(`UPDATE transcript_publication SET placed_records=119,placed_digest='other' WHERE transcript_id=?`).bind(tx).run();
