@@ -812,7 +812,7 @@ export async function restoreArtifact(
       for(const row of rows) {
         const result=await db.batch([registeredBlobsGuard(db,referencedBlobsOf(table,row)),
           ...contentAssertion(db,'EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND kind=?)',
-            [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,true)]);
+            [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,false)]);
         inserted+=result.at(-1)!.results.length;
       }
       outcome.tables[table]={rows:rows.length,inserted};

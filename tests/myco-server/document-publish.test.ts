@@ -993,9 +993,9 @@ test('portable backups restore published document bodies and frontiers into dest
     expect(await releaseBlobs(db,[{projectId:'project',key:raw.blob_key}],Date.now()),name).toMatchObject({released:1});
     expect(await one(db,"SELECT COUNT(*) n FROM event_refs WHERE kind='transcript.segment'"),name).toEqual({n:0});
     await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-      SELECT 'project','portable-output','portable',token_id,'tool.use','cli',?,'hash',1,1 FROM events LIMIT 1`)
+      SELECT 'project','portable-output','portable',token_id,'tool.use','cli',json_set(?,'$.outputBlob',(SELECT blob_key FROM session_chunks WHERE kind='page' LIMIT 1)),'hash',1,1 FROM events LIMIT 1`)
       .bind(JSON.stringify({toolCallId:uuid(99200),toolName:'Read',input:{}})).run();
-    const reference=(await db.prepare(`UPDATE event_refs SET output_blob=(SELECT blob_key FROM session_chunks LIMIT 1)
+    const reference=(await db.prepare(`UPDATE event_refs SET output_blob=(SELECT blob_key FROM session_chunks WHERE kind='body' LIMIT 1)
       WHERE event_id='portable-output' RETURNING event_id,output_blob`).first<Record<string,unknown>>())!;
     const backup=await createBackup(db,blobs,{producer:'test',now:Date.now()});
     artifacts.set(name,{text:(await backupArtifact(db,blobs,backup.id))!.text,blobs,
@@ -1137,7 +1137,7 @@ test('ranged event references survive archive, deletion and a failed range trans
     expect(await one(db,"SELECT high FROM _v117_reference_ranges WHERE source='events'"),name).toEqual({high:296});
     await db.prepare(`UPDATE events SET payload='{"blob":"captured"}' WHERE event_id='legacy-1'`).run();
     const ranges=SCHEMA_STEPS.filter(step=>step.version>117&&step.version<SERVER_SCHEMA_VERSION);
-    expect(ranges,name).toHaveLength(132);
+    expect(ranges,name).toHaveLength(136);
     const interrupted=ranges[10]!;
     await advance(interrupted.version-1);
     const before=await one(db,'SELECT COUNT(*) n FROM event_refs');

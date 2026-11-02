@@ -119,8 +119,8 @@ const referenceSchema = [
 ];
 const rangeSources = [
   {table:'tool_calls',parts:64,id:'tool_call_id',field:'toolCallId',blob:'input_blob_key',kinds:"'tool.use','tool.failure'"},
-  {table:'prompt_batches',parts:2,id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},
-  {table:'responses',parts:2,id:'response_id',field:'responseId',blob:'blob_key',kinds:"'response'"},
+  {table:'prompt_batches',parts:4,id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},
+  {table:'responses',parts:4,id:'response_id',field:'responseId',blob:'blob_key',kinds:"'response'"},
   {table:'events',parts:64},
 ] as const;
 const rangeTable = '_v117_reference_ranges';
