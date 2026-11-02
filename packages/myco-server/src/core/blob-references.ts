@@ -1,4 +1,3 @@
-import { eventPayloadFieldSql } from '../db/document-tables.js';
 /**
  * The blob reference catalogue and the held check every cleanup makes.
  *
@@ -16,7 +15,6 @@ import type { RelationalStore } from './adapters.js';
 export interface BlobReference {
   table: string;
   column: string;
-  jsonField?: string;
   /** First snapshot schema version that must contain this table. */
   sinceSchema: number;
   /** For the raw event log: the kinds whose event row is the blob's only home. Absent on a projected column. */
@@ -40,10 +38,9 @@ const rawKinds = KINDS.filter((kind) => ['raw','prompt_batches','responses','too
 /** Every reference the catalogue declares, projected columns first and the raw event log last. */
 export const BLOB_REFERENCES: readonly BlobReference[] = [
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, projected),
+  ...atSchema(117,[{table:'event_refs',column:'blob'},{table:'event_refs',column:'output_blob'}]),
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, [
     ...(rawKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: rawKinds }] : []),
-    { table: 'events', column: 'payload', jsonField: 'blob' },
-    { table: 'events', column: 'payload', jsonField: 'outputBlob' },
     { table: 'archive_bundles', column: 'archive_key' },
     { table: 'archive_bundles', column: 'receipt_key' },
     { table: 'raw_archive_refs', column: 'archive_key' },
@@ -60,16 +57,16 @@ export const BUNDLE_REFERENCES: readonly ReferenceColumns[] = [
 /** The stored key selected by one declared reference. */
 export function blobReferenceColumn(ref: ReferenceColumns, alias?: string): string {
   const column=alias===undefined?ref.column:`${alias}.${ref.column}`;
-  return ref.jsonField===undefined?column:eventPayloadFieldSql(ref.jsonField,alias===undefined?'':`${alias}.`);
+  return column;
 }
 export function referencedBlobValue(ref: ReferenceColumns, row: Readonly<Record<string,unknown>>): unknown {
   const value=row[ref.column];
-  return ref.jsonField===undefined ? value : typeof value==='string' ? (JSON.parse(value) as Record<string,unknown>)[ref.jsonField] : undefined;
+  return value;
 }
 
 /** The reference as a message names it: `table.column`, with the kinds a raw-log reference is limited to. */
 export const referenceLabel = (ref: BlobReference): string =>
-  `${ref.table}.${ref.column}${ref.jsonField ? `.${ref.jsonField}` : ''}${ref.kinds ? ` (${ref.kinds.join(', ')})` : ''}`;
+  `${ref.table}.${ref.column}${ref.kinds ? ` (${ref.kinds.join(', ')})` : ''}`;
 
 const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 

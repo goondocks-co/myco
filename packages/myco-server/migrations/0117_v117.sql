@@ -28,11 +28,37 @@ DROP TABLE _v117_documents_guard;
 UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
     (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'));
 
-CREATE TRIGGER IF NOT EXISTS retirement_archive_metadata BEFORE UPDATE OF payload,payload_format ON events
-  WHEN OLD.payload_format='inline' AND NEW.payload_format='archived' AND NEW.kind IN ('prompt','response','tool.use','tool.failure')
-    AND EXISTS (SELECT 1 FROM json_each(json_object('promptId',json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.promptId'),'responseId',json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.responseId'),'toolCallId',json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.toolCallId'),'blob',json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob'),'outputBlob',json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob'))) old_field
-      JOIN json_each(json_object('promptId',json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId'),'responseId',json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId'),'toolCallId',json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId'),'blob',json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),'outputBlob',json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'))) new_field ON old_field.key=new_field.key
-      WHERE old_field.value IS NOT NULL AND old_field.value IS NOT new_field.value)
-  BEGIN SELECT RAISE(ABORT,'retirement_archive_metadata_required'); END;
+CREATE TABLE IF NOT EXISTS event_refs (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),event_id TEXT NOT NULL,session_id TEXT NOT NULL,kind TEXT NOT NULL,
+    record_id TEXT,blob TEXT,output_blob TEXT,PRIMARY KEY(project_id,event_id));
+
+CREATE INDEX IF NOT EXISTS idx_event_refs_identity ON event_refs(project_id,record_id,session_id,kind) WHERE record_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_event_refs_blob ON event_refs(project_id,blob) WHERE blob IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_event_refs_output_blob ON event_refs(project_id,output_blob) WHERE output_blob IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_event_refs_session ON event_refs(project_id,session_id,kind,record_id);
+
+CREATE TRIGGER IF NOT EXISTS events_refs_insert AFTER INSERT ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob')
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure') OR json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob') IS NOT NULL OR json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob') IS NOT NULL
+    ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
+      record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
+
+CREATE TRIGGER IF NOT EXISTS events_refs_update AFTER UPDATE OF payload ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,COALESCE(CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,CASE OLD.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.toolCallId') END),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob')),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob'))
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure') OR COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob')) IS NOT NULL OR COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob')) IS NOT NULL
+    ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
+      record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
+
+CREATE TRIGGER IF NOT EXISTS events_refs_delete AFTER DELETE ON events BEGIN DELETE FROM event_refs WHERE project_id=OLD.project_id AND event_id=OLD.event_id; END;
+
+CREATE TABLE _v117_reference_ranges (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID;
+
+INSERT INTO _v117_reference_ranges SELECT 'tool_calls',COALESCE(MAX(rowid),0) FROM tool_calls;
+
+INSERT INTO _v117_reference_ranges SELECT 'prompt_batches',COALESCE(MAX(rowid),0) FROM prompt_batches;
+
+INSERT INTO _v117_reference_ranges SELECT 'responses',COALESCE(MAX(rowid),0) FROM responses;
+
+INSERT INTO _v117_reference_ranges SELECT 'events',COALESCE(MAX(rowid),0) FROM events;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '117');

@@ -1,3 +1,4 @@
+import { eventReferenceStatement } from '../db/event-references.js';
 import { materialRecord } from '../content/document-records.js';
 import { isTombstoned, sessionPresent } from '../core/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
@@ -302,4 +303,16 @@ export function restoreDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>): RestoreD
       };
     },
   };
+}
+
+
+/** Legacy artifact references fill only absent values of events the destination holds. */
+export async function restoreLegacyEventReferences(db: ServerEnv['db'], tables: ReadonlyMap<string, readonly Row[]>): Promise<void> {
+  for(const [table,id,blob] of [['prompt_batches','prompt_id','blob_key'],['responses','response_id','blob_key'],['tool_calls','tool_call_id','input_blob_key']] as const) {
+    for(const row of tables.get(table)??[]) {
+      if(typeof row.event_id!=='string')continue;
+      await eventReferenceStatement(db,{project_id:row.project_id,event_id:row.event_id,session_id:row.session_id,
+        record_id:row[id],blob:row[blob],output_blob:row.output_blob_key},true).all();
+    }
+  }
 }

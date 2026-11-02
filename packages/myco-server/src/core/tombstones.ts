@@ -14,7 +14,7 @@ import { emit } from '../telemetry.js';
 
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
-  'learning_sessions',
+  'learning_sessions', 'event_refs',
   ...DOCUMENT_SESSION_TABLES,
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
   'transcripts', 'attachments', 'plans', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
@@ -141,7 +141,7 @@ export async function tombstoneSession(
     // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
     env.db.prepare(`UPDATE spores SET prompt_id = NULL
       WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM session_prompts WHERE project_id = ? AND session_id = ?
-        UNION SELECT json_extract(payload,'$.promptId') FROM events WHERE project_id=? AND session_id=? AND kind='prompt')`)
+        UNION SELECT record_id FROM event_refs WHERE project_id=? AND session_id=? AND kind='prompt')`)
       .bind(projectId,projectId,sessionId,projectId,sessionId),
     env.db.prepare(`UPDATE injection_served_items
       SET title = NULL, content_hash = NULL, session_id = NULL, unavailable = 1
