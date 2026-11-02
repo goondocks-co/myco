@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { materializeArtifact, nativeArtifactDirectory } from './artifact-files.js';
+import { NativeArtifactCache } from './artifact-files.js';
 
 const require_ = createRequire(import.meta.url);
 
@@ -33,11 +33,11 @@ export async function registerEmbeddedNativeDeps(params: {
   ripgrepEmbed: string;
   version: string;
 }): Promise<void> {
-  const cacheDir = nativeArtifactDirectory(params.version);
+  const cache = new NativeArtifactCache(params.version);
 
-  const libsqlite = materializeArtifact(cacheDir, libsqliteFilename(), new Uint8Array(await Bun.file(params.libsqliteEmbed).arrayBuffer()));
-  const vec0 = materializeArtifact(cacheDir, vec0Filename(), new Uint8Array(await Bun.file(params.vec0Embed).arrayBuffer()));
-  const ripgrep = materializeArtifact(cacheDir, ripgrepFilename(), new Uint8Array(await Bun.file(params.ripgrepEmbed).arrayBuffer()));
+  const libsqlite = cache.materialize(libsqliteFilename(), new Uint8Array(await Bun.file(params.libsqliteEmbed).arrayBuffer()));
+  const vec0 = cache.materialize(vec0Filename(), new Uint8Array(await Bun.file(params.vec0Embed).arrayBuffer()));
+  const ripgrep = cache.materialize(ripgrepFilename(), new Uint8Array(await Bun.file(params.ripgrepEmbed).arrayBuffer()));
 
   Database.setCustomSQLite(libsqlite);
   resolved = { libsqlite, vec0, ripgrep };

@@ -1,24 +1,22 @@
-/** Private, verified publication of native libraries and executable artifacts. */
+/** Private extraction and verified reuse of embedded native artifacts. */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const CACHE_NAME = '.myco-runtime';
 const PRIVATE_DIRECTORY_MODE = 0o700;
-const EXECUTABLE_MODE = 0o700;
-const NON_OWNER_WRITE = 0o022;
-const NON_OWNER_ACCESS = 0o077;
-const STICKY_DIRECTORY = 0o1000;
-const HASH_CHUNK_BYTES = 64 * 1024;
-const FILE_MODE_BITS = 0o777;
+const PRIVATE_FILE_MODE = 0o700;
+const MODE_BITS = 0o777;
+const VERSION_DIRECTORY = /^[a-f0-9]{64}$/;
+const UNAVAILABLE_HOME = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOENT', 'ENOTDIR']);
+const UNSUPPORTED_DIRECTORY_SYNC = new Set(['EINVAL', 'ENOTSUP', 'ENOSYS', 'EPERM', 'EACCES', 'EISDIR', 'EBADF']);
 
-function owned(stat: fs.Stats, file: string, ancestor = false): void {
-  if (typeof process.getuid !== 'function') return;
-  if (stat.uid !== process.getuid() && !(ancestor && stat.uid === 0)) {
-    throw new Error(`Artifact path is foreign-owned: ${file}`);
-  }
-  if ((stat.mode & NON_OWNER_WRITE) !== 0 && !(ancestor && stat.isDirectory() && (stat.mode & STICKY_DIRECTORY) !== 0)) {
-    throw new Error(`Artifact path is writable by another user: ${file}`);
+class UntrustedArtifactPath extends Error {}
+
+function owner(stat: fs.Stats, file: string): void {
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    throw new UntrustedArtifactPath(`Artifact path is foreign-owned: ${file}`);
   }
 }
 
@@ -30,106 +28,135 @@ function statIfPresent(file: string): fs.Stats | null {
   }
 }
 
-/** Admit each ancestor before creating a directory; the artifact directory must belong to this user. */
-function artifactDirectory(directory: string, privateDirectory = false, ancestor = false): void {
-  const parent = path.dirname(directory);
-  if (parent !== directory) artifactDirectory(parent, false, true);
-  let stat = statIfPresent(directory);
-  if (stat === null) {
-    try { fs.mkdirSync(directory, { mode: PRIVATE_DIRECTORY_MODE }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    stat = fs.lstatSync(directory);
-  }
-  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Artifact directory must be a real directory: ${directory}`);
-  owned(stat, directory, ancestor);
-  if (privateDirectory && typeof process.getuid === 'function' && (stat.mode & NON_OWNER_ACCESS) !== 0) {
-    throw new Error(`Artifact directory must be private: ${directory}`);
+/** Only the cache leaf is admitted; user-controlled ancestors retain their existing modes and links. */
+function privateLeaf(directory: string): void {
+  try { fs.mkdirSync(directory, { mode: PRIVATE_DIRECTORY_MODE }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  const stat = fs.lstatSync(directory);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new UntrustedArtifactPath(`Artifact directory must be a real directory: ${directory}`);
+  owner(stat, directory);
+  if (typeof process.getuid === 'function' && (stat.mode & MODE_BITS) !== PRIVATE_DIRECTORY_MODE) {
+    const fd = fs.openSync(directory, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = fs.fstatSync(fd);
+      owner(opened, directory);
+      if (!opened.isDirectory() || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new UntrustedArtifactPath(`Artifact directory changed: ${directory}`);
+      fs.fchmodSync(fd, PRIVATE_DIRECTORY_MODE);
+    } finally { fs.closeSync(fd); }
   }
 }
 
-function artifactFile(file: string): fs.Stats | null {
+function cacheRoot(): string {
+  return path.join(fs.realpathSync(os.homedir()), CACHE_NAME);
+}
+
+function temporaryCache(): string {
+  return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'myco-native-'));
+}
+
+function matches(file: string, bytes: Uint8Array): boolean {
   const stat = statIfPresent(file);
-  if (stat === null) return null;
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Artifact must be a regular file: ${file}`);
-  owned(stat, file);
-  return stat;
-}
-
-function digest(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
-}
-
-function fileDigest(file: string): string {
-  if (artifactFile(file) === null) throw new Error(`Artifact is missing: ${file}`);
+  if (stat === null) return false;
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new UntrustedArtifactPath(`Artifact must be a regular file: ${file}`);
+  owner(stat, file);
   const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    owned(fs.fstatSync(fd), file);
-    const hash = createHash('sha256');
-    const chunk = Buffer.alloc(HASH_CHUNK_BYTES);
-    let length: number;
-    while ((length = fs.readSync(fd, chunk, 0, chunk.length, null)) !== 0) hash.update(chunk.subarray(0, length));
-    return hash.digest('hex');
+    const opened = fs.fstatSync(fd);
+    owner(opened, file);
+    if (!opened.isFile()) throw new UntrustedArtifactPath(`Artifact must be a regular file: ${file}`);
+    return fs.readFileSync(fd).equals(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
   } finally { fs.closeSync(fd); }
 }
 
-/** The cache is rooted in the trusted user home, independent of shared temporary storage. */
-export function nativeArtifactDirectory(version: string): string {
-  const root = path.join(fs.realpathSync(os.homedir()), '.myco-runtime');
-  artifactDirectory(root, true);
-  const directory = path.join(root, digest(Buffer.from(version)));
-  artifactDirectory(directory, true);
-  return directory;
+function busy(error: unknown): boolean {
+  return ['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '');
 }
 
-/**
- * Publish a complete artifact by rename from exclusive private staging. Source bytes are checked before any
- * preparation can load or execute them. Preparation may sign the staged executable; its resulting bytes are
- * checked again after publication.
- */
-export function publishArtifact(
-  destination: string,
-  source: string | Uint8Array,
-  options: { mode?: number; move?: boolean; prepare?: (file: string) => void } = {},
-): void {
-  destination = path.resolve(destination);
-  if (typeof source === 'string') source = path.resolve(source);
-  const directory = path.dirname(destination);
-  artifactDirectory(directory);
-  artifactFile(destination);
-  const expected = typeof source === 'string' ? fileDigest(source) : digest(source);
-  const staging = fs.mkdtempSync(path.join(directory, '.myco-place-'));
-  const temporary = path.join(staging, path.basename(destination));
-  try {
-    artifactDirectory(staging, true);
-    if (typeof source === 'string') {
-      if (options.move) fs.renameSync(source, temporary);
-      else fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
-    } else fs.writeFileSync(temporary, source, { flag: 'wx', mode: EXECUTABLE_MODE });
-    fs.chmodSync(temporary, options.mode ?? EXECUTABLE_MODE);
-    if (fileDigest(temporary) !== expected) throw new Error(`Artifact bytes differ from source: ${destination}`);
-    options.prepare?.(temporary);
-    const prepared = fileDigest(temporary);
-    const fd = fs.openSync(temporary, fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW ?? 0));
-    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    artifactFile(destination);
-    fs.renameSync(temporary, destination);
-    if (fileDigest(destination) !== prepared) throw new Error(`Published artifact bytes differ: ${destination}`);
-    if (process.platform !== 'win32') {
-      const directoryFd = fs.openSync(directory, 'r');
-      try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+function syncDirectory(directory: string): void {
+  let fd: number | undefined;
+  try { fd = fs.openSync(directory, 'r'); fs.fsyncSync(fd); }
+  catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+/** One invocation's native files, cached per user or extracted into a fresh private temporary directory. */
+export class NativeArtifactCache {
+  private root: string | null = null;
+  private location: string;
+
+  get directory(): string { return this.location; }
+
+  constructor(version: string) {
+    try {
+      this.root = cacheRoot();
+      privateLeaf(this.root);
+      this.location = path.join(this.root, createHash('sha256').update(version).digest('hex'));
+      privateLeaf(this.directory);
+    } catch (error) {
+      if (!UNAVAILABLE_HOME.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      this.root = null;
+      this.location = temporaryCache();
     }
-  } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+  }
+
+  /** Correct existing bytes are reused, including a concurrent publisher's completed file. */
+  materialize(name: string, bytes: Uint8Array): string {
+    if (path.basename(name) !== name || name === '.' || name === '..') throw new Error('Artifact name must be a filename');
+    try { return this.publish(name, bytes); }
+    catch (error) {
+      if (this.root === null || !UNAVAILABLE_HOME.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      this.root = null;
+      this.location = temporaryCache();
+      return this.publish(name, bytes);
+    }
+  }
+
+  private reuse(file: string, bytes: Uint8Array): boolean {
+    if (!matches(file, bytes)) return false;
+    if (process.platform !== 'win32' && (fs.lstatSync(file).mode & MODE_BITS) !== PRIVATE_FILE_MODE) fs.chmodSync(file, PRIVATE_FILE_MODE);
+    return true;
+  }
+
+  private publish(name: string, bytes: Uint8Array): string {
+    const file = path.join(this.directory, name);
+    if (this.reuse(file, bytes)) return file;
+    const staging = fs.mkdtempSync(path.join(this.directory, '.myco-native-'));
+    const temporary = path.join(staging, name);
+    try {
+      fs.writeFileSync(temporary, bytes, { flag: 'wx', mode: PRIVATE_FILE_MODE });
+      const fd = fs.openSync(temporary, 'r+');
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      if (!matches(temporary, bytes)) throw new Error(`Artifact bytes differ from embedded bytes: ${file}`);
+      if (this.reuse(file, bytes)) return file;
+      try { fs.renameSync(temporary, file); }
+      catch (error) { if (!busy(error) || !matches(file, bytes)) throw error; }
+      if (!matches(file, bytes)) throw new Error(`Published artifact bytes differ from embedded bytes: ${file}`);
+      if (process.platform !== 'win32') syncDirectory(this.directory);
+      this.prune();
+      return file;
+    } finally { fs.rmSync(staging, { recursive: true, force: true }); }
+  }
+
+  private prune(): void {
+    if (this.root === null) return;
+    for (const entry of fs.readdirSync(this.root)) {
+      const file = path.join(this.root, entry);
+      if (!VERSION_DIRECTORY.test(entry) || file === this.directory) continue;
+      const stat = statIfPresent(file);
+      if (stat === null || stat.isSymbolicLink() || !stat.isDirectory() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) continue;
+      try { fs.rmSync(file, { recursive: true, force: true }); }
+      catch (error) { if (!busy(error)) throw error; }
+    }
+  }
 }
 
-/** Reuse only verified bytes; an incomplete or differing owned file is atomically replaced. */
-export function materializeArtifact(directory: string, name: string, bytes: Uint8Array, mode = EXECUTABLE_MODE): string {
-  if (path.basename(name) !== name || name === '.' || name === '..') throw new Error('Artifact name must be a filename');
-  directory = path.resolve(directory);
-  artifactDirectory(directory, true);
-  const file = path.join(directory, name);
-  const stat = artifactFile(file);
-  if (stat === null || fileDigest(file) !== digest(bytes) || (process.platform !== 'win32' && (stat.mode & FILE_MODE_BITS) !== mode)) {
-    publishArtifact(file, bytes, { mode });
-  }
-  return file;
+/** Remove only this user's admitted native cache; other home contents are preserved. */
+export function removeNativeArtifactCache(): void {
+  let root: string;
+  try { root = cacheRoot(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  if (statIfPresent(root) === null) return;
+  privateLeaf(root);
+  fs.rmSync(root, { recursive: true, force: true });
 }

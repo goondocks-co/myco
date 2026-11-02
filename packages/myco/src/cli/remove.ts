@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { removeNativeArtifactCache } from '../runtime/artifact-files.js';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { resolveMycoHome, resolveHomeDir, canonicalHomePath, defaultMycoHome } from '../paths/home.js';
@@ -277,6 +278,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     if (deletions.includes('install.json')) removeEntry('install.json');
     if (fs.readdirSync(canonical).length === 0) fs.rmdirSync(canonical);
   }
+  removeNativeArtifactCache();
   if (purge && preserveReceipt) console.log(`Preserved migration receipt at ${path.join(home, 'member', 'cutover.json')}.`);
   if (legacyMessage) console.log(legacyMessage);
   if (purge && fs.existsSync(home)) console.log(`Preserved entries at ${home}: ${fs.readdirSync(home).join(', ')}`);

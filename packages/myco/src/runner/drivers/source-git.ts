@@ -29,8 +29,7 @@
  * Git command is granted, and a source run reads through its file tools.
  */
 import nodeFs from 'node:fs';
-import { materializeArtifact } from '../../runtime/artifact-files.js';
-const { accessSync, constants, realpathSync, statSync } = nodeFs;
+const { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } = nodeFs;
 import { delimiter, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
@@ -395,9 +394,10 @@ export function prepareSourceGit(scratchDir: string, platform: NodeJS.Platform =
   if (realGit === null) return null;
   const repository = realpathSync(join(scratchDir, RUN_REPOSITORY_DIR));
   const shimDir = join(scratchDir, SHIM_DIR);
-  materializeArtifact(shimDir, 'git', Buffer.from(gitShimScript(realGit, repository)));
+  mkdirSync(shimDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(shimDir, 'git'), gitShimScript(realGit, repository), { mode: 0o700 });
   const shellSetup = join(scratchDir, SHELL_SETUP_FILE);
-  materializeArtifact(scratchDir, SHELL_SETUP_FILE, Buffer.from(shellSetupScript(shimDir)), 0o600);
+  writeFileSync(shellSetup, shellSetupScript(shimDir), { mode: 0o600 });
   return { shimDir, shellSetup, env: { ...GIT_TRIPWIRE_ENV, PATH: `${shimDir}${delimiter}${path ?? ''}` } };
 }
 

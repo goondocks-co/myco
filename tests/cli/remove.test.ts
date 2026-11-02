@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { NativeArtifactCache } from '@myco/runtime/artifact-files.js';
 import { run, deploymentLosses, unsafePurgePath } from '@myco/cli/remove.js';
 import { runProvision } from '@myco/cli/member.js';
 import { writeDeploymentMembership, deploymentKeyFor } from '@myco/member/registry.js';
@@ -81,6 +82,19 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  it('prunes prior native cache versions at publication and removes the cache during member removal', async () => {
+    member();
+    const old = new NativeArtifactCache('prior');
+    old.materialize('native', Buffer.from('prior artifact'));
+    const current = new NativeArtifactCache('current');
+    current.materialize('native', Buffer.from('current artifact'));
+    expect(fs.existsSync(old.directory)).toBe(false);
+    expect(fs.existsSync(current.directory)).toBe(true);
+    await run(['--yes'], deps());
+    expect(fs.existsSync(path.dirname(current.directory))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'member', 'spool', 'captured.jsonl'))).toBe(true);
+  });
+
   for (const purge of [false, true]) it(`${purge ? 'purges' : 'preserves'} this installation's automatic update preference`, async () => {
     member();
     writeAutomaticUpdatePreference(home, false);

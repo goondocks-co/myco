@@ -1,4 +1,5 @@
 import { expect, it } from 'bun:test';
+import ts from 'typescript-v6';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +16,7 @@ const TRUSTED_SERVER = 'https://trusted.invalid';
 const CHECKOUT_SERVER = 'https://checkout.invalid';
 const TRUSTED_PROJECT = 'proj_trusted';
 
-it('checkout environment files cannot choose a hook home or Deployment; inherited credentials still work', () => {
+it('checkout .env cannot choose a hook home or Deployment; inherited credentials still work', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-checkout-env-'));
   try {
     const checkout = path.join(root, 'checkout');
@@ -73,8 +74,19 @@ globalThis.fetch = async (input, init) => {
     expect(inheritedRequests.every(request => request.authorization === 'Bearer fake-inherited-token')).toBe(true);
 
     const build = fs.readFileSync(BUILD, 'utf8');
-    const flags = ['--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig'];
-    for (const flag of flags) expect(build).toContain(`'${flag}'`);
+    const syntax = ts.createSourceFile(BUILD, build, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    let flags: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'spawnSync') {
+        const [command, argv] = node.arguments;
+        if (command && ts.isStringLiteral(command) && command.text === 'bun' && argv && ts.isArrayLiteralExpression(argv)) {
+          flags = argv.elements.filter(ts.isStringLiteral).map(element => element.text).filter(flag => flag.startsWith('--no-compile-autoload-'));
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(syntax);
+    expect(flags).toEqual(['--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig']);
     const binary = path.join(root, process.platform === 'win32' ? 'hook.exe' : 'hook');
     const compiled = spawnSync(process.execPath, ['build', '--compile', '--splitting', ...flags,
       '--external', '../cli.js', entry, '--outfile', binary],

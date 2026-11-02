@@ -1,6 +1,6 @@
 {
   "sources": [
-    "local: sec3 security hardening, pinned Bun 1.4.0 darwin-arm64 through npm test with isolated homes. checkout-env.test.ts measured 965.48ms body including a compiled hook and ordinary CLI; artifact-files.test.ts measured 4.45ms body in the 80-pass/1-skip service-boundary recheck (25870ms runner). Weights 4000ms and 500ms cover measured bodies plus startup. Six focused byte/ownership/env/autoload mutations failed as expected. The local Worker bundle prerequisite was frozen and hash-checked after its initial dry-run generation; no further Wrangler execution. No new parity scenario; parity weights unchanged.",
+    "local: sec3 correction2, pinned Bun1.4.0 darwin-arm64 with isolated homes and the frozen hash-checked Worker prerequisite. Eight focused files passed186 cases at umask022 in26355ms and umask002 in24469ms runner. The final cache/compiled-env pair passed7 cases in2775ms runner; native artifact cases measured437.27/571.76/3.14/5.89/73.90/8.32ms bodies (1100.28ms sum), so the file weight is4000ms. Native cache pruning/removal measured64.36ms in remove.test.ts; its prior7159ms CI allowance plus twice added body rounds to7500ms. Checkout-env4000ms retains allowance for1405.26ms body including the real compiler-argument AST and compiled hook. Nineteen source mutations failed through test assertions and were restored. No new test file or parity scenario; parity weights unchanged.",
     "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
     "local: split117 CI/review correction, pinned Bun 1.4.0. Nine focused files passed 118 cases in 42.64s. Session lifecycle now includes the native/Miniflare D1 archived-prompt regression; the file measured 1986ms and its weight is 4000ms. The single object-lifecycle parity scenario passed both targets before and after: fresh Cloudflare migration setup measured 25049ms with numbered files at schema 178 and 1470ms with one fresh-store SQL import at schema 250; total runs 32.42s and 7.40s. Upgrade probes keep numbered migrations and all deadlines are unchanged.",
     "local: event reference catalog rework, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. Eleven focused files passed 139 cases in 127.99s. The 45000ms migration and 145000ms publication weights remain above the measured file case totals; no new test file or parity scenario.",
@@ -209,7 +209,7 @@
     "tests/cli/member-settings-leaves.test.ts": 1748,
     "tests/cli/member-setup-refresh.test.ts": 2076,
     "tests/cli/open.test.ts": 693,
-    "tests/cli/remove.test.ts": 7159,
+    "tests/cli/remove.test.ts": 7500,
     "tests/cli/retired-verbs.test.ts": 3416,
     "tests/cli/runner-compiled.test.ts": 22180,
     "tests/cli/runner-detect.test.ts": 947,
@@ -843,7 +843,7 @@
     "tests/runner/update-idle.test.ts": 1338,
     "tests/runner/update-report-order.test.ts": 675,
     "tests/runner/update.test.ts": 4525,
-    "tests/runtime/artifact-files.test.ts": 500,
+    "tests/runtime/artifact-files.test.ts": 4000,
     "tests/runtime/binary-resolution-adoption.test.ts": 920,
     "tests/runtime/binary-resolution-cjs-agreement.test.ts": 931,
     "tests/runtime/binary-resolution.test.ts": 606,
