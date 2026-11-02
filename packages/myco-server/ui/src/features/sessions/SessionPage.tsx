@@ -130,7 +130,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const name = projectName ?? 'A project';
   useFollowLive(projectId, session);
   const content: Record<Tab, ReactNode> = {
-    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} now={now} />,
+    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} typedTotal={counts.userPrompts} now={now} />,
     activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
     outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
     spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
@@ -180,11 +180,11 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
             <Summary session={session} untitled={answer.untitled ?? null} live={live} />
             <div className="flex flex-wrap gap-s2" data-session-counts="">
               <CountButton value={counts.prompts} onClick={() => openFilter('all')}>{counts.prompts === 1 ? 'turn' : 'turns'}</CountButton>
-              <CountButton value={counts.userPrompts} onClick={() => openFilter('you')}>{counts.userPrompts === undefined ? 'From you' : 'from you'}</CountButton>
+              <CountButton value={counts.userPrompts} onClick={() => openFilter('you')}>from you</CountButton>
               <CountButton value={counts.toolCalls}>{counts.toolCalls === 1 ? 'tool call' : 'tool calls'}</CountButton>
-              <CountButton value={counts.failedTools} tone="bad" onClick={() => openFilter('failed')}>{counts.failedTools === undefined ? 'Failed' : 'failed'}</CountButton>
+              <CountButton value={counts.failedTools} tone="bad" onClick={() => openFilter('failed')}>failed</CountButton>
               <CountButton value={counts.mycoCalls} tone="primary" onClick={() => openFilter('myco')}>{counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls'}</CountButton>
-              <CountButton value={answer.filesEdited} onClick={() => setTab('files')}>{answer.filesEdited === undefined ? 'Files edited' : answer.filesEdited === 1 ? 'file edited' : 'files edited'}</CountButton>
+              <CountButton value={answer.filesEdited} onClick={() => setTab('files')}>{answer.filesEdited === 1 ? 'file edited' : 'files edited'}</CountButton>
               <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
             </div>
           </header>

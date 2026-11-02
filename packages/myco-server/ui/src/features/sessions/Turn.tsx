@@ -163,10 +163,9 @@ function CardRow({ term, children }: { term: string; children: ReactNode }) {
 }
 
 /** What the turn's card says happened: laid out by part, or as written when it reads as no card. */
-function WhatHappened({ card, headline }: { card: string | null | undefined; headline: string | null }) {
+function WhatHappened({ card }: { card: string | null | undefined }) {
   const parsed = card == null ? null : parseCard(card);
-  const mechanical = isMechanical(parsed?.done ?? card ?? headline);
-  if (mechanical) return null;
+  if (isMechanical(parsed?.done ?? card)) return null;
   let body: ReactNode;
   if (parsed !== null) {
     body = (
@@ -182,8 +181,6 @@ function WhatHappened({ card, headline }: { card: string | null | undefined; hea
     );
   } else if (card != null && card !== '') {
     body = <p className="whitespace-pre-wrap break-words t-small text-ink-2">{card}</p>;
-  } else if (headline !== null) {
-    body = <p className="break-words t-small text-ink-2">{headline}</p>;
   } else {
     body = <p className="t-small text-muted">Myco writes this once the turn settles.</p>;
   }
@@ -265,6 +262,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
 function ChildTurn({ projectId, sessionId, agent, contexts, child }: { projectId: string; sessionId: string; agent: string | null; contexts?: Record<string, { subagents: number }>; child: TurnChild }) {
   const prompt: TurnPrompt = child.prompt;
   const body: TurnDetail = child.body ?? {
+    card: null, toolCounts: { total: child.toolCallCount, shown: child.toolCallCount },
     prompt, responses: child.responses, attachments: [], plans: [], injection: null, children: [],
     cursors: { responses: child.responsesCursor ?? null, attachments: null, plans: null, children: null, answers: null },
   };
@@ -327,8 +325,8 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
           <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={read.attachments} cursor={read.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
             {(rows) => <Attachments projectId={projectId} attachments={rows} />}
           </TurnPages>
-          <WhatHappened card={read.card} headline={turn.headline ?? null} />
-          <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={Math.max(turn.toolCallCount, read.toolCounts?.total ?? 0)} failed={turn.failedTools} rollup={turn.toolRollup ?? null} />
+          <WhatHappened card={read.card} />
+          <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} />
         </>}
       </ReadState>
     </article>

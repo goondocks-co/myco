@@ -118,7 +118,9 @@ export interface ToolUseProps {
 export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup, summary, shown, added }: ToolUseProps) {
   const failures = summary?.failures ?? [];
   const files = summary?.files ?? [];
-  const edited = rollup?.filesEdited ?? 0;
+  const edited = rollup?.filesEdited ?? files.length;
+  const named = summary?.filesNamed ?? 0;
+  const fileWords = edited > 0 ? `${count(edited, 'file')} edited${named > edited ? ` · ${named.toLocaleString()} named` : ''}` : named > 0 ? `${count(named, 'file')} named` : null;
   const myco = rollup !== null
     ? rollup.myco.map((call) => ({ key: call.name, name: call.name, count: call.count, failed: call.failed }))
     : (summary?.myco ?? []).map((call) => ({ key: `${call.tool}:${call.op ?? ''}`, name: `${call.tool}${call.op !== null ? ` · ${call.op}` : ''}`, count: call.count, failed: call.failed }));
@@ -154,12 +156,12 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
           </ul>
         )}
         {files.length > 0 ? (
-          <Disclosure summary={<span>{edited > 0 ? `${count(edited, 'file')} edited · ${files.length.toLocaleString()} named` : `${count(files.length, 'file')} named`}</span>}>
-            <ul className="flex flex-col gap-s1 t-mono text-muted" aria-label="Files named">
+          <Disclosure summary={<span>{fileWords}</span>}>
+            <ul className="flex flex-col gap-s1 t-mono text-muted" aria-label="Files edited">
               {files.map((file) => <li key={file} className="break-all">{file}</li>)}
             </ul>
           </Disclosure>
-        ) : edited > 0 && <p className="t-small text-ink-2">{count(edited, 'file')} edited</p>}
+        ) : fileWords !== null && <p className="t-small text-ink-2">{fileWords}</p>}
         <ToolCalls projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} partial={partial} />
       </div>
     </section>

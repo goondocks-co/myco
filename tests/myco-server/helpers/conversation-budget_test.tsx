@@ -12,7 +12,7 @@ it('opens the conversation without reading records outside its turns', async () 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   try {
     render(<QueryClientProvider client={client}><MemoryRouter>
-      <Conversation projectId="project" sessionId="session" turnsTotal={1} now={100} />
+      <Conversation projectId="project" sessionId="session" turnsTotal={1} typedTotal={1} now={100} />
     </MemoryRouter></QueryClientProvider>);
     await screen.findByRole('list', { name: 'Conversation' });
     await waitFor(() => expect(client.isFetching()).toBe(0));

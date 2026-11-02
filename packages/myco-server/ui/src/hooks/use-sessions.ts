@@ -40,10 +40,10 @@ export interface SessionRow {
 export interface SessionCounts {
   prompts: number;
   toolCalls: number;
-  failedTools?: number;
+  failedTools: number;
   /** The prompts a person typed, of all `prompts`. */
-  userPrompts?: number;
-  mycoCalls?: number;
+  userPrompts: number;
+  mycoCalls: number;
   responses: number;
   plans: number;
   attachments: number;
@@ -68,7 +68,7 @@ export interface SessionResponse {
   untitled?: UntitledReason | null;
   counts: SessionCounts;
   /** How many files the agent's editing tools changed. */
-  filesEdited?: number;
+  filesEdited: number;
   metrics?: { tools: ToolUsage[]; tokens: number | null; durationMs?: number | null };
   turnContexts?: Record<string, { subagents: number }>;
   /** Whether the session's work is released, or null when it has no release state. */
@@ -289,9 +289,9 @@ export interface TurnInjection {
 /** One turn's body; its tool calls are read on their own when opened. */
 export interface TurnDetail {
   /** The turn's card as written, or null until it has one. */
-  card?: string | null;
-  /** All the turn's calls, and how many of them the failures, files and Myco lists below cover. */
-  toolCounts?: { total: number; shown: number };
+  card: string | null;
+  /** All the turn's calls, and how many of them the failures, files and Myco lists cover. */
+  toolCounts: { total: number; shown: number };
   prompt: TurnPrompt;
   responses: ResponseRow[];
   attachments: AttachmentRow[];
@@ -301,7 +301,7 @@ export interface TurnDetail {
   injection: TurnInjection | null;
   children: TurnChild[];
   metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
-  /** The prompt's tool calls in brief: counts by tool, failures, files named and Myco calls. */
+  /** The prompt's tool calls in brief: counts by tool, failures, files edited and Myco calls. */
   tools?: ToolSummary;
   context?: { subagents: number };
   answers?: PromptAnswer[];
@@ -668,7 +668,10 @@ export interface ToolSummary {
   failed: number;
   byTool: ToolUsage[];
   failures: ToolCallRow[];
+  /** The files the calls read here edited. */
   files: string[];
+  /** How many files those calls named, edited or not. */
+  filesNamed: number;
   myco: { tool: string; op: string | null; count: number; failed: number }[];
 }
 export interface PromptAnswer {

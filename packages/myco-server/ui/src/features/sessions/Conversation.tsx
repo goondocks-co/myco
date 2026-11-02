@@ -32,8 +32,10 @@ export interface ConversationProps {
   sessionId: string;
   agent?: string | null;
   contexts?: Record<string, { subagents: number }>;
-  /** How many turns the session holds, of every origin. */
+  /** How many prompts the session holds, of every origin. */
   turnsTotal: number;
+  /** How many of them a person typed. */
+  typedTotal: number;
   now: number;
 }
 
@@ -43,7 +45,7 @@ export interface ConversationProps {
  * turn's body is read. `?turn=` names the open turn, and a link to one opens the
  * outline around it.
  */
-export function Conversation({ projectId, sessionId, agent = null, contexts, turnsTotal, now }: ConversationProps) {
+export function Conversation({ projectId, sessionId, agent = null, contexts, turnsTotal, typedTotal, now }: ConversationProps) {
   const [params, setParams] = useSearchParams();
   const compact = useMediaQuery(COMPACT_QUERY);
   const wanted = params.get('turn');
@@ -58,9 +60,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
   const anchorTurn = anchorRead.data?.rows[0];
   const waiting = anchor !== null && anchorRead.isPending;
 
-  const typedAround = anchorTurn !== undefined && anchorTurn.origin === 'user' ? anchorTurn.promptId : null;
-  const typed = useTurnOutline(projectId, sessionId, 'you', { order, around: typedAround, enabled: requested === null && !waiting && (anchorTurn === undefined || anchorTurn.origin === 'user') });
-  const fewTyped = !typed.isPending && !typed.error && !typed.hasMore && typed.rows.length < FEW_TYPED_PROMPTS && turnsTotal > typed.rows.length;
+  const fewTyped = typedTotal < FEW_TYPED_PROMPTS && turnsTotal > typedTotal;
   const filter: TurnFilter = requested ?? ((anchorTurn !== undefined && anchorTurn.origin !== 'user') || fewTyped ? 'all' : 'you');
   const around = anchorTurn !== undefined && inFilter(anchorTurn, filter) ? anchorTurn.promptId : null;
   const outline = useTurnOutline(projectId, sessionId, filter, { order, around, enabled: !waiting });
@@ -147,7 +147,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
   const address = openId === null ? '' : `${window.location.origin}${window.location.pathname}?${new URLSearchParams({ turn: openId })}`;
 
   return (
-    <div className="grid items-start gap-s5 lg:grid-outline lg:gap-s5 min-[1180px]:grid-outline-wide min-[1180px]:gap-s8">
+    <div className="grid items-start gap-s5 lg:grid-outline xl:gap-s8">
       {showRail && (
         <TurnRail
           ref={listRef}

@@ -5,7 +5,7 @@ import { focusRing } from '../lib/classes';
 const frame = 'inline-flex items-baseline gap-s2 rounded-control border border-line bg-surface-1 px-s3 py-[5px] t-small text-muted max-lg:min-h-tap max-lg:items-center';
 
 export interface CountButtonProps {
-  /** The number; absent when the count is not known, and the row then reads as the view's name alone. */
+  /** The number; absent for a control that sits in the row and counts nothing. */
   value?: number;
   /** What it counts, as in "tool calls". */
   children: ReactNode;

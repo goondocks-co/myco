@@ -69,10 +69,10 @@ const session = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const page = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor });
-const counts = { prompts: 1, toolCalls: 3, responses: 1, plans: 0, attachments: 2 };
+const counts = { prompts: 1, userPrompts: 1, mycoCalls: 0, toolCalls: 3, failedTools: 0, responses: 1, plans: 0, attachments: 2 };
 const NO_OUTCOME = { runs: [], spores: { total: 0, items: [] } };
 const detail = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
-  Response.json({ session: session(over), untitled: null, counts, release: null, outcome: NO_OUTCOME, projectId: 'x', ...extra });
+  Response.json({ session: session(over), untitled: null, counts, filesEdited: 0, release: null, outcome: NO_OUTCOME, projectId: 'x', ...extra });
 
 const turn = (over: Record<string, unknown> = {}) => ({
   promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
@@ -1070,7 +1070,7 @@ describe('the session reading page', () => {
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
         prompt: prompt(P1, 'user', '<command-name>/fork</command-name><command-args></command-args>'),
         metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
-        tools: { complete: true, total: 3, failed: 1, byTool: [{ toolName: 'Read', count: 2 }, { toolName: 'Bash', count: 1 }], files: ['src/read.ts'],
+        tools: { complete: true, total: 3, failed: 1, byTool: [{ toolName: 'Read', count: 2 }, { toolName: 'Bash', count: 1 }], files: ['src/read.ts'], filesNamed: 3,
           myco: [{ tool: 'myco_search', op: null, count: 1, failed: 0 }],
           failures: [{ toolCallId: 'failed-call', promptId: P1, toolName: 'Bash', mycoTool: null, mycoOp: null, inputPreview: 'npm test', inputBytes: 8,
             inputTruncated: false, inputBlobKey: null, outputPreview: null, outputBlobKey: null, success: false, errorMessage: 'exit 1',
@@ -1094,11 +1094,11 @@ describe('the session reading page', () => {
     expect(within(parent).queryByRole('button', { name: 'Ran /fork' })).toBeNull();
     expect(within(parent).queryByText('/fork')).toBeNull();
     expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
-    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files it named folded.
+    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files it edited folded.
     const summary = within(parent).getAllByTestId('tool-use').at(-1)!;
     expect(within(summary).getByText('myco_search')).toBeTruthy();
     expect(within(within(summary).getByRole('list', { name: 'Failed tool calls' })).getByTestId('failed-call-failed-call').textContent).toContain('exit 1');
-    expect(within(summary).getByText('1 file named')).toBeTruthy();
+    expect(within(summary).getByText('1 file edited · 3 named')).toBeTruthy();
     expect(within(parent).getByText('1.2s')).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
     expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);
@@ -1528,10 +1528,11 @@ describe('the session reading page', () => {
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=files'));
     });
 
-    it('opens on every turn when the session has few typed prompts', async () => {
-      server(longRoutes(listRoutes((init, url) => url!.searchParams.get('origins') === 'user' ? page([turn({ promptId: idOf(0), preview: 'Only one typed' })]) : turnList(init, url))));
+    it('opens on every turn when the session has few typed prompts, without reading the typed list', async () => {
+      const { requested } = server(longRoutes({ '/api/projects/x/sessions/s1': () => detail({ title: 'A worker' }, { counts: { ...counts, prompts: TURNS, userPrompts: 1 } }) }));
       mount('/p/x/sessions/s1');
       expect(await screen.findByTestId(`row-${idOf(398)}`)).toBeTruthy();
+      expect(requested.some((path) => path.includes('origins=user&'))).toBe(false);
       expect((within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' })).getAttribute('aria-pressed')).toBe('true');
     });
 
@@ -1616,7 +1617,7 @@ describe('the session reading page', () => {
         [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
           prompt: { promptId: P1, origin: 'user', text: 'Build it.', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'a', text: 'Earlier word', blobKey: null, createdAt: NOW }, { responseId: 'b', text: 'Last word', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null,
           card, toolCounts: { total: 1204, shown: 300 },
-          tools: { complete: false, total: 300, failed: 1, byTool: [], failures: [failure], files: ['a.ts', 'b.ts', 'c.ts', 'd.ts'], myco: [] },
+          tools: { complete: false, total: 300, failed: 1, byTool: [], failures: [failure], files: ['a.ts', 'b.ts', 'c.ts'], filesNamed: 9, myco: [] },
         }),
       }));
       mount('/p/x/sessions/s1');
@@ -1634,7 +1635,7 @@ describe('the session reading page', () => {
       expect(within(reader).getByText('myco_search ×6 · 1 failed')).toBeTruthy();
       expect(within(reader).getByTestId('failed-call-f1').textContent).toContain('FAIL sweep-batch');
       expect(within(reader).getByText('Showing the first 1 of 41 failures. All tool calls has the rest.')).toBeTruthy();
-      expect(within(reader).getByText('3 files edited · 4 named')).toBeTruthy();
+      expect(within(reader).getByText('3 files edited · 9 named')).toBeTruthy();
       expect(within(reader).queryByText('a.ts')).toBeNull();
       expect(within(reader).getByTestId('tool-calls-toggle').textContent).toBe('All 1,204 tool calls');
       expect(requested.some((path) => path.includes('/tool-calls'))).toBe(false);

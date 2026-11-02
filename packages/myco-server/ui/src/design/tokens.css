@@ -222,7 +222,7 @@
   /* A page's lead, wider than prose. */
   --container-lead: 110ch;
   /* A turn open beside its outline. */
-  --container-reader: calc(var(--measure) + 40px);
+  --container-reader: 110ch;
   /* The panel a record opens in beside its list. */
   --container-slide-over: 560px;
 
@@ -328,13 +328,9 @@
   grid-template-rows: auto 1fr;
 }
 
-/* An outline of turns beside the one open turn, its outline wider once there is room. */
+/* An outline of turns beside the one open turn: the outline grows with the room between two bounds, and the turn takes the rest. */
 @utility grid-outline {
-  grid-template-columns: 330px minmax(0, 1fr);
-}
-
-@utility grid-outline-wide {
-  grid-template-columns: 390px minmax(0, 1fr);
+  grid-template-columns: minmax(330px, min(34%, 480px)) minmax(0, 1fr);
 }
 
 /* A term beside what it says, such as a part of a turn's card. */
