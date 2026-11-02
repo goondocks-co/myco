@@ -1,3 +1,4 @@
+import { storedCardFields } from '@goondocks/myco-shared/turn-card';
 import { jsonPages } from '../db/json-pages.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { cardOutline } from '../core/turn-cards.js';
@@ -177,13 +178,13 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
     } catch (error) { await deferDocumentReadFailure(env.db, doc, error, now); }
   }
   if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { changed, more: true };
-  const cards = (await db.prepare(`SELECT project_id,session_id,turn_key,card FROM turn_cards INDEXED BY idx_turn_cards_headline
+  const cards = (await db.prepare(`SELECT project_id,session_id,turn_key,card,fields FROM turn_cards INDEXED BY idx_turn_cards_headline
     WHERE card IS NOT NULL AND headline IS NULL LIMIT ?`).bind(SUMMARY_PAGES)
-    .all<{ project_id: string; session_id: string; turn_key: string; card: string }>()).results;
+    .all<{ project_id: string; session_id: string; turn_key: string; card: string; fields: string | null }>()).results;
   if (cards.length > 0) await db.batch(cards.map(card => {
-    const outline = cardOutline(card.card);
-    return db.prepare(`UPDATE turn_cards SET headline=?,marks=? WHERE project_id=? AND session_id=? AND turn_key=? AND card=? AND headline IS NULL`)
-      .bind(outline.headline, JSON.stringify(outline.marks), card.project_id, card.session_id, card.turn_key, card.card);
+    const outline = cardOutline(storedCardFields(card.fields) ?? card.card);
+    return db.prepare(`UPDATE turn_cards SET headline=?,marks=? WHERE project_id=? AND session_id=? AND turn_key=? AND card=? AND fields IS ? AND headline IS NULL`)
+      .bind(outline.headline, JSON.stringify(outline.marks), card.project_id, card.session_id, card.turn_key, card.card, card.fields);
   }));
   changed += cards.length;
   const pending = await db.prepare(`SELECT 1 AS pending FROM session_documents INDEXED BY idx_session_documents_rollup

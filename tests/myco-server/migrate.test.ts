@@ -478,6 +478,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0462_v462.sql': 'dbe70dd7f0e89229e852e05691d8326c9cedeafca8b5a8fca50a181be644075c',
   '0463_v463.sql': '9bb7a86837e9443352f642a7dbceda559eb5cf093ccc7f2af5d1d3c3a2d3a92b',
   '0464_v464.sql': '45d940f08c5feda6e953f84d47e2010996bfa5c7fa3cbabe4e6294f98b28e1fe',
+  '0465_v465.sql': '85cd8aed1d1ae6c631b06bd3b6f324038050cb6f59473bea45b7a356d1a6705b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1295,6 +1296,7 @@ describe('content storage removal, steps 265 to 464', () => {
     }
     sqlite.exec('PRAGMA ignore_check_constraints = OFF; PRAGMA foreign_keys = ON');
   };
+  const through = DROP_CONTENT_SCHEMA_STEPS.at(-1)!.version;
   const keptRows = (sqlite: Database) => new Map(dataTables(sqlite).filter(name => !DROPPED_CONTENT.has(name) && name !== DROP_RANGES_TABLE)
     .map(name => [name, JSON.stringify(sqlite.query(`SELECT * FROM ${name}`).all())]));
   const at264 = () => { const sqlite = fresh(); for (const prior of SCHEMA_STEPS.filter(s => s.version < 265)) step(sqlite, prior); seed(sqlite); return sqlite; };
@@ -1319,13 +1321,13 @@ describe('content storage removal, steps 265 to 464', () => {
       for (const next of SCHEMA_STEPS.filter(s => s.version >= 265 && s.version < firstDrop)) step(sqlite, next);
       expect(RANGED.map(table => ({ table, rows: count(table) }))).toEqual(RANGED.map(table => ({ table, rows: 0 })));
       expect(DROPPED_CONTENT_TABLES.filter(t => !t.endsWith('_fts') && !RANGED.includes(t)).map(table => count(table))).not.toContain(0);
-      for (const next of SCHEMA_STEPS.filter(s => s.version >= firstDrop)) step(sqlite, next);
-      expect(version(sqlite)).toBe(String(SERVER_SCHEMA_VERSION));
+      for (const next of SCHEMA_STEPS.filter(s => s.version >= firstDrop && s.version <= through)) step(sqlite, next);
+      expect(version(sqlite)).toBe(String(through));
       const after = objectsOf(sqlite);
       expect(after.filter(o => DROPPED_CONTENT.has(o.tbl_name) || o.tbl_name === DROP_RANGES_TABLE || shadow(o.name))).toEqual([]);
       expect(keptRows(sqlite)).toEqual(kept);
       expect(keptViolations()).toEqual(violations);
-      for (const f of renderMigrationFiles()) store.exec(f.sql);
+      for (const f of renderMigrationFiles().filter(file => Number.parseInt(file.name, 10) <= through)) store.exec(f.sql);
       expect(after).toEqual(objectsOf(store));
     } finally { sqlite.close(); store.close(); }
   });
@@ -1344,4 +1346,20 @@ describe('content storage removal, steps 265 to 464', () => {
       }
     } finally { sqlite.close(); }
   });
+});
+
+it('adds card fields without rewriting legacy cards or rebuilding their search index', async () => {
+  const sqlite = fresh();
+  try {
+    const fieldStep = SCHEMA_STEPS.find(step => step.version === 465)!;
+    for (const stepBefore of SCHEMA_STEPS.filter(step => step.version < fieldStep.version)) step(sqlite, stepBefore);
+    for (let row = 0; row < 100; row++) sqlite.run("INSERT INTO turn_cards(project_id,session_id,turn_key,state,card,created_at) VALUES('project','session',?,'carded','Done: legacyneedle',1)", [String(row)]);
+    const changes = () => (sqlite.query('SELECT total_changes() n').get() as { n: number }).n;
+    const before = changes();
+    await applySchemaSteps(sqliteD1(sqlite), [fieldStep]);
+    const MAX_METADATA_WRITES = 4;
+    expect(changes() - before).toBeLessThanOrEqual(MAX_METADATA_WRITES);
+    expect(sqlite.query("SELECT COUNT(*) n FROM turn_cards WHERE fields IS NULL AND card='Done: legacyneedle'").get()).toEqual({ n: 100 });
+    expect(sqlite.query("SELECT COUNT(*) n FROM turn_cards_fts WHERE turn_cards_fts MATCH 'legacyneedle'").get()).toEqual({ n: 100 });
+  } finally { sqlite.close(); }
 });

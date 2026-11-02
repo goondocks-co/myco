@@ -1,11 +1,33 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type HTMLAttributes, type ReactNode } from 'react';
+import { createContext, forwardRef, useContext, useRef, useState, type RefObject, type ComponentPropsWithoutRef, type ElementRef, type HTMLAttributes, type ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
 import { Button } from './Button';
 
-export const Dialog = DialogPrimitive.Root;
+const ReturnFocus = createContext<RefObject<HTMLElement | null> | null>(null);
+
+function openerTarget(): HTMLElement | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return null;
+  const menu = active.closest('[role="menu"]');
+  const trigger = document.getElementById(menu?.getAttribute('aria-labelledby') ?? '');
+  return trigger ?? active;
+}
+
+/** The opener is captured before dialog children mount or receive autofocus. */
+export function Dialog({ open, defaultOpen, onOpenChange, ...props }: ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
+  const [localOpen, setLocalOpen] = useState(defaultOpen ?? false);
+  const shown = open ?? localOpen;
+  const previous = useRef(false);
+  const opener = useRef<HTMLElement | null>(null);
+  if (shown && !previous.current) opener.current = openerTarget();
+  previous.current = shown;
+  return <ReturnFocus.Provider value={opener}><DialogPrimitive.Root {...props} open={shown} onOpenChange={next => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  }} /></ReturnFocus.Provider>;
+}
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
 
@@ -18,9 +40,11 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
   hideClose?: boolean;
 }
 
-/** A centred dialog over a scrim. Radix traps focus inside it and returns focus to the trigger on close. */
+/** A centred dialog traps focus and returns it to its connected opener or the page. */
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, title, description, hideClose = false, children, ...props }, ref) => (
+  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+    const opener = useContext(ReturnFocus);
+    return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
       <DialogPrimitive.Content
@@ -32,6 +56,21 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
           className,
         )}
         {...props}
+        onOpenAutoFocus={(event) => {
+          onOpenAutoFocus?.(event);
+        }}
+        onCloseAutoFocus={(event) => {
+          onCloseAutoFocus?.(event);
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          const target = opener?.current?.isConnected && opener.current !== document.body
+            ? opener.current
+            : document.querySelector<HTMLElement>('main, [role="main"]')
+              ?? document.querySelector<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]')
+              ?? document.body;
+          if (target.tabIndex < 0 && !target.hasAttribute('tabindex')) target.tabIndex = -1;
+          target.focus({ preventScroll: true });
+        }}
       >
         <div className="flex flex-col gap-s1 pr-s8">
           <DialogPrimitive.Title className="t-h2 text-ink">{title}</DialogPrimitive.Title>
@@ -48,7 +87,8 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         )}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
-  ),
+    );
+  },
 );
 DialogContent.displayName = 'DialogContent';
 

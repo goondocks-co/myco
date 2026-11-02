@@ -1,3 +1,5 @@
+import { encodeCard, isCardFields, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
+export { renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 /**
  * Stage one of learning: one card per turn, written as turns complete.
@@ -34,42 +36,19 @@ const LIVE_HASH = `(SELECT sp.input_hash FROM session_prompts sp JOIN session_do
   AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
   WHERE sp.project_id = turn_cards.project_id AND sp.session_id = turn_cards.session_id AND sp.prompt_id = turn_cards.turn_key)`;
 
-export interface CardFields {
-  asked: string; done: string; outcome: string;
-  decisions: { decision: string; reason: string }[];
-  rejected: { approach: string; reason: string }[];
-  errors: { error: string; fix: string }[];
-  corrections: { wrong: string; right: string }[];
-  files: string[]; commands: string[]; open_questions: string[];
-}
 export interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
-
-/** A card as every reader sees it: its fields in their fixed order. */
-export function renderCard(card: CardFields): string {
-  const pairs = (items: readonly Record<string, string>[], a: string, b: string) =>
-    items.map((item) => `- ${item[a]}${item[b] === '' ? '' : ` — ${b}: ${item[b]}`}`).join('\n');
-  return [
-    `Asked: ${card.asked}`, `Done: ${card.done}`, `Outcome: ${card.outcome}`,
-    card.decisions.length === 0 ? '' : `Decisions:\n${pairs(card.decisions, 'decision', 'reason')}`,
-    card.rejected.length === 0 ? '' : `Rejected:\n${pairs(card.rejected, 'approach', 'reason')}`,
-    card.errors.length === 0 ? '' : `Errors:\n${pairs(card.errors, 'error', 'fix')}`,
-    card.corrections.length === 0 ? '' : `Corrections:\n${pairs(card.corrections, 'wrong', 'right')}`,
-    card.files.length === 0 ? '' : `Files: ${card.files.join(', ')}`,
-    card.commands.length === 0 ? '' : `Commands:\n${card.commands.map((command) => `- ${command}`).join('\n')}`,
-    card.open_questions.length === 0 ? '' : `Open questions:\n${card.open_questions.map((q) => `- ${q}`).join('\n')}`,
-  ].filter((line) => line !== '').join('\n');
-}
 
 export interface CardMarks { decisions: boolean; rejected: boolean; errors: boolean; corrections: boolean; openQuestions: boolean }
 
 /** Outline fields of a rendered card, including cards read from an artifact. */
 export function cardOutline(card: string | CardFields): { headline: string; marks: CardMarks } {
-  if (typeof card !== 'string') return {
-    headline: (card.outcome || card.done).slice(0, DOCUMENT_PREVIEW_CHARS),
-    marks: { decisions: card.decisions.length > 0, rejected: card.rejected.length > 0, errors: card.errors.length > 0,
-      corrections: card.corrections.length > 0, openQuestions: card.open_questions.length > 0 },
+  const fields = typeof card === 'string' ? readCard(card) : card;
+  if (fields !== null) return {
+    headline: (fields.outcome || fields.done).slice(0, DOCUMENT_PREVIEW_CHARS),
+    marks: { decisions: fields.decisions.length > 0, rejected: fields.rejected.length > 0, errors: fields.errors.length > 0,
+      corrections: fields.corrections.length > 0, openQuestions: fields.open_questions.length > 0 },
   };
-  const text = card;
+  const text = String(card);
   const fieldText = (name: string) => text.match(new RegExp('^' + name + ': *(.*)$', 'm'))?.[1]?.trim() ?? '';
   return {
     headline: (fieldText('Outcome') || fieldText('Done')).slice(0, DOCUMENT_PREVIEW_CHARS),
@@ -105,8 +84,9 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
       const text = ['asked', 'done', 'outcome'].includes(field);
       if (text ? typeof value !== 'string' : !Array.isArray(value)) return `card field ${field} is missing or malformed`;
     }
-    if (renderCard(card as unknown as CardFields).length > CARD_MAX_CHARS) return `a card runs past ${CARD_MAX_CHARS} characters`;
-    writes.push({ turns: turns as string[], signal: entry.signal as CardSignal, card: card as unknown as CardFields });
+    if (!isCardFields(card)) return 'card fields are malformed';
+    if (renderCard(card).length > CARD_MAX_CHARS) return `a card runs past ${CARD_MAX_CHARS} characters`;
+    writes.push({ turns: turns as string[], signal: entry.signal as CardSignal, card });
   }
   if (seen.size !== assigned.size) return 'every served turn appears in one card';
   return writes;
@@ -126,20 +106,22 @@ export function turnMaterial(trimmed: TrimmedTurn): { records: string; inputChar
  */
 export function cardStatements(
   db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn,
-  card: { text: string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null;
+  card: { value: CardFields | string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null;
     outline?: ReturnType<typeof cardOutline> },
   now: number, material?: ReturnType<typeof turnMaterial>,
 ): PreparedStatement[] {
-  const outline = card.outline ?? cardOutline(card.text);
+  const fields = typeof card.value === 'string' ? null : card.value;
+  const text = typeof card.value === 'string' ? card.value : renderCard(card.value);
+  const outline = card.outline ?? cardOutline(card.value);
   return [
     db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL, settle_at = NULL,
         records = COALESCE(?, records), input_chars = COALESCE(?, input_chars), raw_chars = COALESCE(?, raw_chars),
-        headline = ?, marks = ?, card = ?, signal = ?, signal_reason = ?, shared_with = ?,
+        headline = ?, marks = ?, card = ?, fields = ?, signal = ?, signal_reason = ?, shared_with = ?,
         covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
         input_hash = ${LIVE_HASH}, run_id = ?, model = ?, carded_at = ?
       WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
       .bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
-        outline.headline, JSON.stringify(outline.marks), card.text, card.signal, card.reason, card.sharedWith,
+        outline.headline, JSON.stringify(outline.marks), text, fields === null ? null : encodeCard(fields), card.signal, card.reason, card.sharedWith,
         card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0,
         card.runId, card.model, now, projectId, sessionId, turn.turnKey, turn.changes),
   ];
@@ -147,13 +129,14 @@ export function cardStatements(
 
 /** The carded turn of the session whose input hash equals the one stored for `turnKey`, coverage first, or null. */
 export async function reusableCard(db: RelationalStore, projectId: string, sessionId: string, turnKey: string):
-  Promise<{ turnKey: string; card: string; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null } | null> {
-  return db.prepare(`SELECT c.turn_key AS turnKey, c.card, c.signal, c.signal_reason AS reason, c.covered,c.headline,c.marks FROM turn_cards c INDEXED BY idx_turn_cards_reuse
+  Promise<{ turnKey: string; card: string; fields: CardFields | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null } | null> {
+  const row = await db.prepare(`SELECT c.turn_key AS turnKey, c.card,c.fields, c.signal, c.signal_reason AS reason, c.covered,c.headline,c.marks FROM turn_cards c INDEXED BY idx_turn_cards_reuse
     WHERE c.project_id = ?1 AND c.session_id = ?2 AND c.card IS NOT NULL AND c.input_hash = (SELECT sp.input_hash FROM session_prompts sp
       JOIN session_documents d ON d.project_id = sp.project_id AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
       WHERE sp.project_id = ?1 AND sp.session_id = ?2 AND sp.prompt_id = ?3)
     ORDER BY c.covered DESC LIMIT 1`).bind(projectId, sessionId, turnKey)
-    .first<{ turnKey: string; card: string; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null }>();
+    .first<{ turnKey: string; card: string; fields: string | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null }>();
+  return row === null ? null : { ...row, fields: storedCardFields(row.fields) };
 }
 
 /** A settled turn a model must card: due now, with the material its card is built from. */
@@ -205,12 +188,11 @@ export async function writeRunCards(
   const changed: string[] = [];
   let written = 0;
   for (const write of writes) {
-    const text = renderCard(write.card);
     const [first, ...rest] = write.turns;
     for (const turnKey of write.turns) {
       const results = await db.batch([
         ...cardStatements(db, projectId, sessionId, byKey.get(turnKey)!, {
-          text, outline: cardOutline(write.card), signal: write.signal, reason: 'model', sharedWith: turnKey === first || rest.length === 0 ? null : first!,
+          value: write.card, signal: write.signal, reason: 'model', sharedWith: turnKey === first || rest.length === 0 ? null : first!,
           covered: null, runId: run.runId, model: run.model,
         }, now),
         ...sessionProgressStatements(db, projectId, sessionId, now),

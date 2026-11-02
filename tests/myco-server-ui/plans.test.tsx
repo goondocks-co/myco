@@ -274,14 +274,14 @@ describe('a plan’s page', () => {
     expect(sent).toEqual([]);
   });
 
-  it('shows a member the status in a word, with no control', async () => {
+  it('offers a member the admitted plan status control', async () => {
     server(base({
       [PLAN]: () => onePlan(),
       [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer,
     }, MEMBER));
     mount(planPagePath(MYCO, { planKey: KEY }));
     await screen.findByRole('heading', { level: 1 });
-    expect(screen.queryByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toBeNull();
+    expect(screen.getByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toBeTruthy();
     expect((document.querySelector('[data-facts]') as HTMLElement).textContent).toContain('StatusIn progress');
   });
 

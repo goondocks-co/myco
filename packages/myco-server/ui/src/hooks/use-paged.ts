@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { retryCursorRead } from './cursor-retry';
 import { fetchJson } from '../lib/api';
 
 export interface Page<T> { rows: T[]; cursor: string | null }
@@ -12,6 +13,7 @@ export interface Page<T> { rows: T[]; cursor: string | null }
  * re-walks the loaded pages.
  */
 export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
+  const client = useQueryClient();
   const query = useInfiniteQuery({
     queryKey: [...key],
     initialPageParam: null as string | null,
@@ -35,6 +37,6 @@ export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unkno
     isFetchingMore: query.isFetchingNextPage,
     // A page already on its way is joined, never asked for again.
     more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
-    retry: () => { void query.refetch(); },
+    retry: () => { void retryCursorRead(client, key, query.error, () => query.refetch()); },
   };
 }

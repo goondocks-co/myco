@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  Button, DataTable, dayLabel, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, StatusChip, useFilterParams, useQueryDraft,
+  Button, DataTable, ReadState, dayLabel, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, StatusChip, useFilterParams, useQueryDraft,
   type DataTableColumn, type DataTableGroup,
 } from '../../design';
 import { useMembers } from '../../hooks/use-access';
@@ -110,11 +110,13 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
           </Button>
         </p>
       )}
+      {values.state !== 'ended' && <ReadState data={live.data} pending={live.isPending} error={live.error} onRetry={() => void live.refetch()} label="live sessions">{() => null}</ReadState>}
+      {list.rows.length > 0 && list.error && <ReadState data={list.rows} pending={false} error={list.error} onRetry={list.retry} label="sessions">{() => null}</ReadState>}
       <Table
         count={shown}
         groups={groups}
         pending={list.isPending}
-        error={list.error}
+        error={list.rows.length === 0 ? list.error : null}
         onRetry={list.retry}
         scoped={projectId !== null}
         projectName={projectName}

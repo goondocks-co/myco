@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { retryCursorRead } from './cursor-retry';
 import { fetchJson } from '../lib/api';
 import type { Page } from './use-paged';
 import type { TurnCollection } from './use-sessions';
@@ -80,6 +81,6 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
       setStalledOn(null);
       void query.fetchNextPage({ cancelRefetch: false });
     },
-    retry: () => { if (query.isFetchNextPageError) void query.fetchNextPage({ cancelRefetch: false }); else void query.refetch(); },
+    retry: () => { void retryCursorRead(client, key, query.error, () => query.isFetchNextPageError ? query.fetchNextPage({ cancelRefetch: false }) : query.refetch()); },
   };
 }

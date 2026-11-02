@@ -2,8 +2,9 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ANY, Breadcrumbs, COMPACT_QUERY, CountButton, ErrorState, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
+  ANY, Breadcrumbs, ReadState, COMPACT_QUERY, CountButton, ErrorState, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
 } from '../../design';
+import { invalidateSessionReads } from '../../hooks/session-reads';
 import { planPagePath } from '../../hooks/use-knowledge';
 import { PLAN_COLUMNS, planStatusWord, planTitle, progressWords, SPORE_TYPES, sporeStatusWord, sporeTypePlural } from '../knowledge/words';
 import { useSporePages } from '../../hooks/use-intelligence';
@@ -69,13 +70,13 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
   }
   const listPath = projectPath(projectId, '/sessions');
   return (
-    <Reading
+    <ReadState data={detail.data} pending={detail.isPending} error={detail.error} onRetry={() => void detail.refetch()} label="session">{() => <Reading
       answer={detail.data}
       projectId={projectId}
       projectName={projectName}
       now={now}
       actions={admin ? <SessionActions projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={() => navigate(listPath, { replace: true })} /> : null}
-    />
+    />}</ReadState>
   );
 }
 
@@ -87,11 +88,7 @@ function useFollowLive(projectId: string, session: SessionRow) {
   useEffect(() => {
     if (seen.current === heard) return;
     seen.current = heard;
-    void client.invalidateQueries({ queryKey: ['turns', projectId, session.sessionId] });
-    void client.invalidateQueries({ queryKey: ['turn', projectId, session.sessionId] });
-    void client.invalidateQueries({ queryKey: ['session-commits', projectId, session.sessionId] });
-    void client.invalidateQueries({ queryKey: ['session-activity', projectId, session.sessionId] });
-    void client.invalidateQueries({ queryKey: ['session-files', projectId, session.sessionId] });
+    void invalidateSessionReads(client, projectId, session.sessionId);
   }, [client, projectId, session.sessionId, heard]);
 }
 

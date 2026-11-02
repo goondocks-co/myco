@@ -40,7 +40,7 @@ export function Shell() {
   const current = inPath === null ? undefined : all.find((p) => p.projectId === inPath);
   useEffect(() => { if (current) rememberProject(current.projectId); }, [current]);
 
-  if (me.isError) return <ErrorState error={me.error} onRetry={() => void me.refetch()} />;
+  if (me.isError && me.data === undefined) return <ErrorState error={me.error} onRetry={() => void me.refetch()} />;
   if (me.data && member === null) return <NotAMember login={me.data.login} membership={me.data.membership} />;
 
   // An archived project is never the nav's fallback, unless it is the one open.

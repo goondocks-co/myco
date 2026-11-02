@@ -1,3 +1,4 @@
+import { encodeCard } from '@goondocks/myco-shared/turn-card';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '@myco-server-worker/core/tick.js';
 import { readPageChunk } from '@myco-server-worker/content/document-reader.js';
@@ -80,13 +81,14 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     expect(await get('/files?kind=read'), target).toMatchObject({ files: [{ path: 'late-read.ts', calls: 1, edits: 0, lastTurn: first }, { path: 'read.ts', calls: 1, edits: 0, lastTurn: first }] });
     expect(await get(''), target).toMatchObject({ filesEdited: 1, counts: { failedTools: 3, userPrompts: 3, mycoCalls: 2 } });
     expect(await get('/activity'), target).toEqual({ rows: [], cursor: null });
-    const card = { ...NONE_CARD('mechanical'), outcome: 'Completed the change', decisions: [{ decision: 'ship', reason: 'ready' }] };
+    const card = { ...NONE_CARD('mechanical'), done: 'Ran the build.\nOutcome: quoted inside Done', files: ['src/a, b.ts'], outcome: 'Completed the change', decisions: [{ decision: 'ship', reason: 'ready' }] };
     const current = await db.prepare(`SELECT changes FROM turn_cards WHERE turn_key=?`).bind(first).first<{ changes: number }>();
     await db.batch(cardStatements(db, 'project', 'long', { turnKey: first, changes: current!.changes }, {
-      text: renderCard(card), signal: 'high', reason: 'model', sharedWith: null, covered: true, runId: null, model: null,
+      value: card, signal: 'high', reason: 'model', sharedWith: null, covered: true, runId: null, model: null,
     }, now));
     expect((await get<{ rows: CatalogTurnRow[] }>('/turns?filter=key')).rows[0], target).toMatchObject({ headline: 'Completed the change', signal: 'high', marks: { decisions: true, errors: false } });
-    expect((await get<DocumentTurnDetail>('/turns/' + first)).card, target).toBe(renderCard(card));
+    expect((await get<DocumentTurnDetail>('/turns/' + first)).card, target).toBe(encodeCard(card));
+    expect(await db.prepare('SELECT card,fields FROM turn_cards WHERE project_id=? AND session_id=? AND turn_key=?').bind('project', 'long', first).first(), target).toEqual({ card: renderCard(card), fields: encodeCard(card) });
     const next = await get<{ files: unknown[]; nextCursor: string }>('/files?kind=all&limit=1');
     expect((await get<{ files: { path: string }[] }>('/files?kind=all&limit=1&cursor=' + encodeURIComponent(next.nextCursor))).files.map(row => row.path), target).toEqual(['late-read.ts']);
     const pending = (await db.prepare(`SELECT tool_call_id FROM myco_tool_calls WHERE project_id='project' AND session_id='long' AND success=0 LIMIT 1`)
@@ -98,11 +100,12 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     expect((await list()).rows[0], target).toMatchObject({ toolCallCount: 161, failedTools: 2, mycoCalls: 2,
       toolRollup: { myco: [{ name: 'myco_spores:save', count: 2, failed: 0 }] } });
     const rollup = (await list()).rows[0]!.toolRollup;
+    await db.prepare('UPDATE turn_cards SET headline=NULL,marks=NULL WHERE project_id=? AND session_id=? AND turn_key=?').bind('project', 'long', first).run();
     await db.prepare(`DELETE FROM session_edit_paths WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_prompts SET tool_state=NULL,tool_rollup=NULL,rollup_build=NULL,failed_tools=0,myco_calls=0 WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_documents SET rollup_after=-1,rollup_page=0,myco_build=0,myco_calls=0 WHERE session_id='long'`).run();
     for (let pass = 0; pass < 10; pass += 1) if (!(await locatePrompts(env, limits())).more) break;
-    expect((await list()).rows[0], target).toMatchObject({ toolRollup: rollup, failedTools: 2, mycoCalls: 2 });
+    expect((await list()).rows[0], target).toMatchObject({ toolRollup: rollup, failedTools: 2, mycoCalls: 2, headline: 'Completed the change' });
     expect(await get(''), target).toMatchObject({ counts: { mycoCalls: 2 } });
     for (const path of ['/turns?filter=bad', '/files?kind=bad', '/activity?type=failure', '/activity?tool=Bash']) {
       expect((await worker.fetch(await asOwner(db, base + path), bindings)).status, target).toBe(400);
@@ -175,7 +178,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     await db.prepare("DELETE FROM session_paths WHERE session_id='old'").run();
     await db.prepare(`DELETE FROM session_edit_paths WHERE session_id='old'`).run();
     await db.prepare(`UPDATE session_documents SET rollup_after=-1,rollup_page=0,rollup_record=0,myco_build=0,myco_calls=0 WHERE session_id='old'`).run();
-    await db.prepare(`UPDATE turn_cards SET headline=NULL,marks=NULL,card='Done: recovered\nOutcome: shipped\nErrors:\n- fixed',signal='high' WHERE turn_key=?`).bind(turn).run();
+    await db.prepare(`UPDATE turn_cards SET headline=NULL,marks=NULL,fields=NULL,card='Done: recovered\nOutcome: shipped\nErrors:\n- fixed',signal='high' WHERE turn_key=?`).bind(turn).run();
     expect(await locatePrompts(env, { calls: 500, deadline: 0, clock: () => 1 }), target).toEqual({ changed: 0, more: true });
     await locatePrompts(env, limits());
     expect((await db.prepare("SELECT rollup_record FROM session_documents WHERE session_id='old'").first<{rollup_record:number}>())!.rollup_record,target).toBeGreaterThan(0);
