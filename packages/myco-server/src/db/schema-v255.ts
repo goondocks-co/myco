@@ -79,10 +79,10 @@ const STATEMENTS: readonly string[] = [
 
 /** Each existing-table index build has its own deployment transaction. */
 const indexes = STATEMENTS.filter(sql => sql.startsWith('CREATE INDEX') && !sql.includes('ON session_turn_entries'));
-export const V121_STATEMENTS = STATEMENTS.filter(sql => !indexes.includes(sql) && !sql.startsWith('DROP INDEX'));
+export const V255_STATEMENTS = STATEMENTS.filter(sql => !indexes.includes(sql) && !sql.startsWith('DROP INDEX'));
 export const UX_SCHEMA_STEPS = [
-  { version: 121, statements: V121_STATEMENTS },
-  ...indexes.map((sql, at) => ({ version: 122 + at, statements: [
+  { version: 255, statements: V255_STATEMENTS },
+  ...indexes.map((sql, at) => ({ version: 256 + at, statements: [
     ...(sql.includes('idx_session_prompts_turns ON') ? ['DROP INDEX IF EXISTS idx_session_prompts_turns'] : []), sql,
   ] })),
 ];

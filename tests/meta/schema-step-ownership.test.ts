@@ -1,5 +1,5 @@
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
-import { V121_STATEMENTS, UX_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v121.js';
+import { V255_STATEMENTS, UX_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v255.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
@@ -133,8 +133,8 @@ interface StatementException {
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
-  ...V121_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({
-    step:121,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
+  ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({
+    step:255,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
   })),
   ...UX_SCHEMA_STEPS.flatMap(step => step.statements.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
     step: step.version, sql, reason: 'The ordered turn index is replaced in its own transaction.',
