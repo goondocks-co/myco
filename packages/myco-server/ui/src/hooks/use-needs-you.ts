@@ -21,7 +21,10 @@ export function useNeedsYou({ now, projectName }: { now: number; projectName: (p
     answer: attention.data,
     pending: attention.isPending,
     error: attention.error,
-    onRetry: () => void attention.refetch(),
+    onRetry: () => {
+      if (admin) void attention.refetch();
+      if (signedIn) void repositories.refetch();
+    },
     repositories: { items: repositories.data?.items, pending: signedIn && repositories.isPending, error: repositories.error },
     viewerId: me.data?.member?.id ?? null,
     projects: (projects.data?.projects ?? []).filter((p) => !isArchived(p)).map((p) => ({ projectId: p.projectId, name: p.name })),

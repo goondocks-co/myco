@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { ME_KEY } from '../lib/query-client';
 
@@ -51,4 +51,22 @@ export function useMe(options: { enabled?: boolean } = {}) {
 /** Whether the Deployment permits ordinary administration for this viewer. */
 export function useIsAdmin(): boolean {
   return permissionOf(useMe().data, 'settings').allowed;
+}
+
+/** Identity-changing writes retain their outcome while the shared identity owns refresh failure. */
+export function useIdentityMutation<TData, TVariables>(options: Omit<UseMutationOptions<TData, Error, TVariables>, 'mutationFn'> & { mutationFn: (variables: TVariables) => Promise<TData> }) {
+  const client = useQueryClient();
+  return useMutation({
+    ...options,
+    mutationFn: async (variables: TVariables) => {
+      const result = await options.mutationFn(variables);
+      await client.cancelQueries({ queryKey: ME_KEY, exact: true });
+      try {
+        await client.fetchQuery({ queryKey: ME_KEY, queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), staleTime: 0 });
+      } catch {
+        await client.invalidateQueries({ queryKey: ME_KEY, exact: true, refetchType: 'none' });
+      }
+      return result;
+    },
+  });
 }

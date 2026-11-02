@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActionLink, Breadcrumbs, Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, LoadingState, Progress, Select, StatusChip, TypeChip } from '../../design';
 import { useMembers } from '../../hooks/use-access';
 import { usePlan } from '../../hooks/use-knowledge';
-import { useIsAdmin } from '../../hooks/use-me';
+import { useMe } from '../../hooks/use-me';
 import { useSession, useSetPlanStatus } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
@@ -26,7 +26,7 @@ export interface PlanPageProps {
 /**
  * One plan as a reading page: its title and status, how far its items have
  * got, the plan in full at a readable width, and beside it the session that
- * wrote it and its facts. An admin sets its status here.
+ * wrote it and its facts. A member sets its status here.
  */
 export function PlanPage({ projectId, planKey, projectName }: PlanPageProps) {
   const plan = usePlan(projectId, planKey);
@@ -41,7 +41,8 @@ export function PlanPage({ projectId, planKey, projectName }: PlanPageProps) {
 
 function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; projectId: string; projectName: string; now: number }) {
   const parts = progressParts(plan.progress);
-  const admin = useIsAdmin();
+  const me = useMe();
+  const canSetStatus = me.data?.membership.state === 'active';
   const members = useMembers();
   const setBy = plan.updatedBy === null ? null : authorName(plan.updatedBy, members.data?.members);
   return (
@@ -68,6 +69,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
               </div>
             )}
           </header>
+          {plan.content === null && plan.blobKey !== null && <p className="t-small text-muted">Checklist progress is unavailable for this large stored plan.</p>}
           <section aria-label="The plan" data-plan-body="">
             <TextOrBlob projectId={projectId} text={plan.content === null ? null : withoutTitle(plan.content, plan.title)} blobKey={plan.blobKey} body={{ kind: 'plan', id: plan.planKey }} markdown />
           </section>
@@ -78,7 +80,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
           <FactsPanel title="Facts" actions={<CopyButton value={plan.planKey} label="Copy plan key" variant="secondary" />}>
             <FactRow term="Project">{projectName}</FactRow>
             <FactRow term="Status">
-              {admin ? <StatusControl projectId={projectId} plan={plan} /> : planStatusWord(plan.status)}
+              {canSetStatus ? <StatusControl projectId={projectId} plan={plan} /> : planStatusWord(plan.status)}
             </FactRow>
             {setBy !== null && <FactRow term="Status set by">{setBy}</FactRow>}
             <FactRow term="Written">{dateTime(plan.createdAt, now)}</FactRow>
@@ -130,7 +132,7 @@ function WrittenIn({ projectId, sessionId }: { projectId: string; sessionId: str
 const STATUS_OPTIONS = PLAN_COLUMNS.map((status) => ({ value: status, label: planStatusWord(status) }));
 
 /**
- * An admin's status control: a status is picked, then saved with its own
+ * A member's status control: a status is picked, then saved with its own
  * button, so a keystroke in the closed select never writes by itself. The
  * write is made as the signed-in member, and the page reads the plan again.
  */

@@ -21,7 +21,7 @@ export interface PlansBoardProps {
  * The plans your agents wrote, as a board by status: in progress, open, done
  * and abandoned, each column newest edit first with "Show more" and its count.
  * Searching keeps the board: each column then holds the plans of its status
- * whose title or text match, counted the same way. Every plan opens its own
+ * whose title or inline text match, counted the same way. Every plan opens its own
  * page and links to the session that wrote it.
  */
 export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
@@ -34,11 +34,12 @@ export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
     <div className="flex flex-col gap-s5" data-plans-board="">
       <FilterBar
         searchLabel="Search plans"
-        placeholder="Search plans by title or what they say"
+        placeholder="Search plan titles or inline text"
         query={draft.text}
         onQueryChange={draft.setText}
         onClear={() => { draft.reset(); filterParams.clear(); }}
       />
+      <p className="t-small text-muted">Large plans match by title only here; use Search to search their full text. Their checklist progress is unavailable on this board.</p>
       {q.length > 0 && !searching && <p className="t-small text-muted">Type at least two characters to search.</p>}
       {/* One column under another on a phone, two by two on a tablet, and side by side on a wide screen: nothing scrolls sideways. */}
       <div className="grid items-start gap-s4 md:grid-cols-2 xl:grid-cols-4" data-board="">

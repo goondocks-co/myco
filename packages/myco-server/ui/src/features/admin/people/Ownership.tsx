@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
 import { Button, Card, ConfirmDialog, ErrorState, Input, LoadingState, Select } from '../../../design';
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
-import { ME_KEY } from '../../../lib/query-client';
+import { useIdentityMutation } from '../../../hooks/use-me';
 import { AdminSection } from '../AdminFrame';
 
 const OWNERSHIP_KEY = ['ownership'] as const;
@@ -18,7 +18,7 @@ export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; name
   const [review, setReview] = useState<Review | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const change = useMutation({
+  const change = useIdentityMutation({
     mutationFn: (choice: Review) => choice.kind === 'record'
       ? postJson<DeploymentOwnershipPreview>('/api/ownership', { ownerMemberId: choice.memberId, revision: choice.revision })
       : postJson<DeploymentOwnershipPreview>('/api/ownership/transfer', { member_id: choice.memberId, expected_revision: choice.revision }),
@@ -28,7 +28,7 @@ export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; name
       setSelected('');
       setError(null);
       client.setQueryData(OWNERSHIP_KEY, outcome);
-      await Promise.all([client.invalidateQueries({ queryKey: OWNERSHIP_KEY }), client.invalidateQueries({ queryKey: ME_KEY })]);
+      await client.invalidateQueries({ queryKey: OWNERSHIP_KEY });
     },
     onError: async (failure) => {
       setReview(null);

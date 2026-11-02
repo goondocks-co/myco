@@ -69,16 +69,20 @@ A secret or equivalent authority created during Server Provisioning that permits
 _Avoid_: Having every member permanently share the provisioning secret
 
 **Member Credential**:
-An individually attributable credential issued when a member joins a Deployment. It grants full Member Access while allowing the server to preserve member identity and revoke or rotate one member's credential independently.
+An individually attributable credential issued when a member joins a Deployment. It grants the member’s role-based Member Access while allowing the server to preserve member identity and revoke or rotate one member's credential independently.
 _Avoid_: Using runtime or machine identity as the member's human identity
 
+**Membership Authority (2.0)**:
+Live members share capture and project intelligence across the Deployment; admins additionally manage settings (including provider credentials), enrollment, external-agent grants and ordinary administration, and the owner alone transfers ownership, grants or revokes admin roles, and administers another admin's membership. Own-runtime enrollment, machine and credential controls, and raw capture follow their resource-specific ownership rules; server infrastructure lifecycle remains an operator concern.
+_Avoid_: Treating a joined member as an administrator or deriving authority from runtime location
+
 **Flat Membership (2.0)**:
-Every joined member has equal application access across the Deployment: capture, dashboard, project intelligence, normal MCP, generated intelligence, settings, enrollment, and external-agent grant management. Provider settings and credentials included (the step-up credential was dropped 2026-08-30, #1036); a future guard, if ever wanted, is re-authentication of the signed-in member, never a second secret.
-_Avoid_: Reintroducing owner/member application roles in the initial 2.0 authorization model
+Deployment-wide access to shared Project intelligence, governed by Membership Authority. It does not grant equal administrative permissions.
+_Avoid_: Project-by-project sharing or assuming every member controls settings and enrollment
 
 **Member Access**:
-Full product access granted when a member joins a Deployment. A member may automatically create or resolve Projects from Git checkouts, contribute capture, and use the normal project-intelligence surfaces across the Deployment. Server infrastructure lifecycle remains an operator concern.
-_Avoid_: Project-by-project sharing or treating a member's checkout as a private copy
+The product access granted to a live member by Membership Authority. A member's checkout contributes to the Deployment's shared Projects.
+_Avoid_: Treating a member's checkout as a private copy or bypassing an operation's role policy
 
 **Member Runtime**:
 An environment acting on behalf of a member, whether a persistent Member Installation or an ephemeral sandbox. Runtime location and lifetime are execution metadata, not member identity or authorization scope.
@@ -139,7 +143,7 @@ _Avoid_: Treating the Cloudflare target as a different product
 ## Configuration and intelligence
 
 **Deployment Settings**:
-Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. All members manage these settings and the provider credentials in 2.0 with their session alone; credentials stay write-only and masked.
+Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. Management follows Membership Authority; provider credentials stay write-only and masked.
 _Avoid_: Applying Deployment Settings to only the currently selected Project
 
 **Member Settings**:

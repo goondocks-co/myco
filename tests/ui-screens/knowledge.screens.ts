@@ -147,7 +147,7 @@ async function expectBoard(page: Page, viewport: ViewportName): Promise<void> {
   await expect(column(page, 'in_progress').getByRole('link', { name: `Its session, which wrote “${PLAN_TITLE}”` })).toBeVisible();
 }
 
-async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' | 'member'): Promise<void> {
+async function expectPlanPage(page: Page, viewport: ViewportName): Promise<void> {
   const plan = page.locator('[data-plan-page]');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(PLAN_TITLE);
   await expect(plan.locator('[data-plan-status]')).toHaveText('In progress');
@@ -157,7 +157,7 @@ async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' 
   if (viewport === 'desktop') await expect(written).toBeInViewport();
   await expect(written).toContainText(PLAN_SESSION);
   await expect(written.getByRole('link', { name: 'Open the session →' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(page.getByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toHaveCount(1);
   await expect(plan.locator('[data-facts]').getByRole('button', { name: 'Copy plan key' })).toBeVisible();
   // The plan is read by its key, so its tags come with it.
   if (onFixture()) await expect(plan.locator('[data-facts]')).toContainText('Tagsdashboardoutcomes');
@@ -228,7 +228,7 @@ test.describe('Knowledge', () => {
           await column(page, 'in_progress').getByRole('link', { name: PLAN_TITLE, exact: true }).click();
           await expect(page).toHaveURL(/\/plans\/[0-9a-f-]+$/);
         });
-        await expectPlanPage(page, viewport, role);
+        await expectPlanPage(page, viewport);
         await settle(page, `plan-${role}`, viewport, mode);
         expectQuiet(watch);
       } finally {

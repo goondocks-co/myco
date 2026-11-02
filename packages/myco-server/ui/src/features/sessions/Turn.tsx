@@ -352,7 +352,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
           <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={read.attachments} cursor={read.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
             {(rows) => <Attachments projectId={projectId} attachments={rows} />}
           </TurnPages>
-          <WhatHappened card={read.card} />
+          {!isMechanical(turn.headline) && <WhatHappened card={read.card} />}
           <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} held={{ replies: turn.responseCount, children: turn.childCount, plans: turn.planCount }} />
         </>}
       </ReadState>
