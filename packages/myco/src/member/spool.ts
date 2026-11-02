@@ -301,6 +301,7 @@ export class MemberSpool {
   /** The home this spool lives under; retention ages that home and no other. */
   readonly mycoHome: string;
   private readonly createReadLocks: boolean;
+  private readonly stagingTransactions = new Set<string>();
 
   /**
    * `initialize` false skips creating the spool's directories, so a caller that
@@ -362,10 +363,12 @@ export class MemberSpool {
       const source = { path: file, sha256, mediaType, size: bytes.byteLength };
       const lock = bufferLockPath(this.dir, sessionId);
       ensurePrivateFile(lock);
-      withFileLockSync(lock, () => {
+      const stage = () => {
         ensureMemberDir(dir, this.mycoHome);
         publishStagedBlob(source, bytes);
-      });
+      };
+      if (this.stagingTransactions.has(sessionId)) stage();
+      else withFileLockSync(lock, stage);
       return source;
     };
   }
@@ -505,6 +508,15 @@ export class MemberSpool {
     return appended;
   }
 
+  /** Permit body staging for the full session mutation while its lock is held. */
+  private withStagingTransaction<T>(sessionId: string, operation: () => T): T {
+    return withFileLockSync(bufferLockPath(this.dir, sessionId), () => {
+      this.stagingTransactions.add(sessionId);
+      try { return operation(); }
+      finally { this.stagingTransactions.delete(sessionId); }
+    });
+  }
+
   /**
    * One hook's lines into `file` (the journal or the marks file) and its receipts, under one hold of the session's
    * lock and in ONE write: a hook that is killed, or meets a full disk, part-way leaves at most a cut final line,
@@ -517,7 +529,7 @@ export class MemberSpool {
     if (typeof derive !== 'function' && derive.length === 0 && !record) return;
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
-    withFileLockSync(lock, () => {
+    this.withStagingTransaction(sessionId, () => {
       const state = readSessionStateUnlocked(this.dir, sessionId);
       // Lines a hook derives from the session's state are derived under the lock that writes them and that state.
       const lines = typeof derive === 'function' ? derive(state) : derive;

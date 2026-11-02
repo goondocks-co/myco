@@ -333,7 +333,7 @@ function removeClaimGate(gate: string, token: string): void {
   }
 }
 
-/** Only a dead process permits removal of its immutable operation token. */
+/** Only a verified dead process instance permits removal of its immutable operation token. */
 function recoverClaimGate(gate: string): void {
   let tokens: string[];
   try { tokens = readdirSync(gate); }
@@ -349,6 +349,11 @@ function recoverClaimGate(gate: string): void {
   const token = tokens[0];
   const match = /^owner-(\d+)-/.exec(token);
   if (!match || Number(match[1]) <= 0) return;
+  const birth = /^owner-\d+-birth-(\d+(?:\.\d+)?)-/.exec(token)?.[1];
+  if (birth !== undefined) {
+    if (writerStatus({ instance: `${match[1]}-gate`, at: 0, born: Number(birth) }) === "dead") removeClaimGate(gate, token);
+    return;
+  }
   try { process.kill(Number(match[1]), 0); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") removeClaimGate(gate, token);
@@ -363,7 +368,7 @@ function withClaimGate<T>(claimPath: string, denied: T, operation: () => T): T {
     removeClaimGate(gate, cleanupToken);
     pendingClaimGateCleanup.delete(claimPath);
   }
-  const token = `owner-${MYCO_INSTANCE_ID}-${++claimGateOrdinal}`;
+  const token = `owner-${process.pid}-birth-${PROCESS_BORN_AT}-${MYCO_INSTANCE_ID}-${++claimGateOrdinal}`;
   const prepared = `${gate}.${token}`;
   mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
   mkdirSync(prepared, { mode: 0o700 });
@@ -400,11 +405,31 @@ function withClaimGate<T>(claimPath: string, denied: T, operation: () => T): T {
 }
 
 /** The instance a claim names and when it last said so, or null when the claim is absent or empty. */
-function claimHolder(claimPath: string): { instance: string; at: number } | null {
+interface WriterClaim { instance: string; at: number; born?: number }
+/** The process birth bound stored with a claim; module instances in one process keep separate instance ids. */
+const PROCESS_BORN_AT = performance.timeOrigin;
+const PROCESS_BIRTH_PRECISION_MS = 1000;
+const PROCESS_PROBE_TIMEOUT_MS = 500;
+
+function writerStatus(holder: WriterClaim): "live" | "dead" | "unknown" {
+  const pid = Number(/^(\d+)-/.exec(holder.instance)?.[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || holder.born === undefined) return "unknown";
+  if (pid === process.pid) return PROCESS_BORN_AT > holder.born + PROCESS_BIRTH_PRECISION_MS ? "dead" : "live";
+  try { process.kill(pid, 0); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "unknown"; }
+  const probe = process.platform === "win32"
+    ? spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`], { encoding: "utf8", timeout: PROCESS_PROBE_TIMEOUT_MS })
+    : spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: PROCESS_PROBE_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C" } });
+  const birth = Date.parse(probe.stdout?.trim() ?? "");
+  if (probe.status !== 0 || !Number.isFinite(birth)) return "unknown";
+  return birth > holder.born + PROCESS_BIRTH_PRECISION_MS ? "dead" : "live";
+}
+
+function claimHolder(claimPath: string): WriterClaim | null {
   try {
-    const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
+    const [instance, at, born] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
     if (!instance) return null;
-    return { instance, at: Number.parseInt(at ?? "0", 10) || 0 };
+    return { instance, at: Number.parseInt(at ?? "0", 10) || 0, ...(born !== undefined && Number.isFinite(Number(born)) ? { born: Number(born) } : {}) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -413,7 +438,7 @@ function claimHolder(claimPath: string): { instance: string; at: number } | null
 
 function writeClaim(claimPath: string): void {
   const handle = openSync(claimPath, "w", 0o600);
-  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`); }
+  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()} ${PROCESS_BORN_AT}`); }
   finally { closeSync(handle); }
 }
 
@@ -424,7 +449,7 @@ function takeClaim(claimPath: string): boolean {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
-  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`); }
+  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()} ${PROCESS_BORN_AT}`); }
   finally { closeSync(handle); }
   return true;
 }
@@ -436,17 +461,11 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string, 
   if (performance.now() < (claimRecheckAt.get(claimPath) ?? 0)) return false;
   let claimed = false;
   try {
-    const existing = claimHolder(claimPath);
-    if (existing !== null && existing.instance !== MYCO_INSTANCE_ID && Date.now() - existing.at <= CLAIM_STALE_MS) {
-      claimRecheckAt.set(claimPath, performance.now() + CLAIM_RECHECK_MS);
-      noteOnce(`claim-wait-${claimPath}`, `${agent} session ${sessionId}: waiting for its writer claim; acquisition retries on later actions`);
-      return false;
-    }
     claimed = withClaimGate(claimPath, false, () => {
       if (takeClaim(claimPath)) return true;
       const holder = claimHolder(claimPath);
       if (holder?.instance === MYCO_INSTANCE_ID) return true;
-      if (holder !== null && Date.now() - holder.at <= CLAIM_STALE_MS) return false;
+      if (holder !== null && Date.now() - holder.at <= CLAIM_STALE_MS && writerStatus(holder) !== "dead") return false;
       try { unlinkSync(claimPath); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       return takeClaim(claimPath);
@@ -467,13 +486,7 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string, 
   return claimed;
 }
 
-/**
- * Remove every claim this instance still holds when the process exits, so a
- * session resumed in a new process is captured at once instead of waiting out
- * `CLAIM_STALE_MS`. Registered once, on the first claim taken, and only for
- * `exit`: a signal handler would hold the host open past the signal. A process
- * killed outright leaves its claim to age out.
- */
+/** Release this instance's claims on process exit; retained claims carry the process birth proof for recovery. */
 let claimExitHookInstalled = false;
 function releaseClaimsWhenProcessEnds(): void {
   if (claimExitHookInstalled) return;
@@ -487,12 +500,12 @@ function releaseClaimsWhenProcessEnds(): void {
           });
         } catch (error) {
           if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
-          noteOnce(`exit-${key}`, `could not give up the claim on ${key} at exit (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+          noteOnce(`exit-${key}`, `could not give up the claim on ${key} at exit (${(error as Error)?.message ?? "unknown"}) — retained capture waits for verified writer recovery`);
         }
       }
     });
   } catch (error) {
-    noteOnce("exit-hook", `could not register the exit hook (${(error as Error)?.message ?? "unknown"}) — a claim this process holds waits to go stale instead`);
+    noteOnce("exit-hook", `could not register the exit hook (${(error as Error)?.message ?? "unknown"}) — retained claims carry their process birth proof for recovery`);
   }
 }
 
@@ -552,7 +565,7 @@ function releaseSessionClaim(directory: string, agent: string, sessionId: string
       transcriptSessions.delete(claimPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
-      noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+      noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — retained capture waits for verified writer recovery`);
     }
   }
 }
@@ -580,6 +593,75 @@ type CaptureStatus = "committed" | "refused" | "failed";
 type HookAnswer = { additionalContext?: string; promptId?: string };
 type CaptureResult = { status: CaptureStatus; answer?: HookAnswer };
 
+let pendingCaptureOrdinal = 0;
+const replayingCapture = new Set<string>();
+const replayedCaptureSizes = new Map<string, number>();
+
+/** A verified competing writer suppresses duplicate callbacks; uncertain ownership retains immutable raw records. */
+function retainPendingCapture(directory: string, agent: string, sessionId: string, record: Record<string, unknown>): CaptureStatus {
+  const routingKey = routingKeyFor(directory, false);
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (claimPath === null) return "refused";
+  try {
+    const holder = claimHolder(claimPath);
+    if (holder !== null && holder.instance !== MYCO_INSTANCE_ID && writerStatus(holder) === "live") return "refused";
+    const pendingDir = `${claimPath}.pending`;
+    mkdirSync(pendingDir, { recursive: true, mode: 0o700 });
+    const file = join(pendingDir, `${MYCO_INSTANCE_ID}.jsonl`);
+    appendFileSync(file, `${JSON.stringify({ ...record, captureId: record.type === "prompt" && typeof record.submissionId === "string" ? `submission-${record.submissionId}` : `${MYCO_INSTANCE_ID}-${++pendingCaptureOrdinal}` })}\n`, { mode: 0o600 });
+    noteOnce(`pending-${claimPath}`, `${agent} session ${sessionId}: capture retained pending writer verification`);
+    return "committed";
+  } catch (error) {
+    noteOnce(`pending-error-${claimPath}`, `${agent} session ${sessionId}: cannot retain pending capture (${(error as Error)?.message ?? "unknown"})`);
+    return "failed";
+  }
+}
+
+/** Replay under the transcript mutation gate; captured ids make an interrupted replay idempotent. */
+function flushPendingCapture(directory: string, agent: string, sessionId: string, routingKey: string): void {
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey)!;
+  if (replayingCapture.has(claimPath)) return;
+  const pendingDir = `${claimPath}.pending`;
+  let files: string[];
+  try { files = readdirSync(pendingDir); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  files = files.filter(name => name.endsWith(".jsonl") && replayedCaptureSizes.get(join(pendingDir, name)) !== statSync(join(pendingDir, name)).size);
+  if (files.length === 0) return;
+  const transcript = transcriptPathFor(directory, agent, sessionId, routingKey)!;
+  const captured = new Set<string>();
+  for (const line of readFileSync(transcript, "utf8").split("\n").filter(Boolean)) {
+    let row: Record<string, unknown>;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (typeof row.captureId === "string") captured.add(row.captureId);
+  }
+  replayingCapture.add(claimPath);
+  try {
+    for (const name of files) {
+      if (!name.endsWith(".jsonl")) continue;
+      const file = join(pendingDir, name);
+      const text = readFileSync(file, "utf8");
+      const end = text.lastIndexOf("\n") + 1;
+      for (const line of text.slice(0, end).split("\n").filter(Boolean)) {
+        const row = JSON.parse(line) as Record<string, unknown>;
+        if (typeof row.captureId !== "string") throw new Error("Pending capture has no identity");
+        if (captured.has(row.captureId)) continue;
+        if (appendTranscriptLine(directory, agent, sessionId, row) !== "committed") throw new Error("Pending capture append refused");
+        captured.add(row.captureId);
+      }
+      replayedCaptureSizes.set(file, Buffer.byteLength(text));
+      // Active producers retain their inbox; only a dead writer's complete inbox can be retired.
+      const instance = name.slice(0, -".jsonl".length);
+      const pid = Number(/^(\d+)-/.exec(instance)?.[1]);
+      let dead = false;
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); }
+        catch (error) { dead = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+      }
+      if (dead && end === text.length && statSync(file).size === Buffer.byteLength(text)) unlinkSync(file);
+    }
+  } finally { replayingCapture.delete(claimPath); }
+}
+
 /**
  * Append one record to the transcript.
  *
@@ -603,6 +685,7 @@ function appendTranscriptLine(
   try {
     return withClaimGate<CaptureStatus>(claimPath, "refused", () => {
       if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return "refused";
+      if (record.type !== "session") flushPendingCapture(directory, agent, sessionId, routingKey);
       mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
       const handle = openSync(filePath, "a+", 0o600);
       try {
@@ -612,6 +695,7 @@ function appendTranscriptLine(
         const line = `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`;
         appendFileSync(handle, `${unfinished ? "\n" : ""}${line}`, "utf-8");
         committed = true;
+        if (record.type === "prompt" && typeof record.submissionId === "string") transcriptSessions.get(claimPath)?.submissions?.set(record.submissionId, typeof record.promptId === "string" ? { promptId: record.promptId } : {});
         if (unfinished) noteOnce(`tail-${filePath}-${size}`, `${agent} session ${sessionId}: isolated an unfinished transcript tail at byte ${size}`);
       } finally { closeSync(handle); }
       return "committed";
@@ -715,7 +799,8 @@ function runMycoHook(
 const transcriptSessions = new Map<string, {
   header: boolean;
   started: boolean;
-  pendingPrompt?: { text: string; answer: HookAnswer };
+  pendingPrompt?: { submission?: string; answer: HookAnswer };
+  submissions?: Map<string, HookAnswer>;
 }>();
 
 function transcriptHookPayload(directory: string, agent: string, sessionId: string, routingKey: string): Record<string, unknown> {
@@ -746,6 +831,7 @@ function initializeTranscriptSession(directory: string, agent: string, sessionId
         if (status !== "committed") return { status };
         state.header = true;
       }
+      flushPendingCapture(directory, agent, sessionId, routingKey);
       if (state.started) return { status: "committed" };
       const answer = runMycoHook(directory, agent, sessionId, "session-start", transcriptHookPayload(directory, agent, sessionId, routingKey), routingKey);
       if (answer === null) return { status: "failed" };
@@ -761,29 +847,46 @@ function initializeTranscriptSession(directory: string, agent: string, sessionId
 /** All plugin turn records require the same session initialization obligations. */
 function captureTranscriptLine(directory: string, agent: string, sessionId: string, record: Record<string, unknown>): CaptureStatus {
   const initialized = initializeTranscriptSession(directory, agent, sessionId);
-  return initialized.status === "committed" ? appendTranscriptLine(directory, agent, sessionId, record) : initialized.status;
+  const status = initialized.status === "committed" ? appendTranscriptLine(directory, agent, sessionId, record) : initialized.status;
+  return status === "refused" ? retainPendingCapture(directory, agent, sessionId, record) : status;
 }
 
 /** Keep a successful prompt hook answer until its transcript append commits. */
-function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string): CaptureResult {
+function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string, submission?: string): CaptureResult {
+  const record = { type: "prompt", sessionId, submissionId: submission, text, origin: "human", at: new Date().toISOString() };
   const routingKey = routingKeyFor(directory);
   const initialized = initializeTranscriptSession(directory, agent, sessionId, routingKey);
-  if (initialized.status !== "committed") return initialized;
+  if (initialized.status !== "committed") return initialized.status === "refused"
+    ? { status: retainPendingCapture(directory, agent, sessionId, record) }
+    : initialized;
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   if (routingKey === null || claimPath === null) return { status: "refused" };
   try {
-    return withClaimGate<CaptureResult>(claimPath, { status: "refused" }, () => {
+    const result = withClaimGate<CaptureResult>(claimPath, { status: "refused" }, () => {
       if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return { status: "refused" };
       const state = transcriptSessions.get(claimPath)!;
-      const answer = state.pendingPrompt?.text === text ? state.pendingPrompt.answer
+      if (submission !== undefined) {
+        if (state.submissions === undefined) {
+          state.submissions = new Map();
+          for (const line of readFileSync(transcriptPathFor(directory, agent, sessionId, routingKey)!, "utf8").split("\n").filter(Boolean)) {
+            let row: Record<string, unknown>;
+            try { row = JSON.parse(line); } catch { continue; }
+            if (row.type === "prompt" && typeof row.submissionId === "string") state.submissions.set(row.submissionId, typeof row.promptId === "string" ? { promptId: row.promptId } : {});
+          }
+        }
+        const captured = state.submissions.get(submission);
+        if (captured !== undefined) return { status: "committed", answer: captured };
+      }
+      const answer = state.pendingPrompt !== undefined && state.pendingPrompt.submission === submission ? state.pendingPrompt.answer
         : runMycoHook(directory, agent, sessionId, "user-prompt-submit", { ...transcriptHookPayload(directory, agent, sessionId, routingKey), prompt: text }, routingKey);
-      if (answer !== null) state.pendingPrompt = { text, answer };
-      const status = appendTranscriptLine(directory, agent, sessionId, {
-        type: "prompt", sessionId, promptId: answer?.promptId, text, origin: "human", at: new Date().toISOString(),
-      });
+      if (answer !== null) state.pendingPrompt = { submission, answer };
+      const status = appendTranscriptLine(directory, agent, sessionId, { ...record, promptId: answer?.promptId });
       if (status === "committed") delete state.pendingPrompt;
       return { status, answer: answer ?? undefined };
     });
+    return result.status === "refused"
+      ? { status: retainPendingCapture(directory, agent, sessionId, record) }
+      : result;
   } catch (error) {
     noteOnce(`prompt-${agent}-${sessionId}`, `${agent} session ${sessionId}: cannot capture prompt (${(error as Error)?.message ?? "unknown"})`);
     return { status: "failed" };
@@ -956,7 +1059,7 @@ export const MycoPlugin = async ({
       const startContext = openSession(root, sessionId);
       if (startContext) await injectSynthetic(sessionId, `${CONTEXT_HEADING}${startContext}`);
 
-      const result = captureTranscriptPrompt(root, AGENT, sessionId, text);
+      const result = captureTranscriptPrompt(root, AGENT, sessionId, text, output?.message?.id ?? _input?.messageID);
       if (result.status !== "committed") return;
       const answer = result.answer;
       const promptId = answer?.promptId;

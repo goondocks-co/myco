@@ -110,8 +110,9 @@ export function deriveId(...parts: string[]): string {
 export const subagentIdFor = (sessionId: string, agentId: string): string => deriveId('subagent', sessionId, agentId);
 export const planKeyForPath = (projectId: string, planPath: string): string => deriveId('plan', projectId, planPath);
 export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveId('plan-tag', sessionId, tag, String(position));
-/** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
-export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveId('plan-tag', sessionId, tag, 'prompt', promptId);
+/** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt and tag occurrence: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
+export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string, occurrence = 0): string =>
+  occurrence === 0 ? deriveId('plan-tag', sessionId, tag, 'prompt', promptId) : deriveId('plan-tag', sessionId, tag, 'prompt', promptId, String(occurrence));
 
 // ---------------------------------------------------------------------------
 // Helpers

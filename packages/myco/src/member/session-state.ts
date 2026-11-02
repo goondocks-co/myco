@@ -86,6 +86,8 @@ export interface SessionState {
   /** sha256(content) → planKey for every plan this session has emitted. */
   planHashes: Record<string, string>;
   planTagCount: number;
+  /** Submission/tag occurrence key → the captured plan identity. */
+  pastedPlans: Record<string, string>;
   /** Normalized path → the key, captured content hash and any outstanding read for each tracked plan; Stop re-reads them. */
   planPaths: Record<string, {
     planKey: string;
@@ -178,7 +180,7 @@ export function pointerBehind(pointer: TranscriptPointer): boolean {
 }
 
 export function emptySessionState(now: number = Date.now()): SessionState {
-  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, siblings: {}, planHashes: {}, planTagCount: 0, planPaths: {}, attachmentKeys: [], delivered: [], compactionOrdinal: 0, updatedAt: now };
+  return { version: SESSION_STATE_VERSION, highWater: 0, prompts: {}, siblings: {}, planHashes: {}, planTagCount: 0, pastedPlans: {}, planPaths: {}, attachmentKeys: [], delivered: [], compactionOrdinal: 0, updatedAt: now };
 }
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {

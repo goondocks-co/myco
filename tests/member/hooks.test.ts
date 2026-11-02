@@ -261,8 +261,8 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(row).toEqual({ plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: asked.promptId });
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     await run('user-prompt-submit', { transcript_path: tx, prompt: '<system-reminder>quoting <ultraplan>\n# Quoted\n</ultraplan></system-reminder>' });
-    // The same plan pasted again is one plan.
-    await run('user-prompt-submit', { transcript_path: tx, prompt: 'Again:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
+    // Replaying the same submission retains one plan.
+    await run('user-prompt-submit', { transcript_path: tx, prompt_id: 'k-pasted', prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
     expect(rig.rows('plans')).toBe(1);
     expect(memberKinds()).toEqual(['session.start', 'plan']);
   });

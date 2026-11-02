@@ -54,7 +54,7 @@ export const SESSION_FIELD_RULES = {
   startSettled: 'or', startedAt: 'min', planTagCount: 'max', compactionOrdinal: 'max',
   // Report instants: shown, never used to order anything.
   lastAckAt: 'max', lastAccountedAt: 'max', lastDeliveryAt: 'max',
-  prompts: 'union', planHashes: 'union', planPaths: 'union', attachmentKeys: 'union',
+  prompts: 'union', planHashes: 'union', pastedPlans: 'union', planPaths: 'union', attachmentKeys: 'union',
   // Only ever suppresses a second render of a block.
   delivered: 'union',
   transcript: 'pointers', continuations: 'pointers', siblings: 'pointers',

@@ -25,6 +25,7 @@ export class AntigravityJsonlParser implements TranscriptParser {
     const lines = content.split('\n').filter(Boolean);
     const turns: TranscriptTurn[] = [];
     let current: TranscriptTurn | null = null;
+    const submissions = new Set<string>();
 
     for (const line of lines) {
       let entry: Record<string, unknown>;
@@ -36,9 +37,11 @@ export class AntigravityJsonlParser implements TranscriptParser {
       if (type === 'USER_INPUT') {
         const rawContent = typeof entry.content === 'string' ? entry.content : '';
         const promptText = cleanAntigravityUserPrompt(rawContent).slice(0, PROMPT_PREVIEW_CHARS);
-        // AGY re-emits the same USER_INPUT at step 0 of each execution within
-        // one logical turn; skip the duplicate.
-        if (current && current.prompt === promptText) continue;
+        const submissionId = typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : undefined;
+        if (submissionId !== undefined) {
+          if (submissions.has(submissionId)) continue;
+          submissions.add(submissionId);
+        }
         if (current) turns.push(current);
         current = { prompt: promptText, toolCount: 0, timestamp };
         continue;

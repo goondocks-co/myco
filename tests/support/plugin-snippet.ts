@@ -38,7 +38,7 @@ export function snippetModule(
     },
     { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
     class extends Date { static now() { return now(); } },
-    { now: () => elapsed() + performance.now() - realStart },
+    { timeOrigin: performance.timeOrigin, now: () => elapsed() + performance.now() - realStart },
   ) as {
     transcriptPathFor: (d: string, a: string, s: string) => string;
     appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => "committed" | "refused" | "failed";

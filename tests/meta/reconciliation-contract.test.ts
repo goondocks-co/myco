@@ -39,7 +39,7 @@ const FULL: Required<SessionState> = {
   transcript: { path: '/t', transcriptId: 't', inode: 1, nextOffset: 0, parsedSize: 0 },
   continuations: { '/c': { path: '/c', transcriptId: 'c', inode: 2, nextOffset: 0, parsedSize: 0 } },
   siblings: { '/s': { path: '/s', transcriptId: 's', inode: 3, nextOffset: 0, parsedSize: 0 } },
-  planHashes: { h: 'k' }, planTagCount: 1, planPaths: { '/p': { planKey: 'k', hash: 'h' } }, attachmentKeys: ['a'], delivered: ['cortex'],
+  planHashes: { h: 'k' }, pastedPlans: { occurrence: 'k' }, planTagCount: 1, planPaths: { '/p': { planKey: 'k', hash: 'h' } }, attachmentKeys: ['a'], delivered: ['cortex'],
   compactionOrdinal: 1, agent: 'claude-code', agentUnknown: true, transcriptRetry: { at: 1, backoffMs: 1 }, eventRetry: { at: 1, backoffMs: 1 },
   startedAt: 1, lastAckAt: 1, lastAccountedAt: 1, lastDeliveryAt: 1, contextAsks: [{ kind: 'start', at: 1, id: 'a' }],
   promptBackfill: { transcriptPath: '/t', at: 1 }, hookAt: 1, endedAt: 1, renderedAsk: 'a', turn: { id: 't', promptId: 'p' },

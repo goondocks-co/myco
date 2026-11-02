@@ -171,15 +171,16 @@ export async function main(opts: HookMainOptions = {}) {
         let position = state.planTagCount;
         for (const tag of HOOK_CONFIG[agent]?.planTags ?? []) {
           const regex = planTagEnvelopeRegex(tag);
+          let occurrence = 0;
           let match: RegExpExecArray | null;
           while ((match = regex.exec(text)) !== null) {
             const planContent = match[1].trim();
             if (!planContent) continue;
-            const planHash = sha256Text(planContent);
-            if (state.planHashes[planHash] || plans.some(([h]) => h === planHash)) continue;
-            const planKey = transcriptWritesRows ? planKeyForPromptTag(sessionId, tag, planAnchor) : planKeyForTag(sessionId, tag, position);
+            const occurrenceKey = planKeyForPromptTag(sessionId, tag, planAnchor, occurrence++);
+            if (state.pastedPlans[occurrenceKey]) continue;
+            const planKey = transcriptWritesRows ? occurrenceKey : planKeyForTag(sessionId, tag, position);
             position += 1;
-            plans.push([planHash, planKey]);
+            plans.push([occurrenceKey, planKey]);
             events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', originPath: `transcript:${tag}`, tags: [tag], promptId: naming.shared ? promptId : undefined }));
           }
         }
@@ -207,7 +208,7 @@ export async function main(opts: HookMainOptions = {}) {
             next.prompts[hash] = promptId;
             next.planTagCount += plans.length;
           }
-          for (const [planHash, planKey] of plans) next.planHashes[planHash] = planKey;
+          for (const [occurrenceKey, planKey] of plans) next.pastedPlans[occurrenceKey] = planKey;
           if (delivered !== undefined) next.renderedAsk = delivered.ask;
         },
         response: served.response,
