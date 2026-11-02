@@ -72,7 +72,7 @@ import { V112_STATEMENTS } from './schema-v112.js';
 import { V113_STATEMENTS } from './schema-v113.js';
 import { V114_STATEMENTS } from './schema-v114.js';
 import { RETIREMENT_SCHEMA_STEPS } from './schema-v117.js';
-import { UX_SCHEMA_STEPS } from './schema-v121.js';
+import { UX_SCHEMA_STEPS } from './schema-v255.js';
 import { V115_STATEMENTS } from './schema-v115.js';
 import { V116_STATEMENTS } from './schema-v116.js';
 

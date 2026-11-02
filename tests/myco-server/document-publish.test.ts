@@ -24,6 +24,7 @@ import { prepareDerivedStream } from '@myco-server-worker/core/registered-conten
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
 import { DOCUMENT_IDENTITIES_SQL } from '@myco-server-worker/db/document-tables.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
@@ -1142,7 +1143,7 @@ test('ranged event references survive archive, deletion and a failed range trans
     await event(500,'arrived','response',JSON.stringify({responseId:'arrived-record',blob:'arrived-blob'}),'inline').run();
     expect(await one(db,"SELECT high FROM _v117_reference_ranges WHERE source='events'"),name).toEqual({high:296});
     await db.prepare(`UPDATE events SET payload='{"blob":"captured"}' WHERE event_id='legacy-1'`).run();
-    const ranges=SCHEMA_STEPS.filter(step=>step.version>117&&step.version<SERVER_SCHEMA_VERSION);
+    const ranges=SCHEMA_STEPS.filter(step=>step.version>117&&step.version<RETIREMENT_SCHEMA_STEPS.at(-1)!.version);
     expect(ranges,name).toHaveLength(136);
     const interrupted=ranges[10]!;
     await advance(interrupted.version-1);
