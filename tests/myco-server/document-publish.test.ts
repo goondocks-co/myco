@@ -19,7 +19,6 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { prepareArchive } from '@myco-server-worker/core/event-content.js';
 import { bundleArchiveStatements } from '@myco-server-worker/core/archive-bundle.js';
-import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
@@ -320,7 +319,7 @@ test('a session too large for one pass commits progress on every pass under the 
   });
 }, 120_000);
 
-test('a session whose publication keeps failing backs off and is recorded while another session converts in the same wake', async () => {
+test('a session whose publication keeps failing backs off and is recorded while another session publishes in the same wake', async () => {
   await withDocumentStores(async (db, name) => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const blobs = memoryBlobStore();
@@ -328,9 +327,8 @@ test('a session whose publication keeps failing backs off and is recorded while 
     const env = await captureDocumentTranscript(db, blobs, 'session', tx, first, t0, 0, 'codex');
     await publishDocuments(env, t0 + MIN, limits());
     await captureDocumentTranscript(db, blobs, 'session', tx, reply('still running'), t0 + 2 * MIN, first.length, 'codex');
-    await captureDocumentSession(db, 'project', 'old', { blobs });
-    await db.prepare(`UPDATE session_documents SET state='convert',generation=NULL,due_at=NULL WHERE session_id='old'`).run();
-    await db.prepare(`DELETE FROM publish_queue WHERE session_id='old'`).run();
+    await captureDocumentTranscript(db, blobs, 'other-session', 'tx_abcdef0123456789abcdef0123456789',
+      user('other-turn', 'continue') + ran('other-call'), t0 + 2 * MIN, 0, 'codex');
 
     // The live session's chunk objects can no longer be read, so every pass over it fails by name.
     const lost = new Set((await db.prepare(`SELECT b.generation,c.blob_key FROM session_chunks c JOIN blobs b ON b.project_id=c.project_id AND b.key=c.blob_key
@@ -340,7 +338,7 @@ test('a session whose publication keeps failing backs off and is recorded while 
 
     const now = t0 + 3 * MIN;
     await publishDocuments(env, now, limits());
-    expect(await one(db, `SELECT state FROM session_documents WHERE session_id='old'`), name).toEqual({ state: 'live' });
+    expect(await counters(db, 'other-session'), name).toMatchObject({ prompts: 1, tool_calls: 1 });
     expect(Number((await counters(db, 'session'))!.due_at), name).toBeGreaterThan(now);
     expect(documentPublishFailureFinding((await statusMetadata(db)).documentPublishFailure, now), name)
       .toEqual({ kind: 'document_publish_failed', tone: 'warn', failures: 1, lastFailedAt: now, failure: 'document_object_missing' });
@@ -1065,7 +1063,11 @@ test('retirement refuses missing records and preserves archived blob holders thr
         ('project','invalid','converted','token','prompt','cli','not JSON','hash',1,1,'inline')`).run();
     await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
       VALUES('project','converted','tool','archived','Read',?,1,1,'token',1)`).bind(output).run();
+    await db.prepare(`INSERT INTO transcript_publication(project_id,session_id,transcript_id,generation,record_scheme,parser_version,state,failure,updated_at)
+      VALUES('project','converted','stopped',1,'native',1,'failed','blob_absent',1)`).run();
+    await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id='converted'").run();
     for(const step of SCHEMA_STEPS.filter(step=>step.version>=117))await run(step);
+    expect(await one(db,"SELECT due_at FROM session_documents WHERE session_id='converted'"),name).toEqual({due_at:0});
     expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='responses'").first(),name).toBeNull();
     expect(await readPage({db,blobs},'project','converted',SESSION_OWNER,0),name).toMatchObject(records);
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
@@ -1073,5 +1075,5 @@ test('retirement refuses missing records and preserves archived blob holders thr
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
     expect(await db.prepare(`SELECT json_extract(payload,'$.toolCallId') id FROM events WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
-  },115);
+  },116);
 });

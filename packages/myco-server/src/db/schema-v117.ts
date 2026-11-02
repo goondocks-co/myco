@@ -89,6 +89,8 @@ export const V117_STATEMENTS: readonly string[] = [
         WHERE c.value>0 AND (c.key GLOB 'ids_differ:*'
           OR c.key GLOB 'body_differs:*' OR c.key GLOB 'plan_not_promoted*')))`,
   `DROP TABLE _v117_documents_guard`,
+  `UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
+    (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'))`,
   ...[
     {table:'prompt_batches',id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},
     {table:'responses',id:'response_id',field:'responseId',blob:'blob_key',kinds:"'response'"},
@@ -105,7 +107,6 @@ export const V117_STATEMENTS: readonly string[] = [
   ...RETIRED_CONTENT_TABLES.map((name) => `DROP TABLE IF EXISTS ${name}`),
   `UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0`,
   'ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT',
-  `CREATE INDEX IF NOT EXISTS idx_transcript_publication_failed ON transcript_publication(project_id,failure,updated_at) WHERE state='failed'`,
   ...documentCounters,
 ];
 

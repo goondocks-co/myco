@@ -25,6 +25,9 @@ INSERT INTO _v117_documents_guard SELECT COUNT(*) FROM session_documents d
 
 DROP TABLE _v117_documents_guard;
 
+UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
+    (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'));
+
 WITH backfill AS MATERIALIZED (
       SELECT p.project_id,p.event_id,json_set(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END,
         '$.promptId',COALESCE(json_extract(CASE WHEN json_valid(e.payload) THEN e.payload END,'$.promptId'),p.prompt_id),
@@ -129,8 +132,6 @@ DROP TABLE IF EXISTS view_instances;
 UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0;
 
 ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_transcript_publication_failed ON transcript_publication(project_id,failure,updated_at) WHERE state='failed';
 
 CREATE TRIGGER IF NOT EXISTS session_prompts_unread_insert AFTER INSERT ON session_prompts BEGIN UPDATE session_read_facts SET eligible_prompts=eligible_prompts+(1)
   WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND EXISTS (SELECT 1 FROM session_documents d

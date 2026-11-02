@@ -129,7 +129,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0114_v114.sql': '98f3e9945585c1cf8dacf510a2fc516308786ab541f045f5fc225134bba72c6c',
   '0115_v115.sql': '2294b761a948cb8d15ab9552c36ce9373037480e389bf1e3a0f402e0814d62a2',
   '0116_v116.sql': 'aa4873f1546a150d5349fae34fed7ff63daafed93a83762db2b5729985ab0bea',
-  '0117_v117.sql': '8a2d29b41e8246f664553418ef0b7ba37ab87ea6bd3b32069fafe953e55f8c4c',
+  '0117_v117.sql': '5f6c5d01777141d0667aa52d1f5e8acab6116db33c7630e196a2b24604866e9d',
   '0118_v118.sql': 'f67d20715d48958b2fee095660203d95e11bd651fe7ae0670c1e6ea69a345dde',
   '0119_v119.sql': 'd704b38c014b738c302c06b67627073ee1b2b33d569a3ed0c072c054a7a084db',
   '0120_v120.sql': 'a5a857afc9369f5cad903cbdec47bdf90d6fbd68179a84a45bfe5c15d55be8e9',
@@ -472,7 +472,7 @@ describe('versioned schema steps', () => {
   });
   it('stamps its version as the last statement of every step, in ascending order from 1', () => {
     SCHEMA_STEPS.forEach((step, i) => {
-      expect(step.version).toBe(i < 115 ? i + 1 : i + 2);
+      expect(step.version).toBe(i + 1);
       expect(step.statements[step.statements.length - 1]).toMatch(new RegExp(`^INSERT OR REPLACE INTO schema_meta \\(key, value\\) (VALUES \\('version', '${step.version}'\\)|SELECT 'version', '${step.version}' WHERE )`));
     });
     expect(SCHEMA_STEPS[SCHEMA_STEPS.length - 1].version).toBe(SERVER_SCHEMA_VERSION);
@@ -899,7 +899,7 @@ it('retires content storage only after documents are live, preserving the catalo
       VALUES('retirement','prompt','session','event','token','retained body','user',1,1,1,'hash')`);
     const retirement = SCHEMA_STEPS.find(step => step.version === 117)!;
     expect(() => step(sqlite, retirement)).toThrow('documents_retirement_incomplete');
-    expect(version(sqlite)).toBe('115');
+    expect(version(sqlite)).toBe('116');
     sqlite.run(`UPDATE session_documents SET state='live',generation=1 WHERE project_id='retirement'`);
     sqlite.run(`UPDATE raw_provenance_backfill SET source=5,cursor_project='retirement',cursor_id='old',complete=0 WHERE id=1`);
     sqlite.run(`INSERT INTO view_instances(project_id,session_id,instance_id,parser_version,base,state,created_at) VALUES('retirement','session','instance',1,'full','live',1)`);

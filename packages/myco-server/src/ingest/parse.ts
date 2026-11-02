@@ -523,7 +523,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     if (chunkedState)
         calls += 1;
     // A window's claims on harness keys are admitted before anything it derives is published: the session's key owners
-    // decide (`prompt_key_owners`), and a window that lost a claim to another transcript of the session is read again
+    // decide, and a window that lost a claim to another transcript of the session is read again
     // under the owner that won, so its record is derived as the reuse it is.
     lines = lines.map((line, i) => ({ ...line, sourceEnd: lines![i + 1]?.offset ?? windowEnd }));
     let keys: ReadonlyMap<string, string> = new Map<string, string>();
