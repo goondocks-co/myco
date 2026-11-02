@@ -1059,9 +1059,10 @@ describe('the session reading page', () => {
 
   it('keeps a plan tag written as an example in code, with or without a plan of that body', () => {
     const plans = ['steps', 'sample'];
-    for (const text of ['Use `<proposed_plan>steps</proposed_plan>` in the example.', '```xml\n<proposed_plan>sample</proposed_plan>\n```', '~~~\n<proposed_plan>sample</proposed_plan>\n'])
+    for (const text of ['Use `<proposed_plan>steps</proposed_plan>` in the example.', '```xml\n<proposed_plan>sample</proposed_plan>\n```', '~~~\n<proposed_plan>sample</proposed_plan>\n', 'Example:\n\n    <proposed_plan>sample</proposed_plan>\n\nEnd.', 'The literal string "<proposed_plan>sample</proposed_plan>" is the example.', '<proposed_plan>sample</proposed_plan> is the example.'])
       expect(replyDisplay(text, 'codex', plans)).toBe(text);
     expect(replyDisplay('Before\n\n<proposed_plan>\n```sh\nrun\n```\n</proposed_plan>', 'codex', ['```sh\nrun\n```'])).toBe('Before');
+    expect(replyDisplay('Before\n<proposed_plan>sample</proposed_plan>  \nAfter', 'codex', plans)).toBe('Before\n  \nAfter');
     expect(replyDisplay('<proposed_plan>sample</proposed_plan>', 'cursor', plans)).toBe('<proposed_plan>sample</proposed_plan>');
   });
 
