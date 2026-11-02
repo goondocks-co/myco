@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -29,7 +30,7 @@ import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV } from './helpers/owner.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
-import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { envelope, uuid } from './helpers/fixtures.js';
 import { jsonBody } from '../helpers/json-body.js';
 
 const MEMBER = { memberId: 'mem_machine_1', machineId: 'machine_1' };

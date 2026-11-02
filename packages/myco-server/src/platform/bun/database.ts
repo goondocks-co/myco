@@ -11,13 +11,18 @@ import { sqliteRelationalStore } from './sqlite.js';
 import { configureSqliteLibrary } from './sqlite-library.js';
 import type { NativeSqlite } from './native.js';
 
-/** Opens the database on the mounted volume with foreign keys enforced and write-ahead logging on. */
-export function openDatabase(databasePath: string, native?: NativeSqlite): Database {
+/** Admit an existing mounted database without changing its connection or journal policy. */
+export function openExistingDatabase(databasePath: string, native?: NativeSqlite): Database {
   configureSqliteLibrary(native);
   if (!databasePath) throw new Error('a self-hosted deployment requires a database path on its mounted volume');
   // `create: false`: a mistyped or unmounted path must surface as a missing
   // database, not as a running server on an empty one it silently made.
-  const sqlite = new Database(databasePath, { create: false, readwrite: true });
+  return new Database(databasePath, { create: false, readwrite: true });
+}
+
+/** Opens the database on the mounted volume with foreign keys enforced and write-ahead logging on. */
+export function openDatabase(databasePath: string, native?: NativeSqlite): Database {
+  const sqlite = openExistingDatabase(databasePath, native);
   sqlite.exec('PRAGMA foreign_keys = ON');
   sqlite.exec('PRAGMA journal_mode = WAL');
   return sqlite;

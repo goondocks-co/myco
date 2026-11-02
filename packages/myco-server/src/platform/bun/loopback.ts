@@ -11,6 +11,17 @@ export const LOOPBACK_V6 = '::1';
 /** Host values a loopback deployment answers. Ports are compared separately. */
 const ALLOWED_HOSTNAMES = new Set([LOOPBACK_V4, `[${LOOPBACK_V6}]`]);
 
+/** A configured public origin admits exactly its loopback authority, including a published port. */
+export function loopbackHostAdmission(origin?: string): (header: string | null, port: number) => boolean {
+  if (origin === undefined) return isAllowedLoopbackHost;
+  const publicUrl = new URL(origin);
+  if (!['http:', 'https:'].includes(publicUrl.protocol) || !ALLOWED_HOSTNAMES.has(publicUrl.hostname)
+    || publicUrl.username !== '' || publicUrl.password !== '') {
+    throw new LoopbackContractError('loopback-authority', 'a loopback public origin requires an http or https loopback literal authority');
+  }
+  return (header) => header === publicUrl.host;
+}
+
 export class LoopbackContractError extends Error {
   constructor(readonly condition: string, message: string) {
     super(message);

@@ -29,7 +29,7 @@ import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { configureSqliteLibrary, resolveSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
 import { vectorId, type VectorMetadata } from '@myco-server-worker/core/embedding/vectors.js';
-import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { bootstrapDatabase } from '@myco-server-worker/platform/bun/server-main.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { FRAME_HEADERS } from '@myco-server-worker/platform/bun/static.js';
@@ -80,7 +80,7 @@ function carriedLibrary(): string | null {
 function volume(): { databasePath: string; blobDir: string } {
   const root = scratch();
   const databasePath = join(root, 'myco.sqlite');
-  migrateOnly(databasePath);
+  bootstrapDatabase(databasePath);
   const sqlite = new Database(databasePath);
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','a',0)`).run();
   sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();

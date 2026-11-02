@@ -9,8 +9,9 @@ const READY_INTERVAL_MS = 2_000;
 
 function docker(...args) {
   const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 });
-  if (result.status !== 0) throw new Error(`docker ${args[0]} failed: ${result.stderr || result.stdout}`);
-  return result.stdout.trim();
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  if (result.status !== 0) throw new Error(`docker ${args[0]} failed: ${output}`);
+  return args[0] === 'logs' ? output : result.stdout.trim();
 }
 
 async function ready(container) {
@@ -19,6 +20,9 @@ async function ready(container) {
       const response = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(3_000) });
       if (response.status === 200) return;
     } catch { /* The listener may not have bound yet. */ }
+    if (docker('inspect', '--format', '{{.State.Running}}', container) === 'false') {
+      throw new Error(`${container} stopped before readiness:\n${docker('logs', container)}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, READY_INTERVAL_MS));
   }
   throw new Error(`${container} did not become ready:\n${docker('logs', container)}`);
@@ -84,6 +88,7 @@ async function main() {
   let failure;
   if (!dataDir) docker('volume', 'create', volume);
   try {
+    docker('run', '--rm', '-v', `${mount}:/data`, image, '--bootstrap-only');
     start(first, image);
     containers.add(first);
     await ready(first);

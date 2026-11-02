@@ -105,7 +105,7 @@ export function tickPacer(): TickPacer {
 
 /** Whether the wake at `now` runs only the jobs the pacer holds as draining. */
 function drainOnlyAt(pacer: TickPacer | undefined, now: number): pacer is TickPacer & { fullAt: number; state: PowerState } {
-  if (pacer === undefined || pacer.fullAt === null || pacer.state === null || pacer.draining.length === 0) return false;
+  if (pacer === undefined || pacer.fullAt === null || pacer.state === null) return false;
   const cadence = nextWakeDelayMs(pacer.state, WAKE_INTERVALS);
   return cadence !== null && now - pacer.fullAt < cadence;
 }
@@ -209,19 +209,21 @@ function continuationDelay(now: number, cadence: number, drainAt: Record<string,
  * `wake` names which wake this tick is: a target's own clock passes `'clock'`; a tick an owner requests is `'request'`.
  * A clock also passes its `pacer`, which this tick reads to decide whether it drains only, and updates.
  */
-export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake; pacer?: TickPacer } = {}): Promise<TickReport> {
+export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake; pacer?: TickPacer; workRequested?: boolean } = {}): Promise<TickReport> {
   const pacer = options.pacer;
   if (drainOnlyAt(pacer, now) && !(pacer.heldBy === EMBEDDING_SWEEP_ASSERTION && await embeddingKeepsAwake(env, now))) {
-    const due = pacer.draining.filter((name) => (pacer.drainAt?.[name] ?? 0) <= now);
-    const jobs = await runJobs(env, now, pacer.state, due, true);
+    const workState = options.workRequested ? 'active' : pacer.state;
+    const requested = options.workRequested ? jobsDueAt(workState, options.wake ?? 'clock').filter(job => job.onWorkWake).map(job => job.name) : [];
+    const due = [...new Set([...pacer.draining.filter((name) => (pacer.drainAt?.[name] ?? 0) <= now), ...requested])];
+    const jobs = await runJobs(env, now, workState, due, true);
     // A queued run waits on no cadence: an owner's dispatch during a drain starts as it would at any other wake.
-    const drained = await drainAfterJobs(env, now, pacer.state);
+    const drained = await drainAfterJobs(env, now, workState);
     const continuation = continuedJobs(now, jobs, pacer.draining.filter((name) => !due.includes(name)), pacer.drainAt);
     Object.assign(pacer, continuation);
     const untilFull = Math.max(0, pacer.fullAt + nextWakeDelayMs(pacer.state, WAKE_INTERVALS)! - now);
     const nextWakeMs = continuationDelay(now, untilFull, pacer.drainAt ?? {});
     const backlog = await pendingPublication(env.db, now);
-    return { state: pacer.state, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
+    return { state: workState, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
   }
   const last = await lastActivityAt(env.db);
   const idleMs = last === null ? null : Math.max(0, now - last);

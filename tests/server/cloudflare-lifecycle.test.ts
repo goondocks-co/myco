@@ -97,6 +97,27 @@ const setup = () => {
   return { home, dir: stagingDir(home), options: { accountId: ACCOUNT, mycoHome: home } };
 };
 
+it('refuses a different account before any command for an existing hosted Deployment', async () => {
+  const { home, options } = setup();
+  writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'fixture-worker', databaseName: 'fixture-db', bucketName: 'fixture-blobs', versionId: 'fixture-version', deployedAt: 'fixture' }, home);
+  for (const operation of [updateCloudflareDeployment, cloudflareDeploymentStatus, rollbackCloudflareDeployment, destroyCloudflareDeployment, createCloudflareDeployment]) {
+    calls = [];
+    await expect(operation({ ...options, accountId: 'c'.repeat(32), runner: runner() })).rejects.toThrow('selected account does not match');
+    expect(calls).toEqual([]);
+    expect(readDeploymentRecord(home)?.versionId).toBe('fixture-version');
+  }
+  const admittedAccounts: string[] = [];
+  const provider = runner();
+  const selected = { ...options, runner: provider };
+  selected.runner = { run: async (command, args, runOptions) => {
+    selected.accountId = 'c'.repeat(32);
+    if (args.includes('delete')) admittedAccounts.push(runOptions?.env?.CLOUDFLARE_ACCOUNT_ID ?? '');
+    return provider.run(command, args, runOptions);
+  } };
+  await destroyCloudflareDeployment(selected);
+  expect(admittedAccounts).toEqual([ACCOUNT]);
+});
+
 /** A home no command has touched: `stagingDir` is a path answer, so naming it writes nothing. */
 const freshHome = (): string => mkdtempSync(join(tmpdir(), 'myco-cf-fresh-'));
 

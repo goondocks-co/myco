@@ -8,6 +8,8 @@
  * `ensure` is what requested work calls — a wake soon, unless one is already
  * sooner.
  */
+import { ENSURE_SOON_MS, wakePolicy } from '../../core/wake-policy.js';
+import { classify, emit } from '../../telemetry.js';
 
 export interface WakeLoop {
   /** Wake soon, unless a wake is already due sooner. */
@@ -26,26 +28,27 @@ export interface WakeLoopOptions {
 }
 
 export const WAKE_FLOOR_MS = 15 * 60_000;
-const ENSURE_SOON_MS = 1_000;
 
-export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>, options: WakeLoopOptions): WakeLoop {
+export function startWakeLoop(tick: (workRequested: boolean) => Promise<{ nextWakeMs: number | null }>, options: WakeLoopOptions): WakeLoop {
   const soonMs = options.soonMs ?? ENSURE_SOON_MS;
+  const timing = wakePolicy();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let dueAt = Number.POSITIVE_INFINITY;
   let running: Promise<unknown> | null = null;
   let again = false;
   let stopped = false;
+  let workRequested = false;
 
   const arm = (delayMs: number): void => {
     if (stopped) return;
     const bounded = Math.max(0, Math.min(delayMs, options.floorMs));
-    const at = Date.now() + bounded;
+    const at = timing.workAt(Date.now(), bounded);
     if (timer !== null) {
       if (at >= dueAt) return;
       clearTimeout(timer);
     }
     dueAt = at;
-    timer = setTimeout(() => { timer = null; dueAt = Number.POSITIVE_INFINITY; void fire(); }, bounded);
+    timer = setTimeout(() => { timer = null; dueAt = Number.POSITIVE_INFINITY; void fire(); }, Math.max(0, at - Date.now()));
     (timer as { unref?: () => void }).unref?.();
   };
 
@@ -53,12 +56,20 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
     if (stopped) return;
     if (running !== null) { again = true; return; }
     let nextWakeMs: number | null = options.floorMs;
-    const ticking = tick();
+    const requested = workRequested;
+    workRequested = false;
+    const ticking = Promise.resolve().then(() => tick(requested));
     running = ticking;
     try {
       nextWakeMs = (await ticking).nextWakeMs;
-    } catch {
-      // The tick reports its own failures; the loop's job is only to come back.
+      timing.succeeded();
+    } catch (error) {
+      workRequested ||= requested;
+      nextWakeMs = timing.failed(Date.now());
+      emit({ kind: 'wake_failed', error_class: classify(error) });
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      dueAt = Number.POSITIVE_INFINITY;
     } finally {
       running = null;
     }
@@ -70,7 +81,7 @@ export function startWakeLoop(tick: () => Promise<{ nextWakeMs: number | null }>
   else arm(options.floorMs);
 
   return {
-    ensure: async () => { arm(soonMs); },
+    ensure: async () => { workRequested = true; arm(soonMs); },
     stop: async () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);

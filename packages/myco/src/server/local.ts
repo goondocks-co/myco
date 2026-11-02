@@ -21,7 +21,7 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { LocalVolume } from './local-volume.js';
-import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { bootstrapDatabase, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
@@ -289,7 +289,7 @@ export function createLocalDeployment(
     onProgress?.('directory');
     const generated = ensureSecrets(paths);
     onProgress?.('secrets');
-    const applied = migrateOnly(paths.databasePath, native);
+    const applied = bootstrapDatabase(paths.databasePath, native);
     onProgress?.('schema');
     writeRecord(record, paths);
     onProgress?.('record');

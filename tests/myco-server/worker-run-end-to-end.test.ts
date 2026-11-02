@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { queuePrePauseExtraction, claimPrePauseExtraction } from './helpers/held-extraction.js';
 import { legacyWorker } from './helpers/worker-principal.js';
@@ -28,7 +29,7 @@ import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-cat
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { publishFixture, memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { publishFixture, memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
