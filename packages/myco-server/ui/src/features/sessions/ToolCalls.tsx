@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
+import { mycoToolFields } from '@goondocks/myco-shared/member-protocol';
 import { Button, Disclosure, ExternalLink, Skeleton } from '../../design';
 import { processedBodyUrl, useTurnToolCalls, type ToolCallRow, type ToolRollup, type ToolSummary as ToolSummaryRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
@@ -93,7 +94,16 @@ function FailedCall({ projectId, sessionId, row }: { projectId: string; sessionI
   );
 }
 
-const countsLine = (rollup: ToolRollup) => rollup.tools.map((tool) => `${tool.name} ${tool.count.toLocaleString()}`).join(' · ');
+/** A tool's name in the counts: an MCP tool's as `server: tool`. */
+function toolLabel(name: string): string {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  return mcp === null ? name : `${mcp[1]}: ${mcp[2]}`;
+}
+
+/** The counts by tool, leaving out the Myco tools the chips show. */
+const countsLine = (rollup: ToolRollup) => rollup.tools
+  .filter((tool) => mycoToolFields(tool.name, null).mycoTool === undefined)
+  .map((tool) => `${toolLabel(tool.name)} ${tool.count.toLocaleString()}`).join(' · ');
 
 const mycoChip = 'rounded-control border border-primary/45 bg-primary-bg px-s2 py-px t-mono text-primary';
 const failedChip = 'border-bad/50 bg-bad-bg text-bad';
@@ -127,6 +137,7 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
   const failuresTotal = rollup !== null ? failed : summary?.failed ?? 0;
   const partial = summary?.complete === false;
   const calls = total > 0 || partial;
+  const byTool = rollup === null ? '' : countsLine(rollup);
   return (
     <section aria-label="Tool use" className="flex flex-col gap-s2" data-testid="tool-use">
       <h2 className="t-h3 text-ink">{calls ? 'Tool use' : 'Myco'}</h2>
@@ -135,7 +146,7 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
           <p className="t-small text-ink-2" data-testid="tool-counts">
             {count(total, 'call')}
             {rollup !== null && failed > 0 && <> · <span className="font-medium text-bad">{failed.toLocaleString()} failed</span></>}
-            {rollup !== null && rollup.tools.length > 0 && <span className="text-muted"> · {countsLine(rollup)}</span>}
+            {byTool !== '' && <span className="text-muted"> · {byTool}</span>}
           </p>
         )}
         {shown !== undefined && shown.shown < shown.total && <p className="t-small text-muted" data-testid="tool-partial">Failures, Myco calls and files below: showing the first {shown.shown.toLocaleString()} of {shown.total.toLocaleString()} calls.</p>}

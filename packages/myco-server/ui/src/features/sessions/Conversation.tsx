@@ -126,7 +126,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  // The open row stays in view inside the list, and the page returns to the turn's start.
+  // The open row stays in view, inside the list and on the page, and the page returns to the turn's start.
   const listRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -137,6 +137,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
       const b = list.getBoundingClientRect();
       if (a.top < b.top + 30 || a.bottom > b.bottom) list.scrollTop += a.top - b.top - 60;
     }
+    if (row != null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
     const reader = readerRef.current;
     if (reader != null && reader.getBoundingClientRect().top < 0 && typeof reader.scrollIntoView === 'function') reader.scrollIntoView({ block: 'start' });
   }, [openId, filter, outline.isPending]);

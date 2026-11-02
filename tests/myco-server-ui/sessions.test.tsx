@@ -1623,7 +1623,7 @@ describe('the session reading page', () => {
         ...listRoutes(() => page([turn({
           headline: 'Built the sweep', signal: 'high', marks: { decisions: true, rejected: true, errors: true, corrections: true, openQuestions: true },
           toolCallCount: 1204, failedTools: 41, mycoCalls: 20,
-          toolRollup: rollup({ tools: [{ name: 'Bash', count: 498 }, { name: 'Read', count: 366 }, { name: 'other', count: 340 }], myco: [{ name: 'myco_search', count: 6, failed: 1 }], filesEdited: 3 }),
+          toolRollup: rollup({ tools: [{ name: 'Bash', count: 498 }, { name: 'Read', count: 366 }, { name: 'mcp__github__create_issue', count: 2 }, { name: 'mcp__myco__myco_search', count: 6 }, { name: 'other', count: 332 }], myco: [{ name: 'myco_search', count: 6, failed: 1 }], filesEdited: 3 }),
         })])),
         [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
           prompt: { promptId: P1, origin: 'user', text: 'Build it.', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'a', text: 'Earlier word', blobKey: null, createdAt: NOW }, { responseId: 'b', text: 'Last word', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null,
@@ -1641,7 +1641,7 @@ describe('the session reading page', () => {
       expect(within(reader).getByText('Last word')).toBeTruthy();
       expect(within(reader).queryByText('Earlier word')).toBeNull();
       expect(within(reader).getByRole('button', { name: '1 earlier reply' })).toBeTruthy();
-      expect(within(reader).getByTestId('tool-counts').textContent).toBe('1,204 calls · 41 failed · Bash 498 · Read 366 · other 340');
+      expect(within(reader).getByTestId('tool-counts').textContent).toBe('1,204 calls · 41 failed · Bash 498 · Read 366 · github: create_issue 2 · other 332');
       expect(within(reader).getByTestId('tool-partial').textContent).toContain('showing the first 300 of 1,204 calls');
       expect(within(reader).getByText('myco_search ×6 · 1 failed')).toBeTruthy();
       expect(within(reader).getByTestId('failed-call-f1').textContent).toContain('FAIL sweep-batch');

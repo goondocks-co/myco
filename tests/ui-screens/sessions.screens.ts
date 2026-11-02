@@ -593,6 +593,23 @@ test.describe('Sessions', () => {
     });
   }
 
+  test('a link to a turn below the fold brings its row into view', async ({ browser }) => {
+    test.skip(!onFixture(), 'the session is the fixture’s');
+    const { context, page, watch } = await openPage(browser, { path: '/projects', viewport: 'desktop', mode: 'light', cookie: screensEnv('ownerCookie') });
+    try {
+      await watch.navigate(() => openTable(page, 'desktop'));
+      await watch.navigate(() => openSession(page));
+      const turn = await page.locator('[data-turn-row]').last().getAttribute('data-turn-row');
+      await page.setViewportSize({ width: 1280, height: 420 });
+      await page.goto(`${page.url().split('?')[0]}?turn=${turn}`);
+      await settled(page);
+      await expect(page.locator(`[aria-current="true"][data-turn-row="${turn}"]`)).toBeInViewport({ ratio: 0.9 });
+      expectQuiet(watch);
+    } finally {
+      await context.close();
+    }
+  });
+
   for (const viewport of ['desktop', 'phone'] as const) {
     test(`an admin's session actions ${viewport}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the session is the fixture’s');
