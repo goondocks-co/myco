@@ -45,7 +45,7 @@ export function turnStatisticsStatements(db: RelationalStore, key: readonly unkn
   }
   const match = `e.project_id=p.project_id AND e.session_id=p.session_id AND e.generation=p.generation AND e.owner=p.prompt_id`;
   const top = (kind: string, fields: string) => `SELECT ${fields} FROM session_turn_entries e INDEXED BY idx_session_turn_entries_count
-    WHERE ${match} AND e.kind='${kind}' ORDER BY e.n DESC,e.name LIMIT ${ROLLUP_TOOLS}`;
+    WHERE ${match} AND e.kind IN ('tool','myco') AND e.kind='${kind}' ORDER BY e.n DESC,e.name LIMIT ${ROLLUP_TOOLS}`;
   for (const page of jsonPages(finished)) statements.push(db.prepare(`UPDATE session_prompts AS p SET
     files_named=(SELECT named FROM session_turn_totals t WHERE t.project_id=p.project_id AND t.session_id=p.session_id AND t.generation=p.generation AND t.owner=p.prompt_id),
     tool_rollup=json_object(

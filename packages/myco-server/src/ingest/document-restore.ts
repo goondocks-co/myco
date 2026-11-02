@@ -209,12 +209,12 @@ async function restartConversions(db: Pick<ServerEnv, 'db'>['db'], plan: Documen
       ...BUILT.map((table) => db.prepare(`DELETE FROM ${table} WHERE ${converting}`).bind(refs, ...own)),
       heldUntil === null
         ? db.prepare(`UPDATE session_documents SET generation = NULL, build = NULL, due_at = NULL, restore_hold = NULL,
-            prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0, first_prompt = NULL,
+            prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, paths_count = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0, first_prompt = NULL,
             last_record_at = NULL, open_turn_key = NULL, next_chunk = 0, updated_at = ? WHERE ${converting}`).bind(now, refs, holder)
         : db.prepare(`INSERT INTO session_documents (project_id, session_id, state, due_at, restore_hold, updated_at)
             SELECT json_extract(value,'$.projectId'), json_extract(value,'$.sessionId'), 'convert', ?, ?, ? FROM json_each(?) WHERE true
             ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'convert', generation = NULL, build = NULL, due_at = excluded.due_at,
-              restore_hold = excluded.restore_hold, prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0,
+              restore_hold = excluded.restore_hold, prompts = 0, user_prompts = 0, replies = 0, tool_calls = 0, failed_tools = 0, plans = 0, myco_calls = 0, files_edited = 0, paths_count = 0, myco_build = 0, paths_build = NULL, rollup_after = NULL, rollup_page = 0, rollup_record = 0,
               first_prompt = NULL, last_record_at = NULL, open_turn_key = NULL, next_chunk = 0, updated_at = excluded.updated_at
               WHERE session_documents.state = 'convert'`).bind(heldUntil, holder, now, refs),
     ]);
