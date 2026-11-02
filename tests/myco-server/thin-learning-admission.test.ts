@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from 'bun:test';
-import { withViewStores } from './helpers/view-stores.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 import { V104_STATEMENTS } from '@myco-server-worker/db/schema-v104.js';
 import { assertThinLearningDrained, THIN_LEARNING_ADMISSION_SQL, admitThinLearningRemoval } from '@myco-server-worker/db/thin-learning-admission.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
@@ -63,7 +63,7 @@ for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pendin
         run = db.query("SELECT * FROM agent_runs WHERE id='held'").get();
       } finally { db.close(); }
       if (from >= 102 && status === 'completed') {
-        expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-from);
+        expect(migrateOnly(file)).toBe(SCHEMA_STEPS.filter(step => step.version > from).length);
         return;
       }
       expect(() => migrateOnly(file)).toThrow(from < 102 ? THIN_LEARNING_STEPPING_STONE_REQUIRED : 'thin_learning_not_drained');
@@ -82,14 +82,14 @@ for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pendin
           for (const step of SCHEMA_STEPS.filter(step => step.version > from && step.version <= 103)) for (const sql of step.statements) stepping.exec(sql);
         } finally { stepping.close(); }
       }
-      expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-(from < 102 ? 103 : from));
+      expect(migrateOnly(file)).toBe(SCHEMA_STEPS.filter(step => step.version > (from < 102 ? 103 : from)).length);
       expect(migrateOnly(file)).toBe(0);
     } finally { report.mockRestore(); fs.rmSync(root, {recursive:true,force:true}); }
   });
 }
 
 it('admits only drained pre-pause extraction on native and D1, including equal and unknown dispatch boundaries', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     await db.prepare("UPDATE schema_meta SET value='100' WHERE key='learning_paused_at'").run();
     await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1)").run();
     for (const status of ['queued', 'pending', 'running']) for (const [queued, started] of [[99, 101], [100, 101], [null, 100], [null, null]]) {
@@ -174,7 +174,7 @@ it('aborts the native migration without stamping or changing held work and conve
       expect(held.query("SELECT name FROM sqlite_master WHERE name='_v104_guard_thin_learning'").get()).toBeNull();
       held.exec("UPDATE agent_runs SET status='completed' WHERE id='held'");
     } finally { held.close(); }
-    expect(migrateOnly(file)).toBe(SERVER_SCHEMA_VERSION-103);
+    expect(migrateOnly(file)).toBe(SCHEMA_STEPS.filter(step => step.version > 103).length);
     expect(migrateOnly(file)).toBe(0);
   } finally { fs.rmSync(root, { recursive: true }); }
 });
@@ -204,7 +204,7 @@ for (const from of [41,101]) for (const status of ['queued','pending','running']
         expect(held.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toBeNull();
         held.exec("UPDATE agent_runs SET status='completed' WHERE id='held'");
       } finally {held.close();}
-      expect(migrateOnly(copy.databasePath,undefined,copy)).toBe(SERVER_SCHEMA_VERSION-from);
+      expect(migrateOnly(copy.databasePath,undefined,copy)).toBe(SCHEMA_STEPS.filter(step => step.version > from).length);
     });
     expect(report.mock.calls).toEqual([[THIN_LEARNING_UPGRADE_REMEDY]]);
     expect(await fingerprintFile(source)).toEqual(fingerprint);

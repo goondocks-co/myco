@@ -5,21 +5,20 @@
  * exclude tombstones; ingestion refuses subsequent capture and import for the
  * same session ID. Unreferenced blobs are freed in bounded pages.
  */
-import { VIEW_SESSION_TABLES } from '../db/view-tables.js';
 import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { recordBlobCandidates, releaseBlobs } from './object-release.js';
-import { BLOB_REFERENCES, kindFilter, type BlobReference } from './blob-references.js';
+import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, type BlobReference } from './blob-references.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
-  ...VIEW_SESSION_TABLES,
+  'learning_sessions',
   ...DOCUMENT_SESSION_TABLES,
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
-  'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts', 'prompt_key_owners',
-  'prompt_batches', 'extraction_acks', 'turn_cards', 'learning_init_queue', 'session_artifacts', 'events',
+  'transcripts', 'attachments', 'plans', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
+  'extraction_acks', 'turn_cards', 'session_artifacts', 'events',
 ] as const;
 
 /**
@@ -46,12 +45,7 @@ function sessionRoute(table: string): SessionRoute {
 const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
   BLOB_REFERENCES.map((ref) => ({ ref, route: sessionRoute(ref.table) }));
 
-/** SQL naming a session that carries no tombstone. `alias` is the `sessions` alias in the query it joins. */
-export const notTombstonedSql = (alias: string): string =>
-  `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)`;
-
-/** The same predicate for a query that names its project and session by parameter rather than by alias. */
-export const NOT_TOMBSTONED_PARAMS = `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ? AND t.session_id = ?)`;
+export { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 
 /** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
 export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {
@@ -78,7 +72,7 @@ export interface TombstoneOutcome {
 }
 
 /** True when the Project holds this session at all, tombstoned or not: what separates "already deleted" from "never here". */
-async function sessionPresent(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
+export async function sessionPresent(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ present: number }>();
   return row !== null;
 }
@@ -86,7 +80,7 @@ async function sessionPresent(db: RelationalStore, projectId: string, sessionId:
 /** Every blob key the session's rows name, before any of them are removed: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
 async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: string): Promise<string[]> {
   const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => db
-    .prepare(`SELECT DISTINCT ${ref.column} AS k FROM ${ref.table} WHERE project_id = ? AND ${route.where} AND ${ref.column} IS NOT NULL${kindFilter(ref)}`)
+    .prepare(`SELECT DISTINCT ${blobReferenceColumn(ref)} AS k FROM ${ref.table} WHERE project_id = ? AND ${route.where} AND ${blobReferenceColumn(ref)} IS NOT NULL${kindFilter(ref)}`)
     .bind(...route.params(projectId, sessionId))));
   return [...new Set(rows.flatMap((r) => (r.results as { k: string }[]).map((row) => row.k)))];
 }
@@ -146,7 +140,9 @@ export async function tombstoneSession(
     ...tombstoneMarkStatements(env.db, projectId, sessionId, by, nowMs, reason),
     // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
     env.db.prepare(`UPDATE spores SET prompt_id = NULL
-      WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),
+      WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM session_prompts WHERE project_id = ? AND session_id = ?
+        UNION SELECT json_extract(payload,'$.promptId') FROM events WHERE project_id=? AND session_id=? AND kind='prompt')`)
+      .bind(projectId,projectId,sessionId,projectId,sessionId),
     env.db.prepare(`UPDATE injection_served_items
       SET title = NULL, content_hash = NULL, session_id = NULL, unavailable = 1
       WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
@@ -155,8 +151,8 @@ export async function tombstoneSession(
     ...metadata,
     // Segments first: `transcripts` is the only route to them.
     env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
-    ...(['event','tool-input'] as const).map(kind=>{
-      const table=kind==='event'?'events':'tool_calls';const id=kind==='event'?'event_id':'tool_call_id';
+    ...(['event'] as const).map(kind=>{
+      const table='events';const id='event_id';
       return env.db.prepare(`DELETE FROM storage_cleanup_omissions WHERE rowid IN
         (SELECT o.rowid FROM ${table} r CROSS JOIN storage_cleanup_omissions o
           WHERE r.project_id=? AND r.session_id=? AND o.project_id=r.project_id

@@ -58,5 +58,3 @@ Bun.plugin({
     }));
   },
 });
-
-await import('./view-read-preload.js');

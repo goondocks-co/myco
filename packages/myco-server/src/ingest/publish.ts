@@ -42,15 +42,13 @@ import {
   publishedPromptScheme, PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
-import { convertDocuments } from './document-conversion.js';
-import { conversionBacklog } from './document-convertible.js';
 import { settleCards } from './card-settle.js';
 import { locatePrompts } from './document-locators.js';
 import {
   parseOnce, terminalRule, TRANSCRIPT_IDLE_MS, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, type ParsePersistence, type ParseTarget, type PassLimits,
 } from './parse.js';
 import { promptOwners, type ParserState } from './parsers/index.js';
-import { admittedViewEvent, viewSourceReceipts } from './view-writer.js';
+import { admittedDocumentEvent, sourceReceipts } from './document-admission.js';
 import { isPromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Sessions one wake publishes. */
@@ -95,7 +93,7 @@ interface DocumentRow {
 interface TranscriptRow {
   transcript_id: string; agent: string | null; role: string | null; size: number; machine_id: string; token_id: string;
   prompt_identity_scheme: string | null; imported_at: number | null; last_received_at: number;
-  published_offset: number | null; segment_lines: number | null; open_prompt_id: string | null; unfinished: number | null;
+  publication_parser_version: number | null; diagnostic: string | null; published_offset: number | null; segment_lines: number | null; open_prompt_id: string | null; unfinished: number | null;
   reply_unfinished: number | null; reply_latest_at: number | null; prompt_scheme: string | null; record_scheme: string | null;
   state: string | null; failure: string | null; awaited_size: number | null; updated_at: number | null;
   placed_records: number | null; placed_digest: string | null;
@@ -125,6 +123,7 @@ interface Publication {
   changed: boolean;
   /** A fault this pass met that can clear: the transcript waits at its frontier. */
   fault?: string;
+  diagnostic?: import('./parse.js').ParseDiagnostic;
 }
 
 /**
@@ -149,15 +148,7 @@ async function dueSessions(db: RelationalStore, now: number, limit: number): Pro
     .bind(now, limit).all<DueSession>()).results;
 }
 
-/**
- * Publishes the due sessions within the wake's remaining budget, converts sessions that predate documents with what a
- * wake that published everything due has left, locates the prompts of documents written before page locators with
- * what conversion leaves, settles the turn cards due for it, then retires superseded chunk versions past their grace.
- * None of them spends the reserve the wake keeps for its later jobs.
- *
- * A session whose pass fails is recorded for the Deployment's health and does not hold the others: one that fails by
- * name waits out a bounded backoff, and a store fault is reported once conversion, locating and settlement have run.
- */
+/** Publishes due sessions, locates prompts, settles cards and retires superseded chunks within the wake budget. */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
   let changed = 0;
@@ -180,15 +171,11 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
     }
   }
   if (!more) {
-    const converted = await convertDocuments(env, now, limits);
-    changed += converted.changed;
-    more ||= converted.more;
-    if (!converted.more) {
-      const located = await locatePrompts(env, limits);
-      changed += located.changed;
-      more ||= located.more;
-    }
+    const located = await locatePrompts(env, limits);
+    changed += located.changed;
+    more ||= located.more;
   }
+
   const cards = await settleCards(env, now, limits);
   changed += cards.settled;
   more ||= cards.more;
@@ -214,14 +201,10 @@ async function deferFailedSession(db: RelationalStore, ref: DueSession, named: s
   }
 }
 
-/**
- * The transcript-parse job: the publisher, within the job budget of the wake. While sessions wait for conversion, a wake
- * that moved the publisher on and left more asks for the next at `BACKLOG_CHAINED_WAKE_MS`.
- */
+/** The transcript-parse job publishes documents within the wake's declared job budget. */
 export async function runPublishWake(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean; continueAfterMs?: number }> {
-  const converting = await conversionBacklog(env.db);
   const report = await publishDocuments(env, now, { calls: env.platform.jobBudget.calls, deadline: Date.now() + env.platform.jobBudget.wallMs, clock: Date.now });
-  return converting && report.more && report.changed > 0 ? { ...report, continueAfterMs: BACKLOG_CHAINED_WAKE_MS } : report;
+  return report;
 }
 
 /** Releases the holders past their grace. */
@@ -312,7 +295,7 @@ class SessionPublication {
         WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live' AND d.generation IS NOT NULL`).bind(this.projectId, this.sessionId),
       ...directoryStatements(db, this.projectId, this.sessionId),
       db.prepare(`SELECT t.transcript_id,t.agent,t.role,t.size,t.machine_id,t.token_id,t.prompt_identity_scheme,t.imported_at,t.last_received_at,
-          p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
+          p.parser_version AS publication_parser_version,p.diagnostic,p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
           p.state,p.failure,p.awaited_size,p.updated_at,p.placed_records,p.placed_digest
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
@@ -337,7 +320,7 @@ class SessionPublication {
         openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
         replyLatestAt: t.reply_latest_at, promptScheme: t.published_offset === null ? publishedPromptScheme(t.prompt_identity_scheme) : t.prompt_scheme,
         recordScheme: t.record_scheme ?? PUBLISHED_RECORD_SCHEME, state: (cleared ? 'active' : t.state ?? 'active') as Publication['state'],
-        failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
+        diagnostic: cleared || t.diagnostic===null ? undefined : JSON.parse(t.diagnostic), failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
         changed: cleared || t.published_offset === null,
       };
     });
@@ -373,16 +356,17 @@ class SessionPublication {
   private async publishTranscript(publication: Publication): Promise<void> {
     const t = publication.transcript;
     if (publication.state === 'failed' || (publication.state === 'awaiting' && t.size <= (publication.awaitedSize ?? -1))) return;
+    if (publication.offset === 0 || t.publication_parser_version === 0) this.batch.writer.states.delete(t.transcript_id);
     const receipts = new Map<number, number>();
     const claims = new Map<string, { thread: string; record: string }>();
     const persistence: ParsePersistence = {
-      sourceTimes: (offsets) => viewSourceReceipts(this.db, this.projectId, t.transcript_id, offsets, receipts),
+      sourceTimes: (offsets) => sourceReceipts(this.db, this.projectId, t.transcript_id, offsets, receipts),
       checkpoint: async () => { throw new Error('document_continuation_chunked'); },
       owners: async () => promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]),
       claim: async (incoming) => { for (const claim of incoming) claims.set(claim.key, { thread: claim.thread, record: claim.record }); },
-      stop: async (failure) => {
+      stop: async (failure, _now, diagnostic) => {
         if (CLEARABLE_FAILURES.has(failure)) this.recordFault(publication, failure);
-        else Object.assign(publication, { state: 'failed', failure, changed: true });
+        else Object.assign(publication, { diagnostic, state: 'failed', failure, changed: true });
       },
       awaitBytes: async () => { Object.assign(publication, { state: 'awaiting', awaitedSize: t.size, changed: true }); },
       header: async (metadata) => {
@@ -391,7 +375,7 @@ class SessionPublication {
       },
       publish: async (window) => {
         const records = window.events.map((event) => {
-          const admitted = admittedViewEvent(event, this.now);
+          const admitted = admittedDocumentEvent(event, this.now);
           const known = typeof admitted.payload.toolName === 'string' && admitted.payload.toolName !== 'unknown';
           return documentRecord(admitted.kind, admitted.payload, admitted.createdAt, {
             src: [t.transcript_id, event.offset, event.sourceEnd ?? window.to],
@@ -435,7 +419,7 @@ class SessionPublication {
         });
         Object.assign(publication, {
           offset: window.to, segmentLines: window.segmentLines, openPromptId: window.openPromptId, unfinished,
-          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', failure: null, awaitedSize: null,
+          replyUnfinished: state.reply === undefined ? 0 : 1, replyLatestAt, state: 'active', diagnostic: undefined, failure: null, awaitedSize: null,
           placedRecords: null, placedDigest: null, changed: true,
         });
         this.continuationChanged = true;
@@ -562,7 +546,7 @@ class SessionPublication {
     if (publications.length > 0) after.push(publicationStatement(db, p, s, g, this.now, publications.map((pub) => ({
       t: pub.transcript.transcript_id, o: pub.offset, l: pub.segmentLines, p: pub.openPromptId, u: pub.unfinished, r: pub.replyUnfinished,
       a: pub.replyLatestAt, ps: pub.promptScheme, rs: pub.recordScheme, s: pub.state, f: pub.failure, w: pub.awaitedSize,
-      n: pub.placedRecords, d: pub.placedDigest,
+      n: pub.placedRecords, d: pub.placedDigest, diag: pub.diagnostic===undefined?null:JSON.stringify(pub.diagnostic),
     }))));
     if (this.consumed.length > 0) {
       after.push(db.prepare(`DELETE FROM publish_queue WHERE (project_id,session_id,rank,created_at,event_id) IN

@@ -7,7 +7,6 @@
  * save is a shared editorial edit by the caller's member, the same write the
  * dashboard makes; it names the session for the record and writes the row.
  */
-import { promoteViewPlan } from '../../ingest/view-plan-promotion.js';
 import { changePlanStatus, savePlan } from '../../core/plans.js';
 import { getPlan, listProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../../read/plans.js';
 import type { ReadScope } from '../../read/scope.js';
@@ -102,8 +101,7 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
     sourcePath: str(input.source_path), planKey: str(input.plan_key), promptId: str(input.prompt_id),
   };
   let outcome = await savePlan(ctx.env, member, scope, request, ctx.now);
-  if (!outcome.ok && outcome.code === 'view_plan_requires_promotion' && id !== undefined && await promoteViewPlan(ctx.env, scope, id, ctx.now))
-    outcome = await savePlan(ctx.env, member, scope, request, ctx.now);
+
   if (!outcome.ok) return outcome.code === undefined ? failure(outcome.error) : { ok: false, code: outcome.code, error: outcome.error };
   return saved(outcome.row, outcome.logicalKey);
 }

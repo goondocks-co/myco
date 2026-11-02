@@ -1,3 +1,4 @@
+import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * Importing a Myco 1.4 vault into a Deployment, against the real worker.
  *
@@ -255,7 +256,7 @@ async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   sqlite.run(`UPDATE sessions SET title = 'Automatic title', titled_at = 1 WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_LIVE]);
   sqlite.run(`UPDATE sessions SET title = 'Admin title', titled_at = 1, titled_by = 'mem_admin' WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_ADMIN]);
 
-  const tables = ['sessions', 'prompt_batches', 'responses', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs', 'session_tombstones'];
+  const tables = ['sessions', 'session_prompts', 'session_documents', 'plans', 'spores', 'resolution_events', 'events', 'transcripts', 'blobs', 'session_tombstones'];
   const snapshot = () => ({
     ...Object.fromEntries(tables.map((t) => [t, rig.rows(t)])),
     spores: rig.env.sqlite.query(`SELECT id, status, updated_at FROM spores ORDER BY id`).all(),
@@ -263,14 +264,19 @@ async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   });
   return {
     rig, mycoHome, home, root, vault, liveEnd,
-    run: (opts = {}) => runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
-      fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: opts.sleep ?? (async () => {}),
-    }),
+    run: async (opts = {}) => {
+      const result=await runLegacyImport({ sources: [path.dirname(path.dirname(path.dirname(vault)))], serverUrl: SERVER, dryRun: opts.dryRun }, {
+        fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: opts.sleep ?? (async () => {}),
+      });
+      if(!opts.dryRun)await publishFixture(rig.env);
+      return result;
+    },
     cli: async (opts = {}) => {
       const out: string[] = [];
       const ok = await runImportCli(['--legacy', vault, '--days', '3650', '--max', '1000', '--server', SERVER], {
         fetch: opts.fetch ?? rig.fetch, mycoHome: opts.mycoHome ?? mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {}, stdout: (l) => out.push(l), stderr: () => {},
       });
+      await publishFixture(rig.env);
       return { ok, out };
     },
     bind: (home: string) => writeRegistryEntry({
@@ -399,7 +405,7 @@ describe('importing a 1.4 vault', () => {
 
     // Prompts from the vault only where no transcript holds the session.
     const promptTexts = (sessionId: string) =>
-      (sqlite.query(`SELECT text FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at`).all(PROJECT, sessionId) as Array<{ text: string | null }>).map((p) => p.text);
+      (sqlite.query(`SELECT preview AS text FROM session_prompts WHERE project_id = ? AND session_id = ? ORDER BY created_at`).all(PROJECT, sessionId) as Array<{ text: string | null }>).map((p) => p.text);
     expect(promptTexts(SESSION_PRUNED)).toEqual(['pruned prompt one', 'pruned prompt two']);
     expect(promptTexts(SESSION_TWICE)).toEqual(['earlier prompt']);
     expect(promptTexts(SESSION_ON_DISK).every((t) => t !== 'on disk prompt')).toBe(true);
@@ -488,7 +494,7 @@ describe('importing a 1.4 vault', () => {
     db.close();
     await f.run();
     expect(f.rig.env.sqlite.query(`SELECT session_id FROM sessions WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([{ session_id: SESSION_TWICE }]);
-    expect(f.rig.env.sqlite.query(`SELECT text FROM prompt_batches WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([]);
+    expect(f.rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts WHERE session_id = ?`).all(SESSION_TWICE)).toEqual([]);
   });
 
   it('never takes a transcript for a session whose prompts came from the vault, on a machine with no record of it', async () => {
@@ -614,7 +620,7 @@ describe('importing a 1.4 vault', () => {
     expect(again.projects[0].stillWriting).toEqual([]);
     expect(again.projects[0].sessions.transcriptsShipped).toBe(1);
     expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(SESSION_ACTIVE)).toEqual({ n: 1 });
-    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND text = 'active prompt from vault'`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
+    expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM session_prompts WHERE session_id = ? AND preview = 'active prompt from vault'`).get(SESSION_ACTIVE)).toEqual({ n: 0 });
   });
 
   it('stops once one step has waited out its limit, and reports the rest as not attempted', async () => {

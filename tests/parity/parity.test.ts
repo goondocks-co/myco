@@ -4,10 +4,7 @@ import { budgetMigrationParity } from './scenarios/budget-migration.ts';
 import { budgetGovernor } from './scenarios/budget-governor.ts';
 import { pulledClaim } from './scenarios/pulled-claim.ts';
 import { budgetRestore } from './scenarios/budget-restore.ts';
-import {viewWriter} from './scenarios/view-writer.ts';
 import { learningPause } from './scenarios/learning-pause.ts';
-import {viewReadClosure} from './scenarios/view-read-closure.ts';
-import { viewStoreInert } from './scenarios/view-store-inert.ts';
 import { extractionCoverage } from './scenarios/extraction-coverage.ts';
 import { hookPlacement } from './scenarios/hook-placement.ts';
 import { runnerSignIn } from './scenarios/runner-sign-in.ts';
@@ -93,7 +90,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [viewWriter, hookPlacementTick, viewReadClosure, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, budgetRestore, learningPause, viewStoreInert, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [hookPlacementTick, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, budgetRestore, learningPause, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
@@ -118,7 +115,7 @@ if (!process.env.MYCO_PARITY) {
     afterAll(stopCloudflareRuntime);
     try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
-      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ viewWriter:scenario?.dedicated?.viewWriter===true,pulledStage:scenario?.dedicated?.pulledStage===true,stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true }) },
+      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ pulledStage:scenario?.dedicated?.pulledStage===true,stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true }) },
       { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare(scenario?.dedicated?.cloudflare ?? {}) },
     ];
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);

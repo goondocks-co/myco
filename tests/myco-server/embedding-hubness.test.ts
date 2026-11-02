@@ -1,4 +1,4 @@
-import { currentSporeVectorIds } from '../../packages/myco-server/src/read/view-store.js';
+import { currentSporeVectorIds } from '../../packages/myco-server/src/read/catalog-store.js';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';

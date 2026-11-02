@@ -64,7 +64,7 @@ function scheduledFixture() {
   f.setting('agent.tasks', { 'canopy-map': { schedule: { ...SMOKE, enabled: true, preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
   for (const [project, at] of [['proj_1', NOW - 3_600_000], ['proj_2', NOW - 20 * DAY]] as const) {
     f.sqlite.run(`INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,ended_at) VALUES (?, 's_clock','m1','tok_1',?,?, 'claude-code',?)`, [project, at, at, at]);
-    f.sqlite.run(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,processed) VALUES (?,'s_clock','p_clock','e_clock','scheduled extraction input','user','h_clock',?,?,'tok_1',?,0)`, [project, at, at, at]);
+    f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT ? AS project_id,'s_clock' AS session_id,'p_clock' AS prompt_id,'e_clock' AS event_id,'scheduled extraction input' AS text,'user' AS origin,'h_clock' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at,0 AS processed)`, [project, at, at, at]);
   }
   return f;
 }

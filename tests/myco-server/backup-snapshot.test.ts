@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { backupCheckpointRestoreScenario, HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
+import { HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
 
 type Outcome = Awaited<ReturnType<typeof snapshotScenario>>;
 function check(result: Outcome, boundary: 'table' | 'page') {
@@ -15,7 +15,6 @@ function check(result: Outcome, boundary: 'table' | 'page') {
     { session_id: 'kept', text: 'conversation kept' },
   ]);
   expect(result.tombstones).toEqual([]);
-  expect(result.continuation).toEqual([{ cursor_offset: 0, chunk_index: 0, chunk_count: 1, payload: '{"planIndex":17}' }]);
   expect(result.restored).toHaveLength(boundary === 'page' ? 203 : 2);
   expect(result.restored).toContainEqual({ session_id: 'kept', title: 'before' });
   expect(result.restored).toContainEqual({ session_id: 'deleted', title: null });
@@ -31,16 +30,6 @@ function checkFunctions(result: Awaited<ReturnType<typeof snapshotFunctionBounds
     expect(result.actual[column]).toBeNull();
   }
   expect(result.equal).toBe(true);
-}
-
-function checkCheckpoint(result: Awaited<ReturnType<typeof backupCheckpointRestoreScenario>>) {
-  expect(result.oldChunks).toBeGreaterThan(result.newChunks);
-  expect(result.newChunks).toBeGreaterThan(0);
-  expect(result.digestsDiffer).toBe(true);
-  expect(result.liveUnchanged).toBe(true);
-  expect(result.liveStateMatches).toBe(true);
-  expect(result.freshMatches).toBe(true);
-  expect(result.freshStateMatches).toBe(true);
 }
 
 function checkAdmission(result: Awaited<ReturnType<typeof snapshotAdmission>>) {
@@ -69,13 +58,11 @@ describe('relational backup snapshot', () => {
       const target = sqliteEnv();
       try {
         checkAdmission(await snapshotAdmission(source.db));
-        checkCheckpoint(await backupCheckpointRestoreScenario(source.db, target.db, source.bucket, boundary === 'page'));
         checkFunctions(await snapshotFunctionBounds(source.db));
         check(await snapshotScenario(source.db, target.db, source.bucket, boundary), boundary);
         const refusal = await snapshotRefusals(source.db, source.bucket);
         expect(refusal.truncated).toContain('incomplete');
         expect(refusal.orphan).toContain('missing session');
-        expect(refusal.continuationParent).toContain('transcript_parser_state_chunks names a missing transcript');
         expect(refusal.publications).toBe(0);
         expect({ bounded: refusal.bounded, transferred: refusal.transferred }).toEqual({ bounded: true, transferred: 0 });
       }
@@ -87,14 +74,13 @@ describe('relational backup snapshot', () => {
       if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
       const mf = new Miniflare(convertV4MiniflareOptions({
         modules: [
-          { type: 'ESModule', path: 'worker.js', contents: `import { backupCheckpointRestoreScenario, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './snapshot.js';
+          { type: 'ESModule', path: 'worker.js', contents: `import { snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './snapshot.js';
             export default { async fetch(request, env) {
               try {
                 const admission = await snapshotAdmission(env.DB);
-                const checkpoint = await backupCheckpointRestoreScenario(env.DB, env.TARGET, env.BUCKET, '${boundary}' === 'page');
                 const functions = await snapshotFunctionBounds(env.DB);
                 const result = await snapshotScenario(env.DB, env.TARGET, env.BUCKET, '${boundary}');
-                return Response.json({ admission, result, refusal: await snapshotRefusals(env.DB, env.BUCKET), functions, checkpoint });
+                return Response.json({ admission, result, refusal: await snapshotRefusals(env.DB, env.BUCKET), functions });
               }
               catch(e) { return Response.json({ error: String(e.stack) }, { status: 500 }); }
             } };` },
@@ -108,15 +94,13 @@ describe('relational backup snapshot', () => {
           for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
         }
         const response = await mf.dispatchFetch('http://snapshot/');
-        const answer = await response.json() as { admission: Awaited<ReturnType<typeof snapshotAdmission>>; result: Outcome; refusal: Awaited<ReturnType<typeof snapshotRefusals>>; functions: Awaited<ReturnType<typeof snapshotFunctionBounds>>; checkpoint: Awaited<ReturnType<typeof backupCheckpointRestoreScenario>> };
-        expect({ status: response.status, error: response.status === 200 ? undefined : answer }).toEqual({ status: 200, error: undefined });
+        expect({ status: response.status, error: response.status === 200 ? undefined : await response.clone().text() }).toEqual({ status: 200, error: undefined });
+        const answer = await response.json() as { admission: Awaited<ReturnType<typeof snapshotAdmission>>; result: Outcome; refusal: Awaited<ReturnType<typeof snapshotRefusals>>; functions: Awaited<ReturnType<typeof snapshotFunctionBounds>> };
         checkAdmission(answer.admission);
         check(answer.result, boundary);
-        checkCheckpoint(answer.checkpoint);
         checkFunctions(answer.functions);
         expect(answer.refusal.truncated).toContain('incomplete');
         expect(answer.refusal.orphan).toContain('missing session');
-        expect(answer.refusal.continuationParent).toContain('transcript_parser_state_chunks names a missing transcript');
         expect(answer.refusal.publications).toBe(0);
         expect({ bounded: answer.refusal.bounded, transferred: answer.refusal.transferred }).toEqual({ bounded: true, transferred: 0 });
       } finally { await mf.dispose(); }

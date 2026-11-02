@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { countUnplacedContextRecords, listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
-import { listAttachments, listToolCalls } from '@myco-server-worker/read/children.js';
-import { sessionTurnContexts, turnDetail } from '@myco-server-worker/read/turns.js';
-import { subagentIdFor } from '@myco/member/envelope.js';
+
+import { sessionTurnContexts } from '@myco-server-worker/read/turns.js';
+
 
 const scope = { projectId: 'proj_1' };
 const opened: ReturnType<typeof sqliteEnv>[] = [];
@@ -15,9 +15,9 @@ function fixture() {
   const { sqlite } = env;
   sqlite.run(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at)
     VALUES ('proj_1','s','t',1,1),('proj_1','other','t',1,1),('proj_2','s','t',1,1)`);
-  const prompt = (id: string, session = 's', project = 'proj_1', thread = 'main') => sqlite.run(`INSERT INTO prompt_batches
-    (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,thread_id)
-    VALUES (?,?,?,?,'same text','user','same hash',100,100,'t',100,?)`, [project, session, id, id, thread]);
+  const prompt = (id: string, session = 's', project = 'proj_1', thread = 'main') => sqlite.run(`INSERT INTO session_prompts
+    (project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at,preview,thread_label)
+    VALUES (?,?,1,?,?,100,'user',100,'same text',?)`, [project, session, id, id, thread]);
   prompt('previous'); prompt('next'); prompt('overlap', 's', 'proj_1', 'parallel');
   prompt('other-session', 'other'); prompt('other-project', 's', 'proj_2');
   const receipt = (id: string, hint: string | null, selected = 'selection-' + id) => sqlite.run(`INSERT INTO spore_injections

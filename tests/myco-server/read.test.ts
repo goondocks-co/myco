@@ -1,13 +1,13 @@
 import { legacyBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { statementRecorder } from '../helpers/statement-recorder.js';
+
 import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, sessionDurationMs, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionDurationMs, unarchiveProject, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
 import { activityFeed } from '@myco-server-worker/read/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
@@ -135,123 +135,14 @@ describe('read/sessions', () => {
   });
 });
 
-import { listPrompts, listToolCalls } from '@myco-server-worker/read/children.js';
-import { TOOL_INPUT_PREVIEW_BYTES } from '@myco-server-worker/core/tool-input.js';
 
-describe('read/children', () => {
-  it('lists a session\'s prompts oldest first inside the scope', async () => {
-    const { db, sqlite } = sqliteEnv();
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1','s1','p2','e2','second','user','h2',20,20,'t1',20), ('proj_1','s1','p1','e1','first','user','h1',10,10,'t1',10),
-                       ('proj_2','s1','pX','eX','other','user','hX',15,15,'t1',15)`);
-    const { rows } = await listPrompts(db, { projectId: 'proj_1' }, 's1');
-    expect(rows.map((r) => r.text)).toEqual(['first', 'second']);
-  });
 
-  it('carries how each tool call went, with a bounded input preview and the input\'s full size', async () => {
-    const { db, sqlite } = sqliteEnv();
-    const input = 'x'.repeat(190_000);
-    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, myco_tool, input, output_preview, success, error_message, duration_ms, created_at, token_id, received_at)
-                VALUES ('proj_1','s1','tc1','ev1','Write',NULL,?,'wrote it',0,'disk full',42,1,'t1',1)`, [input]);
-    const { rows } = await listToolCalls(db, { projectId: 'proj_1' }, 's1');
-    expect(rows.map((r) => [r.toolName, r.success, r.errorMessage, r.durationMs, r.outputPreview, r.inputPreview?.length, r.inputBytes, r.inputTruncated]))
-      .toEqual([['Write', false, 'disk full', 42, 'wrote it', TOOL_INPUT_PREVIEW_BYTES, 190_000, true]]);
-  });
 
-  it('reports original bytes and a complete-code-point preview across the UTF-8 boundary', async () => {
-    const { db, sqlite } = sqliteEnv();
-    for (const [id, input] of [
-      ['below', 'é'.repeat(1023)],
-      ['equal', 'é'.repeat(1024)],
-      ['above', `${'é'.repeat(1023)}🙂tail`],
-    ]) {
-      sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, input, success, created_at, token_id, received_at)
-        VALUES ('proj_1', 's1', ?, ?, 'Read', ?, 1, 1, 't1', 1)`, [id, id, input]);
-    }
-    const rows = (await listToolCalls(db, { projectId: 'proj_1' }, 's1')).rows;
-    expect(rows.map((r) => [r.toolCallId, r.inputBytes, r.inputTruncated, r.inputPreview])).toEqual([
-      ['above', 2054, true, 'é'.repeat(1023)],
-      ['below', 2046, false, 'é'.repeat(1023)],
-      ['equal', 2048, false, 'é'.repeat(1024)],
-    ]);
-  });
 
-  it('pages tool calls and stops cleanly at the end', async () => {
-    const { db, sqlite } = sqliteEnv();
-    for (let i = 1; i <= 3; i++) {
-      sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, success, created_at, token_id, received_at) VALUES ('proj_1','s1','tc${i}','ev${i}','Read',1,${i * 10},'t1',${i * 10})`);
-    }
-    const first = await listToolCalls(db, { projectId: 'proj_1' }, 's1', { limit: 2 });
-    expect(first.rows.map((r) => r.toolCallId)).toEqual(['tc1', 'tc2']);
-    const second = await listToolCalls(db, { projectId: 'proj_1' }, 's1', { limit: 2, cursor: first.cursor! });
-    expect(second.rows.map((r) => r.toolCallId)).toEqual(['tc3']);
-    expect(second.cursor).toBeNull();
-  });
-});
 
-import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS, toolUsage, turnCollection, sessionTurnContexts } from '@myco-server-worker/read/turns.js';
-import { listAttachments } from '@myco-server-worker/read/children.js';
-import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
+
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
-
-describe('read/turns', () => {
-  function seedTurns(sqlite: import('bun:sqlite').Database) {
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1','s1','m1','tok_1',1,100,1)`);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, parent_prompt_id, thread_label, text, blob_key, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES
-      ('proj_1','s1',?,'e1',NULL,NULL,?,NULL,'user','h1',10,10,'t1',10),
-      ('proj_1','s1',?,'e2',NULL,NULL,'<task-notification>ignored by default</task-notification>',NULL,'system','h2',20,20,'t1',20),
-      ('proj_1','s1',?,'e3',?,'reviewer','steer it left',NULL,'user','h3',25,25,'t1',25),
-      ('proj_1','s1',?,'e4',NULL,NULL,NULL,?,'user','h4',30,30,'t1',30),
-      ('proj_2','s1',?,'e5',NULL,NULL,'other project',NULL,'user','h5',15,15,'t1',15)`,
-      [UUID(1), `${'first prompt '.repeat(20)}tail`, UUID(2), UUID(3), UUID(1), UUID(4), 'a'.repeat(64), UUID(9)]);
-    sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, prompt_id, tool_name, success, created_at, token_id, received_at) VALUES
-      ('proj_1','s1','tc1','ev1',?,'Read',1,11,'t1',11), ('proj_1','s1','tc2','ev2',?,'Edit',1,12,'t1',12), ('proj_1','s1','tc3','ev3',?,'Bash',0,26,'t1',26)`, [UUID(1), UUID(1), UUID(3)]);
-    sqlite.run(`INSERT INTO responses (project_id, session_id, response_id, event_id, prompt_id, text, content_hash, created_at, token_id, received_at) VALUES
-      ('proj_1','s1','r1','er1',?,'done the first','hr1',13,'t1',13), ('proj_1','s1','r2','er2',?,'steered','hr2',27,'t1',27)`, [UUID(1), UUID(3)]);
-    sqlite.run(`INSERT INTO attachments (project_id, session_id, attachment_id, event_id, prompt_id, blob_key, media_type, byte_size, created_at, token_id, received_at) VALUES
-      ('proj_1','s1','a1','ea1',?,?,'image/png',1234,14,'t1',14)`, [UUID(1), 'b'.repeat(64)]);
-    sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, prompt_id, updated_by, created_at, updated_at, token_id, received_at) VALUES
-      ('proj_1',?,'s1','ep1','m1','Plan','- [x] a\n- [ ] b','hp1','in_progress',?,'mem_x',15,16,'t1',16)`, [UUID(5), UUID(1)]);
-  }
-
-  it('shows every origin when asked, pages by the turn key, and refuses an origin the wire does not admit', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    const all = await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: ['user', 'system'], limit: 2 });
-    expect(all.rows.map((r) => [r.promptId, r.origin])).toEqual([[UUID(1), 'user'], [UUID(2), 'system']]);
-    const rest = await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: ['user', 'system'], limit: 2, cursor: all.cursor! });
-    expect(rest.rows.map((r) => r.promptId)).toEqual([UUID(4)]);
-    expect(rest.cursor).toBeNull();
-    expect(parseOrigins(null)).toEqual(DEFAULT_ORIGINS);
-    expect(parseOrigins('system, user,user')).toEqual(['system', 'user']);
-    expect(parseOrigins('human')).toBeNull();
-    expect(parseOrigins(',')).toBeNull();
-    expect((await listTurns(db, { projectId: 'proj_1' }, 's1', { origins: [] })).rows).toEqual([]);
-    expect((await listTurns(db, { projectId: 'proj_1' }, 's1', { cursor: 'garbage' })).rows).toEqual([]);
-  });
-
-
-  it('seeks session/prompt tool calls without statistics', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    for (const prompt of [false, true]) {
-      const recorded = statementRecorder(db, { accounting: 'native' });
-      await toolUsage(recorded.db, { projectId: 'proj_1' }, 's1', prompt ? UUID(1) : undefined);
-      expect(recorded.statements).toHaveLength(1);
-      const statement = recorded.statements[0]!;
-      const plan = sqlite.query('EXPLAIN QUERY PLAN ' + statement.sql).all(...statement.binds) as { detail: string }[];
-      expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toMatch(/idx_tool_calls_(?:prompt|activity) \(project_id=\? AND session_id=\?/);
-      if (prompt) expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('prompt_id=?');
-    }
-  });
-  it('returns unknown duration for synthetic Cursor timestamps', async () => {
-    const { db, sqlite } = sqliteEnv();
-    seedTurns(sqlite);
-    sqlite.run("UPDATE sessions SET agent = 'cursor' WHERE session_id = 's1'");
-    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1)))?.metrics.durationMs).toBeNull();
-  });
-});
 
 import { credentialActivity, listCredentials } from '@myco-server-worker/read/credentials.js';
 
@@ -386,9 +277,7 @@ const OCCURRED_AT = SESSION_OCCURRED_AT;
 const A4_SESSION_LIST = (keyset: boolean): string =>
   `SELECT s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
      s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
-     s.title, s.summary, s.titled_at, (SELECT substr(pb.text, 1, 160) FROM prompt_batches pb
-       WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
-       ORDER BY pb.created_at, pb.prompt_id LIMIT 1) AS first_prompt,
+     s.title, s.summary, s.titled_at, (SELECT first_prompt FROM session_documents d WHERE d.project_id=s.project_id AND d.session_id=s.session_id AND d.state='live') AS first_prompt,
      c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label
    FROM sessions s
      LEFT JOIN member_credentials c ON c.id = s.created_by_token_id

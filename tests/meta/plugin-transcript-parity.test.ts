@@ -1,3 +1,4 @@
+import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 /**
  * One row per fact for the agents whose transcript Myco's own plugin writes.
  *
@@ -23,7 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 
-import { parseOnce } from '@myco-server-worker/ingest/parse.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -73,21 +74,20 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
               VALUES (?, ?, 0, ?, ?, 'seg', ?, ?, ?)`, [PROJECT, TRANSCRIPT, bytes.length, key, NOW, NOW, tokenId]);
 
-  await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
-    projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
-  }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
+  await publishDocuments(env as never,NOW,{ calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
 }
 
-const count = (sqlite: Database, table: string): number =>
-  (sqlite.query(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).get(PROJECT) as { n: number }).n;
+const count = (sqlite: Database, table: string): number => {
+  const column = ({prompt_batches:'prompts',responses:'replies',tool_calls:'tool_calls'} as Record<string,string>)[table];
+  return (sqlite.query(column ? `SELECT COALESCE(SUM(${column}),0) n FROM session_documents WHERE project_id=?` : `SELECT COUNT(*) n FROM ${table} WHERE project_id=?`).get(PROJECT) as {n:number}).n;
+};
 
 describe('native plugin transcripts land one row per fact', () => {
   it('writes one prompt row under the id the member minted, not a derived one', async () => {
     const { sqlite, env, tokenId } = await rig();
     await parseArm(sqlite, env as never, tokenId, 'opencode', TRANSCRIPT_TEXT);
 
-    const prompts = sqlite.query(`SELECT prompt_id FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { prompt_id: string }[];
+    const prompts = sqlite.query(`SELECT prompt_id FROM session_prompts WHERE project_id = ?`).all(PROJECT) as { prompt_id: string }[];
     expect(prompts.map((p) => p.prompt_id)).toEqual([MINTED_PROMPT]);
   });
 
@@ -101,7 +101,7 @@ describe('native plugin transcripts land one row per fact', () => {
     const { sqlite, env, tokenId } = await rig();
     await parseArm(sqlite, env as never, tokenId, 'opencode', TRANSCRIPT_TEXT);
 
-    expect(count(sqlite, 'events')).toBe(3);
+    expect(count(sqlite, 'events')).toBe(0);
     expect(count(sqlite, 'prompt_batches')).toBe(1);
     expect(count(sqlite, 'responses')).toBe(1);
     expect(count(sqlite, 'tool_calls')).toBe(1);
@@ -111,12 +111,8 @@ describe('native plugin transcripts land one row per fact', () => {
     const { sqlite, env, tokenId } = await rig();
     await parseArm(sqlite, env as never, tokenId, 'opencode', TRANSCRIPT_TEXT);
     const before = count(sqlite, 'events');
-    sqlite.run(`UPDATE transcripts SET parsed_offset = 0 WHERE project_id = ?`, [PROJECT]);
-    await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
-      projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
-      parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme('opencode'), imported: false,
-    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
+    await rereadTranscripts((env as {db:import('@myco-server-worker/core/adapters.js').RelationalStore}).db,{projectId:PROJECT,sessionId:SESSION});
+    await publishDocuments(env as never,NOW,{ calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
     expect(count(sqlite, 'events')).toBe(before);
     expect(count(sqlite, 'prompt_batches')).toBe(1);
   });

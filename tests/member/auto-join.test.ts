@@ -1,3 +1,4 @@
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * Auto-join (#1547): a git repository this machine meets with no connection of its own joins the machine's default
  * Deployment by itself, through the real hooks, the member helper's join bucket and `myco member auto-join` against the
@@ -35,7 +36,7 @@ import { defaultDeploymentPath } from '@myco/member/default-deployment.js';
 import { RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { autoJoinHold } from '@myco/member/auto-join-hook.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from './helpers/server.js';
 import { recordingFetch, runHelperHere, runHook } from './helpers/hooks.js';
@@ -572,8 +573,8 @@ describe('held capture reaches the project however the repository is connected',
     expect(kindsOf('sess-t')).toEqual([]);
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'joined' });
     expect(kindsOf('sess-t')).toEqual(expect.arrayContaining(['session.start', 'session.end', 'transcript.segment']));
-    await parseTranscripts(rig.env.serverEnv, Date.now());
-    expect(rig.env.sqlite.query(`SELECT text FROM prompt_batches WHERE session_id = 'sess-t'`).all()).toEqual([{ text: 'held prompt' }]);
+    await publishFixtureDocuments(rig.env.serverEnv, Date.now());
+    expect(rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts WHERE session_id = 'sess-t'`).all()).toEqual([{ text: 'held prompt' }]);
   });
 
   it('a hook-sourced session keeps its prompt across the join: the tool call after the join names the prompt held before it', async () => {
@@ -586,9 +587,9 @@ describe('held capture reaches the project however the repository is connected',
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'joined' });
     await hook('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/x' } });
     await hook('stop', { hook_event_name: 'Stop', last_assistant_message: 'done' });
-    const prompts = rig.env.sqlite.query(`SELECT prompt_id FROM prompt_batches WHERE session_id = 'sess-h'`).all() as Array<{ prompt_id: string }>;
+    const prompts = rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE session_id='sess-h' AND kind='prompt'`).all() as Array<{ prompt_id: string }>;
     expect(prompts).toHaveLength(1);
-    expect(rig.env.sqlite.query(`SELECT prompt_id FROM tool_calls WHERE session_id = 'sess-h'`).all()).toEqual([{ prompt_id: prompts[0]!.prompt_id }]);
+    expect(rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE session_id='sess-h' AND kind='tool.use'`).all()).toEqual([{ prompt_id: prompts[0]!.prompt_id }]);
   });
 
   it('myco member join delivers what was held, and the Deployment forgets the repository', async () => {

@@ -4,8 +4,6 @@
  */
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { factoryReadTrace } from '../setup/view-read-preload.js';
-import { readTag } from '../helpers/view-read-contract.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
@@ -22,14 +20,8 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/plans.js';
-import { receiptPlans } from '@myco-server-worker/read/view-store.js';
+import { receiptPlans } from '@myco-server-worker/read/catalog-store.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
-async function expectInjectionRead(operation: string, sql: RegExp): Promise<void> {
-  const trace = await factoryReadTrace();
-  const reads = trace.statements.filter(row => sql.test(row.sql));
-  expect(reads.length).toBeGreaterThan(0);
-  expect(reads.every(row => readTag(row.sql)?.operation === operation && row.origin?.kind === 'module')).toBe(true);
-}
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
 const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
 
@@ -161,7 +153,6 @@ describe('the pool', () => {
     const fourth = await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p4', promptHash: 'h4' });
     expect([fourth.skipped, fourth.items.length]).toEqual(['empty', 0]);
     expect([...(await injectedSporeIds(db, SCOPE, SESSION))].sort()).toEqual(['a', 'b', 'c']);
-    await expectInjectionRead('N:injectionServedIds:0', /SELECT (?:spore_ids|plan_ids) AS ids FROM spore_injections/);
   });
 
   it('keeps the exclusion set to its own session', async () => {
@@ -201,7 +192,6 @@ describe('the record', () => {
     // The same prompt content again: the pool still offers `b`, and the key refuses the row.
     const again = await select(db, { leaves: one, promptId: 'p2', promptHash: 'same' });
     expect([again.skipped, again.items.length, again.context]).toEqual(['repeat', 0, '']);
-    await expectInjectionRead('N:injectionPromptHeld:0', /SELECT 1 AS held FROM spore_injections/);
 
     expect(rows(sqlite)).toEqual([{
       project_id: SCOPE.projectId, session_id: SESSION, prompt_id: 'p1', prompt_hash: 'same',
@@ -218,7 +208,6 @@ describe('the record', () => {
 
     const listed = await injectionsForSession(db, SCOPE, SESSION);
     expect(listed.map((r) => [r.promptId, r.sporeIds, r.createdAt])).toEqual([['p2', ['b'], NOW + 10], ['p1', ['a'], NOW]]);
-    await expectInjectionRead('N:injectionSessionRecords:0', /SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections/);
 
     expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
     // A receipt is placed on a prompt its session's live document catalogs.

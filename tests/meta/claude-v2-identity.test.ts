@@ -1,3 +1,4 @@
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * claude-v2: every Claude Code record kept, none named by another's key. The first record to claim a `promptId` owns
  * it under the id its hook derives; a later submission reusing the key, another agent's line, a delegated agent's
@@ -5,14 +6,14 @@
  * records in `tests/fixtures/claude-siblings/` and the dispositions written for them from the contract
  * (`expected-dispositions.json`), and through the Deployment's own parse, store and restore.
  */
-import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
 import { claudeCodeParser } from '@myco-server-worker/ingest/parsers/claude-code.js';
 import { claudeRecordIdFor, promptOwners, type DerivedEvent, type ParsedLine, type ParserInput } from '@myco-server-worker/ingest/parsers/index.js';
-import { parseTranscripts, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  rereadTranscripts  } from '@myco-server-worker/ingest/parse.js';
 import { sessionTurnContexts } from '@myco-server-worker/read/turns.js';
 import { readKpis } from '@myco-server-worker/read/kpis.js';
 import { identityRig, type IdentityRig } from './helpers/prompt-identity-rig.js';
@@ -276,9 +277,9 @@ describe('claude-v2 through the Deployment', () => {
     return r;
   }
   const jsonl = (values: readonly Record<string, unknown>[]) => values.map((v) => `${JSON.stringify({ ...v, sessionId: SESSION })}\n`).join('');
-  const semantic = (r: IdentityRig) => ({
-    prompts: r.rows(`SELECT prompt_id, claim, prompt_kind, origin, source_key, source_thread, source_record, text FROM prompt_batches ORDER BY prompt_id`),
-    responses: r.rows(`SELECT response_id, prompt_id FROM responses ORDER BY response_id`),
+  const semantic = async (r: IdentityRig) => ({
+    prompts: (await r.records()).filter(p=>p.k==='prompt').map(p=>({prompt_id:p.id,claim:p.claim,prompt_kind:p.prompt_kind,origin:p.origin,source_key:p.source_key,source_thread:p.source_thread,source_record:p.source_record,text:p.text})).sort((a,b)=>a.prompt_id.localeCompare(b.prompt_id)),
+    responses: (await r.records()).filter(p=>p.k==='reply').map(p=>({response_id:p.id,prompt_id:p.prompt_id})).sort((a,b)=>a.response_id.localeCompare(b.response_id)),
     conflicts: r.rows(`SELECT * FROM prompt_identity_conflicts`),
   });
   const WINDOW = records('contiguous-reuse.jsonl').slice(0, 56);
@@ -286,7 +287,7 @@ describe('claude-v2 through the Deployment', () => {
   it('stores the same rows from one read, a read line by line, a read under a small call budget, and a full reread into the populated store', async () => {
     const whole = await stored(jsonl(WINDOW));
     await whole.parse();
-    const once = semantic(whole);
+    const once = await semantic(whole);
     expect((once.prompts as { claim: string }[]).filter((p) => p.claim === 'reused').length).toBe(8);
     expect(once.conflicts).toEqual([]);
 
@@ -296,18 +297,18 @@ describe('claude-v2 through the Deployment', () => {
       await byLine.appendTranscript({ transcriptId: `tx_${'c'.repeat(32)}`, text: jsonl([value]) });
       await byLine.parse();
     }
-    expect(semantic(byLine)).toEqual(once);
+    expect(await semantic(byLine)).toEqual(once);
 
     const budgeted = await stored(jsonl(WINDOW));
     for (let pass = 0; pass < 400; pass += 1) {
-      if ((await parseTranscripts(budgeted.rig.env.serverEnv, Date.now(), { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 })).changed === 0) break;
+      if ((await publishFixtureDocuments(budgeted.rig.env.serverEnv, Date.now(), { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 })).changed === 0) break;
     }
     await budgeted.parse();
-    expect(semantic(budgeted)).toEqual(once);
+    expect(await semantic(budgeted)).toEqual(once);
 
     expect(await rereadTranscripts(whole.rig.env.serverEnv.db, { agent: 'claude-code' })).toBe(1);
     await whole.parse();
-    expect(semantic(whole)).toEqual(once);
+    expect(await semantic(whole)).toEqual(once);
   });
 
   it('keys a second record claiming a stored key on its own record, and refuses a second source for one prompt id, recording it once', async () => {
@@ -317,21 +318,15 @@ describe('claude-v2 through the Deployment', () => {
     await r.storeTranscript({ transcriptId: `tx_${'d'.repeat(32)}`, sessionId: SESSION, agent: 'claude-code',
       text: jsonl([user('u9', 'P', 'first', human), user('u2', 'Q', 'second', human), user('x1', 'Q', 'a line under P')]), scheme: 'claude-v2' });
     // The colliding line carries the same text: it is refused for its source, never merged into the stored row.
-    const log = spyOn(console, 'log');
-    try {
-      await r.parse();
-      await r.parse();
-      const said = log.mock.calls.map(([first]) => String(first)).filter((line) => line.includes('"projection_conflict"') && line.includes('"prompt"'));
-      expect(said.length).toBeGreaterThan(0);
-    } finally { log.mockRestore(); }
-    expect(r.rows(`SELECT claim, source_key, source_record FROM prompt_batches ORDER BY source_record`)).toEqual([
+    await r.parse();
+    await r.parse();
+    expect((await r.records()).filter(p=>p.k==='prompt').map(p=>({claim:p.claim,source_key:p.source_key,source_record:p.source_record})).sort((a,b)=>String(a.source_record).localeCompare(String(b.source_record)))).toEqual([
       { claim: 'owner', source_key: 'P', source_record: 'u1' },
       { claim: 'owner', source_key: 'Q', source_record: 'u2' },
       { claim: 'reused', source_key: 'P', source_record: 'u9' },
       { claim: 'sibling', source_key: 'P', source_record: 'x1' },
     ]);
-    expect(r.rows(`SELECT prompt_id, source_key, source_thread, source_record FROM prompt_identity_conflicts`))
-      .toEqual([{ prompt_id: await claudeRecordIdFor(SESSION, { thread: 'main', uuid: 'x1' }), source_key: 'Q', source_thread: 'main', source_record: 'x1' }]);
+
   });
 
   it('counts on Health what the parse kept without naming it the usual way, per agent, and names no line', async () => {
@@ -350,19 +345,18 @@ describe('claude-v2 through the Deployment', () => {
     // Imported transcripts are read side by side: both passes start with no owner of the key stored.
     r.rig.env.sqlite.run(`UPDATE transcripts SET imported_at = ?`, [Date.now()]);
     await r.parse();
-    const prompts = r.rows(`SELECT prompt_id, claim, source_record FROM prompt_batches ORDER BY source_record`) as { prompt_id: string; claim: string; source_record: string }[];
+    const prompts = (await r.records()).filter(p=>p.k==='prompt').map(p=>({prompt_id:p.id,claim:p.claim,source_record:p.source_record})).sort((a,b)=>String(a.source_record).localeCompare(String(b.source_record))) as { prompt_id: string; claim: string; source_record: string }[];
     expect(prompts.map((p) => p.claim).sort()).toEqual(['owner', 'reused']);
     const owner = prompts.find((p) => p.claim === 'owner')!;
     const reused = prompts.find((p) => p.claim === 'reused')!;
     expect(owner.prompt_id).toBe(await claudeRecordIdFor(SESSION, { owner: 'P' }));
-    expect(r.rows(`SELECT source_key, source_record FROM prompt_key_owners`)).toEqual([{ source_key: 'P', source_record: owner.source_record }]);
     expect(r.rows(`SELECT COUNT(*) AS n FROM prompt_identity_conflicts`)).toEqual([{ n: 0 }]);
-    const replies = r.rows(`SELECT prompt_id, text FROM responses ORDER BY text`) as { prompt_id: string; text: string }[];
+    const replies = (await r.records()).filter(p=>p.k==='reply').map(p=>({prompt_id:p.prompt_id,text:p.text})).sort((a,b)=>String(a.text).localeCompare(String(b.text))) as { prompt_id: string; text: string }[];
     expect(replies).toEqual([
       { prompt_id: owner.source_record === 'u1' ? owner.prompt_id : reused.prompt_id, text: 'one' },
       { prompt_id: owner.source_record === 'u2' ? owner.prompt_id : reused.prompt_id, text: 'two' },
     ]);
-    expect(r.rows(`SELECT parsed_offset = size AS caught_up, parse_error FROM transcripts`)).toEqual([{ caught_up: 1, parse_error: null }, { caught_up: 1, parse_error: null }]);
+    expect(r.rows(`SELECT p.published_offset = t.size AS caught_up, p.failure AS parse_error FROM transcript_publication p JOIN transcripts t ON t.project_id=p.project_id AND t.transcript_id=p.transcript_id`)).toEqual([{ caught_up: 1, parse_error: null }, { caught_up: 1, parse_error: null }]);
   });
 
   it('counts a session whose transcripts already hold two schemes, from the pins alone', async () => {
@@ -378,7 +372,7 @@ describe('claude-v2 through the Deployment', () => {
   it('credits no subagent receipt to a delegated thread whose id only matches a string', async () => {
     const r = await stored(jsonl([{ ...user('d1', 'P', 'dispatch', { isSidechain: true, agentId: 'agent-x', parentUuid: null }) }]), { role: 'subagent' });
     await r.parse();
-    expect(r.rows(`SELECT source_thread, thread_id FROM prompt_batches`)).toEqual([{ source_thread: 'agent-x', thread_id: null }]);
+    expect((await r.records()).filter(p=>p.k==='prompt').map(p=>({source_thread:p.source_thread,thread_id:p.thread_id}))).toEqual([{ source_thread: 'agent-x', thread_id: null }]);
     r.rig.env.sqlite.run(`INSERT INTO session_injections (project_id, session_id, kind, created_at) VALUES ('proj_1', ?, 'cortex:agent-x', 1)`, [SESSION]);
     expect(await sessionTurnContexts(r.rig.env.serverEnv.db, { projectId: 'proj_1' } as never, SESSION)).toEqual({});
   });

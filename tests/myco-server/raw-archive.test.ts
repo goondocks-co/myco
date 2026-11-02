@@ -6,7 +6,7 @@ import { expect, it } from 'bun:test';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { listSegments } from '@myco-server-worker/read/transcript.js';
-import { laneSelectionSql, PARSER_VERSION } from '@myco-server-worker/ingest/parse.js';
+import { PARSER_VERSION } from '@myco-server-worker/constants.js';
 import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -15,7 +15,7 @@ const digest=(text:string)=>createHash('sha256').update(text).digest('hex');
 
 /** A transcript's live publication standing at `offset`, in `state`. */
 function publishTranscript(sqlite: Database, transcriptId: string, offset: number, state: 'active' | 'failed' = 'active') {
-  sqlite.query(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,state,updated_at)
+  sqlite.query(`INSERT OR REPLACE INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,state,updated_at)
     SELECT t.project_id,t.transcript_id,d.generation,t.session_id,?,'source-record-v1',1,?,1 FROM transcripts t
       JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live' WHERE t.transcript_id=?`).run(offset,state,transcriptId);
 }
@@ -44,22 +44,6 @@ async function heldSegment(parsedOffset: number, publication: 'active' | 'failed
   return f;
 }
 
-it('seeks the hot and cold segment indexes at the parser cursor', () => {
-  const f=sqliteEnv();
-  try {
-    const plan=f.sqlite.query(`EXPLAIN QUERY PLAN ${laneSelectionSql('live',1,NOW)}`)
-      .all(PARSER_VERSION) as Array<{detail:string}>;
-    expect(plan.some(row=>/SEARCH s USING INDEX sqlite_autoindex_transcript_segments_1 .*base_offset>/.test(row.detail))).toBe(true);
-    expect(plan.some(row=>/SEARCH r USING INDEX idx_raw_archive_refs_transcript .*base_offset>/.test(row.detail))).toBe(true);
-    const rawPlan=f.sqlite.query(`EXPLAIN QUERY PLAN SELECT e.rowid,e.project_id,e.event_id
-      FROM events e INDEXED BY idx_events_session LEFT JOIN raw_credentials c ON c.token_id=e.token_id
-      WHERE (e.project_id,e.session_id,e.created_at,e.rowid)>(?,?,?,?)
-      ORDER BY e.project_id,e.session_id,e.created_at,e.rowid LIMIT ?`)
-      .all('','',-1,-1,20) as Array<{detail:string}>;
-    expect(rawPlan.some(row=>/SEARCH e USING INDEX idx_events_session/.test(row.detail))).toBe(true);
-  } finally {f.sqlite.close();}
-});
-
 it('archives an aged inline event exactly before clearing its stored body', async () => {
   const f=sqliteEnv();
   try {
@@ -73,7 +57,7 @@ it('archives an aged inline event exactly before clearing its stored body', asyn
     for(let pass=0;pass<6&&archived===0;pass+=1) archived=await archiveRawSources(f.serverEnv,NOW,90);
     expect(archived).toBe(1);
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='evt_archive'`).get())
-      .toEqual({payload:'{}',payload_format:'archived'});
+      .toEqual({payload:JSON.stringify({promptId:null,responseId:null,toolCallId:null,blob:null,outputBlob:null}),payload_format:'archived'});
     expect(await eventContent(f.serverEnv,'proj_1','evt_archive')).toBe(payload);
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:1});
@@ -467,8 +451,7 @@ it('reasserts the learning hold when a prompt fact arrives after segment selecti
     f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
     seedCredential(f.sqlite,{id:'token',machineId:'m',expiresAt:NOW+86_400_000});
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
-    f.sqlite.run("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('proj_1','published','s-held',1,'full','live',1)");
-    f.sqlite.run("INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('proj_1','s-held','published','published',1)");
+    publishTranscript(f.sqlite,'tx-held',Buffer.byteLength('retained source bytes'));
     let inserted=false;
     let admission: unknown;
     const db=f.serverEnv.db;
@@ -503,13 +486,14 @@ it('advances and wraps past learning-held transcript pages before revisiting rel
         SELECT project_id,?,?,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme
         FROM transcripts WHERE transcript_id='tx-held'`,[transcript,session]);
       publishTranscript(f.sqlite,transcript,Buffer.byteLength('retained source bytes'));
+      f.sqlite.run(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+        VALUES('proj_1',?,1,?,?,0,'user',1)`,[session,`prompt-${index}`,`prompt-${index}`]);
       f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision)
         SELECT project_id,?,?,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision FROM events WHERE event_id='e-held'`,[event,session]);
       f.sqlite.run(`INSERT INTO transcript_segments(project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)
         SELECT project_id,?,base_offset,length,blob_key,?,created_at,received_at,token_id FROM transcript_segments WHERE transcript_id='tx-held'`,[transcript,event]);
     }
-    f.sqlite.run("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('proj_1','last-published','s-held',1,'full','live',1)");
-    f.sqlite.run("INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('proj_1','s-held','last-published','published',1)");
+    publishTranscript(f.sqlite,'tx-held',Buffer.byteLength('retained source bytes'));
     for(let pass=0;pass<8;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'archived'});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:21});

@@ -1,4 +1,4 @@
-import { prepareSwitchEnd } from '../../read/view-store.js';
+import { prepareSwitchEnd } from '../../read/catalog-store.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
  * answering with the current one.

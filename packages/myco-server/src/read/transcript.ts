@@ -73,8 +73,10 @@ export interface SegmentRow {
   availability: 'hot' | 'archived';
 }
 
-const TRANSCRIPT_COLUMNS = `transcript_id, session_id, machine_id, agent, origin_path, size, segment_count,
-     first_received_at, last_received_at, role, parsed_offset, parsed_at, fidelity, parse_error, parse_failed_at`;
+const TRANSCRIPT_COLUMNS = `t.transcript_id,t.session_id,t.machine_id,t.agent,t.origin_path,t.size,t.segment_count,
+  t.first_received_at,t.last_received_at,t.role,COALESCE(p.published_offset,0) AS parsed_offset,p.updated_at AS parsed_at,t.fidelity,
+  CASE WHEN p.state='awaiting' THEN 'awaiting_bytes' WHEN p.state='failed' THEN p.failure END AS parse_error,
+  CASE WHEN p.state='failed' THEN p.updated_at END AS parse_failed_at`;
 
 function toTranscript(row: Record<string, unknown>): TranscriptRow {
   return {
@@ -106,8 +108,11 @@ function toTranscript(row: Record<string, unknown>): TranscriptRow {
  */
 export async function listTranscripts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<TranscriptRow[]> {
   const { results } = await db
-    .prepare(`SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts WHERE project_id = ? AND session_id = ?
-              ORDER BY CASE WHEN role = 'subagent' THEN 1 ELSE 0 END, transcript_id`)
+    .prepare(`SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts t
+      LEFT JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
+      LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation
+      WHERE t.project_id = ? AND t.session_id = ?
+              ORDER BY CASE WHEN t.role = 'subagent' THEN 1 ELSE 0 END, t.transcript_id`)
     .bind(scope.projectId, sessionId)
     .all<Record<string, unknown>>();
   return results.map(toTranscript);

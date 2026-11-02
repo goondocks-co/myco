@@ -81,7 +81,7 @@ describe('verified recovery artifacts', () => {
     } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
   });
 
-  it.each(['responses', 'view_content_proofs'])('requires reference table %s in a current-schema snapshot', async table => {
+  it.each(['attachments','registered_content_proofs'])('requires reference table %s in a current-schema snapshot', async table => {
     const f = fixture();
     try {
       f.source.sqlite.exec(`DROP TABLE ${table}`);
@@ -456,9 +456,9 @@ describe('verified recovery artifacts', () => {
   it('refuses a snapshot whose tool payload references missing blob metadata', async () => {
     const f = fixture();
     try {
-      f.source.sqlite.run(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input_blob_key,success,created_at,token_id,received_at)
-        VALUES ('proj_1','tc_probe','s_probe','ev_probe','Read',?,1,1,'mt_fixture',1)`, ['a'.repeat(64)]);
-      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('tool_calls.input_blob_key');
+      f.source.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+        VALUES('proj_1','ev_probe','s_probe','mt_fixture','tool.use','cli',json_object('blob',?),'hash',1,1)`,['a'.repeat(64)]);
+      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('events.payload.blob');
       expect(f.manifest().status).toBe('snapshot');
       expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
       expect(f.reads).toEqual([]);

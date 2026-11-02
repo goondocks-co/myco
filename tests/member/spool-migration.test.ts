@@ -292,7 +292,7 @@ describe('legacy member spool migration', () => {
     expect(listLegacySpools(mycoHome)[0].sidecarHolds!.length).toBeGreaterThan(0);
     const client = new ServerClient({ ...routeA, token: rig.token }, rig.fetch);
     expect(await target.drainSession('optional', client, unboundedBudget(), { force: true })).toMatchObject({ acked: 1, remaining: 0 });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(fs.readFileSync(path.join(source.dir, 'optional.jsonl'), 'utf8')).toContain('capture before optional anomaly');
   });
 
@@ -367,12 +367,12 @@ describe('legacy member spool migration', () => {
       const report = await drainEntryBacklog(entry, { mycoHome, fetch: rig.fetch });
       expect(report.sessions.some((session) => session.events?.acked === 1)).toBe(true);
       expect(notices.join('')).toContain('Legacy helper is still active');
-      expect(rig.rows('prompt_batches')).toBe(1);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
       expect(source.readRecords('active-legacy')).toHaveLength(1);
     } finally { stderr.mockRestore(); lease.lock.release(); }
     expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', copied: 1 });
     expect(await target.drainSession('active-legacy', new ServerClient(entry, rig.fetch), unboundedBudget())).toMatchObject({ acked: 1, remaining: 0 });
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
   });
 
   it('reports temporary context artifacts without reading or copying them and drains healthy capture', async () => {
@@ -460,7 +460,7 @@ describe('legacy member spool migration', () => {
       expect(journalReads).toEqual([]);
     } finally { guard.mockRestore(); }
     expect(fs.readFileSync(path.join(target.dir, LEGACY_MIGRATION_FILE))).toEqual(original);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', copied: 1 });
     expect(target.readRecords('retained')).toHaveLength(1);
   });
@@ -495,7 +495,7 @@ describe('legacy member spool migration', () => {
     fs.writeFileSync(path.join(target.dir, LEGACY_MIGRATION_FILE), state === 'malformed' ? 'broken' : JSON.stringify({ version: 1, state: 'held', reason: 'legacy capture anomaly' }), { mode: 0o600 });
     const client = new ServerClient({ ...routeA, token: rig.token }, rig.fetch);
     expect(await target.drainSession('healthy-destination', client, unboundedBudget())).toMatchObject({ acked: 1, remaining: 0 });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
   });
 
   it('retires a quiet legacy source even when routed capture changes throughout the grace window', async () => {
@@ -549,7 +549,7 @@ describe('legacy member spool migration', () => {
       fs.appendFileSync(path.join(source.dir, 'retire.jsonl'), JSON.stringify(record) + '\n');
       expect(migrateLegacySpool(routeA, mycoHome).copied).toBe(0);
       expect(await target.drainSession('retire', client, unboundedBudget())).toMatchObject({ acked: 0 });
-      expect(rig.rows('prompt_batches')).toBe(4);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(4);
     } finally { fs.closeSync(open); }
   });
 
@@ -599,7 +599,7 @@ describe('legacy member spool migration', () => {
     } finally { guard.mockRestore(); }
     await target.drainSession('retired-blob', client, unboundedBudget(), { now: () => now + LEGACY_SPOOL_RETIRE_GRACE_MS + 3_600_000 });
     expect(target.depth('retired-blob')).toBe(0);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(new CaptureLossLedger(target.dir).read().payloads).toBe(0);
   });
 
@@ -640,7 +640,7 @@ describe('legacy member spool migration', () => {
     expect(await drain).toMatchObject({ acked: 1, remaining: 0 });
     expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', copied: 1 });
     expect(await target.drainSession('concurrent', new ServerClient({ ...routeA, token: rig.token }, rig.fetch), unboundedBudget())).toMatchObject({ acked: 1, remaining: 0 });
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
   });
 
   it('keeps an unreadable owned payload retryable when retained migration fallback paths are absent', async () => {
@@ -667,10 +667,10 @@ describe('legacy member spool migration', () => {
       await target.drainSession('owned-read', client, unboundedBudget(), { now: () => now + 60_000 });
       expect(target.depth('owned-read')).toBe(1);
       expect(new CaptureLossLedger(target.dir).read().payloads).toBe(0);
-      expect(rig.rows('prompt_batches')).toBe(0);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     } finally { guard.mockRestore(); }
     expect(await target.drainSession('owned-read', client, unboundedBudget(), { now: () => now + 3_600_000 })).toMatchObject({ acked: 1, remaining: 0 });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
   });
 
   it.each(['missing', 'EACCES', 'EIO', 'corrupt'])('migrates %s payload metadata into owned staging while the healthy tail delivers', async (failure) => {
@@ -701,7 +701,7 @@ describe('legacy member spool migration', () => {
       expect(migrateLegacySpool(routeA, mycoHome).status).toBe('migrated');
       expect(target.readRecords('payload')[1]!._blobSource!.path.startsWith(target.blobsDirFor('payload'))).toBe(true);
       await target.drainSession('payload', client, unboundedBudget(), { now: () => now });
-      expect(rig.rows('prompt_batches')).toBe(1);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
       expect(target.depth('payload')).toBe(1);
       await target.drainSession('payload', client, unboundedBudget(), { now: () => now + 60_000 });
       if (failure === 'EACCES' || failure === 'EIO') {
@@ -717,7 +717,7 @@ describe('legacy member spool migration', () => {
       expect(fs.readFileSync(file)).toEqual(original);
       await target.drainSession('payload', client, unboundedBudget(), { now: () => now + 3_600_000 });
       expect(target.depth('payload')).toBe(0);
-      expect(rig.rows('prompt_batches')).toBe(2);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     }
   });
 

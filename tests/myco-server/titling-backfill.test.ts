@@ -52,10 +52,6 @@ function rig() {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title)
                   VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?)`, [project, id, endedAt - 10_000, endedAt, endedAt - 10_000, endedAt, over.title ?? null]);
     documented(project, id, over.material === false ? 0 : 1);
-    if (over.material !== false) {
-      e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                    VALUES (?, ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [project, id, `p_${id}`, `e_${id}`, `Please fix the build for ${id}`, `h_${id}`, endedAt - 5000, endedAt - 5000, endedAt - 5000]);
-    }
     if (over.transcript !== false) {
       e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
                     VALUES (?, ?, ?, 'm1', 100, ?, ?, ?, 'tok_1', ?)`, [project, `tx_${id}`, id, over.parsed === false ? 40 : 100, endedAt, endedAt, over.imported === false ? null : endedAt]);

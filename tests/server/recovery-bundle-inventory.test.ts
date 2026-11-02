@@ -1,3 +1,5 @@
+import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
+import { prepareArchive,eventArchiveStatements } from '@myco-server-worker/core/event-content.js';
 import { expect, it, spyOn } from 'bun:test';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -54,18 +56,16 @@ it('operator recovery examines each historical identity once and searches its te
         envelope({ eventId: uuid(i+1), sessionId: 'sess_inventory', kind: 'tool.use',
           payload: { toolCallId: uuid(i+100), toolName: 'Write', input: 'exact input '.repeat(300), success: true } }),
         f.serverEnv)).toMatchObject({ persisted: true, projected: true });
+      const candidate=await cleanupCandidate(f.db,{project_id:'proj_1',resource_kind:'event',resource_id:uuid(i+1)},true);
+      await f.db.batch(eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
     }
     f.sqlite.exec(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES('proj_1','sess_history','m','t',0,0)`);
     const event = f.sqlite.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,
       envelope_hash,created_at,received_at,payload_bytes) VALUES('proj_1',?,'sess_history','t','response','cli','{}',?,0,0,2)`);
-    const tool = f.sqlite.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input,
-      success,created_at,token_id,received_at) VALUES('proj_1',?,'sess_history',?,'Read','{}',1,0,'t',0)`);
     try { f.sqlite.transaction(() => {
-      for (let i = 0; i < HISTORY_ROWS; i += 1) {
-        event.run(uuid(10_000+i), '0'.repeat(64)); tool.run(uuid(30_000+i), uuid(10_000+i));
-      }
-    })(); } finally { event.finalize(); tool.finalize(); }
+      for (let i = 0; i < HISTORY_ROWS; i += 1) event.run(uuid(10_000+i),'0'.repeat(64));
+    })(); } finally { event.finalize(); }
     const file = path.join(dir, 'snapshot.sqlite'); fs.writeFileSync(file, f.sqlite.serialize());
     snapshot = new Database(file, { readonly: true });
     const before = fs.readFileSync(file);
@@ -78,7 +78,7 @@ it('operator recovery examines each historical identity once and searches its te
       await verifyCopiedBundleEntries(snapshot, { ...f.bucket,
         head: key => f.bucket.head(sourceKey(key)), get: (key, options) => f.bucket.get(sourceKey(key), options) });
     } finally { reads.stop(); }
-    for (const table of ['events','tool_calls']) {
+    for (const table of ['events']) {
       const pages = reads.calls.filter(call => new RegExp(`FROM ${table}\\b`).test(call.sql));
       expect(pages.reduce((sum, call) => sum+call.rows, 0)).toBe(HISTORY_ROWS+BUNDLES);
       expect(pages).toHaveLength(Math.ceil((HISTORY_ROWS+BUNDLES)/RECOVERY_LOCATOR_PAGE_ROWS)+1);
@@ -119,6 +119,8 @@ it('operator recovery refuses a bundle outside the bounded entry format',async()
     expect(await ingestEvent(f.db,{projectId:'proj_1',machineId:'m',tokenId:token,bodyBytes:0,now},
       envelope({eventId:uuid(90),kind:'tool.use',payload:{toolCallId:uuid(91),toolName:'Read',
         input:'format bound'.repeat(300),success:true}}),f.serverEnv)).toMatchObject({persisted:true,projected:true});
+    const candidate=await cleanupCandidate(f.db,{project_id:'proj_1',resource_kind:'event',resource_id:uuid(90)},true);
+    await f.db.batch(eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
     f.sqlite.exec('UPDATE archive_bundles SET entry_count=65');
     const sourceKey=(key:string)=>{
       const [project,digest]=key.split('/');

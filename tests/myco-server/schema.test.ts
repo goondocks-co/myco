@@ -11,7 +11,7 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
 
 /** The tables schema v2 introduces, and the later tables held to its rules; every one is project-scoped and attributed. */
-const V2_TABLES = ['blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'run_reads'];
+const V2_TABLES = ['blobs', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'run_reads'];
 const CONTINUED_TABLES = ['plans', 'transcripts'];
 
 function applied(): Database {
@@ -30,10 +30,10 @@ describe('server schema', () => {
       for (const step of SCHEMA_STEPS.filter(step => step.version < 98)) for (const sql of step.statements) sqlite.exec(sql);
       sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('coverage','Coverage',1)");
       const db = sqliteRelationalStore(sqlite);
-      expect(await ingestEvent(db, { projectId: 'coverage', machineId: 'machine', tokenId: 'capture', now: 1, bodyBytes: 0, writeOrigin: 'server' }, {
-        eventId: crypto.randomUUID(), sessionId: 'session', kind: 'prompt', createdAt: 1, channel: 'cli',
-        producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId: crypto.randomUUID(), text: 'Historical material', origin: 'user' },
-      })).toMatchObject({ persisted: true, projected: true });
+      sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        VALUES('coverage','session','machine','capture',1,1)`);
+      sqlite.run(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+        VALUES('coverage','session','prompt','event','Historical material','user','hash',1,1,'capture',1)`);
       sqlite.run('UPDATE prompt_batches SET processed=1');
       const before = sqlite.query('SELECT * FROM prompt_batches').all();
       const step = SCHEMA_STEPS.find(step => step.version === 98)!;

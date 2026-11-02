@@ -1,5 +1,4 @@
 import { handleSetup } from './api/setup.js';
-import { readRefusalHandler } from './core/read-refusals.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
 import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
@@ -355,13 +354,6 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
 /** Each HTTP entry point shares the named read refusal boundary. */
 export const ROUTES: readonly Route[] = ROUTE_DECLARATIONS.map(route => {
   const guarded = { ...route };
-  if ('handler' in guarded && guarded.handler !== undefined) guarded.handler = readRefusalHandler(guarded.handler);
-  if ('run' in guarded && guarded.run !== undefined) guarded.run = readRefusalHandler(guarded.run);
-  if ('grant' in guarded && guarded.grant !== undefined) guarded.grant = readRefusalHandler(guarded.grant);
-  if ('credential' in guarded && guarded.credential !== undefined) guarded.credential = readRefusalHandler(guarded.credential);
-  if ('deployment' in guarded && guarded.deployment !== undefined) guarded.deployment = readRefusalHandler(guarded.deployment);
-  if ('runner' in guarded && guarded.runner !== undefined) guarded.runner = readRefusalHandler(guarded.runner);
-  if ('unbound' in guarded && guarded.unbound !== undefined) guarded.unbound = readRefusalHandler(guarded.unbound);
   return guarded;
 });
 

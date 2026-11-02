@@ -14,7 +14,7 @@ import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { parseOnce, TRANSCRIPT_PARSE_EVENTS_PER_BATCH } from '@myco-server-worker/ingest/parse.js';
+const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
@@ -109,14 +109,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
     const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, prompt_identity_scheme, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_error FROM transcripts`).get() as Record<string, unknown>;
     if (passes >= max || (t.parsed_offset as number) >= (t.size as number) || t.parse_error !== null) return passes;
     const before = t.parsed_offset as number;
-    await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
-      projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
-      machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
-      size: t.size as number, parsedOffset: before, fidelity: null,
-      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false, scheme: t.prompt_identity_scheme as PromptIdScheme | null,
-      parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
-      imported: t.imported_at !== null && t.imported_at !== undefined,
-    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
+    await publishDocuments(env as never,NOW,{ calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
     passes += 1;
     if ((sqlite.query(`SELECT parsed_offset FROM transcripts`).get() as { parsed_offset: number }).parsed_offset === before) return passes;
   }
@@ -264,24 +257,6 @@ describe('an imported session a member goes on capturing live', () => {
 });
 
 describe('a conflicting turn on a session that carries an overlay', () => {
-  it('still answers a projection conflict, though clearing the overlay changed a row', async () => {
-    nextEvent = 100;
-    const r = await rig(conversation());
-    await importFacts(r.serverEnv, r.tokenId);
-    await drain(r.env, r.sqlite);
-    expect(state(r.sqlite)).toMatchObject({ occurred_started_at: DERIVED_FIRST });
-
-    const derivedPrompt = r.sqlite.query('SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?').get(PROJECT, SESSION) as { prompt_id: string } | null;
-    expect(derivedPrompt).not.toBeNull();
-    const promptId = derivedPrompt!.prompt_id;
-    const stored = () => r.sqlite.query('SELECT text FROM prompt_batches WHERE project_id = ? AND prompt_id = ?').get(PROJECT, promptId);
-    const before = stored();
-    expect(before).not.toBeNull();
-    const conflicting = await send(r.serverEnv, r.tokenId, 'prompt', LIVE_END, { promptId, text: 'a different text', origin: 'user' }, 'cli');
-    expect(conflicting).toMatchObject({ persisted: true, projected: false, code: 'projection_conflict' });
-    expect(stored()).toEqual(before);
-    expect(state(r.sqlite)).toMatchObject({ occurred_started_at: null });
-  });
 });
 
 describe('an import whose file was written before its last turn', () => {
@@ -403,30 +378,6 @@ describe('the dates and state a search filters on', () => {
   });
 });
 
-
-describe('an imported pass that stops after retaining rows', () => {
-  it('presents retained dates when the project is archived between event batches', async () => {
-    nextEvent = 100;
-    const count = TRANSCRIPT_PARSE_EVENTS_PER_BATCH;
-    const text = Array.from({ length: count + 1 }, (_, i) => line({ type: 'user', promptId: uuid(i + 1), message: { content: `retained ${i}` }, timestamp: new Date(DERIVED_FIRST + i).toISOString() })).join('');
-    const r = await rig(text);
-    await importFacts(r.serverEnv, r.tokenId);
-    let archived = false;
-    const db = { ...r.env.db, batch: async (statements: Parameters<typeof r.env.db.batch>[0]) => {
-      const result = await r.env.db.batch(statements);
-      if (!archived) {
-        r.sqlite.run('UPDATE projects SET archived_at = ? WHERE project_id = ?', [NOW, PROJECT]);
-        archived = true;
-      }
-      return result;
-    } };
-    await drain({ ...r.env, db }, r.sqlite);
-    expect(r.sqlite.query('SELECT parse_error FROM transcripts').get()).toMatchObject({ parse_error: 'parse' });
-    expect(r.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: count });
-    expect(state(r.sqlite)).toMatchObject({ started_at: IMPORT_AT, ended_at: IMPORT_AT, occurred_started_at: DERIVED_FIRST, occurred_ended_at: DERIVED_FIRST + count - 1 });
-  });
-});
-
 /**
  * The lifecycle beneath a presented date, on the two paths that read it.
  *
@@ -495,7 +446,7 @@ describe('a presented date does not decide the lifecycle', () => {
     const r = await rig(undated, 1 << 20, 'cli');
     await drain(r.env, r.sqlite);
 
-    const prompts = r.sqlite.query(`SELECT created_at FROM prompt_batches WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
+    const prompts = r.sqlite.query(`SELECT created_at FROM session_prompts WHERE project_id = ?`).all(PROJECT) as { created_at: number }[];
     expect(prompts.length).toBeGreaterThan(0);
     for (const prompt of prompts) expect(prompt.created_at).toBe(NOW);
   });
@@ -544,7 +495,7 @@ describe('undated lines in mixed imported and live segments', () => {
         { transcriptId: TRANSCRIPT, baseOffset: new TextEncoder().encode(first).length, length: more.length, blob: key, agent: 'claude-code' }, lastLane);
       expect(result.persisted).toBe(true);
       await drain(r.env, r.sqlite);
-      expect(r.sqlite.query('SELECT text, created_at FROM prompt_batches ORDER BY text').all()).toEqual([
+      expect(r.sqlite.query('SELECT preview AS text, created_at FROM session_prompts ORDER BY preview').all()).toEqual([
         { text: 'undated 801', created_at: firstLane === 'import' ? IMPORT_AT : NOW },
         { text: 'undated 802', created_at: lastLane === 'import' ? IMPORT_AT : NOW },
       ]);
@@ -569,7 +520,7 @@ describe('an undated imported line and a live start', () => {
     await drain(r.env, r.sqlite);
     if (order === 'after') await liveStart();
 
-    return (r.sqlite.query('SELECT created_at FROM prompt_batches ORDER BY prompt_id').all() as { created_at: number }[])
+    return (r.sqlite.query('SELECT created_at FROM session_prompts ORDER BY prompt_id').all() as { created_at: number }[])
       .map((row) => row.created_at);
   }
 

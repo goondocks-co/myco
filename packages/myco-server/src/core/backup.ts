@@ -1,8 +1,9 @@
+import { archivedEventMetadata } from '../db/document-tables.js';
 import { assertThinLearningDrained, THIN_LEARNING_REMOVAL_VERSION } from '../db/thin-learning-admission.js';
 import { estimateInvalidationStatements } from './budget-estimates.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
-import { VIEW_FACT_TABLES, VIEW_FTS_TABLES, VIEW_REGENERABLE_TABLES, VIEW_DURABLE_TABLES } from '../db/view-tables.js';
-import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
+import { restoreDocuments } from '../ingest/document-restore.js';
+import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -30,13 +31,11 @@ import { BUNDLE_REFERENCES, bundleHeld, type BlobRef } from './blob-references.j
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content.js';
-import { restoreToolInput } from './tool-input-restore.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
-import { prepareRestoredSessionUnread } from '../read/view-store.js';
+import { prepareRestoredSessionUnread } from '../read/catalog-store.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
-import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
 import { restoreRecordSchemeDecisions } from '../ingest/record-scheme.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -61,13 +60,16 @@ const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'runners', 'device_decision_audit', 'device_requests', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
-  'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
-  'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
-  'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
+  'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'processed_resources', 'plans',
+  'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
+  'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
-  'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...VIEW_FACT_TABLES,
+  'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...DOCUMENT_ARTIFACT_TABLES,
 ];
+
+/** Input-only tables whose artifact rows are converted directly to documents. */
+const LEGACY_DOCUMENT_TABLES = ['prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'transcript_parser_state_chunks', 'prompt_key_owners'];
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
 export const RETIRED_TABLES: ReadonlyMap<string, number> = new Map(
@@ -96,13 +98,12 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  ...VIEW_REGENERABLE_TABLES,
-  ...VIEW_DURABLE_TABLES,
-  ...DOCUMENT_SESSION_TABLES,
+  'learning_sessions', 'plan_promotions',
+  ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts', 'learning_init_queue',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...[...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`), ...VIEW_FTS_TABLES]
+  ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
@@ -338,7 +339,7 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
 
 /** Admit every table named by the artifact before any restore write. */
 function artifactTable(table: string): void {
-  if (!BACKUP_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
+  if (!BACKUP_TABLES.includes(table) && !LEGACY_DOCUMENT_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
     throw new BackupApplyError(table, 'unknown artifact table');
   }
 }
@@ -462,11 +463,7 @@ const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> =
         SELECT ${columns.map(() => '?').join(', ')}, ${pin.sql} RETURNING rowid`)
       .bind(...columns.map((c) => row[c] ?? null), ...pin.params);
   },
-  transcript_parser_state_chunks(db, row, { parents }) {
-    const parent = parents.get(transcriptIdentity(row.project_id, row.transcript_id));
-    if (parent === undefined) throw new BackupApplyError('transcript_parser_state_chunks', 'a checkpoint row names no transcript in the artifact');
-    return restoreParserCheckpointStatement(db, row, parent);
-  },
+
 };
 
 function readRestoreProgress(db: RelationalStore, table: string): Promise<RestoreProgress | null> {
@@ -635,8 +632,13 @@ export async function restoreArtifact(
         kind:'tool-input',resourceId:tool.tool_call_id as string,tokenId:tool.token_id as string});
     }
     try {
-      await verifyBundleArtifact({db,blobs:opts.blobs!},row as Parameters<typeof verifyBundleArtifact>[1],
+      const contents = await verifyBundleArtifact({db,blobs:opts.blobs!},row as Parameters<typeof verifyBundleArtifact>[1],
         byTable.get('registered_content_proofs') ?? [],locators);
+      for(const event of byTable.get('events') ?? []) if(event.project_id===row.project_id&&event.bundle_id===row.id) {
+        const payload=contents.get(String(event.event_id));
+        if(payload===undefined)throw new Error('event_content_reference_invalid');
+        event.payload=archivedEventMetadata(JSON.parse(payload));
+      }
     } catch (error) {
       throw new BackupApplyError('archive_bundles',error instanceof Error ? error.message : String(error));
     }
@@ -649,7 +651,10 @@ export async function restoreArtifact(
     throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
   }
 
-  const documents = opts.documents === undefined ? undefined : await opts.documents.plan(byTable);
+  const legacyContent = ['session_chunks','prompt_batches', 'responses', 'tool_calls'].some((table) => (byTable.get(table)?.length ?? 0) > 0);
+  if (legacyContent && opts.blobs === undefined) throw new BackupApplyError('documents', 'document restoration requires a content store');
+  const documentRestorer = opts.documents ?? (legacyContent ? restoreDocuments({ db, blobs: opts.blobs! }) : undefined);
+  const documents = documentRestorer === undefined ? undefined : await documentRestorer.plan(byTable);
   if (documents !== undefined && documents.summary.refuse.length > 0) {
     throw new BackupApplyError('documents', `${ARTIFACT_PRECEDENCE_AMBIGUOUS}: sessions ${documents.summary.refuse.join(', ')} hold legacy-classified content their live documents may keep under other ids; restore them through the staged restore`);
   }
@@ -685,10 +690,6 @@ export async function restoreArtifact(
   const restoredBundleIds = new Map<string, number>();
   const insertedBundles: Array<{projectId:string;id:number;archiveKey:string;receiptKey:string}> = [];
   const artifactEvents = new Map((byTable.get('events') ?? []).map(row => [transcriptIdentity(row.project_id, row.event_id), row]));
-  const displayedInputs = new Set((byTable.get('tool_calls') ?? [])
-    .filter(row => typeof row.input === 'string' && typeof row.input_bytes === 'number'
-      && row.input_bytes > 2048 && typeof row.input_blob_key === 'string')
-    .map(row => transcriptIdentity(row.project_id, row.tool_call_id)));
   const transcriptSegments = new Map<string, Record<string, unknown>[]>();
   for (const row of byTable.get('transcript_segments') ?? []) {
     const identity = transcriptIdentity(row.project_id, row.transcript_id);
@@ -701,6 +702,10 @@ export async function restoreArtifact(
   for (const table of BACKUP_TABLES) {
     let rows = byTable.get(table) ?? [];
     const artifactRowCount = rows.length;
+    if((DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)){
+      outcome.tables[table]={rows:rows.length,inserted:0,skipped:'document restore owns catalog publication'};
+      continue;
+    }
     if (rows.length === 0) continue;
     if (table === 'raw_provenance_state' || table === 'raw_provenance_backfill') {
       outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'destination provenance checkpoint owns the restored revision reservation' };
@@ -796,61 +801,8 @@ export async function restoreArtifact(
       outcome.tables[table] = { rows: rows.length, inserted };
       continue;
     }
-    if (table === 'tool_calls') {
-      let inserted = 0;
-      for (const row of rows) {
-        try {
-          if (row.input_bundle_id !== null && row.input_bundle_id !== undefined) {
-            const restoredId = restoredBundleIds.get(transcriptIdentity(row.project_id,row.input_bundle_id));
-            if (restoredId === undefined) throw new BackupApplyError(table, 'a tool input lacks its restored bundle');
-            row.input_bundle_id = restoredId;
-          }
-          const identity = transcriptIdentity(row.project_id, row.tool_call_id);
-          if (displayedInputs.has(identity)) {
-            const outcomeEvent = artifactEvents.get(transcriptIdentity(row.project_id, row.event_id));
-            const processed = (byTable.get('processed_resources') ?? []).find(candidate => candidate.project_id === row.project_id
-              && candidate.kind === 'tool-input' && candidate.resource_id === row.tool_call_id && candidate.blob_key === row.input_blob_key);
-            const inputEvent = processed === undefined ? undefined : artifactEvents.get(transcriptIdentity(row.project_id, processed.event_id));
-            if (outcomeEvent === undefined || inputEvent === undefined || processed === undefined) {
-              throw new BackupApplyError(table, 'a displayed input lacks its source or processed reference');
-            }
-            const proofs = (byTable.get('registered_content_proofs') ?? []).filter(proof => proof.project_id === row.project_id
-              && ((proof.source_kind === 'tool-input' && proof.source_id === row.tool_call_id && proof.key === row.input_blob_key)
-                || (proof.source_kind === 'receipt' && proof.source_id === `tool-input:${String(row.tool_call_id)}`)));
-            inserted += await restoreToolInput(db, row, outcomeEvent, inputEvent, processed, proofs);
-          } else {
-            const references = referencedBlobsOf(table, row);
-            const columns = Object.keys(row);
-            const bundledGuard = row.input_bundle_id === null || row.input_bundle_id === undefined ? [] : [
-              db.prepare(`INSERT INTO restore_reference_guard (missing)
-                SELECT 'bundled tool input closure' WHERE NOT EXISTS (
-                  SELECT 1 FROM archive_bundles a JOIN registered_content_proofs p
-                    ON p.project_id=a.project_id AND p.key=a.archive_key
-                    AND p.source_kind='bundle' AND p.source_id=a.archive_key AND p.durable=1
-                  JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key AND b.generation=p.generation
-                  JOIN events e ON e.project_id=a.project_id AND e.event_id=?
-                  WHERE a.project_id=? AND a.id=? AND a.session_id=? AND a.token_id=?
-                    AND a.entry_count>? AND e.session_id=? AND e.envelope_hash=?)`)
-                .bind(row.event_id,row.project_id,row.input_bundle_id,row.session_id,row.token_id,
-                  row.input_bundle_entry,row.session_id,artifactEvents.get(transcriptIdentity(row.project_id,row.event_id))?.envelope_hash)
-            ];
-            const statements = [...bundledGuard, ...(references.length === 0 ? [] : [registeredBlobsGuard(db, references)]),
-              db.prepare(`INSERT OR IGNORE INTO tool_calls (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
-                .bind(...columns.map(column => row[column] ?? null))];
-            const applied = await db.batch(statements);
-            inserted += applied.at(-1)!.results.length;
-          }
-        } catch (error) {
-          if (error instanceof RestoreAuthorizationError || error instanceof BackupApplyError) throw error;
-          throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
-        }
-      }
-      outcome.tables[table] = { rows: rows.length, inserted };
-      continue;
-    }
     if (table === 'processed_resources') {
-      rows = rows.filter(row => row.kind !== 'tool-input'
-        || !displayedInputs.has(transcriptIdentity(row.project_id, row.resource_id)));
+      rows = rows.filter(row => row.kind !== 'tool-input');
       if (rows.length === 0) {
         outcome.tables[table] = { rows: artifactRowCount, inserted: 0, skipped: 'displayed input restoration owns processed references' };
         continue;
@@ -859,10 +811,6 @@ export async function restoreArtifact(
     if (table === 'registered_content_proofs') {
       let inserted = 0;
       for (const row of rows) {
-        if ((row.source_kind === 'tool-input' && displayedInputs.has(transcriptIdentity(row.project_id, row.source_id)))
-          || (row.source_kind === 'receipt' && typeof row.source_id === 'string'
-            && row.source_id.startsWith('tool-input:')
-            && displayedInputs.has(transcriptIdentity(row.project_id, row.source_id.slice('tool-input:'.length))))) continue;
         const columns = Object.keys(row);
         const values = columns.filter(column => column !== 'generation');
         try {
@@ -989,6 +937,12 @@ export async function restoreArtifact(
     prepareRestoredSessionUnread(db, JSON.stringify([...restoredSessions.values()])),
     db.prepare('UPDATE backup_restore_progress SET next_row=1 WHERE table_name=? AND artifact_hash=?').bind(recountPhase, hash),
   ]);
+  for (const row of byTable.get('tool_calls') ?? []) {
+    if (row.input_bundle_id == null) continue;
+    const restored = restoredBundleIds.get(transcriptIdentity(row.project_id, row.input_bundle_id));
+    if (restored === undefined) throw new BackupApplyError('documents', 'a restored input has no verified bundle');
+    row.input_bundle_id = restored;
+  }
   await documents?.apply(restoredAt);
   return outcome;
 }

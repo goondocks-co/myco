@@ -1,7 +1,7 @@
 import { launchParentSession } from '@myco/member/session-lineage.js';
 import { expect } from 'bun:test';
 import { sessionLineage, type SessionLineage } from '@myco-server-worker/read/lineage.js';
-import { listSessionActivity, type SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
+import { sessionEdges, type SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -22,8 +22,8 @@ async function issued(projectId: string, sessionId: string): Promise<Array<{ sql
     },
   } as unknown as RelationalStore;
   await sessionLineage(db, { projectId }, sessionId);
-  await listSessionActivity(db, { projectId }, sessionId, { type: 'child_session' });
-  await listSessionActivity(db, { projectId }, sessionId, { type: 'continuation' });
+  await sessionEdges(db, { projectId }, sessionId, { type: 'child_session' });
+  await sessionEdges(db, { projectId }, sessionId, { type: 'continuation' });
   return statements;
 }
 

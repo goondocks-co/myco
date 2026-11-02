@@ -55,7 +55,7 @@ async function verify(db: RelationalStore) {
   ];
   for (const sql of initial) await db.prepare(sql).run();
   await db.batch(READ_BUDGET_SESSION_STATEMENTS.map((sql) => db.prepare(sql)));
-  for (const step of SCHEMA_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+  for (const step of SCHEMA_STEPS.filter(step => step.version > 83 && step.version < 117)) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await assertProjection(db);
   await db.batch([
     db.prepare('UPDATE session_read_facts SET eligible_prompts=99'),

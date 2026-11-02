@@ -79,9 +79,14 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     expect(shell.status).toBe(200);
     expect(await shell.text()).toContain('<html');
 
-    const [tool] = await target.sql(`SELECT session_id,tool_call_id,input_blob_key FROM tool_calls
-      WHERE project_id='${PROJECT_ID}' AND prompt_id IS NOT NULL AND input_bundle_id IS NOT NULL LIMIT 1`);
-    const fullPath = `/api/projects/${PROJECT_ID}/processed/tool-input/${tool.tool_call_id}`;
+    const [prompt]=await target.sql(`SELECT p.session_id,p.prompt_id FROM session_prompts p JOIN session_documents d
+      ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation
+      WHERE p.project_id='${PROJECT_ID}' AND d.tool_calls>0 AND p.turn_key=p.prompt_id LIMIT 1`);
+    const toolRows=await (await fetch(`${url}/api/projects/${PROJECT_ID}/sessions/${prompt.session_id}/turns/${prompt.prompt_id}/tool-calls`,{headers:{cookie}})).json() as {rows:{toolCallId:string;inputTruncated:boolean;locator:{generation:number;owner:string;page:number}}[]};
+    const held=toolRows.rows.find(row=>row.inputTruncated)!;
+    const tool={session_id:prompt.session_id,tool_call_id:held.toolCallId};
+    const locator=new URLSearchParams({session:String(prompt.session_id),generation:String(held.locator.generation),owner:held.locator.owner,page:String(held.locator.page)});
+    const fullPath=`/api/projects/${PROJECT_ID}/processed/tool-input/${tool.tool_call_id}?${locator}`;
     const full = await (await fetch(`${url}${fullPath}`, { headers: { cookie } })).text();
     const browser = await chromium.launch({ headless: true });
     try {

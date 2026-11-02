@@ -1,3 +1,4 @@
+import { publishFixture } from './helpers/fixtures.js';
 /**
  * The sessions a run read (`run_reads`), and what the dashboard reads off them.
  *
@@ -35,8 +36,7 @@ async function setup() {
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
   const session = (id: string, project = 'proj_1') => e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at, title)
     VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?)`, [project, id, NOW - 10_000, NOW, NOW - 10_000, NOW, `Title of ${id}`]);
-  const prompt = (id: string, sessionId: string) => e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-    VALUES ('proj_1', ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [sessionId, id, `e_${id}`, `body of ${id}`, `h_${id}`, NOW, NOW, NOW]);
+  const prompt = (id: string, sessionId: string) => e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,? AS text,'user' AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [sessionId, id, `e_${id}`, `body of ${id}`, `h_${id}`, NOW, NOW, NOW]);
   const spore = (id: string, sessionId: string | null, author: string, project = 'proj_1', at = NOW) => e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, session_id, observation_type, status, content, agent_line, author, created_at)
     VALUES (?, ?, 'myco-agent', ?, 'gotcha', 'active', 'body', ?, ?, ?)`, [project, id, sessionId, `line of ${id}`, author, at]);
   session('sess_1');
@@ -46,6 +46,7 @@ async function setup() {
 
   /** A running run, dispatched over a credential of its own, as the dispatcher mints one per run; answers that credential. */
   const dispatch = async (runId: string, task: string, over: { sessionId?: string | null; project?: string; startedAt?: number } = {}) => {
+    await publishFixture(e, NOW);
     const credential = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW);
     const runContext = JSON.stringify({ ...(over.sessionId === null ? {} : { session_id: over.sessionId ?? 'sess_1' }), mode: 'claim', timeoutSeconds: 300 });
     expect(await recordDispatch(e.db, { projectId: over.project ?? 'proj_1' }, {
@@ -56,6 +57,7 @@ async function setup() {
   };
   /** One tool call, the deferral the request carries settled before it answers. */
   const call = async (token: string, name: string, args: Record<string, unknown>, bindings: Record<string, unknown> = env) => {
+    await publishFixture(e, NOW);
     const res = await worker.fetch(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: rpc(name, args) }), bindings as never, e.deferred);
     const body = await res.json() as any;
     await e.deferred.settle();
@@ -144,6 +146,7 @@ describe('recording what a run read', () => {
       prepare: (sql) => e.db.prepare(sql),
       batch: (statements) => (statements.some((s) => /INSERT INTO run_reads/.test((s as unknown as { sql: string }).sql)) ? new Promise(() => {}) : e.db.batch(statements)),
     };
+    await publishFixture(e, NOW);
     const res = await worker.fetch(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(harness.token), body: rpc('myco_run_sessions', { op: 'material' }) }),
       { ...e.env, MYCO_DB: stalled } as never, e.deferred);
     expect(((await res.json()) as any).result.structuredContent.result.session_id).toBe('sess_1');

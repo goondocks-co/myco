@@ -8,26 +8,18 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { BLOB_REFERENCES, blobHeld, referenceLabel, unreferencedAmong } from '@myco-server-worker/core/blob-references.js';
+import { BLOB_REFERENCES, blobReferenceColumn, blobHeld, referenceLabel, unreferencedAmong } from '@myco-server-worker/core/blob-references.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 /** Every reference the catalogue names today, by label; a kind that starts naming a blob lands here. */
 const REFERENCES = [
-  'prompt_batches.blob_key',
-  'tool_calls.input_blob_key',
-  'tool_calls.output_blob_key',
-  'responses.blob_key',
   'plans.blob_key',
   'attachments.blob_key',
   'transcript_segments.blob_key',
-  'view_prompts.blob_key',
-  'view_responses.blob_key',
-  'view_tool_calls.input_blob_key',
-  'view_tool_calls.output_blob_key',
-  'view_plans.blob_key',
-  'view_content_proofs.blob_key',
-  'events.blob_key (compaction.pre, compaction.post)',
+  'events.blob_key (prompt, tool.use, tool.failure, response, compaction.pre, compaction.post)',
+  'events.payload.blob',
+  'events.payload.outputBlob',
   'archive_bundles.archive_key',
   'archive_bundles.receipt_key',
   'raw_archive_refs.archive_key',
@@ -44,7 +36,7 @@ describe('the blob reference catalogue', () => {
 
   it('is indexed by Project and key at every reference, so the held check is a seek per holder rather than a scan', () => {
     for (const ref of BLOB_REFERENCES) {
-      const indexed = DDL.some((s) => new RegExp(`CREATE INDEX IF NOT EXISTS \\w+ ON ${ref.table}\\s*\\(project_id,\\s*${ref.column}\\)`).test(s));
+      const indexed = DDL.some(sql => sql.replace(/\s/g, '').includes(`ON${ref.table}(project_id,${blobReferenceColumn(ref).replace(/\s/g, '')})`));
       expect({ ref: referenceLabel(ref), indexed }).toEqual({ ref: referenceLabel(ref), indexed: true });
     }
   });
@@ -58,7 +50,7 @@ describe('the blob reference catalogue', () => {
       for (const ref of BLOB_REFERENCES) {
         const scanned = details.filter((d) => d.startsWith(`SCAN ${ref.table}`));
         expect({ ref: referenceLabel(ref), scanned }).toEqual({ ref: referenceLabel(ref), scanned: [] });
-        expect(details.some((d) => d.startsWith(`SEARCH ${ref.table} USING`) && d.includes(ref.column))).toBe(true);
+        expect(details.some((d) => d.startsWith(`SEARCH ${ref.table} USING`) && (ref.jsonField !== undefined || d.includes(ref.column)))).toBe(true);
       }
     } finally { sqlite.close(); }
   });
@@ -68,10 +60,10 @@ describe('the blob reference catalogue', () => {
     try {
       const key = (n: number) => String(n).padStart(64, '0');
       const pairs = Array.from({ length: 300 }, (_, n) => ({ projectId: n % 2 === 0 ? 'proj_1' : 'proj_2', key: key(n) }));
-      // Every third key is held by a tool call in proj_1 only.
+      // Every third key is held by a raw event in proj_1 only.
       for (const { key: k } of pairs.filter((_, n) => n % 3 === 0)) {
-        sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, success, created_at, token_id, received_at)
-                    VALUES ('proj_1', ?, 's', 'e', 'Read', ?, 1, 1, 't', 1)`, [`tc-${k}`, k]);
+        sqlite.run(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+                    VALUES ('proj_1', ?, 's', 't', 'tool.use', 'cli', json_object('blob',?), 'h', 1, 1)`, [`tc-${k}`, k]);
       }
       executed.length = 0;
       const free = await unreferencedAmong(db, pairs);

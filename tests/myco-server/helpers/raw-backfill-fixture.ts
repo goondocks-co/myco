@@ -47,12 +47,6 @@ export function historicalBackfillSql(now: number, member = 'member_backfill', m
       (${lit(a)}, 'mixed', 18, 1, ${lit('0'.repeat(64))}, 'mixed-own-segment', ${now}, ${now}, ${lit(credential)}),
       (${lit(a)}, 'mixed', 19, 1, ${lit('0'.repeat(64))}, 'mixed-other-segment', ${now}, ${now}, 'credential_backfill_other'),
       (${lit(b)}, 'known', 0, 1, ${lit('0'.repeat(64))}, 'known-segment', ${now}, ${now}, ${lit(credential)})`,
-    `INSERT INTO prompt_batches (project_id,prompt_id,session_id,event_id,origin,blob_key,content_hash,created_at,updated_at,token_id,received_at)
-      SELECT project_id, 'prompt-' || key, 'backfill_session', 'prompt-' || key, 'user', key, key, ${now}, ${now}, token_id, ${now} FROM blobs WHERE project_id IN (${lit(a)}, ${lit(b)})`,
-    `INSERT INTO responses (project_id,response_id,session_id,event_id,blob_key,content_hash,created_at,token_id,received_at)
-      SELECT project_id, 'response-' || key, 'backfill_session', 'response-' || key, key, key, ${now}, token_id, ${now} FROM blobs WHERE project_id IN (${lit(a)}, ${lit(b)})`,
-    `INSERT INTO tool_calls (project_id,tool_call_id,session_id,event_id,tool_name,input_blob_key,output_blob_key,success,created_at,token_id,received_at)
-      SELECT project_id, 'tool-' || key, 'backfill_session', 'tool-' || key, 'historical', key, key, 1, ${now}, token_id, ${now} FROM blobs WHERE project_id IN (${lit(a)}, ${lit(b)})`,
     `UPDATE transcripts SET parsed_offset = size WHERE project_id IN (${lit(a)}, ${lit(b)})`,
   ];
 }

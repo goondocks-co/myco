@@ -22,3 +22,10 @@ export function unreadPromptSql(row: string, options: { beforeLedger?: boolean; 
 export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
     AND r.${IN_FLIGHT_RUN_STATUSES}
     AND json_extract(CASE WHEN json_valid(r.run_context) THEN r.run_context END, '$.session_id') = ${session}.session_id)`;
+
+/** SQL naming a session that carries no tombstone. `alias` is the `sessions` alias in the query it joins. */
+export const notTombstonedSql = (alias: string): string =>
+  `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)`;
+
+/** The same predicate for a query that names its project and session by parameter rather than by alias. */
+export const NOT_TOMBSTONED_PARAMS = `NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = ? AND t.session_id = ?)`;

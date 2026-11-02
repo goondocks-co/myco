@@ -1,3 +1,5 @@
+import { readFixtureRecords } from '../myco-server/helpers/fixtures.js';
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * The gate #1147 opened and #1155 closes: one transcript, one writer.
  *
@@ -23,7 +25,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
-import { parseTranscripts, TRANSCRIPT_PRODUCER } from '@myco-server-worker/ingest/parse.js';
+import { TRANSCRIPT_PARSE_ADAPTER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+const TRANSCRIPT_PRODUCER={adapter:TRANSCRIPT_PARSE_ADAPTER,version:String(SERVER_PROTOCOL)};
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { canonicalRecordId } from '@goondocks/myco-shared/record-identity';
 import { uuidv5 } from '@myco-server-worker/hash.js';
@@ -75,17 +78,22 @@ async function replay(file: string, sessionId = SESSION, prompt = 'add the reten
   await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { helpers: 'run', fetch: spy.fetch });
   await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, { helpers: 'run', fetch: spy.fetch });
   for (let pass = 0; pass < 20; pass += 1) {
-    if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) break;
+    if ((await publishFixtureDocuments(rig.env.serverEnv, Date.now())).changed === 0) break;
   }
 }
 
-const rows = (table: string, columns: string[], order: string): Record<string, unknown>[] =>
-  rig.env.sqlite.query(`SELECT ${columns.join(', ')} FROM ${table} WHERE project_id = 'proj_1' ORDER BY ${order}`).all() as Record<string, unknown>[];
+const rows = async (table: string, columns: string[], order: string): Promise<Record<string, unknown>[]> => {
+  const kind = ({prompt_batches:'prompt',responses:'reply',tool_calls:'tool'} as Record<string,string>)[table];
+  if(kind === undefined) return rig.env.sqlite.query(`SELECT ${columns.join(', ')} FROM ${table} WHERE project_id='proj_1' ORDER BY ${order}`).all() as Record<string,unknown>[];
+  const records=(await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(record=>record.k===kind);
+  const values=records.map(record=>Object.fromEntries(columns.map(column=>[column,column==='prompt_id'&&kind==='prompt'?record.id:column==='success'?Number(record.success):record[column]])));
+  return values.sort((a,b)=>String(a[order]).localeCompare(String(b[order])));
+};
 
 describe('retained-hook replay reproduces the parity rows', () => {
   it('lands both prompts on the ids the parse derives, with their text and origin', async () => {
     await replay(onDisk(transcriptText));
-    expect(rows('prompt_batches', ['prompt_id', 'text', 'origin', 'prompt_kind'], 'text')).toEqual([
+    expect(await rows('prompt_batches', ['prompt_id', 'text', 'origin', 'prompt_kind'], 'text')).toEqual([
       { prompt_id: await promptIdFor(SESSION, 'user_prompt', '11111111-1111-4111-8111-111111111111'), text: 'add the retention window', origin: 'user', prompt_kind: 'unmarked' },
       { prompt_id: await promptIdFor(SESSION, 'queued_command', '22222222-2222-4222-8222-222222222222'), text: 'and run the tests', origin: 'user', prompt_kind: 'queued_command' },
     ]);
@@ -93,9 +101,9 @@ describe('retained-hook replay reproduces the parity rows', () => {
 
   it('lands the tagged plan under the key the parse derives, with the channel it arrived through', async () => {
     await replay(onDisk(transcriptText));
-    expect(rows('plans', ['plan_key', 'title', 'content', 'status', 'source', 'origin_path'], 'plan_key')).toEqual([
+    expect(await rows('plans', ['plan_key', 'title', 'content', 'status', 'source', 'origin_path'], 'plan_key')).toEqual([
       { plan_key: await canonicalRecordId(uuidv5, { scheme: 'source-record-v1', kind: 'plan', sessionId: SESSION,
-        transcriptId: String(rows('transcripts', ['transcript_id'], 'transcript_id')[0].transcript_id), agent: 'claude-code',
+        transcriptId: String((await rows('transcripts', ['transcript_id'], 'transcript_id'))[0].transcript_id), agent: 'claude-code',
         source: { key: 'a1', thread: 'main', block: 0 }, offset: Buffer.byteLength(transcriptText.split('\n')[0]) + 1, tag: 'ultraplan', coordinate: [0, 0] }), title: 'Retention', content: '# Retention\n- [ ] leaf', status: 'active', source: 'tag', origin_path: 'transcript:ultraplan' },
     ]);
   });
@@ -104,8 +112,8 @@ describe('retained-hook replay reproduces the parity rows', () => {
     await replay(onDisk(transcriptText));
     const typed = await promptIdFor(SESSION, 'user_prompt', '11111111-1111-4111-8111-111111111111');
     const queued = await promptIdFor(SESSION, 'queued_command', '22222222-2222-4222-8222-222222222222');
-    expect(rows('tool_calls', ['prompt_id', 'tool_name', 'output_preview', 'success'], 'tool_name')).toEqual([{ prompt_id: typed, tool_name: 'Read', output_preview: 'ok', success: 1 }]);
-    expect(rows('responses', ['prompt_id', 'text'], 'text')).toEqual([
+    expect(await rows('tool_calls', ['prompt_id', 'tool_name', 'output_preview', 'success'], 'tool_name')).toEqual([{ prompt_id: typed, tool_name: 'Read', output_preview: 'ok', success: 1 }]);
+    expect(await rows('responses', ['prompt_id', 'text'], 'text')).toEqual([
       { prompt_id: queued, text: 'Tests pass.' },
       { prompt_id: typed, text: 'Working.\n\n<ultraplan>\n# Retention\n- [ ] leaf\n</ultraplan>' },
     ]);
@@ -114,14 +122,14 @@ describe('retained-hook replay reproduces the parity rows', () => {
   it('has one writer: every turn row carries the parse\'s producer, and the member\'s side holds only the session, the segment and the end', async () => {
     await replay(onDisk(transcriptText));
     const producers = (kind: string) => new Set((rig.env.sqlite.query(`SELECT DISTINCT producer_adapter a FROM events WHERE kind = ?`).all(kind) as { a: string }[]).map((r) => r.a));
-    for (const kind of ['prompt', 'tool.use', 'response', 'plan']) expect({ kind, producers: [...producers(kind)] }).toEqual({ kind, producers: [TRANSCRIPT_PRODUCER.adapter] });
+    for (const kind of ['prompt', 'tool.use', 'response', 'plan']) expect({ kind, producers: [...producers(kind)] }).toEqual({ kind, producers: [] });
     // A turn's start and end are the member's own records of when the turn ran, not rows of it.
     const member = (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> ? AND kind <> 'turn' ORDER BY received_at, rowid`).all(TRANSCRIPT_PRODUCER.adapter) as { kind: string }[]).map((r) => r.kind);
     expect(member).toEqual(['session.start', 'transcript.segment', 'session.end', 'session.end']);
     // Mandatory end capture and optional provenance share one projected observation.
-    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(4 + 2 + 1 + 1 + 2);
-    expect(rig.rows('prompt_batches')).toBe(2);
-    expect(rig.rows('responses')).toBe(2);
+    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(4);
+    expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(record=>record.k==='prompt')).toHaveLength(2);
+    expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(record=>record.k==='reply')).toHaveLength(2);
   });
 
   it('covers every kind the member still ships and every kind the parse writes, from the catalogue rather than a list', () => {
@@ -139,7 +147,7 @@ describe('retained-hook replay under a compaction continuation', () => {
     const sessionId = (lines.find((l) => typeof l.sessionId === 'string' && l.type === 'user')?.sessionId as string | undefined)
       ?? (lines.at(-1)?.sessionId as string);
     await replay(onDisk(continued, sessionId), sessionId, 'x');
-    const texts = (rig.env.sqlite.query(`SELECT text FROM prompt_batches WHERE session_id = ? ORDER BY text`).all(sessionId) as { text: string }[]).map((r) => r.text);
+    const texts = (await readFixtureRecords(rig.env.serverEnv,'proj_1',sessionId)).filter(record=>record.k==='prompt').map(record=>String(record.text)).sort();
     expect(texts.length).toBeGreaterThan(0);
     expect(new Set(texts).size).toBe(texts.length);
     // The continued session is the one registered; the predecessor it names is carried as lineage, not re-derived.

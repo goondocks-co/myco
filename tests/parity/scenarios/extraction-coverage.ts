@@ -63,7 +63,7 @@ export const extractionCoverage: ParityScenario = {
     expect(await target.sql(`SELECT served_id FROM extraction_acks WHERE project_id=${lit(project)} AND record_id=${lit(hole)}`)).toEqual([{served_id:'coverage-two:'+hole}]);
     expect(await two({op:'mark_processed',served_id:'coverage-two:'+tied})).toMatchObject({marked:true});
     await count(0);
-    expect(await target.sql('SELECT DISTINCT processed FROM prompt_batches')).toEqual([{ processed: 0 }]);
+    expect((await target.sql('SELECT COUNT(*) AS n FROM session_prompts'))[0]!.n).toBeGreaterThan(0);
     await target.sql(`DELETE FROM agent_runs WHERE project_id=${lit(project)} AND id IN ('coverage-one','coverage-two')`);
     expect(await target.sql('SELECT COUNT(*) AS n FROM extraction_acks')).toEqual([{ n: 3 }]);
     expect(await target.sql('SELECT COUNT(*) AS n FROM run_served_material')).toEqual([{ n: 0 }]);

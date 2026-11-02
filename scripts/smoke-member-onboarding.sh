@@ -83,8 +83,8 @@ session beta "$(uuidgen | tr 'A-Z' 'a-z')" "Summarize the beta readme"
 sleep 25
 
 echo "== prompts by project"
-sqlite3 "$DB" "SELECT p.name, substr(b.text, 1, 40) FROM prompt_batches b JOIN projects p ON p.project_id = b.project_id WHERE p.name IN ('alpha','beta') ORDER BY p.name"
-landed=$(sqlite3 "$DB" "SELECT COUNT(*) FROM prompt_batches b JOIN projects p ON p.project_id = b.project_id WHERE (p.name = 'alpha' AND b.text LIKE '%alpha%') OR (p.name = 'beta' AND b.text LIKE '%beta%')")
+sqlite3 "$DB" "SELECT p.name, substr(b.preview, 1, 40) FROM session_prompts b JOIN session_documents d ON d.project_id=b.project_id AND d.session_id=b.session_id AND d.generation=b.generation AND d.state='live' JOIN projects p ON p.project_id = b.project_id WHERE p.name IN ('alpha','beta') ORDER BY p.name"
+landed=$(sqlite3 "$DB" "SELECT COUNT(*) FROM session_prompts b JOIN session_documents d ON d.project_id=b.project_id AND d.session_id=b.session_id AND d.generation=b.generation AND d.state='live' JOIN projects p ON p.project_id = b.project_id WHERE (p.name = 'alpha' AND b.preview LIKE '%alpha%') OR (p.name = 'beta' AND b.preview LIKE '%beta%')")
 [ "$landed" = 2 ] || { echo "FAIL: expected each session in its own repository's project, found $landed" >&2; exit 1; }
 echo "== skills"
 for folder in "$U/.claude/skills" "$U/.agents/skills"; do

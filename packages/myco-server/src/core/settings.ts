@@ -1,5 +1,5 @@
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
-import { prepareSwitchedSettings } from '../read/view-store.js';
+import { prepareSwitchedSettings } from '../read/catalog-store.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';

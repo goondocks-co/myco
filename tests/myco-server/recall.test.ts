@@ -517,14 +517,13 @@ describe('prompt answer retention', () => {
       const targets = JSON.stringify(targetRows);
       for (const [sql, params, index] of [
         [PROMPT_ANSWER_RETENTION_SQL, [cutoff, JOB_BATCH], 'idx_prompt_context_answers_created (project_id=? AND created_at<?)'],
-        [deletes[0]!, [targets, cutoff], 'idx_material_versions_fact_record (project_id=? AND session_id=? AND kind=? AND record_id=?)'],
-        [deletes[1]!, [targets, cutoff], 'sqlite_autoindex_prompt_context_answers_1'],
+        [deletes[0]!, [targets, cutoff], 'sqlite_autoindex_prompt_context_answers_1'],
       ] as const) {
         const statement = e.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`);
         try {
           const plan = JSON.stringify(statement.all(...params));
           expect(plan).toContain(index);
-          expect(plan).not.toMatch(/SCAN (?:prompt_context_answers|material_versions|a|v)\b/);
+          expect(plan).not.toMatch(/SCAN (?:prompt_context_answers|a)\b/);
         } finally { statement.finalize(); }
       }
       expect(await agentRunRetention(e.serverEnv, NOW)).toBe(JOB_BATCH);

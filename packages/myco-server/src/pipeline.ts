@@ -1,5 +1,4 @@
 import { projectExists } from './read/sessions.js';
-import { withViewReadResponse } from './read/view-store.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
@@ -870,9 +869,7 @@ export function createServer(deps: ServerDeps) {
     const timing = pathname.startsWith('/context/') ? { startedAt: performance.now(), stages: new ContextTimings() } : null;
     const answer = (response: Response): Response => stamp(timing === null ? response : withContextServerTiming(response, timing.startedAt, timing.stages), raw);
     try {
-      const response = route === undefined || route.auth === 'public'
-        ? await run(request, env, timing?.stages)
-        : await withViewReadResponse(env.db, deps.now, db => run(request, { ...env, db }, timing?.stages));
+      const response = await run(request, env, timing?.stages);
       return answer(response);
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });

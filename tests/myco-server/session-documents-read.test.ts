@@ -12,9 +12,8 @@ import { documentSessionActivity } from '@myco-server-worker/content/session-act
 import { listSessionSummaries } from '@myco-server-worker/read/sessions.js';
 import { listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
 import { searchProject } from '@myco-server-worker/read/search.js';
-import { captureViewTranscript, withViewStores } from './helpers/view-stores.js';
+import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
-import { withViewWriterDriver } from '../helpers/statement-recorder.js';
 
 const MIN = 60_000;
 const scope = { projectId: 'project' };
@@ -53,13 +52,13 @@ async function published(db: RelationalStore, session: string, tx: string, turns
   const t0 = Date.now() - 2 * 60 * MIN;
   let text = opening + user('turn-0', 'run the tests') + reply('running') + call('c1', 'shell', { command: 'npm test', env: 'x'.repeat(300_000) }) + output('c1', 'ok');
   for (let i = 1; i < turns; i += 1) text += user(`turn-${i}`, `step ${i}`) + reply(`done ${i}`) + (i === 1 ? call('c2', 'shell', { command: 'ls' }) : '');
-  const env = await captureViewTranscript(db, blobs, session, tx, text, t0, 0, 'codex');
+  const env = await captureDocumentTranscript(db, blobs, session, tx, text, t0, 0, 'codex');
   await publishDocuments(env, t0 + 11 * MIN, limits());
   return { ...env, blobs } as ContentStore;
 }
 
 test('a published session reads its turns, a turn with its tools and their full input, and its activity from the document', async () => {
-  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+  await withDocumentStores(async (db, name) => (async () => {
     // A call before the first prompt belongs to no turn.
     const env = await published(db, 'session', 'tx_' + 'a'.repeat(32), 2, memoryBlobStore(), call('c0', 'shell', { command: 'pwd' }));
     const turns = await listCatalogTurns(db, scope, 'session', { origins: ['user'] });
@@ -138,11 +137,11 @@ test('a published session reads its turns, a turn with its tools and their full 
     await place(env, 'session', [...Array.from({ length: 34 }, (_, i): DocRecord => ({ k: 'reply', id: `later-${i}`, prompt_id: first, text: 'x'.repeat(240_000), created_at: 200 + i })),
       { k: 'prompt', id: 'later-child', prompt_id: null, parent_prompt_id: first, text: 'later steering', origin: 'user', created_at: 250 } as DocRecord]);
     expect([afterSix, await openCost('later-child')], name).toEqual([{ ...afterSix, found: true }, afterSix]);
-  }));
+  })());
 });
 
 test('the session page and its list row read the same statements and rows whatever the session holds', async () => {
-  await withViewStores(async (db, name) => {
+  await withDocumentStores(async (db, name) => {
     const statements = async (env: ContentStore, session: string, attachments: number) => {
       const measured = measuredContentEnv(env, { statements: 10_000, blobCalls: 10_000 });
       let rows = 0;

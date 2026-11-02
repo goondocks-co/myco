@@ -7,7 +7,7 @@ import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { convertFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { publishFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 
 async function setup(options?: Parameters<typeof sqliteEnv>[0]) {
   const f = sqliteEnv(options), now = Date.now();
@@ -61,8 +61,8 @@ for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease
     } });
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
-      f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
-      await convertFixture(f);
+      f.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess' AS session_id,'prompt' AS prompt_id,'ev' AS event_id,'hello' AS text,'user' AS origin,'h' AS content_hash,0 AS created_at,0 AS updated_at,'t' AS token_id,0 AS received_at)");
+      await publishFixture(f);
       if (op === 'prompt') await recordServedPrompts(f.db, {projectId:'proj_1'}, 'target', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {
@@ -93,8 +93,8 @@ for (const op of ['save', 'obsolete', 'consolidate'] as const) for (const revoke
     const f = await setup();
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
-      f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
-      await convertFixture(f);
+      f.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess' AS session_id,'prompt' AS prompt_id,'ev' AS event_id,'hello' AS text,'user' AS origin,'h' AS content_hash,0 AS created_at,0 AS updated_at,'t' AS token_id,0 AS received_at)");
+      await publishFixture(f);
       await recordServedPrompts(f.db, {projectId:'proj_1'}, 'target', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
       for (const id of ['a', 'b']) f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES('proj_1',?,'myco-agent','gotcha','active','source',0)", [id]);
       if (revoke) f.sqlite.exec(`CREATE TRIGGER revoke_spore AFTER ${op === 'obsolete' ? 'UPDATE' : 'INSERT'} ON spores BEGIN

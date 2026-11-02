@@ -1,7 +1,7 @@
 import { oldClaim } from '../fixtures/vault-evolution/pre-pause-claim.js';
 import { expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { captureViewSession } from './helpers/view-stores.js';
+import { captureDocumentSession } from './helpers/document-stores.js';
 import { archiveRawSources as oldArchive } from '../fixtures/vault-evolution/pre-pause-archive.js';
 import { oldRequeueLapsedLease } from '../fixtures/vault-evolution/pre-pause-lease.js';
 import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
@@ -35,7 +35,7 @@ async function oldQueueModel(db: ReturnType<typeof sqliteEnv>['db'], id: string,
 it('keeps the old clock disabled across migration while preserving the owner task document and restoring the global switch',async()=>{
   const f=sqliteEnv();
   try {
-    await captureViewSession(f.db,'proj_1','fresh');
+    await captureDocumentSession(f.db,'proj_1','fresh');
     f.sqlite.run('UPDATE events SET received_at=?',[NOW]);
     const writer=oldSettingsWriter(f.db);
     const originalTasks={'extract-curate':{schedule:{memberRunsPerDay:7}},'title-summary':{reasoningLevel:'high'}};
@@ -97,7 +97,7 @@ it('models migrate-then-deploy old-code writes and admits only a preflight with 
   for(const admitted of [false,true]) {
     const f=sqliteEnv();
     try {
-      await captureViewSession(f.db,'proj_1','held-source');
+      await captureDocumentSession(f.db,'proj_1','held-source');
       f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
       if(admitted) f.sqlite.run("UPDATE events SET received_at=?",[NOW]);
       f.sqlite.run("UPDATE raw_archive_state SET phase=2 WHERE id=1");
@@ -124,7 +124,7 @@ it('models migrate-then-deploy old-code writes and admits only a preflight with 
 it('exposes a clock and already-admitted poll crossing a snapshot-only preflight', async () => {
   const f=sqliteEnv();
   try {
-    await captureViewSession(f.db,'proj_1','fresh');
+    await captureDocumentSession(f.db,'proj_1','fresh');
     f.sqlite.run("UPDATE events SET received_at=?",[NOW]);
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE task='extract-curate' AND status IN ('queued','pending','running')").get()).toEqual({n:0});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE received_at<=?").get(NOW-90*DAY+WINDOW)).toEqual({n:0});

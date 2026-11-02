@@ -25,7 +25,7 @@ async function verify(db: RelationalStore, target: string) {
     expect(plan).not.toMatch(/SCAN (?:a\b|extraction_acks)|TEMP B-TREE/i);
     console.info('EXTRACTION_ACK_PLAN', { target, index: probe.index, plan });
   }
-  expect(await db.prepare('SELECT COUNT(*) AS n FROM prompt_batches').first()).toEqual({ n: PROMPTS });
+  expect(await db.prepare('SELECT COUNT(*) AS n FROM session_prompts').first()).toEqual({ n: PROMPTS });
   expect(await db.prepare('SELECT COUNT(*) AS n FROM extraction_acks').first()).toEqual({ n: ACKS });
   expect(await db.prepare("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id=? AND session_id='session'").bind(scope.projectId).first()).toEqual({ n: PROMPTS - ACKS });
 }

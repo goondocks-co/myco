@@ -6,7 +6,7 @@ import { documentTurn } from '@myco-server-worker/content/turn-material.js';
 import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { CARD_CLAIM_TURNS } from '@myco-server-worker/core/turn-cards.js';
-import { captureViewSession, captureViewTranscript } from './helpers/view-stores.js';
+import { captureDocumentSession, captureDocumentTranscript } from './helpers/document-stores.js';
 import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -18,9 +18,8 @@ import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { withViewStores } from './helpers/view-stores.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
-import { withViewWriterDriver } from '../helpers/statement-recorder.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 
@@ -32,11 +31,11 @@ const user = (turn: string, text: string) =>
 const reply = (text: string) => item('response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
 it('the publisher settles cards, keeps transcript plans canonical and reopens a resumed session', async () => {
-  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+  await withDocumentStores(async (db, name) => (async () => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const blobs = memoryBlobStore();
     const text = user('turn-0', 'Plan the release') + reply('<proposed_plan>\n# Ship the release\nTag, then publish.\n</proposed_plan>') + user('turn-1', 'continue');
-    const env = await captureViewTranscript(db, blobs, 'session', 'tx_' + 'a'.repeat(32), text, t0, 0, 'codex');
+    const env = await captureDocumentTranscript(db, blobs, 'session', 'tx_' + 'a'.repeat(32), text, t0, 0, 'codex');
     await db.prepare(`UPDATE sessions SET ended_at = ? WHERE project_id = 'project' AND session_id = 'session'`).bind(t0 - 1).run();
     await publishDocuments(env, t0 + 11 * MIN, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 
@@ -49,16 +48,16 @@ it('the publisher settles cards, keeps transcript plans canonical and reopens a 
     expect(await db.prepare(`SELECT title, content, status FROM plans WHERE session_id = 'session'`).all(), name)
       .toMatchObject({ results: [{ title: 'Ship the release', content: expect.stringContaining('Tag, then publish.'), status: 'active' }] });
     expect(await db.prepare(`SELECT ended_at FROM sessions WHERE session_id = 'session'`).first(), name).toEqual({ ended_at: null });
-  }));
+  })());
 });
 
 it('a transcript plan larger than a page preview keeps its whole body in the canonical plan', async () => {
-  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+  await withDocumentStores(async (db, name) => (async () => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const blobs = memoryBlobStore();
     const body = `# Ship the release\n${'step '.repeat(60_000)}last step`;
     const text = user('turn-0', 'Plan the release') + reply(`<proposed_plan>\n${body}\n</proposed_plan>`) + user('turn-1', 'continue');
-    const env = await captureViewTranscript(db, blobs, 'session', 'tx_' + 'c'.repeat(32), text, t0, 0, 'codex');
+    const env = await captureDocumentTranscript(db, blobs, 'session', 'tx_' + 'c'.repeat(32), text, t0, 0, 'codex');
     await publishDocuments(env, t0 + 11 * MIN, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 
     const plan = (await db.prepare(`SELECT plan_key, content, blob_key, content_hash FROM plans WHERE session_id = 'session'`)
@@ -68,14 +67,14 @@ it('a transcript plan larger than a page preview keeps its whole body in the can
       .toEqual({ kind: 'plan' });
     const read = await processedBody({ db, blobs }, { projectId: 'project' }, 'plan', plan.plan_key);
     expect({ length: read?.length, end: read?.endsWith('last step') }, name).toEqual({ length: body.length, end: true });
-  }));
+  })());
 });
 
 it('a refused placement leaves no transcript plan and no reopened session in the commit that follows it', async () => {
-  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+  await withDocumentStores(async (db, name) => (async () => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const blobs = memoryBlobStore();
-    await captureViewSession(db, 'project', 'undone', { blobs });
+    await captureDocumentSession(db, 'project', 'undone', { blobs });
     await publishDocuments({ db, blobs }, t0, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
     await db.prepare(`UPDATE sessions SET ended_at = ? WHERE project_id = 'project' AND session_id = 'undone'`).bind(t0 + 1).run();
     const measured = measuredContentEnv({ db, blobs }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT });
@@ -103,11 +102,11 @@ it('a refused placement leaves no transcript plan and no reopened session in the
       .toEqual({ replies: 2, user_prompts: 1 });
     expect(await db.prepare(`SELECT COUNT(*) AS n FROM plans WHERE plan_key = 'transcript-plan'`).first(), name).toEqual({ n: 0 });
     expect(await db.prepare(`SELECT ended_at FROM sessions WHERE session_id = 'undone'`).first(), name).toEqual({ ended_at: t0 + 1 });
-  }));
+  })());
 });
 
 it('a turn past the page budget is never carded by rule, and falls due with its tail', async () => {
-  await withViewStores(async (db, name) => withViewWriterDriver(async () => {
+  await withDocumentStores(async (db, name) => (async () => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const line = (value: Record<string, unknown>, at: number) => JSON.stringify({ ...value, timestamp: new Date(at).toISOString() }) + '\n';
     const call = (id: string, tool: string, input: Record<string, unknown>, result: string, failed: boolean, at: number) =>
@@ -125,7 +124,7 @@ it('a turn past the page budget is never carded by rule, and falls due with its 
       const session = `session-${where}`;
       const text = line({ type: 'user', uuid: `u-0-${where}`, message: { role: 'user', content: 'continue' } }, t0) + turn
         + line({ type: 'user', uuid: `u-1-${where}`, message: { role: 'user', content: 'Ship the release' } }, t0 + 30);
-      const env = await captureViewTranscript(db, memoryBlobStore(), session, 'tx_' + (where === 'last' ? 'b' : 'd').repeat(32), text, t0, 0, 'claude-code');
+      const env = await captureDocumentTranscript(db, memoryBlobStore(), session, 'tx_' + (where === 'last' ? 'b' : 'd').repeat(32), text, t0, 0, 'claude-code');
       for (let wake = 0; wake < 4; wake++) await publishDocuments(env, t0 + 11 * MIN, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 
       expect(await db.prepare(`SELECT failed_tools FROM session_documents WHERE session_id = ?`).bind(session).first(), name).toEqual({ failed_tools: 1 });
@@ -143,7 +142,7 @@ it('a turn past the page budget is never carded by rule, and falls due with its 
     // A turn whose six pages sit in six chunks, between another turn's pages, costs four page GETs: three at its head
     // and its last page.
     const blobs = memoryBlobStore(), env = { db, blobs };
-    await captureViewSession(db, 'project', 'session-chunked', { idOffset: 9000 });
+    await captureDocumentSession(db, 'project', 'session-chunked', { idOffset: 9000 });
     await publishDocuments(env, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
     const at = Date.now(), records: DocRecord[] = [{ k: 'prompt', id: 'chunked-turn', prompt_id: null, created_at: at, text: 'continue', origin: 'user', parent_prompt_id: null }];
     for (let i = 0; i < 6; i++) {
@@ -157,7 +156,7 @@ it('a turn past the page budget is never carded by rule, and falls due with its 
     const document = (await SessionDocument.open(env, 'project', 'session-chunked'))!;
     expect({ complete: (await documentTurn(env, 'project', 'session-chunked', 'chunked-turn', document))!.complete, gets: document.gets }, name)
       .toEqual({ complete: false, gets: 4 });
-  }));
+  })());
 });
 
 /** Places records into a live session's document through the shared batch, as the publisher commits them. */
@@ -176,7 +175,7 @@ async function placeRecords(env: { db: RelationalStore; blobs: ReturnType<typeof
 }
 
 it('a card claim reads the same catalog rows whatever the session holds', async () => {
-  await withViewStores(async (db, name) => {
+  await withDocumentStores(async (db, name) => {
     // Every turn is created and falls due at one instant, and as many again are postponed past now.
     const claim = async (session: string, turns: number) => {
       await db.prepare(`INSERT INTO turn_cards (project_id, session_id, turn_key, due_at, input_chars, created_at)
@@ -208,7 +207,7 @@ it('a card claim reads the same catalog rows whatever the session holds', async 
 });
 
 it('an idle claim with learning off issues a small fixed number of statements', async () => {
-  await withViewStores(async (db, name) => {
+  await withDocumentStores(async (db, name) => {
     const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() } as never, recordingDeferred());
     await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
     await completeBudgetMigration(db, NOW);

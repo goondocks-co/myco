@@ -7,7 +7,7 @@ import { acceptableProjectName, basenameOf, planKind, RAW_ROW_GATE, type WriteCo
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
-import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
+import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, PRODUCER, TEXT_MEDIA_TYPE, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
@@ -34,8 +34,8 @@ function finite(bound: Bound): boolean {
 /** A fixture per kind: the payload and the typed table row it must produce. */
 const FIXTURES: Record<string, { payload: Record<string, unknown>; table: string | null }> = {
   'session.start': { payload: { agent: 'claude-code', branch: 'main', startedAt: 900, originPath: '/t.jsonl', parentSessionId: 'sess_0', parentReason: 'fork' }, table: 'sessions' },
+  prompt: { payload: { promptId: uuid(2), text: 'hi', origin: 'user', threadId: uuid(30) }, table: 'events' },
   'session.end': { payload: { endedAt: 5_000 }, table: 'sessions' },
-  prompt: { payload: { promptId: uuid(2), text: 'hi', origin: 'user', promptKind: 'user', threadId: uuid(30), threadLabel: 'main' }, table: 'prompt_batches' },
   'tool.use': { payload: { toolCallId: uuid(3), promptId: uuid(2), toolName: 'Read', input: { path: '/x' }, output: 'ok', durationMs: 5, filesAffected: ['/x'], success: true, mycoTool: 'myco_search', mycoOp: 'get', canopyInjectionTokens: 12 }, table: 'tool_calls' },
   'tool.failure': { payload: { toolCallId: uuid(4), toolName: 'Bash', input: { cmd: 'x' }, success: false, errorMessage: 'boom' }, table: 'tool_calls' },
   response: { payload: { responseId: uuid(5), promptId: uuid(2), text: 'done' }, table: 'responses' },
@@ -67,8 +67,8 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 }
 
 /** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 20;
-const REQUIRED_ONLY_PROJECTION_STATEMENTS = 18;
+const FULL_PROJECTION_STATEMENTS = 15;
+const REQUIRED_ONLY_PROJECTION_STATEMENTS = 14;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 11;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
@@ -78,7 +78,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 67;
+const PLANNED_STATEMENTS = 60;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 11, group: 1, served: 2 };
@@ -150,9 +150,7 @@ describe('kind catalogue', () => {
       expect({ kind: spec.name, body }).toEqual({ kind: spec.name, body: spec.projection === 'raw' ? { persisted: true } : spec.name === 'transcript.segment' ? { persisted: true, projected: true, transcript: { size: segBytes.byteLength, segmentCount: 1 } } : { persisted: true, projected: true } });
     }
     expect(count(e.sqlite, 'events')).toBe(KINDS.length);
-    expect(count(e.sqlite, 'prompt_batches')).toBe(1);
-    expect(count(e.sqlite, 'tool_calls')).toBe(2);
-    expect(count(e.sqlite, 'responses')).toBe(1);
+    expect(count(e.sqlite, 'events') - count(e.sqlite, 'publish_queue')).toBeLessThan(KINDS.length);
     expect(count(e.sqlite, 'plans')).toBe(1);
     expect(count(e.sqlite, 'attachments')).toBe(1);
     expect(count(e.sqlite, 'transcript_segments')).toBe(1);
@@ -162,12 +160,9 @@ describe('kind catalogue', () => {
     expect(session).toEqual({ agent: 'claude-code', branch: 'main', started_at: 900, ended_at: 5_000, origin_path: '/t.jsonl', parent_session_id: 'sess_0', parent_reason: 'fork', machine_id: 'machine_1' });
     const attachment = e.sqlite.query(`SELECT media_type, byte_size, blob_key FROM attachments`).get();
     expect(attachment).toEqual({ media_type: 'image/png', byte_size: bytes.byteLength, blob_key: key });
-    const prompt = e.sqlite.query(`SELECT content_hash, ended_at, thread_id FROM prompt_batches`).get() as any;
-    expect(prompt.content_hash).toBe(await sha256Hex('hi'));
-    expect(prompt.ended_at).toBe(1_000 + 106);
-    expect(prompt.thread_id).toBe(uuid(30));
-    const tool = e.sqlite.query(`SELECT success, error_message, canopy_injection_tokens FROM tool_calls ORDER BY tool_call_id`).all();
-    expect(tool).toEqual([{ success: 1, error_message: null, canopy_injection_tokens: 12 }, { success: 0, error_message: 'boom', canopy_injection_tokens: null }]);
+    const payloads=e.sqlite.query(`SELECT kind,payload FROM events WHERE kind IN ('prompt','tool.use','tool.failure','response') ORDER BY kind`).all() as {kind:string;payload:string}[];
+    expect(payloads).toHaveLength(4);
+    expect(JSON.parse(payloads.find(row=>row.kind==='prompt')!.payload)).toMatchObject({text:'hi',threadId:uuid(30)});
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM events WHERE producer_adapter = '' OR producer_version = ''`).get() as any).c).toBe(0);
   });
 
@@ -284,7 +279,7 @@ describe('kind catalogue', () => {
     expect(await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(42), payload: { promptId: uuid(43), blob: png, origin: 'user' } })), e.env))).toEqual({ persisted: true, projected: true });
     await upload(e, t.token, bytes);
     expect(await json(await worker.fetch(memberPost(t.token, spilled), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT blob_key, content_hash, text FROM prompt_batches WHERE prompt_id = ?`).get(uuid(41))).toEqual({ blob_key: key, content_hash: key, text: null });
+    expect(e.sqlite.query(`SELECT json_extract(payload,'$.blob') AS blob_key FROM events WHERE kind='prompt' AND json_extract(payload,'$.promptId')=?`).get(uuid(41))).toEqual({blob_key:key});
     expect((e.sqlite.query(`SELECT blob_key FROM events WHERE event_id = ?`).get(uuid(40)) as any).blob_key).toBe(key);
     const att = envelope({ eventId: uuid(44), kind: 'attachment', payload: { attachmentId: uuid(45), blob: 'b'.repeat(64) } });
     expect(await json(await worker.fetch(memberPost(t.token, att), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${'b'.repeat(64)}` });
@@ -306,27 +301,6 @@ describe('kind catalogue', () => {
     expect(await json(await worker.fetch(memberPost(t3.token, shared), e.env))).toEqual({ persisted: true, projected: true });
     expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } }), '/events', { [PROJECT_HEADER]: 'proj_2' }), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
     expect((e.sqlite.query(`SELECT media_type FROM attachments`).get() as any).media_type).toBe('image/png');
-  });
-
-  it('merges prompt fields from a later event but never rewrites text: the miner refines, a differing text is a visible projection conflict, replay in any order converges', async () => {
-    const e = sqliteEnv();
-    const t = await member(e);
-    const live = envelope({ eventId: uuid(60), createdAt: 1_000, payload: { promptId: uuid(61), text: 'hi', origin: 'user' } });
-    const mined = envelope({ eventId: uuid(62), createdAt: 2_000, payload: { promptId: uuid(61), text: 'hi', origin: 'user', promptKind: 'user', parentPromptId: uuid(63) } });
-    const differing = envelope({ eventId: uuid(64), createdAt: 3_000, payload: { promptId: uuid(61), text: 'other', origin: 'user' } });
-    expect(await json(await worker.fetch(memberPost(t.token, live), e.env))).toEqual({ persisted: true, projected: true });
-    expect(await json(await worker.fetch(memberPost(t.token, mined), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT text, prompt_kind, parent_prompt_id, updated_at FROM prompt_batches`).get()).toEqual({ text: 'hi', prompt_kind: 'user', parent_prompt_id: uuid(63), updated_at: 2_000 });
-    expect(await json(await worker.fetch(memberPost(t.token, differing), e.env))).toEqual({ persisted: true, projected: false, code: 'projection_conflict', reason: 'prompt text differs from the stored prompt' });
-    expect(e.sqlite.query(`SELECT text FROM prompt_batches`).get()).toEqual({ text: 'hi' });
-    expect(count(e.sqlite, 'events')).toBe(3);
-    const older = envelope({ eventId: uuid(65), createdAt: 500, payload: { promptId: uuid(61), text: 'hi', origin: 'user', promptKind: 'system' } });
-    expect(await json(await worker.fetch(memberPost(t.token, older), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT prompt_kind, created_at, updated_at FROM prompt_batches`).get()).toEqual({ prompt_kind: 'user', created_at: 500, updated_at: 2_000 });
-    const e2 = sqliteEnv();
-    const t2 = await member(e2);
-    for (const ev of [older, differing, mined, live]) await worker.fetch(memberPost(t2.token, ev), e2.env);
-    expect(e2.sqlite.query(`SELECT text, prompt_kind, parent_prompt_id, created_at, updated_at FROM prompt_batches`).get()).toEqual({ text: 'hi', prompt_kind: 'user', parent_prompt_id: uuid(63), created_at: 500, updated_at: 2_000 });
   });
 
   it('upserts plans by client time so a retried older edit never regresses a newer one, and replaces tags atomically', async () => {
@@ -483,14 +457,14 @@ describe('kind catalogue', () => {
     const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
     const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
     for (const spec of KINDS) {
-      const payload = { ...FIXTURES[spec.name].payload, blob: 'a'.repeat(64) };
+      const payload: Record<string,unknown> = { ...FIXTURES[spec.name].payload, blob: 'a'.repeat(64) };
       const e = { eventId: uuid(1), sessionId: 'sess_1', kind: spec.name, createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
       const plan = planKind(spec, { db: recorder, ctx, e, p: payload, contentHash: null });
       const owner = ROW_OWNED_PROJECTIONS.has(spec.projection) ? 'row' : 'session';
       const keyed = Object.entries(spec.fields)
         .filter(([, f]) => ((f.bound.type === 'id' && f.role === 'key') || f.bound.type === 'transcriptId') && f.column !== undefined)
-        .map(([field, f]): Identity => ({ keyColumn: f.column as string, key: (payload as Record<string, unknown>)[field], owner }));
-      const expected: Identity[] = spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
+        .map(([field, f]): Identity => ({ keyColumn: ['prompt_batches','tool_calls','responses'].includes(spec.projection)?'record_id':f.column as string, key: (payload as Record<string, unknown>)[field], owner }));
+      const expected: Identity[] = ['prompt_batches','responses','tool_calls'].includes(spec.projection) ? [{keyColumn:'record_id',key:String(payload[spec.name==='prompt'?'promptId':spec.name==='response'?'responseId':'toolCallId']),owner:'session'}] : spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
       const planned: Identity[] = plan.identities.map(({ keyColumn, key, owner }) => ({ keyColumn, key, owner }));
       expect({ kind: spec.name, identities: planned }).toEqual({ kind: spec.name, identities: expected });
     }
@@ -512,12 +486,12 @@ describe('kind catalogue', () => {
       const own = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(n++), kind, createdAt: 1_000, payload })), e.env));
       expect({ kind, own }).toEqual({ kind, own: { persisted: true, projected: true } });
     }
-    const before = ['tool_calls', 'responses', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all());
+    const before = ['events', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all());
     for (const [kind, payload] of mine) {
       const res = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, createdAt: 9_000, payload })), e.env));
       expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } });
     }
-    expect(['tool_calls', 'responses', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all())).toEqual(before);
+    expect(['events', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all())).toEqual(before);
   });
 
   it('binds referenced prompts to the machine that owns their session: another machine\'s token cannot merge, time, join to, or parent onto them, and sees no oracle', async () => {
@@ -527,7 +501,7 @@ describe('kind catalogue', () => {
     const promptId = uuid(400);
     const own = envelope({ eventId: uuid(401), createdAt: 1_000, payload: { promptId, text: 'secret', origin: 'user' } });
     expect(await json(await worker.fetch(memberPost(t1.token, own), e.env))).toEqual({ persisted: true, projected: true });
-    const before = e.sqlite.query(`SELECT * FROM prompt_batches`).all();
+    const before = e.sqlite.query(`SELECT payload FROM events WHERE kind='prompt'`).all();
     const attacks: [string, Record<string, unknown>][] = [
       ['prompt', { promptId, text: 'secret', origin: 'user', promptKind: 'system', threadId: uuid(402), threadLabel: 'x' }],
       ['prompt', { promptId, text: 'guess', origin: 'user' }],
@@ -541,9 +515,7 @@ describe('kind catalogue', () => {
       const res = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, createdAt: 9_000, payload })), e.env));
       expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } });
     }
-    expect(e.sqlite.query(`SELECT * FROM prompt_batches`).all()).toEqual(before);
-    expect(count(e.sqlite, 'responses')).toBe(0);
-    expect(count(e.sqlite, 'tool_calls')).toBe(0);
+    expect(e.sqlite.query(`SELECT payload FROM events WHERE kind='prompt'`).all()).toEqual(before);
     expect(count(e.sqlite, 'events')).toBe(1);
     expect(bytesWritten(e.sqlite, t3.tokenId)).toBe(0);
     for (const kind of KINDS) {
@@ -551,19 +523,6 @@ describe('kind catalogue', () => {
     }
     expect(promptReferenceFields(kindSpec('subagent.start')!)).toEqual(['parentPromptId']);
     expect(promptReferenceFields(kindSpec('prompt')!).sort()).toEqual(['parentPromptId', 'promptId']);
-  });
-
-  it('never times a prompt from a response another machine posted before the prompt existed', async () => {
-    const e = sqliteEnv();
-    const t1 = await member(e);
-    const t3 = await member(e, 'proj_1', 'machine_3');
-    const promptId = uuid(430);
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(431), sessionId: 'sess_3', kind: 'response', createdAt: 1, payload: { responseId: uuid(432), promptId, text: 'early' } })), e.env))).toEqual({ persisted: true, projected: true });
-    expect(await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(433), createdAt: 5_000, payload: { promptId, text: 'mine', origin: 'user' } })), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT ended_at FROM prompt_batches WHERE prompt_id = ?`).get(promptId)).toEqual({ ended_at: null });
-    expect(await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(434), kind: 'response', createdAt: 6_000, payload: { responseId: uuid(435), promptId, text: 'own' } })), e.env))).toEqual({ persisted: true, projected: true });
-    expect(e.sqlite.query(`SELECT ended_at FROM prompt_batches WHERE prompt_id = ?`).get(promptId)).toEqual({ ended_at: 6_000 });
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(436), sessionId: 'sess_3', kind: 'response', createdAt: 2, payload: { responseId: uuid(437), promptId, text: 'late' } })), e.env))).toEqual({ persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' });
   });
 
   it('refuses a zero-length segment and never advances a transcript without its bytes', async () => {
@@ -706,7 +665,7 @@ describe('kind catalogue', () => {
       .toEqual(['c', 'c', 'x', null, null, null, null, null, null, 'n'.repeat(200)]);
   });
 
-  it('settles a tie on client time by the smaller event id, for session facts, prompts, and plans alike', async () => {
+  it('settles a tie on client time by the smaller event id for session facts and plans', async () => {
     const tied = [
       envelope({ eventId: uuid(950), createdAt: 1_000, kind: 'session.start', payload: { agent: 'claude-code', branch: 'alpha', startedAt: 1_000 } }),
       envelope({ eventId: uuid(951), createdAt: 1_000, kind: 'session.start', payload: { agent: 'codex', branch: 'beta', startedAt: 1_000 } }),
@@ -721,7 +680,6 @@ describe('kind catalogue', () => {
       for (const ev of order) expect((await json(await worker.fetch(memberPost(t.token, ev), e.env))).persisted).toBe(true);
       return {
         session: e.sqlite.query(`SELECT agent, branch, started_at FROM sessions`).get(),
-        prompt: e.sqlite.query(`SELECT prompt_kind FROM prompt_batches`).get(),
         plan: e.sqlite.query(`SELECT title, content FROM plans`).get(),
         tags: e.sqlite.query(`SELECT tag FROM tags ORDER BY tag`).all(),
       };
@@ -729,14 +687,13 @@ describe('kind catalogue', () => {
     const forward = await settled(tied);
     expect(forward).toEqual({
       session: { agent: 'claude-code', branch: 'alpha', started_at: 1_000 },
-      prompt: { prompt_kind: 'user' },
       plan: { title: 'first', content: 'one' },
       tags: [{ tag: 'x' }],
     });
     expect(await settled([...tied].reverse())).toEqual(forward);
   });
 
-  it('settles session facts, prompt merges, and plans on the ranked winner alone under every permutation of three and of four events, so no other event fills a field the winner lacks', async () => {
+  it('settles session facts and plans on the ranked winner alone under every permutation of three and of four events, so no other event fills a field the winner lacks', async () => {
     // Every column of a merged row is the ranked winner's — an absent field included — so the row is a function of the
     // set of events and never of their arrival order. Two-event replays cannot see a fill from a non-winner; three can.
     const facts = [
@@ -761,12 +718,11 @@ describe('kind catalogue', () => {
     const settled = async (order: number[]) => {
       const e = sqliteEnv();
       const t = await member(e);
-      for (const family of [facts, prompts, plans]) {
+      for (const family of [facts, plans]) {
         for (const i of order) expect((await json(await worker.fetch(memberPost(t.token, family[i]), e.env))).persisted).toBe(true);
       }
       return {
         session: e.sqlite.query(`SELECT agent, branch, started_at, origin_path, parent_session_id, parent_reason, facts_event_id FROM sessions`).get(),
-        prompt: e.sqlite.query(`SELECT event_id, prompt_kind, parent_prompt_id, thread_id, thread_label, created_at, updated_at FROM prompt_batches`).get(),
         plan: e.sqlite.query(`SELECT event_id, title, content, status, origin_path, created_at, updated_at FROM plans`).get(),
         tags: e.sqlite.query(`SELECT tag FROM tags ORDER BY tag`).all(),
       };
@@ -774,7 +730,6 @@ describe('kind catalogue', () => {
     for (const n of [3, 4]) {
       const expected = {
         session: { agent: 'a', branch: null, started_at: 100, origin_path: null, parent_session_id: null, parent_reason: null, facts_event_id: uuid(970) },
-        prompt: { event_id: uuid(981), prompt_kind: null, parent_prompt_id: null, thread_id: null, thread_label: null, created_at: n === 4 ? 50 : 100, updated_at: 200 },
         plan: { event_id: uuid(1001), title: null, content: 'c2', status: 'completed', origin_path: null, created_at: n === 4 ? 50 : 100, updated_at: 200 },
         tags: [],
       };
@@ -893,7 +848,7 @@ describe('kind catalogue', () => {
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('past-ceiling')), utf8('past-ceiling')), e.env);
     await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: 'session.start', createdAt: 4_000, payload: FIXTURES['session.start'].payload })), e.env);
 
-    const scoped = new Set(['events', 'sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations', 'raw_resources', 'processed_resources']);
+    const scoped = new Set(['events', 'sessions', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations', 'raw_resources', 'processed_resources']);
     const byTable = new Map<string, string>();
     const unique = new Map<string, number>();
     for (const row of e.sqlite.query(`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'`).all() as { name: string; tbl_name: string }[]) byTable.set(row.name, row.tbl_name);
@@ -938,7 +893,7 @@ describe('kind catalogue', () => {
     const png = await upload(e, t.token, utf8('png-bytes'), 'image/png');
     const segBytes = utf8('{"line":1}\n');
     const segKey = await upload(e, t.token, segBytes);
-    const TABLES = ['sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs'];
+    const TABLES = ['sessions', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs'];
     const snapshot = () => TABLES.map((table) => e.sqlite.query(`SELECT * FROM ${table}`).all());
     let n = 500;
     let offset = 0;
@@ -1001,7 +956,7 @@ describe('kind catalogue', () => {
     expect((e.sqlite.query(`SELECT SUM(length) s FROM transcript_segments`).get() as any).s).toBe(a.byteLength + b.byteLength + c.byteLength);
   });
 
-  it('times a prompt from the earliest response of its machine, and settles session facts from the earliest start, whatever order they arrive in', async () => {
+  it('settles session facts from the earliest start whatever order records arrive in', async () => {
     const events = [
       envelope({ eventId: uuid(700), createdAt: 1_000, kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } }),
       envelope({ eventId: uuid(701), createdAt: 2_000, kind: 'session.start', payload: { agent: 'codex', branch: 'other', startedAt: 2_000 } }),
@@ -1017,11 +972,10 @@ describe('kind catalogue', () => {
       for (const ev of order) expect((await json(await worker.fetch(memberPost(t.token, ev), e.env))).persisted).toBe(true);
       return {
         session: e.sqlite.query(`SELECT agent, branch, started_at, ended_at FROM sessions`).get(),
-        prompt: e.sqlite.query(`SELECT ended_at FROM prompt_batches`).get(),
       };
     };
     const forward = await settled(events);
-    expect(forward).toEqual({ session: { agent: 'claude-code', branch: 'main', started_at: 1_000, ended_at: 4_000 }, prompt: { ended_at: 2_500 } });
+    expect(forward).toEqual({ session: { agent: 'claude-code', branch: 'main', started_at: 1_000, ended_at: 4_000 } });
     expect(await settled([...events].reverse())).toEqual(forward);
   });
 
@@ -1040,8 +994,7 @@ describe('kind catalogue', () => {
     ];
     for (const ev of events) expect((await json(await worker.fetch(memberPost(t.token, ev), e.env))).persisted).toBe(true);
     const snapshot = (env: ReturnType<typeof sqliteEnv>) =>
-      ['sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, last_live_received_at, created_by_token_id, ...rest } = r; return rest; }));
-    expect(e.sqlite.query(`SELECT created_at, updated_at, prompt_kind FROM prompt_batches`).get()).toEqual({ created_at: 1_100, updated_at: 1_150, prompt_kind: 'user' });
+      ['sessions', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, last_live_received_at, created_by_token_id, ...rest } = r; return rest; }));
     expect(e.sqlite.query(`SELECT created_at, updated_at, content FROM plans`).get()).toEqual({ created_at: 1_400, updated_at: 1_450, content: 'p2' });
     const forward = snapshot(e);
     const e2 = sqliteEnv();

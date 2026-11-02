@@ -1,4 +1,4 @@
-import { injectedPromptRecord, withViewReadResponse, injectionServedIds, injectionSessionRecords, injectionPromptHeld } from '../read/view-store.js';
+import { injectedPromptRecord, injectionServedIds, injectionSessionRecords, injectionPromptHeld } from '../read/catalog-store.js';
 import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
@@ -360,7 +360,7 @@ export function selectSporesForPrompt(
   commit:ContextCommit=commitContextWrite,
 ): Promise<InjectionSelection> {
 
-  return withViewReadResponse(db,()=>input.now,bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings,commit));
+  return (bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings,commit))(db);
 }
 async function readSporesForPrompt(
   db: RelationalStore,

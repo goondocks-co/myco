@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform/bun/blobs.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
-import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
+import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
 import { verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { BlobStore } from '@myco-server-worker/core/adapters.js';
@@ -314,8 +314,8 @@ function openSnapshot(file: string): Database {
         if (schemaVersion >= ref.sinceSchema) throw new Error(`recovery database is missing reference table ${ref.table}`);
         continue;
       }
-      if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}
-        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${ref.column}) LIMIT 1`).get() !== null) {
+      if (db.query(`SELECT 1 FROM ${ref.table} r WHERE ${blobReferenceColumn(ref,'r')} IS NOT NULL${kindFilter(ref)}
+        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${blobReferenceColumn(ref,'r')}) LIMIT 1`).get() !== null) {
         throw new Error(`recovery database is missing a blob referenced by ${referenceLabel(ref)}`);
       }
     }
@@ -359,16 +359,7 @@ function openSnapshot(file: string): Database {
             AND p.digest=r.receipt_key AND p.durable=1)) LIMIT 1`).get() !== null) {
         throw new Error('recovery database has a raw archive without verified body and receipt');
       }
-      if (db.query(`SELECT 1 FROM tool_calls t LEFT JOIN archive_bundles a
-          ON a.project_id=t.project_id AND a.id=t.input_bundle_id
-        LEFT JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id
-        WHERE t.input_bundle_id IS NOT NULL AND (a.id IS NULL OR a.session_id IS NOT t.session_id
-          OR a.token_id IS NOT t.token_id OR t.input_bundle_entry < 0
-          OR t.input_bundle_entry >= a.entry_count OR t.input_blob_key IS NOT NULL
-          OR t.input_bytes <= 2048 OR length(CAST(t.input AS BLOB)) > 2048
-          OR e.event_id IS NULL OR e.session_id IS NOT t.session_id) LIMIT 1`).get() !== null) {
-        throw new Error('recovery database has a displayed tool input without its full bundle');
-      }
+
     }
     return db;
   } catch (error) { db.close(); throw error; }

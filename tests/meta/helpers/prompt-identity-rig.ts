@@ -1,3 +1,6 @@
+import { readFixtureRecords } from '../../myco-server/helpers/fixtures.js';
+import type { DocRecord } from '@myco-server-worker/content/document.js';
+import { publishFixtureDocuments } from '../../myco-server/helpers/fixtures.js';
 /**
  * An in-process member and Deployment whose prompt-time recall serves real spores: the worker the member tests drive,
  * with a Workers AI binding that embeds by keyword and a vector index fixture, a Project admitted to recall, and
@@ -13,7 +16,7 @@ import { memberRig, tempMycoHome, TEST_PROJECT_ID, type MemberRig } from '../../
 import { recordingFetch, registerTestMember } from '../../member/helpers/hooks.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
-import { parseTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import {  TRANSCRIPT_IDLE_MS  } from '@myco-server-worker/ingest/parse.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 
@@ -39,6 +42,7 @@ export interface IdentityRig {
   /** Store bytes as the next segment of a transcript already stored, as a member's next shipment lands. */
   appendTranscript(opts: { transcriptId: string; text: string }): Promise<void>;
   rows(sql: string, ...params: unknown[]): Record<string, unknown>[];
+  records(sessionId?: string): Promise<DocRecord[]>;
 }
 
 /** The rig, with `relevant` spores about the relevant word and `background` others, embedded. */
@@ -70,12 +74,13 @@ export async function identityRig(opts: { relevant?: number; background?: number
   sqlite.run(`UPDATE embedding_receipts SET neighbor_mean = 0.5, neighbor_std = 0.1 WHERE project_id = ?`, [TEST_PROJECT_ID]);
 
   return {
+    records: sessionId => readFixtureRecords(rig.env.serverEnv, TEST_PROJECT_ID, sessionId),
     rig, mycoHome, fetch: recordingFetch(rig.fetch),
     async parse() {
       // Then once more after the transcript has gone idle, which ends the reply a turn was still writing.
       for (const at of [Date.now(), Date.now() + TRANSCRIPT_IDLE_MS + 1]) {
         for (let pass = 0; pass < 20; pass += 1) {
-          if ((await parseTranscripts(rig.env.serverEnv, at)).changed === 0) break;
+          if ((await publishFixtureDocuments(rig.env.serverEnv, at)).changed === 0) break;
         }
         for (let pass = 0; pass < 20; pass += 1) {
           if (!(await publishDocuments(rig.env.serverEnv, at, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more) break;

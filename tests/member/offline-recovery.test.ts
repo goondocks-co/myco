@@ -1,3 +1,4 @@
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * A member that could not deliver for a while — offline past its token's TTL,
  * or holding a credential the Deployment refuses — through the real hooks and
@@ -16,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/tokens.js';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { agentOfSession, drainBacklog } from '@myco/member/backlog.js';
@@ -74,11 +75,11 @@ async function session(fetchImpl: Parameters<typeof runHook>[2]['fetch'], sessio
 }
 
 async function parseAll(rig: MemberRig): Promise<void> {
-  for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(rig.env.serverEnv, Date.now())).changed === 0) return;
+  for (let pass = 0; pass < 20; pass += 1) if ((await publishFixtureDocuments(rig.env.serverEnv, Date.now())).changed === 0) return;
 }
 
 const prompts = (rig: MemberRig): string[] =>
-  (rig.env.sqlite.query('SELECT text FROM prompt_batches ORDER BY text').all() as Array<{ text: string }>).map((r) => r.text);
+  (rig.env.sqlite.query('SELECT preview AS text FROM session_prompts ORDER BY preview').all() as Array<{ text: string }>).map((r) => r.text);
 const segmentsOf = (rig: MemberRig, sessionId: string): number =>
   (rig.env.sqlite.query('SELECT COUNT(*) AS n FROM transcript_segments s JOIN transcripts t ON t.transcript_id = s.transcript_id WHERE t.session_id = ?').get(sessionId) as { n: number }).n;
 const revoke = (rig: MemberRig, tokenId: string): void => { rig.env.sqlite.query('UPDATE member_credentials SET revoked_at = ? WHERE id = ?').run(Date.now(), tokenId); };
@@ -271,7 +272,7 @@ describe('a member that could not deliver', () => {
 
     // Nothing is delivered twice: another turn end, and an explicit drain, add no captured row (a turn end is its own).
     const capturedEvents = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
-    const counts = () => [capturedEvents(), ...['transcript_segments', 'prompt_batches', 'responses'].map((t) => rig.rows(t))];
+    const counts = () => [capturedEvents(), ...['transcript_segments', 'session_prompts', 'session_documents'].map((t) => rig.rows(t))];
     const before = counts();
     await runHook('stop', { session_id: 'sess-next', hook_event_name: 'Stop', transcript_path: next.tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
     await runMemberCli(['drain'], { mycoHome, fetch: spy.fetch, stdout: () => {}, stderr: () => {} });
