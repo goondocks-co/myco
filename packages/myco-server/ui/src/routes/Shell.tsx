@@ -2,8 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, NavItem, NavSection, SearchTrigger,
-  Sidebar, StatusChip, useSearchShortcut, useShellMenu,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, NavCollapseToggle, NavItem, NavSection, SearchTrigger,
+  Sidebar, StatusChip, useNavRail, useSearchShortcut, useShellMenu,
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
 import { useAttention } from '../hooks/use-attention';
@@ -50,15 +50,16 @@ export function Shell() {
   const pages = PROJECT_PAGES.filter((page) => admin || page.admin !== true);
   const name = memberDisplayName(member, me.data?.login);
 
-  const account = (compact: boolean) => (
+  const account = (placement: 'row' | 'rail' | 'header') => (
     <AccountMenu
       name={name}
       login={me.data?.login}
       role={me.data?.owner === true ? 'Owner' : member?.role === 'admin' ? 'Admin' : 'Member'}
       machinesHref={MY_MACHINES_PATH}
       onSignOut={() => void signOut()}
-      compact={compact}
-      align={compact ? 'end' : 'start'}
+      compact={placement !== 'row'}
+      align={placement === 'header' ? 'end' : 'start'}
+      side={placement === 'rail' ? 'right' : undefined}
     />
   );
 
@@ -66,7 +67,7 @@ export function Shell() {
     <ShellSidebar
       pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: pageHref(page, location.pathname, scope.projectId), active: pageIsOpen(page, location.pathname) }))}
       admin={admin}
-      account={account(false)}
+      account={(rail) => account(rail ? 'rail' : 'row')}
       onSearch={() => setSearchOpen(true)}
     />
   );
@@ -80,7 +81,7 @@ export function Shell() {
           <IconButton label="Search" onClick={() => setSearchOpen(true)}>
             <Search aria-hidden className="size-[18px]" />
           </IconButton>
-          {account(true)}
+          {account('header')}
         </>
       )}
       bottomBar={scope === undefined ? undefined : (
@@ -107,18 +108,23 @@ export function Shell() {
 interface ShellSidebarProps {
   pages: ReadonlyArray<(typeof PROJECT_PAGES)[number] & { to: string; active: boolean }>;
   admin: boolean;
-  account: ReactNode;
+  /** The account menu, as an avatar alone when the nav is a rail. */
+  account: (rail: boolean) => ReactNode;
   onSearch: () => void;
 }
 
 /** The nav column's contents, the same in the column and in the drawer. */
 function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
   const { closeMenu } = useShellMenu();
+  const { collapsed } = useNavRail();
   return (
     <Sidebar
       top={(
         <>
-          <Brand onNavigate={closeMenu} />
+          <div className={collapsed ? 'flex flex-col items-center gap-s2' : 'flex items-center justify-between gap-s2'}>
+            <Brand compact={collapsed} onNavigate={closeMenu} />
+            <NavCollapseToggle />
+          </div>
           <SearchTrigger onOpen={() => { closeMenu(); onSearch(); }} />
           {pages.length > 0 && (
             <NavSection label="Pages">
@@ -148,7 +154,7 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
           <NavItem to={RUNNERS_PAGE.to} label={RUNNERS_PAGE.label} icon={RUNNERS_PAGE.icon} onNavigate={closeMenu} />
         </NavSection>
       )}
-      account={account}
+      account={account(collapsed)}
     />
   );
 }

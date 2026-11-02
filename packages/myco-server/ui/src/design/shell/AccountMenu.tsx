@@ -53,6 +53,8 @@ export interface AccountMenuProps {
   /** Only the avatar, for a compact header. */
   compact?: boolean;
   align?: 'start' | 'end';
+  /** Which side of the avatar the menu opens on; by default above a full row and below a compact avatar. */
+  side?: 'top' | 'bottom' | 'right';
 }
 
 const groupLabel = 'px-s2 pb-s1 pt-s2 t-kicker text-faint';
@@ -80,7 +82,7 @@ function Segment({ value, children, label }: { value: string; children: ReactNod
  * accent, density, code font), the member's machines, and sign out.
  * Appearance is kept in this browser only.
  */
-export function AccountMenu({ name, login, role, machinesHref, onSignOut, compact = false, align = 'start' }: AccountMenuProps) {
+export function AccountMenu({ name, login, role, machinesHref, onSignOut, compact = false, align = 'start', side }: AccountMenuProps) {
   const { effective, set } = useAppearance();
   const navigate = useNavigate();
   const handle = login != null && login !== '' && login !== name ? `@${login}` : null;
@@ -108,7 +110,7 @@ export function AccountMenu({ name, login, role, machinesHref, onSignOut, compac
       <Menu.Portal>
         <Menu.Content
           align={align}
-          side={compact ? 'bottom' : 'top'}
+          side={side ?? (compact ? 'bottom' : 'top')}
           sideOffset={6}
           collisionPadding={8}
           className={cn(overlaySurface, 'z-50 w-[272px] max-w-[calc(100vw-var(--s-4))] p-s1')}

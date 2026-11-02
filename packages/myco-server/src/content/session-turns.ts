@@ -21,7 +21,7 @@ import {
 
 /** Rows each hook collection carries before its continuation. */
 const HOOK_ROWS = 50;
-/** Failed calls and changed files a turn's tool summary lists before it only counts. */
+/** Failed calls and named files a turn's tool summary lists before it only counts. */
 const SUMMARY_FAILURES = 20;
 const SUMMARY_FILES = 50;
 
@@ -32,7 +32,7 @@ interface Located { record: DocRecord; at: PageLocator }
 
 export interface ToolUsage { toolName: string; count: number }
 /**
- * A prompt's tool calls in brief: counts by tool, every failure up to a bound, the files changed and the Myco calls.
+ * A prompt's tool calls in brief: counts by tool, every failure up to a bound, the files its tool inputs name and the Myco calls.
  * `complete` is false when the turn has pages the read did not open: the counts then cover only the calls it read.
  */
 export interface ToolSummary {

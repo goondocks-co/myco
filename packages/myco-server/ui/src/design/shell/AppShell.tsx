@@ -4,6 +4,7 @@ import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Menu as MenuIcon, MoreHorizontal, X, type LucideIcon } from 'lucide-react';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
+import { readNavCollapsed, rememberNavCollapsed } from '../../lib/nav-collapse';
 import { focusRing } from '../lib/classes';
 import { IconButton } from '../primitives/Button';
 
@@ -26,6 +27,20 @@ const ShellMenuContext = createContext<ShellMenu>({ menuOpen: false, openMenu: (
 /** The shell's drawer controls, for a nav item or a More button. */
 export function useShellMenu(): ShellMenu {
   return useContext(ShellMenuContext);
+}
+
+interface NavRail {
+  /** Whether the nav column is narrowed to its icon rail. The drawer is never collapsed. */
+  collapsed: boolean;
+  /** Collapses or expands the column; null where the nav cannot collapse, as in the drawer. */
+  toggle: (() => void) | null;
+}
+
+const NavRailContext = createContext<NavRail>({ collapsed: false, toggle: null });
+
+/** Whether the nav it renders in is collapsed to the rail, and the control that flips it. */
+export function useNavRail(): NavRail {
+  return useContext(NavRailContext);
 }
 
 export interface AppShellProps {
@@ -51,6 +66,11 @@ export function AppShell({ sidebar, title, headerActions, bottomBar, overlay, ch
   const compact = useMediaQuery(COMPACT_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readNavCollapsed);
+  const rail: NavRail = {
+    collapsed,
+    toggle: () => { rememberNavCollapsed(!collapsed); setCollapsed(!collapsed); },
+  };
   // The control that opened the drawer. Nothing here is a Radix trigger, so the drawer hands focus back itself.
   const opener = useRef<HTMLElement | null>(null);
   const location = useLocation();
@@ -72,8 +92,13 @@ export function AppShell({ sidebar, title, headerActions, bottomBar, overlay, ch
           Skip to content
         </a>
         {!compact && (
-          <aside data-shell="" aria-label="Navigation" className="sticky top-0 flex h-screen w-[248px] shrink-0 flex-col border-r border-line bg-bg">
-            {sidebar}
+          <aside
+            data-shell=""
+            data-nav-collapsed={collapsed ? '' : undefined}
+            aria-label="Navigation"
+            className={cn('sticky top-0 flex h-screen shrink-0 flex-col border-r border-line bg-bg', collapsed ? 'w-[64px]' : 'w-[248px]')}
+          >
+            <NavRailContext.Provider value={rail}>{sidebar}</NavRailContext.Provider>
           </aside>
         )}
         <div className="flex min-w-0 flex-1 flex-col">
