@@ -293,38 +293,6 @@ jobs:
           path: target/test-reports/
           if-no-files-found: error
 
-  view-proof:
-    name: view-proof (${{ matrix.file }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        file:
-          - tests/myco-server/view-read-costs.test.ts
-          - tests/myco-server/view-read-oracle.test.ts
-          - tests/myco-server/view-read-intrinsic-costs.test.ts
-          - tests/myco-server/view-records.test.ts
-          - tests/myco-server/view-sessions.test.ts
-          - tests/myco-server/view-source-closure.test.ts
-          - tests/myco-server/view-read-legacy.test.ts
-          - tests/myco-server/view-lifecycle.test.ts
-          - tests/myco-server/view-writer-throughput.test.ts
-          - tests/meta/view-read-boundary.test.ts
-    env:
-      MYCO_TEST_KIND: view-proof
-      MYCO_TEST_GROUP: view proof ${{ matrix.file }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/ci-setup
-      - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      - run: npm test
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: view-proof-reports-${{ strategy.job-index }}
-          path: target/test-reports/
-          if-no-files-found: error
 
   parity:
     name: parity (${{ matrix.shard }}/7)
@@ -397,7 +365,7 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, build, tests, view-proof, parity, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows, darwin-release-build, darwin-release-verify]
+    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows, darwin-release-build, darwin-release-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

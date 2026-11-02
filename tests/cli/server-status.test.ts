@@ -157,33 +157,6 @@ function expectNoTokenFragments(text: string): void {
 }
 const count = (command: string): number => calls.filter((call) => call.args.slice(2).join(' ').startsWith(command)).length;
 
-it('view-preflight drives the hosted operator command read-only and resumes its opaque cursor',async()=>{
- const fixture=sqliteEnv();let reads=0,logins=0;
- const diagnosticRunner:CommandRunner={async run(_command,args){
-  if(!args.includes('token'))throw new Error('Preflight invoked an unexpected operator command');
-  logins++;
-  return {code:0,stdout:JSON.stringify({type:'oauth',token:'fixture-view-diagnostic-token'}),stderr:''};
- }};
- const fetchImpl:typeof fetch=Object.assign(async(_url:RequestInfo|URL,init?:RequestInit)=>{
-  const body=JSON.parse(String(init?.body)) as {sql:string;params:(string|number|null)[]};
-  const sql=significantStatement(body.sql);
-  if(!/^\s*(?:SELECT|WITH)\b/.test(sql)||/\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/.test(sql))throw new Error('Preflight attempted mutation');
-  reads++;
-  return Response.json({success:true,result:[{success:true,results:fixture.sqlite.query(body.sql).all(...body.params),meta:{changes:0}}]});
- },{preconnect:()=>{}});
- try{
-  const before=fixture.sqlite.serialize();
-  const args=['view-preflight','--target','cloudflare','--account-id',ACCOUNT,'--project','proj_1'];
-  await run(args,{runner:diagnosticRunner,fetchImpl});
-  const first=JSON.parse(printed.at(-1)!) as {project:string;nextCursor:string;complete:boolean};
-  expect(first.project).toBe('proj_1');expect(first.complete).toBe(false);expect(typeof first.nextCursor).toBe('string');
-  await run([...args,'--cursor',first.nextCursor],{runner:diagnosticRunner,fetchImpl});
-  const second=JSON.parse(printed.at(-1)!) as {coverage:{acknowledged:number};nextCursor:string};
-  expect(second.coverage.acknowledged).toBe(0);expect(second.nextCursor).not.toBe(first.nextCursor);
-  expect(reads).toBe(4);expect(logins).toBe(2);expect(fixture.sqlite.serialize()).toEqual(before);
- }finally{fixture.sqlite.close();}
-},30000);
-
 describe('Cloudflare status records and live observations', () => {
   it('prints the recorded budget refusal after an update publishes its Worker',async()=>{
     budgetCountUnavailable=true;

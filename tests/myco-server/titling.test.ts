@@ -12,7 +12,7 @@ import {
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { convertFixture, publishFixture, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { publishFixture, sqliteEnv, withHarness } from './helpers/fixtures.js';
 import { documentTitlingMaterial } from '@myco-server-worker/content/titling-material.js';
 
 const NOW = 1_700_000_000_000;
@@ -36,19 +36,17 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at)
                   VALUES (?, ?, 'm1', 'tok_1', ?, ?, ?, ?, ?, ?)`, [over.project ?? 'proj_1', id, NOW - 10_000, NOW, over.agent ?? 'claude-code', over.branch ?? 'main', NOW - 10_000, over.endedAt === undefined ? NOW : over.endedAt]);
   const prompt = (session: string, id: string, text: string | null, at: number, origin = 'user') =>
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                  VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [session, id, `e_${id}`, text, origin, `h_${id}`, at, at, at]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,? AS text,? AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [session, id, `e_${id}`, text, origin, `h_${id}`, at, at, at]);
   const response = (session: string, promptId: string, id: string, text: string | null, at: number) =>
-    e.sqlite.run(`INSERT INTO responses (project_id, session_id, response_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at)
-                  VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [session, id, promptId, `e_${id}`, text, `h_${id}`, at, at]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'response','cli',json_object('responseId',response_id,'promptId',prompt_id,'text',text),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS response_id,? AS prompt_id,? AS event_id,? AS text,? AS content_hash,? AS created_at,'tok_1' AS token_id,? AS received_at)`, [session, id, promptId, `e_${id}`, text, `h_${id}`, at, at]);
   const row = (id: string) => e.sqlite.query(`SELECT title, summary, titled_at, titled_by FROM sessions WHERE session_id = ?`).get(id) as { title: string | null; summary: string | null; titled_at: number | null; titled_by: string | null };
   const RUN_COLUMNS = `id, status, task, run_context, dispatch_spec, held_by, dispatched_by, agent_id, provider, model, error`;
   type RunRow = { id: string; status: string; task: string; run_context: string | null; dispatch_spec: string | null; held_by: string | null; dispatched_by: string | null; agent_id: string; provider: string | null; model: string | null; error: string | null };
   const runRow = (id: string) => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs WHERE id = ?`).get(id) as RunRow | null;
   const runRows = () => e.sqlite.query(`SELECT ${RUN_COLUMNS} FROM agent_runs ORDER BY COALESCE(queued_at, started_at), id`).all() as RunRow[];
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
-  // The seeded legacy rows convert into documents before titling reads the catalog.
-  const convert = () => convertFixture({ sqlite: e.sqlite, serverEnv: env });
+  // Queued events publish before titling reads the catalog.
+  const convert = () => publishFixture({ sqlite: e.sqlite, serverEnv: env }, NOW);
   const title = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }); };
   const ask = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' }); };
   const material = async (id: string, mode: 'claim' | 'owner' = 'claim') => { await convert(); return documentTitlingMaterial(env, 'proj_1', id, mode); };
@@ -92,7 +90,9 @@ describe('titleSession', () => {
     const env = { ...h.env, origin: ORIGIN };
     expect(await titleReadySessions(env, NOW)).toBe(0);
     expect(h.runRows()).toHaveLength(0);
-    await publishFixture({ sqlite: h.sqlite, serverEnv: h.env });
+    h.sqlite.run("UPDATE transcripts SET parsed_offset=size WHERE transcript_id='tx1'");
+    h.sqlite.run("UPDATE session_documents SET due_at=0 WHERE session_id='s1'");
+    await publishFixture({ sqlite: h.sqlite, serverEnv: h.env }, NOW);
     await expect(titleReadySessions({ ...h.env, origin: undefined }, NOW + SESSION_END_SETTLE_MS)).rejects.toThrow('Deployment origin');
     expect(await titleReadySessions(env, NOW + SESSION_END_SETTLE_MS + 1)).toBe(1);
     expect(h.runRows()).toHaveLength(1);

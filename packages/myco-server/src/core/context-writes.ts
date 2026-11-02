@@ -3,23 +3,23 @@ import {
   materialFields,
   materialMerge,
   materialUpdate,
-  type PreparedMaterialEffect,
 } from '../ingest/material-mutation.js';
-import { CONTEXT_MATERIAL_COLUMNS } from '../db/view-tables.js';
 import type { Fragment } from '../ingest/projections.js';
 import { deliveredFields, type DeliveredNaming } from '../ingest/prompt-scheme.js';
 
 export interface ContextWrite {
   statements: readonly PreparedStatement[];
-  material: { project: string; effects: readonly PreparedMaterialEffect[]; admission: Fragment; opportunity: Fragment };
 }
 export type ContextCommit = (db: RelationalStore, write: ContextWrite) => Promise<RunResult[]>;
 export const commitContextWrite: ContextCommit = async (db, write) =>
   write.statements.length === 1 ? [await write.statements[0]!.run()] : db.batch([...write.statements]);
-const deliveredColumns = ['delivered_at', 'delivered_prompt_id', 'delivered_scope_reason'];
-const always = { sql: '1', params: [] };
+const CONTEXT_MATERIAL_COLUMNS = {
+  injection:['id','prompt_id','scope_reason','ask_protocol','asked_at','prompt_hash','spore_ids','plan_ids','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
+  answer:['id','prompt_id','scope_reason','ask_protocol','asked_at','receipt_id','outcome','context_chars','parts','skipped','failures','selection','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
+  'session-record':['kind','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
+} as const;
 
-/** Receipt uniqueness and its future material postimage use the same admitted identity. */
+/** Receipt uniqueness and the stored row use the same admitted identity. */
 export function prepareInjectionReceipt(
   db: RelationalStore,
   input: {
@@ -45,7 +45,6 @@ export function prepareInjectionReceipt(
     kind: 'injection',
     table: 'spore_injections',
     keyColumn: 'id',
-    recordId: input.id,
     sessionKey: true,
     incoming: materialFields(
       {
@@ -64,8 +63,6 @@ export function prepareInjectionReceipt(
       ['asked_at', 'created_at'],
     ),
     assignments: [],
-    retained: deliveredColumns,
-    insertWhen: unique,
   });
   const statement = db
     .prepare(
@@ -75,7 +72,6 @@ export function prepareInjectionReceipt(
     .bind(...merge.insert.params, ...admission.params, ...unique.params);
   return {
     statements: [statement],
-    material: { project: input.project, effects: [merge.effect], admission, opportunity: always },
   } satisfies ContextWrite;
 }
 
@@ -105,7 +101,6 @@ export function preparePromptAnswer(
     kind: 'answer',
     table: 'prompt_context_answers',
     keyColumn: 'id',
-    recordId: input.id,
     sessionKey: true,
     incoming: materialFields(
       {
@@ -128,7 +123,6 @@ export function preparePromptAnswer(
       ['asked_at', 'context_chars', 'created_at'],
     ),
     assignments: [],
-    retained: deliveredColumns,
   });
   const statement = db
     .prepare(
@@ -137,7 +131,6 @@ export function preparePromptAnswer(
     .bind(...merge.insert.params, ...admission.params);
   return {
     statements: [statement],
-    material: { project: input.project, effects: [merge.effect], admission, opportunity: always },
   } satisfies ContextWrite;
 }
 
@@ -154,11 +147,9 @@ export function prepareSessionRecord(
     kind: 'session-record',
     table: 'session_injections',
     keyColumn: 'kind',
-    recordId: kind,
     sessionKey: true,
     incoming: materialFields({ project_id: project, session_id: session, kind, created_at: now }, ['created_at']),
     assignments: [],
-    retained: deliveredColumns,
   });
   const statement = db
     .prepare(
@@ -167,11 +158,10 @@ export function prepareSessionRecord(
     .bind(...merge.insert.params, ...admission.params);
   return {
     statements: [statement],
-    material: { project, effects: [merge.effect], admission, opportunity: always },
   } satisfies ContextWrite;
 }
 
-/** First delivery assigns the same admitted naming to its row and its postimage. */
+/** First delivery assigns the admitted naming to its row. */
 export function prepareContextDelivery(
   db: RelationalStore,
   kind: 'injection' | 'answer' | 'session-record',
@@ -193,12 +183,9 @@ export function prepareContextDelivery(
     params: throughAnswer === undefined ? [] : [d.projectId, d.sessionId, throughAnswer],
   };
   const definition = {
-    project: d.projectId,
     session: d.sessionId,
-    recordId: d.id,
     columns: ['project_id', 'session_id', ...CONTEXT_MATERIAL_COLUMNS[kind]],
     assignments,
-    when,
   };
   const update =
     kind === 'injection'
@@ -213,8 +200,6 @@ export function prepareContextDelivery(
     .bind(...update.update.params, d.projectId, d.sessionId, d.id, ...when.params, ...gate.params);
   return {
     statement,
-    effect: update.effect,
     statements: [statement],
-    material: { project: d.projectId, effects: [update.effect], admission: gate, opportunity: always },
-  } satisfies ContextWrite & { statement: PreparedStatement; effect: PreparedMaterialEffect };
+  } satisfies ContextWrite & { statement: PreparedStatement };
 }

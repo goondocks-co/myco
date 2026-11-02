@@ -1,4 +1,4 @@
-import { prepareReleasePaths, prepareReleaseCandidates, prepareReleaseClassification, prepareReleasePropagation } from '../read/view-store.js';
+import { prepareReleasePaths, prepareReleaseCandidates, prepareReleaseClassification, prepareReleasePropagation } from '../read/catalog-store.js';
 /**
  * Release provenance for one Project: its configuration, its credential, and
  * the scheduled check that answers whether captured work shipped.

@@ -75,7 +75,7 @@ describe('migrateOnly', () => {
 
   it('applies only the steps a partially-migrated volume is behind', () => {
     const path = join(scratch(), 'myco.sqlite');
-    const sqlite = migrateTo(path, SCHEMA_STEPS.at(-1)!.version - 1);
+    const sqlite = migrateTo(path, SCHEMA_STEPS.at(-2)!.version);
     sqlite.close();
 
     expect(migrateOnly(path)).toBe(1);
@@ -104,7 +104,7 @@ describe('migrateOnly', () => {
     refused.exec('DROP TRIGGER fixture_budget_fault');
     refused.close();
 
-    expect(migrateOnly(path)).toBe(SERVER_SCHEMA_VERSION-102);
+    expect(migrateOnly(path)).toBe(SCHEMA_STEPS.filter(step => step.version > 102).length);
     const healed = new Database(path);
     expect(healed.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
     expect(healed.query("SELECT value FROM schema_meta WHERE key='budget.settlement_sequence'").get()).toEqual({value:'0'});
@@ -200,7 +200,7 @@ const referencingRows = (sqlite: Database) => ({
 });
 
 /** How many steps a volume at step 47 is behind this build. */
-const STEPS_AFTER_47 = SERVER_SCHEMA_VERSION - 47;
+const STEPS_AFTER_47 = SCHEMA_STEPS.filter(step => step.version > 47).length;
 
 describe('migrateOnly across step 48 (#1416)', () => {
   it('migrates a v47 volume whose credentials are referenced: every row, counter and reference kept, the byte CHECK gone, foreign keys still enforced', () => {

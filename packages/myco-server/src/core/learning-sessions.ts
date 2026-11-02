@@ -14,7 +14,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LEARNING_RESUMED_AT } from './learning-pause.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { commitAttributedWrite } from './runs.js';
-import { prepareRecordAcknowledgement } from '../read/view-store.js';
+import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql } from './settings.js';
 export { LEARNING_TOOL };

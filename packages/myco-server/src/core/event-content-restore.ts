@@ -1,3 +1,4 @@
+import { isArchivedEventMetadata } from '../db/document-tables.js';
 import type { RelationalStore } from './adapters.js';
 
 type Row = Record<string, unknown>;
@@ -5,7 +6,7 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Import an archived event only while its exact bundle and publication evidence are held. */
 export async function restoreArchivedEvent(db: RelationalStore, event: Row, bundle: Row): Promise<number> {
-  if (event.payload_format !== 'archived' || event.payload !== '{}'
+  if (event.payload_format !== 'archived' || !isArchivedEventMetadata(event.payload)
     || event.project_id !== bundle.project_id || event.session_id !== bundle.session_id
     || event.token_id !== bundle.token_id || event.bundle_id !== bundle.id
     || !Number.isSafeInteger(event.bundle_entry) || (event.bundle_entry as number) < 0

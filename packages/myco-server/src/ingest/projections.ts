@@ -1,35 +1,31 @@
+import { DOCUMENT_ID_FIELDS, DOCUMENT_IDENTITIES_SQL } from '../db/document-tables.js';
 import { processedResourceProofSql } from '../core/processed-resources.js';
-import { rawMemberResourceSql } from '../core/raw-resources.js';
-import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
-import type { CaptureEnvelope } from './envelope.js';
-import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
-import { emit, refusal, type Refusal } from '../telemetry.js';
-import { PROJECT_ARCHIVED } from './projects.js';
-import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
-import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
-import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
-import { isPromptClaim } from '@goondocks/myco-shared/prompt-identity';
-import { TOOL_RESULT_REASONS, filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
-import { toolInputPreview } from '../core/tool-input.js';
-import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
-import { admittedScheme } from './prompt-scheme.js';
-import { admittedRecordScheme } from './record-scheme.js';
-import { MATERIAL_COLUMNS } from '../db/view-tables.js';
-import {
-  materialFields,
-  materialMerge,
-  materialUpdate,
-  type MaterialAssignment,
-  type PreparedMaterialEffect,
-} from './material-mutation.js';
 
-export interface PreparedToolInput {
-  key: string;
-  generation: string | null;
-  size: number;
-  digest: string;
-  bundle?: PreparedBundle;
-}
+import { rawMemberResourceSql } from '../core/raw-resources.js';
+
+import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
+
+import type { CaptureEnvelope } from './envelope.js';
+
+import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
+
+import { emit, refusal, type Refusal } from '../telemetry.js';
+
+import { PROJECT_ARCHIVED } from './projects.js';
+
+import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
+
+import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
+
+import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+
+
+import { admittedScheme } from './prompt-scheme.js';
+
+import { admittedRecordScheme } from './record-scheme.js';
+
+import { materialFields, materialMerge, type MaterialAssignment } from './material-mutation.js';
+
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -43,14 +39,17 @@ export interface WriteContext {
   processing?: boolean;
 }
 
+
 /** A SQL fragment with its bound parameters. */
 export interface Fragment {
   sql: string;
   params: unknown[];
 }
 
+
 /** Rows read in the same batch after the writes; the kind decides the response from them. */
 export type ReadRows = Record<string, unknown>[][];
+
 
 /** A continued row a kind writes under a member-minted key, and how its owning machine is read: `row` when the table carries `machine_id` itself, `session` when ownership runs through the row's session. */
 export interface Identity {
@@ -60,8 +59,8 @@ export interface Identity {
   owner: 'row' | 'session';
 }
 
+
 export interface KindPlan {
-  material?: readonly PreparedMaterialEffect[];
   /** The continued rows this kind names beyond its session; each is admitted, read, and refused by the shared checks, in identity order. */
   identities: Identity[];
   /** Preconditions placed on the raw insert beyond the shared ones (identities, blob presence, prompt ownership); all must hold for the event to be stored. */
@@ -72,8 +71,7 @@ export interface KindPlan {
   replay?: {
     compatible: Fragment;
     effect: Fragment;
-    material?: readonly PreparedMaterialEffect[];
-    project(gate: Fragment): PreparedStatement[];
+      project(gate: Fragment): PreparedStatement[];
   };
   /** Same-batch reads placed ahead of the projections, so a kind sees the row it is about to move. */
   priors?: PreparedStatement[];
@@ -93,17 +91,23 @@ export interface KindPlan {
   extra?(rows: ReadRows): Record<string, unknown>;
 }
 
+
 /** The raw row this request wrote, named by its nonce; a duplicate or conflict written by another request never matches. */
 export const RAW_ROW_GATE = 'EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)';
+
 export const rawGateParams = (ctx: WriteContext, e: CaptureEnvelope): unknown[] => [
   ctx.projectId,
   e.eventId,
   ctx.nonce,
 ];
 
+
 export const IDENTITY_MISMATCH: Refusal = refusal('machine identity mismatch', 'identity_mismatch');
+
 export const BLOB_ABSENT = (key: string): Refusal => refusal(`blob not present: ${key}`, 'blob_absent');
+
 const NOT_STORED: Refusal = refusal('not stored');
+
 
 /** One shared precondition: the admission fragment the raw insert carries, the same-batch read that explains a refusal, and the refusal decided from that read's first row. */
 export interface SharedCheck {
@@ -111,6 +115,7 @@ export interface SharedCheck {
   read: Fragment;
   refusal(row: Record<string, unknown> | undefined): Refusal | null;
 }
+
 
 /** A continued row may only be written, referenced, or continued by the machine that owns it — the row's own `machine_id`, or its session's; an absent row passes, so a first write and a reference to a not-yet-stored row are always admitted. The admission, the read, and the refusal are three views of this one predicate. */
 const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): SharedCheck => {
@@ -133,6 +138,7 @@ const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): S
   };
 };
 
+
 /** A member may reference only uploaded bytes they possess; server processing uses its recorded input. */
 const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedCheck => {
   const upload = rawMemberResourceSql('?', 'blob', '?', '(SELECT member_id FROM member_credentials WHERE id = ?)');
@@ -152,15 +158,16 @@ const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedC
   };
 };
 
+
 const opt = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
+
 /** The instant an ordering is decided by: the payload's, or the envelope's caller time when the field is absent. The field must carry the catalogue's `time` bound, so an ordering can never be decided by a value the envelope's clock rule does not reach. */
 const orderingTime = (spec: KindSpec, p: Payload, field: string, fallback: number): number => {
   const bound = spec.fields[field]?.bound;
   if (bound?.type !== 'time') throw new Error(`ordering field ${spec.name}.${field} must carry the time bound`);
   return (opt(p[field]) as number | null) ?? fallback;
 };
-const bool = (v: unknown): number => (v === true ? 1 : 0);
-const json = (v: unknown): string | null => (v === undefined ? null : JSON.stringify(v));
+
 
 interface Inputs {
   db: RelationalStore;
@@ -170,9 +177,9 @@ interface Inputs {
   spec: KindSpec;
   /** sha256 of the inline text, or the blob key when spilled. */
   contentHash: string | null;
-  preparedToolInput?: PreparedToolInput;
   envelopeHash?: string;
 }
+
 
 /** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
 export const projectLive = (ctx: WriteContext): SharedCheck => ({
@@ -185,8 +192,10 @@ export const projectLive = (ctx: WriteContext): SharedCheck => ({
     row !== undefined && row.archived_at !== null ? refusal(PROJECT_ARCHIVED, 'project_archived') : null,
 });
 
+
 /** A deleted session takes no further writes. The check is here rather than in a handler so it covers EVERY kind by construction: capture continues on a machine after a person deletes the session, and a sweep that only removed rows would be repopulated behind itself. */
 export const SESSION_TOMBSTONED: Refusal = refusal('session is deleted', 'session_tombstoned');
+
 const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
   admission: { sql: NOT_TOMBSTONED_PARAMS, params: [ctx.projectId, sessionId] },
   read: {
@@ -195,6 +204,7 @@ const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
   },
   refusal: (row) => (row === undefined ? null : SESSION_TOMBSTONED),
 });
+
 
 /**
  * A Deployment with import switched off takes no import-channel write.
@@ -214,6 +224,7 @@ const importEnabled = (): SharedCheck => ({
   refusal: (row) => (row === undefined ? null : IMPORT_DISABLED),
 });
 
+
 /** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session carries no tombstone, then the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
 export function sharedChecks(
   spec: KindSpec,
@@ -232,11 +243,13 @@ export function sharedChecks(
     ...named(blobFields(spec)).map((key) =>
       present(ctx, key, spec.name === 'plan' && typeof p.planKey === 'string' ? p.planKey : undefined),
     ),
-    ...named(promptReferenceFields(spec)).map((promptId) =>
-      owned(ctx, { table: 'prompt_batches', keyColumn: 'prompt_id', key: promptId, owner: 'session' }),
-    ),
+    ...named(promptReferenceFields(spec)).flatMap((promptId) => [
+      owned(ctx, { table: 'session_prompts', keyColumn: 'prompt_id', key: promptId, owner: 'session' }),
+      owned(ctx, { table: DOCUMENT_IDENTITIES_SQL, keyColumn: 'record_id', key: promptId, owner: 'session' }),
+    ]),
   ];
 }
+
 
 /**
  * What a record naming a session, written outside an event, is admitted by: the same tombstone and session-ownership
@@ -248,6 +261,7 @@ export interface SessionWriteAdmission {
   admission: Fragment;
   refusal(db: RelationalStore): Promise<Refusal | null>;
 }
+
 
 export function sessionWriteAdmission(
   ctx: Pick<WriteContext, 'projectId' | 'machineId'>,
@@ -277,6 +291,7 @@ export function sessionWriteAdmission(
   };
 }
 
+
 const rawOnly = (): KindPlan => ({
   identities: [],
   admission: [],
@@ -285,8 +300,10 @@ const rawOnly = (): KindPlan => ({
   refusal: () => NOT_STORED,
 });
 
+
 /** The longest name a project takes from a path; the rename route's grammar. */
 export const MAX_PROJECT_NAME_CHARS = 200;
+
 
 /** The last segment of a path, split on either separator; null when the path names nothing a person would call a project (`''`, `.`, `..`, the home shorthand `~`, or a segment longer than a name may be). */
 export function basenameOf(path: unknown): string | null {
@@ -298,6 +315,7 @@ export function basenameOf(path: unknown): string | null {
   const last = segments.length === 0 ? '' : segments[segments.length - 1];
   return acceptableProjectName(last);
 }
+
 
 /** A single display-name segment within the rename route's length bound. */
 export function acceptableProjectName(value: unknown): string | null {
@@ -313,9 +331,12 @@ export function acceptableProjectName(value: unknown): string | null {
     : name;
 }
 
+
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
+
 /** A session end row's observation error when the member could not read whether tracked files differed from the commit. */
 export const GIT_STATUS_UNREADABLE = 'status_unreadable';
+
 
 /**
  * The commit a session stood on, as the git provenance release reconciliation
@@ -368,6 +389,7 @@ const sessionCommit = (
       ),
   ];
 };
+
 
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the repository name of the first start that carries one, falling back to its origin path's basename; a renamed or onboarded Project keeps its name. */
 const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
@@ -435,6 +457,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   };
 };
 
+
 /**
  * A session's lifecycle, decided at two projections and by the publisher, from
  * projected and catalog rows alone: the raw event log is not consulted.
@@ -454,29 +477,23 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
  *
  * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
  */
-const LATEST_USER_TURN_SQL = `(SELECT MAX(pb.created_at) FROM prompt_batches pb
-   WHERE pb.project_id = sessions.project_id AND pb.session_id = sessions.session_id AND pb.origin = 'user')`;
-const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= MAX(COALESCE(${LATEST_USER_TURN_SQL}, 0),
-  COALESCE((SELECT sp.created_at FROM session_documents d JOIN session_prompts sp ON sp.project_id = d.project_id
-   AND sp.session_id = d.session_id AND sp.generation = d.generation AND sp.prompt_id = d.open_turn_key
-   WHERE d.project_id = sessions.project_id AND d.session_id = sessions.session_id AND d.state = 'live' AND sp.origin = 'user'), 0)))`;
+const LATEST_USER_TURN_SQL = `MAX(COALESCE((SELECT MAX(first_at) FROM (
+  SELECT MIN(p.created_at) first_at FROM events p
+  WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.kind='prompt'
+    AND CASE WHEN p.payload_format='archived' THEN p.archived_prompt_origin ELSE json_extract(p.payload,'$.origin') END='user'
+  GROUP BY json_extract(p.payload,'$.promptId'))),0),COALESCE((SELECT MAX(p.created_at) FROM session_prompts p
+    JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
+    WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.origin='user'),0))`;
+
+const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= ${LATEST_USER_TURN_SQL})`;
+
 const endAppliesParams = (endedAt: number): number[] => [endedAt, endedAt];
-/** A human prompt's admission reopens the session its stored turns say is open; any other prompt leaves it as it is. */
-const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] =>
-  p.origin !== 'user'
-    ? []
-    : [
-        db
-          .prepare(
-            `UPDATE sessions SET ended_at = NULL, ended_by = NULL
-    WHERE project_id = ? AND session_id = ? AND ended_at IS NOT NULL AND ended_at < COALESCE(${LATEST_USER_TURN_SQL}, 0) AND ${RAW_ROW_GATE}`,
-          )
-          .bind(ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),
-      ];
+
 
 /** The instant an ordering is decided by, read back from a stored event: the same rule `orderingTime` applies to an arriving one. */
 export const eventOrderingTimeSql = (alias: string, field: string): string =>
   `CASE WHEN ${alias}.payload_format='archived' THEN ${alias}.archived_ended_at ELSE COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at) END`;
+
 
 /** The first import end that names an instant, ordered by creation time and event id; a title-only end is none. */
 const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
@@ -484,6 +501,7 @@ const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM ev
      AND ie.kind = 'session.end' AND ie.channel = 'import'
      AND NOT (CASE WHEN ie.payload_format='archived' THEN ie.archived_title_only_end ELSE (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL) END)
    ORDER BY ie.created_at, ie.event_id LIMIT 1)`;
+
 
 /**
  * True while an import alone accounts for a session's lifecycle: the facts are
@@ -510,17 +528,13 @@ const IMPORT_OWNS_LIFECYCLE_SQL = `(
            WHERE lb.project_id = sessions.project_id AND lb.session_id = sessions.session_id
              AND lb.imported_at IS NULL))`;
 
-/** The tables a transcript parse derives a dated row into. */
-const DERIVED_ROW_TABLES = ['prompt_batches', 'responses', 'tool_calls'] as const;
 
-/** The earliest or latest instant among every derived row of one session, over a table that holds no row included. Takes two parameters per table. */
-const derivedBound = (bound: 'MIN' | 'MAX'): string =>
-  `(SELECT ${bound}(d.created_at) FROM (${DERIVED_ROW_TABLES.map(
-    (table) => `SELECT created_at FROM ${table} WHERE project_id = ? AND session_id = ?`,
-  ).join(' UNION ALL ')}) d)`;
-
-const derivedBoundParams = (projectId: string, sessionId: string): string[] =>
-  DERIVED_ROW_TABLES.flatMap(() => [projectId, sessionId]);
+const derivedBound = (bound: 'MIN' | 'MAX'): string => bound === 'MIN'
+  ? `(SELECT MIN(p.created_at) FROM session_prompts p JOIN session_documents d
+      ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
+      WHERE p.project_id=? AND p.session_id=?)`
+  : `(SELECT last_record_at FROM session_documents WHERE project_id=? AND session_id=? AND state='live')`;
+const derivedBoundParams = (projectId: string, sessionId: string): string[] => [projectId, sessionId];
 
 /**
  * The instants a session is presented and ordered by.
@@ -559,6 +573,7 @@ export const resolvePresentedDates = (
       ...(gate?.params ?? []),
     );
 
+
 /**
  * The title and summary an import end carries, stored as the session's one
  * titling attempt so neither automatic titling nor a backfill replaces them. A
@@ -584,9 +599,11 @@ const importedTitle = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
           ),
       ];
 
+
 /** An import end that names no instant and carries a title: it stores the title and nothing of the session's lifecycle. */
 const titleOnly = (e: CaptureEnvelope, p: Payload): boolean =>
   e.channel === 'import' && p.endedAt === undefined && typeof p.title === 'string';
+
 
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   if (titleOnly(e, p)) {
@@ -636,426 +653,6 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   };
 };
 
-/** Earliest reply time is restricted to the prompt owner's machine. */
-const responseEnd = (
-  project: string,
-  prompt: unknown,
-  machine: string,
-  extra?: { sql: string; params: readonly unknown[] },
-) => ({
-  sql: `(SELECT MIN(history.created_at) FROM(SELECT r.created_at,s.machine_id FROM responses r
-    JOIN sessions s ON s.project_id=r.project_id AND s.session_id=r.session_id WHERE r.project_id=? AND r.prompt_id=?
-    ${extra ? ' UNION ALL ' + extra.sql : ''}) history WHERE history.machine_id IS ?)`,
-  params: [project, prompt, ...(extra?.params ?? []), machine],
-});
-
-/** A prompt row: inserted once, then merged by events that rank higher in the total order (client time, then the smaller event id, so ties are decided the same way in any delivery order) — the highest-ranked event supplies every merged column, an absent field included, so no other event fills one; `ended_at` comes from the earliest response of the same machine, so a response another machine posted before the prompt existed never sets it. */
-const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
-  const blob = p.blob as string | undefined;
-  // The source of a parsed prompt's identity is the parse's to state; a prompt from anywhere else carries none.
-  const source =
-    e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && isPromptClaim(p.claim)
-      ? { claim: p.claim, key: opt(p.sourceKey), thread: opt(p.sourceThread), record: opt(p.sourceRecord) }
-      : { claim: null, key: null, thread: null, record: null };
-  const newer =
-    '(excluded.updated_at > prompt_batches.updated_at OR (excluded.updated_at = prompt_batches.updated_at AND excluded.event_id < prompt_batches.event_id))';
-  const incoming = {
-    ...materialFields(
-      {
-        project_id: ctx.projectId,
-        prompt_id: p.promptId,
-        session_id: e.sessionId,
-        event_id: e.eventId,
-        parent_prompt_id: opt(p.parentPromptId),
-        thread_id: opt(p.threadId),
-        thread_label: opt(p.threadLabel),
-        origin: p.origin,
-        prompt_kind: opt(p.promptKind),
-        text: opt(p.text),
-        blob_key: opt(blob),
-        content_hash: contentHash,
-        prompt_key_hash: opt(p.promptKeyHash),
-        claim: source.claim,
-        source_key: source.key,
-        source_thread: source.thread,
-        source_record: source.record,
-        created_at: e.createdAt,
-        updated_at: e.createdAt,
-        token_id: ctx.tokenId,
-        received_at: ctx.now,
-      },
-      ['created_at', 'updated_at', 'received_at'],
-    ),
-    ended_at: responseEnd(ctx.projectId, p.promptId, ctx.machineId),
-  };
-  const merged = materialMerge({
-    kind: 'prompt',
-    table: 'prompt_batches',
-    keyColumn: 'prompt_id',
-    recordId: String(p.promptId),
-    incoming,
-    assignments: [
-      ...['prompt_kind', 'parent_prompt_id', 'thread_id', 'thread_label', 'event_id'].map((column) => ({
-        column,
-        sql: `CASE WHEN ${newer} THEN excluded.${column} ELSE prompt_batches.${column} END`,
-        params: [],
-      })),
-      { column: 'ended_at', sql: 'COALESCE(prompt_batches.ended_at, excluded.ended_at)', params: [] },
-      { column: 'created_at', sql: 'MIN(prompt_batches.created_at, excluded.created_at)', params: [] },
-      { column: 'updated_at', sql: 'MAX(prompt_batches.updated_at, excluded.updated_at)', params: [] },
-    ],
-    when: {
-      sql: `excluded.content_hash = prompt_batches.content_hash AND excluded.source_key IS prompt_batches.source_key
-      AND excluded.source_thread IS prompt_batches.source_thread AND excluded.source_record IS prompt_batches.source_record`,
-      params: [],
-    },
-  });
-  return {
-    material: [merged.effect],
-    identities: [],
-    admission: [],
-    projections: [
-      db
-        .prepare(
-          `INSERT INTO prompt_batches (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}
-        ON CONFLICT(project_id,prompt_id) DO UPDATE SET ${merged.update.sql} WHERE ${merged.when.sql}`,
-        )
-        .bind(...merged.insert.params, ...rawGateParams(ctx, e), ...merged.update.params, ...merged.when.params),
-      ...reopensSession(db, ctx, e, p),
-    ],
-    // A turn a member shipped can take a session's lifecycle out of an import's
-    // hands; one the parse derived cannot, and runs nothing.
-    incidental: [
-      // A prompt id another source already holds: the second derivation is refused, and recorded once.
-      ...(source.claim === null
-        ? []
-        : [
-            db
-              .prepare(
-                `INSERT OR IGNORE INTO prompt_identity_conflicts
-          (project_id, session_id, prompt_id, source_key, source_thread, source_record, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND EXISTS (SELECT 1 FROM prompt_batches s WHERE s.project_id = ? AND s.prompt_id = ?
-          AND NOT (s.source_key IS ? AND s.source_thread IS ? AND s.source_record IS ?))`,
-              )
-              .bind(
-                ctx.projectId,
-                e.sessionId,
-                p.promptId,
-                source.key ?? '',
-                source.thread ?? '',
-                source.record ?? '',
-                e.createdAt,
-                ...rawGateParams(ctx, e),
-                ctx.projectId,
-                p.promptId,
-                source.key,
-                source.thread,
-                source.record,
-              ),
-          ]),
-      ...(p.origin !== 'user' || e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER
-        ? []
-        : [
-            resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) }),
-          ]),
-    ],
-    reads: [
-      db
-        .prepare(
-          `SELECT content_hash, source_key, source_thread, source_record FROM prompt_batches WHERE project_id = ? AND prompt_id = ?`,
-        )
-        .bind(ctx.projectId, p.promptId),
-    ],
-    refusal: () => NOT_STORED,
-    conflict: (rows) => {
-      const row = rows[0]?.[0] as
-        | {
-            content_hash: string;
-            source_key: string | null;
-            source_thread: string | null;
-            source_record: string | null;
-          }
-        | undefined;
-      if (
-        row &&
-        (row.source_key !== source.key || row.source_thread !== source.thread || row.source_record !== source.record)
-      )
-        return 'prompt id is held by another source record';
-      if (row && row.content_hash !== contentHash) return 'prompt text differs from the stored prompt';
-      return 'prompt did not apply';
-    },
-  };
-};
-
-const toolResultReplay = (
-  db: RelationalStore,
-  ctx: WriteContext,
-  e: CaptureEnvelope,
-  p: Payload,
-  digest: string | undefined,
-): KindPlan['replay'] => {
-  if (!ctx.processing || e.kind !== 'tool.failure' || p.resultReason === undefined) return undefined;
-  if (digest === undefined) throw new Error('Parser metadata replay requires the admitted envelope hash');
-  const noResultReasons = JSON.stringify(TOOL_RESULT_REASONS.filter((reason) => reason !== 'reported'));
-  const familyReplay: Fragment = {
-    sql: `(? IN (SELECT value FROM json_each(?)) AND (json_extract(held.payload, '$.resultReason') IS NULL
-      OR json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))`,
-    params: [p.resultReason, noResultReasons, noResultReasons],
-  };
-  const mutable: Fragment = {
-    sql: `(t.event_id = ? AND t.success = 0 AND (t.result_reason IS NULL OR t.result_reason = ?
-      OR (? = 'reported' AND t.result_reason IN (SELECT value FROM json_each(?)))))`,
-    params: [e.eventId, p.resultReason, p.resultReason, noResultReasons],
-  };
-  const source = (condition: Fragment): Fragment => ({
-    sql: `EXISTS (SELECT 1 FROM events held
-      JOIN tool_calls t ON t.project_id = held.project_id AND t.tool_call_id = ?
-      WHERE held.project_id = ? AND held.event_id = ? AND held.session_id = ?
-        AND held.kind = ? AND held.producer_adapter = ?
-        AND json_extract(held.payload, '$.toolCallId') = t.tool_call_id
-        AND t.session_id = held.session_id AND ${condition.sql})`,
-    params: [p.toolCallId, ctx.projectId, e.eventId, e.sessionId, e.kind, e.producer.adapter, ...condition.params],
-  });
-  const changed = { sql: `${mutable.sql} AND t.result_reason IS NOT ?`, params: [...mutable.params, p.resultReason] };
-  const mutation = materialUpdate({
-    kind: 'tool',
-    table: 'tool_calls',
-    keyColumn: 'tool_call_id',
-    project: ctx.projectId,
-    recordId: String(p.toolCallId),
-    alias: 't',
-    columns: [
-      'project_id',
-      'session_id',
-      'token_id',
-      'input_bundle_id',
-      'input_bundle_entry',
-      ...MATERIAL_COLUMNS.tool.filter((column) => !['call_source', 'outcome_source'].includes(column)),
-    ],
-    assignments: [{ column: 'result_reason', sql: '?', params: [p.resultReason] }],
-    when: changed,
-  });
-  return {
-    material: [mutation.effect],
-    compatible: source({
-      sql: `(${familyReplay.sql} OR (${mutable.sql} AND (json_extract(held.payload, '$.resultReason') IS NULL
-        OR held.envelope_hash = ? OR (? = 'reported' AND json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))))`,
-      params: [...familyReplay.params, ...mutable.params, digest, p.resultReason, noResultReasons],
-    }),
-    effect: source({
-      sql: `(${familyReplay.sql} OR t.result_reason = ?)`,
-      params: [...familyReplay.params, p.resultReason],
-    }),
-    project: (gate) => [
-      db
-        .prepare(
-          `UPDATE tool_calls AS t SET ${mutation.update.sql}
-      WHERE t.project_id = ? AND t.tool_call_id = ? AND t.session_id = ? AND ${gate.sql}
-        AND ${changed.sql}
-      RETURNING tool_call_id`,
-        )
-        .bind(...mutation.update.params, ctx.projectId, p.toolCallId, e.sessionId, ...gate.params, ...changed.params),
-    ],
-  };
-};
-
-/** A tool call row; one that carries no `filesAffected` records the paths its input names, so hook and parsed calls read alike. */
-const toolCall = ({ db, ctx, e, p, preparedToolInput, envelopeHash }: Inputs): KindPlan => {
-  const fullInput = p.input === undefined ? null : JSON.stringify(p.input);
-  const display = fullInput === null ? null : toolInputPreview(fullInput);
-  if (display?.truncated && preparedToolInput === undefined)
-    throw new Error('Oversized tool input requires registered content preparation');
-  const inputBlob =
-    preparedToolInput?.bundle === undefined ? (preparedToolInput?.key ?? (p.blob as string | undefined)) : undefined;
-  const outputBlob = p.outputBlob as string | undefined;
-  const adoption = {
-    sql: `EXISTS (SELECT 1 FROM tool_calls tc JOIN events ev
-    ON ev.project_id=tc.project_id AND ev.event_id=tc.event_id
-    WHERE tc.project_id=? AND tc.tool_call_id=? AND tc.event_id=? AND tc.token_id=?
-      AND tc.input_bundle_id IS NULL AND tc.input_blob_key IS NULL AND tc.input=? AND tc.input_bytes=?
-      AND ev.ingest_nonce=?)`,
-    params: [ctx.projectId, p.toolCallId, e.eventId, ctx.tokenId, display?.preview, display?.bytes, ctx.nonce],
-  };
-  const proof =
-    preparedToolInput === undefined || preparedToolInput.bundle !== undefined
-      ? []
-      : [
-          db
-            .prepare(
-              `INSERT INTO processed_resources
-      (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT tc.project_id, 'tool-input', tc.tool_call_id, tc.input_blob_key, tc.token_id, tc.event_id
-      FROM tool_calls tc
-      JOIN events ev ON ev.project_id = tc.project_id AND ev.event_id = tc.event_id AND ev.ingest_nonce = ?
-      JOIN registered_content_proofs cp ON cp.project_id = tc.project_id AND cp.source_kind = 'tool-input'
-        AND cp.source_id = tc.tool_call_id AND cp.event_id = ev.event_id AND cp.envelope_hash = ev.envelope_hash
-        AND cp.session_id = tc.session_id AND cp.key = tc.input_blob_key AND cp.digest = tc.input_blob_key
-        AND cp.size = tc.input_bytes AND cp.durable = 1
-      JOIN blobs b ON b.project_id = cp.project_id AND b.key = cp.key AND b.generation IS cp.generation AND b.size = cp.size
-      WHERE tc.project_id = ? AND tc.tool_call_id = ? AND tc.event_id = ? AND tc.input_blob_key = ?
-      ON CONFLICT DO NOTHING`,
-            )
-            .bind(ctx.nonce, ctx.projectId, p.toolCallId, e.eventId, preparedToolInput.key),
-        ];
-  const incoming = {
-    ...materialFields(
-      {
-        project_id: ctx.projectId,
-        tool_call_id: p.toolCallId,
-        session_id: e.sessionId,
-        prompt_id: opt(p.promptId),
-        event_id: e.eventId,
-        tool_name: p.toolName,
-        myco_tool: opt(p.mycoTool),
-        myco_op: opt(p.mycoOp),
-        input: display?.preview ?? null,
-        input_blob_key: opt(inputBlob),
-        output_preview: opt(p.output),
-        output_blob_key: opt(outputBlob),
-        success: e.kind === 'tool.failure' ? 0 : bool(p.success),
-        error_message: opt(p.errorMessage),
-        result_reason: e.kind === 'tool.failure' || p.success === false ? opt(p.resultReason) : null,
-        duration_ms: opt(p.durationMs),
-        files_affected: json(p.filesAffected ?? filesNamedByToolInput(p.input)),
-        canopy_injection_tokens: opt(p.canopyInjectionTokens),
-        created_at: e.createdAt,
-        token_id: ctx.tokenId,
-        received_at: ctx.now,
-      },
-      ['success', 'duration_ms', 'canopy_injection_tokens', 'created_at', 'received_at'],
-    ),
-    input_bytes: {
-      sql: 'COALESCE(CAST(? AS INTEGER),(SELECT b.size FROM blobs b WHERE b.project_id=? AND b.key=?))',
-      params: [display?.bytes ?? null, ctx.projectId, opt(inputBlob)],
-    },
-  };
-  const merged = materialMerge({
-    kind: 'tool',
-    table: 'tool_calls',
-    keyColumn: 'tool_call_id',
-    recordId: String(p.toolCallId),
-    incoming,
-    retained: ['input_bundle_id', 'input_bundle_entry'],
-    assignments: [
-      ...[
-        'event_id',
-        'output_preview',
-        'output_blob_key',
-        'success',
-        'error_message',
-        'result_reason',
-        'duration_ms',
-      ].map((column) => ({ column, sql: 'excluded.' + column, params: [] })),
-      { column: 'received_at', sql: 'MAX(tool_calls.received_at,excluded.received_at)', params: [] },
-    ],
-    when: {
-      sql: 'tool_calls.session_id=excluded.session_id AND tool_calls.success=0 AND excluded.success=1',
-      params: [],
-    },
-  });
-  if (fullInput !== null) merged.effect.newBodies = { input: fullInput };
-  return {
-    material: [merged.effect],
-    identities: [{ table: 'tool_calls', keyColumn: 'tool_call_id', key: p.toolCallId as string, owner: 'session' }],
-    admission: [],
-    replay: toolResultReplay(db, ctx, e, p, envelopeHash),
-    projections: [
-      db
-        .prepare(
-          `INSERT INTO tool_calls (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}
-        ON CONFLICT(project_id,tool_call_id) DO UPDATE SET ${merged.update.sql} WHERE ${merged.when.sql}`,
-        )
-        .bind(...merged.insert.params, ...rawGateParams(ctx, e), ...merged.update.params, ...merged.when.params),
-      ...proof,
-      ...(preparedToolInput?.bundle === undefined
-        ? []
-        : [
-            ...bundlePublicationStatements(db, preparedToolInput.bundle, adoption),
-            db
-              .prepare(
-                `UPDATE tool_calls SET input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),
-          input_bundle_entry=0 WHERE project_id=? AND tool_call_id=? AND ${adoption.sql}`,
-              )
-              .bind(ctx.projectId, preparedToolInput.bundle.body.key, ctx.projectId, p.toolCallId, ...adoption.params),
-          ].flat()),
-    ],
-    reads: [],
-    refusal: () => NOT_STORED,
-    conflict: () => 'tool call id already stored',
-  };
-};
-
-/** A response row, then the prompt's `ended_at` recomputed as the earliest response of the owning machine held after this write, so any delivery order converges. */
-const response = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
-  const blob = p.blob as string | undefined;
-  const merged = materialMerge({
-    kind: 'response',
-    table: 'responses',
-    keyColumn: 'response_id',
-    recordId: String(p.responseId),
-    incoming: materialFields(
-      {
-        project_id: ctx.projectId,
-        response_id: p.responseId,
-        session_id: e.sessionId,
-        prompt_id: opt(p.promptId),
-        event_id: e.eventId,
-        text: opt(p.text),
-        blob_key: opt(blob),
-        content_hash: contentHash,
-        created_at: e.createdAt,
-        token_id: ctx.tokenId,
-        received_at: ctx.now,
-      },
-      ['created_at', 'received_at'],
-    ),
-    assignments: [],
-  });
-  const material = [merged.effect];
-  const projections = [
-    db
-      .prepare(
-        `INSERT INTO responses (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql}
-      WHERE ${RAW_ROW_GATE} ON CONFLICT (project_id, response_id) DO NOTHING`,
-      )
-      .bind(...merged.insert.params, ...rawGateParams(ctx, e)),
-  ];
-  if (p.promptId !== undefined) {
-    const ended = responseEnd(ctx.projectId, p.promptId, ctx.machineId);
-    const future = responseEnd(ctx.projectId, p.promptId, ctx.machineId, {
-      sql: `SELECT CAST(? AS INTEGER),? WHERE (${merged.effect.postimage.sql}) IS NOT NULL`,
-      params: [e.createdAt, ctx.machineId, ...merged.effect.postimage.params],
-    });
-    const promptEnd = materialUpdate({
-      kind: 'prompt',
-      table: 'prompt_batches',
-      keyColumn: 'prompt_id',
-      project: ctx.projectId,
-      recordId: String(p.promptId),
-      columns: ['project_id', 'session_id', ...MATERIAL_COLUMNS.prompt],
-      assignments: [{ column: 'ended_at', ...ended }],
-      postimageAssignments: [{ column: 'ended_at', ...future }],
-    });
-    material.push({ ...promptEnd.effect, skipLegacy: true });
-    projections.push(
-      db
-        .prepare(
-          `UPDATE prompt_batches SET ${promptEnd.update.sql}
-      WHERE project_id=? AND prompt_id=? AND ${RAW_ROW_GATE}`,
-        )
-        .bind(...promptEnd.update.params, ctx.projectId, p.promptId, ...rawGateParams(ctx, e)),
-    );
-  }
-  return {
-    material,
-    identities: [{ table: 'responses', keyColumn: 'response_id', key: p.responseId as string, owner: 'session' }],
-    admission: [],
-    projections,
-    reads: [],
-    refusal: () => NOT_STORED,
-    conflict: () => 'response id already stored',
-  };
-};
 
 const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const planKey = p.planKey as string;
@@ -1109,7 +706,6 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     kind: 'plan',
     table: 'plans',
     keyColumn: 'plan_key',
-    recordId: planKey,
     incoming: materialFields(
       {
         project_id: ctx.projectId,
@@ -1135,29 +731,7 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     ),
     assignments: set,
   });
-  const effect: PreparedMaterialEffect = {
-    ...merged.effect,
-    postimage: {
-      sql: `WITH material(doc) AS(${merged.effect.postimage.sql}),merged_plan AS(
-      SELECT json_extract(doc,'$.project_id') project_id,json_extract(doc,'$.plan_key') plan_key,
-        json_extract(doc,'$.updated_at') updated_at,json_extract(doc,'$.event_id') event_id FROM material)
-      SELECT json_set(doc,'$.tags',json(CASE WHEN ${currentFor('merged_plan')} THEN
-        (SELECT json_group_array(value) FROM(SELECT DISTINCT value FROM json_each(?) ORDER BY value))
-        ELSE(SELECT json_group_array(tag) FROM(SELECT tag FROM tags WHERE project_id=? AND entity_kind='plan' AND entity_id=? ORDER BY tag)) END)) FROM material`,
-      params: [
-        ...merged.effect.postimage.params,
-        ctx.projectId,
-        planKey,
-        e.createdAt,
-        e.eventId,
-        tags,
-        ctx.projectId,
-        planKey,
-      ],
-    },
-  };
   return {
-    material: [effect],
     // A plan is a Project-shared editorial row: any member may update one, the
     // credential that did is recorded on it, and the creating session and machine
     // stay. The session the event names is still owned by the writing machine.
@@ -1204,6 +778,7 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   };
 };
 
+
 const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const blob = p.blob as string;
   const incoming = {
@@ -1233,13 +808,11 @@ const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
     kind: 'attachment',
     table: 'attachments',
     keyColumn: 'attachment_id',
-    recordId: String(p.attachmentId),
     incoming,
     assignments: [],
     source: { sql: 'FROM blobs b WHERE b.project_id=? AND b.key=?', params: [ctx.projectId, blob] },
   });
   return {
-    material: [merged.effect],
     identities: [{ table: 'attachments', keyColumn: 'attachment_id', key: p.attachmentId as string, owner: 'session' }],
     admission: [],
     projections: [
@@ -1256,6 +829,7 @@ const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
     conflict: () => 'attachment id already stored',
   };
 };
+
 
 const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const transcriptId = p.transcriptId as string;
@@ -1413,16 +987,28 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   };
 };
 
+
+const documentOnly = (input: Inputs): KindPlan => ({
+  ...rawOnly(),
+  identities: [{table:DOCUMENT_IDENTITIES_SQL,keyColumn:'record_id',key:String(input.p[DOCUMENT_ID_FIELDS[input.e.kind]!]),owner:'session'}],
+  incidental: input.e.kind !== 'prompt' ? [] : [
+    resolvePresentedDates(input.db,input.ctx.projectId,input.e.sessionId,{sql:RAW_ROW_GATE,params:rawGateParams(input.ctx,input.e)}),
+    ...(input.p.origin !== 'user'?[]:[input.db.prepare(`UPDATE sessions SET ended_at=NULL,ended_by=NULL WHERE project_id=? AND session_id=? AND ended_at IS NOT NULL
+    AND ended_at < COALESCE(${LATEST_USER_TURN_SQL},0) AND ${RAW_ROW_GATE}`)
+    .bind(input.ctx.projectId,input.e.sessionId,...rawGateParams(input.ctx,input.e))])],
+});
+
 const PLANNERS: Record<KindSpec['projection'], (input: Inputs) => KindPlan> = {
   raw: rawOnly,
   sessions: (input) => (input.e.kind === 'session.start' ? sessionStart(input) : sessionEnd(input)),
-  prompt_batches: prompt,
-  tool_calls: toolCall,
-  responses: response,
+  prompt_batches: documentOnly,
+  tool_calls: documentOnly,
+  responses: documentOnly,
   plans: plan,
   attachments: attachment,
   transcript_segments: transcriptSegment,
 };
+
 
 /** The projection plan for one validated event. */
 export function planKind(spec: KindSpec, input: Omit<Inputs, 'spec'>): KindPlan {

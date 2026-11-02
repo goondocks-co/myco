@@ -1,7 +1,8 @@
+import { archivedEventPayloadSql } from '../db/document-tables.js';
 import { SHA256 } from '@stablelib/sha256';
 import type { ContentStore, PreparedStatement, RelationalStore } from './adapters.js';
 import { blobObjectKey } from './blob-objects.js';
-import { bundleHeld } from './blob-references.js';
+
 import { readStoredObject } from './stored-object.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
@@ -24,7 +25,7 @@ export interface BundleEntry {
   kind: BundleKind; resourceId: string; eventId: string; envelopeHash: string;
   revision: number; rawRevision: number; offset: number; length: number; digest: string;
 }
-export interface BundleItem { kind: BundleKind; row: ContentRow; text?: string }
+export interface BundleItem { kind: 'event'; row: ContentRow; text?: string }
 export interface PreparedBundle {
   preparationId: string;
   source: DerivedContentSource; body: VerifiedContent; receipt: VerifiedContent;
@@ -158,31 +159,26 @@ export function bundlePublicationStatements(db:RelationalStore,bundle:PreparedBu
 /** Existing rows carry compact locators; no per-entry catalogue or index is created. */
 export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle):PreparedStatement[] {
   if(bundle.items.length===0||bundle.items.length>ARCHIVE_BUNDLE_ENTRIES)throw new Error('content_bundle_page_invalid');
+  if (bundle.items.some(item => item.kind !== 'event')) throw new Error('content_bundle_kind_unsupported');
   const sources=JSON.stringify(bundle.items.map(item=>({kind:item.kind,...item.row})));
   const sourceGuard=`NOT EXISTS (SELECT 1 FROM json_each(?) j
     LEFT JOIN events e ON e.project_id=json_extract(j.value,'$.project_id') AND e.event_id=json_extract(j.value,'$.event_id')
     LEFT JOIN raw_credentials c ON c.token_id=json_extract(j.value,'$.token_id')
-    LEFT JOIN tool_calls t ON t.project_id=json_extract(j.value,'$.project_id') AND t.tool_call_id=json_extract(j.value,'$.resource_id')
+
     WHERE e.event_id IS NULL OR e.session_id<>json_extract(j.value,'$.session_id')
       OR e.envelope_hash<>json_extract(j.value,'$.envelope_hash') OR (json_extract(j.value,'$.kind')='event' AND e.token_id<>json_extract(j.value,'$.token_id'))
       OR COALESCE(e.raw_revision,0)<>COALESCE(json_extract(j.value,'$.raw_revision'),0)
       OR (json_type(j.value,'$.raw_owner') IS NOT NULL AND ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')}
         IS NOT json_extract(j.value,'$.raw_owner'))
       OR (json_type(j.value,'$.raw_provenance') IS NOT NULL AND c.provenance IS NOT json_extract(j.value,'$.raw_provenance'))
-      OR CASE json_extract(j.value,'$.kind') WHEN 'event' THEN
-        e.payload_format<>'inline' OR e.content_revision<>json_extract(j.value,'$.content_revision')
-          OR length(CAST(e.payload AS BLOB))<>json_extract(j.value,'$.bytes')
-        ELSE t.tool_call_id IS NULL OR t.event_id<>e.event_id OR t.session_id<>e.session_id
-          OR t.token_id<>json_extract(j.value,'$.token_id') OR t.content_revision<>json_extract(j.value,'$.content_revision')
-          OR CASE WHEN json_extract(j.value,'$.input_bundle_id') IS NULL THEN length(CAST(t.input AS BLOB))<>json_extract(j.value,'$.bytes')
-            ELSE t.input_bundle_id IS NOT json_extract(j.value,'$.input_bundle_id') OR t.input_bundle_entry IS NOT json_extract(j.value,'$.input_bundle_entry')
-              OR t.input_bytes<>json_extract(j.value,'$.bytes') END END)`;
+      OR e.payload_format<>'inline' OR e.content_revision<>json_extract(j.value,'$.content_revision')
+        OR length(CAST(e.payload AS BLOB))<>json_extract(j.value,'$.bytes'))`;
   const statements=[...contentAssertion(db,sourceGuard,[sources]),...bundlePublicationStatements(db,bundle)];
   const locators=JSON.stringify(bundle.items.map((item,entry)=>({kind:item.kind,project:item.row.project_id,
     id:item.row.resource_id,entry,preview:item.preview,bytes:item.row.bytes})));
-  for(const kind of ['event','tool-input'] as const){
+  for(const kind of ['event'] as const){
     if(!bundle.items.some(item=>item.kind===kind))continue;
-    const table=kind==='event'?'events':'tool_calls';const id=kind==='event'?'event_id':'tool_call_id';
+    const table='events';const id='event_id';
     const value=(field:string)=>`(SELECT json_extract(j.value,'$.${field}') FROM json_each(?) j
       WHERE json_extract(j.value,'$.kind')='${kind}' AND json_extract(j.value,'$.project')=${table}.project_id
         AND json_extract(j.value,'$.id')=${table}.${id})`;
@@ -195,11 +191,9 @@ export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle
         AND json_type(payload,'$.title') IS NOT NULL THEN 1 ELSE 0 END,
       archived_prompt_origin=CASE WHEN json_valid(payload) THEN json_extract(payload,'$.origin') END,
       bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),bundle_entry=${value('entry')},
-      payload='{}',payload_format='archived',payload_bytes=0 WHERE ${identity}`)
+      payload=${archivedEventPayloadSql()},payload_format='archived',payload_bytes=0 WHERE ${identity}`)
       .bind(bundle.source.projectId,bundle.body.key,locators,locators));
-    else statements.push(db.prepare(`UPDATE tool_calls SET input=${value('preview')},input_bytes=${value('bytes')},input_blob_key=NULL,
-      input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),input_bundle_entry=${value('entry')}
-      WHERE ${identity}`).bind(locators,locators,bundle.source.projectId,bundle.body.key,locators,locators));
+
   }
   statements.push(db.prepare(`DELETE FROM content_scan_checkpoints WHERE rowid IN
     (SELECT c.rowid FROM json_each(?) j CROSS JOIN content_scan_checkpoints c
@@ -212,31 +206,6 @@ export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle
     (SELECT o.rowid FROM json_each(?) j CROSS JOIN storage_cleanup_omissions o
       WHERE o.project_id=json_extract(j.value,'$.project_id') AND o.resource_kind=json_extract(j.value,'$.kind')
         AND o.resource_id=json_extract(j.value,'$.resource_id'))`).bind(sources));
-  const old=JSON.stringify(bundle.items.filter(item=>item.row.input_bundle_id!==null&&item.row.input_bundle_id!==undefined)
-    .map(item=>({id:item.row.input_bundle_id,entry:item.row.input_bundle_entry,key:item.row.input_archive_key,
-      receipt:item.row.input_receipt_key,resourceId:item.row.resource_id})));
-  statements.push(db.prepare(`DELETE FROM archive_bundles WHERE rowid IN
-    (SELECT a.rowid FROM json_each(?) j CROSS JOIN archive_bundles a
-      WHERE a.id=json_extract(j.value,'$.id') AND a.project_id=? AND a.entry_count=1
-        AND json_extract(j.value,'$.entry')=0
-        AND EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=a.project_id
-          AND t.tool_call_id=json_extract(j.value,'$.resourceId') AND t.input_bundle_id IS NOT a.id)
-        AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=a.project_id
-          AND e.event_id=a.event_id AND e.bundle_id=a.id)
-        AND NOT (${bundleHeld('a.project_id','a.id', { eventId: 'a.event_id', toolCallId: "json_extract(j.value,'$.resourceId')" })}))`)
-    .bind(old,bundle.source.projectId));
-  for(const kind of ['bundle','receipt'] as const){
-    const sourceId=kind==='bundle'?"json_extract(j.value,'$.key')":"'bundle:'||json_extract(j.value,'$.key')";
-    const key=kind==='bundle'?"json_extract(j.value,'$.key')":"json_extract(j.value,'$.receipt')";
-    statements.push(db.prepare(`DELETE FROM registered_content_proofs WHERE rowid IN
-      (SELECT p.rowid FROM json_each(?) j CROSS JOIN registered_content_proofs p
-        WHERE p.project_id=? AND p.source_kind='${kind}' AND p.source_id=${sourceId} AND p.key=${key}
-          AND NOT EXISTS(SELECT 1 FROM archive_bundles a WHERE a.project_id=p.project_id AND a.archive_key=p.key)
-          AND NOT EXISTS(SELECT 1 FROM archive_bundles a WHERE a.project_id=p.project_id AND a.receipt_key=p.key))`)
-      .bind(old,bundle.source.projectId));
-  }
-  statements.push(...recordBlobCandidates(db,bundle.items.flatMap(item=>[item.row.input_archive_key,item.row.input_receipt_key]
-    .filter((key):key is string=>typeof key==='string').map(key=>({projectId:bundle.source.projectId,key}))),Date.now()));
   return statements;
 }
 
@@ -325,7 +294,7 @@ async function readEntry(loaded:Loaded,identity:BundleEntryIdentity):Promise<str
 
 /** Verify imported publication evidence and all requested entries before inserting relational rows. */
 export async function verifyBundleArtifact(env:BundleEnv,row:BundleRecord,proofs:readonly Record<string,unknown>[],
-  locators:readonly BundleEntryIdentity[]):Promise<void>{
+  locators:readonly BundleEntryIdentity[]):Promise<ReadonlyMap<string,string>>{
   const registrations=await env.db.batch([row.archive_key,row.receipt_key].map(key=>
     env.db.prepare(`SELECT generation,size FROM blobs WHERE project_id=? AND key=?`).bind(row.project_id,key)));
   const [body,receipt]=registrations.map(result=>result.results[0] as Registration|undefined);
@@ -338,10 +307,12 @@ export async function verifyBundleArtifact(env:BundleEnv,row:BundleRecord,proofs
       throw new Error('event_content_reference_invalid');
   }
   const loaded=await parseBundleObjects(env.blobs,row,body,receipt);
+  const contents=new Map<string,string>();
   for(const locator of locators){
     if(locator.projectId!==row.project_id)throw new Error('content_bundle_entry_invalid');
-    await readEntry(loaded,locator);
+    contents.set(locator.resourceId,await readEntry(loaded,locator));
   }
+  return contents;
 }
 
 /** Resolves and verifies exact bytes and immutable source identity for one compact locator. */

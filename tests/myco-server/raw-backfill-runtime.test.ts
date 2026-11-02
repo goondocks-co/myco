@@ -4,7 +4,7 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
-import { PROCESSED_FIELDS } from '@myco-server-worker/core/processed-resources.js';
+import { LIVE_PROCESSED_FIELDS } from '@myco-server-worker/core/processed-resources.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { historicalBackfillSql } from './helpers/raw-backfill-fixture.js';
@@ -12,7 +12,7 @@ import { historicalBackfillSql } from './helpers/raw-backfill-fixture.js';
 async function assertPageSeeks(db: RelationalStore): Promise<void> {
   const sources = [
     { table: 'blobs', id: 'key' }, { table: 'transcripts', id: 'transcript_id' }, { table: 'events', id: 'event_id' },
-    ...Object.values(PROCESSED_FIELDS),
+    ...Object.values(LIVE_PROCESSED_FIELDS),
   ];
   const stopped = new Error('stop before the page commit');
   for (const [source, { table, id }] of sources.entries()) {

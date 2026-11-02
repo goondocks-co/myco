@@ -56,8 +56,8 @@ async function deliver(rig: MemberRig, out: OutboundEvent): Promise<Record<strin
 }
 
 const PROJECTION_TABLE: Record<string, string> = {
-  'session.start': 'sessions', 'session.end': 'sessions', prompt: 'prompt_batches', 'tool.use': 'tool_calls', 'tool.failure': 'tool_calls',
-  response: 'responses', plan: 'plans', attachment: 'attachments', 'transcript.segment': 'transcript_segments',
+  'session.start': 'sessions', 'session.end': 'sessions', prompt: "events WHERE kind='prompt'", 'tool.use': "events WHERE kind IN ('tool.use','tool.failure')", 'tool.failure': "events WHERE kind IN ('tool.use','tool.failure')",
+  response: "events WHERE kind='response'", plan: 'plans', attachment: 'attachments', 'transcript.segment': 'transcript_segments',
 };
 
 describe('member envelope — every kind through the worker', () => {
@@ -105,9 +105,9 @@ describe('member envelope — every kind through the worker', () => {
       expect(rig.rows('events')).toBe(events);
     }
     expect(rig.rows('sessions')).toBe(before.sessions + 1);
-    expect(rig.rows('prompt_batches')).toBe(before.prompt_batches + 1);
-    expect(rig.rows('tool_calls')).toBe(before.tool_calls + 2);
-    expect(rig.rows('responses')).toBe(before.responses + 1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(before["events WHERE kind='prompt'"] + 1);
+    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(before["events WHERE kind IN ('tool.use','tool.failure')"] + 2);
+    expect(rig.rows("events WHERE kind='response'")).toBe(before["events WHERE kind='response'"] + 1);
     expect(rig.rows('plans')).toBe(before.plans + 1);
     expect(rig.rows('attachments')).toBe(before.attachments + 1);
     expect(rig.rows('transcript_segments')).toBe(before.transcript_segments + 1);
@@ -157,7 +157,7 @@ describe('member envelope — field rules', () => {
     expect(fs.statSync(big.blobSource!.path).size).toBe(MEMBER_INLINE_TEXT_MAX_BYTES + 1);
     const rig = await memberRig();
     expect(await deliver(rig, big)).toMatchObject({ persisted: true });
-    const row = rig.env.sqlite.query(`SELECT blob_key, text FROM prompt_batches WHERE prompt_id = ?`).get(big.envelope.payload.promptId as string) as { blob_key: string; text: string | null };
+    const row = rig.env.sqlite.query(`SELECT json_extract(payload,'$.blob') AS blob_key,json_extract(payload,'$.text') AS text FROM events WHERE kind='prompt' AND json_extract(payload,'$.promptId') = ?`).get(big.envelope.payload.promptId as string) as { blob_key: string; text: string | null };
     expect(row.blob_key).toBe(big.blobSource!.sha256);
     expect(row.text).toBeNull();
   });
@@ -238,7 +238,7 @@ describe('member envelope — field rules', () => {
     const answer = await rig.postEvent(out.envelope);
 
     expect(answer).toMatchObject({ persisted: true });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect((rig.env.sqlite.query('SELECT producer_version FROM events').get() as { producer_version: string }).producer_version)
       .toBe('0.0.0-dev-1.4.8-6-ge1c936ce-dirty');
 

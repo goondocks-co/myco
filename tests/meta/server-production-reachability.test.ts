@@ -8,11 +8,6 @@ const PREFIX = 'packages/myco-server/src/';
 
 /** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
 const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
-  'read/view-material-version.ts': 'selected material sequence resolution exercised before reader integration',
-  'core/material-restore.ts': 'dormant additive material restore exercised by writer tests',
-  'core/material-fact-writer.ts': 'dormant authoritative fact mutations exercised by writer tests',
-  'core/material-version-backup.ts': 'dormant owned version restore tested before activation',
-  'ingest/view-acknowledgements.ts': 'dormant conversion acknowledgement composition tested before activation',
 
   'context.ts': 'type declarations consumed by route handlers',
   'core/cost/types.ts': 'type declarations consumed by cost resolution',

@@ -11,7 +11,7 @@ export async function preparePromptAcknowledgement(db: RelationalStore, scope: R
   await ensureAgent(db, { id: 'coverage-agent', name: 'Coverage', provider: null, model: null, enabled: true }, now);
   await recordDispatch(db, scope, { id: runId, agentId: 'coverage-agent', task: 'extract-curate', provider: null,
     model: null, runContext: null, dispatchedBy: null, startedAt: now });
-  const row = await db.prepare('SELECT session_id AS sessionId, created_at AS createdAt FROM prompt_batches WHERE project_id = ? AND prompt_id = ?')
+  const row = await db.prepare('SELECT session_id AS sessionId, created_at AS createdAt FROM session_prompts WHERE project_id = ? AND prompt_id = ?')
     .bind(scope.projectId, promptId).first<{ sessionId: string; createdAt: number }>();
   if (row === null) return async () => false;
   const [item] = await recordServedPrompts(db, scope, runId, [{ ...row, promptId, endedAt: null }], now);

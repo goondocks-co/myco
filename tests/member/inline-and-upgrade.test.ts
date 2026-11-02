@@ -82,8 +82,8 @@ describe('a sandbox (G4g)', () => {
     const paths = spy.requests.map((r) => r.path);
     expect(paths.indexOf('/events')).toBeGreaterThanOrEqual(0);
     expect(paths.indexOf('/context/prompt')).toBeGreaterThan(paths.indexOf('/events'));
-    expect(rig.rows('prompt_batches')).toBe(1);
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(spool().depth('sess-sandbox')).toBe(0);
   });
 });
@@ -103,11 +103,11 @@ describe('a sandbox holding only a join code (G4g)', () => {
     // turn's end.
     expect(spy.requests.map((r) => r.path)).toEqual(['/members/join', '/context/session', '/context/session']);
     for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
 
     await runHook('stop', { session_id: 'sess-code', last_assistant_message: 'done', transcript_path: tx }, opts);
-    expect(rig.rows('prompt_batches')).toBe(1);
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(spool().depth('sess-code')).toBe(0);
   });
 });
@@ -124,7 +124,7 @@ describe('a turn\'s end that ships inline', () => {
     await runHook('user-prompt-submit', { session_id: 'sess-flag', prompt: 'spooled', transcript_path: tx }, { fetch: offline.fetch, symbiont: 'copilot' });
     expect(spool().depth('sess-flag')).toBe(1);
     await runHook('stop', { session_id: 'sess-flag', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', argv: ['--ship', 'inline'], helperSpawn: noStart });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(spool().depth('sess-flag')).toBe(0);
   });
 
@@ -138,7 +138,7 @@ describe('a turn\'s end that ships inline', () => {
       await runHook('stop', { session_id: sessionId, last_assistant_message: `done ${sessionId}`, transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: start });
       expect({ sessionId, depth: spool().depth(sessionId) }).toEqual({ sessionId, depth: 0 });
     }
-    expect(rig.rows('responses')).toBe(2);
+    expect(rig.rows("events WHERE kind='response'")).toBe(2);
   });
 
   it('waits on a helper the harness\'s job holds, which cleared the marks as its pass began, until the turn is delivered', async () => {
@@ -157,7 +157,7 @@ describe('a turn\'s end that ships inline', () => {
     expect(fs.existsSync(helperPaths('proj_1', mycoHome, 'https://s').dirty)).toBe(false);
     // The turn's end finds that helper holding the work, and ships inline: it waits for it, never past its budget.
     await runHook('stop', { session_id: 'sess-held', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(spool().depth('sess-held')).toBe(0);
     await holder;
   });
@@ -181,7 +181,7 @@ describe('a turn\'s end that ships inline', () => {
     await runHook('stop', { session_id: 'sess-own', last_assistant_message: 'own reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
     // Back once its own records are delivered, not when the helper lets go or the session's transcript ships.
     expect(Date.now() - started).toBeLessThan(4_000);
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(spool().pendingTurnEnds('sess-own')).toEqual([]);
     expect(fs.statSync(tx).size).toBeGreaterThan(readSessionState(spool().dir, 'sess-own').transcript?.nextOffset ?? 0);
     await holder;
@@ -205,7 +205,7 @@ describe('a turn\'s end that ships inline', () => {
     });
     while (!passStarted) await Bun.sleep(5);
     await runHook('stop', { session_id: 'sess-tx', last_assistant_message: 'tx reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
-    expect(rig.rows('responses')).toBe(1);
+    expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(readSessionState(spool().dir, 'sess-tx').transcript?.nextOffset).toBe(fs.statSync(tx).size);
     await holder;
   }, 20_000);
@@ -213,7 +213,7 @@ describe('a turn\'s end that ships inline', () => {
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
     const tx = transcript('sess-capture');
     await runHook('user-prompt-submit', { session_id: 'sess-capture', prompt: 'later', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: false }) });
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     expect(spool().depth('sess-capture')).toBe(1);
   });
 });

@@ -1,3 +1,4 @@
+import { publishFixture } from './helpers/fixtures.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
@@ -9,13 +10,15 @@ import { jsonBody } from '../helpers/json-body.js';
 import type { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
 
-/** The live document catalog of the sessions whose prompts a test seeded as legacy rows. */
+/** Published prompt metadata for tests that read the catalog without document bodies. */
 function catalogPrompts(sqlite: Database): void {
   sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at)
-    SELECT DISTINCT project_id, session_id, 'live', 1, 1 FROM prompt_batches WHERE true
+    SELECT DISTINCT project_id, session_id, 'live', 1, 1 FROM events WHERE kind='prompt'
     ON CONFLICT (project_id, session_id) DO UPDATE SET state = 'live', generation = 1`);
   sqlite.run(`INSERT OR IGNORE INTO session_prompts (project_id, session_id, generation, prompt_id, turn_key, ord, origin, created_at)
-    SELECT project_id, session_id, 1, prompt_id, COALESCE(parent_prompt_id, prompt_id), rowid, origin, created_at FROM prompt_batches`);
+    SELECT project_id,session_id,1,json_extract(payload,'$.promptId'),COALESCE(json_extract(payload,'$.parentPromptId'),json_extract(payload,'$.promptId')),
+      rowid,json_extract(payload,'$.origin'),created_at FROM events WHERE kind='prompt'`);
+  sqlite.run(`DELETE FROM publish_queue WHERE event_id IN (SELECT event_id FROM events WHERE kind='prompt')`);
 }
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
@@ -176,8 +179,7 @@ describe('POST /mcp', () => {
       VALUES ('proj_1', 'sess_mine', 'machine_1', ?, 1000, 1000)`).run(t1.tokenId);
     sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
       VALUES ('proj_1', 'sess_theirs', 'machine_2', ?, 1000, 1000)`).run(t2.tokenId);
-    const prompt = sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', ?, 'sess_mine', ?, 'user', 'h', ?, ?, ?, ?)`);
+    const prompt = sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS prompt_id,'sess_mine' AS session_id,? AS event_id,'user' AS origin,'h' AS content_hash,? AS created_at,? AS updated_at,? AS token_id,? AS received_at)`);
     prompt.run('p_first', 'e1', 1_000, 1_000, t1.tokenId, 1_000);
     prompt.run('p_last', 'e2', 2_000, 2_000, t1.tokenId, 2_000);
     catalogPrompts(sqlite);
@@ -207,8 +209,7 @@ describe('POST /mcp', () => {
       VALUES ('proj_1', 'sess_mine', 'machine_1', ?, 1000, 1000)`).run(t1.tokenId);
     sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
       VALUES ('proj_1', 'sess_theirs', 'machine_2', ?, 1000, 1000)`).run(t2.tokenId);
-    sqlite.query(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', 'p_only', 'sess_mine', 'e1', 'user', 'h', 1000, 1000, ?, 1000)`).run(t1.tokenId);
+    sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'p_only' AS prompt_id,'sess_mine' AS session_id,'e1' AS event_id,'user' AS origin,'h' AS content_hash,1000 AS created_at,1000 AS updated_at,? AS token_id,1000 AS received_at)`).run(t1.tokenId);
     catalogPrompts(sqlite);
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
@@ -643,8 +644,7 @@ async function runSetup(options: Parameters<typeof sqliteEnv>[0] = {}) {
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [RUN_NOW]);
   e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at)
                 VALUES ('proj_1', 'sess_1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [RUN_NOW - 10_000, RUN_NOW, RUN_NOW - 10_000, RUN_NOW]);
-  e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-                VALUES ('proj_1', 'sess_1', 'p_1', 'e_1', 'hello', 'user', 'h_1', ?, ?, 'tok_1', ?)`, [RUN_NOW - 5_000, RUN_NOW - 5_000, RUN_NOW - 5_000]);
+  e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess_1' AS session_id,'p_1' AS prompt_id,'e_1' AS event_id,'hello' AS text,'user' AS origin,'h_1' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [RUN_NOW - 5_000, RUN_NOW - 5_000, RUN_NOW - 5_000]);
   catalogPrompts(e.sqlite);
   await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness runtime');
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
@@ -880,8 +880,7 @@ describe('POST /mcp over a run credential', () => {
       sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
         VALUES ('proj_1',?,'m1','tok_1',?,?,?,?)`, [sessionId, RUN_NOW - 10_000, RUN_NOW, RUN_NOW - 10_000, RUN_NOW]);
     }
-    sqlite.run(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES ('proj_1','sess_2','p_2','e_2','second session','user','h_2',?,?,'tok_1',?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess_2' AS session_id,'p_2' AS prompt_id,'e_2' AS event_id,'second session' AS text,'user' AS origin,'h_2' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
     catalogPrompts(sqlite);
     await serve([{promptId:'p_1',sessionId:'sess_1',createdAt:RUN_NOW,endedAt:RUN_NOW},{promptId:'p_2',sessionId:'sess_2',createdAt:RUN_NOW,endedAt:RUN_NOW}]);
     const args = { op: 'save', type: 'gotcha', content: 'A finding from the second session', session_id: 'sess_2' };
@@ -1006,14 +1005,12 @@ describe('POST /mcp over a run credential', () => {
     const { harness, member, dispatch, call, sqlite } = await runSetup();
     sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(Date.now() + 60_000)]);
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', 'sess_1', 'p_later', 'e_later', 'later prompt', 'user', 'later', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess_1' AS session_id,'p_later' AS prompt_id,'e_later' AS event_id,'later prompt' AS text,'user' AS origin,'later' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
     catalogPrompts(sqlite);
     const args = { op: 'save', type: 'gotcha', content: 'A finding from the earlier prompt' };
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
       VALUES ('proj_2', 'foreign-session', 'm1', 'tok_1', ?, ?)`, [RUN_NOW, RUN_NOW]);
-    sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_2', 'foreign-session', 'foreign-prompt', 'foreign-event', 'foreign', 'user', 'foreign', ?, ?, 'tok_1', ?)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_2' AS project_id,'foreign-session' AS session_id,'foreign-prompt' AS prompt_id,'foreign-event' AS event_id,'foreign' AS text,'user' AS origin,'foreign' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
     catalogPrompts(sqlite);
     expect((await call(harness.token, 'myco_spores', args)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
     expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'missing' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
@@ -1051,7 +1048,11 @@ describe('POST /mcp over a run credential', () => {
   });
 
   it('keeps titling on its dispatch session without requiring extraction citation authority', async () => {
-    const { harness, dispatch, call, sqlite, serve } = await runSetup();
+    const f = await runSetup();
+    const { harness, dispatch, call, sqlite, serve } = f;
+    sqlite.run('DELETE FROM session_prompts');
+    sqlite.run("INSERT OR IGNORE INTO publish_queue(project_id,session_id,event_id,rank,created_at) SELECT project_id,session_id,event_id,0,created_at FROM events WHERE kind='prompt'");
+    await publishFixture(f);
     await dispatch(harness, 'run_1', 'title-summary');
     sqlite.run(`UPDATE agent_runs SET run_context = ? WHERE id = 'run_1'`, [JSON.stringify({ session_id: 'sess_1', mode: 'claim', timeoutSeconds: 300 })]);
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result).toMatchObject({ session_id: 'sess_1', prompt_count: 1 });

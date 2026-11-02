@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { withViewStores } from './helpers/view-stores.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
 import { memberRunsPerDay } from '@myco-server-worker/core/schedule-rules.js';
 import { taskOverridesResolution, settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -11,7 +11,7 @@ import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-work
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 
 it('preserves extraction choices and unrelated preferences through the pause migration on both stores', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     const tasks = { 'extract-curate': { harness: 'claude-code', schedule: { enabled: false, memberRunsPerDay: 7, intervalSeconds: 12 } },
       'canopy-map': { schedule: { enabled: true } } };
     await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id) VALUES('agent.tasks',?,123,'owner','old')")
@@ -32,7 +32,7 @@ it('preserves extraction choices and unrelated preferences through the pause mig
 }, 30_000);
 
 it('ends queued rows and retires only their credentials while preserving held attempts on both stores', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)").run();
     await ensureMember(db,'mem_harness',1,'member');
     const credentials = new Map<string,string>();
@@ -57,7 +57,7 @@ it('ends queued rows and retires only their credentials while preserving held at
 }, 30_000);
 
 it('preserves explicit destinations, zero allowances and malformed preferences on both stores',async()=>{
-  await withViewStores(async db=>{
+  await withDocumentStores(async db=>{
     for(const [held,wanted] of [
       [{enabled:true,memberRunsPerDay:0,schedule:{enabled:false,memberRunsPerDay:7}},{enabled:true,memberRunsPerDay:0}],
       [{schedule:{enabled:false,memberRunsPerDay:0}},{enabled:false,memberRunsPerDay:0}],
@@ -80,7 +80,7 @@ it('preserves explicit destinations, zero allowances and malformed preferences o
 },30_000);
 
 it('reports stored ramp preferences as retired and refuses a new ramp write', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     const stored={'title-summary':{schedule:{rampRunsPerDay:3}}};
     expect(taskOverridesResolution(stored)).toMatchObject({reasons:expect.arrayContaining([
       'title-summary.schedule.rampRunsPerDay: no scheduling consumer uses this field.',

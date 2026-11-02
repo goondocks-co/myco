@@ -1,23 +1,22 @@
+import { eventPayloadFieldSql } from '../db/document-tables.js';
 /**
  * The blob reference catalogue and the held check every cleanup makes.
  *
  * A blob leaves the store only once no surviving row names it. The rows that
- * may name one are derived from the ingest kind catalogue: every projected
- * blob column, and the raw event log's key for the kinds with no projection.
- * A projected kind's own event row is not a reference; the projection is the
- * reader's route to the bytes, and a raw transcript segment past its window
- * is removed while its event row stands.
+ * may name one include projected blob columns, raw event keys and retained
+ * event payload references. Transcript segments release their blob keys when
+ * the raw retention window expires.
  *
  * Read by the orphan sweep, transcript retention, session deletion and the
  * recovery snapshot check.
  */
-import { VIEW_BLOB_REFERENCES } from '../db/view-tables.js';
 import { KINDS, blobFields } from '../ingest/kinds.js';
 import type { RelationalStore } from './adapters.js';
 
 export interface BlobReference {
   table: string;
   column: string;
+  jsonField?: string;
   /** First snapshot schema version that must contain this table. */
   sinceSchema: number;
   /** For the raw event log: the kinds whose event row is the blob's only home. Absent on a projected column. */
@@ -26,25 +25,25 @@ export interface BlobReference {
 
 type ReferenceColumns = Omit<BlobReference, 'sinceSchema'>;
 const COMPLETE_REFERENCE_SCHEMA = 75;
-const VIEW_REFERENCE_SCHEMA = 100;
 const atSchema = (sinceSchema: number, refs: readonly ReferenceColumns[]): BlobReference[] =>
   refs.map(ref => ({ ...ref, sinceSchema }));
 
 const projected: ReferenceColumns[] = [...new Map(KINDS.flatMap((kind) =>
-  kind.projection === 'raw' ? [] : blobFields(kind).flatMap((field) => {
+  ['raw','prompt_batches','responses','tool_calls'].includes(kind.projection) ? [] : blobFields(kind).flatMap((field) => {
     const column = kind.fields[field]!.column;
     return column === undefined ? [] : [[`${kind.projection}.${column}`, { table: kind.projection, column }] as const];
   }),
 )).values()];
 
-const rawKinds = KINDS.filter((kind) => kind.projection === 'raw' && blobFields(kind).length > 0).map((kind) => kind.name);
+const rawKinds = KINDS.filter((kind) => ['raw','prompt_batches','responses','tool_calls'].includes(kind.projection) && blobFields(kind).length > 0).map((kind) => kind.name);
 
 /** Every reference the catalogue declares, projected columns first and the raw event log last. */
 export const BLOB_REFERENCES: readonly BlobReference[] = [
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, projected),
-  ...atSchema(VIEW_REFERENCE_SCHEMA, VIEW_BLOB_REFERENCES),
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, [
     ...(rawKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: rawKinds }] : []),
+    { table: 'events', column: 'payload', jsonField: 'blob' },
+    { table: 'events', column: 'payload', jsonField: 'outputBlob' },
     { table: 'archive_bundles', column: 'archive_key' },
     { table: 'archive_bundles', column: 'receipt_key' },
     { table: 'raw_archive_refs', column: 'archive_key' },
@@ -56,13 +55,21 @@ export const BLOB_REFERENCES: readonly BlobReference[] = [
 /** Physical rows that retain an archive bundle in their Project. */
 export const BUNDLE_REFERENCES: readonly ReferenceColumns[] = [
   { table: 'events', column: 'bundle_id' },
-  { table: 'tool_calls', column: 'input_bundle_id' },
-  { table: 'view_tool_calls', column: 'input_bundle_id' },
 ];
+
+/** The stored key selected by one declared reference. */
+export function blobReferenceColumn(ref: ReferenceColumns, alias?: string): string {
+  const column=alias===undefined?ref.column:`${alias}.${ref.column}`;
+  return ref.jsonField===undefined?column:eventPayloadFieldSql(ref.jsonField,alias===undefined?'':`${alias}.`);
+}
+export function referencedBlobValue(ref: ReferenceColumns, row: Readonly<Record<string,unknown>>): unknown {
+  const value=row[ref.column];
+  return ref.jsonField===undefined ? value : typeof value==='string' ? (JSON.parse(value) as Record<string,unknown>)[ref.jsonField] : undefined;
+}
 
 /** The reference as a message names it: `table.column`, with the kinds a raw-log reference is limited to. */
 export const referenceLabel = (ref: BlobReference): string =>
-  `${ref.table}.${ref.column}${ref.kinds ? ` (${ref.kinds.join(', ')})` : ''}`;
+  `${ref.table}.${ref.column}${ref.jsonField ? `.${ref.jsonField}` : ''}${ref.kinds ? ` (${ref.kinds.join(', ')})` : ''}`;
 
 const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
@@ -71,22 +78,17 @@ export const kindFilter = (ref: ReferenceColumns): string =>
   ref.kinds ? ` AND kind IN (${ref.kinds.map(literal).join(', ')})` : '';
 
 /** SQL true when a row of `ref` names blob `key` in Project `project`; both are SQL expressions in the enclosing statement. */
-export function referenceHolds(ref: ReferenceColumns, project: string, key: string, identity?: { column: string; value: string }): string {
-  const scope = identity === undefined ? '' : ` AND ${identity.column} = ${identity.value}`;
-  return `EXISTS (SELECT 1 FROM ${ref.table} WHERE project_id = ${project} AND ${ref.column} = ${key}${kindFilter(ref)}${scope})`;
+export function referenceHolds(ref: ReferenceColumns, project: string, key: string): string {
+  return `EXISTS (SELECT 1 FROM ${ref.table} WHERE project_id = ${project} AND ${blobReferenceColumn(ref)} = ${key}${kindFilter(ref)})`;
 }
 
 /** SQL true when any row in the catalogue names blob `key` in Project `project`. Each check is scoped to `project`; a row in another Project does not hold the key. */
 export const blobHeld = (project: string, key: string): string =>
   BLOB_REFERENCES.map((ref) => referenceHolds(ref, project, key)).join(' OR ');
 
-/** Singleton bundles have one stored source identity; view holders span every instance. */
-export function bundleHeld(project: string, id: string, singleton?: { eventId: string; toolCallId: string }): string {
-  const identities: Record<string, { column: string; value: string }> = singleton === undefined ? {} : {
-    events: { column: 'event_id', value: singleton.eventId },
-    tool_calls: { column: 'tool_call_id', value: singleton.toolCallId },
-  };
-  return BUNDLE_REFERENCES.map(ref => referenceHolds(ref, project, id, identities[ref.table])).join(' OR ');
+/** SQL true when a retained event names the bundle in its Project. */
+export function bundleHeld(project: string, id: string): string {
+  return BUNDLE_REFERENCES.map(ref => referenceHolds(ref, project, id)).join(' OR ');
 }
 
 export interface BlobRef { projectId: string; key: string }

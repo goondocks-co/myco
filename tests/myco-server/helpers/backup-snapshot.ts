@@ -4,7 +4,6 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { getSession, writeTitle } from '@myco-server-worker/read/sessions.js';
 import { relationalSnapshot, RelationalSnapshotTooLargeError } from '@myco-server-worker/core/relational-snapshot.js';
-import { parserCheckpointStatements, readParserCheckpoint } from '@myco-server-worker/ingest/parser-checkpoint.js';
 import type { ParserState } from '@myco-server-worker/ingest/parsers/index.js';
 
 const PROJECT = 'proj_snapshot';
@@ -30,9 +29,6 @@ export async function snapshotScenario(db: RelationalStore, target: RelationalSt
   await db.prepare(`INSERT INTO transcripts
     (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id)
     VALUES (?, 'snapshot-transcript', 'kept', 'snapshot-machine', 1, 1, 'snapshot-token')`).bind(PROJECT).run();
-  await db.prepare(`INSERT INTO transcript_parser_state_chunks
-    (project_id, transcript_id, cursor_offset, chunk_index, chunk_count, payload)
-    VALUES (?, 'snapshot-transcript', 0, 0, 1, '{"planIndex":17}')`).bind(PROJECT).run();
   if (boundary === 'page') {
     await db.batch(Array.from({ length: 201 }, (_, n) => db.prepare(`INSERT INTO sessions
       (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
@@ -69,15 +65,13 @@ export async function snapshotScenario(db: RelationalStore, target: RelationalSt
   const artifact = (await backupArtifact(db, blobs, saved.id))!;
   await restoreArtifact(target, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
   const restored = await target.prepare(`SELECT session_id, title FROM sessions WHERE project_id = ? ORDER BY session_id`).bind(PROJECT).all();
-  const prompts = await target.prepare(`SELECT session_id, text FROM prompt_batches WHERE project_id = ? ORDER BY session_id`).bind(PROJECT).all();
-  const orphans = await target.prepare(`SELECT COUNT(*) AS n FROM prompt_batches p WHERE p.project_id = ? AND NOT EXISTS
+  const prompts = await target.prepare(`SELECT session_id,json_extract(payload,'$.text') AS text FROM events WHERE kind='prompt' AND project_id = ? ORDER BY session_id`).bind(PROJECT).all();
+  const orphans = await target.prepare(`SELECT COUNT(*) AS n FROM events p WHERE p.project_id = ? AND NOT EXISTS
     (SELECT 1 FROM sessions s WHERE s.project_id = p.project_id AND s.session_id = p.session_id)`).bind(PROJECT).first();
   const tombstones = await target.prepare(`SELECT session_id FROM session_tombstones WHERE project_id = ?`).bind(PROJECT).all();
-  const continuation = await target.prepare(`SELECT cursor_offset, chunk_index, chunk_count, payload
-    FROM transcript_parser_state_chunks WHERE project_id = ? AND transcript_id = 'snapshot-transcript'`).bind(PROJECT).all();
   const live = await getSession(db, { projectId: PROJECT }, 'during-backup');
   const kept = await getSession(target, { projectId: PROJECT }, 'kept');
-  return { interleaved, liveReadable: live !== null, restored: restored.results, prompts: prompts.results, orphans, tombstones: tombstones.results, continuation: continuation.results, keptReadable: kept !== null };
+  return { interleaved, liveReadable: live !== null, restored: restored.results, prompts: prompts.results, orphans, tombstones: tombstones.results, keptReadable: kept !== null };
 }
 
 /** Incomplete reads and missing capture parents never reach artifact publication. */
@@ -96,7 +90,7 @@ export async function snapshotRefusals(db: RelationalStore, blobs: BlobStore) {
     async batch(statements) {
       const results = await db.batch(statements);
       for (const result of results) {
-        result.results = result.results.filter((row) => !String((row as { line?: unknown }).line ?? '').startsWith('{"t":"prompt_batches"'));
+        result.results = result.results.filter((row) => !String((row as { line?: unknown }).line ?? '').startsWith('{"t":"events"'));
       }
       return results;
     },
@@ -113,26 +107,11 @@ export async function snapshotRefusals(db: RelationalStore, blobs: BlobStore) {
       return results;
     },
   };
-  try { await relationalSnapshot(measured, ['sessions', 'prompt_batches'], 1); }
+  try { await relationalSnapshot(measured, ['sessions', 'events'], 1); }
   catch (error) { bounded = error instanceof RelationalSnapshotTooLargeError; }
-  const missingTranscript: RelationalStore = {
-    prepare: (sql) => db.prepare(sql),
-    async batch(statements) {
-      const results = await db.batch(statements);
-      for (const result of results) {
-        const kept = result.results.filter((row) => !String((row as { line?: unknown }).line ?? '').startsWith('{"t":"transcripts"'));
-        const removed = result.results.length - kept.length;
-        result.results = kept.map((row) => removed === 0 ? row : {
-          ...row as Record<string, unknown>, snapshot_count: (row as { snapshot_count: number }).snapshot_count - removed,
-        });
-      }
-      return results;
-    },
-  };
-  const continuationParent = await refusal(missingTranscript);
-  await db.prepare(`UPDATE prompt_batches SET session_id = 'missing-parent' WHERE project_id = ?`).bind(PROJECT).run();
+  await db.prepare(`UPDATE events SET session_id = 'missing-parent' WHERE project_id = ?`).bind(PROJECT).run();
   const orphan = await refusal(db);
-  return { truncated, orphan, publications, bounded, transferred, continuationParent };
+  return { truncated, orphan, publications, bounded, transferred };
 }
 
 /** Count JSON-function arguments independently of the source serializer. */
@@ -180,63 +159,6 @@ export async function snapshotFunctionBounds(db: RelationalStore) {
     maxArguments, columns: Object.keys(expected).length,
     nullColumns: Object.entries(expected).filter(([, value]) => value === null).map(([name]) => name),
     equal: JSON.stringify(actual) === JSON.stringify(expected), actual,
-  };
-}
-
-/** Restoring an artifact reuses a live checkpoint and admits the exact checkpoint into a fresh destination. */
-export async function backupCheckpointRestoreScenario(db: RelationalStore, fresh: RelationalStore, blobs: BlobStore, sameCursor: boolean) {
-  const projectId = `proj_checkpoint_${sameCursor ? 'same' : 'advanced'}`;
-  const transcriptId = 'checkpoint-transcript';
-  await db.prepare(`INSERT INTO projects (project_id, name, created_at) VALUES (?, 'Checkpoint', 1)`).bind(projectId).run();
-  await db.prepare(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-    VALUES (?, 'checkpoint-session', 'checkpoint-machine', 'checkpoint-token', 1, 1)`).bind(projectId).run();
-  await db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size)
-    VALUES (?, ?, 'checkpoint-session', 'checkpoint-machine', 1, 1, 'checkpoint-token', 200)`)
-    .bind(projectId, transcriptId).run();
-  const state = (calls: number, marker: string): ParserState => ({
-    pending: Object.fromEntries(Array.from({ length: calls }, (_, index) => [String(index), {
-      toolCallId: `checkpoint-call-${index}`, toolName: 'Read', createdAt: 1, offset: index,
-      input: { path: marker.repeat(100_000) },
-    }])), planPosition: calls,
-  });
-  const oldState = state(5, 'a');
-  const newState = state(3, 'b');
-  const checkpoint = async (prior: number, to: number, state: ParserState) => {
-    await db.batch(await parserCheckpointStatements(db, { projectId, transcriptId, parsedOffset: prior }, to, state, undefined, prior !== 0,
-      (context) => db.prepare(`UPDATE transcripts SET parsed_offset = ?, parser_context = ?
-        WHERE project_id = ? AND transcript_id = ? AND parsed_offset = ?`).bind(to, context, projectId, transcriptId, prior)));
-  };
-  const held = async (store: RelationalStore) => {
-    const parent = (await store.prepare(`SELECT parsed_offset, parser_context FROM transcripts WHERE project_id = ? AND transcript_id = ?`)
-      .bind(projectId, transcriptId).first<{ parsed_offset: number; parser_context: string }>())!;
-    const chunks = (await store.prepare(`SELECT cursor_offset, chunk_index, chunk_count, payload FROM transcript_parser_state_chunks
-      WHERE project_id = ? AND transcript_id = ? ORDER BY chunk_index`).bind(projectId, transcriptId).all()).results;
-    return { parent, chunks };
-  };
-  const read = async (store: RelationalStore) => {
-    const current = await held(store);
-    const marker = JSON.parse(current.parent.parser_context) as { mycoParserState: { digest: string } };
-    return readParserCheckpoint(store, { projectId, transcriptId, parsedOffset: current.parent.parsed_offset }, marker.mycoParserState.digest);
-  };
-  await checkpoint(0, 100, oldState);
-  const older = await held(db);
-  const saved = await createBackup(db, blobs, { producer: 'checkpoint-restore-gate', now: 1 });
-  const artifact = (await backupArtifact(db, blobs, saved.id))!;
-  await checkpoint(100, sameCursor ? 100 : 200, newState);
-  const advanced = await held(db);
-  await restoreArtifact(db, { authorization: { kind: 'recovery' }, text: artifact.text });
-  await restoreArtifact(db, { authorization: { kind: 'recovery' }, text: artifact.text });
-  const live = await held(db);
-  await restoreArtifact(fresh, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
-  await restoreArtifact(fresh, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
-  const restored = await held(fresh);
-  return {
-    oldChunks: older.chunks.length, newChunks: advanced.chunks.length,
-    digestsDiffer: older.parent.parser_context !== advanced.parent.parser_context,
-    liveUnchanged: JSON.stringify(live) === JSON.stringify(advanced),
-    liveStateMatches: JSON.stringify(await read(db)) === JSON.stringify(newState),
-    freshMatches: JSON.stringify(restored) === JSON.stringify(older),
-    freshStateMatches: JSON.stringify(await read(fresh)) === JSON.stringify(oldState),
   };
 }
 

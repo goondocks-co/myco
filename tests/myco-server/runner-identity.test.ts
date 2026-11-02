@@ -36,7 +36,7 @@ import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-work
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { PROTOCOL, convertFixture, memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { PROTOCOL, publishFixture, memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
@@ -92,8 +92,8 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
   const queueTitling = async () => {
     const id = `s${++sessions}`;
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [id, now - 10_000, now, now - 10_000, now]);
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, ?, 'add a retry to the runner', 'user', ?, ?, ?, 'tok_1', ?)`, [id, `p_${id}`, `e_${id}`, `h_${id}`, now - 5000, now - 5000, now - 5000]);
-    await convertFixture(e);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,'add a retry to the runner' AS text,'user' AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [id, `p_${id}`, `e_${id}`, `h_${id}`, now - 5000, now - 5000, now - 5000]);
+    await publishFixture(e);
     expect((await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: id, now, origin: 'https://s' })).outcome).toBe('queued');
     return id;
   };

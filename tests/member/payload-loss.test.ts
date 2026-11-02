@@ -37,11 +37,11 @@ describe('payload loss disposition', () => {
     });
     const now = Date.now();
     await spool.drainSession('deleted', client, unboundedBudget(), { now: () => now });
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(spool.depth('deleted')).toBe(1);
     spool.append('deleted', promptEvent(ctx, { promptId: mintId(), text: 'fresh capture during payload backoff' }));
     await spool.drainSession('deleted', client, unboundedBudget(), { now: () => now + 1_000, honourRetry: true });
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     expect(spool.depth('deleted')).toBe(1);
     await spool.drainSession('deleted', client, unboundedBudget(), { now: () => now + 60_000 });
     expect(answers).toContain('blob_absent');
@@ -67,7 +67,7 @@ describe('payload loss disposition', () => {
     }) as typeof fs.readFileSync);
     try {
       await spool.drainSession(code, client, unboundedBudget());
-      expect(rig.rows('prompt_batches')).toBe(1);
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
       expect(spool.depth(code)).toBe(1);
       await spool.drainSession(code, client, unboundedBudget(), { now: () => Date.now() + 3_600_000 });
       expect(spool.depth(code)).toBe(1);
@@ -75,7 +75,7 @@ describe('payload loss disposition', () => {
     } finally { fault.mockRestore(); }
     await spool.drainSession(code, client, unboundedBudget(), { now: () => Date.now() + 7_200_000 });
     expect(spool.depth(code)).toBe(0);
-    expect(rig.rows('prompt_batches')).toBe(2);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
   });
 
   it('repairs corruption from verified source bytes without counting a loss', async () => {
@@ -92,7 +92,7 @@ describe('payload loss disposition', () => {
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
     expect(await spool.drainSession('repair', client, unboundedBudget())).toMatchObject({ acked: 2, remaining: 0 });
     expect(new CaptureLossLedger(spool.dir).read().payloads).toBe(0);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
   });
 
   it('bounds loss accounting and preserves its count after session state retires', () => {
@@ -160,7 +160,7 @@ describe('payload loss disposition', () => {
     await spool.drainSession('crash', client, unboundedBudget(), { now: () => now + 60_000 });
     expect(spool.depth('crash')).toBe(0);
     expect(new CaptureLossLedger(spool.dir).read().payloads).toBe(1);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
   });
 
   it('does not count local deletion as loss when the Deployment already has the bytes', async () => {
@@ -176,7 +176,7 @@ describe('payload loss disposition', () => {
     await spool.drainSession(ctx.sessionId, client, unboundedBudget(), { now: () => now });
     await spool.drainSession(ctx.sessionId, client, unboundedBudget(), { now: () => now + 60_000 });
     expect(spool.depth(ctx.sessionId)).toBe(0);
-    expect(rig.rows('prompt_batches')).toBe(1);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(new CaptureLossLedger(spool.dir).read().payloads).toBe(0);
   });
 

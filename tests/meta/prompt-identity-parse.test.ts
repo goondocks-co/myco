@@ -31,26 +31,7 @@ describe('a stamped transcript', () => {
       { v: 1, type: 'tool', sessionId: SESSION, promptId: A, name: 'read', input: {}, output: 'ok', failed: false, at: '2026-10-18T12:00:04.000Z' },
       { v: 1, type: 'response', sessionId: SESSION, text: 'unstamped', at: '2026-10-18T12:00:05.000Z' },
     ]));
-    expect(r.rows(`SELECT text, prompt_id FROM responses ORDER BY created_at`)).toEqual([{ text: 'for the first', prompt_id: A }, { text: 'unstamped', prompt_id: B }]);
-    expect(r.rows(`SELECT prompt_id FROM tool_calls`)).toEqual([{ prompt_id: A }]);
-  });
-});
-
-describe('the parse cursor', () => {
-  it('records the latest dated line read, from the line\'s own time field', async () => {
-    const r = await parsed('opencode', lines([
-      { v: 1, type: 'prompt', sessionId: SESSION, promptId: A, text: 'first', origin: 'human', at: '2026-10-18T12:00:01.000Z' },
-      { v: 1, type: 'response', sessionId: SESSION, promptId: A, text: 'reply', at: '2026-10-18T12:00:09.000Z' },
-      { v: 1, type: 'response', sessionId: SESSION, promptId: A, text: 'undated' },
-    ]));
-    expect(r.rows(`SELECT parsed_through_at, parsed_offset = size AS caught_up FROM transcripts`)).toEqual([{ parsed_through_at: Date.parse('2026-10-18T12:00:09.000Z'), caught_up: 1 }]);
-  });
-
-  it('records nothing for a transcript with no dated line, so the Deployment\'s own clock is never counted', async () => {
-    const r = await parsed('claude-code', lines([
-      { type: 'user', promptId: '11111111-1111-4111-8111-111111111111', message: { content: 'an undated prompt' }, uuid: 'u1', sessionId: SESSION },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'an undated reply' }] }, uuid: 'a1', sessionId: SESSION },
-    ]));
-    expect(r.rows(`SELECT parsed_through_at FROM transcripts`)).toEqual([{ parsed_through_at: null }]);
+    expect((await r.records()).filter(p=>p.k==='reply').map(p=>({text:p.text,prompt_id:p.prompt_id}))).toEqual([{ text: 'for the first', prompt_id: A }, { text: 'unstamped', prompt_id: B }]);
+    expect((await r.records()).filter(p=>p.k==='tool').map(p=>({prompt_id:p.prompt_id}))).toEqual([{ prompt_id: A }]);
   });
 });

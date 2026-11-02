@@ -1,9 +1,11 @@
+import { markPromptProcessed } from './helpers/extraction.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { expect, it } from 'bun:test';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { withViewStores, captureViewSession } from './helpers/view-stores.js';
-import { envelope, publishFixture, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { withDocumentStores, captureDocumentSession } from './helpers/document-stores.js';
+import { envelope, publishFixture, sqliteEnv, uuid, memoryBlobStore } from './helpers/fixtures.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
@@ -18,8 +20,8 @@ it('releases acknowledged facts while retaining the same prompt identity in anot
   const f=sqliteEnv();
   try {
     f.sqlite.run(paused);
-    await captureViewSession(f.db,'proj_1','shared-session');
-    await captureViewSession(f.db,'proj_2','shared-session');
+    await captureDocumentSession(f.db,'proj_1','shared-session');
+    await captureDocumentSession(f.db,'proj_2','shared-session');
     await publishFixture(f);
     f.sqlite.run(enable);
     await ensureAgent(f.db,{id:'held-reader',name:'reader',provider:null,model:null,enabled:true},NOW);
@@ -36,13 +38,15 @@ it('releases acknowledged facts while retaining the same prompt identity in anot
 });
 
 it('retains unread facts without imposing session settlement and applies owner switches on both stores', async () => {
-  await withViewStores(async db => {
+  await withDocumentStores(async db => {
     await db.prepare(paused).run();
-    await captureViewSession(db);
+    await captureDocumentSession(db);
+    const blobs=memoryBlobStore();
+    await publishDocuments({db,blobs},NOW,{calls:500,deadline:Date.now()+60000,clock:Date.now});
     await db.prepare(enable).run();
     expect(await learningHolds(db, 'project', 'session')).toBe(true);
     expect(await learningHolds(db, 'other', 'session')).toBe(false);
-    await db.prepare("UPDATE prompt_batches SET processed=1 WHERE project_id='project'").run();
+    await markPromptProcessed(db,{projectId:'project'},uuid(20));
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
     await db.prepare("INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,first_received_at,last_received_at,token_id) VALUES('project','t','session','m','claude-code',1,1,1,'token')").run();
     expect(await learningHolds(db, 'project', 'session')).toBe(true);
@@ -57,8 +61,8 @@ it('retains unread facts without imposing session settlement and applies owner s
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
     await db.prepare("UPDATE project_capabilities SET enabled=1 WHERE project_id='project'").run();
     expect(await learningHolds(db, 'project', 'session')).toBe(true);
-    await db.prepare("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('project','published','session',1,'full','live',1)").run();
-    await db.prepare("INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('project','session','published','published',1)").run();
+    await db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at)
+      VALUES('project','t',1,'session',1,'source-record-v1',1,1)`).run();
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
   });
 }, 30_000);
@@ -67,7 +71,7 @@ it('advances past learning-held inline sessions and revisits them after release'
   const f = sqliteEnv();
   try {
     f.sqlite.run(paused);
-    await captureViewSession(f.db, 'proj_1', 'held');
+    await captureDocumentSession(f.db, 'proj_1', 'held');
     f.sqlite.run(enable);
     f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','unheld','m','token',1,1)");
     f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision)
@@ -76,7 +80,8 @@ it('advances past learning-held inline sessions and revisits them after release'
     for (let pass=0;pass<6;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT payload_format FROM events WHERE event_id='unheld-event'").get()).toEqual({ payload_format: 'archived' });
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE session_id='held' AND payload_format='archived'").get()).toEqual({ n: 0 });
-    f.sqlite.run("UPDATE prompt_batches SET processed=1 WHERE session_id='held'");
+    await publishFixture(f,NOW);
+    await markPromptProcessed(f.db,{projectId:'proj_1'},uuid(20));
     for (let pass=0;pass<8;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE session_id='held' AND payload_format='inline'").get()).toEqual({ n: 0 });
   } finally { f.sqlite.close(); }
@@ -86,9 +91,10 @@ it('refuses inline archival when an admitted prompt lands after selection, witho
   const f = sqliteEnv();
   try {
     f.sqlite.run(paused);
-    await captureViewSession(f.db, 'proj_1', 'race');
+    await captureDocumentSession(f.db, 'proj_1', 'race');
     f.sqlite.run(enable);
-    f.sqlite.run("UPDATE prompt_batches SET processed=1 WHERE session_id='race'");
+    await publishFixture(f,NOW);
+    await markPromptProcessed(f.db,{projectId:'proj_1'},uuid(20));
     f.sqlite.run("UPDATE raw_archive_state SET phase=2 WHERE id=1");
     const tokenId = f.sqlite.query("SELECT created_by_token_id AS id FROM sessions WHERE session_id='race'").get() as { id: string };
     let inserted=false;

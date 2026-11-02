@@ -8,7 +8,7 @@
  *
  * The reference a copy is compared with comes from the same `migrateAndSeed`,
  * so a step that helper skipped would be missing from both. The copy is also
- * held to the migration files as committed: their count is the schema version
+ * held to the migration files as committed: the final file names the schema version
  * it must carry, and applying them straight from disk must produce its schema.
  * The rows of SQLite's own `sqlite_*` tables, `sqlite_stat1` among them, are
  * deliberately not compared: they are the engine's bookkeeping, not data a
@@ -19,6 +19,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { LEDGER_ENABLED_AT } from '@myco-server-worker/db/schema-v95.js';
 import { GUARD_ENABLED_AT } from '@myco-server-worker/db/schema-v101.js';
 import { LEARNING_PAUSED_AT, LEARNING_RESUMED_AT } from '@myco-server-worker/core/learning-pause.js';
@@ -75,19 +76,18 @@ describe('a seeded database copy', () => {
     }
   });
 
-  it('carries every committed migration file: their count as its schema version, and the schema they build from disk', () => {
+  it('carries every committed migration file: their latest version as its schema version, and the schema they build from disk', () => {
     const files = fs.readdirSync(MIGRATIONS_DIR).filter((name) => /^\d{4}_v\d+\.sql$/.test(name)).sort();
     expect(files.length).toBeGreaterThan(0);
-    // The files are numbered from 1 with no gap, so the count is the version the last one stamps.
-    expect(files.map((name) => Number(name.slice(0, 4)))).toEqual(files.map((_, index) => index + 1));
+    expect(files.map(name => Number(name.slice(0,4)))).toEqual(SCHEMA_STEPS.map(step => step.version));
     const fromDisk = new Database(':memory:');
     const copy = seededSqlite();
     try {
       fromDisk.exec('PRAGMA foreign_keys = ON');
       for (const name of files) fromDisk.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8'));
       const version = (sqlite: Database) => (sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get() as { value: string }).value;
-      expect(version(fromDisk)).toBe(String(files.length));
-      expect(version(copy)).toBe(String(files.length));
+      expect(version(fromDisk)).toBe(String(SCHEMA_STEPS.at(-1)!.version));
+      expect(version(copy)).toBe(String(SCHEMA_STEPS.at(-1)!.version));
       expect(schemaOf(copy)).toEqual(schemaOf(fromDisk));
     } finally {
       fromDisk.close();

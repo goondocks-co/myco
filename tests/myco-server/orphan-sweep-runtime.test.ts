@@ -44,9 +44,7 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
       await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
         VALUES('proj_1',?,1,'text/plain','t',1,?)`).bind(digest,generation).run();
       await bucket.put(blobObjectKey('proj_1',digest,generation),'x');
-      if (heldByCall) await db.prepare(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,
-        tool_name,input_blob_key,success,created_at,token_id,received_at)
-        VALUES('proj_1',?,'s',?,'Read',?,1,1,'t',1)`).bind(`tc-${n}`,`e-${n}`,digest).run();
+      if (heldByCall) await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'tool.use','cli',json_object('toolCallId',tool_call_id,'toolName',tool_name,'blob',input_blob_key,'success',success),'hash',created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS tool_call_id,'s' AS session_id,? AS event_id,'Read' AS tool_name,? AS input_blob_key,1 AS success,1 AS created_at,'t' AS token_id,1 AS received_at)`).bind(`tc-${n}`,`e-${n}`,digest).run();
     };
     for (let n=1;n<=held;n+=1) await seed(n,true);
     await seed(held+1,false);

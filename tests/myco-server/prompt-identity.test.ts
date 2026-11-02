@@ -243,7 +243,7 @@ describe('what outlives the answers', () => {
     const sessionLevel = async () => (await listContextInjections(m.e.db, { projectId: 'proj_1' }, SESSION)).rows
       .filter((row) => row.kind.startsWith('context:')).map(({ kind, delivery }) => ({ kind, delivery }));
     const prune = async () => {
-      for (const table of ['prompt_context_answers', 'spore_injections', 'session_injections', 'prompt_batches']) m.e.sqlite.run(`UPDATE ${table} SET created_at = created_at - ?`, [(PROMPT_ANSWER_RETENTION_DAYS + 1) * DAY]);
+      for (const table of ['prompt_context_answers', 'spore_injections', 'session_injections', 'session_prompts']) m.e.sqlite.run(`UPDATE ${table} SET created_at = created_at - ?`, [(PROMPT_ANSWER_RETENTION_DAYS + 1) * DAY]);
       return prunePromptAnswers(m.e.db, NOW - PROMPT_ANSWER_RETENTION_DAYS * DAY, 100);
     };
     // Prompts are measured from the session's live document catalog.
@@ -308,7 +308,7 @@ describe('deleting a session', () => {
   it('removes what was served to it, and leaves its spores naming no prompt of it', async () => {
     const { e, ctx } = await member();
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, ctx.tokenId]);
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e1', 'user', 'h', 1, 1, 't', 1)`, [uuid(1), SESSION]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS prompt_id,? AS session_id,'e1' AS event_id,'user' AS origin,'h' AS content_hash,1 AS created_at,1 AS updated_at,'t' AS token_id,1 AS received_at)`, [uuid(1), SESSION]);
     e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, importance, created_at, embedded) VALUES ('proj_1', 'kept', 'agent_1', ?, ?, 'decision', 'active', 'c', 5, 1, 0)`, [SESSION, uuid(1)]);
     e.sqlite.run(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at) VALUES ('proj_1', ?, ?, 'h', '[]', 1)`, [SESSION, uuid(1)]);
     e.sqlite.run(`INSERT INTO prompt_context_answers (project_id, session_id, id, prompt_id, outcome, context_chars, parts, skipped, failures, selection, created_at) VALUES ('proj_1', ?, 'a', ?, 'empty', 0, '[]', '[]', '[]', '{}', 1)`, [SESSION, uuid(1)]);

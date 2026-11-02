@@ -26,7 +26,7 @@ import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { statusMetadata, type StatusMetadata } from '../read/meta.js';
-import { OUTCOME_LOOKBACK_MS, viewReadRefusalFinding, type ViewReadRefusalFinding } from './attention-state.js';
+import { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 export { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
 import { RUN_CLOSE_RULES } from './run-postconditions.js';
@@ -61,7 +61,6 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
-  | ViewReadRefusalFinding
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
@@ -109,13 +108,6 @@ const RULES: readonly Rule[] = [
     read: async (_env, _now, _harnessFacts, metadata) => {
       const found = (await metadata()).version;
       return found === SERVER_SCHEMA_VERSION ? [] : [{ kind: 'schema_mismatch', tone: 'bad', expected: SERVER_SCHEMA_VERSION, found }];
-    },
-  },
-  {
-    kind: 'view_state_inconsistent',
-    read: async (_env, now, _harnessFacts, metadata) => {
-      const finding = viewReadRefusalFinding((await metadata()).viewReadRefusal, now);
-      return finding === null ? [] : [finding];
     },
   },
   {

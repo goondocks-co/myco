@@ -1,3 +1,4 @@
+import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * Context a hook serves from this machine alone (#1561 PR 3b): the member helper fetches what the hooks ask for, and
  * the next hook renders it.
@@ -583,10 +584,10 @@ describe('prompts a harness writes only to its transcript', () => {
     const tx = path.join(dir, 'transcript_full.jsonl');
     // The invocation's hook fires before the IDE writes its transcript.
     fs.writeFileSync(tx, '');
-    const invoke = () => runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' });
+    const invoke = async () => { const result = await runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' }); await publishFixture(rig.env); return result; };
     const startedAt = Date.now();
     await invoke();
-    expect(rig.rows('prompt_batches')).toBe(0);
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     // The request waits for the next pass.
     expect(readSessionState(spool().dir, 'sess-agy').promptBackfill?.transcriptPath).toBe(tx);
 
@@ -595,7 +596,7 @@ describe('prompts a harness writes only to its transcript', () => {
       { step_index: 1, type: 'PLANNER_RESPONSE', content: 'thinking', created_at: 't2' },
     ].map((r) => JSON.stringify(r)).join('\n') + '\n');
     await invoke();
-    const rows = rig.env.sqlite.query(`SELECT text FROM prompt_batches`).all() as Array<{ text: string }>;
+    const rows = rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts`).all() as Array<{ text: string }>;
     expect(rows.map((r) => r.text)).toEqual(['first turn']);
     const createdAt = (rig.env.sqlite.query(`SELECT created_at AS at FROM events WHERE kind = 'prompt'`).get() as { at: number }).at;
     expect(createdAt).toBeGreaterThanOrEqual(startedAt);
@@ -604,6 +605,6 @@ describe('prompts a harness writes only to its transcript', () => {
     // A later invocation reads the transcript again and captures only what is new.
     fs.appendFileSync(tx, `${JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '<USER_REQUEST>second turn</USER_REQUEST>', created_at: 't3' })}\n`);
     await invoke();
-    expect((rig.env.sqlite.query(`SELECT text FROM prompt_batches ORDER BY text`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'second turn']);
+    expect((rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts ORDER BY preview`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'second turn']);
   });
 });

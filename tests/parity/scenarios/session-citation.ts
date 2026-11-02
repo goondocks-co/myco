@@ -28,9 +28,6 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
       VALUES(${lit(project)},${lit(session)},'machine',${lit(tokenId)},${now - 10_000},${now},${now - 10_000},${now})`);
     const prompts = Array.from({ length: 50 }, (_, i) => ({ id: `citation-prompt-${String(i).padStart(2, '0')}`, at: now - 5_000 + i }));
-    await target.sql(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      SELECT ${lit(project)},${lit(session)},json_extract(value,'$.id'),json_extract(value,'$.id'),'Whole-session material','user','content',
-        json_extract(value,'$.at'),json_extract(value,'$.at'),${lit(tokenId)},json_extract(value,'$.at') FROM json_each(${lit(JSON.stringify(prompts))})`);
     // The same prompts as the session's live document holds them.
     await target.sql(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(${lit(project)},${lit(session)},'live',1,${now})`);
     await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
@@ -65,9 +62,9 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
       VALUES(${lit(project)},'second-session','machine',${lit(tokenId)},${now - 10_000},${now},${now - 10_000},${now}),
         (${lit(project)},'unserved-session','machine',${lit(tokenId)},1,1,1,1)`);
-    await target.sql(`UPDATE prompt_batches SET processed=1 WHERE project_id=${lit(project)} AND session_id=${lit(session)}`);
-    await target.sql(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
-      VALUES(${lit(project)},'second-session','second-prompt','second-event','Second session material','user','second',${now},${now},${lit(tokenId)},${now})`);
+    await target.sql(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(${lit(project)},'second-session','live',1,${now})`);
+    await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+      VALUES(${lit(project)},'second-session',1,'second-prompt','second-prompt',1,'user',${now})`);
     await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at) VALUES(${lit(project)},'citation-second',${lit(run)},'second-session','second-prompt',${now})`);
     const second = (await call('myco_spores', { ...save, session_id: 'second-session' })).result;
     expect(second.id).toEqual(expect.any(String));

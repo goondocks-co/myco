@@ -54,13 +54,13 @@ describe('tombstoning a session', () => {
   it('records the tombstone and removes every derived row', async () => {
     const { sqlite, env, send } = await rig();
     await populate(send);
-    expect(count(sqlite, 'prompt_batches')).toBe(1);
+    expect(count(sqlite, 'publish_queue')).toBeGreaterThan(0);
 
     const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW, 'asked');
     expect(outcome.applied).toBe(true);
     expect(outcome.removed).toBeGreaterThan(0);
 
-    for (const table of ['prompt_batches', 'responses', 'tool_calls', 'plans', 'events']) {
+    for (const table of ['session_prompts','session_chunks','session_pages','plans','events','publish_queue']) {
       expect({ table, rows: count(sqlite, table) }).toEqual({ table, rows: 0 });
     }
     expect(count(sqlite, 'session_tombstones')).toBe(1);
@@ -170,8 +170,7 @@ describe('the blobs a deleted session\'s tool calls and raw events name', () => 
     await blobs.put(objectKey, new Blob([text]).stream());
   };
   const toolCall = (sqlite: Database, session: string, id: string, input: string | null, output: string | null) =>
-    sqlite.run(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, output_blob_key, success, created_at, token_id, received_at)
-                VALUES (?, ?, ?, ?, 'Read', ?, ?, 1, ?, 't', ?)`, [SCOPE.projectId, id, session, `e-${id}`, input, output, NOW, NOW]);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'tool.use','cli',json_object('toolCallId',tool_call_id,'toolName',tool_name,'blob',input_blob_key,'outputBlob',output_blob_key,'success',success),'hash',created_at,received_at FROM (SELECT ? AS project_id,? AS tool_call_id,? AS session_id,? AS event_id,'Read' AS tool_name,? AS input_blob_key,? AS output_blob_key,1 AS success,? AS created_at,'t' AS token_id,? AS received_at)`, [SCOPE.projectId, id, session, `e-${id}`, input, output, NOW, NOW]);
 
   it('frees them with the session, and keeps a key another session\'s tool call shares', async () => {
     const { sqlite, env, send } = await rig();

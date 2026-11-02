@@ -131,6 +131,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   if (held().preparedFingerprint === undefined) {
     await withRecoveryDatabaseCopy(path.join(artifact, 'myco.sqlite'), manifest.snapshot!.database, async copy => {
       const prepared = copy.databasePath;
+      migrateOnly(prepared, options.native, copy);
       const data = new Database(prepared);
       try {
         const store = sqliteRelationalStore(data);
@@ -142,7 +143,6 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       // The one migration applier brings the copy to the bundled schema, so the import stamps every step it holds and
       // the destination applies none twice. The source's object lifecycle is cleared, and every registered blob is
       // named under one fresh restore generation the objects are copied to.
-      migrateOnly(prepared, options.native, copy);
       const lifecycle = new Database(prepared);
       try {
         const store = sqliteRelationalStore(lifecycle);

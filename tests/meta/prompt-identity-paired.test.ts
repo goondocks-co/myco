@@ -40,14 +40,14 @@ async function assertSelectedThenDelivered(r: IdentityRig, sessionId: string, fi
   expect(answers.length).toBeGreaterThanOrEqual(2);
   expect(answers[0]).toMatchObject({ prompt_id: first, outcome: 'served', delivered_prompt_id: second });
   expect(answers[1]).toMatchObject({ prompt_id: second });
-  const prompts = r.rows(`SELECT prompt_id FROM prompt_batches WHERE session_id = ? ORDER BY created_at`, sessionId).map((p) => p.prompt_id);
+  const prompts = (await r.records(sessionId)).filter(p=>p.k==='prompt').map(p=>({prompt_id:p.id})).map((p) => p.prompt_id);
   expect(prompts).toEqual([first, second]);
   const env = r.rig.env.serverEnv;
   expect((await documentTurnDetail(env, SCOPE, sessionId, first))?.injection).toBeNull();
   const delivered = await documentTurnDetail(env, SCOPE, sessionId, second);
   expect(delivered?.injection?.spores.length).toBeGreaterThan(0);
-  expect(r.rows(`SELECT prompt_id, tool_name FROM tool_calls WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: first, tool_name: expect.any(String) }]);
-  expect(r.rows(`SELECT prompt_id FROM responses WHERE session_id = ? ORDER BY created_at`, sessionId).map((p) => p.prompt_id)).toEqual([first, second]);
+  expect((await r.records(sessionId)).filter(p=>p.k==='tool').map(p=>({prompt_id:p.prompt_id,tool_name:p.tool_name}))).toEqual([{ prompt_id: first, tool_name: expect.any(String) }]);
+  expect((await r.records(sessionId)).filter(p=>p.k==='reply').map(p=>({prompt_id:p.prompt_id})).map((p) => p.prompt_id)).toEqual([first, second]);
 
 }
 

@@ -7,10 +7,10 @@ import { expect, it } from 'bun:test';
 import { backupArtifact, BackupApplyError, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
-import { processedBody } from '@myco-server-worker/read/processed.js';
+
 import { reconcileArchivePreparations, verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
-import { toolInputPreview } from '@myco-server-worker/core/tool-input.js';
+
 import { createRecoveryBundle, verifyRecoveryBundle } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -61,7 +61,7 @@ function bundle(f: Fixture, kind: 'event'|'tool-input', resourceId: string, text
   return {bodyKey,bodyText,receiptKey,receiptText,id};
 }
 
-function seed(f: Fixture, withTool = false, badEventDigest = false): {event:StoredBundle;tool?:StoredBundle} {
+function seed(f: Fixture, badEventDigest = false): {event:StoredBundle;tool?:StoredBundle} {
   const sql=f.sqlite;
   sql.query('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)').run(project,project,1);
   sql.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
@@ -72,14 +72,7 @@ function seed(f: Fixture, withTool = false, badEventDigest = false): {event:Stor
     .run(project,eventId,session,'token','prompt','import','{}',envelope,1,1,0,'archived',3);
   const event=bundle(f,'event',eventId,original,0,badEventDigest ? hash('wrong entry') : hash(original));
   sql.query(`UPDATE events SET bundle_id=?,bundle_entry=0 WHERE project_id=? AND event_id=?`).run(event.id,project,eventId);
-  if(!withTool)return {event};
-  const tool=bundle(f,'tool-input',toolId,fullInput);
-  sql.query(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input,input_bytes,
-    input_bundle_id,input_bundle_entry,success,created_at,token_id,received_at)
-    VALUES(?,?,?,?,?,?,?,?,0,1,1,?,1)`)
-    .run(project,toolId,session,eventId,'test.tool',toolInputPreview(fullInput).preview,
-      Buffer.byteLength(fullInput),tool.id,'token');
-  return {event,tool};
+  return {event};
 }
 
 async function artifactOf(f:Fixture):Promise<string> {
@@ -95,18 +88,15 @@ function registerTarget(target:Fixture, stored:StoredBundle, generation:string):
 it('restores shared bundle entries with destination generations and exact bytes',async()=>{
   const source=sqliteEnv();const target=sqliteEnv();
   try {
-    const stored=seed(source,true);
+    const stored=seed(source);
     const artifact=await artifactOf(source);
     const generation=randomUUID();
     registerTarget(target,stored.event,generation);
-    registerTarget(target,stored.tool!,generation);
     const outcome=await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(outcome.tables.events?.inserted).toBe(1);
-    expect(outcome.tables.tool_calls?.inserted).toBe(1);
     expect((target.sqlite.query(`SELECT generation FROM registered_content_proofs WHERE project_id=? AND key=?`)
       .get(project,stored.event.bodyKey) as {generation:string}).generation).toBe(generation);
     expect(await eventContent({db:target.db,blobs:target.bucket},project,eventId)).toBe(original);
-    expect(await processedBody({db:target.db,blobs:target.bucket},{projectId:project},'tool-input',toolId)).toBe(fullInput);
     expect((await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}})).tables.events?.inserted).toBe(0);
   } finally {source.sqlite.close();target.sqlite.close();}
 });
@@ -164,28 +154,6 @@ it('maps bundle ids across a populated destination without confusing unrelated r
   } finally {source.sqlite.close();target.sqlite.close();}
 });
 
-it('reads a bundled input after a later success changes the tool outcome event',async()=>{
-  const source=sqliteEnv();const target=sqliteEnv();
-  try {
-    const stored=seed(source,true);
-    const successId='evt_tool_later_success';
-    const successHash=hash('later success envelope');
-    source.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,
-      envelope_hash,created_at,received_at,payload_bytes,raw_revision)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(project,successId,session,'token','tool.use','import',
-        '{"success":true}',successHash,2,2,16,4);
-    source.sqlite.query(`UPDATE tool_calls SET event_id=? WHERE project_id=? AND tool_call_id=?`).run(successId,project,toolId);
-    const artifact=await artifactOf(source);
-    const generation=randomUUID();
-    registerTarget(target,stored.event,generation);
-    registerTarget(target,stored.tool!,generation);
-    await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
-    expect((target.sqlite.query(`SELECT event_id FROM tool_calls WHERE project_id=? AND tool_call_id=?`)
-      .get(project,toolId) as {event_id:string}).event_id).toBe(successId);
-    expect(await processedBody({db:target.db,blobs:target.bucket},{projectId:project},'tool-input',toolId)).toBe(fullInput);
-  } finally {source.sqlite.close();target.sqlite.close();}
-});
-
 it('preserves an existing inline event and releases an unused imported bundle',async()=>{
   const source=sqliteEnv();const target=sqliteEnv();
   try {
@@ -210,7 +178,7 @@ it('preserves an existing inline event and releases an unused imported bundle',a
 it('refuses missing bundle or proof closure before restoring any table',async()=>{
   const source=sqliteEnv();const target=sqliteEnv();
   try {
-    const stored=seed(source,true);
+    const stored=seed(source);
     const artifact=await artifactOf(source);
     for(const missing of ['archive_bundles','registered_content_proofs'] as const){
       const altered=artifact.trimEnd().split('\n').filter(line=>{
@@ -228,22 +196,23 @@ it('refuses a valid bundle index that names a different logical source',async()=
   const source=sqliteEnv();const target=sqliteEnv();
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'archive-entry-mismatch-'));
   try {
-    const stored=seed(source,true);
+    const stored=seed(source);
+    const other=bundle(source,'event','different-source',original);
     const artifact=await artifactOf(source);
     const altered=artifact.trimEnd().split('\n').map(line=>{
       const parsed=JSON.parse(line) as {t?:string;r?:Record<string,unknown>};
-      if(parsed.t==='events'&&parsed.r?.event_id===eventId)parsed.r.bundle_id=stored.tool!.id;
+      if(parsed.t==='events'&&parsed.r?.event_id===eventId)parsed.r.bundle_id=other.id;
       return JSON.stringify(parsed);
     }).join('\n')+'\n';
     const generation=randomUUID();
     registerTarget(target,stored.event,generation);
-    registerTarget(target,stored.tool!,generation);
+    registerTarget(target,other,generation);
     await expect(restoreArtifact(target.db,{blobs:target.bucket,text:altered,allowForeignLineage:true,
       authorization:{kind:'recovery'}})).rejects.toThrow(BackupApplyError);
     expect(target.sqlite.query(`SELECT 1 FROM projects WHERE project_id=?`).get(project)).toBeNull();
 
     source.sqlite.query(`UPDATE events SET bundle_id=? WHERE project_id=? AND event_id=?`)
-      .run(stored.tool!.id,project,eventId);
+      .run(other.id,project,eventId);
     await expect(createBackup(source.db,source.bucket,{producer:'invalid entry',now:2})).rejects.toThrow();
     const destination=path.join(scratch,'refused');
     await expect(createRecoveryBundle(destination,{
@@ -258,7 +227,7 @@ it('refuses a valid bundle index that names a different logical source',async()=
 it('refuses an entry digest mismatch even when the whole object and receipt agree',async()=>{
   const source=sqliteEnv();
   try {
-    seed(source,false,true);
+    seed(source,true);
     await expect(createBackup(source.db,source.bucket,{producer:'invalid digest',now:2})).rejects.toThrow('content_bundle_entry_digest_mismatch');
   } finally {source.sqlite.close();}
 });
@@ -281,7 +250,7 @@ it('verifies a full recovery after its original object source is unavailable',as
   const source=sqliteEnv();
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'archive-recovery-'));
   try {
-    const stored=seed(source,true);
+    const stored=seed(source);
     const destination=path.join(scratch,'complete');
     await createRecoveryBundle(destination,{
       source:{target:'local',locator:'archive-fixture'},
@@ -295,7 +264,6 @@ it('verifies a full recovery after its original object source is unavailable',as
       expect(recovered.query(`SELECT bundle_id,bundle_entry FROM events WHERE project_id=? AND event_id=?`)
         .get(project,eventId)).toEqual({bundle_id:stored.event.id,bundle_entry:0});
       expect(fs.readFileSync(path.join(destination,'blobs',project,stored.event.bodyKey),'utf8')).toBe(stored.event.bodyText);
-      expect(fs.readFileSync(path.join(destination,'blobs',project,stored.tool!.bodyKey),'utf8')).toBe(stored.tool!.bodyText);
     } finally {recovered.close();}
   } finally {source.sqlite.close();fs.rmSync(scratch,{recursive:true,force:true});}
 });

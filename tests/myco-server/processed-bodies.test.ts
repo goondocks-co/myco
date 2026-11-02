@@ -23,18 +23,9 @@ function fixture(spilled = true) {
   e.bucket.seed(object, { size: bytes.length, bytes, contentType: 'text/html' });
   const text = spilled ? null : BODY;
   const key = spilled ? HASH : null;
-  e.sqlite.query(`INSERT INTO prompt_batches
-    (project_id, prompt_id, session_id, event_id, origin, text, blob_key, content_hash, created_at, updated_at, token_id, received_at)
-    VALUES ('proj_1', ?, 's', 'event-p', 'user', ?, ?, 'hash-p', 1, 1, ?, 1)`).run(ID, text, key, uploadToken);
-  e.sqlite.query(`INSERT INTO responses
-    (project_id, response_id, session_id, event_id, text, blob_key, content_hash, created_at, token_id, received_at)
-    VALUES ('proj_1', ?, 's', 'event-r', ?, ?, 'hash-r', 1, ?, 1)`).run(ID, text, key, uploadToken);
   e.sqlite.query(`INSERT INTO plans
     (project_id, plan_key, session_id, event_id, machine_id, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
     VALUES ('proj_1', ?, 's', 'event-plan', 'machine_1', ?, ?, 'hash-plan', 'active', 1, 1, ?, 1)`).run(ID, text, key, uploadToken);
-  e.sqlite.query(`INSERT INTO tool_calls
-    (project_id, tool_call_id, session_id, event_id, tool_name, input, input_blob_key, output_preview, output_blob_key, success, created_at, token_id, received_at)
-    VALUES ('proj_1', ?, 's', 'event-tool', 'Read', ?, ?, ?, ?, 1, 1, ?, 1)`).run(ID, text, key, spilled ? 'preview only' : text, key, uploadToken);
   const env = { ...e.env, ...OWNER_ENV };
   const get = async (kind: string, id = ID, project = 'proj_1') => worker.fetch(await asOwner(e.db, `/api/projects/${project}/processed/${kind}/${encodeURIComponent(id)}`), env);
   return { ...e, env, object, get };
@@ -113,9 +104,6 @@ describe('typed processed fields', () => {
     expect(e.sqlite.query(`SELECT record_id FROM embedding_sources WHERE project_id = 'proj_1' AND type = 'plan'`).all()).toEqual([{ record_id: ID }]);
 
     e.sqlite.query(`DELETE FROM plans WHERE project_id = 'proj_1' AND plan_key = ?`).run(ID);
-    e.sqlite.query(`DELETE FROM prompt_batches WHERE project_id = 'proj_1'`).run();
-    e.sqlite.query(`DELETE FROM responses WHERE project_id = 'proj_1'`).run();
-    e.sqlite.query(`DELETE FROM tool_calls WHERE project_id = 'proj_1'`).run();
     const reads = e.bucket.gets.length;
     expect(await pendingSearchBlobs(e.db, 'proj_1')).toBe(0);
     expect(await reconcileSearchIndex(e.db, e.bucket, Date.now())).toBe(0);

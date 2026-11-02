@@ -26,7 +26,7 @@ import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEED
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { convertFixture, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { publishFixture, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
@@ -53,7 +53,7 @@ async function rig() {
   const claim = (now: number) => claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now });
   const endedSession = (sessionId: string) => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [sessionId, NOW - 10_000, NOW, NOW - 10_000, NOW]);
-    e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, ?, 'add a retry to the runner', 'user', ?, ?, ?, 'tok_1', ?)`, [sessionId, `p_${sessionId}`, `e_${sessionId}`, `h_${sessionId}`, NOW - 5000, NOW - 5000, NOW - 5000]);
+    e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,'add a retry to the runner' AS text,'user' AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [sessionId, `p_${sessionId}`, `e_${sessionId}`, `h_${sessionId}`, NOW - 5000, NOW - 5000, NOW - 5000]);
   };
   // Session s1 has one carded turn learning has not covered.
   e.sqlite.run(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES ('proj_1', 's1')`);
@@ -216,7 +216,7 @@ describe('what a claim hands out', () => {
   it('a titling run the Deployment asked for, under the instruction it built for that session', async () => {
     const r = await rig();
     r.endedSession('s1');
-    await convertFixture(r.e);
+    await publishFixture(r.e);
     const asked = await titleSession(r.e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now: NOW, origin: ORIGIN });
     expect(asked.outcome).toBe('queued');
     const claimed = await r.claim(NOW + 1);

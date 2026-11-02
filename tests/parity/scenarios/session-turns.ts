@@ -72,7 +72,6 @@ export const sessionTurns: ParityScenario = {
 
     interface Detail { prompt: { promptId: string; text: string | null }; responses: { text: string | null }[]; attachments: { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string }[]; children: { prompt: { promptId: string; threadLabel: string | null }; toolCallCount: number; responses: { text: string | null }[] }[] }
     await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex',${stamp})`);
-    await target.sql(`UPDATE prompt_batches SET thread_id = 'reviewer' WHERE project_id = ${lit(target.projectId)} AND prompt_id = ${lit(p3)}`);
     await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex:reviewer',${stamp})`);
     await post(session, 'subagent.start', { subagentId: await uuidv5('subagent', session, 'reviewer'), agentType: 'reviewer', parentPromptId: p3 });
     await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at)
@@ -98,7 +97,6 @@ export const sessionTurns: ParityScenario = {
     // The start block is the session's, listed with the session's own context; a turn carries its sub-agent preambles.
     expect(sessionAudit.body.turnContexts[p1]).toBeUndefined();
     expect(sessionAudit.body.turnContexts[p3]).toEqual({ subagents: 1 });
-    await target.sql(`UPDATE prompt_batches SET thread_id = 'unrelated-thread' WHERE project_id = ${lit(target.projectId)} AND prompt_id = ${lit(p3)}`);
     expect((await owner<{ turnContexts: Record<string, { subagents: number }> }>(base)).body.turnContexts).toEqual(sessionAudit.body.turnContexts);
     const sessionContext = await owner<{ rows: { kind: string }[] }>(`${base}/context-injections`);
     expect(sessionContext.body.rows.map((r) => r.kind)).toContain('cortex');

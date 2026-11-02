@@ -1,5 +1,5 @@
-import { prepareNextSearchBlob } from '../read/view-store.js';
-export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/view-store.js";
+import { prepareNextSearchBlob } from '../read/catalog-store.js';
+export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/catalog-store.js";
 import { registeredObjectKeySql } from './blob-objects.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';

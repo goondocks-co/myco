@@ -6,8 +6,7 @@ const INVENTORY_TABLE = 'recovery_bundle_locator_inventory';
 const SOURCES = [
   { table: 'events', id: 'event_id', bundle: 'bundle_id', entry: 'bundle_entry', kind: 'event',
     facts: 'event_id,envelope_hash' },
-  { table: 'tool_calls', id: 'tool_call_id', bundle: 'input_bundle_id', entry: 'input_bundle_entry', kind: 'tool-input',
-    facts: 'NULL AS event_id,NULL AS envelope_hash' },
+
 ] as const;
 type LocatorRow = { project_id: string; resource_id: string; bundle_id: number | null; bundle_entry: number | null;
   event_id: string | null; envelope_hash: string | null; token_id: string };

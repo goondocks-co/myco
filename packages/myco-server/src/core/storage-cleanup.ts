@@ -1,12 +1,13 @@
+import { archivedEventPayloadSql } from '../db/document-tables.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { prepareArchive,prepareArchiveStep,type PreparedArchive,type ContentRow } from './event-content.js';
+import { prepareArchiveStep, type ContentRow } from './event-content.js';
 import { bundleArchiveStatements,discardArchiveBundle,prepareArchiveBundle,ARCHIVE_BUNDLE_BYTES,ARCHIVE_BUNDLE_ENTRIES,projectedBundleMetadata,type BundleItem } from './archive-bundle.js';
 import { contentAssertion } from './registered-content.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
 import { emit } from '../telemetry.js';
-import { TOOL_INPUT_PREVIEW_BYTES } from './tool-input.js';
-import { utf8 } from '../hash.js';
+
+
 
 export const STORAGE_CLEANUP_ROWS = 100;
 export const STORAGE_CLEANUP_TARGET_BYTES = 64 * 1024;
@@ -21,7 +22,7 @@ export interface CleanupState {
   revision:number;complete:number;paused:number;
   converted_rows:number;cleared_bytes:number;metadata_added_bytes:number;updated_at:number;failure:string|null;
 }
-type Candidate={project_id:string;resource_id:string;resource_kind:'event'|'tool-input';
+type Candidate={project_id:string;resource_id:string;resource_kind:'event';
   session_id?:string;created_at?:number;source_rowid?:number};
 const stateGuard=(state:CleanupState)=>({
   sql:`EXISTS (SELECT 1 FROM storage_cleanup_state WHERE id=1 AND phase=? AND cursor_project=? AND cursor_id=?
@@ -38,45 +39,30 @@ async function identities(db:RelationalStore,state:CleanupState,after?:Candidate
       ORDER BY project_id,session_id,resource_kind,resource_id LIMIT ?`)
       .bind(after?.project_id??'',after?.session_id??'',after?.resource_kind??'',after?.resource_id??'',STORAGE_CLEANUP_ROWS).all<Candidate>()).results;
   }
-  const input=state.phase===0;const table=input?'tool_calls':'events';const id=input?'tool_call_id':'event_id';
-  return (await db.prepare(`SELECT rowid AS source_rowid,project_id,${id} AS resource_id,session_id,created_at,
-    '${input?'tool-input':'event'}' AS resource_kind FROM ${table} INDEXED BY ${input?'idx_tool_calls_session':'idx_events_session'}
+  if (state.phase === 0) return [];
+  return (await db.prepare(`SELECT rowid AS source_rowid,project_id,event_id AS resource_id,session_id,created_at,
+    'event' AS resource_kind FROM events INDEXED BY idx_events_session
     WHERE (project_id,session_id,created_at,rowid)>(?,?,?,?) ORDER BY project_id,session_id,created_at,rowid LIMIT ?`)
     .bind(state.cursor_project,state.cursor_session,state.cursor_created,state.cursor_rowid,STORAGE_CLEANUP_ROWS).all<Candidate>()).results;
 }
 
 /** Metadata is read first; exact UTF-8 bodies use a bounded page or checkpointed slices. */
 async function candidates(db:RelationalStore,ids:Candidate[],retention=false):Promise<Map<string,ContentRow>> {
-  const rows=new Map<string,ContentRow>();
-  for(const kind of ['tool-input','event'] as const){
-    const selected=ids.filter(id=>id.resource_kind===kind);if(selected.length===0)continue;
-    const input=kind==='tool-input';
-    const fields=input?'t.tool_call_id AS resource_id,t.event_id,t.session_id,t.token_id,t.content_revision,t.received_at,length(CAST(t.input AS BLOB)) AS bytes,t.input_bundle_id'
-      :'e.event_id AS resource_id,e.event_id,e.session_id,e.token_id,e.content_revision,e.received_at,length(CAST(e.payload AS BLOB)) AS bytes';
-    const found=await db.prepare(`SELECT ${input?'t':'e'}.project_id,${fields},e.envelope_hash,COALESCE(e.raw_revision,0) AS raw_revision,
-      c.provenance AS raw_provenance,${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')} AS raw_owner
-      FROM json_each(?) j
-      ${input?`JOIN tool_calls t ON t.project_id=json_extract(j.value,'$.project_id') AND t.tool_call_id=json_extract(j.value,'$.resource_id') JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id`
-        :`JOIN events e ON e.project_id=json_extract(j.value,'$.project_id') AND e.event_id=json_extract(j.value,'$.resource_id')`}
-      LEFT JOIN raw_credentials c ON c.token_id=${input?'t':'e'}.token_id
-      WHERE ${input?`t.input IS NOT NULL AND t.input_bundle_id IS NULL AND length(CAST(t.input AS BLOB))>${TOOL_INPUT_PREVIEW_BYTES}`:
-        `e.payload_format='inline'${retention?'':" AND (e.producer_adapter='transcript-parse' OR e.channel='import') AND e.kind IN ('prompt','response','tool.use','tool.failure','plan.snapshot')"}`}`)
-      .bind(JSON.stringify(selected)).all<ContentRow>();
-    for(const row of found.results)rows.set(candidateKey({...row,resource_kind:kind}),row);
-  }
-  return rows;
+  const selected = ids.filter(id => id.resource_kind === 'event');
+  const found = await db.prepare(`SELECT e.project_id,e.event_id AS resource_id,e.event_id,e.session_id,e.token_id,
+    e.content_revision,e.received_at,length(CAST(e.payload AS BLOB)) AS bytes,length(CAST(${archivedEventPayloadSql()} AS BLOB)) AS retained_bytes,e.envelope_hash,COALESCE(e.raw_revision,0) AS raw_revision,
+    c.provenance AS raw_provenance,${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')} AS raw_owner
+    FROM json_each(?) j JOIN events e ON e.project_id=json_extract(j.value,'$.project_id') AND e.event_id=json_extract(j.value,'$.resource_id')
+    LEFT JOIN raw_credentials c ON c.token_id=e.token_id WHERE e.payload_format='inline'
+      ${retention ? '' : "AND (e.producer_adapter='transcript-parse' OR e.channel='import') AND e.kind IN ('prompt','response','tool.use','tool.failure','plan.snapshot')"}`)
+    .bind(JSON.stringify(selected)).all<ContentRow>();
+  return new Map(found.results.map(row => [candidateKey({...row,resource_kind:'event'}),row]));
 }
 const candidateKey=(id:Candidate)=>JSON.stringify([id.project_id,id.resource_kind,id.resource_id]);
 async function candidate(db:RelationalStore,id:Candidate,retention=false):Promise<ContentRow|null> {
   return (await candidates(db,[id],retention)).get(candidateKey(id))??null;
 }
 export {candidate as cleanupCandidate};
-
-export async function inputArchiveStatements(env:Pick<ServerEnv,'db'|'blobs'>,row:ContentRow,now:number,
-  prepared?:PreparedArchive & {preview:string}):Promise<PreparedStatement[]> {
-  const archive=prepared??await prepareArchive(env,'tool-input',row,now);
-  return bundleArchiveStatements(env.db,archive.bundle);
-}
 
 /** Clear, compact representation, queue release and sweep progress share one commit. */
 async function commitPage(db:RelationalStore,state:CleanupState,ids:Candidate[],writes:PreparedStatement[],now:number,
@@ -105,8 +91,10 @@ const sameEvidence=(a:ContentRow,b:ContentRow)=>a.project_id===b.project_id&&a.s
   &&a.token_id===b.token_id&&a.raw_owner===b.raw_owner&&a.raw_provenance===b.raw_provenance;
 
 const gainsSpace=(removed:number,metadata:number)=>removed>metadata*(1+STORAGE_CLEANUP_GAIN_MARGIN);
-const removedBytes=(items:readonly BundleItem[])=>items.reduce((sum,item)=>sum+item.row.bytes-
-  (item.kind==='event'?2:TOOL_INPUT_PREVIEW_BYTES),0);
+const removedBytes=(items:readonly BundleItem[])=>items.reduce((sum,{kind,row})=>{
+  if(kind!=='event'||!Number.isSafeInteger(row.retained_bytes)||row.retained_bytes!<0)throw new Error('content_retained_bytes_invalid');
+  return sum+row.bytes-row.retained_bytes!;
+},0);
 const omissions=(db:RelationalStore,items:readonly BundleItem[],now:number)=>[
   db.prepare(`INSERT INTO storage_cleanup_omissions(project_id,resource_kind,resource_id,reason,observed_at)
     SELECT json_extract(value,'$.project_id'),json_extract(value,'$.kind'),json_extract(value,'$.resource_id'),
@@ -162,7 +150,7 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
           try {
             if(clock()>=deadline)return {changed,more:true};
             if(await paused(measured.env.db))return {changed,more:false};
-            const cleared=row.bytes-(id.resource_kind==='event'?2:utf8(step.archive.preview).length);
+            const cleared=removedBytes([{kind:id.resource_kind,row}]);
             await commitPage(measured.env.db,state,[...consumed,id],bundleArchiveStatements(measured.env.db,step.archive.bundle),now,
               1,cleared,step.archive.bundle.metadataBytes);
             changed++;clearedBytes+=cleared;metadataAdded+=step.archive.bundle.metadataBytes;consumed.length=0;stop=true;break;
@@ -187,7 +175,7 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
         try {
           if(clock()>=deadline)return {changed,more:true};
           if(await paused(measured.env.db))return {changed,more:false};
-          const cleared=bundle.items.reduce((sum,item)=>sum+item.row.bytes-(item.kind==='event'?2:utf8(item.preview).length),0);
+          const cleared=removedBytes(bundle.items);
           if(!gainsSpace(cleared,bundle.metadataBytes))throw new Error('content_bundle_net_gain_invalid');
           await commitPage(measured.env.db,state,consumed,bundleArchiveStatements(measured.env.db,bundle),now,
             items.length,cleared,bundle.metadataBytes);
@@ -226,8 +214,7 @@ export async function storageCleanupRetainedInline(db:RelationalStore,after?:Cle
     SELECT p.project_id,p.resource_kind,p.resource_id,
       p.reason='retained-inline:net-gain' AND CASE p.resource_kind
         WHEN 'event' THEN EXISTS(SELECT 1 FROM events e WHERE e.project_id=p.project_id AND e.event_id=p.resource_id AND e.payload_format='inline')
-        WHEN 'tool-input' THEN EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=p.project_id AND t.tool_call_id=p.resource_id
-          AND t.input IS NOT NULL AND t.input_bundle_id IS NULL) ELSE 0 END AS retained
+ ELSE 0 END AS retained
     FROM page p ORDER BY p.project_id,p.resource_kind,p.resource_id`)
     .bind(after?.project_id??'',after?.resource_kind??'',after?.resource_id??'',STORAGE_CLEANUP_ROWS+1)
     .all<CleanupOmissionCursor & {retained:number}>()).results;
@@ -241,6 +228,6 @@ export async function storageCleanupPending(db:RelationalStore):Promise<boolean>
   const state=await readState(db);if(!state)throw new Error('storage_cleanup_state_missing');
   if(state.paused===1)return false;
   if(state.complete===0)return await db.prepare(`SELECT 1 AS pending WHERE EXISTS(SELECT 1 FROM events LIMIT 1)
-    OR EXISTS(SELECT 1 FROM tool_calls LIMIT 1) OR EXISTS(SELECT 1 FROM storage_cleanup_queue LIMIT 1)`).first()!==null;
+    OR EXISTS(SELECT 1 FROM storage_cleanup_queue LIMIT 1)`).first()!==null;
   return await db.prepare('SELECT 1 AS pending FROM storage_cleanup_queue LIMIT 1').first()!==null;
 }

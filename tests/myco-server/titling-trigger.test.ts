@@ -44,6 +44,7 @@ describe('the events route', () => {
     // Late bytes unpublished hold the retry; inside the run window it is held too.
     e.sqlite.run(`UPDATE transcripts SET size = 200, last_received_at = ? WHERE transcript_id = 'tx'`, [later]);
     expect(await backfillTitles(env, later + 1, 'idle')).toBe(0);
+    e.sqlite.run('UPDATE transcripts SET parsed_offset=size');
     await publishFixture(e);
     expect(await backfillTitles(env, first.queued_at + 1, 'idle')).toBe(0);
     // An owner's attempt in flight holds it.
@@ -74,6 +75,7 @@ describe('the events route', () => {
     expect(pending().titled_at).toBeNull();
     expect(e.sqlite.query(`SELECT count(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
     await post({ eventId: uuid(3), kind: 'prompt', payload: { promptId: uuid(21), text: 'second turn', origin: 'user' } });
+    e.sqlite.run('UPDATE transcripts SET parsed_offset=size');
     await publishFixture(e);
     const settled = Date.now() + SESSION_END_SETTLE_MS;
     expect(await titleReadySessions({ ...serverEnvFromBindings(e.env), origin: 'https://s' }, settled)).toBe(1);
@@ -169,6 +171,7 @@ describe('the events route', () => {
     expect(await titleReadySessions(env, end + SESSION_END_SETTLE_MS)).toBe(0);
     // Settled but unpublished: still held.
     expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(0);
+    e.sqlite.run('UPDATE transcripts SET parsed_offset=size');
     await publishFixture(e);
     expect(await titleReadySessions(env, tail + SESSION_END_SETTLE_MS)).toBe(1);
   });

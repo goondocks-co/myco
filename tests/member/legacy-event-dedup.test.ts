@@ -22,5 +22,5 @@ it('the Deployment deduplicates an event delivered from both migrated and old jo
   const replay = await rig.postEvent(event.envelope);
   expect(replay.duplicate).toBe(true);
   expect(rig.rows('events')).toBe(1);
-  expect(rig.rows('prompt_batches')).toBe(1);
+  expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
 });

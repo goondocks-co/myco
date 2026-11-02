@@ -1,3 +1,4 @@
+import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 /**
  * The retained read verbs in a joined project with no 1.4 vault: `search`,
  * `vectors`, `session` and `stats` answer from the Deployment the membership
@@ -9,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
+import {  } from '@myco-server-worker/ingest/parse.js';
 import { run as runRead, STATUS_READ_PATH } from '@myco/cli/member-reads.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { latestOutcome, runMaintenance } from '@myco-server-worker/core/store-maintenance.js';
@@ -99,7 +100,7 @@ async function seedSession(rig: MemberRig, sessionId: string, text: string): Pro
   await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
   await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { helpers: 'run', fetch: rig.fetch });
   await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { helpers: 'run', fetch: rig.fetch });
-  for (let pass = 0; pass < 20; pass += 1) if ((await parseTranscripts(rig.env.serverEnv, Date.now())) === 0) break;
+  for (let pass = 0; pass < 20; pass += 1) if ((await publishFixtureDocuments(rig.env.serverEnv, Date.now())) === 0) break;
 }
 
 /** A spore on the Deployment, saved through the same served tool an agent calls. */

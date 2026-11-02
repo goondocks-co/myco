@@ -6,7 +6,6 @@
  * anywhere a reader sees.
  */
 import { retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
-import {SESSION_VIEW_STATES} from '@goondocks/myco-shared/view-status';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -230,46 +229,6 @@ describe('Health', () => {
       expect.stringMatching(/Atlas web.*Archived.*3 sessions/),
     ]);
     expect(within(status).getByTestId('transcript-backlog').textContent).toBe('3 transcripts (4.0 KB) waiting to be read into sessions.');
-  });
-
-  it('reports view lag and retry state with unavailable throughput kept explicit',async()=>{
-    server(routes({'/api/status':()=>Response.json({...STATUS,views:{observedAt:NOW,
-      counts:Object.fromEntries(SESSION_VIEW_STATES.map(state=>[state,state==='stale'?1:0])),
-      states:[{project_id:MYCO,session_id:'private-session-id',title:'Parser work',state:'stale',bytes_behind:4096,next_attempt_at:NOW+3600000,last_failure:'blob_absent'}],
-      cleanup:{retired:3,eligibleRetired:2,heldRetired:1,abandoned:1},findings:[{kind:'unattributed',count:4}],
-      unplaced:{state:'unavailable'},coverageNotCarried:{state:'unavailable'},details:{limit:64,total:1,complete:true},
-      throughput:{state:'unavailable',reason:'no measured rebuild sample'},preflight:{state:'available',scope:'owner'}}})}));
-    mount();
-    const views=await screen.findByTestId('session-views');
-    expect(views.textContent).toContain('1 waiting for an update');
-    expect(views.textContent).toContain('Myco · Parser work: waiting for an update · 4.0 KB behind');
-    expect(views.textContent).toContain('tries again at');
-    expect(views.textContent).toContain('There is not enough recent data to estimate how quickly sessions can catch up.');
-    expect(views.textContent).not.toMatch(/net measured|convergence limit|binding constraint|Coverage not carried/);
-    expect(views.textContent).not.toContain('private-session-id');
-  });
-
-  it('shows rebuild progress while sessions remain, and says when the database is near its limit', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, viewCutover: { classified: true, swept: false, built: 1200, remaining: 3400, frozenTails: 0, frozenCopying: 0, paused: 'd1_headroom', databaseBytes: 9e9 } }) }));
-    mount();
-    expect((await screen.findByTestId('view-rebuild')).textContent).toBe('Rebuilding session views: 1,200 of 4,600 sessions, paused: database near its size limit');
-  });
-
-  it('hides rebuild progress once no session remains', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, viewCutover: { classified: true, swept: true, built: 9, remaining: 0, frozenTails: 0, frozenCopying: 0, paused: null, databaseBytes: null } }) }));
-    mount();
-    await screen.findByTestId('transcript-backlog');
-    expect(screen.queryByTestId('view-rebuild')).toBeNull();
-  });
-
-  it('describes insufficient catch-up capacity without claiming that recordings are falling behind',async()=>{
-    server(routes({'/api/status':()=>Response.json({...STATUS,views:{
-      counts:{current:1},states:[],throughput:{state:'measured',admit:false,binding_constraint:'drain_time'},
-    }})}));
-    mount();
-    const views=await screen.findByTestId('session-views');
-    expect(views.textContent).toContain('Recent samples do not yet show that all sessions can catch up.');
-    expect(views.textContent).not.toContain('falling behind');
   });
 
   it('shows the search index’s upkeep over the last day in one line', async () => {

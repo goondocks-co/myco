@@ -37,8 +37,10 @@ export const scheduledTasks: ParityScenario = {
 
     for (const [project, session, at] of [[target.projectId, 'clock-live-session', now - 60_000], ['proj_cold', 'cold-session', now - 21 * 86_400_000]] as const) {
       await target.sql(`UPDATE sessions SET ended_at = ${at} WHERE project_id = ${lit(project)} AND session_id = ${lit(session)}`);
-      await target.sql(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,processed)
-        VALUES (${lit(project)},${lit(session)},'clock-prompt','clock-event','scheduled extraction material','user','clock-hash',${at},${at},${lit(credential!.id)},${at},0)`);
+      await target.sql(`INSERT INTO session_documents(project_id,session_id,state,generation,prompts,user_prompts,updated_at)
+        VALUES(${lit(project)},${lit(session)},'live',1,1,1,${at})`);
+      await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
+        VALUES(${lit(project)},${lit(session)},1,'clock-prompt','clock-prompt',1,'user',${at})`);
     }
 
     const wake = async () => {

@@ -41,8 +41,7 @@ it('bounds examined identities with all-held pages and reaches a sparse orphan a
   const held = TRANSCRIPT_RETENTION_BLOBS_PER_PASS * 3;
   for (let n = 1; n <= held; n += 1) {
     registerBlob(sqlite, { projectId: 'proj_1', key: key(n), size: 1, receivedAt: 1 });
-    sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, success, created_at, token_id, received_at)
-                  VALUES ('proj_1', ?, 's', ?, 'Read', ?, 1, 1, 't', 1)`).run(`tc-${n}`, `e-${n}`, key(n));
+    sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'tool.use','cli',json_object('toolCallId',tool_call_id,'toolName',tool_name,'blob',input_blob_key,'success',success),'hash',created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS tool_call_id,'s' AS session_id,? AS event_id,'Read' AS tool_name,? AS input_blob_key,1 AS success,1 AS created_at,'t' AS token_id,1 AS received_at)`).run(`tc-${n}`, `e-${n}`, key(n));
   }
   const orphan = key(held + 1);
   registerBlob(sqlite, { projectId: 'proj_1', key: orphan, size: 1, receivedAt: 1 });
@@ -64,8 +63,7 @@ it('wraps and reaches an orphan inserted behind the committed cursor', async () 
     VALUES('proj_1','recent',?,'fixture')`).run(NOW);
   const first = key(5);
   registerBlob(sqlite, { projectId: 'proj_1', key: first, size: 1, receivedAt: 1 });
-  sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, success, created_at, token_id, received_at)
-                VALUES ('proj_1', 'tc-first', 's', 'e-first', 'Read', ?, 1, 1, 't', 1)`).run(first);
+  sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'tool.use','cli',json_object('toolCallId',tool_call_id,'toolName',tool_name,'blob',input_blob_key,'success',success),'hash',created_at,received_at FROM (SELECT 'proj_1' AS project_id,'tc-first' AS tool_call_id,'s' AS session_id,'e-first' AS event_id,'Read' AS tool_name,? AS input_blob_key,1 AS success,1 AS created_at,'t' AS token_id,1 AS received_at)`).run(first);
   expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(0);
   const behind = key(2);
   registerBlob(sqlite, { projectId: 'proj_1', key: behind, size: 1, receivedAt: 1 });

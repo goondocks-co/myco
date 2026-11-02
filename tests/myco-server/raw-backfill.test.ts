@@ -48,6 +48,16 @@ function sourcePageGate(sqlite: Database, pages: number[]): RelationalStore {
 }
 
 describe('bounded raw provenance backfill correction gates', () => {
+  it('completes on the current schema after relational content sources are retired', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS) for (const statement of step.statements) sqlite.exec(statement);
+      sqlite.exec("UPDATE raw_provenance_backfill SET source=3,cursor_project='',cursor_id='',complete=0 WHERE id=1");
+      expect(await rawBackfill(sqliteD1(sqlite), NOW)).toEqual({ changed: 0, more: false });
+      expect(sqlite.query('SELECT complete FROM raw_provenance_backfill WHERE id=1').get()).toEqual({ complete: 1 });
+    } finally { sqlite.close(); }
+  });
+
   it('attests the selected page before advancing past a concurrent earlier insertion', async () => {
     const sqlite = historical();
     try {
@@ -151,7 +161,7 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(count(sqlite, 'events')).toBe(HISTORICAL_EVENTS + HISTORICAL_PLANS);
       const current = sqlite.query(`SELECT complete FROM raw_provenance_backfill WHERE id = 1`).get();
       expect(current).toEqual({ complete: 0 });
-      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>71&&step.version<117)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'blob', id: '0'.repeat(64) }, 'read')).toBe(false);
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(false);
@@ -169,7 +179,7 @@ describe('bounded raw provenance backfill correction gates', () => {
     try {
       for (const statement of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(statement);
       expect(count(sqlite, 'raw_resources')).toBe(0);
-      const originals = await Promise.all(['blobs', 'events', 'transcripts', 'transcript_segments', 'plans', 'prompt_batches', 'responses', 'tool_calls'].map(async (table) => ({ table, hash: await fingerprint(sqlite, table) })));
+      const originals = await Promise.all(['blobs', 'events', 'transcripts', 'transcript_segments', 'plans'].map(async (table) => ({ table, hash: await fingerprint(sqlite, table) })));
       const { RAW_BACKFILL_BATCH, rawBackfill } = await import('@myco-server-worker/core/raw-backfill.js');
       expect(RAW_BACKFILL_BATCH).toBe(500);
       const pages: number[] = [];
@@ -203,13 +213,11 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(count(sqlite, 'raw_resources')).toBe(HISTORICAL_BLOBS + HISTORICAL_TRANSCRIPTS);
       expect(sqlite.query('SELECT kind, COUNT(*) AS n FROM processed_resources GROUP BY kind ORDER BY kind').all()).toEqual([
         { kind: 'attachment', n: HISTORICAL_BLOBS }, { kind: 'plan', n: HISTORICAL_PLANS },
-        { kind: 'prompt', n: HISTORICAL_BLOBS }, { kind: 'response', n: HISTORICAL_BLOBS },
-        { kind: 'tool-input', n: HISTORICAL_BLOBS }, { kind: 'tool-output', n: HISTORICAL_BLOBS },
       ]);
       expect(sqlite.query(`SELECT COUNT(*) AS n FROM raw_resources WHERE kind = 'event'`).get()).toEqual({ n: 0 });
       for (const original of originals) expect(await fingerprint(sqlite, original.table)).toBe(original.hash);
       expect(await rawBackfill(sqliteD1(sqlite), NOW + MAX_PASSES)).toEqual({ changed: 0, more: false });
-      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>71&&step.version<117)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(true);
       for (const id of ['mixed', 'unknown', 'conflicting']) expect(await reader.allows({ kind: 'transcript', id }, 'read')).toBe(false);

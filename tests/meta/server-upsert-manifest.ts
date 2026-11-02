@@ -1,7 +1,7 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
-  'core/attention-state.ts#recordViewReadRefusal': [{tables:['schema_meta'],order:'unverified'}],
+  'ingest/parse.ts#rereadTranscripts': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'core/attention-state.ts#recordDocumentPublishFailure': [{ tables: ['schema_meta'], order: 'unverified' }],
   'core/attempt-accounting.ts#restoreAttemptStatement': [
     { tables: ['agent_run_attempts'], order: 'unverified' },
@@ -14,27 +14,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'core/runs.ts#guardedStateStatement': [
     { tables: ['agent_state'], order: 'unverified' },
-  ],
-  'ingest/view-plan-promotion.ts#promoteViewPlan': [
-    { tables: ['plans'], order: 'unverified' },
-  ],
-  'ingest/view-flip-work.ts#beginFlipObservation': [
-    { tables: ['view_flip_calibrations'], order: 'unverified' },
-  ],
-  'core/material-versions.ts#publicationVersionStatements': [
-    { tables: ['material_versions'], order: 'unverified' },
-  ],
-  'ingest/view-lifecycle.ts#requestViewRebuildOnce': [
-    { tables: ['session_views'], order: 'unverified' },
-  ],
-  'ingest/view-projections.ts#viewPlanTransitionStatements': [
-    { tables: ['embedding_versions'], order: 'unverified' },
-  ],
-  'ingest/view-projections.ts#viewLiveProjectionStatements': [
-    { tables: ['embedding_versions'], order: 'unverified' },
-  ],
-  'ingest/view-writer.ts#viewRowStatements': [
-    { tables: ['view_prompts','view_responses','view_tool_calls','view_plans'], order: 'unverified' },
   ],
   'auth/members-admin.ts#nameMemberFromLogin': [
     { tables: ['schema_meta'], order: 'unverified' },
@@ -70,7 +49,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/model-catalogs.ts#recordModelCatalog': [
     { tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' },
   ],
-  'read/view-store.ts#<module>': [
+  'read/catalog-store.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
   ],
   'core/runner-updates.ts#runnerUpdateReportStatements': [
@@ -100,7 +79,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['deployment_settings'], order: 'writer-revision' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],
-  'read/view-store.ts#prepareSwitchedSettings': [
+  'read/catalog-store.ts#prepareSwitchedSettings': [
     { tables: ['deployment_settings'], order: 'unverified' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],
@@ -149,14 +128,8 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'ingest/projections.ts#plan': [
     { tables: ['plans'], order: 'event-rank' },
   ],
-  'ingest/projections.ts#prompt': [
-    { tables: ['prompt_batches'], order: 'unverified' },
-  ],
   'ingest/projections.ts#sessionCommit': [
     { tables: ['knowledge_git_provenance'], order: 'event-rank' },
-  ],
-  'ingest/projections.ts#toolCall': [
-    { tables: ['tool_calls'], order: 'unverified' },
   ],
   'ingest/projections.ts#transcriptSegment': [
     { tables: ['transcripts'], order: 'unverified' },

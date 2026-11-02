@@ -47,7 +47,7 @@ function interleavedReads(db: RelationalStore, match: string): RelationalStore {
 const permutations = <T,>(values: T[]): T[][] => values.length === 0 ? [[]] : values.flatMap((v, i) => permutations(values.filter((_, j) => i !== j)).map(rest => [v, ...rest]));
 
 async function project(db: RelationalStore, kind: 'plan' | 'session.start' | 'session.end', id: string, at: number, payload: Record<string, unknown>): Promise<void> {
-  await db.prepare('INSERT OR REPLACE INTO events VALUES (?, ?, ?)').bind('p', id, id).run();
+  await db.prepare('INSERT OR REPLACE INTO events(project_id,event_id,ingest_nonce) VALUES (?, ?, ?)').bind('p', id, id).run();
   const e: CaptureEnvelope = { eventId: id, sessionId: 's', kind, createdAt: at, channel: 'http', producer: { adapter: 'test', version: '1' }, payload, payloadJson: JSON.stringify(payload), payloadBytes: new TextEncoder().encode(JSON.stringify(payload)) };
   const projection = planKind(kindSpec(kind)!, { db, ctx: { projectId: 'p', machineId: 'm', tokenId: id, now: at, nonce: id, actor: null }, e, p: payload, contentHash: String(payload.content ?? '') });
   await db.batch(projection.projections);
@@ -165,7 +165,7 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
 }
 
 export const RECONCILIATION_FIXTURE = [
-  'CREATE TABLE events(project_id TEXT,event_id TEXT,ingest_nonce TEXT,PRIMARY KEY(project_id,event_id))',
+  'CREATE TABLE events(project_id TEXT,event_id TEXT,ingest_nonce TEXT,session_id TEXT,kind TEXT,payload TEXT,payload_format TEXT,archived_prompt_origin TEXT,created_at INTEGER,PRIMARY KEY(project_id,event_id))',
   'CREATE TABLE projects(project_id TEXT PRIMARY KEY,name TEXT)',
   "INSERT INTO projects VALUES ('p','p')",
   'CREATE TABLE sessions(project_id TEXT,session_id TEXT,agent TEXT,branch TEXT,origin_path TEXT,parent_session_id TEXT,parent_reason TEXT,launch_parent_session_id TEXT,facts_event_id TEXT,started_at INTEGER,ended_at INTEGER,ended_by TEXT,titling_requested_at INTEGER,PRIMARY KEY(project_id,session_id))',

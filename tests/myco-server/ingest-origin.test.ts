@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
  * Who the Deployment writes as, and what that changes.
  *
@@ -92,7 +93,7 @@ describe('write origin', () => {
     await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(20), sessionId: 'old', kind: 'prompt', payload: { promptId: uuid(21), text: 'derived', origin: 'user' } }));
     const row = sqlite.query(`SELECT last_received_at FROM sessions WHERE session_id = 'old'`).get() as { last_received_at: number };
     expect(row.last_received_at).toBe(old);
-    expect(count(sqlite, 'prompt_batches')).toBe(1);
+    expect(count(sqlite, 'publish_queue')).toBe(1);
   });
 
   it('a member write still moves it, which is what the power depth reads', async () => {
@@ -109,7 +110,7 @@ describe('write origin', () => {
     const { sqlite, db, tokenId } = await rig();
     await ingestEvent(db, ctxFor(tokenId, 'server'), envelope({ eventId: uuid(24), sessionId: 'fresh', kind: 'prompt', payload: { promptId: uuid(25), text: 'derived', origin: 'user' } }));
     expect(count(sqlite, 'sessions')).toBe(1);
-    expect(count(sqlite, 'prompt_batches')).toBe(1);
+    expect(count(sqlite, 'publish_queue')).toBe(1);
   });
 
   it('holds every other admission for a server write: an archived Project still refuses it', async () => {
@@ -160,4 +161,16 @@ describe('planned writes', () => {
     expect(outcomes.every((o) => o.persisted)).toBe(true);
     expect(count(sqlite, 'events')).toBe(4);
   });
+});
+
+it('admits ordinary capture while import is disabled', async () => {
+  const r=await rig();
+  try {
+    await settingsWriter(r.db).setLeaf('import.enabled',false,'mem_machine_1',NOW);
+    await r.db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('proj_1',?,1,'text/plain',?,?,?)`).bind('b'.repeat(64),r.tokenId,NOW,uuid(998)).run();
+    const event=envelope({kind:'transcript.segment',payload:{transcriptId:'tx_'+'a'.repeat(32),agent:'cursor',blob:'b'.repeat(64),baseOffset:0,length:1}});
+    expect((await ingestEvent(r.db,ctxFor(r.tokenId),event)).persisted).toBe(true);
+    const refused=await ingestEvent(r.db,ctxFor(r.tokenId),{...event,eventId:uuid(999),sessionId:'imported',channel:'import',payload:{...(event.payload as Record<string,unknown>),transcriptId:'tx_'+'c'.repeat(32)}});
+    expect(refused).toMatchObject({persisted:false,code:'import_disabled'});
+  }finally{r.sqlite.close();}
 });

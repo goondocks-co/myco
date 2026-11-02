@@ -38,32 +38,6 @@ describe('ingest', () => {
     } finally { sqlite.close(); }
   });
 
-  it('refuses metadata replay when raw bytes change after the source proof was read', async () => {
-    const { db, sqlite } = realDb();
-    try {
-      const context = { ...ctx, writeOrigin: 'server' as const };
-      const original = { eventId: uuid(71), sessionId: 'replay-race', kind: 'tool.failure', createdAt: 1_000,
-        channel: 'cli', producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
-        payload: { toolCallId: uuid(72), toolName: 'Read', input: {}, success: false, errorMessage: 'original failure' } };
-      expect(await ingestEvent(db, context, original)).toEqual({ persisted: true, projected: true });
-      const replay = { ...original, payload: { ...original.payload, resultReason: 'reported' } };
-      const planned = await planEventWrite(db, context, replay);
-      if (!planned.ok) throw new Error('metadata replay fixture was refused before its race');
-      sqlite.query("UPDATE events SET payload=json_set(payload, '$.errorMessage', ?) WHERE event_id=?")
-        .run('changed after source proof', original.eventId);
-      const raw = sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(original.eventId);
-      const outcome = planned.write.interpret(await db.batch(planned.write.statements));
-      expect(outcome).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
-      expect(sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: null });
-      expect(sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(original.eventId)).toEqual(raw);
-      expect(await db.prepare(`SELECT ${planned.write.proof.sql} AS admitted`).bind(...planned.write.proof.params).first())
-        .toEqual({ admitted: 0 });
-      sqlite.query('UPDATE events SET payload=? WHERE event_id=?').run(JSON.stringify(original.payload), original.eventId);
-      expect(await ingestEvent(db, context, replay)).toEqual({ persisted: true, projected: true });
-      expect(sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'reported' });
-    } finally { sqlite.close(); }
-  });
-
   it('propagates a replay source lookup failure before preparing oversized tool input', async () => {
     const fixture = sqliteEnv();
     try {

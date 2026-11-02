@@ -25,7 +25,7 @@ describe('dashboard status and scope honesty on both store adapters', () => {
   for (const target of ['native', 'hosted-contract'] as const) {
     for (const [fact, sql] of [
       ['schema', /FROM schema_meta/],
-      ['transcriptBacklog', /FROM transcripts WHERE/],
+      ['transcriptBacklog', /FROM transcripts t/],
       ['projects', /FROM projects p/],
       ['workers', /worker_contacts w/],
       ['capture', /MAX\(last_received_at\)/],

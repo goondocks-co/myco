@@ -1,3 +1,5 @@
+import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
+import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './vector-index.js';
 import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
@@ -189,24 +191,13 @@ export async function publishFixture(f: { sqlite: Database; serverEnv: ServerEnv
   f.sqlite.run(`INSERT INTO transcript_publication (project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at)
     SELECT t.project_id,t.transcript_id,d.generation,t.session_id,t.size,'source-record-v1',1,1 FROM transcripts t
       JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
-    WHERE NOT EXISTS (SELECT 1 FROM transcript_segments x WHERE x.project_id=t.project_id AND x.transcript_id=t.transcript_id)
-    ON CONFLICT (project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset`);
-  await publishDocuments(f.serverEnv, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
-}
-
-/**
- * The documents a fixture's legacy rows convert into: each session with no document, or with one that holds nothing yet,
- * waits for conversion, and conversion runs to its end. A transcript's publication starts from its legacy cursor.
- */
-export async function convertFixture(f: { sqlite: Database; serverEnv: ServerEnv }, now = Date.now()): Promise<void> {
-  f.sqlite.run(`INSERT OR IGNORE INTO session_documents (project_id, session_id, state, updated_at) SELECT project_id, session_id, 'convert', 1 FROM sessions`);
-  f.sqlite.run(`UPDATE session_documents SET state = 'convert', generation = NULL, due_at = NULL WHERE next_chunk = 0
-    AND NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id = session_documents.project_id AND c.session_id = session_documents.session_id)`);
+    WHERE t.parse_error IS NULL AND t.parsed_offset=t.size AND NOT EXISTS (SELECT 1 FROM transcript_segments x WHERE x.project_id=t.project_id AND x.transcript_id=t.transcript_id)
+    ON CONFLICT (project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,state='active',failure=NULL`);
   for (let pass = 0; pass < 100; pass += 1) {
-    if ((await publishDocuments(f.serverEnv, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more) continue;
-    if (f.sqlite.query(`SELECT 1 FROM session_documents WHERE state = 'convert'`).get() === null) return;
+    const result = await publishDocuments(f.serverEnv, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    if (!result.more || result.changed === 0) return;
   }
-  throw new Error('fixture conversion did not finish');
+  throw new Error('fixture publication did not finish');
 }
 
 /** What a dispatch hands a runtime. */
@@ -262,4 +253,24 @@ export function turnOnGatedCapabilities(sqlite: Database, projects: readonly str
       sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, 1, 0, 'test')`, [project, capability]);
     }
   }
+}
+
+/** One document publication pass under a fixture's call and wall allowance. */
+export function publishFixtureDocuments(env: ServerEnv, now = Date.now(), options: {budget?: {calls:number;wallMs:number};clock?:()=>number} = {}) {
+  const clock = options.clock ?? Date.now;
+  return publishDocuments(env, now, {calls:options.budget?.calls ?? 500,deadline:clock()+(options.budget?.wallMs ?? 60_000),clock});
+}
+
+/** Reads published records through the document reader for fixture assertions. */
+export async function readFixtureRecords(env: Pick<ServerEnv,'db'|'blobs'>, projectId: string, sessionId?: string): Promise<DocRecord[]> {
+  const sessions = sessionId === undefined ? (await env.db.prepare(`SELECT session_id FROM session_documents WHERE project_id=? AND state='live'`).bind(projectId).all<{session_id:string}>()).results.map(row=>row.session_id) : [sessionId];
+  const records: DocRecord[] = [];
+  for(const id of sessions){
+    const doc = await SessionDocument.open(env,projectId,id);
+    if(doc===null)continue;
+    let after=-1;
+    for(;;){const read=await doc.chunksAfter(after,8);for(const chunk of read.chunks)for(const page of chunk.pages)records.push(...page.records);
+      if(!read.more||read.chunks.length===0)break;after=read.chunks.at(-1)!.chunkNo;}
+  }
+  return records.sort((a,b)=>a.created_at-b.created_at);
 }

@@ -50,11 +50,12 @@ export const rawBackfillParity: ParityScenario = {
       return rows;
     };
     const originals: Array<{ table: string; rows: Record<string, unknown>[]; hash: string }> = [];
-    for (const table of ['blobs', 'events', 'transcripts', 'transcript_segments', 'plans', 'prompt_batches', 'responses', 'tool_calls']) {
+    for (const table of ['blobs', 'events', 'transcripts', 'transcript_segments', 'plans']) {
       const rows = await sourceRows(table);
       originals.push({ table, rows, hash: await sha256Hex(JSON.stringify(rows)) });
     }
-    const triggerStatements = schema.statements.filter((statement) => statement.startsWith('CREATE TRIGGER'));
+    const triggerStatements = schema.statements.filter(statement => statement.startsWith('CREATE TRIGGER')
+      && provenanceTriggers.some(row => row.name === /CREATE TRIGGER (?:IF NOT EXISTS )?([A-Za-z0-9_]+)/.exec(statement)?.[1]));
     await writeStatements(triggerStatements);
     await target.sql(`UPDATE raw_provenance_backfill SET source = 0, cursor_project = '', cursor_id = '', complete = 0, updated_at = 0 WHERE id = 1`);
     const rows = async () => Number((await target.sql(`SELECT COUNT(*) AS n FROM raw_resources WHERE project_id IN (${BACKFILL_PROJECTS.map(lit).join(',')})`))[0]?.n);
@@ -87,8 +88,6 @@ export const rawBackfillParity: ParityScenario = {
     expect(await target.sql(`SELECT COUNT(*) AS n FROM events WHERE project_id IN (${BACKFILL_PROJECTS.map(lit).join(',')})`)).toEqual([{ n: PARITY_EVENTS + HISTORICAL_PLANS }]);
     expect(await target.sql(`SELECT kind, COUNT(*) AS n FROM processed_resources WHERE project_id IN (${BACKFILL_PROJECTS.map(lit).join(',')}) GROUP BY kind ORDER BY kind`)).toEqual([
       { kind: 'attachment', n: HISTORICAL_BLOBS }, { kind: 'plan', n: HISTORICAL_PLANS },
-      { kind: 'prompt', n: HISTORICAL_BLOBS }, { kind: 'response', n: HISTORICAL_BLOBS },
-      { kind: 'tool-input', n: HISTORICAL_BLOBS }, { kind: 'tool-output', n: HISTORICAL_BLOBS },
     ]);
     for (const original of originals) {
       const rows = await sourceRows(original.table);
