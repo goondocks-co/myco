@@ -46,9 +46,9 @@ export { SlideOver, type SlideOverProps } from './patterns/SlideOver';
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from './patterns/Breadcrumbs';
 export { focusRing, selectedRow, tapTarget } from './lib/classes';
 
-export { AppShell, BottomBar, useShellMenu, COMPACT_QUERY, PHONE_QUERY, type AppShellProps, type BottomBarItem } from './shell/AppShell';
+export { AppShell, BottomBar, useShellMenu, useNavRail, COMPACT_QUERY, PHONE_QUERY, type AppShellProps, type BottomBarItem } from './shell/AppShell';
 export {
-  Sidebar, NavItem, NavGroup, NavSection, SearchTrigger, Brand, type SidebarProps, type NavItemProps, type NavGroupProps, type NavSectionProps,
+  Sidebar, NavItem, NavGroup, NavSection, NavCollapseToggle, SearchTrigger, Brand, type SidebarProps, type NavItemProps, type NavGroupProps, type NavSectionProps,
 } from './shell/Sidebar';
 export { ScopeSwitcher, recencyOf, type ScopeSwitcherProps, type ScopeProject, type ScopeAll } from './shell/ScopeSwitcher';
 export { AccountMenu, type AccountMenuProps } from './shell/AccountMenu';

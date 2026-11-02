@@ -262,7 +262,7 @@ export interface TurnDetail {
   injection: TurnInjection | null;
   children: TurnChild[];
   metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
-  /** The prompt's tool calls in brief: counts by tool, failures, files changed and Myco calls. */
+  /** The prompt's tool calls in brief: counts by tool, failures, files named and Myco calls. */
   tools?: ToolSummary;
   context?: { subagents: number };
   answers?: PromptAnswer[];

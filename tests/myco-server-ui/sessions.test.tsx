@@ -1218,11 +1218,11 @@ describe('the session reading page', () => {
     expect(within(parent).queryByText('/fork')).toBeNull();
     expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
     expect(within(parent).getByText('Read × 2')).toBeTruthy();
-    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files it changed folded.
+    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files its tool inputs name folded.
     const summary = within(parent).getByTestId('tool-summary');
     expect(within(summary).getByText('myco_search')).toBeTruthy();
     expect(within(within(summary).getByRole('list', { name: 'Failed tool calls' })).getByTestId('tool-call-failed-call')).toBeTruthy();
-    expect(within(summary).getByText('1 file changed')).toBeTruthy();
+    expect(within(summary).getByText('1 file named')).toBeTruthy();
     expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
     expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
+import { rememberNavCollapsed } from '../../packages/myco-server/ui/src/lib/nav-collapse';
 import { recencyOf } from '../../packages/myco-server/ui/src/design';
 import { scopeAll } from '../../packages/myco-server/ui/src/routes/scope';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
@@ -31,6 +32,7 @@ afterEach(() => {
   window.matchMedia = originalMatchMedia;
   window.location.hash = '';
   forgetProject();
+  rememberNavCollapsed(false);
 });
 
 /** Answers each path from the table; anything else is 404. Restored after every test so no sibling sees it. */
@@ -186,6 +188,42 @@ describe('the nav', () => {
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1 @octocat' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Skip to content' }).getAttribute('href')).toBe('#main');
     expect(screen.getByRole('main').id).toBe('main');
+  });
+
+  it('collapses to an icon rail that survives a reload, and renders expanded when storage throws', async () => {
+    server(signedIn());
+    mount('/p/alpha/sessions');
+    const collapse = await screen.findByRole('button', { name: 'Collapse navigation' });
+    expect(collapse.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(collapse);
+    const nav = screen.getByRole('complementary', { name: 'Navigation' });
+    expect(nav.hasAttribute('data-nav-collapsed')).toBe(true);
+    // The rail keeps every control reachable by name, with its label as the tooltip.
+    expect(within(await within(nav).findByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Sessions' }).getAttribute('title')).toBe('Sessions');
+    expect(within(nav).getByRole('button', { name: 'Search' })).toBeTruthy();
+    expect(within(nav).getByRole('button', { name: /^Account and appearance for/ })).toBeTruthy();
+    expect(within(nav).getByRole('button', { name: 'Expand navigation' }).getAttribute('aria-expanded')).toBe('false');
+    cleanup();
+    mount('/p/alpha/sessions');
+    const reloaded = await screen.findByRole('button', { name: 'Expand navigation' });
+    expect(screen.getByRole('complementary', { name: 'Navigation' }).hasAttribute('data-nav-collapsed')).toBe(true);
+    fireEvent.click(reloaded);
+    expect(screen.getByRole('complementary', { name: 'Navigation' }).hasAttribute('data-nav-collapsed')).toBe(false);
+    cleanup();
+    mount('/p/alpha/sessions');
+    expect(await screen.findByRole('button', { name: 'Collapse navigation' })).toBeTruthy();
+
+    rememberNavCollapsed(true);
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')!;
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new DOMException('blocked', 'SecurityError'); } });
+    try {
+      cleanup();
+      mount('/p/alpha/sessions');
+      fireEvent.click(await screen.findByRole('button', { name: 'Collapse navigation' }));
+      expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', descriptor);
+    }
   });
 
   it('carries the count of what needs an admin beside Health, and nothing when nothing does', async () => {
