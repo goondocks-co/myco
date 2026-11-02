@@ -21,6 +21,23 @@ const PKG_ROOT = path.resolve(__dirname, '..');
 const TEMPLATES_DIR = path.resolve(PKG_ROOT, 'src/symbionts/templates');
 const OUTPUT = path.resolve(PKG_ROOT, 'src/symbionts/templates.generated.ts');
 
+/** Inline the member's raw-capture capability into standalone plugin hosts. */
+function syncCaptureStore() {
+  const file = path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet');
+  const source = readTextFile(file);
+  const capability = readTextFile(path.join(PKG_ROOT, 'src/member/plugin-capture-store.ts'))
+    .replace(/^import .*;\n/gm, '').replace(/^export /gm, '').replace(/\bfs\b/g, 'nodeFs').trim();
+  const startMarker = '// <myco:capture-store>';
+  const endMarker = '// </myco:capture-store>';
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  if (start < 0 || end < start) throw new Error('Missing capture-store markers');
+  const rendered = source.slice(0, start + startMarker.length) + `\n${capability}\n` + source.slice(end);
+  if (source === rendered) return;
+  if (process.argv.includes('--check')) throw new Error('Stale capture store; run npm run codegen');
+  fs.writeFileSync(file, rendered, 'utf-8');
+}
+
 /** Keep every native plugin's inline helper block equal to the shared source. */
 function syncSharedPluginHelpers() {
   const snippet = readTextFile(path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet')).trim();
@@ -67,6 +84,7 @@ ${serialized}
   return { content, count: entries.length };
 }
 
+syncCaptureStore();
 syncSharedPluginHelpers();
 const { content, count } = buildBundle();
 emitBundle({

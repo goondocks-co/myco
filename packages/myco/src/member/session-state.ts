@@ -76,7 +76,7 @@ export interface SessionState {
   startSettled?: true;
   /** The current prompt, minted by UserPromptSubmit. */
   promptId?: string;
-  /** sha256(text) → promptId for every prompt this session has captured. */
+  /** Capture receipt → canonical prompt id for every prompt this session has captured. */
   prompts: Record<string, string>;
   transcript?: TranscriptPointer;
   /** Prior managed transcript files for the same primary session, keyed by path. */

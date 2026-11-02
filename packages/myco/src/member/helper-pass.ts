@@ -12,6 +12,7 @@ import type { RegistryEntry } from './registry.js';
 import { applySpoolRetention } from './retention.js';
 import { liveRoutingEntry, routingEntry, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import { MemberSpool } from './spool.js';
+import { recoverPluginCapture } from './plugin-capture.js';
 import { backfillTranscriptPrompts } from './transcript-prompts.js';
 import { ServerClient, type FetchLike } from './transport.js';
 import { promptContextLogPrefix } from './context-diagnostics.js';
@@ -42,6 +43,7 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
       ? prefetchContext({ spool, client: new ServerClient(deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry, fetchImpl, { credentialSource: deps.entry === undefined ? 'registry' : 'env' }), serverUrl: entry.serverUrl, mycoHome, budget, now })
       : null;
     // Prompts a harness writes only to its transcript, appended before the drain that delivers them.
+    const pluginCapture = recoverPluginCapture(spool, now);
     backfillTranscriptPrompts(spool, now);
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
     let prefetched: Awaited<ReturnType<typeof prefetch>> = null;
@@ -53,7 +55,7 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     const shipped = backlog.sessions.reduce((n, s) => n + (s.events?.acked ?? 0) + (typeof s.transcripts === 'object' ? s.transcripts.shipped : 0), 0);
     const context = prefetched === null || prefetched.asked === 0 ? '' : `; context ${prefetched.answered} of ${prefetched.asked} served`;
     process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}${context}, ended by ${backlog.endedBy}\n`);
-    return { more: backlog.endedBy === 'budget' || prefetched?.stoppedBy === 'budget' };
+    return { more: pluginCapture.more || backlog.endedBy === 'budget' || prefetched?.stoppedBy === 'budget' };
   };
 }
 

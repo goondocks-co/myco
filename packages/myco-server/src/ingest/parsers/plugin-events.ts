@@ -37,6 +37,7 @@ interface PluginLine {
   type?: unknown;
   sessionId?: unknown;
   promptId?: unknown;
+  submissionId?: unknown;
   text?: unknown;
   name?: unknown;
   input?: unknown;
@@ -92,7 +93,13 @@ export function pluginEventsParser(options: {
       const events: DerivedEvent[] = [];
       let promptId = input.openPromptId;
       const continuation = parserContinuation(input);
+      const submissions: Record<string, string> = Object.assign(Object.create(null), input.state?.pluginPrompts);
+      if (input.state !== undefined) input.state.pluginPrompts = submissions;
       let planPosition = continuation.position;
+      const attributedPrompt = (line: PluginLine): string | undefined => {
+        const submission = str(line.submissionId);
+        return str(line.promptId) ?? (submission === undefined ? promptId : submissions[submission]);
+      };
 
       for (const { value, offset, undatedAt } of input.lines as readonly ParsedLine[]) {
         const line = value as PluginLine;
@@ -105,8 +112,14 @@ export function pluginEventsParser(options: {
         if (type === 'prompt') {
           const text = typeof line.text === 'string' ? strip(line.text) : '';
           if (text.trim() === '') continue;
+          const submission = str(line.submissionId);
+          if (submission !== undefined && submissions[submission] !== undefined) {
+            promptId = submissions[submission];
+            continue;
+          }
           const named = await promptIdentity(input, { scheme: input.scheme === 'stamp-or-offset-v2' ? 'stamp-or-offset-v2' : 'stamp-or-offset-v1', sessionId: input.sessionId, transcriptId: input.transcriptId, stamp: str(line.promptId), offset });
           promptId = named;
+          if (submission !== undefined) submissions[submission] = named;
           events.push({
             kind: 'prompt',
             payload: {
@@ -127,11 +140,11 @@ export function pluginEventsParser(options: {
           events.push({
             kind: 'response',
             source: recordSource(input, agent, { kind: 'response', record: value, block: 0 }),
-            payload: { promptId: str(line.promptId) ?? promptId, text },
+            payload: { promptId: attributedPrompt(line), text },
             createdAt,
             offset,
           });
-          const plans = await plansInText(text, planTags, input, agent, value, { promptId: str(line.promptId) ?? promptId, offset, createdAt }, planPosition);
+          const plans = await plansInText(text, planTags, input, agent, value, { promptId: attributedPrompt(line), offset, createdAt }, planPosition);
           events.push(...plans.events);
           planPosition = plans.next;
           continue;
@@ -148,7 +161,7 @@ export function pluginEventsParser(options: {
             legacyId: await legacyRecordId(input, { kind: 'tool-call', source, offset }),
             payload: {
               toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset }),
-              promptId: str(line.promptId) ?? promptId,
+              promptId: attributedPrompt(line),
               toolName: name.slice(0, 64),
               input: toolInput(line.input) ?? {},
               output,

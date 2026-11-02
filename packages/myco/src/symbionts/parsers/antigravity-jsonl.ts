@@ -25,7 +25,7 @@ export class AntigravityJsonlParser implements TranscriptParser {
     const lines = content.split('\n').filter(Boolean);
     const turns: TranscriptTurn[] = [];
     let current: TranscriptTurn | null = null;
-    const submissions = new Set<string>();
+    const submissions = new Set<number>();
 
     for (const line of lines) {
       let entry: Record<string, unknown>;
@@ -37,13 +37,13 @@ export class AntigravityJsonlParser implements TranscriptParser {
       if (type === 'USER_INPUT') {
         const rawContent = typeof entry.content === 'string' ? entry.content : '';
         const promptText = cleanAntigravityUserPrompt(rawContent).slice(0, PROMPT_PREVIEW_CHARS);
-        const submissionId = typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : undefined;
+        const submissionId = typeof entry.step_index === 'number' && Number.isSafeInteger(entry.step_index) && entry.step_index >= 0 ? entry.step_index : undefined;
         if (submissionId !== undefined) {
           if (submissions.has(submissionId)) continue;
           submissions.add(submissionId);
         }
         if (current) turns.push(current);
-        current = { prompt: promptText, toolCount: 0, timestamp };
+        current = { prompt: promptText, toolCount: 0, timestamp, ...(submissionId === undefined ? {} : { submissionKey: String(submissionId) }) };
         continue;
       }
 

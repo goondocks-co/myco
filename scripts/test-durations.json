@@ -166,7 +166,8 @@
     "local: uxserver review fixes, pinned Bun 1.4.0; session-long four critical native/Miniflare D1 flows measured 43647ms final body (bulk 1500 turns, growing 9000-call turn, catch-up fairness and missing object isolation included); file weighted 45000ms. No new test file or parity scenario.",
     "local: uxserver N1 tail completion regression on pinned Bun1.4.0, native SQLite and Miniflare D1, new flow measured2159ms; session-long plus gates ran46150ms. Session-long weight50000ms; no new test file or parity scenario.",
     "local: droptables parity upgrade path, pinned Bun 1.4.0 darwin-arm64. The seeded-upgrade boot now imports the previous 463 files as one d1 execute --file with the wrangler ledger seeded, then d1 migrations apply applies exactly the latest file; locally the import, the single-file apply and one omission probe measured through the same wrangler commands (see the lane report). Scenario weights return to 70000ms and 240000ms and their dedicated timeouts to 240000ms. No new test file or parity scenario.",
-    "local: #1944 t1 capture fixes, pinned Bun1.4.0 darwin-arm64 via npm test. New pasted-plans file measured168ms Bun/183ms runner for two real hook subprocess probes (46.68ms/45.13ms bodies);1000ms covers twice measured time plus startup. Expanded plugin recovery/transcript/shared-helper74 tests measured1840ms Bun/1859ms runner; recovery4000ms covers twice the entire three-file run plus startup. Antigravity additions are sub-millisecond in existing712ms weight. No new parity scenario; parity weights unchanged."
+    "local: #1944 t1 capture fixes, pinned Bun1.4.0 darwin-arm64 via npm test. New pasted-plans file measured168ms Bun/183ms runner for two real hook subprocess probes (46.68ms/45.13ms bodies);1000ms covers twice measured time plus startup. Expanded plugin recovery/transcript/shared-helper74 tests measured1840ms Bun/1859ms runner; recovery4000ms covers twice the entire three-file run plus startup. Antigravity additions are sub-millisecond in existing712ms weight. No new parity scenario; parity weights unchanged.",
+    "local: #2055 CI and Opus capture review correction, pinned Bun1.4.0 darwin-arm64 through npm test with only the Wrangler Worker-carrier bootstrap omitted by a scratch preload. Focused four-file run132 cases14810ms: context-render bodies8008ms, pasted-plans2847ms, plugin-capture-recovery2667ms, parsers130ms. Weights20000/6000/6000/1000ms cover the expanded real-hook/local-Deployment paths and startup; pasted plans include two300KB bodies read through the processed-body reader. No new test file or parity scenario; parity weights unchanged."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -263,7 +264,7 @@
     "tests/member/claim-takeover.test.ts": 16504,
     "tests/member/claims-home-pin.test.ts": 729,
     "tests/member/cli.test.ts": 2373,
-    "tests/member/context-render.test.ts": 3963,
+    "tests/member/context-render.test.ts": 20000,
     "tests/member/credential.test.ts": 2116,
     "tests/member/cutover-backup.test.ts": 7735,
     "tests/member/daemon-refusal.test.ts": 1005,
@@ -655,7 +656,7 @@
     "tests/myco-server/owner-lifecycle.test.ts": 2235,
     "tests/myco-server/owner-review-probe.test.ts": 610,
     "tests/myco-server/parser-payload-bounds.test.ts": 480,
-    "tests/myco-server/parsers.test.ts": 181,
+    "tests/myco-server/parsers.test.ts": 1000,
     "tests/myco-server/people-and-machines.test.ts": 725,
     "tests/myco-server/pipeline.test.ts": 36,
     "tests/myco-server/plan-status-intent.test.ts": 22,
@@ -953,7 +954,7 @@
     "tests/symbionts/parsers/standard-jsonl.test.ts": 712,
     "tests/symbionts/pi-binary-resolution.test.ts": 610,
     "tests/symbionts/pi-member-contract.test.ts": 1189,
-    "tests/symbionts/plugin-capture-recovery.test.ts": 4000,
+    "tests/symbionts/plugin-capture-recovery.test.ts": 6000,
     "tests/symbionts/plugin-home-agreement.test.ts": 1134,
     "tests/symbionts/plugin-shared-helpers.test.ts": 522,
     "tests/symbionts/plugin-transcript.test.ts": 1257,
@@ -996,7 +997,7 @@
     "tests/myco-server/session-documents-read.test.ts": 15050,
     "tests/myco-server/learning-documents.test.ts": 33075,
     "tests/myco-server/parser-continuity.test.ts": 1500,
-    "tests/member/pasted-plans.test.ts": 1000
+    "tests/member/pasted-plans.test.ts": 6000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

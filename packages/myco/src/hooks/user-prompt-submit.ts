@@ -1,12 +1,11 @@
 import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
-import { contextDeliveredEvent, deriveId, mintId, planEvent, planKeyForPromptTag, planKeyForTag, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
+import { contextDeliveredEvent, deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
 import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
-import { firstHeading, sha256Text } from '../member/text.js';
+import { sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
-import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 import {
@@ -147,8 +146,6 @@ export async function main(opts: HookMainOptions = {}) {
     const capture = (naming: PromptNaming, state: SessionState): Required<Pick<HookOutcome, 'events' | 'record' | 'response' | 'ask'>> => {
       const promptId = naming.promptId;
       turnPromptId = promptId;
-      // A pasted plan's key is anchored to this prompt's id, or to one minted for the key alone where the prompt has none.
-      const planAnchor = promptId ?? mintId();
       // A symbiont whose transcript carries this turn writes no row here and
       // keeps no receipt: the id travels back on the response, a runtime that
       // writes its own transcript stamps it on the turn's lines, and the server's
@@ -159,32 +156,6 @@ export async function main(opts: HookMainOptions = {}) {
       const events: OutboundEvent[] = transcriptWritesRows || promptId === undefined
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
-      // A plan a person pasted inside a tag envelope is captured with the prompt,
-      // whichever side writes the turn: the Deployment's parse scans assistant
-      // text for plans and a pasted one is the person's. It keys on the prompt
-      // where the transcript writes the turn, and on the session's own tag count
-      // where the hooks do, so it never takes a key the parse also derives. Text
-      // a runtime injected around a person's prompt is never scanned: a system
-      // reminder that quotes a plan is not a plan.
-      const plans: Array<[string, string]> = [];
-      if (human) {
-        let position = state.planTagCount;
-        for (const tag of HOOK_CONFIG[agent]?.planTags ?? []) {
-          const regex = planTagEnvelopeRegex(tag);
-          let occurrence = 0;
-          let match: RegExpExecArray | null;
-          while ((match = regex.exec(text)) !== null) {
-            const planContent = match[1].trim();
-            if (!planContent) continue;
-            const occurrenceKey = planKeyForPromptTag(sessionId, tag, planAnchor, occurrence++);
-            if (state.pastedPlans[occurrenceKey]) continue;
-            const planKey = transcriptWritesRows ? occurrenceKey : planKeyForTag(sessionId, tag, position);
-            position += 1;
-            plans.push([occurrenceKey, planKey]);
-            events.push(planEvent(ctx, { planKey, content: planContent, title: firstHeading(planContent), status: 'active', originPath: `transcript:${tag}`, tags: [tag], promptId: naming.shared ? promptId : undefined }));
-          }
-        }
-      }
       const served = withServed(spool.dir, sessionId, state, { ...response, ...(promptId === undefined ? {} : { promptId }) });
       // The rows the rendered answer named, reported where they reached the agent, in the append that records the render.
       const delivered = served.rendered;
@@ -206,9 +177,7 @@ export async function main(opts: HookMainOptions = {}) {
           if (!transcriptWritesRows && promptId !== undefined) {
             next.promptId = promptId;
             next.prompts[hash] = promptId;
-            next.planTagCount += plans.length;
           }
-          for (const [occurrenceKey, planKey] of plans) next.pastedPlans[occurrenceKey] = planKey;
           if (delivered !== undefined) next.renderedAsk = delivered.ask;
         },
         response: served.response,

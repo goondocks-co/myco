@@ -34,7 +34,7 @@ import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
-  callForResult, recordId, recordSource, optionalRecordSource, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, recordId, recordSource, optionalRecordSource, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, pastedPlansInPrompt, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type ReplyPart, type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -184,13 +184,14 @@ export const claudeCodeParser: TranscriptParser = {
 
     /** A claude-v2 prompt row, with the source its identity is derived from; it becomes the current prompt unless it is context. */
     const v2Prompt = async (row: { id: string; text: string; origin: WirePromptOrigin; kind: string; claim: PromptClaim; key?: string; thread: string; record?: string },
-      createdAt: number, offset: number): Promise<void> => {
+      createdAt: number, offset: number, sourceRecord: Record<string, unknown>): Promise<void> => {
       await flushReply();
       events.push({ kind: 'prompt', payload: {
         promptId: row.id, text: row.text, origin: row.origin, promptKind: row.kind, claim: row.claim,
         ...(row.key === undefined ? {} : { sourceKey: row.key }), sourceThread: row.thread, ...(row.record === undefined ? {} : { sourceRecord: row.record }),
       }, createdAt, offset, ...(row.claim === 'context' ? { opensTurn: false } : {}) });
       if (row.claim !== 'context') promptId = row.id;
+      if (row.claim !== 'context' && row.origin === 'user') events.push(...await pastedPlansInPrompt(row.text, this.planTags, input, this.agent, sourceRecord, { promptId: row.id, offset, createdAt }));
     };
 
     const flushReply = async (): Promise<void> => {
@@ -224,7 +225,7 @@ export const claudeCodeParser: TranscriptParser = {
           if (owner === undefined || owner === uuid) {
             if (uuid !== undefined) claimed.set(key, uuid);
             await v2Prompt({ id: await claudeRecordIdFor(sessionId, { owner: key }, input), text, origin: disposition.origin, kind: disposition.kind,
-              claim: 'owner', key, thread: MAIN_THREAD, record: uuid }, createdAt, offset);
+              claim: 'owner', key, thread: MAIN_THREAD, record: uuid }, createdAt, offset, value);
             continue;
           }
         }
@@ -234,7 +235,7 @@ export const claudeCodeParser: TranscriptParser = {
         const label = disposition.as === 'context' ? { kind: 'compact_summary', origin: 'system' as const }
           : disposition.as === 'claimant' && !disposition.opener ? { kind: envelopeLabel(text) ?? 'unrecognized', origin: envelopeLabel(text) === undefined ? 'system' as const : 'agent_dispatch' as const }
           : { kind: disposition.kind, origin: disposition.origin };
-        await v2Prompt({ id: await claudeRecordIdFor(sessionId, { thread, uuid }, input), text, ...label, claim, key, thread, record: uuid }, createdAt, offset);
+        await v2Prompt({ id: await claudeRecordIdFor(sessionId, { thread, uuid }, input), text, ...label, claim, key, thread, record: uuid }, createdAt, offset, value);
         continue;
       }
 
@@ -246,6 +247,7 @@ export const claudeCodeParser: TranscriptParser = {
         if (text.trim() !== '' && key !== undefined) {
           promptId = await promptIdFor(sessionId, shape, key, input);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: shape === 'user_prompt' ? 'user' : 'agent_dispatch', promptKind: shape }, createdAt, offset });
+          if (shape === 'user_prompt') events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
         }
         continue;
       }
@@ -256,10 +258,11 @@ export const claudeCodeParser: TranscriptParser = {
         const key = str(value.uuid);
         if (text.trim() !== '' && key !== undefined && v2) {
           await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }, input), text, origin: 'user', kind: 'queued_command',
-            claim: 'owner', key, thread: str(value.agentId) ?? MAIN_THREAD, record: key }, createdAt, offset);
+            claim: 'owner', key, thread: str(value.agentId) ?? MAIN_THREAD, record: key }, createdAt, offset, value);
         } else if (text.trim() !== '' && key !== undefined) {
           promptId = await promptIdFor(sessionId, 'queued_command', key, input);
           events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'queued_command' }, createdAt, offset });
+          events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
         }
         continue;
       }

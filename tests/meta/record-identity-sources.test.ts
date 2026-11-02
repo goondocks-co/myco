@@ -38,7 +38,7 @@ const resolvedSymbol = (checker: ts.TypeChecker, node: ts.Node): ts.Symbol | und
       : ts.isShorthandPropertyAssignment(parent) ? checker.getShorthandAssignmentValueSymbol(parent) : checker.getSymbolAtLocation(node);
   return symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
 };
-const RECORD_ENTRIES = new Set(['canonicalRecordId', 'deriveLegacyRecordId', 'canonicalPromptId'].map(name => `myco-shared/src/record-identity.ts#${name}`));
+const RECORD_ENTRIES = new Set(['canonicalRecordId', 'deriveLegacyRecordId', 'canonicalPromptId', 'promptPlanKey'].map(name => `myco-shared/src/record-identity.ts#${name}`));
 
 /** Non-parser identity owners and their fixed domains. */
 const NON_PARSER_ENTRIES: Readonly<Record<string, readonly string[]>> = {

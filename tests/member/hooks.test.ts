@@ -250,21 +250,25 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     } finally { cleanup(); }
   });
 
-  it('captures a plan a person pasted in a tag envelope, keyed by the prompt so it never meets a key the parse derives, and never one a runtime injected', async () => {
-    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
+  it('captures pasted plans from their native submission once and excludes injected context', async () => {
+    const tx = transcript([{ type: 'user', uuid: 'initial', promptId: 'initial-key', message: { role: 'user', content: 'x' } }]);
     await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
-    await run('user-prompt-submit', { transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>', prompt_id: 'k-pasted' });
-    // The prompt's id is the one the transcript's parse derives, so the plan is keyed by it and names it.
+    const text = 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>';
+    const input = { transcript_path: tx, prompt: text, prompt_id: 'k-pasted' };
+    await run('user-prompt-submit', input);
+    await run('user-prompt-submit', input);
     const asked = JSON.parse(fetchSpy.requests.find((r) => r.path === '/context/prompt')!.body!) as { promptId: string };
-    expect(asked.promptId).toBe(await promptIdFor(session, 'user_prompt', 'k-pasted'));
-    const row = rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
-    expect(row).toEqual({ plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: asked.promptId });
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
-    await run('user-prompt-submit', { transcript_path: tx, prompt: '<system-reminder>quoting <ultraplan>\n# Quoted\n</ultraplan></system-reminder>' });
-    // Replaying the same submission retains one plan.
-    await run('user-prompt-submit', { transcript_path: tx, prompt_id: 'k-pasted', prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
+    fs.appendFileSync(tx, JSON.stringify({ type: 'user', uuid: 'pasted-record', promptId: 'k-pasted', message: { role: 'user', content: text } }) + '\n');
+    fs.appendFileSync(tx, JSON.stringify({ type: 'user', uuid: 'injected-record', promptId: 'injected', isMeta: true, message: { role: 'user', content: '<system-reminder>quoting <ultraplan># Quoted</ultraplan></system-reminder>' } }) + '\n');
+    await run('stop', { transcript_path: tx, last_assistant_message: '' });
+    await parseAll();
+    expect(rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get()).toEqual({
+      plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: asked.promptId,
+    });
+    await run('stop', { transcript_path: tx, last_assistant_message: '' });
+    await parseAll();
     expect(rig.rows('plans')).toBe(1);
-    expect(memberKinds()).toEqual(['session.start', 'plan']);
+    expect(memberKinds().filter(kind => kind === 'plan')).toEqual([]);
   });
 
   it('ships the subagent transcripts beside the session under their own identity and role, and the parse reads them', async () => {

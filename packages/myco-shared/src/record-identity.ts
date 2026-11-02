@@ -261,3 +261,10 @@ export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdR
       return underived(request);
   }
 }
+
+
+/** A pasted tag occurrence belongs to its canonical human submission. */
+export function promptPlanKey<R>(hash: PromptIdHasher<R>, sessionId: string, tag: string, promptId: string, occurrence = 0): R {
+  return occurrence === 0 ? hash('plan-tag', sessionId, tag, 'prompt', promptId)
+    : hash('plan-tag', sessionId, tag, 'prompt', promptId, String(occurrence));
+}

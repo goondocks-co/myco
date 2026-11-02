@@ -60,7 +60,9 @@ function writePin(dir: string, home: string, mode = 0o644): string {
  */
 function driverScript(): string {
   const snippet = fs.readFileSync(SNIPPET, 'utf-8').replace('{{mycoCredentialSource}}', 'registry');
-  return `import { readFileSync, appendFileSync, mkdirSync, statSync, lstatSync, accessSync, openSync, closeSync, writeSync, unlinkSync, constants as fsConstants } from 'node:fs';
+  return `import nodeFs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, appendFileSync, mkdirSync, statSync, lstatSync, accessSync, openSync, closeSync, writeSync, unlinkSync, constants as fsConstants } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';

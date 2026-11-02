@@ -18,7 +18,8 @@
  */
 import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme, type PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
-import { canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
+import { promptPlanKey, canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
+import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { planEnvelope } from '@goondocks/myco-shared/prompt-text';
 import type { TranscriptRole, ToolResultReason } from '@goondocks/myco-shared/member-protocol';
@@ -106,6 +107,8 @@ export interface PendingCall {
 }
 
 export interface ParserState {
+  /** Native plugin submission keys already assigned canonical prompt ids. */
+  pluginPrompts?: Record<string, string>;
   unattributed?:{offset:number;kind:'prompt'}[];
   pending?: Record<string, PendingCall>;
   findings?: {kind:'key_reuse';recordId:string;offset:number}[];
@@ -477,7 +480,7 @@ export function firstHeading(content: string): string | undefined {
 /** The plans in each declared envelope, named by its source-record coordinate. */
 export async function plansInText(
   text: string, tags: readonly string[], input: ParserInput, agent: string, record: Record<string, unknown>,
-  at: { promptId?: string; offset: number; createdAt: number }, from: number, block?: number,
+  at: { promptId?: string; offset: number; createdAt: number }, from: number, block?: number, sourceKind: 'assistant' | 'prompt' = 'assistant',
 ): Promise<{ events: DerivedEvent[]; next: number }> {
   const events: DerivedEvent[] = [];
   let position = from;
@@ -493,11 +496,13 @@ export async function plansInText(
       const coordinate = recordPlanCoordinate({ declaration: recordDeclaration(agent),
         scheme: input.recordScheme, block: block ?? 0, matchIndex: rawMatchIndex });
       const plan = { tag, coordinate, legacyPosition: position };
-      const legacyId = await legacyRecordId(input, { kind: 'plan', offset: at.offset, ...plan });
+      const legacyId = sourceKind === 'prompt' && at.promptId !== undefined
+        ? await promptPlanKey(uuidv5, input.sessionId, tag, at.promptId, rawMatchIndex)
+        : await legacyRecordId(input, { kind: 'plan', offset: at.offset, ...plan });
       events.push({
         kind: 'plan', source, coordinate, legacyId,
         payload: {
-          planKey: source === undefined ? legacyId : await recordId(input, agent, { kind: 'plan', source, offset: at.offset, ...plan }),
+          planKey: sourceKind === 'prompt' || source === undefined ? legacyId : await recordId(input, agent, { kind: 'plan', source, offset: at.offset, ...plan }),
           promptId: at.promptId,
           title: firstHeading(content),
           content,
@@ -513,4 +518,13 @@ export async function plansInText(
     }
   }
   return { events, next: position };
+}
+
+
+/** Derive pasted plans from the human submission's native record. */
+export async function pastedPlansInPrompt(text: string, tags: readonly string[], input: ParserInput, agent: string,
+  record: Record<string, unknown>, at: { promptId: string; offset: number; createdAt: number }): Promise<DerivedEvent[]> {
+  const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, agent, { prompt: text, transcriptPath: input.sessionId, record, transcriptMeta: input.transcriptMeta });
+  if (decision.action === 'drop' || (decision.origin !== undefined && decision.origin !== 'human')) return [];
+  return (await plansInText(decision.prompt, tags, input, agent, record, at, 0, 0, 'prompt')).events;
 }

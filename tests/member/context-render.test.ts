@@ -578,7 +578,7 @@ describe('Deployment feature scope', () => {
 });
 
 describe('prompts a harness writes only to its transcript', () => {
-  it('are read by the helper after the invocation\'s hook, each once, stamped with the invocation\'s time', async () => {
+  it('capture each source occurrence once through the helper, including equal text', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-agy-tx-'));
     scratch.push(dir);
     const tx = path.join(dir, 'transcript_full.jsonl');
@@ -603,8 +603,42 @@ describe('prompts a harness writes only to its transcript', () => {
     expect(readSessionState(spool().dir, 'sess-agy').promptBackfill).toBeUndefined();
 
     // A later invocation reads the transcript again and captures only what is new.
-    fs.appendFileSync(tx, `${JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '<USER_REQUEST>second turn</USER_REQUEST>', created_at: 't3' })}\n`);
+    fs.appendFileSync(tx, `${JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>', created_at: 't3' })}\n`);
     await invoke();
-    expect((rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts ORDER BY preview`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'second turn']);
+    expect((rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts ORDER BY preview`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'first turn']);
+    const promptIds = () => (rig.env.sqlite.query(`SELECT payload FROM events WHERE kind='prompt' ORDER BY rowid`).all() as Array<{ payload: string }>)
+      .map(row => (JSON.parse(row.payload) as { promptId: string }).promptId);
+    const captured = promptIds();
+    expect(captured).toHaveLength(2);
+    expect(new Set(captured).size).toBe(2);
+    await invoke();
+    expect(promptIds()).toEqual(captured);
   });
+});
+
+it('the member helper ships a final retained plugin turn without another plugin callback', async () => {
+  const { snippetModule } = await import('../support/plugin-snippet.js');
+  const { routingKey } = await import('@myco/member/routing.js');
+  const route = spool().routing!;
+  const { prepareMemberTranscriptScope } = await import('@myco/member/transcript-routing.js');
+  const key = prepareMemberTranscriptScope(route, mycoHome);
+  const claim = path.join(mycoHome, 'member', 'claims', key, 'cline-final-inbox.lock');
+  fs.mkdirSync(path.dirname(claim), { recursive: true });
+  fs.writeFileSync(claim, `unverified-writer ${Date.now()}`, { mode: 0o600 });
+  const wakes: Record<string, unknown>[] = [];
+  const subject = snippetModule({ ...process.env, MYCO_HOME: mycoHome }, [], [], (_bin, args, options) => {
+    if (args[1] === 'stop') wakes.push(JSON.parse((options as { input: string }).input));
+    return { status: 0, stdout: '{}', stderr: '' };
+  }, key, Date.now, fs, () => 0, 'cline');
+  const snapshot = { conversationId: 'final-inbox' };
+  await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'source-1', role: 'user', content: [{ type: 'text', text: 'final prompt' }] }] } });
+  await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'reply-1', content: [{ type: 'text', text: 'final reply' }] } });
+  expect(wakes).toHaveLength(2);
+  await runHook('stop', wakes.at(-1)!, { helpers: 'run', fetch: rig.fetch, symbiont: 'cline' });
+  await publishFixture(rig.env);
+  const prompts = rig.env.sqlite.query('SELECT preview FROM session_prompts WHERE session_id=?').all('final-inbox') as Array<{ preview: string }>;
+  expect(prompts.map(row => row.preview)).toEqual(['final prompt']);
+  const tx = subject.transcriptPathFor(process.cwd(), 'cline', 'final-inbox');
+  const raw = fs.readFileSync(tx, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(raw.filter(row => row.type === 'prompt' || row.type === 'response').map(row => row.text)).toEqual(['final prompt', 'final reply']);
 });

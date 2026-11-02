@@ -53,18 +53,7 @@ describe('native plugin transcripts', () => {
     // template's own `transcriptPathFor` is evaluated out of the shipped
     // snippet, and the manifest's root through the discovery resolver. A
     // rename inside the snippet moves one and not the other.
-    const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
-    const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet);
-    const composed = new Function(
-      'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
-      'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'spawnSync', 'process',
-      `${js}; return transcriptPathFor;`,
-    )(
-      fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
-      fs.constants, path.join, path.dirname, path.resolve, () => ENV.HOME,
-      () => ({ status: 0, stdout: `${ROUTING_KEY}\n`, stderr: '' }),
-      { ...process, env: ENV, platform: process.platform },
-    ) as (d: string, a: string, s: string) => string;
+    const composed = snippetModule(ENV).transcriptPathFor;
 
     for (const agent of NATIVE_PLUGIN_AGENTS) {
       const discovery = manifestTranscriptDiscovery(agent)!;
@@ -314,6 +303,7 @@ describe('one instance speaks for a session', () => {
     const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8')
       .split('{{mycoCredentialSource}}').join('registry');
     fs.writeFileSync(script, [
+      'import nodeFs from "node:fs";',
       'import { spawnSync } from "node:child_process";',
       'import { accessSync, appendFileSync, closeSync, constants as fsConstants, fstatSync, readSync, renameSync, rmdirSync, readdirSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";',
       'import { homedir } from "node:os";',
