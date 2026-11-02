@@ -998,6 +998,58 @@ describe('the session reading page', () => {
     expect(screen.getByTestId('turn-plans').children).toHaveLength(51);
   });
 
+  it('reads on through a wide turn\'s pages for one ask, at most four of them, and says when the bound stopped it', async () => {
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const plan = { planKey: 'mid', promptId: P1, title: 'Mid-turn plan', status: 'active', content: null, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW };
+    const wide = (planAt: number) => {
+      const reads: Record<string, () => Response> = {};
+      for (let at = 1; at <= 8; at += 1) reads[`${turnPath}?collection=plans&cursor=p${at}`] = () => page(at === planAt ? [plan] : [], `p${at + 1}`);
+      return routes({
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 1, toolCallCount: 240 })]),
+        [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'A wide turn', blobKey: null, origin: 'user', createdAt: NOW }, responses: [], attachments: [], children: [], plans: [], injection: null, toolCounts: { total: 240, shown: 18 }, cursors: { plans: 'p1' } }),
+        ...reads,
+      });
+    };
+    const planReads = (requested: string[]) => requested.filter((path) => path.includes('collection=plans')).length;
+    const near = server(wide(3));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Mid-turn plan')).toBeTruthy();
+    expect(planReads(near.requested)).toBe(3);
+    expect(screen.queryByRole('button', { name: 'Show more plans' })).toBeNull();
+    cleanup();
+
+    const far = server(wide(6));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Still reading this turn…')).toBeTruthy();
+    expect(planReads(far.requested)).toBe(4);
+    expect(screen.queryByText('Mid-turn plan')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Mid-turn plan')).toBeTruthy();
+    expect(planReads(far.requested)).toBe(6);
+    expect(screen.queryByText('Still reading this turn…')).toBeNull();
+  });
+
+  it('shows a reply without the plan envelopes its agent declares, the plan keeping their content', async () => {
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const reply = (id: string, text: string) => ({ responseId: id, promptId: P1, text, blobKey: null, createdAt: NOW, orderedAt: NOW });
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 1, responseCount: 2, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'Plan it', blobKey: null, origin: 'user', createdAt: NOW }, attachments: [], children: [], injection: null,
+        responses: [reply('only', '<ultraplan>\n# Sweep plan\n</ultraplan>'), reply('said', 'Looking now.\n\n<ultraplan>\n# Sweep plan\n- [ ] add the leaf\n</ultraplan>\n\nDone <ultraplan>unclosed')],
+        plans: [{ planKey: 'sweep', promptId: P1, title: 'Sweep plan', status: 'active', content: '# Sweep plan', blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW }] }),
+    }));
+    mount('/p/x/sessions/s1');
+    const shown = await screen.findByTestId('turn-response');
+    expect(shown.textContent).toContain('Looking now.');
+    expect(shown.textContent).toContain('Done <ultraplan>unclosed');
+    expect(shown.textContent).not.toContain('add the leaf');
+    expect(within(screen.getByTestId('turn-plans')).getByText('Sweep plan')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '1 earlier reply' }));
+    expect(await screen.findByText('This reply is a plan.')).toBeTruthy();
+  });
+
   it('offers a wide turn\'s unread pages only for what the turn holds', async () => {
     const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
     server(routes({

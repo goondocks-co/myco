@@ -5,6 +5,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "antigravity",
     "rules": [],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "view_file",
@@ -188,6 +189,9 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "set_origin": "system"
       }
     ],
+    "planTags": [
+      "ultraplan"
+    ],
     "fileTools": [
       {
         "tool": "Read",
@@ -340,6 +344,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true
       }
     ],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "read_files",
@@ -542,6 +547,9 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "set_origin": "system"
       }
     ],
+    "planTags": [
+      "proposed_plan"
+    ],
     "fileTools": [
       {
         "tool": "apply_patch",
@@ -633,6 +641,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "copilot",
     "rules": [],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "read_file",
@@ -700,6 +709,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true
       }
     ],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "Read",
@@ -767,6 +777,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "opencode",
     "rules": [],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "read",
@@ -835,6 +846,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "pi",
     "rules": [],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "read",
@@ -917,6 +929,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "windsurf",
     "rules": [],
+    "planTags": [],
     "fileTools": [
       {
         "tool": "post_write_code",

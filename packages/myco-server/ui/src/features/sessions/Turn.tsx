@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, ReadState, StatusChip, TypeChip } from '../../design';
+import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, Markdown, ReadState, StatusChip, TypeChip } from '../../design';
 import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator, type TurnPrompt } from '../../hooks/use-sessions';
 import { useTurnCollection } from '../../hooks/use-turn-collection';
 import { cn } from '../../lib/cn';
@@ -9,7 +9,7 @@ import { TextOrBlob } from './StoredText';
 import { ToolUse } from './ToolCalls';
 import { formatElapsed } from '../../lib/format';
 import { projectPath, PLAN_SUFFIX } from '../../routes/nav';
-import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
+import { displayPrompt, promptDisplay, replyDisplay } from '@goondocks/myco-shared/prompt-text';
 import { clockTime, count, dateTime, sporeTypeWord } from './words';
 
 /** How much of a prompt the list row carries, and so what a turn shows before its body is read. */
@@ -45,6 +45,7 @@ function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cur
     {unloaded && pages.pending && pages.rows.length === 0 && <p role="status" className="t-small text-muted">Reading {label}…</p>}
     {children(pages.rows)}
     {pages.error && <p role="alert" className="t-small text-bad">More {label} could not be read. The items above are still available.</p>}
+    {pages.stalled && hasMore && !pages.pending && <p role="status" className="t-small text-muted">Still reading this turn…</p>}
     {(hasMore || pages.error) && <Button variant="secondary" className="w-fit" onClick={pages.error ? pages.retry : pages.more} disabled={pages.pending}>
       {pages.pending ? `Reading more ${label}…` : pages.error ? `Retry reading ${label}` : `Show more ${label}`}
     </Button>}
@@ -73,17 +74,20 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
   );
 }
 
-function Reply({ projectId, sessionId, reply }: { projectId: string; sessionId: string; reply: ResponseRow }) {
+function Reply({ projectId, sessionId, agent, reply }: { projectId: string; sessionId: string; agent: string | null; reply: ResponseRow }) {
   return (
     <div className="flex flex-col gap-s1" data-testid="turn-response">
       <time dateTime={new Date(reply.createdAt).toISOString()} className="t-meta text-faint">{clockTime(reply.createdAt)}</time>
-      <TextOrBlob projectId={projectId} text={reply.text} blobKey={reply.blobKey} body={{ kind: 'response', id: reply.responseId, at: reply.locator === undefined ? undefined : { ...reply.locator, sessionId } }} markdown />
+      <TextOrBlob projectId={projectId} text={reply.text} blobKey={reply.blobKey} body={{ kind: 'response', id: reply.responseId, at: reply.locator === undefined ? undefined : { ...reply.locator, sessionId } }} render={(text) => {
+        const shown = replyDisplay(text, agent);
+        return shown === '' ? <p className="t-small text-muted">This reply is a plan.</p> : <Markdown content={shown} />;
+      }} />
     </div>
   );
 }
 
 /** The last reply in view, with those before it folded above it. */
-function Replies({ projectId, sessionId, responses }: { projectId: string; sessionId: string; responses: ResponseRow[] }) {
+function Replies({ projectId, sessionId, agent, responses }: { projectId: string; sessionId: string; agent: string | null; responses: ResponseRow[] }) {
   const inOrder = [...responses].sort((a, b) => a.orderedAt - b.orderedAt);
   const last = inOrder.at(-1);
   if (last === undefined) return null;
@@ -92,10 +96,10 @@ function Replies({ projectId, sessionId, responses }: { projectId: string; sessi
     <div className="flex flex-col gap-s3">
       {earlier.length > 0 && (
         <Disclosure summary={count(earlier.length, 'earlier reply', 'earlier replies')}>
-          <div className="flex flex-col gap-s4">{earlier.map((reply) => <Reply key={reply.responseId} projectId={projectId} sessionId={sessionId} reply={reply} />)}</div>
+          <div className="flex flex-col gap-s4">{earlier.map((reply) => <Reply key={reply.responseId} projectId={projectId} sessionId={sessionId} agent={agent} reply={reply} />)}</div>
         </Disclosure>
       )}
-      <Reply projectId={projectId} sessionId={sessionId} reply={last} />
+      <Reply projectId={projectId} sessionId={sessionId} agent={agent} reply={last} />
     </div>
   );
 }
@@ -255,7 +259,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
       {(rows) => rows.length > 0 && (
         <section aria-label="Reply" className="flex flex-col gap-s2">
           <h2 className="t-h3 text-ink">Reply</h2>
-          <Replies projectId={projectId} sessionId={sessionId} responses={rows} />
+          <Replies projectId={projectId} sessionId={sessionId} agent={agent} responses={rows} />
         </section>
       )}
     </TurnPages>

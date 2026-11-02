@@ -20,6 +20,7 @@ import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme, type PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
 import { canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { planEnvelope } from '@goondocks/myco-shared/prompt-text';
 import type { TranscriptRole, ToolResultReason } from '@goondocks/myco-shared/member-protocol';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
@@ -463,9 +464,6 @@ export function replyChunks(parts: readonly ReplyPart[], bound: ResponseBound = 
 
 /** How much of a tool's output is kept inline; the catalogue's own bound on `output`. */
 export const TOOL_OUTPUT_PREVIEW_CHARS = 4096;
-
-/** A plan-tag envelope's body, non-greedy so consecutive envelopes stay separate; the optional newline either side is the member's own shape (`packages/myco/src/plans/tag-envelopes.ts`). */
-export const planEnvelope = (tag: string): RegExp => new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
 
 /** The first Markdown heading of a body, for a plan the transcript gives no title. */
 export function firstHeading(content: string): string | undefined {

@@ -9,6 +9,8 @@ export interface CaptureRuleBundle {
   name: string;
   rules: readonly CaptureRule[];
   displayEnvelopeTags?: readonly string[];
+  /** The tags whose envelopes in a reply hold a plan, from its manifest's `capture.planTags`. */
+  planTags?: readonly string[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;

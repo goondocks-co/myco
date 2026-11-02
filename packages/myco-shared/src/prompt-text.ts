@@ -70,6 +70,15 @@ function interpretPrompt(text: string, agent: string | null, preserveUnclosed: b
   return { text: [...person, rest].filter(Boolean).join('\n\n'), envelopes };
 }
 
+/** A plan-tag envelope's body, non-greedy so consecutive envelopes stay separate; the optional newline either side is the member's own shape (`packages/myco/src/plans/tag-envelopes.ts`). */
+export const planEnvelope = (tag: string): RegExp => new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
+
+/** A reply as a reader sees it: without the plan envelopes its agent declares, whose content the plans hold. Stored replies keep them. */
+export function replyDisplay(text: string, agent: string | null): string {
+  const tags = CAPTURE_RULE_BUNDLES.find((item) => item.name === agent)?.planTags ?? [];
+  return tags.reduce((rest, tag) => rest.replace(planEnvelope(tag), ''), text).trim();
+}
+
 /** Plain labels use the same envelope interpretation as the conversation. */
 export function displayPrompt(text: string, agent: string | null): string {
   const shown = interpretPrompt(text, agent, false);
