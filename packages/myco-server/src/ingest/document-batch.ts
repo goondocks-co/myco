@@ -11,16 +11,17 @@ import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
-import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
+import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, rollupOf, toolFiles, type ToolState } from '../content/tool-rollup.js';
+import { sessionEditStatement } from './session-edits.js';
 
-/** Distinct paths a session's tools touched that the catalog keeps. */
-export const SESSION_PATHS_LIMIT = 500;
+export { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 /** Statements and blob calls a pass keeps for its registration and commit, above the wake's reserve for later jobs. */
 export const PASS_CLOSING_STATEMENTS = 64;
 export const PASS_CLOSING_BLOB_CALLS = 12;
@@ -160,7 +161,7 @@ interface TurnAdded { tools: number; replies: number; children: number; plans: n
 
 export class DocumentBatch {
   readonly writer: DocumentWriter;
-  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0 };
+  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
   records = 0;
   calls = 0;
   lastRecordAt: number | null = null;
@@ -181,7 +182,9 @@ export class DocumentBatch {
   private readonly turns = new Map<string, string | null>();
   private readonly resolved = new Set<string>();
   private readonly newPrompts: { record: DocRecord; turnKey: string | null }[] = [];
-  private readonly paths = new Map<string, { n: number; at: number }>();
+  private readonly paths = new Map<string, { n: number; edits: number; at: number; turn: string | null }>();
+  private readonly toolChanges: { owner: string; record: DocRecord; held: DocRecord | null; harness: string | null }[] = [];
+  private fallbackHarness: string | null | undefined;
   private readonly mycoCalls = new Map<string, DocRecord & { harness: string | null }>();
   /**
    * When set, every placement keeps the batch's commit payable: a chunk read or a placement whose commit the
@@ -319,14 +322,14 @@ export class DocumentBatch {
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     added: Map<string, TurnAdded>;
-    resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
+    resolved: Set<string>; paths: Map<string, { n: number; edits: number; at: number; turn: string | null }>; toolChanges: number; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
     transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
-      mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
+      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
     };
   }
 
@@ -337,6 +340,7 @@ export class DocumentBatch {
       unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
+    this.toolChanges.splice(mark.toolChanges);
     for (const [into, from] of [[this.turns, mark.turns], [this.added, mark.added], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
       [this.transcriptPlans, mark.transcriptPlans]] as const) {
       (into as Map<string, unknown>).clear();
@@ -379,12 +383,28 @@ export class DocumentBatch {
   }
 
   private async placeAll(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
+    if (harness === null) {
+      if (this.fallbackHarness === undefined) {
+        const session = await this.db.prepare('SELECT agent FROM sessions WHERE project_id=? AND session_id=?')
+          .bind(this.projectId, this.sessionId).first<{ agent: string | null }>();
+        this.calls += 1;
+        this.fallbackHarness = session?.agent ?? null;
+      }
+      harness = this.fallbackHarness;
+    }
     await this.resolve(records);
     this.assignPrompts(records);
     await this.locateSealed(records);
     const reads = this.writer.reads;
     const out: (DocRecord | null)[] = [];
-    for (const record of records) {
+    for (const incoming of records) {
+      const record = incoming.k === 'tool' ? { ...incoming, harness: incoming.harness ?? harness } : incoming;
+      if (record.k === 'tool') {
+        record.files_affected = toolFiles(record, harness);
+        const myco = recordMycoFields(record);
+        record.myco_tool = myco.tool;
+        record.myco_op = myco.op;
+      }
       const owner = this.ownerOf(record);
       const newPlan = record.k === 'plan' && !(await this.planHeld(owner, planKeyOf(record)));
       const placed = await this.writer.upsert(record, owner);
@@ -400,8 +420,25 @@ export class DocumentBatch {
           record: placed.record, hash: await sha256Hex(content), spilled: placed.record.bodies?.content !== undefined,
         });
       }
+      this.toolChanges.push({ owner, record: placed.record, held: placed.outcome === 'merged' ? placed.held : null, harness });
+      if (record.k === 'tool') {
+        const prior = placed.outcome === 'merged' ? placed.held : null;
+        const before = prior === null ? [] : toolFiles(prior);
+        const after = toolFiles(placed.record);
+        const beforeEdits = prior === null ? [] : editedFiles(prior, harness);
+        const afterEdits = editedFiles(placed.record, harness);
+        for (const path of new Set([...before, ...after])) {
+          const held = this.paths.get(path);
+          this.paths.set(path, {
+            n: (held?.n ?? 0) + Number(after.includes(path)) - Number(before.includes(path)),
+            edits: (held?.edits ?? 0) + Number(afterEdits.includes(path)) - Number(beforeEdits.includes(path)),
+            at: Math.max(held?.at ?? 0, record.created_at), turn: held !== undefined && held.at > record.created_at ? held.turn : owner === SESSION_OWNER ? null : owner,
+          });
+        }
+      }
       if (placed.outcome === 'merged') {
         if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
+        if (record.k === 'tool') this.counts.myco_calls += Number(recordMycoFields(placed.record).tool !== null) - Number(recordMycoFields(placed.held).tool !== null);
         continue;
       }
       this.inserted.push([record.k, record.k === 'plan' ? planKeyOf(record) : record.id]);
@@ -432,12 +469,8 @@ export class DocumentBatch {
       }
       else {
         this.counts.tool_calls += 1;
+        if (recordMycoFields(record).tool !== null) this.counts.myco_calls += 1;
         if (record.success === 0) this.counts.failed_tools += 1;
-        for (const path of Array.isArray(record.files_affected) ? record.files_affected : []) {
-          if (typeof path !== 'string') continue;
-          const held = this.paths.get(path);
-          this.paths.set(path, { n: (held?.n ?? 0) + 1, at: Math.max(held?.at ?? 0, record.created_at) });
-        }
       }
     }
     for (const owner of this.writer.touched) if (owner !== SESSION_OWNER) await this.writer.readTurnHead(owner);
@@ -456,16 +489,33 @@ export class DocumentBatch {
       if (owner === SESSION_OWNER) continue;
       const { pages, complete } = await this.writer.turnPages(owner);
       const records = pages.flatMap((page) => page.records);
+      const prior = await this.db.prepare('SELECT tool_state FROM session_prompts WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=?')
+        .bind(this.projectId, this.sessionId, this.doc.generation, owner).first<{ tool_state: string | null }>();
+      this.calls += 1;
+      let state: ToolState | null = prior?.tool_state ? JSON.parse(prior.tool_state) as ToolState : null;
+      if (state !== null) {
+        for (const change of this.toolChanges.filter(change => change.owner === owner)) {
+          if (change.held !== null) adjustToolState(state, change.held, change.harness, -1);
+          adjustToolState(state, change.record, change.harness, 1);
+        }
+      } else if (complete && records.every(record => record.k !== 'tool' || record.bodies?.input === undefined || Object.hasOwn(record, 'harness'))) {
+        state = emptyToolState();
+        const harness = this.toolChanges.find(change => change.owner === owner)?.harness ?? null;
+        for (const record of records) adjustToolState(state, record, harness, 1);
+      }
+      const statistics = { expected_state: prior?.tool_state ?? null, ...(state === null ? {} : {
+        failed_tools: state.failed, myco_calls: state.mycoCalls, files_named: state.named.length, tool_rollup: JSON.stringify(rollupOf(state)), tool_state: JSON.stringify(state),
+      }) };
       const input = turnInput(owner, records);
       const added = this.added.get(owner) ?? { tools: 0, replies: 0, children: 0, plans: 0 };
       if (input === null) {
-        if (!complete) settled.push({ id: owner, added });
+        if (!complete) settled.push({ id: owner, added, ...statistics });
         continue;
       }
       const trimmed = trimTurn(input);
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
-        id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
+        ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
         ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
         input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
@@ -549,6 +599,9 @@ export class DocumentBatch {
     const p = this.projectId, s = this.sessionId, g = this.doc.generation;
     const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId })));
     const statements: PreparedStatement[] = [
+      ...contentAssertion(db, `NOT EXISTS (SELECT 1 FROM json_each(?4) j CROSS JOIN session_prompts sp
+        ON sp.project_id=?1 AND sp.session_id=?2 AND sp.generation=?3 AND sp.prompt_id=json_extract(j.value,'$.id')
+        WHERE sp.tool_state IS NOT json_extract(j.value,'$.expected_state'))`, [p, s, g, JSON.stringify(settled)]),
       ...contentAssertion(db, `(SELECT COUNT(*) FROM json_each(?) j JOIN retired_objects r ON r.project_id=? AND r.session_id=?
         AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i'))=?`, [rows, p, s, registered.length]),
     ];
@@ -601,18 +654,21 @@ export class DocumentBatch {
       const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field}+COALESCE(json_extract(j.value,'$.added.${field}'),0))`;
       const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
       statements.push(db.prepare(`UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
-          ${count('plans')},${kept('input_hash')},${kept('input_chars')}
-        FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
+          ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},${kept('input_hash')},${kept('input_chars')}
+        FROM json_each(?1) j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=json_extract(j.value,'$.id')
+          AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
         .bind(JSON.stringify(settled), p, s, g));
     }
     if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
-      statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at)
-        SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at') FROM json_each(?) j
+      statements.push(sessionEditStatement(db, p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
+      statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at,edits,last_turn)
+        SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at'),json_extract(j.value,'$.edits'),json_extract(j.value,'$.turn') FROM json_each(?) j
           WHERE EXISTS (SELECT 1 FROM session_paths h WHERE h.project_id=? AND h.session_id=? AND h.generation=? AND h.path=json_extract(j.value,'$.path'))
             OR (SELECT COUNT(*) FROM session_paths h WHERE h.project_id=? AND h.session_id=? AND h.generation=?) < ${SESSION_PATHS_LIMIT}
-        ON CONFLICT (project_id,session_id,generation,path) DO UPDATE SET tool_calls=tool_calls+excluded.tool_calls,last_at=MAX(last_at,excluded.last_at)`)
-        .bind(p, s, g, JSON.stringify([...this.paths].map(([path, held]) => ({ path, n: held.n, at: held.at }))), p, s, g, p, s, g));
+        ON CONFLICT (project_id,session_id,generation,path) DO UPDATE SET tool_calls=tool_calls+excluded.tool_calls,edits=edits+excluded.edits,
+          last_turn=CASE WHEN excluded.last_at >= last_at THEN excluded.last_turn ELSE last_turn END,last_at=MAX(last_at,excluded.last_at)`)
+        .bind(p, s, g, JSON.stringify([...this.paths].map(([path, held]) => ({ path, ...held }))), p, s, g, p, s, g));
     }
     if (this.mycoCalls.size > 0) {
       statements.push(db.prepare(`INSERT INTO myco_tool_calls (project_id,session_id,generation,tool_call_id,myco_tool,myco_op,success,created_at,harness)
@@ -658,9 +714,10 @@ export class DocumentBatch {
   documentSet(now: number): { sql: string; params: unknown[] } {
     const c = this.counts;
     return {
-      sql: `prompts=prompts+?,user_prompts=user_prompts+?,replies=replies+?,tool_calls=tool_calls+?,failed_tools=failed_tools+?,plans=plans+?,
+      sql: `prompts=prompts+?,user_prompts=user_prompts+?,replies=replies+?,tool_calls=tool_calls+?,failed_tools=failed_tools+?,plans=plans+?,myco_calls=myco_calls+?,
+        rollup_after=CASE WHEN rollup_after IS NULL THEN NULL ELSE -1 END,rollup_page=0,rollup_record=0,rollup_epoch=rollup_epoch+1,paths_build=NULL,myco_build=0,
         first_prompt=?,open_turn_key=?,last_record_at=MAX(COALESCE(last_record_at,0),COALESCE(?,0)),next_chunk=?,updated_at=?`,
-      params: [c.prompts, c.user_prompts, c.replies, c.tool_calls, c.failed_tools, c.plans, this.firstPrompt, this.openTurn, this.lastRecordAt,
+      params: [c.prompts, c.user_prompts, c.replies, c.tool_calls, c.failed_tools, c.plans, c.myco_calls, this.firstPrompt, this.openTurn, this.lastRecordAt,
         this.writer.nextChunk, now],
     };
   }

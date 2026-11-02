@@ -1813,7 +1813,7 @@ const session_activity_EDGE_SOURCES = [
 
 type session_activity_EdgeKey = 'child' | 'continued_by' | 'continues';
 
-export const SESSION_ACTIVITY_TYPES = ['failure', 'no_result', 'child_session', 'continuation'] as const;
+export const SESSION_ACTIVITY_TYPES = ['child_session', 'continuation'] as const;
 
 type session_activity_SessionActivityType = typeof SESSION_ACTIVITY_TYPES[number];
 
@@ -1836,8 +1836,6 @@ interface session_activity_SessionActivityRow {
 
 interface session_activity_SessionActivityOptions {
   type?: session_activity_SessionActivityType;
-  tool?: string;
-  failed?: boolean;
   limit?: number;
   cursor?: string;
 }

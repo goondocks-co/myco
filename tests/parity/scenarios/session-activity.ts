@@ -1,8 +1,8 @@
 import { expect } from 'bun:test';
 import type { SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
-import { documentsPublished, expectPersisted, lit, type ParityScenario } from '../harness.ts';
+import { documentsPublished, expectPersisted, type ParityScenario } from '../harness.ts';
 
-/** Stored result reasons, metadata filters and success upgrades, read from the session's document through both front doors. */
+/** Tool outcomes are read through turns; activity serves related sessions. */
 export const sessionActivityParity: ParityScenario = {
   name: 'session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade',
   async run(target) {
@@ -20,7 +20,7 @@ export const sessionActivityParity: ParityScenario = {
     const read = async (query = '') => {
       const response = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/activity${query}`, { headers: target.ownerHeaders() });
       expect(response.status).toBe(200);
-      return await response.json() as { rows: SessionActivityRow[]; cursor: string | null; tools: string[] };
+      return await response.json() as { rows: SessionActivityRow[]; cursor: string | null };
     };
     await post('session.start', stamp, { agent: 'claude-code', startedAt: stamp });
     await post('prompt', stamp + 1, { promptId: prompt, origin: 'user', text: 'Inspect activity' });
@@ -30,15 +30,16 @@ export const sessionActivityParity: ParityScenario = {
     }
     await documentsPublished(target, session);
     const full = await read();
-    expect(full.rows.map(row => row.id)).toEqual([ids[4], ids[3], ids[2], ids[1], ids[0]]);
-    expect(full.rows.at(-1)?.promptId).toBe(prompt);
-    expect(full.rows.slice(0, -1).every(row => row.promptId === null && row.detail.includes('Not placed on a turn'))).toBe(true);
-    expect(full.rows.map(row => row.resultReason)).toEqual(['no_result', 'no_result', 'pending_limit', 'no_result', 'reported']);
-    expect(full.tools).toEqual(['Bash', 'Read']);
+    expect(full.rows).toEqual([]);
     expect(JSON.stringify(full)).not.toMatch(/activity input secret|activity output secret/);
-    expect((await read('?tool=Read&type=failure&failed=true')).rows.map(row => row.id)).toEqual([ids[0]]);
-    expect((await read('?type=no_result')).rows.map(row => row.id)).toEqual([ids[4], ids[3], ids[2], ids[1]]);
-    expect((await read('?failed=false')).rows).toEqual([]);
+    for (const query of ['?tool=Read', '?type=failure', '?type=no_result', '?failed=true']) {
+      const response = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/activity${query}`, { headers: target.ownerHeaders() });
+      expect(response.status).toBe(400);
+    }
+    const turns = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns?filter=failed`, { headers: target.ownerHeaders() });
+    expect((await turns.json() as { rows: { promptId: string; failedTools: number }[] }).rows).toEqual([
+      expect.objectContaining({ promptId: prompt, failedTools: 1 }),
+    ]);
     await post('tool.use', stamp + 20, { toolCallId: ids[1], toolName: 'Bash', input: {}, output: 'success', success: true });
     await documentsPublished(target, session);
     expect((await read()).rows.map(row => row.id)).not.toContain(ids[1]);

@@ -1,4 +1,5 @@
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
+import { V121_STATEMENTS } from '@myco-server-worker/db/schema-v121.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
@@ -89,6 +90,15 @@ const LISTED: readonly Exception[] = [
 ];
 const EXCEPTIONS: readonly Exception[] = [
   ...LISTED,
+  ...[
+    ['idx_session_prompts_failed','session_prompts'], ['idx_session_prompts_myco','session_prompts'],
+    ['idx_session_prompts_turns','session_prompts'],
+    ['idx_session_prompts_user_turns','session_prompts'],
+    ['idx_turn_cards_key','turn_cards'], ['idx_turn_cards_headline','turn_cards'],
+    ['idx_turn_cards_reuse','turn_cards'],
+    ['idx_session_documents_rollup','session_documents'], ['idx_session_chunks_pages','session_chunks'],
+    ['session_paths_cap','session_paths'],
+  ].map(([object,table]) => ({ step:121,object:object!,table:table!,reason:'Session outline and file reads use stored summaries and bounded catch-up indexes.' })),
   ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({ ...exception, step: 108 })),
   ...['idx_learning_eligible', 'idx_learning_eligible_all', 'idx_learning_completed', 'idx_learning_init_pending'].map((object) => ({
     step: 110,
@@ -126,6 +136,9 @@ interface StatementException {
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
+  ...V121_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents') || sql.startsWith('DROP INDEX')).map(sql => ({
+    step:121,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
+  })),
   ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
     step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
   })),
@@ -515,7 +528,7 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
 
 it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
   expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
-    Array.from({ length: 254 }, (_, index) => index + 1),
+    Array.from({ length: SERVER_SCHEMA_VERSION }, (_, index) => index + 1),
   );
   expect(
     readdirSync('packages/myco-server/migrations')

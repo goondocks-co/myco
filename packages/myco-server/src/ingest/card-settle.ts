@@ -10,7 +10,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { trimTurn, triageTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import {
-  cardStatements, forgetTurnStatement, modelDueStatement, NONE_CARD, renderCard, reusableCard, turnMaterial, type DueTurn,
+  cardOutline, cardStatements, forgetTurnStatement, modelDueStatement, NONE_CARD, renderCard, reusableCard, turnMaterial, type DueTurn, type CardMarks,
 } from '../core/turn-cards.js';
 import { pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { SessionDocument } from '../content/session-pages.js';
@@ -63,7 +63,8 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: SettleRow, 
     return;
   }
   const card = prior !== null
-    ? { text: prior.card, signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
-    : { text: renderCard(NONE_CARD(rule!)), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
+    ? { text: prior.card, outline: prior.headline === null || prior.marks === null ? cardOutline(prior.card) : { headline: prior.headline, marks: JSON.parse(prior.marks) as CardMarks },
+      signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
+    : { text: renderCard(NONE_CARD(rule!)), outline: cardOutline(NONE_CARD(rule!)), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
   await db.batch([...cardStatements(db, p, s, turn, card, now, material), ...sessionProgressStatements(db, p, s, now)]);
 }
