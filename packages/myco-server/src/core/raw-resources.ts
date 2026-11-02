@@ -26,7 +26,7 @@ export const rawMemberResourceSql = (project: string, kind: RawResource['kind'],
           AND a.archive_key=r.resource_id)
         AND NOT EXISTS (SELECT 1 FROM archive_bundles a WHERE '${kind}'='blob' AND a.project_id=r.project_id
           AND a.receipt_key=r.resource_id)
-        AND NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE '${kind}'='blob' AND p.project_id=r.project_id
+        AND NOT EXISTS (SELECT 1 FROM registered_content_proofs p INDEXED BY idx_registered_content_proofs_key WHERE '${kind}'='blob' AND p.project_id=r.project_id
           AND p.key=r.resource_id AND (p.source_kind='bundle' OR (p.source_kind='receipt' AND p.source_id LIKE 'bundle:%')))
         AND m.id = ${member} AND m.revoked_at IS NULL
         AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'm.id', rawClaimCutoffSql('m.id', 'r.revision'))}))`;
