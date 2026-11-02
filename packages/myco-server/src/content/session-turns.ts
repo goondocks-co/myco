@@ -291,17 +291,17 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   if (top === undefined) return null;
   const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
-    const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card FROM session_prompts p
+    const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card,c.fields FROM session_prompts p
       JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
       LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id
       WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.prompt_id=?3`)
-      .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null }>();
+      .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null; fields: string | null }>();
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
     const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
-    body.card = catalog?.card ?? null;
+    body.card = catalog?.fields ?? catalog?.card ?? null;
     body.tools = rollup === null ? shown : { ...shown, total: catalog!.tools, failed: catalog!.failed_tools,
       filesNamed: catalog!.files_named, byTool: rollup.tools.map(row => ({ toolName: row.name, count: row.count })) };
   }

@@ -25,6 +25,7 @@ for (const { viewport, mode } of SHOT_MATRIX) {
       await shoot(page, 'project-rename-dialog', viewport, mode);
       await dialog.getByRole('button', { name: 'Cancel' }).click();
       await expect(dialog).toHaveCount(0);
+      await expect(rename).toBeFocused();
     } finally {
       await context.close();
     }

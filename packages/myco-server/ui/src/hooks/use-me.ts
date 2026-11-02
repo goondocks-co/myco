@@ -53,7 +53,7 @@ export function useIsAdmin(): boolean {
   return permissionOf(useMe().data, 'settings').allowed;
 }
 
-/** Identity-changing writes settle only after the shared identity is read successfully. */
+/** Identity-changing writes retain their outcome while the shared identity owns refresh failure. */
 export function useIdentityMutation<TData, TVariables>(options: Omit<UseMutationOptions<TData, Error, TVariables>, 'mutationFn'> & { mutationFn: (variables: TVariables) => Promise<TData> }) {
   const client = useQueryClient();
   return useMutation({
@@ -61,7 +61,11 @@ export function useIdentityMutation<TData, TVariables>(options: Omit<UseMutation
     mutationFn: async (variables: TVariables) => {
       const result = await options.mutationFn(variables);
       await client.cancelQueries({ queryKey: ME_KEY, exact: true });
-      await client.fetchQuery({ queryKey: ME_KEY, queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), staleTime: 0 });
+      try {
+        await client.fetchQuery({ queryKey: ME_KEY, queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), staleTime: 0 });
+      } catch {
+        await client.invalidateQueries({ queryKey: ME_KEY, exact: true, refetchType: 'none' });
+      }
       return result;
     },
   });

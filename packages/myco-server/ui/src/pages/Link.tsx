@@ -74,7 +74,10 @@ export function LinkPage() {
     body = (
       <>
         <p className="t-body text-ink">Connected to <strong className="font-semibold">{memberWords(outcome.member)}</strong>.</p>
-        <RouterLink to={PROJECTS_PATH} className={buttonVariants({ variant: 'primary', className: 'self-center' })}>Open Projects</RouterLink>
+        {me.error || me.data?.member === null ? <div role="alert" className="flex flex-col items-center gap-s2">
+          <p className="t-small text-bad">Your account is connected, but your sign-in could not be refreshed.</p>
+          <Button pending={me.isFetching} onClick={() => void me.refetch()}>Retry</Button>
+        </div> : <RouterLink to={PROJECTS_PATH} className={buttonVariants({ variant: 'primary', className: 'self-center' })}>Open Projects</RouterLink>}
       </>
     );
   } else if (outcome?.kind === 'refused') {

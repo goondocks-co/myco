@@ -1,3 +1,4 @@
+import { renderCard, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { registerBlob } from './helpers/d1.js';
@@ -31,6 +32,20 @@ function fixture() {
 }
 
 describe('full-text search', () => {
+  it('searches rendered card values after line breaks without indexing the wire grammar', async () => {
+    const f = fixture();
+    f.prompt('rendered', renderCard({ ...NONE_CARD('x'), asked: 'Run it', done: 'Ran the build.\nsweepbatch failed once', errors: [{ error: 'first line\nENOSPC while writing', fix: 'freed disk' }] }));
+    f.prompt('mechanical', renderCard(NONE_CARD('poll')));
+    for (const query of ['sweepbatch', 'ENOSPC']) {
+      const answer = await f.search(query, { type: 'prompt' });
+      expect(answer.results.map(hit => hit.id)).toEqual(['rendered']);
+      expect(answer.results[0]!.preview).not.toContain('Myco card v1');
+      expect(answer.results[0]!.preview).not.toContain('{"asked"');
+    }
+    for (const query of ['myco', 'files', 'commands', 'rejected', 'questions']) expect((await f.search(query, { type: 'prompt' })).results).toEqual([]);
+    expect((await f.search('errors', { type: 'prompt' })).results.map(hit => hit.id)).toEqual(['rendered']);
+  });
+
   it('uses the shared harness display for prompt search labels', async () => {
     const f = fixture();
     f.sqlite.run("UPDATE sessions SET agent = 'claude-code' WHERE project_id = 'search-a'");

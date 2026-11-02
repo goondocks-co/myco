@@ -1,6 +1,6 @@
 import { useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
-import { Button } from '../design';
+import { Button, ReadState } from '../design';
 import { useMe } from '../hooks/use-me';
 import { ApiError, SignedOutError } from '../lib/api';
 import { readPendingLink } from '../lib/pending-link';
@@ -45,6 +45,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (PUBLIC_PATHS.has(location.pathname) || (location.pathname === '/' && readPendingLink() !== null)) return <>{children}</>;
   if (me.isPending) return <Splash />;
   if (me.error instanceof SignedOutError) return <SignedOut />;
-  if (me.error) return <Unreachable retry={() => { void me.refetch(); }} />;
-  return <>{children}</>;
+  if (me.error && me.data === undefined) return <Unreachable retry={() => { void me.refetch(); }} />;
+  return <ReadState data={me.data} pending={me.isPending} error={me.error} onRetry={() => void me.refetch()} label="sign-in">{() => children}</ReadState>;
 }

@@ -1,3 +1,4 @@
+import { encodeCard } from '@goondocks/myco-shared/turn-card';
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { sessionLineage } from '@myco-server-worker/read/lineage.js';
@@ -25,7 +26,6 @@ import { useTurnCollection } from '../../packages/myco-server/ui/src/hooks/use-t
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { parseCard } from '../../packages/myco-server/ui/src/features/sessions/card-text';
-import { renderCard } from '@myco-server-worker/core/turn-cards.js';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -1713,7 +1713,7 @@ describe('the session reading page', () => {
     });
 
     it('shows what happened from the card and the turn’s tool use in brief, saying when the lists cover only the first calls', async () => {
-      const card = renderCard({
+      const card = encodeCard({
         asked: 'Build it', done: 'Implemented the sweep.\nOutcome: kept inside Done', outcome: 'Done',
         decisions: [{ decision: 'Off by default', reason: 'A sweep deletes data' }], rejected: [{ approach: 'A lifecycle rule', reason: '' }],
         errors: [{ error: 'a blob was deleted', fix: 'Read manifests first' }], corrections: [{ wrong: 'Counts rows', right: 'Sums bytes' }],

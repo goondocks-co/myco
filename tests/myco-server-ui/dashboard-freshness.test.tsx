@@ -3,12 +3,15 @@ import { useState, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Dialog, DialogContent } from '../../packages/myco-server/ui/src/design';
+import { Dialog, DialogContent, Input, MoreMenu } from '../../packages/myco-server/ui/src/design';
 import { LinkPage } from '../../packages/myco-server/ui/src/pages/Link';
 import { MachineSettingsDialog } from '../../packages/myco-server/ui/src/features/admin/people/MachineSettingsDialog';
 import { PlansBoard } from '../../packages/myco-server/ui/src/features/knowledge/PlansBoard';
 import { SessionPage } from '../../packages/myco-server/ui/src/features/sessions/SessionPage';
 import { SessionsPage } from '../../packages/myco-server/ui/src/features/sessions/SessionsPage';
+import { useAccessActions } from '../../packages/myco-server/ui/src/hooks/use-access';
+import { usePaged } from '../../packages/myco-server/ui/src/hooks/use-paged';
+import { useConversationSearch } from '../../packages/myco-server/ui/src/hooks/use-conversation-search';
 import { useNeedsYou } from '../../packages/myco-server/ui/src/hooks/use-needs-you';
 import { useTurnCollection } from '../../packages/myco-server/ui/src/hooks/use-turn-collection';
 import { useTurnToolCalls } from '../../packages/myco-server/ui/src/hooks/use-sessions';
@@ -125,23 +128,24 @@ it('returns keyboard focus to a connected opener or the page fallback', async ()
   function Example() {
     const [open, setOpen] = useState(false);
     const [opener, setOpener] = useState(true);
-    return <><main tabIndex={-1}>Page</main>{opener && <button onClick={() => setOpen(true)}>Open</button>}<Dialog open={open} onOpenChange={setOpen}><DialogContent title="Example"><button onClick={() => { setOpener(false); setOpen(false); }}>Remove opener</button></DialogContent></Dialog></>;
+    return <><main tabIndex={-1}>Page</main>{opener && <button onClick={() => setOpen(true)}>Open</button>}<Dialog open={open} onOpenChange={setOpen}><DialogContent title="Example"><Input aria-label="Name" autoFocus /><button onClick={() => { setOpener(false); setOpen(false); }}>Remove opener</button></DialogContent></Dialog></>;
   }
   render(<Example />);
   const opener = screen.getByRole('button', { name: 'Open' });
   opener.focus(); fireEvent.click(opener);
   fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
-  await waitFor(() => expect(document.activeElement).toBe(opener));
+  await waitFor(() => expect(document.activeElement === opener).toBe(true));
   fireEvent.click(opener);
   fireEvent.click(await screen.findByRole('button', { name: 'Remove opener' }));
-  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+  await waitFor(() => expect(document.activeElement === screen.getByRole('main')).toBe(true));
 });
 
 it('retries the repository source without asking an ordinary member for admin reads', async () => {
   let reads = 0;
+  let adminReads = 0;
   const { wrapper } = setup(url => {
     if (url.pathname === '/api/uncaptured') { reads++; return reads === 1 ? Response.json({ error: 'unavailable' }, { status: 503 }) : empty(); }
-    if (url.pathname === '/api/attention') throw new Error('Admin route requested');
+    if (url.pathname === '/api/attention') { adminReads++; return empty(); }
     return empty();
   });
   const { result } = renderHook(() => useNeedsYou({ now: 1, projectName: () => 'Local' }), { wrapper });
@@ -149,10 +153,116 @@ it('retries the repository source without asking an ordinary member for admin re
   act(() => result.current.onRetry());
   await waitFor(() => expect(result.current.repositories.error).toBeNull());
   expect(reads).toBe(2);
+  expect(adminReads).toBe(0);
 });
 
 it('states the plan board body-search and progress limits for large plans', async () => {
   const { wrapper } = setup(() => Response.json({ plans: [], cursor: null, totals: {} }));
   render(<PlansBoard projectId="p" projectName={() => 'Local'} />, { wrapper });
   expect(screen.getByText(/Large plans.*Search.*checklist progress/i)).toBeTruthy();
+});
+
+it('returns focus to the connected menu trigger after an autofocused dialog closes', async () => {
+  function Example() {
+    const [open, setOpen] = useState(false);
+    return <><main tabIndex={-1}>Page</main><MoreMenu label="Row actions" items={[{ label: 'Rename', onSelect: () => setOpen(true) }]} /><Dialog open={open} onOpenChange={setOpen}><DialogContent title="Rename"><Input aria-label="Name" autoFocus /></DialogContent></Dialog></>;
+  }
+  render(<Example />);
+  const trigger = screen.getByRole('button', { name: 'Row actions' });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: 'Enter' });
+  const item = await screen.findByRole('menuitem', { name: 'Rename' });
+  item.focus(); fireEvent.keyDown(item, { key: 'Enter' });
+  await screen.findByRole('dialog');
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(document.activeElement === trigger).toBe(true));
+});
+
+it('retains committed account linking while sign-in refresh fails and retries only the read', async () => {
+  holdPendingLink('x'.repeat(43));
+  let posts = 0;
+  let failed = true;
+  const { client, wrapper } = setup((url, init) => {
+    if (url.pathname === '/auth/me') return failed ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(dashboardMe({ member: { id: 'm', label: 'Member', role: 'member' } }));
+    if (JSON.parse(String(init?.body)).confirm) { posts++; return Response.json({ linked: true, member: { id: 'm', label: 'Member' } }); }
+    return Response.json({ preview: { member: { id: 'm', label: 'Member' } } });
+  });
+  client.setQueryData(['me'], dashboardMe({ member: null }));
+  render(<LinkPage />, { wrapper });
+  fireEvent.click(await screen.findByRole('button', { name: 'Connect this account' }));
+  await waitFor(() => expect(screen.getByText(/Connected to/)).toBeTruthy());
+  expect(screen.queryByRole('link', { name: 'Open Projects' })).toBeNull();
+  expect(screen.getByRole('alert').textContent).toContain('sign-in');
+  failed = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await screen.findByRole('link', { name: 'Open Projects' });
+  expect(posts).toBe(1);
+});
+
+it('reconciles each access mutation and preserves write results and list invalidation on refresh failure', async () => {
+  let reads = 0;
+  let failing = false;
+  const { client, wrapper } = setup(url => {
+    if (url.pathname === '/auth/me') { reads++; return failing ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(dashboardMe({ login: String(reads), member: { id: 'm', label: 'Member', role: 'admin' } })); }
+    if (url.pathname.endsWith('/role')) return Response.json({ memberId: 'other', role: 'member', roleRevision: 'next' });
+    if (url.pathname.endsWith('/stop')) return Response.json({ revoked: 2, revokedBy: 'm' });
+    return Response.json({ revoked: true });
+  });
+  const { result } = renderHook(() => useAccessActions(), { wrapper });
+  const writes = [
+    { run: () => result.current.revokeMember.mutateAsync('other'), expected: { revoked: true } },
+    { run: () => result.current.changeRole.mutateAsync({ memberId: 'other', role: 'member', expectedRevision: 'revision' }), expected: { memberId: 'other', role: 'member', roleRevision: 'next' } },
+    { run: () => result.current.revokeCredentials.mutateAsync(['a', 'b']), expected: { stopped: ['a', 'b'], failed: [] } },
+    { run: () => result.current.stopMachine.mutateAsync('mac'), expected: { revoked: 2, revokedBy: 'm' } },
+  ];
+  for (const { run: write, expected } of writes) {
+    let committed: unknown;
+    await act(async () => { committed = await write(); });
+    expect(client.getQueryData<{ login: string }>(['me'])?.login).toBe(String(reads));
+    failing = true;
+    client.setQueryData(['members'], { members: [] });
+    let retained: unknown;
+    await act(async () => { retained = await write(); });
+    expect(committed).toEqual(expected);
+    expect(retained).toEqual(expected);
+    expect(client.getQueryState(['me'])?.error).toBeTruthy();
+    expect(client.getQueryState(['me'])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(['members'])?.isInvalidated).toBe(true);
+    failing = false;
+  }
+  expect(reads).toBe(8);
+});
+
+it('discards an expired cursor set in a generic paged session read', async () => {
+  let first = true;
+  let parents = 0;
+  const { client, wrapper } = setup(url => {
+    if (url.pathname === '/parent') { parents++; return Response.json({}); }
+    if (url.searchParams.has('cursor')) return Response.json({ error: 'stale_cursor' }, { status: 409 });
+    const rows = [{ id: first ? 'old' : 'current' }]; const cursor = first ? 'expired' : null; first = false;
+    return Response.json({ rows, cursor });
+  });
+  client.setQueryDefaults(['session', 'p', 's'], { queryFn: () => fetch('/parent').then(r => r.json()) });
+  client.setQueryData(['session', 'p', 's'], {});
+  const { result } = renderHook(() => usePaged<{ id: string }>(['turn-tool-calls', 'p', 's', 'turn'], '/calls'), { wrapper });
+  await waitFor(() => expect(result.current.rows).toEqual([{ id: 'old' }]));
+  act(() => result.current.more());
+  await waitFor(() => expect(result.current.error).toBeTruthy());
+  act(() => result.current.retry());
+  await waitFor(() => expect(result.current.rows).toEqual([{ id: 'current' }]));
+  expect(parents).toBe(1);
+});
+
+it('refreshes open conversation search when a session revision changes', async () => {
+  let reads = 0;
+  const { client, wrapper } = setup(url => {
+    if (url.pathname.endsWith('/search')) { reads++; return Response.json({ results: [], cursor: null, coverage: { pending_blobs: 0 } }); }
+    return empty();
+  });
+  client.setQueryData(['session', 'p', 's'], detail());
+  function Reader() { useConversationSearch('p', 's', 'needle'); return <SessionPage projectId="p" sessionId="s" projectName="Local" />; }
+  render(<Reader />, { wrapper });
+  await waitFor(() => expect(reads).toBe(1));
+  act(() => client.setQueryData(['session', 'p', 's'], { ...detail(), session: { ...session, lastReceivedAt: 3 } }));
+  await waitFor(() => expect(reads).toBe(2));
 });

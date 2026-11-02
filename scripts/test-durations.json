@@ -172,7 +172,8 @@
     "local: sec3 correction2, pinned Bun1.4.0 darwin-arm64 with isolated homes and the frozen hash-checked Worker prerequisite. Eight focused files passed186 cases at umask022 in26355ms and umask002 in24469ms runner. The final cache/compiled-env pair passed7 cases in2775ms runner; native artifact cases measured437.27/571.76/3.14/5.89/73.90/8.32ms bodies (1100.28ms sum), so the file weight is4000ms. Native cache pruning/removal measured64.36ms in remove.test.ts; its prior7159ms CI allowance plus twice added body rounds to7500ms. Checkout-env4000ms retains allowance for1405.26ms body including the real compiler-argument AST and compiled hook. Nineteen source mutations failed through test assertions and were restored. No new test file or parity scenario; parity weights unchanged.",
     "local: #1944 t1 capture fixes, pinned Bun1.4.0 darwin-arm64 via npm test. New pasted-plans file measured168ms Bun/183ms runner for two real hook subprocess probes (46.68ms/45.13ms bodies);1000ms covers twice measured time plus startup. Expanded plugin recovery/transcript/shared-helper74 tests measured1840ms Bun/1859ms runner; recovery4000ms covers twice the entire three-file run plus startup. Antigravity additions are sub-millisecond in existing712ms weight. No new parity scenario; parity weights unchanged.",
     "local: #2055 CI and Opus capture review correction, pinned Bun1.4.0 darwin-arm64 through npm test with only the Wrangler Worker-carrier bootstrap omitted by a scratch preload. Focused four-file run132 cases14810ms: context-render bodies8008ms, pasted-plans2847ms, plugin-capture-recovery2667ms, parsers130ms. Weights20000/6000/6000/1000ms cover the expanded real-hook/local-Deployment paths and startup; pasted plans include two300KB bodies read through the processed-body reader. No new test file or parity scenario; parity weights unchanged.",
-    "local: #1944 t7 dashboard regressions measured with pinned Bun 1.4.0 through npm test on darwin-arm64 and jsdom. The nine-case dashboard-freshness.test.tsx body measured 924ms in the final gate run; 4000ms weight covers startup and more than twice the measured body. Final source gates, focused DOM and shard suites passed 1126 cases across 107 files. No new parity scenario."
+    "local: #1944 t7 dashboard regressions measured with pinned Bun 1.4.0 through npm test on darwin-arm64 and jsdom. The nine-case dashboard-freshness.test.tsx body measured 924ms in the final gate run; 4000ms weight covers startup and more than twice the measured body. Final source gates, focused DOM and shard suites passed 1126 cases across 107 files. No new parity scenario.",
+    "local: t7 Opus correction, pinned Bun 1.4.0 through npm test on darwin-arm64. Fourteen dashboard freshness cases measured 1763ms and eighteen auth-gate cases measured 743ms body; weights 6000ms and 4000ms include more than twice measured body plus startup. No new test file or parity scenario."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -495,7 +496,7 @@
     "tests/meta/workspace-dep-consistency.test.ts": 578,
     "tests/meta/workspace-lockfile-complete.test.ts": 888,
     "tests/myco-server-ui/access.test.tsx": 1741,
-    "tests/myco-server-ui/auth-gate.test.tsx": 691,
+    "tests/myco-server-ui/auth-gate.test.tsx": 4000,
     "tests/myco-server-ui/design.test.tsx": 193,
     "tests/myco-server-ui/device.test.tsx": 254,
     "tests/myco-server-ui/error-states.test.tsx": 677,
@@ -1006,7 +1007,7 @@
     "tests/myco-server/parser-continuity.test.ts": 1500,
     "tests/member/pasted-plans.test.ts": 6000,
     "tests/cli/project-pin-trust.test.ts": 18000,
-    "tests/myco-server-ui/dashboard-freshness.test.tsx": 4000
+    "tests/myco-server-ui/dashboard-freshness.test.tsx": 6000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

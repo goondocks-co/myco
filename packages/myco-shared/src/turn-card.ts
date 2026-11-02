@@ -28,7 +28,7 @@ export function isCardFields(value: unknown): value is CardFields {
 const CARD_FORMAT = 'Myco card v1\n';
 
 /** A versioned JSON representation preserves field boundaries and every string value. */
-export function renderCard(card: CardFields): string {
+export function encodeCard(card: CardFields): string {
   return CARD_FORMAT + JSON.stringify(card);
 }
 
@@ -38,4 +38,28 @@ export function readCard(text: string): CardFields | null {
   let value: unknown;
   try { value = JSON.parse(text.slice(CARD_FORMAT.length)); } catch { return null; }
   return isCardFields(value) ? value : null;
+}
+
+/** Readable authored content for search and model context. */
+export function renderCard(card: CardFields): string {
+  const pairs = (items: readonly Record<string, string>[], text: string, detail: string) =>
+    items.map(item => `- ${item[text]}${item[detail] === '' ? '' : ` — ${detail}: ${item[detail]}`}`).join('\n');
+  return [
+    `Asked: ${card.asked}`, `Done: ${card.done}`, `Outcome: ${card.outcome}`,
+    card.decisions.length === 0 ? '' : `Decisions:\n${pairs(card.decisions, 'decision', 'reason')}`,
+    card.rejected.length === 0 ? '' : `Rejected:\n${pairs(card.rejected, 'approach', 'reason')}`,
+    card.errors.length === 0 ? '' : `Errors:\n${pairs(card.errors, 'error', 'fix')}`,
+    card.corrections.length === 0 ? '' : `Corrections:\n${pairs(card.corrections, 'wrong', 'right')}`,
+    card.files.length === 0 ? '' : `Files: ${card.files.join(', ')}`,
+    card.commands.length === 0 ? '' : `Commands:\n${card.commands.map(command => `- ${command}`).join('\n')}`,
+    card.open_questions.length === 0 ? '' : `Open questions:\n${card.open_questions.map(question => `- ${question}`).join('\n')}`,
+  ].filter(line => line !== '').join('\n');
+}
+
+/** A dedicated stored fields payload must decode to an admitted card. */
+export function storedCardFields(encoded: string | null): CardFields | null {
+  if (encoded === null) return null;
+  const fields = readCard(encoded);
+  if (fields === null) throw new Error('Stored turn card fields are invalid');
+  return fields;
 }

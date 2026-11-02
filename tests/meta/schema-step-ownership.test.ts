@@ -133,6 +133,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  { step: 465, sql: 'ALTER TABLE turn_cards ADD COLUMN fields TEXT', reason: 'Cards retain their structured fields in a nullable column added without rewriting rows or rebuilding search.' },
   ...DROP_CONTENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE TABLE/.test(sql)).map(sql=>({step,sql,reason:'Retired content storage leaves in bounded transactions: triggers, then indexes, then rowid ranges, then the tables.'}))),
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
   ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({

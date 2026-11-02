@@ -313,7 +313,7 @@ The audit (`64d8f59006e9b912`) predates the Wayfinder decision session. Its per-
 | Audit said | Now settled as | Where |
 |---|---|---|
 | "Multi-user access — phase 2, out of scope" (§9) | **Flat Membership is a v2.0.0 requirement.** Multi-member enrollment, credentials, and attribution ship before release (#912) | Glossary "Flat Membership (2.0)" |
-| "two tiers — **owner** settings on the server" (OPEN-5) | Two tiers survive, but the server tier is **Deployment Settings**, manageable by **all members**, not an owner | Glossary "Deployment Settings" |
+| "two tiers — **owner** settings on the server" (OPEN-5) | Two tiers survive, but the server tier is **Deployment Settings**, managed under **Membership Authority** (see CONTEXT.md) | Glossary "Deployment Settings" |
 | "the **tokens** view *is* it" — per-project member tokens (OPEN-6) | Per-Project member tokens are **implementation baseline, not the destination**. Members hold one individually attributable Member Credential with full Deployment access | `wisdom-5b9069b8` |
 | "Groves DROP — the server's `projects` table is the tenancy unit" (§6) | Grove drops, but the replacement boundary is **Deployment**; `Project` is the shared identity **within** it. Tenancy and identity are two nouns, not one | Glossary "Deployment", "Project" |
 | "migrates one server per Grove or consolidated" | A Deployment contains **many** Projects. "One server holds one Project" was an intermediate design | `wisdom-5b9069b8` |

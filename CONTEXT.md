@@ -143,7 +143,7 @@ _Avoid_: Treating the Cloudflare target as a different product
 ## Configuration and intelligence
 
 **Deployment Settings**:
-Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. All members manage these settings and the provider credentials in 2.0 with their session alone; credentials stay write-only and masked.
+Server-wide settings for intelligence providers, schedules, retention, server behavior, and protected provider credentials. Management follows Membership Authority; provider credentials stay write-only and masked.
 _Avoid_: Applying Deployment Settings to only the currently selected Project
 
 **Member Settings**:
