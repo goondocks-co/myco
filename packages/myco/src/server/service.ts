@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import nodeFs from 'node:fs';
 const { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
+import { commandArgument, commandLine } from '@goondocks/myco-shared/shell-command';
 import { homedir } from 'node:os';
 import { canonicalHomePath } from '../paths/home.js';
 
@@ -245,8 +246,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${spec.binaryPath} ${spec.unit.args.join(' ')}
-${environmentOf(spec).map(([key, value]) => `Environment=${key}=${value}`).join('\n')}
+ExecStart=${commandLine([spec.binaryPath, ...spec.unit.args], 'systemd')}
+${environmentOf(spec).map(([key, value]) => `Environment=${commandArgument(`${key}=${value}`, 'systemd')}`).join('\n')}
 Restart=${spec.unit.restart === 'never' ? 'no' : 'on-failure'}
 RestartSec=${spec.unit.restartDelaySeconds}
 StandardOutput=append:${paths.outLog}
@@ -269,8 +270,11 @@ WantedBy=default.target
  */
 export function renderWindowsTask(spec: ServiceSpec, paths: ServicePaths): string {
   assertUnquotablePath(spec.binaryPath);
-  const settings = environmentOf(spec).filter(([key]) => key !== 'HOME').map(([key, value]) => `set "${key}=${value}" && `).join('');
-  const action = `${settings}${spec.binaryPath} ${spec.unit.args.join(' ')} >> ${paths.outLog} 2>> ${paths.errLog}`;
+  const settings = environmentOf(spec).filter(([key]) => key !== 'HOME').map(([key, value]) => {
+    commandArgument(value, 'cmd', key === 'PATH' ? ['PATH'] : []);
+    return `set "${key}=${value}" && `;
+  }).join('');
+  const action = `${settings}${commandLine([spec.binaryPath, ...spec.unit.args], 'cmd')} >> ${commandArgument(paths.outLog, 'cmd')} 2>> ${commandArgument(paths.errLog, 'cmd')}`;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

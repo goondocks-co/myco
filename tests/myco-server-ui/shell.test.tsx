@@ -593,13 +593,20 @@ describe('/join', () => {
     mount('/join');
     expect(await screen.findByRole('heading', { name: 'Connect a machine to Myco' })).toBeTruthy();
     expect(screen.getByText('On the machine you want to connect, run:')).toBeTruthy();
-    const command = `myco login http://localhost/join#${KEY}`;
+    const command = `myco login 'http://localhost/join#${KEY}'`;
     expect(screen.getByText(command)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
     await waitFor(() => expect(copied).toEqual([command]));
     expect(await screen.findByText('Copied')).toBeTruthy();
     expect(screen.getByText(/works once and then expires/)).toBeTruthy();
     expect(screen.queryByText('Sign in with GitHub')).toBeNull();
+  });
+
+  it('refuses a malformed invitation before offering a command to copy', async () => {
+    window.location.hash = '#$(touch%20fixture)';
+    mount('/join');
+    expect(await screen.findByRole('heading', { name: 'This link carries no valid invitation' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
   });
 
   it('says a link without its key carries no invitation, and offers no command', async () => {

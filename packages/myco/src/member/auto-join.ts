@@ -504,12 +504,13 @@ export function markSweepDone(mycoHome: string, now: number): void {
  * otherwise. A repository left and then connected from "Needs you" is no longer left.
  */
 export function joinStanding(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): {
-  standing: 'left' | 'due' | 'waiting'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
+  standing: 'left' | 'due' | 'waiting' | 'busy'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
 } {
   const leaves = autoJoinLeavesFor(rootKey, serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
   const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
-  if (leftForConnection(rootKey, mycoHome, connectTo)) return { standing: 'left', leaves, state };
+  const left = leftForConnection(rootKey, mycoHome, connectTo);
+  if (left !== 'ready') return { standing: left, leaves, state };
   const moved = settingsMoved(state, placeRepository({ root, rootKey }, leaves), connectTo);
   return { standing: moved || autoJoinDue(state, now) ? 'due' : 'waiting', leaves, state };
 }
@@ -582,7 +583,7 @@ export function dropJoinRequest(rootKey: string, mycoHome: string, serverUrl?: s
 }
 
 /** A joined repository's past sessions, still to bring: the helper's join pass brings them a step at a time. */
-export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number }
+export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number; retryAt?: number }
 
 const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'>): string =>
   scopedFile(IMPORTS_DIRNAME, rootKey, mycoHome, route?.serverUrl, route?.projectId);
@@ -607,6 +608,7 @@ export function listPendingImports(mycoHome: string): PendingImport[] {
       const value = read.value;
       if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
         && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
+        && (value.retryAt === undefined || Number.isFinite(value.retryAt))
         && path.basename(file) === `${value.rootKey}.json`
         && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
           || (path.basename(path.dirname(file)) === value.projectId
@@ -749,17 +751,17 @@ export function listLeftRepositories(mycoHome: string): ({ key: string; root?: s
 }
 
 /** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */
-export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): boolean {
+export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): 'left' | 'busy' | 'ready' {
   const standing = (): 'absent' | 'left' | 'reconnect' => leftStanding(rootKey, mycoHome, connectTo);
   const observed = standing();
-  if (observed !== 'reconnect') return observed === 'left';
+  if (observed !== 'reconnect') return observed === 'left' ? 'left' : 'ready';
   const lease = acquireRegistryLock(mycoHome);
-  if (!lease.acquired) return true;
+  if (!lease.acquired) return 'busy';
   try {
     const current = standing();
-    if (current !== 'reconnect') return current === 'left';
+    if (current !== 'reconnect') return current === 'left' ? 'left' : 'ready';
     clearLeft(rootKey, mycoHome);
-    return false;
+    return 'ready';
   } finally {
     lease.lock.release();
   }
@@ -770,7 +772,7 @@ function leftStanding(rootKey: string, mycoHome: string, connectTo: string | nul
   const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
   let observed = false;
   for (const mark of listLeftRepositories(mycoHome)) {
-    if ('error' in mark) { if (keys.has(mark.key)) return 'left'; continue; }
+    if ('error' in mark) { if (keys.has(mark.key)) throw new Error(mark.error); continue; }
     if (keys.has(mark.key)) {
       observed = true;
       if (mark.explicitJoinOnly || connectTo === null) return 'left';

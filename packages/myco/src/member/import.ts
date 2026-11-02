@@ -671,3 +671,13 @@ export async function importUntilSettled(
 
 /** Tries a step makes after the Deployment answers a server error before the step is recorded as failed. */
 export const SERVER_FAULT_RETRIES = 3;
+
+/** Only a complete pass retires its history import obligation. */
+export function importCompleted(report: ImportReport): boolean {
+  return report.refused === undefined && report.stoppedBy === undefined && report.projects.every(project => project.endedBy === undefined);
+}
+
+/** Discovery and per-Project passes share the import deadline. */
+export function importDeadlineReached(report: ImportReport): boolean {
+  return report.stoppedBy === IMPORT_DEADLINE || report.projects.some(project => project.endedBy === IMPORT_DEADLINE);
+}

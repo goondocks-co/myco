@@ -15,6 +15,26 @@ import type { MemberTokenSource } from './token-pairing.js';
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export class CredentialRedirectError extends Error {
+  readonly code = 'redirect';
+  constructor() { super('The Deployment redirected a credential-bearing request'); }
+}
+
+/** Credential-bearing requests stay at the authority the caller selected. */
+export async function credentialFetch(fetchImpl: FetchLike, input: string | URL | Request, init: RequestInit): Promise<Response> {
+  const response = await fetchImpl(input, { ...init, redirect: 'manual' });
+  if (response.status >= 300 && response.status < 400) throw new CredentialRedirectError();
+  return response;
+}
+
+/** Retry-After delay at the receiving clock, in seconds or HTTP-date form. */
+export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (value === null) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - now) : undefined;
+}
+
 /** A credential and the Deployment it is for: all a Deployment-scoped request carries. */
 export interface DeploymentRecord {
   serverUrl: string;
@@ -101,7 +121,7 @@ function statusLineAnswer(res: Response): RawAnswer {
     kind: 'response',
     status: res.status,
     protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
-    retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    retryAfterMs: retryAfterMs(retryAfter),
     json: null,
   };
 }
@@ -127,7 +147,7 @@ export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<
     kind: 'response',
     status: res.status,
     protocolHeader: res.headers.get(PROTOCOL_HEADER) !== null,
-    retryAfterMs: retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    retryAfterMs: retryAfterMs(retryAfter),
     json,
   };
 }
@@ -191,16 +211,10 @@ export class ServerClient {
     const started = Date.now();
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
-      const res = await this.fetchImpl(memberServerDialUrl(`${this.base}${path}`), {
+      const res = await credentialFetch(this.fetchImpl, memberServerDialUrl(`${this.base}${path}`), {
         method,
         headers,
         body: init.body,
-        // A redirect is an error, never a hop. Following one ships the capture
-        // body to whatever host the response names and answers in that host's
-        // shape — a `{persisted:true}` from anywhere would read as `acked` and
-        // delete the durable copy. `error` surfaces as a transport failure,
-        // which classifies `retry`, so the events stay spooled.
-        redirect: 'error',
         signal,
       });
       phase = 'body';

@@ -1,3 +1,4 @@
+import { commandLine } from '@goondocks/myco-shared/shell-command';
 import { MCP_CLIENT_ROOTS_FLAG } from '@myco/cli/flags.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
@@ -101,7 +102,7 @@ export function memberRemoteMcp(
 ): Record<string, unknown> {
   const server = deploymentUrl(serverUrl);
   if (!SHELL_SAFE_URL.test(server)) throw new Error(`Refusing to emit a member MCP server: ${server} cannot ride unquoted in a headers-helper command`);
-  const helper = [binaryPath, ...MCP_HEADERS_ARGS, CREDENTIAL_FLAG, source, SERVER_FLAG, server].join(' ');
+  const helper = commandLine([binaryPath, ...MCP_HEADERS_ARGS, CREDENTIAL_FLAG, source, SERVER_FLAG, server]);
   return { url: memberServerDialUrl(`${server}${MCP_PATH}`), [helperKey]: helper };
 }
 

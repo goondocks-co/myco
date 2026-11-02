@@ -165,7 +165,7 @@ describe('invitations', () => {
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
-    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'k'.repeat(43)}`));
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login '${window.location.origin}/join#${'k'.repeat(43)}'`));
     dialog = screen.getByRole('dialog');
     expect(dialog.textContent).toContain('On their machine, run:');
     expect(dialog.textContent).toMatch(/shown only now/);
@@ -194,7 +194,7 @@ describe('invitations', () => {
     fireEvent.click(within(dialog).getByRole('combobox', { name: /^How\ long\ the\ link\ works(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'For a day' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
-    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'m'.repeat(43)}`));
+    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login '${window.location.origin}/join#${'m'.repeat(43)}'`));
     dialog = screen.getByRole('dialog');
     expect(dialog.textContent).toContain('On the machine you want to add, run:');
     expect(posts).toEqual([{ path: '/api/enrollment', body: { memberId: LIN, ttlMinutes: 1440 } }]);

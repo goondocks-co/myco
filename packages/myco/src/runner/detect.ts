@@ -10,7 +10,7 @@
  * A probe never prints a credential. It answers whether one is present.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -20,6 +20,7 @@ export interface DetectedHarness {
   id: string;
   installed: boolean;
   authenticated: boolean;
+  error?: string;
 }
 
 export interface OfferedHarness extends DetectedHarness {
@@ -56,8 +57,11 @@ export function locate(binary: string, env: NodeJS.ProcessEnv = probeEnv()): str
 
 /** A file that exists and holds at least one of the keys a login writes. An empty file is a logged-out file. */
 function fileHolds(at: string | null, requires: readonly string[]): boolean {
-  if (at === null || !existsSync(at)) return false;
-  try { return holdsCredentials(readFileSync(at, 'utf8'), requires); } catch { return false; }
+  if (at === null) return false;
+  try { return holdsCredentials(readFileSync(at, 'utf8'), requires); } catch (error) {
+    if (ABSENT_PATH_CODES.includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
+  }
 }
 
 function holdsCredentials(content: string, requires: readonly string[]): boolean {
@@ -93,7 +97,8 @@ export function detectHarnesses(only?: readonly string[], env: NodeJS.ProcessEnv
   for (const harness of HARNESSES) {
     if (wanted !== null && !wanted.has(harness.id)) continue;
     const installed = locate(harness.binary, env) !== null;
-    out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness, env) });
+    try { out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness, env) }); }
+    catch (error) { out.push({ id: harness.id, installed, authenticated: false, error: error instanceof Error ? error.message : String(error) }); }
   }
   return out;
 }
@@ -128,7 +133,10 @@ function probeCommand(binary: string, args: readonly string[], signal?: AbortSig
 
 async function fileHoldsAsync(at: string | null, requires: readonly string[]): Promise<boolean> {
   if (at === null) return false;
-  try { return holdsCredentials(await readFile(at, 'utf8'), requires); } catch { return false; }
+  try { return holdsCredentials(await readFile(at, 'utf8'), requires); } catch (error) {
+    if (ABSENT_PATH_CODES.includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
+  }
 }
 
 /** What a file probe reads of a credential file. */
@@ -159,12 +167,14 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
     const found = await probeCommand(process.platform === 'win32' ? 'where' : 'which', [harness.binary], signal);
     const installed = (found?.split('\n')[0]?.trim() ?? '').length > 0;
     if (!installed) return { id: harness.id, installed, authenticated: false };
-    const probe = harness.credential;
-    const fileAuthenticated = probe.kind !== 'command' && (mode.credentialBytes
-      ? await fileHoldsAsync(credentialFile(harness), probe.requires)
-      : await fileNonEmpty(credentialFile(harness)));
-    const authenticated = fileAuthenticated || (probe.kind !== 'file' && await probeCommand(harness.binary, probe.args, signal) !== null);
-    return { id: harness.id, installed, authenticated };
+    try {
+      const probe = harness.credential;
+      const fileAuthenticated = probe.kind !== 'command' && (mode.credentialBytes
+        ? await fileHoldsAsync(credentialFile(harness), probe.requires)
+        : await fileNonEmpty(credentialFile(harness)));
+      const authenticated = fileAuthenticated || (probe.kind !== 'file' && await probeCommand(harness.binary, probe.args, signal) !== null);
+      return { id: harness.id, installed, authenticated };
+    } catch (error) { return { id: harness.id, installed, authenticated: false, error: error instanceof Error ? error.message : String(error) }; }
   }));
 }
 
@@ -208,7 +218,7 @@ export function offerOf(detected: readonly DetectedHarness[]): { offered: Offere
   return {
     offered: detected.flatMap((found) => {
       const harness = harnessById(found.id);
-      return harness !== null && offerable(harness) ? [{ ...found, profile: harness.profile }] : [];
+      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, profile: harness.profile }] : [];
     }),
     withheld: detected.filter((found) => found.authenticated && !holdable(found)).map((found) => found.id),
   };

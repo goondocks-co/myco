@@ -339,3 +339,12 @@ export function buildTomlMcpSection(
 
   return updated;
 }
+
+/** Remove one table and its descendants while preserving unrelated TOML text. */
+export function removeTomlTable(raw: string, sectionName: string): string {
+  const header = `[${sectionName}]`;
+  const start = raw.indexOf(header);
+  if (start < 0) return raw;
+  const end = findTomlSectionEnd(raw, start + header.length, sectionName);
+  return raw.slice(0, start) + raw.slice(end);
+}

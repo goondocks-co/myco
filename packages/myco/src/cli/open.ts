@@ -4,7 +4,7 @@ import { resolveMemberProjectRoot } from '../member/credential.js';
 import { defaultMembership } from '../member/default-deployment.js';
 import { JOIN_A_DEPLOYMENT } from '../member/join-guidance.js';
 import { readRegistryEntry } from '../member/registry.js';
-import { resolveMycoHome } from '../paths/home.js';
+import { memberHomeFor } from '../member/home-for-folder.js';
 
 export interface OpenDeps {
   cwd?: string;
@@ -18,7 +18,7 @@ export interface OpenDeps {
  * null when this machine holds neither.
  */
 export function deploymentDashboardUrl(deps: OpenDeps = {}): string | null {
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const mycoHome = deps.mycoHome ?? memberHomeFor(deps.cwd ?? process.cwd()).home;
   const entry = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), mycoHome);
   const serverUrl = entry?.serverUrl ?? defaultMembership(mycoHome)?.serverUrl;
   return serverUrl === undefined ? null : memberServerDialUrl(`${serverUrl.replace(/\/+$/, '')}/`);

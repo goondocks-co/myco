@@ -1,5 +1,7 @@
 /** Downloads and verifies release binaries into versioned slots, and prunes retained slots. */
 import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -68,36 +70,20 @@ async function download(
   // This prevents an oversized (or malicious) CDN response from OOM-ing the
   // orchestrator even when Content-Length is absent or lying.
   let received = 0;
-  const fileStream = fs.createWriteStream(destPath);
-  const reader = res.body.getReader();
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+  const chunks = async function* () {
+    for await (const value of res.body!) {
       received += value.byteLength;
-      if (received > maxBytes) {
-        reader.cancel().catch(() => { /* best-effort cancel */ });
-        fileStream.destroy();
-        rmSafe(destPath);
-        throw new Error(
-          `download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`,
-        );
-      }
-      await new Promise<void>((resolve, reject) => {
-        fileStream.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
-      });
+      if (received > maxBytes) throw new Error(`download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`);
+      yield value;
     }
-    await new Promise<void>((resolve, reject) => {
-      fileStream.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
-  } catch (err) {
-    // On any error (cap exceeded, write failure, …) ensure the file stream is
-    // closed and the partial file is removed before re-throwing.
-    fileStream.destroy();
+  };
+  try {
+    await pipeline(Readable.from(chunks()), fs.createWriteStream(destPath));
+  } catch (error) {
     rmSafe(destPath);
-    throw err;
+    throw error;
   }
+
 }
 
 function computeSha256(filePath: string): Promise<string> {
