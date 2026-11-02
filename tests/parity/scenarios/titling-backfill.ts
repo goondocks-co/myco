@@ -21,6 +21,12 @@ export const titlingBackfill: ParityScenario = {
   dedicated: { timeoutMs: 240000 },
   async run(target: ParityTarget) {
     const stamp = Date.now();
+    const DAY = 86_400_000;
+    const expiredAge = 2 * DAY;
+    const activatedAt = stamp - expiredAge - DAY;
+    // Budget activation precedes the backdated queued runs.
+    await target.sql(`UPDATE schema_meta SET value = ${lit(String(activatedAt))}
+      WHERE key IN ('budget_activation_started_at', 'budget_enabled_at', 'budget_queue_opened_at')`);
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, channel: 'cli' | 'import' = 'import') => {
       const res = await fetch(`${target.url}/events`, {
         method: 'POST',
@@ -86,7 +92,6 @@ export const titlingBackfill: ParityScenario = {
       await post(id, 'prompt', { promptId: crypto.randomUUID(), text: `Title me ${id}`, origin: 'user' }, 'cli');
       await post(id, 'session.end', { endedAt: stamp + 1_000 }, id === stranded ? 'cli' : 'import');
     }
-    const DAY = 86_400_000;
     const runsOf = (id: string) => target.sql(`SELECT status, json_extract(dispatch_spec, '$.actor') AS actor FROM agent_runs
       WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(id)} ORDER BY COALESCE(queued_at, started_at)`);
     expect(await runsOf(stranded)).toEqual([]);
@@ -95,8 +100,8 @@ export const titlingBackfill: ParityScenario = {
     await owner('POST', '/api/wake');
     expect(await runsOf(stranded)).toEqual([{ status: 'queued', actor: 'deployment' }]);
     expect(await runsOf(unrequested)).toEqual([{ status: 'queued', actor: 'backfill' }]);
-    await target.sql(`UPDATE agent_runs SET queued_at = queued_at - ${2 * DAY} WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(stranded)}`);
-    await target.sql(`UPDATE sessions SET titled_at = titled_at - ${2 * DAY} WHERE session_id = ${lit(stranded)}`);
+    await target.sql(`UPDATE agent_runs SET queued_at = queued_at - ${expiredAge} WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(stranded)}`);
+    await target.sql(`UPDATE sessions SET titled_at = titled_at - ${expiredAge} WHERE session_id = ${lit(stranded)}`);
     await owner('POST', '/api/wake');
     expect(await runsOf(stranded)).toEqual([{ status: 'failed', actor: 'deployment' }, { status: 'queued', actor: 'backfill' }]);
     expect(await runsOf(unrequested)).toEqual([{ status: 'queued', actor: 'backfill' }]);
@@ -108,7 +113,7 @@ export const titlingBackfill: ParityScenario = {
 
     // Workers took the bound on it: the session is left untitled, and says so.
     await target.sql(`UPDATE agent_runs SET status = 'failed' WHERE task = 'title-summary' AND status = 'queued' AND json_extract(run_context, '$.session_id') = ${lit(stranded)}`);
-    await target.sql(`UPDATE sessions SET titling_attempts = 3, titled_at = titled_at - ${2 * DAY} WHERE session_id = ${lit(stranded)}`);
+    await target.sql(`UPDATE sessions SET titling_attempts = 3, titled_at = titled_at - ${expiredAge} WHERE session_id = ${lit(stranded)}`);
     expect(await reason(stranded)).toBe('stopped');
     await owner('POST', '/api/wake');
     expect((await runsOf(stranded)).length).toBe(2);
