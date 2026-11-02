@@ -22,6 +22,8 @@ import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-wor
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
 import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
+import { parseCard } from '../../packages/myco-server/ui/src/features/sessions/card-text';
+import { renderCard } from '@myco-server-worker/core/turn-cards.js';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -67,14 +69,15 @@ const session = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const page = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor });
-const counts = { prompts: 2, toolCalls: 3, responses: 1, plans: 0, attachments: 2 };
+const counts = { prompts: 1, toolCalls: 3, responses: 1, plans: 0, attachments: 2 };
 const NO_OUTCOME = { runs: [], spores: { total: 0, items: [] } };
 const detail = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
   Response.json({ session: session(over), untitled: null, counts, release: null, outcome: NO_OUTCOME, projectId: 'x', ...extra });
 
 const turn = (over: Record<string, unknown> = {}) => ({
   promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
-  createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, planCount: 0, attachmentCount: 0, ...over,
+  createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, planCount: 0, attachmentCount: 0,
+  headline: null, signal: null, marks: null, failedTools: 0, mycoCalls: 0, toolRollup: null, ...over,
 });
 
 const originalFetch = globalThis.fetch;
@@ -424,8 +427,7 @@ describe('the session reading page', () => {
       '/api/projects/x/sessions/s1/unplaced-records': () => page([{ key: 'tool:a', kind: 'tool', id: 'a', label: 'Shell', createdAt: NOW, failed: true }]),
       '/api/projects/x/sessions/s1/unplaced': () => page([{ key: 'receipt:b', kind: 'receipt', id: 'b', label: 'Context received', createdAt: NOW }]),
     }));
-    mount('/p/x/sessions/s1');
-    await screen.findByRole('heading', { level: 1 });
+    mount('/p/x/sessions/s1?about=1');
     const disclosure = await screen.findByRole('button', { name: 'Not placed on a turn' });
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
     expect(requested.some(path => path.includes('/unplaced'))).toBe(false);
@@ -438,8 +440,8 @@ describe('the session reading page', () => {
     expect(requested.filter(path => path.includes('/unplaced'))).toHaveLength(2);
   });
 
-  it('leads with the title and summary, keeps the facts and what came of it beside the conversation, and shows no raw id', async () => {
-    server(routes());
+  it('leads with the title, summary and counts, and keeps the facts, what came of it and the raw data in a panel, showing no raw id', async () => {
+    const { requested } = server(routes());
     mount('/p/x/sessions/s1');
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe('Flaky test port collision fixed');
@@ -454,23 +456,30 @@ describe('the session reading page', () => {
     const page = document.querySelector('[data-session-page]')!;
     const summary = page.querySelector('[data-summary]')!;
     expect(summary.textContent).toBe('The test reserved a fixed port.\nIt now asks the kernel for one.');
-    // The summary comes before the conversation, and the conversation sits in the reading column.
+    // The summary comes before the tabs.
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The tabs name what they hold and count nothing.
-    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans', 'Lineage']);
+    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Agent activity', 'Outcomes', 'Spores12', 'Plans', 'Files', 'Lineage']);
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
+    expect(page.querySelector('[data-facts]')).toBeNull();
+    expect(requested.some((path) => path.endsWith('/lineage'))).toBe(false);
     // The facts, in words; the id is only copied.
-    const facts = screen.getByRole('complementary', { name: 'About this session' });
-    const factText = facts.querySelector('[data-facts]')!.textContent!;
-    for (const words of ['Project X', 'Claude Code', 'Ada’s studio Mac', 'Ada', 'main', '/repo', 'Released · v1.2.0', '2 prompts · 3 tool calls · 1 reply']) expect(factText).toContain(words);
-    expect(within(facts).getByRole('button', { name: 'Copy session id' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?about=1'));
+    const about = await screen.findByRole('dialog', { name: 'About this session' });
+    const factText = about.querySelector('[data-facts]')!.textContent!;
+    for (const words of ['Project X', 'Claude Code', 'Ada’s studio Mac', 'Ada', 'main', '/repo', 'Released · v1.2.0', '1 prompt · 3 tool calls · 1 reply']) expect(factText).toContain(words);
+    expect(within(about).getByRole('button', { name: 'Copy session id' })).toBeTruthy();
     expect(factText).not.toContain('s1');
-    // The raw data is folded away at the foot, and the conversation's last typed turn is open.
-    const raw = screen.getByRole('region', { name: 'Raw data' });
+    expect(await within(about).findByText('Myco sent the session start block')).toBeTruthy();
+    const raw = within(about).getByRole('region', { name: 'Raw data' });
     expect(within(raw).getByRole('button', { name: 'Raw data' }).getAttribute('aria-expanded')).toBe('false');
-    expect((await within(await screen.findByTestId(`turn-${P3}`)).findAllByTestId('turn-body')).length).toBeGreaterThan(0);
     expect(rawIdsInPage()).toEqual([]);
+    fireEvent.click(within(about).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1'));
+    // The newest typed turn is open, and only its body has been read.
+    expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
+    expect(requested.filter((path) => /\/turns\/[^?]+$/.test(path))).toEqual([`/api/projects/x/sessions/s1/turns/${P1}`]);
   });
 
   it('copies the resume command the server words, verbatim, and offers none when the session can’t be resumed', async () => {
@@ -480,8 +489,8 @@ describe('the session reading page', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
     try {
       server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed' }, { resume: { command: 'claude --resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b', line } }) }));
-      mount('/p/x/sessions/s1');
-      const facts = await screen.findByRole('complementary', { name: 'About this session' });
+      mount('/p/x/sessions/s1?about=1');
+      const facts = await screen.findByRole('dialog', { name: 'About this session' });
       const copy = await within(facts).findByRole('button', { name: 'Copy resume command' });
       expect(copy.closest('[data-facts]')).not.toBeNull();
       fireEvent.click(copy);
@@ -489,7 +498,7 @@ describe('the session reading page', () => {
       expect(facts.textContent).not.toContain('claude --resume');
       cleanup();
       server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed' }, { resume: null }) }));
-      mount('/p/x/sessions/s1');
+      mount('/p/x/sessions/s1?about=1');
       await screen.findByRole('button', { name: 'Copy session id' });
       expect(screen.queryByRole('button', { name: 'Copy resume command' })).toBeNull();
     } finally {
@@ -498,40 +507,15 @@ describe('the session reading page', () => {
   });
 
   const activityRow = (over: Record<string, unknown> = {}) => ({
-    id: 'activity-one', type: 'failure', title: 'Bash', detail: 'Tool reported a failure', at: NOW - MINUTE,
-    promptId: P1, toolName: 'Bash', resultReason: 'reported', failed: true, sessionId: null, agent: null, ...over,
+    id: 'activity-one', type: 'child_session', title: 'Port allocation reviewed', detail: 'Child of this session', at: NOW - MINUTE, sessionId: 'reviewer', agent: 'codex', ...over,
   });
-  const activityPage = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor, tools: ['Bash', 'Read'] });
-
-  it('lists diagnostic reasons and opens only the prompt target the server verified', async () => {
-    server(routes({
-      '/api/projects/x/sessions/s1/activity': () => activityPage([
-        activityRow(),
-        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured · Not placed on a turn', promptId: null, resultReason: 'no_result' }),
-        activityRow({ id: 'legacy', title: 'Tool call did not succeed', detail: 'Reason not recorded · Not placed on a turn', promptId: null, resultReason: null }),
-      ]),
-    }));
-    mount('/p/x/sessions/s1?tab=activity');
-    const list = await screen.findByRole('list', { name: 'Agent activity' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(3);
-    expect(within(list).getAllByText('Failure')[0]).toBeTruthy();
-    expect(within(list).getByText('No result captured')).toBeTruthy();
-    expect(within(list).getByText('Tool call did not succeed')).toBeTruthy();
-    expect(within(list).getByText('Reason not recorded · Not placed on a turn')).toBeTruthy();
-    expect(within(list).getAllByRole('link')).toHaveLength(1);
-    expect(within(list).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
-    expect(screen.queryByRole('searchbox')).toBeNull();
-    expect(rawIdsInPage()).toEqual([]);
-    fireEvent.click(within(list).getByRole('link'));
-    await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${P1}`));
-    expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
-  });
+  const activityPage = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor });
 
   it('lists child sessions and continuations, each opening the related session on its conversation, and a session not captured here opening nothing', async () => {
     server(routes({
       '/api/projects/x/sessions/s1/activity': () => activityPage([
-        activityRow({ id: 'child:reviewer', type: 'child_session', title: 'Port allocation reviewed', detail: 'Child of this session', promptId: null, toolName: null, resultReason: null, failed: false, sessionId: 'reviewer', agent: 'codex' }),
-        activityRow({ id: 'continues:gone', type: 'continuation', title: 'A session not captured here', detail: 'This session continues its conversation · fork', promptId: null, toolName: null, resultReason: null, failed: false, sessionId: null, agent: null }),
+        activityRow({ id: 'child:reviewer' }),
+        activityRow({ id: 'continues:gone', type: 'continuation', title: 'A session not captured here', detail: 'This session continues its conversation · fork', sessionId: null, agent: null }),
       ]),
     }));
     mount('/p/x/sessions/s1?tab=activity');
@@ -547,8 +531,8 @@ describe('the session reading page', () => {
 
   it('names the parent and counts the children in the facts, and draws the family on the Lineage tab with the session marked', async () => {
     server(routes());
-    mount('/p/x/sessions/s1');
-    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    mount('/p/x/sessions/s1?about=1');
+    const facts = await screen.findByRole('dialog', { name: 'About this session' });
     const parent = await within(facts).findByRole('link', { name: 'Release checks coordinated' });
     expect(parent.getAttribute('href')).toBe('/p/x/sessions/coordinator');
     const children = within(facts).getByRole('link', { name: '2 sessions' });
@@ -591,15 +575,15 @@ describe('the session reading page', () => {
     const wide = await wideLineage('s1', 205, null);
     expect(wide.truncated).toBe(true);
     server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json(wide) }));
-    mount('/p/x/sessions/s1');
-    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    mount('/p/x/sessions/s1?about=1');
+    const facts = await screen.findByRole('dialog', { name: 'About this session' });
     expect((await within(facts).findByRole('link', { name: '199+ sessions' })).getAttribute('href')).toBe('/p/x/sessions/s1?tab=lineage');
     cleanup();
     const boundary = await wideLineage('r', 205, 's1');
     expect([boundary.truncated, boundary.edges.some((edge) => edge.parentId === 's1')]).toEqual([true, false]);
     server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json(boundary) }));
-    mount('/p/x/sessions/s1');
-    const cut = await screen.findByRole('complementary', { name: 'About this session' });
+    mount('/p/x/sessions/s1?about=1');
+    const cut = await screen.findByRole('dialog', { name: 'About this session' });
     expect(await within(cut).findByRole('link', { name: 'Not all counted' })).toBeTruthy();
     expect(within(cut).getByRole('link', { name: 'Session r' })).toBeTruthy();
   });
@@ -608,8 +592,8 @@ describe('the session reading page', () => {
     let fail = true;
     server(routes({ '/api/projects/x/sessions/s1/lineage': () => fail ? new Response(null, { status: 500 }) : Response.json(LINEAGE) }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mount('/p/x/sessions/s1', client);
-    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    mount('/p/x/sessions/s1?about=1', client);
+    const facts = await screen.findByRole('dialog', { name: 'About this session' });
     expect((await within(facts).findByText('Could not be read')).closest('[data-facts]')).not.toBeNull();
     expect(within(facts).queryByText('Children')).toBeNull();
     fail = false;
@@ -636,8 +620,9 @@ describe('the session reading page', () => {
     expect(lineage.textContent).toContain('A session not captured here');
     expect(lineage.textContent).toContain('Times not captured');
     expect(screen.getByText('Only part of this family is shown: it reaches past what one page reads.')).toBeTruthy();
-    const facts = screen.getByRole('complementary', { name: 'About this session' });
-    expect(within(facts).getByText('A session not captured here')).toBeTruthy();
+    cleanup();
+    mount('/p/x/sessions/s1?about=1');
+    expect(await within(await screen.findByRole('dialog', { name: 'About this session' })).findByText('A session not captured here')).toBeTruthy();
     cleanup();
     server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json({ nodes: [lineageNode('s1', 0, { current: true })], edges: [], truncated: false }) }));
     mount('/p/x/sessions/s1?tab=lineage');
@@ -645,41 +630,35 @@ describe('the session reading page', () => {
     expect(screen.queryByText('Children')).toBeNull();
   });
 
-  it('pages activity under structured filters and drops activity filters when opening another tab', async () => {
+  it('pages activity under its type filter, offers no failure rows or tool filter, and drops the filter when opening another tab', async () => {
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1/activity': (_init, url) => {
-        if (url!.searchParams.get('tool') === 'Read') return activityPage([]);
+        if (url!.searchParams.get('type') === 'continuation') return activityPage([]);
         return url!.searchParams.has('cursor')
-          ? activityPage([activityRow({ id: 'second', title: 'Second failure' })])
+          ? activityPage([activityRow({ id: 'second', title: 'Second child' })])
           : activityPage([activityRow()], 'next:page');
       },
     }));
-    mount('/p/x/sessions/s1?tab=activity&type=failure&tool=Bash&q=ignored-body');
+    mount('/p/x/sessions/s1?tab=activity&type=child_session&q=ignored-body');
     await screen.findByRole('list', { name: 'Agent activity' });
-    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash');
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=child_session');
     expect(screen.getByText('Showing 1 activity events')).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: /^Tool(?::|$)/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    await screen.findByText('Second failure');
-    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash&cursor=next%3Apage');
+    await screen.findByText('Second child');
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=child_session&cursor=next%3Apage');
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
-    await pick('Tool', 'Read');
-    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Read'));
-    expect(screen.queryByRole('combobox', { name: /^Result(?::|$)/ })).toBeNull();
+    fireEvent.click(screen.getByRole('combobox', { name: /^Type(?::|$)/ }));
+    expect(screen.queryByRole('option', { name: 'Failure' })).toBeNull();
+    fireEvent.click(await screen.findByRole('option', { name: 'Continuation' }));
+    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=continuation'));
     await screen.findByText('No agent activity in this session matches these filters.');
-    expect(screen.queryByRole('list', { name: 'Agent activity' })).toBeNull();
     const activityReads = () => requested.filter(path => path.startsWith('/api/projects/x/sessions/s1/activity?'));
     const beforeExit = activityReads();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=plans'));
     expect(await screen.findByText('No plans were captured in this session.')).toBeTruthy();
     expect(activityReads()).toEqual(beforeExit);
-  });
-
-  it('keeps a linked tool filter visible when the session has no matching calls', async () => {
-    server(routes({ '/api/projects/x/sessions/s1/activity': () => activityPage([]) }));
-    mount('/p/x/sessions/s1?tab=activity&tool=Unrecorded');
-    await screen.findByText('No agent activity in this session matches these filters.');
-    expect(screen.getByRole('combobox', { name: 'Tool: Unrecorded' }).textContent).toBe('Unrecorded');
   });
 
   it('surfaces an activity read failure and retries into the unfiltered empty state', async () => {
@@ -695,7 +674,7 @@ describe('the session reading page', () => {
 
   it('says what came of the session: how many spores, one link from their tab, and each run with whether the Deployment holds a record of its reading', async () => {
     server(routes());
-    mount('/p/x/sessions/s1');
+    mount('/p/x/sessions/s1?about=1');
     const outcome = await screen.findByText('What came of it').then((h) => h.closest('[data-outcome]') as HTMLElement);
     // The spores themselves are listed on the Spores tab, not here.
     expect(within(outcome).queryByRole('list', { name: 'Spores from this session' })).toBeNull();
@@ -720,16 +699,16 @@ describe('the session reading page', () => {
 
   it('says nothing came of a session yet, and why, whether it is open or ended', async () => {
     server(base({ '/api/projects/x/sessions/s1': () => detail({ label: 'Try the login flow' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([]) }));
-    mount('/p/x/sessions/s1');
+    mount('/p/x/sessions/s1?about=1');
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco learns from a session once it ends.');
     // Open and untitled: headed by what the person typed, marked Untitled, and the summary waits for the end.
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('UntitledTry the login flow');
+    expect(screen.getByRole('heading', { level: 1, hidden: true }).textContent).toBe('UntitledTry the login flow');
     expect(screen.getByText('Myco writes a summary once the session ends.')).toBeTruthy();
     cleanup();
     server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'stopped' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([]) }));
-    mount('/p/x/sessions/s1');
+    mount('/p/x/sessions/s1?about=1');
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco hasn’t learned anything from this session.');
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('UntitledUntitled session');
+    expect(screen.getByRole('heading', { level: 1, hidden: true }).textContent).toBe('UntitledUntitled session');
     expect(screen.getByText(/^Untitled: Myco stopped trying/)).toBeTruthy();
   });
 
@@ -777,14 +756,17 @@ describe('the session reading page', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'End session' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(lists.map((key) => client.getQueryState(key)?.isInvalidated)).toEqual([true, true, true]));
-    await waitFor(() => expect(screen.getByRole('complementary', { name: 'About this session' }).textContent).toContain('by Ada'));
+    fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
+    await waitFor(async () => expect((await screen.findByRole('dialog', { name: 'About this session' })).textContent).toContain('by Ada'));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'About this session' })).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(within(await openMenu()).queryByRole('menuitem', { name: 'End session' })).toBeNull();
 
     // Delete: names what goes and what stays, keeps the dialog open on a failure, and leaves for the list once done.
     fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Delete session' }));
     dialog = await screen.findByRole('dialog', { name: 'Delete this session?' });
     expect(dialog.textContent).toContain('The spores learned from it, and other sessions');
-    expect(dialog.querySelector('[data-delete-impact]')!.textContent).toBe('2 prompts · 3 tool calls · 0 plans · 2 attachments');
+    expect(dialog.querySelector('[data-delete-impact]')!.textContent).toBe('1 prompt · 3 tool calls · 0 plans · 2 attachments');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Try again');
     expect(location()).toBe('/p/x/sessions/s1');
@@ -810,52 +792,31 @@ describe('the session reading page', () => {
     expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t start writing a title. Try again.');
   });
 
-  it('shows each prompt a person typed with what followed it inline, reading a turn’s body only once it nears the screen', async () => {
-    // A stand-in for the browser's observer: nothing is on screen until a test says so.
-    const watched = new Map<Element, (entries: Array<{ isIntersecting: boolean }>) => void>();
-    const original = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
-    (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
-      constructor(private readonly callback: (entries: Array<{ isIntersecting: boolean }>) => void) {}
-      observe(el: Element) { watched.set(el, this.callback); }
-      disconnect() { for (const [el, cb] of watched) if (cb === this.callback) watched.delete(el); }
-      unobserve() {}
-    };
-    const reach = (el: Element) => act(() => { watched.get(el)?.([{ isIntersecting: true }]); });
-    try {
-      const { requested } = server(routes());
-      mount('/p/x/sessions/s1');
-      const first = await screen.findByTestId(`turn-${P1}`);
-      const last = screen.getByTestId(`turn-${P3}`);
-      // Before its body is read a turn shows the prompt's opening from the list, and nothing is folded.
-      expect(first.textContent).toContain(`Please rename the project card ${'x'.repeat(PROMPT_PREVIEW_CHARS - 'Please rename the project card '.length)}…`);
-      expect(within(first).queryByRole('button', { expanded: false })).toBeNull();
-      expect(screen.getAllByTestId(/^turn-0000/).map((el) => el.getAttribute('data-testid'))).toEqual([`turn-${P1}`, `turn-${P3}`]);
-      expect(requested.filter((p) => p.includes('/turns/'))).toEqual([]);
-
-      await reach(last);
-      // A prompt kept as stored text is read only when asked for.
-      fireEvent.click(await within(last).findByRole('button', { name: 'Show the whole prompt' }));
-      expect(await within(last).findByText('{"a":1}')).toBeTruthy();
-      expect(requested).toContain(`/api/projects/x/processed/prompt/${P3}`);
-      expect(requested).not.toContain(BLOB(KEY_TEXT));
-      expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('steer it left');
-      expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('reviewer');
-      expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
-
-      await reach(first);
-      // The whole prompt, its image and its reply sit inline.
-      await within(first).findByTestId('turn-response');
-      expect(within(first).getByTestId('turn-response').textContent).toContain('done');
-      expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
-      expect(within(first).getByRole('link', { name: 'Download a turn diagram' }).getAttribute('href')).toBe('/api/projects/x/processed/attachment/turn-file');
-      fireEvent.click(within(first).getByRole('button', { name: 'Open a screenshot' }));
-      const lightbox = await screen.findByRole('dialog', { name: 'Image' });
-      expect(within(lightbox).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
-      fireEvent.click(within(lightbox).getByRole('button', { name: 'Close' }));
-      expect(first.textContent).toContain('And the rest of a long prompt.');
-    } finally {
-      (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = original;
-    }
+  it('opens the newest typed turn with its prompt, image and reply, and reads a stored prompt only when asked for', async () => {
+    const { requested } = server(routes());
+    mount('/p/x/sessions/s1');
+    const first = await screen.findByTestId(`turn-${P1}`);
+    // The whole prompt, its image and its reply sit in the reader.
+    await within(first).findByTestId('turn-response');
+    expect(within(first).getByTestId('turn-response').textContent).toContain('done');
+    expect(first.textContent).toContain('And the rest of a long prompt.');
+    expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
+    expect(within(first).getByRole('link', { name: 'Download a turn diagram' }).getAttribute('href')).toBe('/api/projects/x/processed/attachment/turn-file');
+    fireEvent.click(within(first).getByRole('button', { name: 'Open a screenshot' }));
+    const lightbox = await screen.findByRole('dialog', { name: 'Image' });
+    expect(within(lightbox).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
+    fireEvent.click(within(lightbox).getByRole('button', { name: 'Close' }));
+    // The row of a long prompt carries its opening; another row opens that turn alone.
+    expect(screen.getByTestId(`row-${P1}`).textContent).toContain(`Please rename the project card ${'x'.repeat(PROMPT_PREVIEW_CHARS - 'Please rename the project card '.length)}…`);
+    fireEvent.click(screen.getByTestId(`row-${P3}`));
+    const last = await screen.findByTestId(`turn-${P3}`);
+    fireEvent.click(await within(last).findByRole('button', { name: 'Show the whole prompt' }));
+    expect(await within(last).findByText('{"a":1}')).toBeTruthy();
+    expect(requested).toContain(`/api/projects/x/processed/prompt/${P3}`);
+    expect(requested).not.toContain(BLOB(KEY_TEXT));
+    expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('steer it left');
+    expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('reviewer');
+    expect(requested.filter((p) => /\/turns\/[^?]+$/.test(p))).toEqual([`/api/projects/x/sessions/s1/turns/${P1}`, `/api/projects/x/sessions/s1/turns/${P3}`]);
   });
 
   it('reads spilled replies and steering prompts by typed identities, and links bundled and legacy tool bodies', async () => {
@@ -866,7 +827,6 @@ describe('the session reading page', () => {
         attachments: [], plans: [], injection: null,
         children: [{ prompt: { promptId: P2, text: null, blobKey: KEY_TEXT, origin: 'user', createdAt: NOW }, responses: [], toolCallCount: 0 }],
       }),
-      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ prompt: { promptId: P2, text: null, blobKey: KEY_TEXT, origin: 'user', createdAt: NOW }, responses: [], attachments: [], plans: [], children: [], injection: null }),
       '/api/projects/x/processed/response/reply-spill': () => new Response('A complete processed reply'),
       [`/api/projects/x/processed/prompt/${P2}`]: () => new Response('A complete steering prompt'),
       [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
@@ -891,22 +851,6 @@ describe('the session reading page', () => {
     expect(requested).not.toContain(BLOB(KEY_TEXT));
   });
 
-  it('retains child replies from the parent read when the child detail fails, and offers a retry', async () => {
-    let failed = true;
-    server(routes({
-      [`/api/projects/x/sessions/s1/turns/${P4}`]: () => failed ? new Response(null, { status: 503 }) : Response.json({ prompt: { promptId: P4, origin: 'user', threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'r2', text: 'steered', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null, metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 100, tokens: null } }),
-    }));
-    mount('/p/x/sessions/s1', new QueryClient({ defaultOptions: { queries: { retry: false } } }));
-    const child = await screen.findByTestId(`turn-${P4}`);
-    expect(await within(child).findByText('steered')).toBeTruthy();
-    expect((await within(child).findByRole('alert')).textContent).toContain('Couldn’t read the rest of this turn.');
-    failed = false;
-    fireEvent.click(within(child).getByRole('button', { name: 'Retry' }));
-    expect(await within(child).findByText('Write × 1')).toBeTruthy();
-    expect(within(child).queryByRole('alert')).toBeNull();
-    expect(within(child).getByText('steered')).toBeTruthy();
-  });
-
   it('gate 1643.1: continues every turn collection and steering replies, retaining content when a page fails', async () => {
     const prompt = (id: string, text: string) => ({ promptId: id, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text, blobKey: null, createdAt: NOW });
     const replies = (offset: number, length: number, parent = P1) => Array.from({ length }, (_, i) => ({ responseId: `${parent}-reply-${offset + i}`, promptId: parent, text: `Reply ${parent} ${offset + i}`, blobKey: null, createdAt: NOW, orderedAt: NOW }));
@@ -922,12 +866,11 @@ describe('the session reading page', () => {
       [`${turnPath}?collection=attachments&cursor=next`]: () => page(attachments(50, 1)),
       [`${turnPath}?collection=plans&cursor=next`]: () => page(plans(50, 1)),
       [`${turnPath}?collection=children&cursor=next`]: () => page(children(50, 1)),
-      ...Object.fromEntries(children(0, 51).map((child) => [`/api/projects/x/sessions/s1/turns/${child.prompt.promptId}`, () => Response.json({ prompt: child.prompt, responses: child.responses, attachments: [], plans: [], children: [], injection: null, cursors: { responses: child.responsesCursor } })])),
       '/api/projects/x/sessions/s1/turns/child-0?collection=responses&cursor=child-next': () => page(replies(50, 1, 'child-0')),
     }));
     mount('/p/x/sessions/s1', new QueryClient({ defaultOptions: { queries: { retry: false } } }));
     const body = await screen.findByText('Turn with many parts');
-    const card = body.closest('li')!;
+    const card = body.closest('article')!;
     for (const label of ['attachments', 'plans', 'steering prompts']) fireEvent.click(within(card).getByRole('button', { name: `Show more ${label}` }));
     expect(await screen.findByText('Download File 50')).toBeTruthy();
     expect(await screen.findByText('Plan 50')).toBeTruthy();
@@ -937,7 +880,7 @@ describe('the session reading page', () => {
     expect(await screen.findByText('Reply child-0 50')).toBeTruthy();
     fireEvent.click(within(card).getByRole('button', { name: 'Show more replies' }));
     expect(await within(card).findByRole('alert')).toBeTruthy();
-    expect(within(card).getByText(`Reply ${P1} 0`)).toBeTruthy();
+    expect(within(card).getByText(`Reply ${P1} 49`)).toBeTruthy();
     failReplies = false;
     fireEvent.click(within(card).getByRole('button', { name: 'Retry reading replies' }));
     expect(await screen.findByText(`Reply ${P1} 50`)).toBeTruthy();
@@ -1028,6 +971,7 @@ describe('the session reading page', () => {
         if (refresh === 'failed') client.setQueryDefaults(['turn', 'x', 's1', P1], { staleTime: 0 });
         mount('/p/x/sessions/s1', client);
       }
+      fireEvent.click(await screen.findByRole('button', { name: '61 earlier replies' }));
       expect(await screen.findByText('Inserted-page reply 25.5')).toBeTruthy();
       await waitFor(() => expect(screen.getAllByTestId('turn-response')).toHaveLength(62));
       for (const row of [...original, inserted]) expect(screen.getAllByText(row.text)).toHaveLength(1);
@@ -1071,44 +1015,6 @@ describe('the session reading page', () => {
     expect(requested.filter((path) => path === turnPath)).toHaveLength(2);
   });
 
-  it('gate 1643.2: opens 5,001 turns at the newest page, then reads earlier pages only on request', async () => {
-    const many = Array.from({ length: 5001 }, (_, i) => turn({ promptId: `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`, preview: `prompt ${i}`, createdAt: NOW - (5001 - i) * MINUTE, toolCallCount: 0, responseCount: 0 }));
-    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc';
-    const { requested } = server(routes({
-      [path]: () => page(many.slice(-200).reverse(), 'older'),
-      [`${path}&cursor=older`]: () => page(many.slice(-400, -200).reverse(), 'more-older'),
-    }));
-    mount('/p/x/sessions/s1');
-    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(200));
-    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(1);
-    expect(screen.getAllByTestId(/^turn-0000/).at(-1)!.textContent).toContain('prompt 5000');
-    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 4801');
-    expect(within(screen.getByRole('tablist')).getByRole('tab', { name: /Conversation/ }).textContent).toBe('Conversation');
-    fireEvent.click(screen.getByRole('button', { name: 'Show earlier turns' }));
-    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(400));
-    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(2);
-    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 4601');
-    expect(screen.getByRole('button', { name: 'Show earlier turns' })).toBeTruthy();
-  });
-
-  it('gate 1643.2: reads named turns on either side of the first page through bounded lookups', async () => {
-    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc';
-    for (const position of [0, 5000]) {
-      const id = `00000000-0000-7000-8000-${String(position).padStart(12, '0')}`;
-      const lookup = `/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${id}`;
-      const { requested } = server(routes({
-        [path]: () => page([turn({ promptId: P3, preview: 'Latest turn' })], 'older'),
-        [lookup]: () => page([turn({ promptId: id, preview: `Linked turn ${position}`, textChars: `Linked turn ${position}`.length, createdAt: position })]),
-      }));
-      mount(`/p/x/sessions/s1?turn=${id}`);
-      expect(await screen.findByText(`Linked turn ${position}`)).toBeTruthy();
-      expect(requested.filter((p) => p.startsWith(path))).toHaveLength(1);
-      expect(requested.filter((p) => p === lookup)).toHaveLength(1);
-      expect(screen.getByText(/More turns may sit between them/)).toBeTruthy();
-      cleanup();
-    }
-  });
-
   it('reads a turn’s tool calls only when they open, then shows how each went', async () => {
     // The turn's first pages hold none of its calls, so its summary is partial: the turn's own count still offers them.
     const { requested } = server(routes({ [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
@@ -1129,33 +1035,6 @@ describe('the session reading page', () => {
     fireEvent.click(within(row).getByRole('button', { expanded: false }));
     expect(within(row).getByText('disk full')).toBeTruthy();
     expect(within(row).getByText(/Input · 186 KB/)).toBeTruthy();
-  });
-
-  it('shows every prompt on request, and opens and scrolls to a turn a link names even when only the wider list holds it', async () => {
-    const scrolled: string[] = [];
-    const original = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.getAttribute('data-testid') ?? ''); };
-    try {
-      const { requested } = server(routes());
-      mount('/p/x/sessions/s1');
-      await screen.findByTestId(`turn-${P1}`);
-      fireEvent.click(screen.getByRole('switch', { name: 'Show prompts from the system and sub-agents' }));
-      const injected = await screen.findByTestId(`turn-${P2}`);
-      expect(injected.getAttribute('data-origin')).toBe('system');
-      expect(injected.textContent).toContain('System');
-      cleanup();
-
-      mount(`/p/x/sessions/s1?turn=${P1}`);
-      await screen.findByTestId(`turn-${P1}`);
-      await waitFor(() => expect(scrolled).toContain(`turn-${P1}`));
-      cleanup();
-
-      mount(`/p/x/sessions/s1?turn=${P2}`);
-      await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc'));
-      await waitFor(() => expect(screen.getByRole('switch', { name: 'Show prompts from the system and sub-agents' }).getAttribute('aria-checked')).toBe('true'));
-    } finally {
-      Element.prototype.scrollIntoView = original;
-    }
   });
 
   it('shows what Myco added to a prompt as one folded line, opening on the spores it served', async () => {
@@ -1210,41 +1089,39 @@ describe('the session reading page', () => {
     }));
     mount('/p/x/sessions/s1');
     const parent = await screen.findByTestId(`turn-${P1}`);
-    // The session start block is the session's: the header says so, and no prompt carries it.
-    await screen.findByText('Myco sent the session start block');
     expect(within(parent).queryByText('Myco sent the session start block')).toBeNull();
-    expect(within(parent).getByText('Ran /fork')).toBeTruthy();
+    expect(await within(parent).findByText('Ran /fork')).toBeTruthy();
     expect(within(parent).queryByRole('button', { name: 'Ran /fork' })).toBeNull();
     expect(within(parent).queryByText('/fork')).toBeNull();
     expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
-    expect(within(parent).getByText('Read × 2')).toBeTruthy();
-    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files its tool inputs name folded.
-    const summary = within(parent).getByTestId('tool-summary');
+    // The turn's tool calls in brief: its Myco call named, its failure open to read, the files it named folded.
+    const summary = within(parent).getAllByTestId('tool-use').at(-1)!;
     expect(within(summary).getByText('myco_search')).toBeTruthy();
-    expect(within(within(summary).getByRole('list', { name: 'Failed tool calls' })).getByTestId('tool-call-failed-call')).toBeTruthy();
+    expect(within(within(summary).getByRole('list', { name: 'Failed tool calls' })).getByTestId('failed-call-failed-call').textContent).toContain('exit 1');
     expect(within(summary).getByText('1 file named')).toBeTruthy();
-    expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
+    expect(within(parent).getByText('1.2s')).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
     expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);
-    fireEvent.click(within(parent).getAllByRole('button', { name: 'Myco prepared no context' })[0]!);
+    fireEvent.click(within(summary).getAllByRole('button', { name: 'Myco prepared no context' })[0]!);
     expect(within(parent).getByText('12 matches, none relevant enough')).toBeTruthy();
     expect(within(parent).getByText('Memory lookup failed · Storage is full')).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco added 1 spore and 1 plan to this prompt' }));
     expect(within(parent).getByRole('link', { name: 'Session audit plan' }).getAttribute('href')).toBe('/p/x/plans/plan1');
     const child = await within(parent).findByTestId(`turn-${P2}`);
     await within(child).findByText('Myco prepared 1 sub-agent preamble');
-    expect(within(child).getByText('Sub-agent tokens not recorded')).toBeTruthy();
     const steering = await within(parent).findByTestId(`turn-${P3}`);
-    await within(steering).findByText('Write × 1');
     fireEvent.click(within(steering).getByRole('button', { name: 'Myco prepared no context' }));
     expect(within(steering).getByText('Prompt too short to match')).toBeTruthy();
     expect(within(steering).queryByText('No matches found')).toBeNull();
     expect(within(steering).getByText('Steered while it ran')).toBeTruthy();
-    expect(screen.getByText('Read × 3')).toBeTruthy();
-    expect(screen.getByText('Not recorded, including sub-agents')).toBeTruthy();
-    expect(screen.getByText('Wall time')).toBeTruthy();
     expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P2);
     expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P3);
+    fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
+    const about = await screen.findByRole('dialog', { name: 'About this session' });
+    await within(about).findByText('Myco sent the session start block');
+    expect(within(about).getByText('Read × 3')).toBeTruthy();
+    expect(within(about).getByText('Not recorded, including sub-agents')).toBeTruthy();
+    expect(within(about).getByText('Wall time')).toBeTruthy();
   });
 
 
@@ -1279,8 +1156,9 @@ describe('the session reading page', () => {
     expect(inline.textContent).toContain('file preamble');
     fireEvent.click(within(inline).getByRole('button', { name: 'Show the whole prompt' }));
     expect(inline.textContent).toContain('## My request for Codex:');
+    fireEvent.click(screen.getByTestId(`row-${P2}`));
     const stored = await screen.findByTestId(`turn-${P2}`);
-    fireEvent.click(within(stored).getByRole('button', { name: 'Show the whole prompt' }));
+    fireEvent.click(await within(stored).findByRole('button', { name: 'Show the whole prompt' }));
     fireEvent.click(await within(stored).findByRole('button', { name: 'Sub-agent notification' }));
     await within(stored).findByText('Stored delegation');
     expect(stored.textContent).not.toContain('<subagent_notification>');
@@ -1433,7 +1311,7 @@ describe('the session reading page', () => {
       '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
       [PLANS]: () => page([plan()]),
     }));
-    mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache&raw=transcript');
+    mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');
     await screen.findByRole('list', { name: 'Spores' });
     expect((screen.getByRole('searchbox', { name: 'Search spores' }) as HTMLInputElement).value).toBe('cache');
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));
@@ -1443,93 +1321,51 @@ describe('the session reading page', () => {
     expect(screen.getByRole('combobox', { name: /^Status(?::|$)/ }).textContent).toBe('Every status');
   });
 
-  describe('searching the conversation', () => {
+  describe('searching the session', () => {
     const SEARCH = '/api/projects/x/search';
     const DISTANT = '00000000-0000-7000-8000-000000000777';
-    const OTHER_SESSION_HIT = { id: 'p_other', type: 'prompt', title: 'Prompt', preview: 'cobalt from another session', score: 1, created_at: NOW, session_id: 's2', prompt_id: 'p_other', turn: { prompt_id: 'p_other', preview: 'x', text_chars: 1, stored: false } };
     const turnOf = (promptId: string, preview: string | null = 'Please rename the project card') => ({ prompt_id: promptId, preview, text_chars: preview?.length ?? null, stored: preview === null });
-    const answer = (results: unknown[], cursor: string | null = null, coverage = { pending_blobs: 0 }) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage, cursor });
+    const answer = (results: unknown[], cursor: string | null = null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor });
     const hit = (over: Record<string, unknown>) => ({ id: 'h', type: 'prompt', title: 'Prompt', preview: 'cobalt', score: 1, created_at: NOW - 2000, session_id: 's1', ...over });
-    /** Answers a project search as the server does: a request scoped to a session never returns another session's hits. */
-    const searchRoute = (byType: Record<string, unknown[]>) => (_init?: RequestInit, url?: URL) => {
-      const scoped = url!.searchParams.get('session_id') === 's1';
-      const own = byType[url!.searchParams.get('type') ?? ''] ?? [];
-      return answer(scoped ? own : [...own, OTHER_SESSION_HIT]);
-    };
     const searchRequests = (requested: string[]) => requested.filter((path) => path.startsWith(`${SEARCH}?`)).map((path) => new URL(path, 'https://s').searchParams);
-    const searchBox = () => screen.findByRole('searchbox', { name: 'Search the conversation' });
+    const searchBox = () => screen.findByRole('searchbox', { name: 'Search this session' });
     const results = () => screen.findByRole('list', { name: 'Matches' });
-    const namedReads = (requested: string[]) => requested.filter((path) => /\/turns\?.*&turn=/.test(path));
 
-    it('searches the whole session’s prompts and replies, scoped to the session, and reads a named turn only when a hit opens one that is not loaded', async () => {
+    it('searches this session’s turn cards once, lists each turn once, and opens a hit’s turn beside the matches', async () => {
+      const lookup = `/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${DISTANT}`;
       const { requested } = server(routes({
-        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ promptId: P3, preview: 'Latest turn' })], 'older'),
-        [SEARCH]: searchRoute({ prompt: [hit({ id: DISTANT, prompt_id: DISTANT, preview: 'the cobalt palette', created_at: NOW - 5 * DAY, turn: turnOf(DISTANT, 'Distant turn') })], response: [] }),
-        [`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${DISTANT}`]: () => page([turn({ promptId: DISTANT, preview: 'Distant turn', textChars: 12, createdAt: NOW - 5 * DAY })]),
+        [SEARCH]: () => answer([
+          hit({ id: DISTANT, prompt_id: DISTANT, preview: 'the cobalt palette', created_at: NOW - 5 * DAY, turn: turnOf(DISTANT, 'Distant turn') }),
+          hit({ id: DISTANT, prompt_id: DISTANT, preview: 'the cobalt palette', created_at: NOW - 5 * DAY, turn: turnOf(DISTANT, 'Distant turn') }),
+        ]),
+        [lookup]: () => page([turn({ promptId: DISTANT, preview: 'Distant turn', textChars: 12, createdAt: NOW - 5 * DAY })]),
+        [`/api/projects/x/sessions/s1/turns/${DISTANT}`]: () => Response.json({ prompt: { promptId: DISTANT, origin: 'user', text: 'Distant turn', blobKey: null, createdAt: NOW }, responses: [], attachments: [], plans: [], children: [], injection: null }),
       }));
       mount('/p/x/sessions/s1');
-      await screen.findByTestId(`turn-${P3}`);
+      await screen.findByTestId(`turn-${P1}`);
       fireEvent.change(await searchBox(), { target: { value: 'cobalt' } });
       const rows = within(await results()).getAllByRole('listitem');
       expect(rows).toHaveLength(1);
-      expect(rows[0]!.textContent).toBe('Sep 2416:00Promptthe cobalt paletteThe prompt of this turn');
+      expect(rows[0]!.textContent).toContain('the cobalt palette');
+      expect(rows[0]!.textContent).toContain('“Distant turn”');
+      expect(rows[0]!.querySelector('mark')!.textContent).toBe('cobalt');
       expect(rawIdsInPage()).toEqual([]);
-      // Both kinds are asked for, each scoped to this session and nothing else.
-      expect(searchRequests(requested).map((params) => [params.get('type'), params.get('session_id'), params.get('q'), params.get('mode'), params.get('order'), params.get('cursor')]).sort())
-        .toEqual([['prompt', 's1', 'cobalt', 'fts', 'time', null], ['response', 's1', 'cobalt', 'fts', 'time', null]]);
-      expect(screen.queryByText(/another session/)).toBeNull();
-      // Listing the hits reads no turn; the conversation stays where it was, out of sight.
-      expect(namedReads(requested)).toEqual([]);
-      expect(screen.getByRole('list', { name: 'Conversation', hidden: true })).toBeTruthy();
-      expect(screen.queryByRole('list', { name: 'Conversation' })).toBeNull();
-
+      expect(searchRequests(requested).map((params) => [params.get('type'), params.get('session_id'), params.get('q'), params.get('mode'), params.get('order'), params.get('cursor')]))
+        .toEqual([['prompt', 's1', 'cobalt', 'fts', 'time', null]]);
+      expect(requested.some((path) => /\/turns\?.*&turn=/.test(path))).toBe(false);
       fireEvent.click(within(rows[0]!).getByRole('link'));
-      await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${DISTANT}`));
-      expect(await screen.findByText('Distant turn')).toBeTruthy();
-      expect(screen.queryByRole('list', { name: 'Matches' })).toBeNull();
-      // The turn came from its own named read beside the latest page, never from filtering the turns on screen.
-      expect(namedReads(requested)).toEqual([`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${DISTANT}`]);
-      expect(requested.filter((path) => path.startsWith('/api/projects/x/sessions/s1/turns?origins=user&limit=200')).length).toBe(1);
+      await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?q=cobalt&turn=${DISTANT}`));
+      expect(await screen.findByTestId(`turn-${DISTANT}`)).toBeTruthy();
+      expect(screen.getByRole('list', { name: 'Matches' })).toBeTruthy();
+      expect(requested.filter((path) => path === lookup)).toHaveLength(1);
     });
 
-    it('anchors a reply hit to the prompt it answers with the hit’s own time, and shows a hit found inside a long stored body', async () => {
-      server(routes({
-        [SEARCH]: searchRoute({
-          prompt: [hit({ id: P3, prompt_id: P3, preview: 'a needle deep inside a long stored prompt', score: 0.4, created_at: NOW - 1000, turn: turnOf(P3, null) })],
-          response: [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'renamed the card to cobalt', score: 0.9, created_at: NOW - 40 * MINUTE, turn: turnOf(P1) })],
-        }),
-      }));
+    it('lists a hit with no turn in this session without a link', async () => {
+      server(routes({ [SEARCH]: () => answer([hit({ id: 'loose', prompt_id: null, preview: 'cobalt outside a turn', turn: null })]) }));
       mount('/p/x/sessions/s1?q=cobalt');
-      const rows = within(await results()).getAllByRole('listitem');
-      // Oldest first, each row naming its kind in words and showing its own time, not its turn's.
-      expect(rows.map((row) => row.textContent)).toEqual([
-        'Sep 2915:20Replyrenamed the card to cobaltIn reply to “Please rename the project card”',
-        'Sep 2915:59Prompta needle deep inside a long stored promptThe prompt of this turn',
-      ]);
-      expect(within(rows[0]!).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
-      expect(within(rows[1]!).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P3}`);
-      fireEvent.click(within(rows[0]!).getByRole('link'));
-      await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${P1}`));
-      expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
-    });
-
-    it('lists a hit with no turn in this session as session-level with its own time, and links nowhere', async () => {
-      server(routes({
-        [SEARCH]: searchRoute({
-          prompt: [],
-          response: [
-            hit({ id: 'r_free', type: 'response', title: 'Response', preview: 'a reply with no prompt', turn: null, created_at: NOW - 30 * MINUTE }),
-            hit({ id: 'r_gone', type: 'response', title: 'Response', prompt_id: 'p_elsewhere', preview: 'a reply to a prompt kept elsewhere', score: 0.5, turn: null, created_at: NOW - 20 * MINUTE }),
-          ],
-        }),
-      }));
-      mount('/p/x/sessions/s1?q=reply');
-      const list = await results();
-      expect(within(list).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
-        'Sep 2915:30Replya reply with no promptNot placed on a turn',
-        'Sep 2915:40Replya reply to a prompt kept elsewhereNot placed on a turn',
-      ]);
-      expect(within(list).queryAllByRole('link')).toEqual([]);
+      const row = within(await results()).getByRole('listitem');
+      expect(row.textContent).toContain('Not placed on a turn');
+      expect(within(row).queryByRole('link')).toBeNull();
     });
 
     it('says when nothing matches and when the search cannot start yet, and after a failure retries into the results', async () => {
@@ -1538,7 +1374,7 @@ describe('the session reading page', () => {
         [SEARCH]: (_init, url) => {
           if (url!.searchParams.get('q') === 'zzz') return answer([]);
           if (failing) return new Response('{"error":"down"}', { status: 500 });
-          return answer(url!.searchParams.get('type') === 'prompt' ? [hit({ id: P1, prompt_id: P1, preview: 'back again', turn: turnOf(P1) })] : []);
+          return answer([hit({ id: P1, prompt_id: P1, preview: 'back again', turn: turnOf(P1) })]);
         },
       }));
       mount('/p/x/sessions/s1');
@@ -1547,132 +1383,312 @@ describe('the session reading page', () => {
       expect(await screen.findByText('Search starts at 2 characters.')).toBeTruthy();
       expect(searchRequests(requested)).toEqual([]);
       fireEvent.change(await searchBox(), { target: { value: 'zzz' } });
-      expect(await screen.findByText('Nothing said in this session matches “zzz”.')).toBeTruthy();
-
+      expect(await screen.findByText('No turn in this session matches “zzz”.')).toBeTruthy();
       fireEvent.change(await searchBox(), { target: { value: 'again' } });
       const retry = await screen.findByRole('button', { name: 'Retry' });
       failing = false;
       fireEvent.click(retry);
-      const list = await results();
-      expect(within(list).getByText('back again')).toBeTruthy();
-      expect(within(list).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+      expect(within(await results()).getByText('again')).toBeTruthy();
       expect(screen.queryByRole('alert')).toBeNull();
     });
 
-    it('follows each kind’s cursor through Show more, scoped and ordered the same on every page, and ends when none follows', async () => {
-      const prompts = (from: number, count: number) => Array.from({ length: count }, (_, i) => hit({ id: `p${from + i}`, prompt_id: `p${from + i}`, preview: `same words ${from + i}`, score: 0.5, created_at: NOW - 3 * HOUR + (from + i) * 1000, turn: turnOf(`p${from + i}`) }));
-      const replies = [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'one reply', score: 0.4, created_at: NOW - 4 * HOUR, turn: turnOf(P1) })];
+    it('follows the cursor through Show more, keeping the matches when a page fails', async () => {
+      const hits = (from: number, count: number) => Array.from({ length: count }, (_, i) => hit({ id: `p${from + i}`, prompt_id: `p${from + i}`, preview: `same words ${from + i}`, created_at: NOW - 3 * HOUR + (from + i) * 1000, turn: turnOf(`p${from + i}`) }));
       let failNext = true;
       const { requested } = server(routes({
         [SEARCH]: (_init, url) => {
-          const type = url!.searchParams.get('type');
           const cursor = url!.searchParams.get('cursor');
-          if (type === 'response') return answer(replies);
-          if (cursor === null) return answer(prompts(0, 20), 'after-20');
-          if (cursor === 'after-20' && failNext) { failNext = false; return new Response('{"error":"down"}', { status: 500 }); }
-          if (cursor === 'after-20') return answer(prompts(20, 20), 'after-40');
-          return answer(prompts(40, 5), null);
+          if (cursor === null) return answer(hits(0, 20), 'after-20');
+          if (failNext) { failNext = false; return new Response('{"error":"down"}', { status: 500 }); }
+          return answer(hits(20, 5));
         },
       }));
       mount('/p/x/sessions/s1?q=same');
-      const list = await results();
-      expect(within(list).getAllByRole('listitem')).toHaveLength(21);
-      expect(screen.getByText('Showing 21 matches')).toBeTruthy();
-
-      // A page that fails keeps the matches listed and offers its own retry.
+      expect(within(await results()).getAllByRole('listitem')).toHaveLength(20);
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       const retry = await screen.findByRole('button', { name: 'Retry' });
-      expect(within(await results()).getAllByRole('listitem')).toHaveLength(21);
+      expect(within(await results()).getAllByRole('listitem')).toHaveLength(20);
       fireEvent.click(retry);
-      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(41));
-      fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
-      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(46));
-      // The 21st and the 45th prompt are listed, once each, in time order, and nothing follows the last page.
-      expect(screen.getByText('same words 20')).toBeTruthy();
-      expect(screen.getByText('same words 44')).toBeTruthy();
-      expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')[0]!.textContent).toContain('one reply');
+      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(25));
       expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
-      const sent = searchRequests(requested).filter((params) => params.get('type') === 'prompt');
-      expect(sent.map((params) => params.get('cursor'))).toEqual([null, 'after-20', 'after-20', 'after-40']);
-      for (const params of searchRequests(requested)) expect([params.get('session_id'), params.get('mode'), params.get('order')]).toEqual(['s1', 'fts', 'time']);
+      expect(searchRequests(requested).map((params) => params.get('cursor'))).toEqual([null, 'after-20', 'after-20']);
     });
 
-    it('lists prompts and replies together in time order, each only once both kinds have been read as far as its time', async () => {
-      const at = (n: number) => NOW - HOUR + n * 1000;
-      const prompt = (n: number) => hit({ id: `p${n}`, prompt_id: `p${n}`, preview: `prompt at ${n}`, created_at: at(n), turn: turnOf(`p${n}`) });
-      const reply = (n: number) => hit({ id: `r${n}`, type: 'response', title: 'Response', prompt_id: P1, preview: `reply at ${n}`, created_at: at(n), turn: turnOf(P1) });
+    it('holds the query in the URL, drops it when another tab opens, and returns to the outline when it is cleared', async () => {
       server(routes({
-        [SEARCH]: (_init, url) => {
-          const type = url!.searchParams.get('type');
-          const cursor = url!.searchParams.get('cursor');
-          if (type === 'prompt') return cursor === null ? answer([prompt(1), prompt(2)], 'p-more') : answer([prompt(10)]);
-          return cursor === null ? answer([reply(5), reply(6)], 'r-more') : answer([reply(7)]);
-        },
-      }));
-      mount('/p/x/sessions/s1?q=at');
-      // Prompts are read only to 2, so the replies at 5 and 6 wait for them.
-      expect((await within(await results()).findAllByRole('listitem')).map((row) => row.textContent?.replace(/^.*?(Prompt|Reply)/, '$1'))).toEqual([
-        expect.stringContaining('prompt at 1'), expect.stringContaining('prompt at 2'),
-      ]);
-      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(6));
-      expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem').map((row) => /(?:prompt|reply) at \d+/.exec(row.textContent!)![0])).toEqual([
-        'prompt at 1', 'prompt at 2', 'reply at 5', 'reply at 6', 'reply at 7', 'prompt at 10',
-      ]);
-      expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
-    });
-
-    it('keeps the matches already read when a refresh fails, says so with Retry, and recovers on retry', async () => {
-      let failing = false;
-      server(routes({
-        [SEARCH]: (_init, url) => {
-          if (failing) return new Response('{"error":"down"}', { status: 503 });
-          return answer(url!.searchParams.get('type') === 'prompt' ? [hit({ id: P1, prompt_id: P1, preview: 'first read', turn: turnOf(P1) })] : []);
-        },
-      }));
-      const client = mount('/p/x/sessions/s1?q=read');
-      expect(await within(await results()).findByText('first read')).toBeTruthy();
-      failing = true;
-      await act(async () => { await client.invalidateQueries({ queryKey: ['conversation-search'] }); });
-      const retry = await screen.findByRole('button', { name: 'Retry' });
-      expect(within(screen.getByRole('list', { name: 'Matches' })).getByText('first read')).toBeTruthy();
-      failing = false;
-      fireEvent.click(retry);
-      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-      expect(within(screen.getByRole('list', { name: 'Matches' })).getByText('first read')).toBeTruthy();
-    });
-
-    it('says the long bodies still being indexed', async () => {
-      server(routes({ [SEARCH]: (_init, url) => answer(url!.searchParams.get('type') === 'response' ? [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'reply', turn: turnOf(P1) })] : [], null, { pending_blobs: 3 }) }));
-      mount('/p/x/sessions/s1?q=reply');
-      expect(await screen.findByText('Indexing 3 captured bodies. More matches will become available.')).toBeTruthy();
-    });
-
-    it('holds the query in the URL, drops it when another tab opens, and returns to the conversation, unchanged, when it is cleared', async () => {
-      server(routes({
-        [SEARCH]: searchRoute({ prompt: [hit({ id: P1, prompt_id: P1, preview: 'cobalt card', turn: turnOf(P1) })], response: [] }),
+        [SEARCH]: () => answer([hit({ id: P1, prompt_id: P1, preview: 'cobalt card', turn: turnOf(P1) })]),
         '/api/projects/x/sessions/s1/commits': () => Response.json({ observations: [], release: null }),
       }));
       mount('/p/x/sessions/s1');
       await screen.findByTestId(`turn-${P1}`);
-      fireEvent.click(screen.getByRole('switch', { name: 'Show prompts from the system and sub-agents' }));
       fireEvent.change(await searchBox(), { target: { value: 'cobalt' } });
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?q=cobalt'));
       await results();
       expect(screen.queryByRole('list', { name: 'Conversation' })).toBeNull();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1'));
-      expect(screen.queryByRole('list', { name: 'Matches' })).toBeNull();
       expect(await screen.findByRole('list', { name: 'Conversation' })).toBeTruthy();
-      // The toggle the reader set is still set: the conversation was kept, not rebuilt.
-      expect(screen.getByRole('switch', { name: 'Show prompts from the system and sub-agents' }).getAttribute('aria-checked')).toBe('true');
       expect(((await searchBox()) as HTMLInputElement).value).toBe('');
-
       fireEvent.change(await searchBox(), { target: { value: 'cobalt' } });
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?q=cobalt'));
       fireEvent.mouseDown(screen.getByRole('tab', { name: 'Outcomes' }));
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=outcomes'));
+    });
+  });
+
+  describe('a long session', () => {
+    const TURNS = 400;
+    const idOf = (i: number) => `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`;
+    const ORIGINS: Record<number, string> = { 0: 'user', 1: 'agent_dispatch', 2: 'agent_dispatch', 3: 'system' };
+    const rollup = (over: Record<string, unknown> = {}) => ({ tools: [{ name: 'Bash', count: 20 }, { name: 'Read', count: 5 }], myco: [], firstError: null, filesEdited: 0, lastRecordAt: NOW, ...over });
+    const longRow = (i: number) => turn({
+      promptId: idOf(i), origin: ORIGINS[i % 4], preview: `Prompt ${i}`, textChars: 9, createdAt: NOW - (TURNS - i) * MINUTE, toolCallCount: 25,
+      headline: `Headline ${i}`, signal: i % 20 === 0 ? 'high' : 'low', marks: { decisions: i % 20 === 0, rejected: false, errors: false, corrections: false, openQuestions: false },
+      failedTools: i % 10 === 0 ? 1 : 0, mycoCalls: i % 8 === 0 ? 2 : 0, toolRollup: rollup({ firstError: i % 10 === 0 ? `error of turn ${i}` : null }),
+    });
+    const LONG = Array.from({ length: TURNS }, (_, i) => longRow(i));
+    /** The turn list as the server answers it: newest first, 200 a page, under a filter or centred on a turn. */
+    const turnList = (_init?: RequestInit, url?: URL) => {
+      const q = url!.searchParams;
+      const named = q.get('turn');
+      if (named !== null) return page(LONG.filter((row) => row.promptId === named));
+      const origins = q.get('origins')!.split(',');
+      const filter = q.get('filter');
+      const rows = LONG.filter((row) => origins.includes(row.origin as string) && (filter === null || (filter === 'key' ? row.signal === 'high' : filter === 'failed' ? (row.failedTools as number) > 0 : (row.mycoCalls as number) > 0))).reverse();
+      const around = q.get('around');
+      const start = around === null ? Number(q.get('cursor') ?? 0) : Math.max(0, rows.findIndex((row) => row.promptId === around) - 100);
+      const end = start + 200;
+      return page(rows.slice(start, end), end < rows.length ? String(end) : null);
+    };
+    /** The one answer for every read of the turn list, over the page's own fixed answers. */
+    const listRoutes = (list: Routes[string]): Routes => ({
+      '/api/projects/x/sessions/s1/turns': list,
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': list,
+      '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc': list,
+    });
+    const longRoutes = (over: Routes = {}) => routes({
+      '/api/projects/x/sessions/s1': () => detail({ title: 'A long one' }, { counts: { ...counts, prompts: TURNS, userPrompts: 100, toolCalls: 10_000, failedTools: 40, mycoCalls: 100 }, filesEdited: 12 }),
+      ...listRoutes(turnList),
+      ...Object.fromEntries(LONG.map((row) => [`/api/projects/x/sessions/s1/turns/${row.promptId}`, () => Response.json({
+        card: `Asked: ${row.preview}\nDone: Did turn ${row.promptId}\nOutcome: ${row.headline}`,
+        prompt: { promptId: row.promptId, origin: row.origin, text: `Whole ${row.preview}`, blobKey: null, createdAt: row.createdAt, threadLabel: null },
+        responses: [], attachments: [], plans: [], children: [], injection: null, toolCounts: { total: 25, shown: 25 },
+      })])),
+      ...over,
+    });
+    const bodyReads = (requested: string[]) => requested.filter((path) => /\/turns\/[^/?]+$/.test(path));
+    const compactScreen = () => {
+      const original = window.matchMedia;
+      window.matchMedia = ((query: string) => ({ matches: query.includes('1023'), media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+      return () => { window.matchMedia = original; };
+    };
+
+    it('reads the outline a page at a time and no body but the open turn’s, whatever is listed', async () => {
+      const { requested } = server(longRoutes());
+      mount('/p/x/sessions/s1');
+      const newest = idOf(396);
+      expect(await screen.findByTestId(`turn-${newest}`)).toBeTruthy();
+      const list = screen.getByRole('list', { name: 'Conversation' });
+      expect(within(list).getAllByRole('link')).toHaveLength(100);
+      expect(screen.getByTestId(`row-${newest}`).getAttribute('aria-current')).toBe('true');
+      const counted = document.querySelector('[data-session-counts]')!.textContent!;
+      for (const words of ['400 turns', '100 from you', '10,000 tool calls', '40 failed', '100 Myco calls', '12 files edited']) expect(counted).toContain(words);
+      await waitFor(() => expect(bodyReads(requested)).toEqual([`/api/projects/x/sessions/s1/turns/${newest}`]));
+      expect(requested.some((path) => path.includes('/tool-calls'))).toBe(false);
+      // A row and j and k each open one turn, stepping within the list; k stops at its top.
+      fireEvent.click(screen.getByTestId(`row-${idOf(392)}`));
+      expect(await screen.findByTestId(`turn-${idOf(392)}`)).toBeTruthy();
+      fireEvent.keyDown(document.body, { key: 'j' });
+      expect(await screen.findByTestId(`turn-${idOf(388)}`)).toBeTruthy();
+      expect(location()).toBe(`/p/x/sessions/s1?turn=${idOf(388)}`);
+      fireEvent.keyDown(document.body, { key: 'k' });
+      expect(await screen.findByTestId(`turn-${idOf(392)}`)).toBeTruthy();
+      expect([...new Set(bodyReads(requested))]).toEqual([newest, idOf(392), idOf(388)].map((id) => `/api/projects/x/sessions/s1/turns/${id}`));
+    });
+
+    it('switches filter on the server, showing the first error under Failures and system turns small under Everything', async () => {
+      const { requested } = server(longRoutes());
+      mount('/p/x/sessions/s1');
+      await screen.findByTestId(`turn-${idOf(396)}`);
+      fireEvent.click(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Failures' }));
+      await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?filter=failed'));
+      expect((await screen.findByTestId(`row-${idOf(390)}`)).textContent).toContain('error of turn 390');
+      expect(screen.getByTestId(`row-${idOf(390)}`).textContent).toContain('1 failed');
+      expect(requested.some((path) => path.includes('&filter=failed'))).toBe(true);
+      fireEvent.click(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Key moments' }));
+      expect((await screen.findByTestId(`row-${idOf(380)}`)).textContent).toContain('Decision');
+      expect(screen.queryByText('error of turn 380')).toBeNull();
+      fireEvent.click(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' }));
+      expect((await screen.findByTestId(`row-${idOf(399)}`)).getAttribute('data-background')).toBe('');
+      expect(screen.getByTestId(`row-${idOf(398)}`).textContent).toContain('Sub-agent');
+      // A header count opens its filter, and the files count its tab.
+      fireEvent.click(screen.getByRole('button', { name: /40 failed/ }));
+      await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?filter=failed'));
+      fireEvent.click(screen.getByRole('button', { name: /12 files edited/ }));
+      await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=files'));
+    });
+
+    it('opens on every turn when the session has few typed prompts', async () => {
+      server(longRoutes(listRoutes((init, url) => url!.searchParams.get('origins') === 'user' ? page([turn({ promptId: idOf(0), preview: 'Only one typed' })]) : turnList(init, url))));
+      mount('/p/x/sessions/s1');
+      expect(await screen.findByTestId(`row-${idOf(398)}`)).toBeTruthy();
+      expect((within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' })).getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('keeps ?turn= links working by opening the outline around the turn, and under Everything for a turn a person did not type', async () => {
+      const target = idOf(40);
+      const { requested } = server(longRoutes());
+      mount(`/p/x/sessions/s1?turn=${target}`);
+      expect(await within(await screen.findByTestId(`turn-${target}`)).findByText('Whole Prompt 40')).toBeTruthy();
+      expect((await screen.findByTestId(`row-${target}`)).getAttribute('aria-current')).toBe('true');
+      const around = requested.filter((path) => path.includes(`&around=${target}`));
+      expect(around).toHaveLength(1);
+      expect(around[0]).toContain('origins=user');
+      expect(requested.some((path) => path.includes('/turns?origins=user&limit=200&order=desc') && !path.includes('around'))).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Go to newest' }));
+      expect(await screen.findByTestId(`row-${idOf(396)}`)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Go to newest' })).toBeNull();
+      cleanup();
+
+      const dispatched = idOf(41);
+      const wider = server(longRoutes());
+      mount(`/p/x/sessions/s1?turn=${dispatched}`);
+      expect(await screen.findByTestId(`row-${dispatched}`)).toBeTruthy();
+      expect(wider.requested.some((path) => path.includes(`&around=${dispatched}`) && path.includes('agent_dispatch'))).toBe(true);
+      expect(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' }).getAttribute('aria-pressed')).toBe('true');
+      cleanup();
+
+      server(longRoutes());
+      mount(`/p/x/sessions/s1?turn=${idOf(9999)}`);
+      expect(await screen.findByText('This turn is not in this session.')).toBeTruthy();
+    });
+
+    it('shows only the tools count for a null rollup, and the prompt with “Not summarized yet” for a null headline', async () => {
+      const pending = turn({ promptId: P1, preview: 'open the PR', toolCallCount: 12, failedTools: 0, toolRollup: null, headline: null });
+      const mechanical = turn({ promptId: P2, preview: 'yes', toolCallCount: 0, headline: 'mechanical turn (too short)', signal: 'none', createdAt: NOW - 5000 });
+      server(routes({
+        ...listRoutes(() => page([pending, mechanical])),
+        [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+          prompt: { promptId: P1, origin: 'user', text: 'open the PR', blobKey: null, createdAt: NOW }, responses: [], attachments: [], plans: [], children: [], injection: null, card: null,
+          tools: { complete: true, total: 12, failed: 0, byTool: [{ toolName: 'Bash', count: 12 }], failures: [], files: [], myco: [] },
+        }),
+        [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ prompt: { promptId: P2, origin: 'user', text: 'yes', blobKey: null, createdAt: NOW }, responses: [], attachments: [], plans: [], children: [], injection: null, card: 'Asked: \nDone: mechanical turn (too short)\nOutcome: ' }),
+      }));
+      mount('/p/x/sessions/s1');
+      const row = await screen.findByTestId(`row-${P1}`);
+      expect(row.textContent).toContain('open the PR');
+      expect(row.textContent).toContain('Not summarized yet');
+      expect(row.textContent).toContain('12 calls');
+      const reader = await screen.findByTestId(`turn-${P1}`);
+      expect((await within(reader).findByTestId('tool-counts')).textContent).toBe('12 calls');
+      expect(within(reader).getByTestId('what-happened').textContent).toContain('Myco writes this once the turn settles.');
+      // A turn triage carded is not waiting for a summary and says nothing of mechanism.
+      expect(screen.getByTestId(`row-${P2}`).textContent).not.toContain('Not summarized yet');
+      expect(document.body.textContent).not.toContain('mechanical');
+      fireEvent.click(screen.getByTestId(`row-${P2}`));
+      const quiet = await screen.findByTestId(`turn-${P2}`);
+      await within(quiet).findByText('yes');
+      await waitFor(() => expect(within(quiet).queryByRole('status')).toBeNull());
+      expect(within(quiet).queryByTestId('what-happened')).toBeNull();
+    });
+
+    it('shows what happened from the card and the turn’s tool use in brief, saying when the lists cover only the first calls', async () => {
+      const card = renderCard({
+        asked: 'Build it', done: 'Implemented the sweep.', outcome: 'Done',
+        decisions: [{ decision: 'Off by default', reason: 'A sweep deletes data' }], rejected: [{ approach: 'A lifecycle rule', reason: '' }],
+        errors: [{ error: 'a blob was deleted', fix: 'Read manifests first' }], corrections: [{ wrong: 'Counts rows', right: 'Sums bytes' }],
+        files: ['a.ts', 'b.ts'], commands: ['npm test'], open_questions: ['Pause the whole sweep?'],
+      });
+      expect(parseCard(card)).toEqual({
+        done: 'Implemented the sweep.', outcome: 'Done',
+        decisions: [{ text: 'Off by default', detail: 'A sweep deletes data' }], rejected: [{ text: 'A lifecycle rule', detail: '' }],
+        errors: [{ text: 'a blob was deleted', detail: 'Read manifests first' }], corrections: [{ text: 'Counts rows', detail: 'Sums bytes' }],
+        openQuestions: ['Pause the whole sweep?'],
+      });
+      expect(parseCard('Not a card')).toBeNull();
+      const failure = { toolCallId: 'f1', promptId: P1, toolName: 'Bash', mycoTool: null, mycoOp: null, inputPreview: 'npm test', inputBytes: 8, inputTruncated: false, inputBlobKey: null, outputPreview: null, outputBlobKey: null, success: false, errorMessage: 'FAIL sweep-batch', durationMs: null, filesAffected: null, createdAt: NOW, orderedAt: NOW };
+      const { requested } = server(routes({
+        ...listRoutes(() => page([turn({
+          headline: 'Built the sweep', signal: 'high', marks: { decisions: true, rejected: true, errors: true, corrections: true, openQuestions: true },
+          toolCallCount: 1204, failedTools: 41, mycoCalls: 20,
+          toolRollup: rollup({ tools: [{ name: 'Bash', count: 498 }, { name: 'Read', count: 366 }, { name: 'other', count: 340 }], myco: [{ name: 'myco_search', count: 6, failed: 1 }], filesEdited: 3 }),
+        })])),
+        [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+          prompt: { promptId: P1, origin: 'user', text: 'Build it.', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'a', text: 'Earlier word', blobKey: null, createdAt: NOW }, { responseId: 'b', text: 'Last word', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null,
+          card, toolCounts: { total: 1204, shown: 300 },
+          tools: { complete: false, total: 300, failed: 1, byTool: [], failures: [failure], files: ['a.ts', 'b.ts', 'c.ts', 'd.ts'], myco: [] },
+        }),
+      }));
+      mount('/p/x/sessions/s1');
+      const row = await screen.findByTestId(`row-${P1}`);
+      for (const mark of ['Decision', 'Rejected', 'Corrected', 'Fixed', 'Open question', '41 failed', 'Myco 20', '1,204 calls']) expect(row.textContent).toContain(mark);
+      const reader = await screen.findByTestId(`turn-${P1}`);
+      const happened = await within(reader).findByTestId('what-happened');
+      for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
+      expect(within(reader).getByText('Key moment')).toBeTruthy();
+      expect(within(reader).getByText('Last word')).toBeTruthy();
+      expect(within(reader).queryByText('Earlier word')).toBeNull();
+      expect(within(reader).getByRole('button', { name: '1 earlier reply' })).toBeTruthy();
+      expect(within(reader).getByTestId('tool-counts').textContent).toBe('1,204 calls · 41 failed · Bash 498 · Read 366 · other 340');
+      expect(within(reader).getByTestId('tool-partial').textContent).toContain('showing the first 300 of 1,204 calls');
+      expect(within(reader).getByText('myco_search ×6 · 1 failed')).toBeTruthy();
+      expect(within(reader).getByTestId('failed-call-f1').textContent).toContain('FAIL sweep-batch');
+      expect(within(reader).getByText('Showing the first 1 of 41 failures. All tool calls has the rest.')).toBeTruthy();
+      expect(within(reader).getByText('3 files edited · 4 named')).toBeTruthy();
+      expect(within(reader).queryByText('a.ts')).toBeNull();
+      expect(within(reader).getByTestId('tool-calls-toggle').textContent).toBe('All 1,204 tool calls');
+      expect(requested.some((path) => path.includes('/tool-calls'))).toBe(false);
+    });
+
+    it('lists the files the session’s tools named by kind, each opening its last turn, and says what it cannot see', async () => {
+      const { requested } = server(routes({
+        '/api/projects/x/sessions/s1/files': (_init, url) => {
+          const kind = url!.searchParams.get('kind');
+          if (kind === 'read') return Response.json({ files: [], nextCursor: null, capped: false, shellEditsUnseen: true });
+          return url!.searchParams.has('cursor')
+            ? Response.json({ files: [{ path: 'src/later.ts', calls: 1, edits: 1, lastTurn: null }], nextCursor: null, capped: true, shellEditsUnseen: true })
+            : Response.json({ files: [{ path: 'src/core/retention-sweep.ts', calls: 37, edits: 12, lastTurn: P1 }], nextCursor: 'more', capped: false, shellEditsUnseen: true });
+        },
+      }));
+      mount('/p/x/sessions/s1?tab=files');
+      const list = await screen.findByRole('list', { name: 'Files' });
+      expect(requested).toContain('/api/projects/x/sessions/s1/files?kind=edited');
+      expect(screen.getByText(/A change made through a shell command does not appear here/)).toBeTruthy();
+      const row = within(list).getByRole('link');
+      expect(row.textContent).toContain('src/core/retention-sweep.ts');
+      expect(row.textContent).toContain('37');
+      expect(row.getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+      expect(screen.queryByText(/first 500 files/)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      expect(await within(list).findByText('src/later.ts')).toBeTruthy();
+      expect(screen.getByText(/first 500 files/)).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Only read' }));
+      expect(await screen.findByText('No file was only read in this session.')).toBeTruthy();
+      expect(location()).toBe('/p/x/sessions/s1?tab=files&kind=read');
+      fireEvent.click(screen.getByRole('button', { name: 'All' }));
+      await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/files?kind=all'));
+    });
+
+    it('on a narrow screen shows the list with no body read, then the turn alone with a way back', async () => {
+      const restore = compactScreen();
+      try {
+        const { requested } = server(longRoutes());
+        const client = mount('/p/x/sessions/s1');
+        const row = await screen.findByTestId(`row-${idOf(396)}`);
+        await waitFor(() => expect(client.isFetching()).toBe(0));
+        expect(bodyReads(requested)).toEqual([]);
+        fireEvent.click(row);
+        const reader = await screen.findByTestId(`turn-${idOf(396)}`);
+        expect(screen.queryByRole('list', { name: 'Conversation' })).toBeNull();
+        expect(screen.queryByRole('tablist')).toBeNull();
+        expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
+        fireEvent.click(within(reader).getByRole('button', { name: '← Turns' }));
+        expect(await screen.findByRole('list', { name: 'Conversation' })).toBeTruthy();
+        expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
+        expect(location()).toBe('/p/x/sessions/s1');
+      } finally {
+        restore();
+      }
     });
   });
 
@@ -1888,7 +1904,7 @@ describe('the session reading page', () => {
 
   it('folds the transcript, context and attachments into Raw data, links the transcript by piece, and never fetches its bytes', async () => {
     const { requested } = server(routes());
-    mount('/p/x/sessions/s1');
+    mount('/p/x/sessions/s1?about=1');
     const raw = await screen.findByRole('region', { name: 'Raw data' });
     expect(requested.some((p) => p.endsWith('/transcript'))).toBe(false);
     fireEvent.click(within(raw).getByRole('button', { name: 'Raw data' }));
@@ -2002,11 +2018,11 @@ describe('the session reading page', () => {
     server(routes({
       '/api/projects/x/sessions/s1': () => detail({ agent: 'cursor', endedAt: NOW }, { metrics: { tools: [], tokens: null, durationMs: null } }),
     }));
-    mount('/p/x/sessions/s1');
+    mount('/p/x/sessions/s1?about=1');
     expect(await screen.findByText('Not recorded')).toBeTruthy();
   });
 
-  it('shows Cursor reply time as not recorded and uses days for recorded session endpoints', async () => {
+  it('shows no reply time when none is recorded, and uses days for recorded session endpoints', async () => {
     server(routes({
       '/api/projects/x/sessions/s1': () => detail({ agent: 'cursor', endedAt: NOW }, { metrics: { tools: [], tokens: null, durationMs: 2 * 86400000 } }),
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
@@ -2016,10 +2032,10 @@ describe('the session reading page', () => {
         metrics: { tools: [], tokens: null, durationMs: null },
       }),
     }));
-    mount('/p/x/sessions/s1');
-    expect(await screen.findByText('Reply time not recorded')).toBeTruthy();
-    expect(screen.getByText('2d 0h')).toBeTruthy();
-    expect(screen.queryByText('Prompt to last reply · 4ms')).toBeNull();
+    mount('/p/x/sessions/s1?about=1');
+    expect(await screen.findByText('2d 0h')).toBeTruthy();
+    expect(await screen.findByText('A Cursor prompt')).toBeTruthy();
+    expect(document.querySelector('[data-testid^="turn-"]')!.textContent).not.toContain('Reply time');
   });
 });
 

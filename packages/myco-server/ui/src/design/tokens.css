@@ -219,6 +219,10 @@
   /* An image shown small in a conversation, opened full size on a click. */
   --container-thumb: 200px;
   --spacing-thumb-h: 140px;
+  /* A page's lead, wider than prose. */
+  --container-lead: 110ch;
+  /* A turn open beside its outline. */
+  --container-reader: calc(var(--measure) + 40px);
   /* The panel a record opens in beside its list. */
   --container-slide-over: 560px;
 
@@ -322,6 +326,25 @@
 /* A reading page's first row holds its heading, the next the rest, so the facts column starts beside the heading. */
 @utility grid-rows-lead {
   grid-template-rows: auto 1fr;
+}
+
+/* An outline of turns beside the one open turn, its outline wider once there is room. */
+@utility grid-outline {
+  grid-template-columns: 330px minmax(0, 1fr);
+}
+
+@utility grid-outline-wide {
+  grid-template-columns: 390px minmax(0, 1fr);
+}
+
+/* A term beside what it says, such as a part of a turn's card. */
+@utility grid-term {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+/* A file's row: its path, kind, calls and last turn. */
+@utility grid-file-row {
+  grid-template-columns: minmax(0, 1fr) 72px 64px 88px;
 }
 
 /* A timeline: the time column, then what happened. */

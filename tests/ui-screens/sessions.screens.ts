@@ -13,7 +13,7 @@
  * sideways, that no raw id reaches the page's text, and that axe-core finds
  * nothing serious or critical.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   expectAxeClean, expectFits, pagesNav, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
@@ -107,20 +107,59 @@ async function settled(page: Page): Promise<void> {
   await expect(page.getByRole('status', { name: 'Reading this turn' })).toHaveCount(0);
 }
 
+/** Opens the panel that holds the session's facts, what came of it and its raw data. */
+async function openAbout(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: 'About this session' }).click();
+  const about = page.getByRole('dialog', { name: 'About this session' });
+  await expect(about).toBeVisible();
+  return about;
+}
+
 async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admin' | 'member'): Promise<void> {
   await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
   await expect(page.locator('[data-summary]')).toBeInViewport();
   await expect(page.locator('[data-summary]')).toHaveText('The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.');
-  const outcome = page.locator('[data-outcome]');
+  await expect(page.locator('[data-session-counts]')).toContainText('tool calls');
+  await expect(page.locator('[data-facts]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Session actions' })).toHaveCount(role === 'admin' ? 1 : 0);
+
+  // The outline lists the turns; a row opens one turn, the only body read.
+  const outline = page.getByRole('list', { name: 'Conversation', exact: true });
+  await expect(outline.getByRole('listitem').first()).toBeVisible();
   if (viewport === 'desktop') {
-    await expect(outcome).toBeInViewport();
-    // The facts and what came of it sit beside the conversation, which keeps a readable width.
-    const [article, aside] = await Promise.all([page.getByRole('tablist').boundingBox(), page.getByRole('complementary', { name: 'About this session' }).boundingBox()]);
-    expect(aside!.x).toBeGreaterThan(article!.x + article!.width);
-    expect(article!.width).toBeLessThanOrEqual(760);
-  } else {
-    await outcome.scrollIntoViewIfNeeded();
+    const [rail, reader] = await Promise.all([page.locator('[data-turn-rail]').boundingBox(), page.getByRole('article', { name: 'Open turn' }).boundingBox()]);
+    expect(reader!.x).toBeGreaterThan(rail!.x + rail!.width);
   }
+  await outline.getByRole('link', { name: /This test fails one run in twenty/ }).click();
+  const turn = page.getByRole('article', { name: 'Open turn' });
+  await expect(turn.getByText('This test fails one run in twenty', { exact: true })).toBeVisible();
+  await expect(turn).not.toContainText('<subagent_notification>');
+  await expect(turn.getByText('Myco prepared 1 sub-agent preamble')).toHaveCount(0);
+  const envelope = turn.getByRole('button', { name: 'Sub-agent notification', exact: true });
+  await expect(envelope).toBeVisible();
+  await envelope.click();
+  await expect(turn.getByText('/audit', { exact: true })).toBeVisible();
+  await envelope.click();
+  const noContext = turn.getByRole('button', { name: 'Myco prepared no context' });
+  await noContext.click();
+  await expect(turn.getByText('No relevant memories found')).toBeVisible();
+  await expect(turn.getByText('12 matches, none relevant enough')).toBeVisible();
+  await noContext.click();
+  const backToOutline = async () => {
+    if (viewport === 'desktop') return;
+    await expect(page.getByRole('tablist')).toHaveCount(0);
+    await turn.getByRole('button', { name: '← Turns' }).click();
+    await expect(outline).toBeVisible();
+  };
+  await backToOutline();
+  await outline.getByRole('link', { name: /Stop reserving a fixed port/ }).click();
+  await expect(turn.getByRole('button', { name: /Myco added .*spore/ })).toBeVisible();
+  await backToOutline();
+
+  // The facts, what came of the session and the raw data sit in a panel.
+  const about = await openAbout(page);
+  await expect(about.locator('[data-session-context]').getByText('Myco sent the session start block')).toBeVisible();
+  const outcome = about.locator('[data-outcome]');
   // Two spores Myco's runs wrote, and the one an agent saved later to replace one of them, listed on the Spores tab.
   await expect(outcome.getByRole('link', { name: '3 spores from this session →' })).toHaveAttribute('href', /\/sessions\/[^/?]+\?tab=spores$/);
   const runs = outcome.getByRole('list', { name: 'Myco’s work on this session' }).getByRole('listitem');
@@ -131,36 +170,20 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   const unrecorded = runs.filter({ hasText: 'Myco was asked to title it' });
   await expect(unrecorded).toContainText('No record of what it read');
   await expect(outcome).not.toContainText(/read nothing/i);
-  await expect(page.locator('[data-outcome-run="unrecorded"]')).toHaveCount(2);
-  await expect(page.getByRole('list', { name: 'Conversation' }).getByRole('listitem').first()).toBeVisible();
-  const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
-  await expect(page.locator('[data-session-context]').getByText('Myco sent the session start block')).toBeVisible();
-  await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toHaveCount(0);
-  const unplacedToggle = page.getByRole('button', { name: 'Not placed on a turn', exact: true });
+  await expect(about.locator('[data-outcome-run="unrecorded"]')).toHaveCount(2);
+  const unplacedToggle = about.getByRole('button', { name: 'Not placed on a turn', exact: true });
   await unplacedToggle.click();
-  const unplaced = page.getByRole('region', { name: 'Not placed on a turn', exact: true });
+  const unplaced = about.getByRole('region', { name: 'Not placed on a turn', exact: true });
   await expect(unplaced.getByText('Context for a sub-agent', { exact: true })).toBeVisible();
   await unplacedToggle.click();
-  await expect(conversation.getByText('Sub-agent tokens not recorded')).toBeVisible();
-  await expect(conversation).not.toContainText('<subagent_notification>');
-  await expect(conversation.getByText('This test fails one run in twenty', { exact: true })).toBeVisible();
-  const envelope = conversation.getByRole('button', { name: 'Sub-agent notification', exact: true });
-  await expect(envelope).toBeVisible();
-  await envelope.click();
-  await expect(conversation.getByText('/audit', { exact: true })).toBeVisible();
-  await envelope.click();
-  await conversation.getByRole('button', { name: 'Myco prepared no context' }).click();
-  await expect(conversation.getByText('No relevant memories found')).toBeVisible();
-  await expect(conversation.getByText('12 matches, none relevant enough')).toBeVisible();
-  await conversation.getByRole('button', { name: 'Myco prepared no context' }).click();
-  await expect(conversation.getByRole('button', { name: /Myco added .*spore/ })).toBeVisible();
-  const raw = page.getByRole('region', { name: 'Raw data' });
+  const raw = about.getByRole('region', { name: 'Raw data' });
   await expect(raw.getByRole('button', { name: 'Raw data' })).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.getByRole('button', { name: 'Session actions' })).toHaveCount(role === 'admin' ? 1 : 0);
   // Codex can resume it: the command sits beside the id, both only ever copied, for every member.
-  const facts = page.getByRole('complementary', { name: 'About this session' }).locator('[data-facts]');
+  const facts = about.locator('[data-facts]');
   await expect(facts.getByRole('button', { name: 'Copy resume command' })).toBeVisible();
   await expect(facts).not.toContainText('codex resume');
+  await about.getByRole('button', { name: 'Close' }).click();
+  await expect(about).toHaveCount(0);
 }
 
 test.describe('Sessions', () => {
@@ -200,9 +223,9 @@ test.describe('Sessions', () => {
 
         expectQuiet(watch);
 
-        // The raw data opens at the foot of the page. The fixture's capture holds no transcript file, and the
+        // The raw data opens in the panel. The fixture's capture holds no transcript file, and the
         // transcript read answers a session without one with 404, which the page reads as none captured.
-        await page.getByRole('region', { name: 'Raw data' }).getByRole('button', { name: 'Raw data' }).click();
+        await (await openAbout(page)).getByRole('region', { name: 'Raw data' }).getByRole('button', { name: 'Raw data' }).click();
         await expect(page.getByRole('region', { name: 'Transcript files' })).toContainText('No transcript captured.');
         await expect(page.getByRole('region', { name: 'Context Myco prepared' })).toBeVisible();
         await page.waitForLoadState('networkidle');
@@ -281,7 +304,7 @@ test.describe('Sessions', () => {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
-        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans', 'Lineage']);
+        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', /^Spores/, /^Plans/, 'Files', 'Lineage']);
 
         // Spores: every one the session produced, a row each, the type above its line and its status under it.
         await tabs.getByRole('tab', { name: 'Spores' }).click();
@@ -379,50 +402,27 @@ test.describe('Sessions', () => {
         await expect(page).toHaveURL(/\?tab=activity$/);
         const list = page.getByRole('list', { name: 'Agent activity' });
         const events = list.getByRole('listitem');
-        await expect(events).toHaveCount(7);
+        await expect(events).toHaveCount(3);
         await expect(events.filter({ hasText: 'Child of this session' })).toHaveCount(3);
         await expect(events.filter({ hasText: 'Port allocation reviewed' })).toContainText('Child session');
-        await expect(events.filter({ hasText: 'Tool reported a failure' })).toContainText('Failure');
-        const legacy = events.filter({ hasText: 'Tool call did not succeed' });
-        await expect(legacy).toContainText('Reason not recorded · Not placed on a turn');
-        await expect(legacy.getByRole('link')).toHaveCount(0);
         await expect(page.getByRole('searchbox')).toHaveCount(0);
-        await capture('session-activity-failure');
+        await expect(page.getByRole('combobox', { name: /^Tool(?::|$)/ })).toHaveCount(0);
+        await capture('session-activity-children');
 
         await page.getByRole('combobox', { name: /^Type(?::|$)/ }).click();
-        await page.getByRole('option', { name: 'No result captured', exact: true }).click();
-        await expect(page).toHaveURL(/tab=activity&type=no_result$/);
-        await expect(events).toHaveCount(2);
-        await expect(events.filter({ hasText: 'Read' })).toContainText('Not placed on a turn');
-        await expect(events.getByRole('link')).toHaveCount(0);
-        await capture('session-activity-no-result');
-
-        await page.getByRole('combobox', { name: /^Tool(?::|$)/ }).click();
-        await page.getByRole('option', { name: 'Read', exact: true }).click();
-        await expect(events).toHaveCount(1);
-        await expect(page).toHaveURL(/type=no_result&tool=Read$/);
-        await capture('session-activity-filtered');
-
-        await expect(page.getByRole('combobox', { name: /^Result(?::|$)/ })).toHaveCount(0);
-        await page.getByRole('combobox', { name: /^Tool(?::|$)/ }).click();
-        await page.getByRole('option', { name: 'Bash', exact: true }).click();
+        await page.getByRole('option', { name: 'Continuation', exact: true }).click();
+        await expect(page).toHaveURL(/tab=activity&type=continuation$/);
         await expect(page.getByText('No agent activity in this session matches these filters.')).toBeVisible();
         await capture('session-activity-none-match');
 
         await page.getByRole('button', { name: 'Clear search and filters' }).click();
         await expect(page).toHaveURL(/\?tab=activity$/);
-        await expect(events).toHaveCount(7);
+        await expect(events).toHaveCount(3);
         await watch.navigate(async () => {
-          await events.filter({ hasText: 'Tool reported a failure' }).getByRole('link').click();
-          await expect(page).toHaveURL(/\?turn=/);
+          await events.filter({ hasText: 'Port allocation reviewed' }).getByRole('link').click();
+          await expect(page).toHaveURL(/\/sessions\/[^/?]+$/);
         });
-        await expect(tabs.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true');
-        await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toBeVisible();
-
-        await page.goto(`${sessionUrl}?tab=activity&type=failure&tool=Bash`);
-        await expect(events).toHaveCount(1);
-        await tabs.getByRole('tab', { name: 'Plans' }).click();
-        await expect(page).toHaveURL(/\?tab=plans$/);
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('Port allocation reviewed');
 
         await page.goto(new URL('/sessions', page.url()).href);
         await openSession(page, 'Checkout form validation messages rewritten');
@@ -455,7 +455,7 @@ test.describe('Sessions', () => {
       try {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openSession(page));
-        const facts = page.locator('[data-facts]');
+        const facts = (await openAbout(page)).locator('[data-facts]');
         await expect(facts).toContainText('A session not captured here');
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
         await facts.getByRole('link', { name: '3 sessions' }).click();
@@ -480,7 +480,7 @@ test.describe('Sessions', () => {
         });
         await expect(page.getByRole('heading', { level: 1 })).toHaveText('Port allocation reviewed');
         await expect(tabs.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true');
-        await expect(page.locator('[data-facts]').getByRole('link', { name: OUTCOME_TITLE })).toBeVisible();
+        await expect((await openAbout(page)).locator('[data-facts]').getByRole('link', { name: OUTCOME_TITLE })).toBeVisible();
 
         await page.goto(new URL('/sessions', page.url()).href);
         await openSession(page, 'Checkout form validation messages rewritten');
@@ -562,34 +562,29 @@ test.describe('Sessions', () => {
       try {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openSession(page));
-        const box = page.getByRole('searchbox', { name: 'Search the conversation' });
+        const box = page.getByRole('searchbox', { name: 'Search this session' });
         await expect(box).toBeVisible();
 
-        // The prompt and the reply that said it, each leading to the turn they belong to.
+        // The turn whose card says it, listed once, leading to the turn.
         await box.fill('fixed port');
         await expect(page).toHaveURL(/\?q=fixed\+port$/);
         const matches = page.getByRole('list', { name: 'Matches' }).getByRole('listitem');
-        await expect(matches).toHaveCount(2);
-        const prompt = matches.filter({ hasText: 'Prompt' });
-        const reply = matches.filter({ hasText: 'Reply' });
-        await expect(prompt).toContainText('Stop reserving a fixed port');
-        await expect(reply).toContainText('Done: stop reserving a fixed port');
-        await expect(reply).toContainText('In reply to “Stop reserving a fixed port”');
+        await expect(matches).toHaveCount(1);
+        await expect(matches).toContainText('Stop reserving a fixed port');
         await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toHaveCount(0);
         await expectListState(page, viewport, 'session-conversation-search');
 
         await box.fill('qqzzxx');
-        await expect(page.getByText('Nothing said in this session matches “qqzzxx”.')).toBeVisible();
+        await expect(page.getByText('No turn in this session matches “qqzzxx”.')).toBeVisible();
         await expectListState(page, viewport, 'session-conversation-search-none');
 
-        // A hit opens its turn, and the search is left behind.
+        // A hit opens its turn.
         await box.fill('fixed port');
-        await expect(matches).toHaveCount(2);
-        await reply.getByRole('link').click();
-        await expect(page).toHaveURL(/\/sessions\/[^/?]+\?turn=[^&]+$/);
-        const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
-        await expect(conversation.getByText('Stop reserving a fixed port', { exact: true })).toBeInViewport();
-        await expect(page.getByRole('searchbox', { name: 'Search the conversation' })).toHaveValue('');
+        await expect(matches).toHaveCount(1);
+        await matches.getByRole('link').click();
+        await expect(page).toHaveURL(/\?q=fixed\+port&turn=[^&]+$/);
+        const opened = page.getByRole('article', { name: 'Open turn' });
+        await expect(opened.getByText('Stop reserving a fixed port', { exact: true })).toBeInViewport();
         await expectListState(page, viewport, 'session-conversation-search-opened');
         expectQuiet(watch);
       } finally {

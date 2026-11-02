@@ -74,6 +74,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
       await page.getByRole('tab', { name: /^Spores/ }).click();
       inserted = true;
       await page.getByRole('tab', { name: /^Conversation/ }).click();
+      await page.getByRole('button', { name: /earlier replies$/ }).click();
       await expect(page.getByText('Reply 50', { exact: true })).toHaveCount(before ? 2 : 1);
       await expect(page.getByText(extra.text, { exact: true })).toHaveCount(before ? 0 : 1);
       await page.getByText('Reply 25', { exact: true }).scrollIntoViewIfNeeded();
@@ -93,7 +94,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
     if (finding === 4 && !before) {
       unavailable = false;
       await page.getByRole('button', { name: 'Retry', exact: true }).click();
-      await expect(page.getByText('Reply 1', { exact: true })).toBeVisible();
+      await expect(page.getByText('Reply 50', { exact: true })).toBeVisible();
       await page.screenshot({ path: path.join(report, 'review-4-retry-success.png') });
     }
     await context.close();

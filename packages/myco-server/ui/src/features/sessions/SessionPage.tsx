@@ -2,37 +2,38 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ANY, Breadcrumbs, Button, CopyButton, ErrorState, FactRow, FactsPanel, Link, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
+  ANY, Breadcrumbs, COMPACT_QUERY, CountButton, ErrorState, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
 } from '../../design';
 import { planPagePath } from '../../hooks/use-knowledge';
 import { PLAN_COLUMNS, planStatusWord, planTitle, progressWords, SPORE_TYPES, sporeStatusWord, sporeTypePlural } from '../knowledge/words';
-import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSporePages } from '../../hooks/use-intelligence';
-import { useIsAdmin, useMe } from '../../hooks/use-me';
-import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useSession, useSessionChildren, useSessionLineage, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { useMediaQuery } from '../../hooks/use-media-query';
+import { useIsAdmin } from '../../hooks/use-me';
+import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow, type TurnFilter } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
-import { memberLabel } from '../../lib/member-name';
 import { sessionHeading } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { isLive } from '../today/timeline';
-import { ago, dayHeading, workPlace } from '../today/words';
-import { ToolUsageLine } from './Usage';
-import { formatElapsed } from '../../lib/format';
-import { Conversation } from './Conversation';
-import { RawData, isRawSection } from './RawData';
+import { dayHeading } from '../today/words';
+import { SessionAbout } from './About';
+import { Conversation, TURN_FILTER_KEY, TURN_ORDER_KEY } from './Conversation';
+import { FILE_KIND_KEY, SessionFiles } from './Files';
+import { isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
 import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionEventRow } from './SessionEventList';
 import { SessionOutcomes } from './Outcomes';
 import { ACTIVITY_FILTER_KEYS, SessionActivity } from './Activity';
-import { WhatCameOfIt } from './WhatCameOfIt';
-import { lineageName, SessionLineageTab, sessionPagePath } from './Lineage';
-import { agentName, count, dateTime, memberName, sporeLine, sporeTypeWord, spanWords } from './words';
+import { SessionLineageTab } from './Lineage';
+import { agentName, sporeLine, sporeTypeWord, spanWords } from './words';
 
-const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans', 'lineage'] as const;
+const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans', 'files', 'lineage'] as const;
 type Tab = (typeof TABS)[number];
+
+/** The URL key that holds the About panel open. */
+const ABOUT_KEY = 'about';
 
 const SPORE_TYPE_OPTIONS: readonly SelectOption[] = [
   { value: ANY, label: 'Every type' },
@@ -52,9 +53,9 @@ export interface SessionPageProps {
 }
 
 /**
- * One session as a reading page: its title and summary first, the conversation
- * at a readable width, the facts and what came of the session beside it, and
- * the raw data it was captured from folded away at the foot.
+ * One session as a reading page: its title, summary and counts first, then its
+ * tabs, with the conversation as an outline beside one open turn. The facts, what
+ * came of the session and the raw data it was captured from sit in a panel.
  */
 export function SessionPage({ projectId, sessionId, projectName }: SessionPageProps) {
   const detail = useSession(projectId, sessionId);
@@ -78,7 +79,7 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
   );
 }
 
-/** While a live session is read again, what arrived since is read too: its turns, the bodies of turns already read, and its commits. */
+/** While a live session is read again, what arrived since is read too: its turns, the open turn's body, its commits and its files. */
 function useFollowLive(projectId: string, session: SessionRow) {
   const client = useQueryClient();
   const heard = session.lastReceivedAt;
@@ -90,96 +91,120 @@ function useFollowLive(projectId: string, session: SessionRow) {
     void client.invalidateQueries({ queryKey: ['turn', projectId, session.sessionId] });
     void client.invalidateQueries({ queryKey: ['session-commits', projectId, session.sessionId] });
     void client.invalidateQueries({ queryKey: ['session-activity', projectId, session.sessionId] });
+    void client.invalidateQueries({ queryKey: ['session-files', projectId, session.sessionId] });
   }, [client, projectId, session.sessionId, heard]);
 }
 
 function Reading({ answer, projectId, projectName, now, actions }: { answer: SessionResponse; projectId: string; projectName: string | null; now: number; actions: ReactNode }) {
   const { session, counts, outcome } = answer;
   const [params, setParams] = useSearchParams();
+  const compact = useMediaQuery(COMPACT_QUERY);
   const requested = params.get('tab');
   const tab: Tab = (TABS as readonly string[]).includes(requested ?? '') ? requested as Tab : 'conversation';
   const setTab = (next: string) => {
     const copy = new URLSearchParams(params);
     if (next === 'conversation') copy.delete('tab'); else copy.set('tab', next);
     // A filter belongs to the list it was set on, never to the tab opened next.
-    for (const key of ['raw', 'q', EVENT_TYPE_KEY, ...ACTIVITY_FILTER_KEYS]) copy.delete(key);
+    for (const key of ['raw', 'q', TURN_FILTER_KEY, TURN_ORDER_KEY, FILE_KIND_KEY, EVENT_TYPE_KEY, ...ACTIVITY_FILTER_KEYS]) copy.delete(key);
     setParams(copy, { replace: true });
   };
+  /** A count that opens its view: the outline under a filter. */
+  const openFilter = (filter: TurnFilter) => {
+    const copy = new URLSearchParams(params);
+    for (const key of ['tab', 'q', 'raw', ABOUT_KEY, FILE_KIND_KEY, EVENT_TYPE_KEY]) copy.delete(key);
+    copy.set(TURN_FILTER_KEY, filter);
+    setParams(copy);
+  };
   const raw = params.get('raw');
+  const rawSection = isRawSection(raw) ? raw : null;
+  const aboutOpen = params.get(ABOUT_KEY) !== null || rawSection !== null;
+  const setAbout = (open: boolean) => {
+    const copy = new URLSearchParams(params);
+    copy.delete('raw');
+    if (open) copy.set(ABOUT_KEY, '1'); else copy.delete(ABOUT_KEY);
+    setParams(copy, { replace: true });
+  };
   const live = isLive(session, now);
   const heading = sessionHeading(session);
   const started = session.startedAt ?? session.firstReceivedAt;
   const name = projectName ?? 'A project';
-  const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
   useFollowLive(projectId, session);
   const content: Record<Tab, ReactNode> = {
-    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />,
+    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} now={now} />,
     activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
     outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
     spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
     plans: <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />,
+    files: <SessionFiles projectId={projectId} sessionId={session.sessionId} />,
     lineage: <SessionLineageTab projectId={projectId} sessionId={session.sessionId} now={now} />,
   };
+  // A narrow screen gives an open turn the whole page, with its own way back.
+  const turnOnly = compact && tab === 'conversation' && params.get('turn') !== null;
+  const panel = <TabsContent key={tab} value={tab}>{content[tab]}</TabsContent>;
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
-      <div className="flex flex-wrap items-center justify-between gap-s3">
-        <Breadcrumbs items={[{ label: 'Sessions', to: '/sessions' }, { label: name, to: projectPath(projectId, '/sessions') }]} />
-        <PageScope />
-      </div>
-
-      <div className="grid items-start gap-s6 lg:grid-reading lg:grid-rows-lead lg:gap-x-s10">
-        <header className="flex min-w-0 max-w-measure flex-col gap-s3 lg:col-start-1 lg:row-start-1">
-          <h1 className="t-display text-ink" data-session-title="">
-            {heading.titled ? heading.title : (
-              <>
-                <StatusChip className="mr-s2 align-middle">Untitled</StatusChip>
-                <span className={heading.firstPrompt === null ? 'text-muted' : undefined}>{heading.firstPrompt ?? 'Untitled session'}</span>
-              </>
-            )}
-          </h1>
-          <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
-            {live && (
-              <StatusChip tone="ok">
-                <span aria-hidden className="size-s2 rounded-pill bg-ok motion-safe:animate-pulse" />
-                Live
-              </StatusChip>
-            )}
-            <span className="font-medium text-ink-2">{name}</span>
-            <Sep />
-            <span>{agentName(session.agent)}</span>
-            <Sep />
-            <time dateTime={new Date(started).toISOString()}>{dayHeading(started, now)}</time>
-            {session.endedAt !== null && session.startedAt !== null && <><Sep /><span>{spanWords(session.endedAt - session.startedAt)}</span></>}
-            <Sep />
-            <span>{count(counts.prompts, 'prompt')}</span>
-          </p>
-          <Summary session={session} untitled={answer.untitled ?? null} live={live} />
-          <SessionContext projectId={projectId} sessionId={session.sessionId} />
-        </header>
-
-        <div className="flex min-w-0 max-w-measure flex-col gap-s8 lg:col-start-1 lg:row-start-2">
-          <Tabs value={tab} onValueChange={setTab}>
-            <TabsList aria-label="What the session holds">
-              <TabsTrigger value="conversation">Conversation</TabsTrigger>
-              <TabsTrigger value="activity">Agent activity</TabsTrigger>
-              <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
-              <TabsTrigger value="spores">Spores</TabsTrigger>
-              <TabsTrigger value="plans">Plans</TabsTrigger>
-              <TabsTrigger value="lineage">Lineage</TabsTrigger>
-            </TabsList>
-            {TABS.map((value) => (
-              <TabsContent key={value} value={value}>{value === tab ? content[value] : null}</TabsContent>
-            ))}
-          </Tabs>
-          <RawData agent={session.agent} projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
-        </div>
-        {/* After the conversation in reading order; beside it from the desktop width. */}
-        <aside aria-label="About this session" className="flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-          <Facts answer={answer} projectName={name} projectId={projectId} now={now} live={live} actions={actions} />
-          <WhatCameOfIt projectId={projectId} outcome={outcome} open={session.endedAt === null} now={now} sporesHref={sporesHref} />
-        </aside>
-      </div>
+      {!turnOnly && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-s3">
+            <Breadcrumbs items={[{ label: 'Sessions', to: '/sessions' }, { label: name, to: projectPath(projectId, '/sessions') }]} />
+            <span className="flex items-center gap-s2">
+              {actions}
+              <PageScope />
+            </span>
+          </div>
+          <header className="flex min-w-0 max-w-lead flex-col gap-s3">
+            <h1 className="t-display text-ink" data-session-title="">
+              {heading.titled ? heading.title : (
+                <>
+                  <StatusChip className="mr-s2 align-middle">Untitled</StatusChip>
+                  <span className={heading.firstPrompt === null ? 'text-muted' : undefined}>{heading.firstPrompt ?? 'Untitled session'}</span>
+                </>
+              )}
+            </h1>
+            <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
+              {live && (
+                <StatusChip tone="ok">
+                  <span aria-hidden className="size-s2 rounded-pill bg-ok motion-safe:animate-pulse" />
+                  Live
+                </StatusChip>
+              )}
+              <span className="font-medium text-ink-2">{name}</span>
+              <Sep />
+              <span>{agentName(session.agent)}</span>
+              <Sep />
+              <time dateTime={new Date(started).toISOString()}>{dayHeading(started, now)}</time>
+              {session.endedAt !== null && session.startedAt !== null && <><Sep /><span>{spanWords(session.endedAt - session.startedAt)}</span></>}
+              {session.branch !== null && <><Sep /><span className="t-mono">{session.branch}</span></>}
+            </p>
+            <Summary session={session} untitled={answer.untitled ?? null} live={live} />
+            <div className="flex flex-wrap gap-s2" data-session-counts="">
+              <CountButton value={counts.prompts} onClick={() => openFilter('all')}>{counts.prompts === 1 ? 'turn' : 'turns'}</CountButton>
+              <CountButton value={counts.userPrompts} onClick={() => openFilter('you')}>{counts.userPrompts === undefined ? 'From you' : 'from you'}</CountButton>
+              <CountButton value={counts.toolCalls}>{counts.toolCalls === 1 ? 'tool call' : 'tool calls'}</CountButton>
+              <CountButton value={counts.failedTools} tone="bad" onClick={() => openFilter('failed')}>{counts.failedTools === undefined ? 'Failed' : 'failed'}</CountButton>
+              <CountButton value={counts.mycoCalls} tone="primary" onClick={() => openFilter('myco')}>{counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls'}</CountButton>
+              <CountButton value={answer.filesEdited} onClick={() => setTab('files')}>{answer.filesEdited === undefined ? 'Files edited' : answer.filesEdited === 1 ? 'file edited' : 'files edited'}</CountButton>
+              <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
+            </div>
+          </header>
+        </>
+      )}
+      <Tabs value={tab} onValueChange={setTab}>
+        {!turnOnly && (
+          <TabsList aria-label="What the session holds">
+            <TabsTrigger value="conversation">Conversation</TabsTrigger>
+            <TabsTrigger value="activity">Agent activity</TabsTrigger>
+            <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
+            <TabsTrigger value="spores" count={outcome.spores.total > 0 ? outcome.spores.total : undefined}>Spores</TabsTrigger>
+            <TabsTrigger value="plans" count={counts.plans > 0 ? counts.plans : undefined}>Plans</TabsTrigger>
+            <TabsTrigger value="files">Files</TabsTrigger>
+            <TabsTrigger value="lineage">Lineage</TabsTrigger>
+          </TabsList>
+        )}
+        {panel}
+      </Tabs>
+      {aboutOpen && <SessionAbout open onClose={() => setAbout(false)} answer={answer} projectId={projectId} projectName={name} now={now} live={live} rawSection={rawSection} />}
     </article>
   );
 }
@@ -188,25 +213,6 @@ function Sep() {
   return <span aria-hidden>·</span>;
 }
 
-
-/**
- * What Myco served the session as a whole, read from its session-level context records: the start block, and the
- * context that reached no prompt the conversation shows.
- */
-function SessionContext({ projectId, sessionId }: { projectId: string; sessionId: string }) {
-  const records = useSessionChildren<ContextInjectionRow>(projectId, sessionId, 'context-injections');
-  if (records.isPending) return null;
-  if (records.error) return <p className="t-small text-muted" data-session-context="">Myco’s session context could not be read.</p>;
-  const start = records.rows.some((record) => record.kind === 'cortex');
-  const unattached = records.rows.filter((record) => record.kind.startsWith(SESSION_ANSWER_KIND_PREFIX)).length;
-  if (!start && unattached === 0) return null;
-  return (
-    <ul className="flex flex-col gap-s1 t-small text-muted" data-session-context="">
-      {start && <li>Myco sent the session start block</li>}
-      {unattached > 0 && <li>Myco added context {count(unattached, 'time')}{records.hasMore ? ' or more' : ''} in this session</li>}
-    </ul>
-  );
-}
 
 /** The summary as the page's lead, or why there is none yet. */
 function Summary({ session, untitled, live }: { session: SessionRow; untitled: SessionResponse['untitled'] | null; live: boolean }) {
@@ -217,91 +223,6 @@ function Summary({ session, untitled, live }: { session: SessionRow; untitled: S
     <p className="t-small text-muted" data-summary-missing="">
       {live || session.endedAt === null ? 'Myco writes a summary once the session ends.' : 'No summary yet.'}
     </p>
-  );
-}
-
-/** The facts a reader checks or copies. The session's id is only ever copied, never shown. */
-function Facts({ answer, projectId, projectName, now, live, actions }: { answer: SessionResponse; projectId: string; projectName: string; now: number; live: boolean; actions: ReactNode }) {
-  const { session, counts, release } = answer;
-  const who = memberName(session);
-  // The viewer's own machine, by its name or as "Your machine"; another member's machine is named by the Member row alone.
-  const viewerId = useMe().data?.member?.id ?? null;
-  const place = workPlace(session.runtimeLabel, session.memberId === null ? null : { id: session.memberId, label: session.memberLabel }, viewerId);
-  const machine = place?.own === true ? place.machine : null;
-  const endedBy = session.endedBy === null ? null : memberLabel({ id: session.endedBy, label: session.endedByLabel }) ?? 'a member';
-  return (
-    <FactsPanel
-      title="Facts"
-      actions={(
-        <>
-          {answer.resume != null && <CopyButton value={answer.resume.line} label="Copy resume command" variant="secondary" data-resume="" />}
-          <CopyButton value={session.sessionId} label="Copy session id" variant="secondary" />
-          {actions}
-        </>
-      )}
-    >
-      <FactRow term="Project">{projectName}</FactRow>
-      <FactRow term="Agent">{agentName(session.agent)}</FactRow>
-      {machine !== null && <FactRow term="Machine">{machine}</FactRow>}
-      {who !== null && <FactRow term="Member">{who}</FactRow>}
-      {session.branch !== null && <FactRow term="Branch" mono>{session.branch}</FactRow>}
-      {session.originPath !== null && <FactRow term="Folder" mono>{session.originPath}</FactRow>}
-      <FactRow term="Started">{dateTime(session.startedAt ?? session.firstReceivedAt, now)}</FactRow>
-      {session.endedAt !== null
-        ? <FactRow term="Ended">{dateTime(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
-        : <FactRow term={live ? 'Live' : 'Open'}>Last heard {ago(session.lastReceivedAt, now)}</FactRow>}
-      <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
-      <FactRow term="Tools">{answer.metrics !== undefined && answer.metrics.tools.length > 0 ? <ToolUsageLine tools={answer.metrics.tools} /> : `${count(counts.toolCalls, 'tool call')}${(counts.failedTools ?? 0) > 0 ? ` · ${counts.failedTools} failed` : ''}`}</FactRow>
-      <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
-      <FactRow term="Size">{[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
-      {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
-      <Family projectId={projectId} session={session} />
-    </FactsPanel>
-  );
-}
-
-/** How many children the facts name: exact when the family was read whole, a lower bound when a bound cut it short. */
-function childrenWords(children: number, truncated: boolean): string {
-  if (!truncated) return count(children, 'session');
-  return children === 0 ? 'Not all counted' : `${children}+ ${children === 1 ? 'session' : 'sessions'}`;
-}
-
-/**
- * The session's parents, each by name, and how many children it has, which open the lineage. A failed read says so
- * with a retry, beside whatever an earlier read already showed.
- */
-function Family({ projectId, session }: { projectId: string; session: SessionRow }) {
-  const lineage = useSessionLineage(projectId, session.sessionId);
-  if (lineage.isPending) return null;
-  const failed = lineage.error !== null && (
-    <FactRow term="Family">
-      <span data-family-error="">Could not be read</span>{' '}
-      <Button size="sm" variant="ghost" className="tap-area" onClick={() => void lineage.refetch()}>Retry</Button>
-    </FactRow>
-  );
-  if (lineage.data === undefined) return failed;
-  const byId = new Map(lineage.data.nodes.map((node) => [node.sessionId, node]));
-  const parents = lineage.data.edges.filter((edge) => edge.childId === session.sessionId);
-  const children = new Set(lineage.data.edges.filter((edge) => edge.parentId === session.sessionId).map((edge) => edge.childId)).size;
-  return (
-    <>
-      {parents.map((edge) => {
-        const parent = byId.get(edge.parentId);
-        const name = lineageName(parent);
-        return (
-          <FactRow key={`${edge.kind}:${edge.parentId}`} term="Parent">
-            {parent?.captured === true ? <Link to={sessionPagePath(projectId, edge.parentId)} className="tap-area">{name}</Link> : name}
-            {edge.kind === 'continuation' && <span className="block text-muted">This session continues it{edge.reason === null ? '' : ` (${edge.reason})`}</span>}
-          </FactRow>
-        );
-      })}
-      {(children > 0 || lineage.data.truncated) && (
-        <FactRow term="Children">
-          <Link to={`?${new URLSearchParams({ tab: 'lineage' })}`} className="tap-area">{childrenWords(children, lineage.data.truncated)}</Link>
-        </FactRow>
-      )}
-      {failed}
-    </>
   );
 }
 
