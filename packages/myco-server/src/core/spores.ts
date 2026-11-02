@@ -192,11 +192,12 @@ function sporeInsert(db: RelationalStore, scope: ReadScope, row: SporeInsert, ig
 /** Fill absent import provenance only when the original spore and its stored source agree. */
 export async function repairImportedSporeSource(db: RelationalStore, scope: ReadScope, row: Pick<SporeInsert, 'id' | 'author' | 'agentId' | 'content' | 'sessionId'> & { createdAt?: number }): Promise<'restored' | 'kept' | 'pending'> {
   if (row.sessionId === null) return 'restored';
+  const admitted = importEnabledChecks().admission;
   await db.prepare(`UPDATE spores SET session_id = COALESCE(session_id, ?)
     WHERE project_id = ? AND id = ? AND author = ? AND agent_id = ? AND content = ? AND (? IS NULL OR created_at = ?)
       AND (session_id IS NULL OR session_id = ?)
-      AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id AND s.session_id = ?)`)
-    .bind(row.sessionId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null, row.createdAt ?? null, row.sessionId, row.sessionId).run();
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id AND s.session_id = ?) AND ${admitted.sql}`)
+    .bind(row.sessionId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null, row.createdAt ?? null, row.sessionId, row.sessionId, ...admitted.params).run();
   const held = await getSpore(db, scope, row.id);
   if (held?.sessionId === row.sessionId) return 'restored';
   if (held !== null && ((held.sessionId !== null && held.sessionId !== row.sessionId)

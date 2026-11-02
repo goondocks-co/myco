@@ -8,7 +8,6 @@ import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
 import { USER_AGENT_ID } from '../constants.js';
-import { isLiveAdmin } from '../auth/members-admin.js';
 import { importPolicy } from './import-policy.js';
 import { ensureAgent } from './runs.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
@@ -16,7 +15,7 @@ import type { ReadScope } from '../read/scope.js';
 
 export type SporePrincipal = { kind: 'member'; memberId: string; machineId: string } | { kind: 'grant'; grantId: string }
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
-export interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number }
+export interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
 type SporeWriteFailure = { ok: false; error: string };
 const failure = (error: string): SporeWriteFailure => ({ ok: false, error });
@@ -163,11 +162,11 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
     const spore = await insertSpore(session.db, scope, {
-      id: str(input.id) ?? mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, observationType: type,
+      id: ctx.saveId ?? mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, observationType: type,
       content, context: str(input.context) ?? null, filePath: str(input.file_path) ?? null, tags: sporeTags(input.tags), contentHash: str(input.content_hash) ?? null, properties: str(input.properties) ?? null, importance: int(input.importance),
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
-    if (spore === null) return input.id === undefined ? failure('Spore was not recorded') : { id: str(input.id), duplicate: true };
+    if (spore === null) return ctx.saveId === undefined ? failure('Spore was not recorded') : { id: ctx.saveId, duplicate: true };
     return { id: spore.id, observation_type: spore.observationType, status: spore.status, created_at: spore.createdAt };
   }
 
@@ -232,11 +231,11 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
   return failure('unknown spore operation');
 }
 
-/** Historical metadata is admitted only by an administrator on the enabled import channel. */
+/** Live members import their own history while the Deployment admits imports. */
 async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
   const p = ctx.principal;
-  if (p.kind !== 'member' || !await isLiveAdmin(ctx.env.db, p.memberId) || !(await importPolicy(ctx.env.db)).enabled) return failure('import authority required');
-  ctx = { ...ctx, env: { ...ctx.env, db: memberWriteStore(ctx.env.db, p.memberId, 'admin') } };
+  if (p.kind !== 'member' || !(await importPolicy(ctx.env.db)).enabled) return failure('import authority required');
+  ctx = { ...ctx, env: { ...ctx.env, db: memberWriteStore(ctx.env.db, p.memberId, 'member') } };
   const scope = { projectId: ctx.projectId };
   const session = await sessionOf(ctx, scope, input);
   if (!session.ok) return session;
@@ -257,6 +256,7 @@ async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext):
     const saved = await insertSpore(ctx.env.db, scope, row);
     if (saved === null) {
       const source = await repairImportedSporeSource(ctx.env.db, scope, { id, agentId, content, sessionId: session.sessionId, author: p.memberId, createdAt: int(input.created_at) });
+      if (await getSpore(ctx.env.db, scope, id) === null) return failure('Spore was not recorded');
       if (source === 'pending') return failure('the existing spore source could not be restored');
       return { id, duplicate: true, ...(source === 'kept' ? { sourceKept: true } : {}) };
     }
@@ -267,12 +267,14 @@ async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext):
   const id = str(input.id) ?? str(input.old_spore_id);
   const eventId = str(input.event_id);
   if (id === undefined || eventId === undefined) return failure('import resolution requires source and event id');
-  const planned = await planSporeResolution(ctx.env.db, scope, { action, sporeId: id, newSporeId: str(input.new_spore_id), reason: str(input.reason) });
-  if (!planned.ok) return failure(planned.reason);
+  const status = input.status;
+  if (!(SPORE_STATUSES as readonly unknown[]).includes(status)) return failure('import resolution requires a known final status');
+  const newSporeId = str(input.new_spore_id) ?? null;
+  if (action === 'supersede' && newSporeId === null) return failure('supersede requires new_spore_id');
   const expect = await sporeExpectations(ctx.env.db, scope, { ...input, op: 'resolve' });
   if (!expect.ok) return failure(expect.reason);
-  const outcome = await resolveSpore(ctx.env.db, scope, planned.plan.status, { id: eventId, agentId, author: p.memberId, sporeId: id,
-    action, newSporeId: planned.plan.newSporeId, reason: planned.plan.reason, sessionId: session.sessionId, provenance: cited.provenance, channel: 'import', createdAt: at }, at, expect.expect);
+  const outcome = await resolveSpore(ctx.env.db, scope, status as SporeStatus, { id: eventId, agentId, author: p.memberId, sporeId: id,
+    action, newSporeId, reason: str(input.reason) ?? null, sessionId: session.sessionId, provenance: cited.provenance, channel: 'import', createdAt: at }, at, expect.expect);
   if (typeof outcome === 'object') return { ...failure(outcome.error), status: outcome.status, revision: outcome.revision, reason: outcome.reason };
   return { resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) };
 }

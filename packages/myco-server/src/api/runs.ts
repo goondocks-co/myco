@@ -2,14 +2,14 @@ import { runtimeCaller } from './run-admission.js';
 /** The authenticated in-process embedding channel; store mutations stay in core/runs.ts. */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStatus, listAgents, markRunReplaced, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
+import { RUN_UPDATE_COLUMNS, claimRun, getRun, isTerminalRunStatus, listAgents, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
-import { releaseRun } from '../core/release.js';
+import { commitRunUpdate } from '../core/release.js';
 import { recordReport, decideRunEnd, runEndingContext, emitLateHarnessError } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
-import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
-import { refusal } from '../telemetry.js';
+import { HARNESS_MEMBER_ID, drainQueue, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
+import { classify, emit, refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
 
@@ -118,16 +118,6 @@ export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<
   return ok({ agents: await listAgents(env.db) });
 }
 
-/** Terminal in-process work releases its clock hold and revokes only its own dispatch credential. */
-async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: string, status: unknown): Promise<void> {
-  if (ctx.memberId !== HARNESS_MEMBER_ID) return;
-  if (!isTerminalRunStatus(status)) return;
-  const scope = { projectId: ctx.projectId };
-  const run = await getRun(env.db, scope, runId);
-  if (run === null || run.dispatchedBy !== ctx.tokenId) return;
-  await releaseRun(env, scope, run, ctx.now);
-}
-
 /**
  * Record that a deployment ended this run, and stand one fresh run of the same
  * task in its place.
@@ -148,7 +138,7 @@ async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: strin
   const scope = { projectId: ctx.projectId };
   const run = await getRun(env.db, scope, runId);
   if (run === null || run.dispatchedBy !== ctx.tokenId) return;
-  if (!(await markRunReplaced(env.db, scope, runId))) return;
+  if (JSON.parse(run.runContext ?? 'null')?.replaced !== true) return;
   await requeueReplaced(env, { run, projectId: ctx.projectId, serverUrl: ctx.origin, actor: ctx.memberId }, ctx.now);
 }
 
@@ -165,15 +155,7 @@ function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Resp
 /** Either the refusal a write is answered with, or how many rows it moved. */
 type RunWrite = { refused: Response } | { changed: number };
 
-/**
- * Write a run's status as the caller, and release what the run held.
- *
- * The guard and the write are one act here, which is what keeps them together:
- * no route in this file reaches `applyRunUpdate` or `recordReplacedRun` on its
- * own, and `tests/meta/queued-run-release-chokepoint.test.ts` holds that. A
- * route that wrote a run terminal beside this one would be a route the
- * credential rule does not reach.
- */
+/** Run status and retirement of its dispatch credential commit under the caller's authority. */
 async function endRunAsCaller(
   env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
   update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode; refusalId?: string | null; context?: Readonly<Record<string, string>> } = {},
@@ -181,13 +163,19 @@ async function endRunAsCaller(
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
-  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined,
-    options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), options.context,
-    { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) });
+  const changed = await commitRunUpdate(env, scope, runId, update, {
+    now: ctx.now, replaced: options.replaced, context: options.context,
+    errorCode: options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null),
+    caller: { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) },
+  });
   if (changed === 1) {
-    if (before !== null) emitLateHarnessError(ctx.projectId, before, options.context);
-    await releaseDispatchedRun(env, ctx, runId, update.status);
-    if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
+    try {
+      if (before !== null) emitLateHarnessError(ctx.projectId, before, options.context);
+      if (isTerminalRunStatus(update.status)) await drainQueue(env, ctx.now);
+      if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
+    } catch (error) {
+      emit({ kind: 'run_close_followup_failed', runId, error_class: classify(error) });
+    }
   }
   return { changed };
 }
@@ -254,7 +242,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     const ending = await decideRunEnd(env.db, scope, before, runUpdate.status, reportedError);
     context = runEndingContext(ending.endedNote, reportedError);
     if (ending.unmet !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { errorCode: closeErrorCode(ending.unmet), context });
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { replaced, errorCode: closeErrorCode(ending.unmet), context });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;

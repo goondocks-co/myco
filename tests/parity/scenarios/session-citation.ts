@@ -14,6 +14,7 @@ export const sessionCitation: ParityScenario = {
     const tokenId = 'mt_citation_run';
     const token = 'citation-run-synthetic-token'.padEnd(43, 'x');
     const call = async (name: string, args: Record<string, unknown>) => {
+      if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
       const res = await fetch(`${target.url}/mcp`, {
         method: 'POST', headers: memberHeadersFor(token, project, { 'content-type': 'application/json' }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project, ...args } } }),

@@ -102,7 +102,7 @@ export function maskSecretLabels(input: string, replacement: string, options: { 
     if (/^["']$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     while (/^[ \t]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     let connected = false;
-    while (/^[:=|,;]$/.test(character(text, valueAt).comparison)) {
+    while (/^[:=|]$/.test(character(text, valueAt).comparison)) {
       connected = true;
       valueAt = character(text, valueAt).end;
       while (/^[ \t]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
@@ -111,8 +111,8 @@ export function maskSecretLabels(input: string, replacement: string, options: { 
       const jointAt = valueAt;
       while (/^[A-Za-z]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
       if (!JOINT_WORDS.has(text.slice(jointAt, valueAt).normalize('NFKC').toLowerCase())
-        || !/^[ \t:=|,;]$/.test(character(text, valueAt).comparison)) continue;
-      while (/^[ \t:=|,;]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
+        || !/^[\s:=|,;]$/.test(character(text, valueAt).comparison)) continue;
+      while (/^[\s:=|,;]$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     }
     while (/^\s$/.test(character(text, valueAt).comparison)) valueAt = character(text, valueAt).end;
     if (valueAt === text.length || text[valueAt] === '|') continue;

@@ -365,7 +365,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
       method: 'POST',
       headers: memberHeaders(session.machine, spore.project),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: {
-        op: 'save', type: spore.type, content: spore.content, ...(spore.line === null ? {} : { agent_line: spore.line }), session_id: sessionIds[spore.session], project: idOf(spore.project),
+        op: 'save', type: spore.type, content: spore.content, agent_line: spore.line ?? 'When reading this observation, consult its supporting session.', session_id: sessionIds[spore.session], project: idOf(spore.project),
       } } }),
     });
     const body = await expectOk(res, `spore ${spore.type}`) as { result?: { structuredContent?: { result?: { id?: string; error?: string } } } };

@@ -33,6 +33,7 @@ async function setup(ttlDays?: number) {
   const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'review bot', 'mem_machine_1', now, ttlDays);
 
   const callAs = async (key: string, name: string, args: Record<string, unknown> = {}, headers: Record<string, string> = {}) => {
+    if (name === 'myco_spores' && args.op === 'save') args = { agent_line: 'When reviewing this fixture, retain its evidence.', ...args };
     const res = await worker.fetch(grantRequest(key, rpc('tools/call', { name, arguments: args }), headers), e.env);
     const body = await res.json() as any;
     return { status: res.status, result: body.result?.structuredContent?.result, error: body.error };

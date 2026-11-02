@@ -26,6 +26,7 @@ export const spores: ParityScenario = {
       return { status: res.status, body: (await res.json()) as T };
     };
     const mcp = async (args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
       const res = await fetch(`${target.url}/mcp`, {
         method: 'POST',
         headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
@@ -120,6 +121,7 @@ export const guardedSpores: ParityScenario = {
     const now = Date.now();
     const scope = `project_id = ${lit(target.projectId)}`;
     const call = async (token: string, name: string, args: Record<string, unknown>) => {
+      if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
       const response = await fetch(`${target.url}/mcp`, {
         method: 'POST', headers: memberHeadersFor(token, target.projectId, { 'content-type': 'application/json' }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: target.projectId, ...args } } }),

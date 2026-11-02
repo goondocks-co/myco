@@ -159,15 +159,21 @@ export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise
 /** Query and fragment secrets are removed while surrounding closing punctuation is retained. */
 function withoutUrlTailSecrets(value: string): string {
   const query = value.search(/[?#]/);
-  return query < 0 ? value : value.slice(0, query) + (value.match(/[\])}]+$/)?.[0] ?? '');
+  return query < 0 ? value : value.slice(0, query) + (value.match(/["'\])},;]+$/)?.[0] ?? '');
 }
 
 /** Credential-bearing host tokens retain their scheme, host and path across prose and assignment prefixes. */
-const withoutUrlSecrets = (value: string): string => value.replace(
-  /((?:[a-z][\w+.-]*:)?\/\/)[^\s"'<>\\/@]+@([^\s"'<>(),\\]*)|[^\s"'<>()[\]{},\\/@:=]+:[^\s"'<>\\/@]*@([^\s"'<>(),\\]*)/gi,
-  (_userinfo, scheme: string | undefined, urlTail: string | undefined, bareTail: string | undefined) =>
-    (scheme ?? '') + withoutUrlTailSecrets(urlTail ?? bareTail ?? ''),
-).replace(/(?:[a-z][\w+.-]*:)?\/\/[^\s"'<>(),\\]+/gi, withoutUrlTailSecrets);
+const withoutUrlSecrets = (value: string): string => value.replace(/\S+/g, token => {
+  const uri = /(?:[a-z][\w+.-]*:)?\/\//i.exec(token);
+  const userinfoEnd = token.lastIndexOf('@');
+  const colon = token.indexOf(':');
+  if (uri === null && (userinfoEnd < 0 || colon < 0 || colon > userinfoEnd)) return token;
+  if (userinfoEnd < 0) return token.slice(0, uri!.index) + withoutUrlTailSecrets(token.slice(uri!.index));
+  const prefix = uri !== null && !token.slice(0, uri.index).includes(':')
+    ? token.slice(0, uri.index) + uri[0]
+    : token.match(/^[("'`\[{<]+/)?.[0] ?? '';
+  return withoutUrlTailSecrets(prefix + token.slice(userinfoEnd + 1));
+});
 
 /**
  * The same leaves to a member credential, Deployment-wide, over a member json

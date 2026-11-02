@@ -19,7 +19,7 @@ import { admitProject, PROJECT_NAME_MAX } from '../core/project-creation.js';
 export { PROJECT_NAME_MAX, AUTO_CREATE_LEAF, autoCreateProjects, mayCreateProjects } from '../core/project-creation.js';
 import { MAX_REMOTE_CHARS, normalizeRemote, resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
-import { settingTexts, ROOT_KEY } from '../core/settings.js';
+import { ROOT_KEY } from '../core/settings.js';
 import { clearUncapturedStatement, heldUncapturedStatement, isUncapturedReason, recordUncapturedStatement, type UncapturedReason } from '../ingest/uncaptured.js';
 import { listVisibleProjects, ok, parseJsonObject } from './scope.js';
 import { emit } from '../telemetry.js';

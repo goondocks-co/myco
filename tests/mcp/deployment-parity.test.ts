@@ -100,10 +100,10 @@ describe('the member tool surface over a real Deployment', () => {
     expect(called.envelope).toEqual({ ok: true, tool: 'myco_plans', result: [] });
 
     // A write names its Project; the member credential reaches every Project of the Deployment.
-    const unnamed = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', content: 'no project named' }));
+    const unnamed = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'no project named' }));
     expect({ ok: unnamed.envelope.ok, code: unnamed.envelope.error?.code }).toEqual({ ok: false, code: 'invalid_input' });
 
-    const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', content: 'over the wire', project: 'proj_1' }));
+    const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'over the wire', project: 'proj_1' }));
     expect({ ok: saved.envelope.ok, type: saved.envelope.result?.observation_type }).toEqual({ ok: true, type: 'gotcha' });
 
     const found = await cli(env, 'call', 'myco_search', '--input', '{"query":"wire"}');
@@ -156,7 +156,7 @@ describe('the external read-only surface over a real Deployment', () => {
       expect(tools.tools.map((t) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
       const plans = await bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
       expect((plans.structuredContent as { result: unknown[] }).result).toEqual([]);
-      const saved = await bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', content: 'the reviewer found it', provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' } });
+      const saved = await bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'the reviewer found it', provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' } });
       const sporeId = (saved.structuredContent as { result: { id: string } }).result.id;
       expect(sqlite.query(`SELECT agent_id, author, session_id, provenance_kind FROM spores WHERE id = ?`).get(sporeId))
         .toEqual({ agent_id: grant.id, author: grant.id, session_id: null, provenance_kind: 'pr' });

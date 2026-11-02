@@ -78,7 +78,7 @@ test('HTTP and MCP spore admission reject foreign sessions and derive ordinary m
     expect(held).toMatchObject({ agent_id: 'user', status: 'active', author: 'mem_machine_2', agent_line: 'When testing, retain the evidence.' });
     expect(held.created_at).toBeGreaterThan(1);
     expect(await f.post('/spores/save', { ...spore('missing-line'), agentLine: undefined })).toMatchObject({ persisted: false });
-    expect(await f.post('/spores/save', spore('import-forged', { channel: 'import', createdAt: 1 }))).toMatchObject({ persisted: false });
+    expect(await f.post('/spores/save', spore('import-owned', { channel: 'import', createdAt: 1 }))).toMatchObject({ persisted: true, spore: { createdAt: 1, author: 'mem_machine_2' } });
   } finally { f.sqlite.close(); }
 });
 
@@ -159,7 +159,7 @@ test('card admission refuses null and array card fields', () => {
 test('run state cannot reset server read budgets', async () => {
   const f = await rig();
   try {
-    const ctx = { env: f.serverEnv, projectId: 'proj_1', now: f.now, principal: { kind: 'run' as const, runId: 'run', agentId: 'user', task: 'vault-seed', sessionId: null, runContext: null, model: null, tokenId: f.token.tokenId, allow: runAllowlist([]), window: readWindowFor('vault-seed') } };
+    const ctx = { env: f.serverEnv, projectId: 'proj_1', now: f.now, principal: { kind: 'run' as const, runId: 'run', agentId: 'user', task: 'vault-seed', sessionId: null, runContext: null, model: null, tokenId: f.token.tokenId, allow: runAllowlist([], { dryRun: false }), window: readWindowFor('vault-seed') } };
     expect(await handleRun({ op: 'state_set', key: 'spore_reads:run', value: '0' }, ctx)).toMatchObject({ ok: false });
     expect(await handleRun({ op: 'state_set', key: 'work-notes', value: 'safe' }, ctx)).toMatchObject({ applied: true });
   } finally { f.sqlite.close(); }
@@ -256,5 +256,93 @@ test('every worker protocol route reports the same subject-liveness outcome', as
       const response = await worker.fetch(memberPost(token.token, {}, path), f.env);
       expect(await response.json()).toEqual({ persisted: true, [path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
     }
+  } finally { f.sqlite.close(); }
+});
+
+test('secret connectors preserve surrounding prose and admit line breaks', async () => {
+  const { redactSecrets } = await import('@goondocks/myco-shared/redact-secrets');
+  for (const prose of ['Rotate the password, then restart the service and check the logs.', 'Rotate the password; then restart the service and check the logs.', 'The API key, the worker and the queue all recovered.']) {
+    expect(agentProse(prose, 1000)).toContain(prose.includes('restart') ? 'restart the service and check the logs.' : 'worker and the queue all recovered.');
+    expect(redactSecrets(prose)).toBe(prose);
+  }
+  for (const separator of ['\n', '\r\n', ':\n', ',\n']) expect(redactSecrets(`The password is${separator}syntheticvalue`)).not.toContain('syntheticvalue');
+});
+
+test('settings remove complete userinfo with reserved password separators', async () => {
+  const f = await rig();
+  try {
+    const separators = ['/', '@', '?', '#', ',', '(', ')', "'", '"', '\\', ';', '=', '&', ':'];
+    const nested = separators.flatMap(separator => [`postgres://user:pa${separator}ss@host/db`, `user:pa${separator}ss@host/db`, `DATABASE_URL=postgres://user:pa${separator}ss@host/db`]);
+    f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks',?,0,'test')", [JSON.stringify({ nested })]);
+    const result = await f.post('/members/settings', {});
+    const value = result.leaves.find((leaf: any) => leaf.leaf === 'agent.tasks').value.nested;
+    expect(value).toEqual(separators.flatMap(() => ['postgres://host/db', 'host/db', 'DATABASE_URL=postgres://host/db']));
+  } finally { f.sqlite.close(); }
+});
+
+test('member imports retain final status and every historical resolution shape', async () => {
+  const f = await rig();
+  try {
+    for (const [id, status, events] of [
+      ['live-history', 'active', [{ action: 'obsolete', reason: null }]],
+      ['mixed-history', 'superseded', [{ action: 'obsolete', reason: null }, { action: 'supersede', newSporeId: 'retained-successor' }]],
+      ['merged-history', 'consolidated', [{ action: 'consolidate', newSporeId: null, reason: null }]],
+    ] as const) {
+      expect(await f.post('/spores/save', { ...spore(id), agentLine: undefined, channel: 'import', status, createdAt: 1 })).toMatchObject({ persisted: true });
+      for (const [index, event] of events.entries()) expect(await f.post('/spores/resolve', { channel: 'import', agentId: 'user', sporeId: id, eventId: `${id}-${index}`, status, createdAt: index + 2, ...event })).toMatchObject({ persisted: true, resolved: true });
+      expect(f.sqlite.query('SELECT status FROM spores WHERE id=?').get(id)).toEqual({ status });
+      expect((f.sqlite.query('SELECT COUNT(*) n FROM resolution_events WHERE spore_id=?').get(id) as any).n).toBe(events.length);
+    }
+    for (const channel of [undefined, 'import']) expect(await f.post('/spores/resolve', { channel, agentId: 'user', sporeId: 'absent', eventId: `absent-${channel}`, action: 'supersede', status: 'superseded', newSporeId: 'unheld' })).toMatchObject({ persisted: true, resolved: false });
+  } finally { f.sqlite.close(); }
+});
+
+test('MCP saves always mint a separate identity even when an id was supplied', async () => {
+  const f = await rig();
+  try {
+    const first = await f.rpc(f.token.token, 'myco_spores', { op: 'save', id: 'chosen-id', type: 'gotcha', content: 'first finding', agent_line: 'Retain evidence.' });
+    const second = await f.rpc(f.token.token, 'myco_spores', { op: 'save', id: first.id, type: 'gotcha', content: 'second finding', agent_line: 'Retain evidence.' });
+    expect(first.id).not.toBe('chosen-id');
+    expect(second.id).not.toBe(first.id);
+    expect(f.sqlite.query('SELECT content FROM spores ORDER BY content').all()).toEqual([{ content: 'first finding' }, { content: 'second finding' }]);
+  } finally { f.sqlite.close(); }
+});
+
+test('an import disabled at its insert is refused and can be retried after admission', async () => {
+  let armed = false;
+  const f = await rig((sql, db) => {
+    if (armed && sql.startsWith('INSERT INTO spores')) {
+      armed = false;
+      db.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('import.enabled','false',0,'test')");
+    }
+  });
+  try {
+    const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, f.now);
+    const post = async (sessionId: string | null = null) => (await worker.fetch(memberPost(token.token, { ...spore('racing-import'), channel: 'import', sessionId }, '/spores/save'), f.env)).json() as Promise<any>;
+    armed = true;
+    expect(await post()).toMatchObject({ persisted: false });
+    expect(f.sqlite.query("SELECT id FROM spores WHERE id='racing-import'").get()).toBeNull();
+    f.sqlite.run("DELETE FROM deployment_settings WHERE leaf='import.enabled'");
+    expect(await post()).toMatchObject({ persisted: true, spore: { id: 'racing-import' } });
+    f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','sess_1','machine_1','tok_1',1,1)");
+    armed = true;
+    expect(await post('sess_1')).toMatchObject({ persisted: false });
+    expect(armed).toBe(false);
+    expect(f.sqlite.query("SELECT session_id FROM spores WHERE id='racing-import'").get()).toEqual({ session_id: null });
+  } finally { f.sqlite.close(); }
+});
+
+test('a terminal run and its credential retirement commit together and retry once', async () => {
+  const f = await rig();
+  try {
+    const post = await embedding(f);
+    f.sqlite.exec("CREATE TRIGGER refuse_retirement BEFORE UPDATE OF revoked_at ON member_credentials WHEN NEW.revoked_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'retirement unavailable'); END");
+    const close = () => post('/runs/update', { runId: 'embedding-run', update: { status: 'failed', error: 'stopped' } });
+    expect((await close()).status).toBe(503);
+    expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='embedding-run'").get()).toEqual({ status: 'pending' });
+    f.sqlite.exec('DROP TRIGGER refuse_retirement');
+    expect(await (await close()).json()).toMatchObject({ persisted: true, changed: 1, applied: true });
+    expect(f.sqlite.query("SELECT revoked_at IS NOT NULL AS retired FROM member_credentials WHERE id=(SELECT dispatched_by FROM agent_runs WHERE id='embedding-run')").get()).toEqual({ retired: 1 });
+    expect(await (await close()).json()).toMatchObject({ persisted: true, changed: 0, applied: true });
   } finally { f.sqlite.close(); }
 });
