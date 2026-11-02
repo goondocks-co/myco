@@ -7,6 +7,8 @@ import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { handleBlob, type BlobResult } from '@myco-server-worker/ingest/blobs.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -20,7 +22,7 @@ import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 
 const PROJECT = 'proj_event_budget';
-const BLOB = '0'.repeat(64);
+const BLOB = await sha256Hex('x');
 const CONTEXT = { projectId: PROJECT, machineId: 'machine', tokenId: 'credential', bodyBytes: 100, now: 2_000 };
 const ROW_READ_LIMIT = 64;
 const CORPUS_SIZES = [1_000, 10_000] as const;
@@ -53,10 +55,16 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       VALUES('credential','member','machine','hash',1,99999999,'credential',1)`).run();
     await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES(?,'session','machine','credential',1,1)`).bind(PROJECT).run();
-    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
-      VALUES(?, ?,1,'text/plain','credential',1,'00000000-0000-4000-8000-000000000001')`).bind(PROJECT, BLOB).run();
+    const blobs = memoryBlobStore();
+    const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
+    const uploaded = await handleBlob(env, new Request(`http://127.0.0.1/blobs/${BLOB}`, {
+      method: 'PUT', headers: { 'content-type': 'text/plain' }, body: 'x',
+    }), { ...CONTEXT, now: 1, clock: () => 1, contentLength: 1, params: { key: BLOB } });
+    const stored = await uploaded.json() as BlobResult;
+    if (!stored.stored) throw new Error(JSON.stringify(stored));
     await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at,due_at) VALUES(?,'session','live',1,1,0)").bind(PROJECT).run();
     const reads: number[] = [];
+    const captureReads: number[] = [];
     const media: { before: number[]; after: number[] } = { before: [], after: [] };
     const retention: { before: number[]; after: number[] } = { before: [], after: [] };
     const retentionLive: { before: number[]; after: number[] } = { before: [], after: [] };
@@ -87,6 +95,10 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       await measured.db.batch(blobDecisionStatements(measured.db, page, 2));
       retention.after.push(measured.reads());
       await db.prepare("UPDATE recovery_holds SET released_at=2,release_reason='complete',released_by='operator' WHERE released_at IS NULL").run();
+      const sessionId = `capture-${size}`;
+      await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        VALUES(?,?,'machine','credential',1,1)`).bind(PROJECT, sessionId).run();
+      await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,?,'live',1,1)").bind(PROJECT, sessionId).run();
       const envelope = { eventId: 'media-read', sessionId: 'session', kind: 'prompt', createdAt: 1, channel: 'cli' as const,
         producer: { adapter: 'test', version: '1' }, payload: { promptId: 'prompt', blob: BLOB, origin: 'user' },
         payloadJson: '{}', payloadBytes: new TextEncoder().encode('{}') };
@@ -97,25 +109,29 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
         "AND NOT EXISTS (SELECT 1 FROM archive_bundles a WHERE 'blob'='blob' AND a.project_id=r.project_id AND (a.archive_key=r.resource_id OR a.receipt_key=r.resource_id))");
       const oldMedia = await db.prepare(oldMediaSql).bind(...mediaRead.params).all();
       const newMedia = await db.prepare(mediaRead.sql).bind(...mediaRead.params).all();
-      expect(newMedia.results).toEqual([{ media_type: 'text/plain' }]);
+      expect(newMedia.results).toEqual([{ media_type: stored.mediaType }]);
       expect(newMedia.results).toEqual(oldMedia.results);
       media.before.push(oldMedia.meta.rows_read);
       media.after.push(newMedia.meta.rows_read);
       const eventId = crypto.randomUUID();
-      const planned = await planEventWrite(db as unknown as RelationalStore, CONTEXT, {
-        eventId, sessionId: 'session', kind: 'prompt', createdAt: 1_000, channel: 'import',
+      measured.reset();
+      const planned = await planEventWrite(measured.db, CONTEXT, {
+        eventId, sessionId, kind: 'prompt', createdAt: 1_000, channel: 'import',
         producer: { adapter: 'claude-code', version: '1' }, payload: { promptId: crypto.randomUUID(), blob: BLOB, origin: 'user' },
-      });
+      }, { db: measured.db, blobs });
       if (!planned.ok) throw new Error(JSON.stringify(planned));
-      const result = await db.batch(planned.write.statements as unknown as Parameters<typeof db.batch>[0]);
+      const planningReads = measured.reads();
+      const result = await measured.db.batch(planned.write.statements);
       expect(planned.write.interpret(result)).toEqual({ persisted: true, projected: true });
-      const rowsRead = result[0]!.meta.rows_read;
-      reads.push(rowsRead);
+      const meta = result[0]!.meta;
+      if (!('rows_read' in meta) || typeof meta.rows_read !== 'number') throw new Error('D1 admission metadata has no row-read count');
+      reads.push(planningReads + meta.rows_read);
+      captureReads.push(measured.reads());
       expect(await db.prepare('SELECT owner_member_id,provenance FROM raw_credentials WHERE token_id=?').bind('credential').first<{ owner_member_id: string; provenance: string }>())
         .toEqual({ owner_member_id: 'member', provenance: 'recorded' });
       expect((await db.prepare('SELECT raw_revision FROM events WHERE project_id=? AND event_id=?').bind(PROJECT, eventId).first<{ raw_revision: number }>())!.raw_revision).toBeGreaterThan(0);
       expect(await db.prepare('SELECT session_id FROM storage_cleanup_queue WHERE project_id=? AND resource_kind=? AND resource_id=?').bind(PROJECT, 'event', eventId).first<{ session_id: string }>())
-        .toEqual({ session_id: 'session' });
+        .toEqual({ session_id: sessionId });
       measured.reset();
       await oldDecisions.batch(blobDecisionStatements(oldDecisions, page, 2));
       retentionLive.before.push(measured.reads());
@@ -124,9 +140,11 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       await measured.db.batch(blobDecisionStatements(measured.db, page, 2));
       retentionLive.after.push(measured.reads());
     }
-    console.info('EVENT_INSERT_READ_BUDGET ' + JSON.stringify({ sizes: CORPUS_SIZES, rowsRead: reads }));
+    console.info('EVENT_ADMISSION_READ_BUDGET ' + JSON.stringify({ sizes: CORPUS_SIZES, rowsRead: reads, captureRowsRead: captureReads }));
+    expect(blobs.gets).toHaveLength(CORPUS_SIZES.length);
     for (const [index, rowsRead] of reads.entries()) {
-      expect(rowsRead, `events INSERT at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
+      expect(rowsRead, `event admission at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
+      expect(captureReads[index]!, `complete capture at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
     }
     expect(reads[1]).toBe(reads[0]);
     for (const [name, rows] of [['blob-retention-held-page', retention], ['blob-retention-live-page', retentionLive], ['blob-media-type', media]] as const) {

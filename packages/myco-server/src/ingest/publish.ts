@@ -64,7 +64,7 @@ const RETIRE_PAGE = 100;
 const STEP_STATEMENTS = 24;
 const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
 /** What reading one queued event may spend: its row, its bundle and its spilled body, and resolving its prompt. */
-const QUEUED_STATEMENTS = 6;
+const QUEUED_STATEMENTS = 7;
 const QUEUED_BLOB_CALLS = 4;
 /** How long a failed session pass waits before retrying: the time from its last advance, within bounds. */
 export const PUBLISH_BACKOFF_MIN_MS = 60_000;
@@ -552,17 +552,17 @@ class SessionPublication {
     }
   }
 
-  /** A queued reference waits until its pending prompt can place in the same payable group or an earlier group. */
+  /** Queued prompts retain their order; references wait until their prompt can place in the same payable group or an earlier group. */
   private async readyQueued(rows: readonly QueuedRecord[]): Promise<QueuedRecord[]> {
     const parentOf = (record: DocRecord): unknown => record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
     const ids = [...new Set(rows.flatMap(({ record }) => {
       const id = record === null ? null : parentOf(record);
       return typeof id === 'string' && !this.placedPrompts.has(id) ? [id] : [];
     }))];
-    if (ids.length === 0) return [...rows];
+    if (ids.length === 0 && !rows.some(row => row.record?.k === 'prompt')) return [...rows];
     const outcomes = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])]
       .map(({ e, failure, retry }) => ({ e, failure, retry }));
-    const held = (await this.db.prepare(`SELECT j.value id,(SELECT COALESCE(
+    const held = ids.length === 0 ? [] : (await this.db.prepare(`SELECT j.value id,(SELECT COALESCE(
         (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at)
       FROM event_refs r CROSS JOIN events e CROSS JOIN publish_queue q
       WHERE r.project_id=?1 AND r.session_id=?2 AND r.kind='prompt' AND r.record_id=j.value AND r.record_id IS NOT NULL
@@ -574,7 +574,7 @@ class SessionPublication {
         WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value)`)
       .bind(this.projectId, this.sessionId, JSON.stringify(ids), JSON.stringify(outcomes), this.doc.generation)
       .all<{ id: string; retry: number | null }>()).results;
-    this.batch.calls += 1;
+    this.batch.calls += Number(ids.length > 0);
     const pending = new Map(held.flatMap(row => row.retry === null ? [] : [[row.id, row.retry] as const]));
     const prompts = new Map<string, DocRecord>();
     for (const { record } of rows) if (record?.k === 'prompt' && !prompts.has(record.id)) prompts.set(record.id, record);
@@ -587,12 +587,48 @@ class SessionPublication {
       seen.add(id);
       return waitingFor(parent, seen);
     };
-    return rows.map(row => {
+    const defer = (row: QueuedRecord, retry: number): QueuedRecord => ({ consumed: row.consumed, record: null,
+      failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending' } });
+    const dependencies = (row: QueuedRecord): QueuedRecord => {
       const id = row.record === null ? null : parentOf(row.record);
       const retry = typeof id === 'string' ? waitingFor(id) : null;
-      return retry === null ? row : { consumed: row.consumed, record: null,
-        failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending' } };
-    });
+      return retry === null ? row : defer(row, retry);
+    };
+    let ready = rows.map(dependencies);
+    if (!ready.some(row => row.record?.k === 'prompt')) return ready;
+    const skipped = [...this.consumed.filter(row => row.r === 0).map(row => row.e),
+      ...rows.flatMap(row => row.record?.k === 'prompt' ? [row.consumed.e] : [])];
+    const outside = await this.db.prepare(`SELECT q.created_at c,q.event_id e,COALESCE(
+        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at) retry
+      FROM publish_queue q WHERE q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.failure IS NULL
+        AND NOT EXISTS (SELECT 1 FROM json_each(?3) WHERE value=q.event_id)
+        AND NOT EXISTS (SELECT 1 FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL)
+      ORDER BY q.created_at,q.event_id LIMIT 1`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(skipped), JSON.stringify(outcomes))
+      .first<{ c: number; e: string; retry: number }>();
+    this.batch.calls += 1;
+    const earlier = (left: Pick<QueuedRef, 'c' | 'e'>, right: Pick<QueuedRef, 'c' | 'e'>) => left.c < right.c || (left.c === right.c && left.e < right.e);
+    // Order holds propagate through prompt dependencies within this payable group.
+    for (let remaining = prompts.size; remaining >= 0; remaining -= 1) {
+      const waits = ready.flatMap(row => row.consumed.r === 0 && row.failure?.failure === null
+        ? [{ ...row.consumed, retry: row.failure.retry }] : []);
+      const first = [...(outside === null ? [] : [outside]), ...waits]
+        .reduce<{ c: number; e: string; retry: number } | null>((first, row) => first === null || earlier(row, first) ? row : first, null);
+      if (first === null) break;
+      const retry = Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, first.retry);
+      const ordered = ready.map(row => row.record?.k === 'prompt' && earlier(first, row.consumed) ? defer(row, retry) : row);
+      if (ordered.every((row, index) => row === ready[index])) break;
+      const readyPrompts = new Set(ordered.flatMap(row => row.record?.k === 'prompt' ? [row.record.id] : []));
+      for (const [index, row] of ordered.entries()) {
+        const original = rows[index]!.record;
+        if (original?.k === 'prompt' && row.failure?.failure === null && !readyPrompts.has(original.id)) {
+          prompts.delete(original.id);
+          pending.set(original.id, row.failure.retry);
+        }
+      }
+      ready = ordered.map(dependencies);
+    }
+    return ready;
   }
 
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */

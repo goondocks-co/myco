@@ -37,13 +37,11 @@ async function queuedTurn(db: RelationalStore) {
   return { now, env, blobs, key, bytes, ctx };
 }
 
-test('a transient queued prompt holds its descendants while independent turns publish, then preserves turn ownership', async () => {
+test('a transient queued prompt holds its descendants, then preserves turn ownership', async () => {
   await withDocumentStores(async (db, target) => {
     const { now, env, blobs, key, ctx } = await queuedTurn(db);
     for (const event of [
-      envelope({ eventId: uuid(5), sessionId: 'session', kind: 'prompt', payload: { promptId: uuid(21), text: 'independent', origin: 'user' } }),
       envelope({ eventId: uuid(6), sessionId: 'session', kind: 'prompt', payload: { promptId: uuid(22), parentPromptId: uuid(20), text: 'steering', origin: 'user' } }),
-      envelope({ eventId: uuid(7), sessionId: 'session', kind: 'response', payload: { responseId: uuid(31), promptId: uuid(21), text: 'independent reply' } }),
       envelope({ eventId: uuid(8), sessionId: 'session', kind: 'response', payload: { responseId: uuid(32), promptId: uuid(22), text: 'steering reply' } }),
     ]) expect((await ingestEvent(db, ctx, event, env)).persisted, target).toBe(true);
     const get = blobs.get.bind(blobs);
@@ -51,7 +49,7 @@ test('a transient queued prompt holds its descendants while independent turns pu
     blobs.get = async physical => { if (fail && physical.includes(key)) { fail = false; throw new Error('prompt store unavailable'); } return get(physical); };
     await expect(publishDocuments(env, now, limits())).rejects.toThrow('prompt store unavailable');
     expect(await db.prepare(`SELECT prompts,replies,tool_calls FROM session_documents WHERE session_id='session'`).first(), target)
-      .toEqual({ prompts: 1, replies: 1, tool_calls: 0 });
+      .toEqual({ prompts: 0, replies: 0, tool_calls: 0 });
     expect(await readPage(env, 'project', 'session', '', 0), target).toBeNull();
     blobs.get = get;
     await publishDocuments(env, now + PUBLISH_BACKOFF_MAX_MS, limits());
@@ -62,6 +60,35 @@ test('a transient queued prompt holds its descendants while independent turns pu
     expect(tools.rows.map(row => row.toolCallId), target).toEqual([uuid(40)]);
     expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 0 });
     expect(await readPage(env, 'project', 'session', '', 0), target).toBeNull();
+  });
+});
+
+test('queued prompts retain their turn order, first prompt and open turn across a transient read and new input', async () => {
+  await withDocumentStores(async (db, target) => {
+    const { now, env, blobs, key, ctx } = await queuedTurn(db);
+    const prompt = (event: number, id: number, text: string, at: number) => ingestEvent(db, { ...ctx, now: at },
+      envelope({ eventId: uuid(event), sessionId: 'session', kind: 'prompt', payload: { promptId: uuid(id), text, origin: 'user' } }), env);
+    expect((await prompt(5, 21, 'second prompt', now)).persisted, target).toBe(true);
+    expect((await ingestEvent(db, ctx, envelope({ eventId: uuid(6), sessionId: 'session', kind: 'plan',
+      payload: { planKey: uuid(60), content: 'independent plan', status: 'active' } }), env)).persisted, target).toBe(true);
+    const get = blobs.get.bind(blobs);
+    let fail = true;
+    blobs.get = async physical => { if (fail && physical.includes(key)) { fail = false; throw new Error('prompt store unavailable'); } return get(physical); };
+    await expect(publishDocuments(env, now, limits())).rejects.toThrow('prompt store unavailable');
+    expect(await db.prepare(`SELECT prompts,first_prompt,open_turn_key FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: 0, first_prompt: null, open_turn_key: null });
+    expect(await db.prepare(`SELECT plans FROM session_documents WHERE session_id='session'`).first(), target).toEqual({ plans: 1 });
+    expect((await prompt(9, 23, 'third prompt', now + 1)).persisted, target).toBe(true);
+    await publishDocuments(env, now + 1, limits());
+    expect(await db.prepare(`SELECT prompts,first_prompt,open_turn_key FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: 0, first_prompt: null, open_turn_key: null });
+    blobs.get = get;
+    await publishDocuments(env, now + PUBLISH_BACKOFF_MAX_MS, limits());
+    expect((await db.prepare(`SELECT prompt_id,ord FROM session_prompts WHERE session_id='session' ORDER BY ord`).all()).results, target)
+      .toEqual([20, 21, 23].map((id, ord) => ({ prompt_id: uuid(id), ord })));
+    expect(await db.prepare(`SELECT prompts,first_prompt,open_turn_key FROM session_documents WHERE session_id='session'`).first(), target)
+      .toEqual({ prompts: 3, first_prompt: 'retained prompt', open_turn_key: uuid(23) });
+    expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 0 });
   });
 });
 
