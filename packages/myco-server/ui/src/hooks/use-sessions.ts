@@ -650,7 +650,7 @@ export function useTranscript(projectId: string, sessionId: string, enabled = tr
 /** A processed row's complete field, resolved by its identity rather than its storage hash. */
 export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revision: string) {
   return useQuery({
-    queryKey: ['processed-text', projectId, ref.kind, ref.id, revision],
+    queryKey: ['processed-text', projectId, ref.kind, ref.id, revision, processedBodyUrl(projectId, ref)],
     queryFn: async ({ signal }) => {
       const res = await fetch(processedBodyUrl(projectId, ref), { credentials: 'same-origin', signal });
       if (res.status === 401) throw new SignedOutError();

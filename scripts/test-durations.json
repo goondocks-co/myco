@@ -186,7 +186,8 @@
     "local: #1944 t4 review correction, pinned Bun 1.4.0 darwin-arm64 through npm test -- tests/myco-server/review-permissions.test.ts. Final 21 cases including import-source repair measured 1042.90ms summed bodies / 1418ms runner; earlier corrected 21-case run measured 2685ms runner. Retained 5000ms file weight above observed startup and bodies. Six added behavior controls and the extended import-repair control failed before their fixes. Existing parity scenarios only gained required editorial fixtures; existing measured parity weights retained, with no parity run or new scenario.",
     "local: #1944 t4 N1/N2 recheck on origin/main da8d2c42b, pinned Bun1.4.0 darwin-arm64. The expanded 22-case review file measured 536.03ms summed bodies in npm test with the direct settings importer, existing CLI settings regression and guarded parity file (45pass/1skip,2430ms Bun wall). Retained 5000ms file allowance above observed file work. No new test file or parity scenario; existing legacy-import parity fixtures gained required metadata only.",
     "local: #1944 t4 CI fixture correction on origin/main ef5b285a3, pinned Bun 1.4.0 darwin-arm64. The 12 existing spore-stream screen cases passed in 19.6s Playwright wall with two workers; the complete 61-case Knowledge file passed in 1.6m after the original fixture reproduced expected 2 unlined spores versus 0. A native SQLite request/read probe checks ordinary agent-line previews and imported content previews; no parity scenarios ran under the lane host-load restriction. Existing file and parity duration floors retained; no new test file or parity scenario.",
-    "local: fix-1944 t3 publication recovery, pinned Bun 1.4.0 darwin-arm64 through npm test with native SQLite and Miniflare D1. Five focused cases measured 11590ms process wall including both stores; 26000ms file weight covers twice measured wall plus startup. No new parity scenario. The Wrangler bundle prerequisite was skipped with a scratch-only subprocess shim to honor the no-Wrangler lane; test execution and assertions were unchanged."
+    "local: fix-1944 t3 publication recovery, pinned Bun 1.4.0 darwin-arm64 through npm test with native SQLite and Miniflare D1. Five focused cases measured 11590ms process wall including both stores; 26000ms file weight covers twice measured wall plus startup. No new parity scenario. The Wrangler bundle prerequisite was skipped with a scratch-only subprocess shim to honor the no-Wrangler lane; test execution and assertions were unchanged.",
+    "local/projected: PR2056 CI and Opus review follow-up, pinned Bun1.4.0 through npm test, native SQLite and Miniflare D1. Focused file case sums: publication-ci-contracts.test.ts 9628ms (two existing parity scenarios through a local HTTP front door), publication-review.test.ts 14083ms, document-publication-recovery.test.ts 13884ms; weights are local x3.5 rounded up to 1000ms: 34000/50000/49000ms. stored-text.test.tsx measured73ms and retains147ms. No new parity scenario; existing raw-privacy110000ms and storage-cleanup106000ms parity weights retained; the full parity suite was not run under the lane host-load rule."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -1023,7 +1024,9 @@
     "tests/myco-server-ui/dashboard-freshness.test.tsx": 6000,
     "tests/myco-server/embedding-running-cost.test.ts": 120000,
     "tests/myco-server/review-permissions.test.ts": 5000,
-    "tests/myco-server/document-publication-recovery.test.ts": 26000
+    "tests/myco-server/document-publication-recovery.test.ts": 49000,
+    "tests/myco-server/publication-ci-contracts.test.ts": 34000,
+    "tests/myco-server/publication-review.test.ts": 50000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

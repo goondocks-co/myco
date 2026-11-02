@@ -171,6 +171,7 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       const report = await new SessionPublication(env, ref.project_id, ref.session_id, now, limits).run(index === 0);
       changed += report.records;
       more ||= report.more;
+      if (report.failure?.propagate) failure ??= report.failure.error;
     } catch (error) {
       const outcome = publicationOutcome(error);
       emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: outcome.failure });
@@ -250,7 +251,9 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
 }
 
 interface QueuedRef { r: number; c: number; e: string; t: number }
-interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; error: unknown }
+interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; error?: unknown }
+interface QueuedRecord { consumed: QueuedRef; record: DocRecord | null; failure?: QueuedFailure }
+interface PublicationReport { records: number; more: boolean; failure?: { error: unknown; propagate: boolean } }
 
 /** What a run of records holds, in order. */
 const recordsDigest = (records: readonly DocRecord[]): Promise<string> => sha256Hex(JSON.stringify(records));
@@ -263,6 +266,7 @@ class SessionPublication {
   private publications: Publication[] = [];
   private consumed: QueuedRef[] = [];
   private failedQueued: QueuedFailure[] = [];
+  private readonly placedPrompts = new Set<string>();
   private more = false;
   private full = false;
   private continuationChanged = false;
@@ -287,7 +291,7 @@ class SessionPublication {
    * Publishes what the pass can pay for and commits it. A pass that leads its wake and cannot place even one record
    * fails as `document_pass_unaffordable`: every later pass on the same input would stop at the same place.
    */
-  async run(leads = false): Promise<{ records: number; more: boolean }> {
+  async run(leads = false): Promise<PublicationReport> {
     const db = this.db;
     const generation = '(SELECT generation FROM session_documents WHERE project_id=?1 AND session_id=?2)';
     const policy = publicationPolicy('t.prompt_identity_scheme');
@@ -339,13 +343,16 @@ class SessionPublication {
       params: [this.projectId, this.sessionId, doc.generation, this.projectId, this.sessionId, version.key, version.sourceId],
     }), (versions) => this.frontier(versions));
     if (written > 0) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.batch.records, chunks: written });
-    const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault ?? this.failedQueued[0]?.code;
-    if (fault !== undefined) await recordDocumentPublishFailure(db, { projectId: this.projectId, sessionId: this.sessionId, failure: fault }, this.now);
-    const transcriptError = this.publications.find(publication => publication.faultError !== undefined)?.faultError;
-    if (transcriptError !== undefined) throw transcriptError;
-    const retry = this.failedQueued.find(row => row.failure === null);
-    if (retry !== undefined) throw retry.error;
-    return { records: this.batch.records, more: this.more };
+    const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault
+      ?? this.failedQueued.find(row => row.error !== undefined)?.code;
+    const retryError = this.publications.find(publication => publication.faultError !== undefined)?.faultError
+      ?? this.failedQueued.find(row => row.failure === null && row.error !== undefined)?.error;
+    let failure: PublicationReport['failure'] = retryError === undefined ? undefined : { error: retryError, propagate: publicationOutcome(retryError).propagate };
+    if (fault !== undefined) {
+      try { await recordDocumentPublishFailure(db, { projectId: this.projectId, sessionId: this.sessionId, failure: fault }, this.now); }
+      catch (error) { failure = { error, propagate: true }; }
+    }
+    return { records: this.batch.records, more: this.more, failure };
   }
 
   private target(publication: Publication, persistence: ParsePersistence): ParseTarget {
@@ -510,7 +517,7 @@ class SessionPublication {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
     const content = bundleContentEnv(this.env);
     for (let at = 0, size = 1; at < rows.length; size *= 2) {
-      const group: { consumed: QueuedRef; record: DocRecord | null; failure?: QueuedFailure }[] = [];
+      const group: QueuedRecord[] = [];
       for (const row of rows.slice(at, at + size)) {
         if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
         const ref = { r: row.rank, c: row.queued_created_at, e: row.event_id, t: row.retry_at };
@@ -524,23 +531,68 @@ class SessionPublication {
             retry: this.now + delay, code: outcome.failure, error } });
         }
       }
-      let take = group.length;
+      let take = group.length, ready: QueuedRecord[] = [];
       for (; take > 0; take = Math.floor(take / 2)) {
+        ready = await this.readyQueued(group.slice(0, take));
         try {
-          await this.batch.place(group.slice(0, take).flatMap(({ record }) => (record === null ? [] : [record])), null);
+          await this.batch.place(ready.flatMap(({ record }) => (record === null ? [] : [record])), null);
           break;
         } catch (error) {
           if (!(error instanceof DocumentPassFull)) throw error;
           this.full = this.more = true;
         }
       }
-      for (const row of group.slice(0, take)) {
+      for (const row of ready.slice(0, take)) {
+        if (row.record?.k === 'prompt') this.placedPrompts.add(row.record.id);
         if (row.failure === undefined) this.consumed.push(row.consumed);
         else this.failedQueued.push(row.failure);
       }
       if (take < size || this.full) return;
       at += take;
     }
+  }
+
+  /** A queued reference waits until its pending prompt can place in the same payable group or an earlier group. */
+  private async readyQueued(rows: readonly QueuedRecord[]): Promise<QueuedRecord[]> {
+    const parentOf = (record: DocRecord): unknown => record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
+    const ids = [...new Set(rows.flatMap(({ record }) => {
+      const id = record === null ? null : parentOf(record);
+      return typeof id === 'string' && !this.placedPrompts.has(id) ? [id] : [];
+    }))];
+    if (ids.length === 0) return [...rows];
+    const outcomes = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])]
+      .map(({ e, failure, retry }) => ({ e, failure, retry }));
+    const held = (await this.db.prepare(`SELECT j.value id,(SELECT COALESCE(
+        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at)
+      FROM event_refs r CROSS JOIN events e CROSS JOIN publish_queue q
+      WHERE r.project_id=?1 AND r.session_id=?2 AND r.kind='prompt' AND r.record_id=j.value AND r.record_id IS NOT NULL
+        AND e.project_id=r.project_id AND e.event_id=r.event_id
+        AND q.project_id=r.project_id AND q.session_id=r.session_id AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=r.event_id
+        AND q.failure IS NULL AND NOT EXISTS (SELECT 1 FROM json_each(?4)
+          WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL) LIMIT 1) retry
+      FROM json_each(?3) j WHERE NOT EXISTS (SELECT 1 FROM session_prompts p
+        WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value)`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(ids), JSON.stringify(outcomes), this.doc.generation)
+      .all<{ id: string; retry: number | null }>()).results;
+    this.batch.calls += 1;
+    const pending = new Map(held.flatMap(row => row.retry === null ? [] : [[row.id, row.retry] as const]));
+    const prompts = new Map<string, DocRecord>();
+    for (const { record } of rows) if (record?.k === 'prompt' && !prompts.has(record.id)) prompts.set(record.id, record);
+    const waitingFor = (id: string, seen = new Set<string>()): number | null => {
+      if (this.placedPrompts.has(id) || !pending.has(id)) return null;
+      const prompt = prompts.get(id);
+      if (prompt === undefined || seen.has(id)) return Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!);
+      const parent = parentOf(prompt);
+      if (typeof parent !== 'string') return null;
+      seen.add(id);
+      return waitingFor(parent, seen);
+    };
+    return rows.map(row => {
+      const id = row.record === null ? null : parentOf(row.record);
+      const retry = typeof id === 'string' ? waitingFor(id) : null;
+      return retry === null ? row : { consumed: row.consumed, record: null,
+        failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending' } };
+    });
   }
 
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */

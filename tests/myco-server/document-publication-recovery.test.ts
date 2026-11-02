@@ -6,6 +6,8 @@ import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
+import { assertSessionMaterialReady } from '@myco-server-worker/read/material-readiness.js';
+import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
 import { readPage, type ChunkRow, type PageRow } from '@myco-server-worker/content/document-reader.js';
@@ -61,6 +63,8 @@ test('a locator issued before a tool moves refuses stale location and a fresh lo
       return worker.fetch(await asOwner(db, `/api/projects/project/processed/tool-input/${tool.id}?${query}`), bindings);
     };
     expect(await (await fetchBody(old)).text(), target).toBe(input);
+    await place(env, [{ k: 'reply', id: uuid(804), prompt_id: uuid(20), created_at: 2, text: 'unrelated reply' }]);
+    expect(await (await fetchBody(old)).text(), target).toBe(input);
     await place(env, [{ ...tool, output_preview: 'o'.repeat(4096), outcome_source: { ordinal: 0, offset: 1, origin: 'reported' } }]);
     const fresh = await documentPromptTools(env, { projectId: 'project' }, 'session', uuid(20), undefined);
     if (fresh === null || fresh === 'stale') throw new Error('missing tools');
@@ -68,7 +72,7 @@ test('a locator issued before a tool moves refuses stale location and a fresh lo
     expect(current.generation, target).toBe(old.generation);
     expect(current.page, target).not.toBe(old.page);
     expect(current.revision, target).not.toBe(old.revision);
-    expect(await documentBody(env, 'project', 'session', 'tool-input', tool.id, { ...current, revision: old.revision }), target).toBe('stale');
+    expect(await documentBody(env, 'project', 'session', 'tool-input', tool.id, { ...current, revision: old.revision }), target).toBe(input);
     const stale = await fetchBody(old);
     expect(stale.status, target).toBe(409);
     expect(await stale.json(), target).toEqual({ error: 'stale_cursor' });
@@ -159,10 +163,10 @@ test('retained invalid text is held per event while transient reads retry and la
     const physical = blobObjectKey('project', key, registered.generation);
     blobs.get = async (key) => { if (key === physical) throw new Error('temporarily unavailable'); return get(key); };
     await expect(publishDocuments(env, now, limits())).rejects.toThrow('temporarily unavailable');
-    expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 1 });
+    expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 2 });
     expect((await db.prepare(`SELECT due_at FROM session_documents WHERE session_id='session'`).first<{ due_at: number }>())!.due_at, target)
       .toBeGreaterThanOrEqual(now + PUBLISH_BACKOFF_MIN_MS);
-    expect(await db.prepare(`SELECT replies FROM session_documents WHERE session_id='session'`).first(), target).toEqual({ replies: 1 });
+    expect(await db.prepare(`SELECT replies FROM session_documents WHERE session_id='session'`).first(), target).toEqual({ replies: 0 });
     blobs.get = get;
     await publishDocuments(env, now + 60 * 60_000, limits());
     expect(await db.prepare(`SELECT replies FROM session_documents WHERE session_id='session'`).first(), target).toEqual({ replies: 1 });
@@ -173,5 +177,7 @@ test('retained invalid text is held per event while transient reads retry and la
     expect(await db.prepare(`SELECT replies,tool_calls,plans,due_at FROM session_documents WHERE session_id='session'`).first(), target)
       .toEqual({ replies: 1, tool_calls: 1, plans: 1, due_at: null });
     expect(await blobs.get(blobObjectKey('project', key, registered.generation)), target).not.toBeNull();
+    await assertSessionMaterialReady(db, 'project', 'session');
+    expect((await readDocumentStatus(db)).queued, target).toBe(0);
   });
 });

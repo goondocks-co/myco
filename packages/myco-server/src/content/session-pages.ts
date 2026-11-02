@@ -172,7 +172,7 @@ export async function documentBody(env: ContentStore, projectId: string, session
   const [recordKind, field] = BODY_FIELD[kind];
   const read = await doc.ownerPages(at.owner, at.page, 1);
   const page = read.pages.find(page => page.page === at.page);
-  if (at.revision !== undefined && page?.revision !== at.revision) return 'stale';
   const record = page?.records.find((held) => held.k === recordKind && held.id === id);
-  return record === undefined ? at.revision === undefined ? 'stale' : null : doc.body(record, field);
+  if (record !== undefined) return doc.body(record, field);
+  return at.revision === undefined || page?.revision !== at.revision ? 'stale' : null;
 }

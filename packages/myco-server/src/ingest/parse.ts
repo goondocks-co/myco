@@ -611,6 +611,7 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
       ${policy.prompt},${policy.record},0,0 FROM transcripts t JOIN session_documents d
       ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live' WHERE ${where.sql}
     ON CONFLICT(project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,segment_lines=0,open_prompt_id=NULL,
+      prompt_scheme=COALESCE(transcript_publication.prompt_scheme,excluded.prompt_scheme),
       unfinished=0,reply_unfinished=0,reply_latest_at=NULL,state='active',failure=NULL,diagnostic=NULL,awaited_size=NULL,placed_records=NULL,placed_digest=NULL,parser_version=0
     RETURNING transcript_id`).bind(...where.params),
   db.prepare(`UPDATE session_documents AS d SET due_at=0 WHERE d.state='live' AND EXISTS (
