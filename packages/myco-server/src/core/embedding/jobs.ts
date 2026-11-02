@@ -6,7 +6,8 @@ import { WORK_SWEEP_CONTINUE_MS } from './work-state.js';
 import { hasEmbeddingSweep, hasEmbeddingWork } from './work.js';
 export { hasEmbeddingWork, type EmbeddingWorkScope } from './work.js';
 import { advanceEmbedding } from './step.js';
-import { completeEmbeddingSwitch, embeddingWorkPlan } from './switch.js';
+import { completeEmbeddingSwitch, embeddingWorkPlan, type EmbeddingWorkPlan } from './switch.js';
+import { readSwitch } from './switch-store.js';
 
 export { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 import { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
@@ -90,16 +91,27 @@ export async function runEmbeddingJob(env: ServerEnv, now: number, options: { sw
   if (plan !== null) for (const { projectId, retireOnly } of await workProjects(env.db)) {
     if (await hasEmbeddingSweep(env.db, projectId, plan.model, { ...plan, retireOnly })) return { changed, more: true, continueAfterMs: WORK_SWEEP_CONTINUE_MS };
   }
+  const retryAt = await providerRetryAt(env.db,plan,now);
+  if (retryAt !== null) return { changed,more:true,continueAfterMs:retryAt-now };
   return { changed, more: false };
 }
 
-/** A safety cycle holds no depth shallower than sleep. */
+/** Deferred embedding work holds no depth shallower than sleep. */
 export async function embeddingSweepPending(env: ServerEnv, now: number): Promise<boolean> {
   if (!hasTaskRuntime(env, EMBEDDING_TASK) || env.origin === undefined || !(await keepsEmbeddingWhileIdle(env.db))) return false;
   const plan = await embeddingWorkPlan(env, now);
+  if (await providerRetryAt(env.db,plan,now) !== null) return true;
   if (plan === null) return false;
   for (const { projectId, retireOnly } of await workProjects(env.db)) {
     if (await hasEmbeddingSweep(env.db, projectId, plan.model, { ...plan, retireOnly })) return true;
   }
   return false;
+}
+
+async function providerRetryAt(db:RelationalStore,plan:EmbeddingWorkPlan|null,now:number):Promise<number|null> {
+  const models = plan === null ? [(await readSwitch(db))?.modelKey] : [plan.model,plan.building,...plan.retain];
+  const held = await db.prepare(`SELECT retry_at FROM embedding_provider_holds
+    WHERE model_key IN (SELECT value FROM json_each(?)) AND retry_at>? ORDER BY retry_at LIMIT 1`)
+    .bind(JSON.stringify(models),now).first<{ retry_at:number }>();
+  return held?.retry_at ?? null;
 }

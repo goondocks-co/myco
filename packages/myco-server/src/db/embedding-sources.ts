@@ -50,3 +50,8 @@ export const V86_EMBEDDING_SOURCES: readonly Source[] = PROVEN_EMBEDDING_SOURCES
 export const CURRENT_EMBEDDING_SOURCES: readonly Source[] = V86_EMBEDDING_SOURCES.map(source => source.type === 'spore'
   ? { ...source, prompt: 'NULL' }
   : source);
+
+/** A version's source is eligible, read through the source table's identity index. */
+export const eligibleEmbeddingSource = (row: string): string => `(${CURRENT_EMBEDDING_SOURCES.map((source) =>
+  `(${row}.type = '${source.type}' AND EXISTS (SELECT 1 FROM ${source.table}
+    WHERE project_id = ${row}.project_id AND ${source.id} = ${row}.record_id AND (${source.eligible})))`).join(' OR ')})`;

@@ -130,7 +130,9 @@ describe('housekeeping on Health', () => {
   it('says nothing is waiting where nothing is, and words a chained wake in seconds', () => {
     expect(backlogWords({ transcripts: 0, bytes: 0, imported: { transcripts: 0, bytes: 0 } })).toBeNull();
     expect(backlogWords(null)).toBeNull();
+    expect(backlogWords({transcripts:0,bytes:0,imported:{transcripts:0,bytes:0},limited:true})).toBe('Additional sessions may have transcripts waiting to be read.');
     expect(backlogWords({ transcripts: 1, bytes: 2048, imported: { transcripts: 1, bytes: 2048 } })).toBe('1 transcript (2.0 KB) waiting to be read into sessions.');
+    expect(backlogWords({transcripts:128,bytes:12_800,imported:{transcripts:64,bytes:6_400},limited:true})).toBe('At least 128 transcripts (12.5 KB) waiting to be read into sessions.');
     expect(reportWords({ state: 'idle', heldBy: null, idleMs: 400_000, jobs: [{ name: 'transcript-parse', changed: 120, failed: null, more: true }], nextWakeMs: 2_000 }))
       .toBe('The server is idle. Read 120 rows from transcripts, with more still to read. Next wake in 2 s.');
   });

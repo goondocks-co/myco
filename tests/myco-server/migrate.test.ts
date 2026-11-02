@@ -479,6 +479,75 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0463_v463.sql': '9bb7a86837e9443352f642a7dbceda559eb5cf093ccc7f2af5d1d3c3a2d3a92b',
   '0464_v464.sql': '45d940f08c5feda6e953f84d47e2010996bfa5c7fa3cbabe4e6294f98b28e1fe',
   '0465_v465.sql': '85cd8aed1d1ae6c631b06bd3b6f324038050cb6f59473bea45b7a356d1a6705b',
+  '0466_v466.sql': 'fcae60ec393360b430e1064e8e2c021661992178b1ea86402a5f34e7234a3469',
+  '0467_v467.sql': '1c8b65ca1026282f68c8ad3a66644faf88ed256b0265731237926dddd63d9896',
+  '0468_v468.sql': '96482138333e99091a4ccb88ea81dfcf6a9a7b566ff9d11f4dfe7aedf62658c0',
+  '0469_v469.sql': 'ec187c71e78ab78d594feba4a13b016d68cdaeb73d7dc7fc1f0c92812a9e6cb6',
+  '0470_v470.sql': '4c7f9cc69f0b433d79d534a9f967f8800b13200fa260b612c7d51a5f9c32620a',
+  '0471_v471.sql': '9fd5eddcc90559d9e107efe9c8b0315a829f82eb0b264973595e5f5eaf7da19a',
+  '0472_v472.sql': '92f25bfcc9fa840a6771922ea4f5e72e227d065bb4d0868a2fa01e7f33143e7f',
+  '0473_v473.sql': '57602c0a06e553ab6d9ae23989ec8ee2dc3955a891dae4ce9c5a0b5086c09184',
+  '0474_v474.sql': 'a9afa971d9762c38b469099680d6116c0fcb21c217bf94aac61b48df2b2a9d64',
+  '0475_v475.sql': '0b9d77197ac86496dfb01fe9e0432c3586575598905629bee76f52d274489291',
+  '0476_v476.sql': 'a65570aa2a8c1e6e3c6c5d6ca82de15b25c614572d5892a603f0ce07059840ee',
+  '0477_v477.sql': '24a554d36ecdb74085b942588cc30f616bdf81601eeec7ea57c01364a10ca86a',
+  '0478_v478.sql': '6f15d3ddad8aa8c5259caf83453e87ab48259bbd144a8125712703386748dc24',
+  '0479_v479.sql': '1e8fde1266a38d39253b03e3e03c69bb0b12165e397b2af63706bd8e7e532038',
+  '0480_v480.sql': 'b433a858664cd33bc4fb7885a5b1405110b0904495cfb68407950d6ccb59cd35',
+  '0481_v481.sql': '23c4d43817f2d2f989b69099970d50306956f02ad5c8b57a03e2a56074ec00eb',
+  '0482_v482.sql': '1a05428f93369d8b6a8a53e42afee61d1e27370cff456c23f580e56daa0a1290',
+  '0483_v483.sql': '6cbeb7f76f31ea8bc6c25301b112b989d7515383d9d4e56716bb715b88c92493',
+  '0484_v484.sql': '0423b1b8f0e36f11c5efb161fe2b6867da6ad21147466ad450167cd2b57d6bd7',
+  '0485_v485.sql': 'b1d64e18fa3fd5b99be38042224bdbe843f3e211b70df1cf0ab26a6bd7e7b19c',
+  '0486_v486.sql': '36c13b38031d28966714c81788fa8b709471ec60b1a15245f34d46932df7095a',
+  '0487_v487.sql': '42e3cb13c257d8e48e0247bb866ca1b0c1eccb5ee9977b19957969665fdf5a8a',
+  '0488_v488.sql': '29774025d50f26f23021f7abdacab460253fedb5ebe650f48f993a11009fac5f',
+  '0489_v489.sql': '0ec2476102cd9ad42a62e0dd8ce9ade0366065123fd702bcf11ee9b6ee98671f',
+  '0490_v490.sql': '63b98d97180810804b8e368e21576e80da3bef798b8df7a416145861ee8f8df1',
+  '0491_v491.sql': '4b12ad740899d2284c6bb29a3ba0ce23acf2f421c453a6f2a13937bc6de76946',
+  '0492_v492.sql': '97e1dca1d03e5bd56ee1c1a8ac44ebe3745d478e28e4cc0b0d62885fa57bd6a4',
+  '0493_v493.sql': 'db3c25e430a20bc508bca9df7ba91531ff2e3e79dc5d892c4311633e751f9c2d',
+  '0494_v494.sql': 'fe76091f5a342e3a171b328f2c08e69a5907bdc57d50e7e29d9e0b18b354a7b8',
+  '0495_v495.sql': '1210051c6afd806fb0be1c0e0c40f26644f4a83249c2d650066194e86b3ec7b2',
+  '0496_v496.sql': '7480c93d197cf6c27ffe38100a0bd05b05fe82f84fc46a8389fc6b20edc5b42b',
+  '0497_v497.sql': '25504b9563eebd3925c03bf48bf05225ff91d634b92a2652525cfb84edfa752b',
+  '0498_v498.sql': 'a88ef495f2331074b1d27f844b5fba3ef3f29ce76c5c52ad4f784f12f4978597',
+  '0499_v499.sql': '5bf91ad4a34e069721e272241c38758a1fbbe65c1f41d2fd62e26a911283a809',
+  '0500_v500.sql': '8dc2bcec0168602f5ea18cd051b783ab6f2a6dbd0aebe99a36204d1c070de1e9',
+  '0501_v501.sql': '9542de2fd05500eee3cf60a3381432c9dd2afc97e2ad9b36ab297568b087147a',
+  '0502_v502.sql': 'e57a735daccceff2f2e88576bb92610c0b50a87f501e01028d92346c0e0d6d20',
+  '0503_v503.sql': 'c0938e2e1609cbbc7e054dc9e434187b733cc7d51cd23bbafee7a818f48e651a',
+  '0504_v504.sql': '47a0a29b258c5dbe457c416fe9767115b8b7b7a7685b2378568c7bc818fa0dbe',
+  '0505_v505.sql': '14100b8efa54d538487546b1a37ace22e754c26535477a91df32e8401e67b5a7',
+  '0506_v506.sql': 'df4518892f6c588bfade59a2679fe0d8abe1a3d4583c3c204a2ff6d5ce68cb5e',
+  '0507_v507.sql': 'e21d0119e67c5cd071eecc924f0061d74fd9fef2d5431880f4ba621b5c7622bd',
+  '0508_v508.sql': '58da8fed5ba690a64020321184b2797ebc23e86bfcb8e49f8141fc814e34fb2f',
+  '0509_v509.sql': 'f78eaa12b50b5b1798d2854764a9c45426b23dcc55dc8a7f94663bc292bef990',
+  '0510_v510.sql': '7863bf95509b2135a2f9cb3686f50b1b8838cf2ed7e1601bba624ee426a6a99f',
+  '0511_v511.sql': 'e7a604b9bd50331c5f4e0fbf60f7319395940d9de22e046787cddaed68ef25bd',
+  '0512_v512.sql': 'f51a2ebe6472bfdc64ed843c28157e8a87dde2dcb095441758c896c98ab846e2',
+  '0513_v513.sql': '46834a130c442803c01da720eb04128abee07b709996696cb2d36e8eed1b120b',
+  '0514_v514.sql': '13f146cb42303f697c9ba76fff553be8da8ae26631c07b2be27211edb423e254',
+  '0515_v515.sql': '5b016e31d97b24e45f601e9d0b4b5532989b529dbede3e3d7787d57689fd52c5',
+  '0516_v516.sql': '7a88d7f6b71e921f69b905e49e05429e4935dcedceca9b2457438b7882b6c523',
+  '0517_v517.sql': 'a94f31e7a86ebc407256308972e84c27fc21c25cf8707af6ff916bc0c20dc130',
+  '0518_v518.sql': 'f10c0f7d189f46051ab8984d079b0aa0ef676d339f79c5c758cf6e0f8cddcff9',
+  '0519_v519.sql': 'c38de95fdb70bd739b343aeb325158b28874b6ef7191c2a58a1be304681e03b8',
+  '0520_v520.sql': 'e1f08d8d375e87edc009cb631e7acdca65a210d5908985eb483b8e550a16ec07',
+  '0521_v521.sql': 'b358bab44254a4e84dcb86a8a86af410667bf8f7e09884247d7e0c0236888f7d',
+  '0522_v522.sql': '9de96d3e4762c4d796bd47c2ff4c8c2704b2eb440404777f625848292d7546c1',
+  '0523_v523.sql': 'fd009c4587baa8e960f4899d04e277173a447a4382b18b0d2c3f53bdeb7d219f',
+  '0524_v524.sql': '4c832964994619fc889370848721b3f08c9a556d57c269b0ee35b421a1c572e8',
+  '0525_v525.sql': '4c919507bc2161c6056ee6eaabe7ad16828b9ba825313e80c521c9ebe7c77335',
+  '0526_v526.sql': 'f8d2e04816df50d48058de8e512e5d528a7310e2214289f0de3719c1d4ed7841',
+  '0527_v527.sql': '2295f7467066cbec1a12c6e510edfaccd3e9076201eb810994f028f53c0a07ad',
+  '0528_v528.sql': 'b1bca09f481667e0dfa75800ebdd8d7df041b127d44d226b0a0aaff5eb481263',
+  '0529_v529.sql': 'b0d206a1ac14394a0b00667beb84efd85e2161cec064ab9d414ad2dbcf6dac1b',
+  '0530_v530.sql': '8e507d2493f62c8de9d681a78e1ca647cc4e1f09f0c579cd9cba504fb51a0e67',
+  '0531_v531.sql': '9a878280c3459feb52959943dfb3c6fd9e25a08b0fbdb4826e9119fa5d06dc38',
+  '0532_v532.sql': 'b81f4c6801e4f83a15ff9ab34d80b6cdec53d168358d36bd38fcb04635f1749d',
+  '0533_v533.sql': '702652d08c9b36f9e83227f5640dbbd47d305d19756e9fb11b440edb641b1461',
+  '0534_v534.sql': '7734d757bd883f684b4657d7726206646a61ea2d6775ad9e0efc69536dcb3e5b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -498,6 +567,8 @@ function assertPrefix(steps: readonly SchemaStep[]): void {
   if (steps.some((step, index) => step !== SCHEMA_STEPS[index])) throw new Error('schema inventory requires a step prefix');
 }
 
+const indexInventories = new Map<number, Map<string, string>>();
+const triggerInventories = new Map<number, Map<string, string>>();
 const columnInventories = new Map<number, Map<string, Map<string, string>>>();
 function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, string>> {
   assertPrefix(steps);
@@ -513,6 +584,8 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
           out.set(name, cols);
         }
         columnInventories.set(step.version, out);
+        indexInventories.set(step.version,new Map((sqlite.query("SELECT name,tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").all() as {name:string;tbl_name:string}[]).map(row=>[row.name,row.tbl_name])));
+        triggerInventories.set(step.version,new Map((sqlite.query("SELECT name,sql FROM sqlite_master WHERE type='trigger'").all() as {name:string;sql:string}[]).map(row=>[row.name,row.sql])));
       }
     } finally {
       sqlite.close();
@@ -522,36 +595,15 @@ function declaredColumns(steps: readonly SchemaStep[]): Map<string, Map<string, 
 }
 
 /** Every index a prefix of the steps leaves standing, by the table it is on. An index a step drops must have been created by an earlier one, so a name absent here is a drop of nothing. */
-const indexInventories = new Map<number, Map<string, string>>();
-function declaredIndexes(steps: readonly SchemaStep[]): Map<string, string> {
-  assertPrefix(steps);
-  const cached = indexInventories.get(steps.length);
-  if (cached !== undefined) return cached;
-  const sqlite = fresh();
-  try {
-    for (const step of steps) sqlite.exec(renderMigrationFile(step));
-    const rows = sqlite.query(`SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'`).all() as { name: string; tbl_name: string }[];
-    const out = new Map(rows.map((r) => [r.name, r.tbl_name]));
-    indexInventories.set(steps.length, out);
-    return out;
-  } finally {
-    sqlite.close();
-  }
+function declaredIndexes(steps: readonly SchemaStep[]): Map<string,string> {
+  declaredColumns(steps);
+  return indexInventories.get(steps.length)!;
 }
 
 /** Every trigger a prefix of the steps leaves standing, by name, with its SQL. */
-const triggerInventories = new Map<number, Map<string, string>>();
-function declaredTriggers(steps: readonly SchemaStep[]): Map<string, string> {
-  assertPrefix(steps);
-  const cached = triggerInventories.get(steps.length);
-  if (cached !== undefined) return cached;
-  const sqlite = fresh();
-  for (const step of steps) sqlite.exec(renderMigrationFile(step));
-  const rows = sqlite.query(`SELECT name, sql FROM sqlite_master WHERE type='trigger'`).all() as { name: string; sql: string }[];
-  sqlite.close();
-  const out = new Map(rows.map((r) => [r.name, r.sql]));
-  triggerInventories.set(steps.length, out);
-  return out;
+function declaredTriggers(steps: readonly SchemaStep[]): Map<string,string> {
+  declaredColumns(steps);
+  return triggerInventories.get(steps.length)!;
 }
 
 /** What a trigger does: when it fires, on which event of which table, and which tables its body writes. */
@@ -566,16 +618,20 @@ function triggerShape(sql: string): { timing: string; event: string; table: stri
 
 /**
  * Whether a view or trigger a step drops at `index` is created again later in
- * the same step: for a trigger, on the same table and event, writing the same
- * tables as the definition it replaces (`prior`).
+ * the same step: for a trigger, on the same table and event, matching its
+ * admitted writer table set.
  */
-function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null): boolean {
+function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false): boolean {
   const create = new RegExp(`^\\s*CREATE ${kind} (?:IF NOT EXISTS )?${name}\\b`, 'i');
   const later = statements.slice(index + 1).filter((x) => create.test(x));
   if (later.length === 0) return false;
   if (kind === 'VIEW') return true;
   const before = prior === null ? null : triggerShape(prior);
   if (before === null || before.writes.length === 0) return false;
+  if(queueReplacement) {
+    if(!before.writes.includes('document_due_totals')) return false;
+    before.writes=before.writes.map(table=>table==='document_due_totals' ? 'document_due' : table).sort();
+  }
   return later.every((x) => JSON.stringify(triggerShape(x)) === JSON.stringify(before));
 }
 
@@ -959,7 +1015,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (table==='_v117_reference_ranges' && SCHEMA_STEPS[n]!.statements.includes('DROP TABLE _v117_reference_ranges')) { expect(after.has(table)).toBe(false); continue; }
+        if (['_v117_reference_ranges','_document_fact_range','_document_due_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
         if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
@@ -983,7 +1039,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -1009,7 +1065,7 @@ describe('versioned schema steps', () => {
         const droppedTrigger = /^DROP TRIGGER (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
-          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
+          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
@@ -1110,6 +1166,7 @@ describe('versioned schema steps', () => {
       await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('learning_sessions', source.sqlite.query('SELECT * FROM learning_sessions').get() as Record<string, unknown>);
+      writerRows.set('document_publication_facts', source.sqlite.query('SELECT * FROM document_publication_facts LIMIT 1').get() as Record<string, unknown>);
       writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
     } finally { source.sqlite.close(); }
     const sqlite = fresh();
@@ -1172,7 +1229,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',

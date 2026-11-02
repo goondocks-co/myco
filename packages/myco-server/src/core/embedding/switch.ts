@@ -1,3 +1,5 @@
+import { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction } from './provider-failure.js';
+export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, type SwitchFailureAction } from './provider-failure.js';
 import { prepareSwitchEnd } from '../../read/catalog-store.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
@@ -31,9 +33,6 @@ import {
 
 /** A rough count of the characters one token of embedding input carries, for the estimate shown before and during a switch. */
 const CHARS_PER_TOKEN = 4;
-/** The first wait after the new model fails in a way it may recover from; each failure after doubles it, up to `RETRY_MAX_MS`. */
-const RETRY_BASE_MS = 60_000;
-const RETRY_MAX_MS = 60 * 60_000;
 /** How long a building switch may go without a new vector before it says why. */
 export const SWITCH_STALL_MS = 30 * 60_000;
 
@@ -48,11 +47,6 @@ export type EstimateAnswer = { applied: true; estimate: SwitchEstimate } | { app
 export const switchChoice = (sw: Pick<EmbeddingSwitch, 'provider' | 'model' | 'endpoint'>): StoredEmbedding =>
   ({ 'embedding.provider': sw.provider, 'embedding.model': sw.model, ...(sw.endpoint === null ? {} : { 'embedding.base_url': sw.endpoint }) });
 
-/** A failure of the new model, which holds off or pauses the switch rather than failing the run. */
-export class EmbeddingSwitchFailure extends Error {
-  constructor(readonly failure: unknown) { super(failure instanceof Error ? failure.message : String(failure)); }
-}
-
 /**
  * The new model's provider, every failure of which is an `EmbeddingSwitchFailure`, but for a refusal of one source's
  * text, which the embedding run passes over as it does for any model.
@@ -61,56 +55,6 @@ const guarded = (provider: EmbeddingProvider): EmbeddingProvider => ({
   modelKey: provider.modelKey,
   embed: (text) => provider.embed(text).catch((error: unknown) => { throw inputRefusal(error) === null ? new EmbeddingSwitchFailure(error) : error; }),
 });
-
-/**
- * What a failure of the new model does to the switch: pass this one source over, hold the model off until `until`, or
- * pause for an admin.
- */
-export type SwitchFailureAction =
-  | { action: 'skip'; reason: string }
-  | { action: 'wait'; until: number; reason: string }
-  | { action: 'pause'; reason: string };
-
-/** The wait after the switch's `failures`-th failure in a row. */
-const backoff = (failures: number): number => Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(failures, 16));
-
-/**
- * What a failure of the new model does, in the reader's words. A refusal of one source's text passes that source over;
- * a provider that is busy, slow, unreachable or out of its daily quota is asked again later; one that turns the key
- * down, refuses the request, or answers with results too large for search pauses the switch until an admin acts.
- */
-export function switchFailureAction(error: unknown, failures: number, now: number): SwitchFailureAction {
-  const later = (reason: string, at = now + backoff(failures)): SwitchFailureAction => ({ action: 'wait', until: at, reason });
-  const pause = (reason: string): SwitchFailureAction => ({ action: 'pause', reason });
-  const refused = inputRefusal(error);
-  if (refused !== null) return { action: 'skip', reason: refused };
-  if (error instanceof EmbeddingUnavailable) {
-    const failure = error.failure;
-    const diagnostic = ` (${embeddingDiagnostic(failure)})`;
-    switch (failure.kind) {
-      case 'input':
-        return { action: 'skip', reason: 'the model refused its text' };
-      case 'quota':
-        return later(`The new model's daily allowance is used up${diagnostic}. Myco tries again when it renews.`, failure.resetsAt);
-      case 'timeout':
-        return later(`The new model's provider did not answer in time${diagnostic}. Myco tries again shortly.`);
-      case 'unreachable':
-        return later(`Myco could not reach the new model's provider${diagnostic}. It tries again shortly.`);
-      case 'http': {
-        const { status } = failure;
-        if (status === 401 || status === 403) return pause(`The new model's provider turned down its key (HTTP ${status})${diagnostic}. Check the key under Provider keys, then resume.`);
-        if (status === 429) return later(`The new model's provider asked Myco to slow down (HTTP 429)${diagnostic}. Myco tries again when it allows more.`, now + Math.max(backoff(failures), failure.retryAfterMs ?? 0));
-        if (status >= 500 || status === 408) return later(`The new model's provider had a problem (HTTP ${status})${diagnostic}. Myco tries again shortly.`);
-        return pause(`The new model's provider refused the request (HTTP ${status})${diagnostic}. Check the model name and the server it runs on, then resume.`);
-      }
-    }
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  if (/dimensions/.test(message)) {
-    return pause(`The new model's results are too large for search, which holds up to ${VECTOR_DIMENSIONS} numbers for each. Cancel the switch and choose a smaller model.`);
-  }
-  return pause('The new model\'s provider answered with something search cannot use. Check the model name, then resume.');
-}
 
 /** The answer of a server that cannot resolve another model's provider. */
 const CANNOT_BUILD = { provider: null, reason: 'This server cannot build search with another model.' } as const;

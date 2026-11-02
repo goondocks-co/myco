@@ -1,6 +1,14 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'db/schema-v466.ts#<module>': [{tables:['embedding_hubness_revision'],order:'unverified'}],
+  'db/document-facts.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
+  'db/document-facts.ts#differenceDelta': [{tables:['document_difference_totals'],order:'unverified'}],
+  'db/document-facts.ts#queueDue': [{tables:['document_due'],order:'unverified'}],
+  'db/document-facts-v467.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
+  'db/document-facts-v467.ts#documentFactDelta': [{tables:['document_difference_totals'],order:'unverified'}],
+  'db/document-facts-v467.ts#documentDueDelta': [{tables:['document_due_totals'],order:'unverified'}],
+  'core/embedding/provider-state.ts#recordEmbeddingProviderFailure': [{tables:['embedding_provider_holds'],order:'unverified'}],
   'db/event-references.ts#eventReferenceStatement': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#captureReferences': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#fillReferences': [{tables:['event_refs'],order:'unverified'}],

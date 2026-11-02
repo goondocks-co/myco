@@ -1,3 +1,5 @@
+import { embeddingProviderReady, embeddingProviderRevision, recordEmbeddingProviderFailure, clearEmbeddingProviderHold } from './provider-state.js';
+import { prepareEmbeddingDue, retainEmbeddingModels } from './due.js';
 import { core_embedding_reconcile_ANY_MODEL as ANY_MODEL } from '../../read/catalog-store.js';
 export { core_embedding_reconcile_ANY_MODEL as ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS as INPUT_REFUSAL_RETRY_MS } from '../../read/catalog-store.js';
 import { prepareEmbeddingSelection, prepareEmbeddingSource, prepareEmbeddingReadyReceipt } from '../../read/catalog-store.js';
@@ -30,7 +32,7 @@ export interface EmbeddingContext {
   retireOnly?: boolean;
   vectorWriteTimeoutMs?: number;
 }
-export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
+export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled' | 'scan'; processed: number }
 
 /** Requeue a project's embedding sources when its vector namespace is empty. Source revisions remain intact. */
 export async function resetEmbeddingIndex(db: RelationalStore, projectId: string): Promise<void> {
@@ -107,6 +109,7 @@ async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T
 export async function reconcileEmbedding(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
   const { db, vectors } = context;
   const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
+  await retainEmbeddingModels(db,projectId,context.retireOnly === true ? [] : retainedModels(context));
   if (context.retireOnly !== true) {
     const written = await writeSource(context, context.provider, projectId, now)
       ?? (context.building === undefined ? null : await writeSource(context, context.building, projectId, now));
@@ -149,6 +152,10 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
   const { db, blobs, vectors } = context;
   const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
   const scope = { projectId, modelKey: provider.modelKey };
+  if (!(await embeddingProviderReady(db,provider.modelKey,now))) return null;
+  const due = await prepareEmbeddingDue(db, projectId, provider.modelKey);
+  if (!due.ready) return {phase:'scan',processed:1};
+  const scanning = due.more;
   const cursor = await db.prepare('SELECT next_type FROM embedding_cursors WHERE project_id = ?').bind(projectId).first<{ next_type: number }>();
   for (let offset = 0; offset < VECTOR_TYPES.length; offset++) {
     const index = ((cursor?.next_type ?? 0) + offset) % VECTOR_TYPES.length;
@@ -175,14 +182,22 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
     const passOver = (modelKey: string, reason: string) => db.prepare(`INSERT INTO embedding_source_failures (project_id, type, record_id, model_key, revision, reason, recorded_at)
       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, type, record_id, model_key) DO UPDATE SET revision = excluded.revision, reason = excluded.reason, recorded_at = excluded.recorded_at`)
       .bind(projectId, type, source.record_id, modelKey, source.revision, reason, now).run().then((): EmbeddingStep => ({ phase: 'passed-over', processed: 1 }));
-    let values: number[];
-    try { values = await provider.embed(await sourceText(blobs, source)); }
+    let text: string;
+    try { text = await sourceText(blobs,source); }
     catch (error) {
-      if (error instanceof EmbeddingSourceUnreadable) return passOver(ANY_MODEL, error.reason);
-      const refused = inputRefusal(error);
-      if (refused !== null) return passOver(provider.modelKey, refused);
+      if (error instanceof EmbeddingSourceUnreadable) return passOver(ANY_MODEL,error.reason);
       throw error;
     }
+    const providerRevision = await embeddingProviderRevision(db);
+    let values: number[];
+    try { values = await provider.embed(text); }
+    catch (error) {
+      const refused = inputRefusal(error);
+      if (refused !== null) return passOver(provider.modelKey, refused);
+      await recordEmbeddingProviderFailure(db,provider.modelKey,providerRevision,error,now);
+      throw error;
+    }
+    await clearEmbeddingProviderHold(db,provider.modelKey);
     const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled} RETURNING id`)
       .bind(now, ...receipt).all();
     if (rejournaled.results.length !== 1) return { phase, processed: 0 };
@@ -196,5 +211,5 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
     await bounded(vectors.upsert(scope, [{ id, values, metadata: metadataOf(source) }]).then(landed), limit, 'vector write');
     return { phase, processed: 1 };
   }
-  return null;
+  return scanning ? { phase: 'scan', processed: 1 } : null;
 }

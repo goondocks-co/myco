@@ -619,6 +619,8 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
 
 /** The transcripts that still owe a pass, and the bytes they have left to read; the half an import sent, apart. */
 export interface TranscriptBacklog {
+  /** True when a due class extends past the observed page; counts and bytes are lower bounds. */
+  limited?: true;
     transcripts: number;
     bytes: number;
     imported: {
@@ -631,7 +633,7 @@ export interface TranscriptBacklog {
 export async function pendingTranscripts(db: RelationalStore, now=Date.now()): Promise<TranscriptBacklog> {
  const {pendingPublication}=await import('../read/document-status.js');
  const held=await pendingPublication(db,now);
- return {transcripts:held.transcripts,bytes:held.bytes,imported:{transcripts:held.imported.transcripts,bytes:held.imported.bytes}};
+ return {transcripts:held.transcripts,bytes:held.bytes,imported:{transcripts:held.imported.transcripts,bytes:held.imported.bytes},...(held.limited ? {limited:true as const} : {})};
 }
 
 /** Transcripts of one Project the current parser stopped on a fault, and when the latest of them stopped. */

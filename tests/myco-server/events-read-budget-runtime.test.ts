@@ -55,7 +55,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       VALUES(?,'session','machine','credential',1,1)`).bind(PROJECT).run();
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
       VALUES(?, ?,1,'text/plain','credential',1,'00000000-0000-4000-8000-000000000001')`).bind(PROJECT, BLOB).run();
-    await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'session','live',1,1)").bind(PROJECT).run();
+    await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at,due_at) VALUES(?,'session','live',1,1,0)").bind(PROJECT).run();
     const reads: number[] = [];
     const media: { before: number[]; after: number[] } = { before: [], after: [] };
     const retention: { before: number[]; after: number[] } = { before: [], after: [] };

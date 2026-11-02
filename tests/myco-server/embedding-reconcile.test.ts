@@ -134,9 +134,9 @@ test('journals interrupted writes and advances fairly to the next namespace befo
   await expect(f.step()).rejects.toThrow('offline');
   expect(f.sqlite.query('SELECT type, ready FROM embedding_receipts').all()).toEqual([{ type: 'session', ready: 0 }]);
   f.context.provider = f.provider;
-  await f.step();
+  await f.step(61_000);
   expect(f.calls[0]).toContain('spore decision');
-  await f.step();
+  await f.step(61_000);
   expect(f.calls[1]).toContain('session summary');
   expect((await f.search('decision')).results.map((r) => r.type).sort()).toEqual(['session', 'spore']);
 });

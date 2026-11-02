@@ -257,8 +257,8 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     },
 
     async delete(name, actor, nowMs) {
-      const result = await db.prepare(`DELETE FROM deployment_secrets WHERE name = ?`).bind(name).run();
-      const deleted = result.meta.changes === 1;
+      const result = await db.prepare(`DELETE FROM deployment_secrets WHERE name = ? RETURNING name`).bind(name).first<{name:string}>();
+      const deleted = result !== null;
       // Every other mutation on this table records its actor on the row. Deletion
       // removes the row, making it the one destructive operation here whose trail
       // lives nowhere but this event.

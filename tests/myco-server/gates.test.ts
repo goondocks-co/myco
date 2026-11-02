@@ -61,7 +61,6 @@ it('defines the extraction unread predicate once and never writes the historical
     for (const line of lines) held.add(line);
     allowedLines.set(file, held);
   }
-  allowedLines.get('core/embedding/hubness.ts')!.add("if (await tally(false) < 2) return { phase: 'settled', processed: 0 };");
   const unexpected: { file: string; token: string }[] = [];
   for (const file of files(SRC)) {
     const source = readFileSync(file, 'utf8'), relative = file.slice(SRC.length + 1), tokens = tokensOf(source);
