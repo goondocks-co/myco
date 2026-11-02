@@ -24,6 +24,8 @@ import { prepareDerivedStream } from '@myco-server-worker/core/registered-conten
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { DOCUMENT_IDENTITIES_SQL } from '@myco-server-worker/db/document-tables.js';
+import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
@@ -936,7 +938,7 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,10,'text/plain',?,100,?)`)
       .bind('a'.repeat(64),source.created_by_token_id,uuid(99000)).run();
     const continuation = JSON.stringify({planPosition:3});
-    const rows = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},{t:'plans',r:plan},
+    const rows: {t:string;r:Record<string,unknown>}[] = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},{t:'plans',r:plan},
       {t:'plans',r:{...plan,plan_key:'plan-orphan',event_id:'orphan-event',prompt_id:null,session_id:'absent'}},
       {t:'plans',r:{...plan,plan_key:'plan-target',event_id:'target-event',prompt_id:null,session_id:'source'}},
       ...['a','b'].map((key,i)=>({t:'prompt_batches',r:{...prompt,prompt_id:uuid(981+i),text:'retained preview',blob_key:key.repeat(64)}})),
@@ -946,10 +948,15 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
         prompt_identity_scheme:'stamp-or-offset-v1',record_identity_scheme:'legacy-session-v1',
         parser_context:JSON.stringify({mycoParserState:{chunked:true,digest:await sha256Hex(continuation)}})}},
       {t:'transcript_parser_state_chunks',r:{project_id:'project',transcript_id:tx,cursor_offset:42,chunk_index:0,chunk_count:1,payload:continuation}}];
+    rows.push({t:'events',r:{project_id:'project',session_id:'restored',event_id:'legacy-output-event',token_id:source.created_by_token_id,
+      kind:'tool.use',channel:'cli',payload:JSON.stringify({toolCallId:'legacy-output',toolName:'Read',input:{}}),envelope_hash:'hash',created_at:100,received_at:100,payload_format:'inline'}},
+      {t:'tool_calls',r:{project_id:'project',session_id:'restored',tool_call_id:'legacy-output',event_id:'legacy-output-event',
+        tool_name:'Read',input:'{}',output_blob_key:'a'.repeat(64),success:1,created_at:100,received_at:100,token_id:source.created_by_token_id}});
     const header = {format:BACKUP_FORMAT,deploymentId:await deploymentId(db),schemaVersion:115,createdAt:100,producer:'test',
       counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
     const first = await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
+    expect(await db.prepare("SELECT output_blob FROM event_refs WHERE event_id='legacy-output-event'").first(),name).toEqual({output_blob:'a'.repeat(64)});
     expect(first.documents, name).toMatchObject({convert:2,merge:1});
     expect(await counters(db,'source'),name).toMatchObject({plans:1});
     expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
@@ -968,12 +975,12 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     expect(await db.prepare("SELECT session_id FROM plans WHERE plan_key='plan-orphan'").first(),name).toEqual({session_id:'absent'});
     expect(await db.prepare("SELECT restore_hold FROM session_documents WHERE session_id='absent'").first(),name).toBeNull();
     expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
-    expect(await db.prepare(`SELECT 1 FROM sqlite_master WHERE name='prompt_batches'`).first(), name).toBeNull();
+    expect(await db.prepare(`SELECT 1 FROM sqlite_master WHERE name='prompt_batches'`).first(), name).not.toBeNull();
   });
 });
 
 test('portable backups restore published document bodies and frontiers into destination blob generations', async () => {
-  const artifacts=new Map<string,{text:string;blobs:ReturnType<typeof memoryBlobStore>;rows:Record<string,unknown>[];prompt:string}>();
+  const artifacts=new Map<string,{text:string;blobs:ReturnType<typeof memoryBlobStore>;rows:Record<string,unknown>[];prompt:string;reference:Record<string,unknown>}>();
   const body='retained document body '.repeat(16000);
   await withDocumentStores(async(db,name)=>{
     const blobs=memoryBlobStore();
@@ -981,9 +988,18 @@ test('portable backups restore published document bodies and frontiers into dest
     for(let pass=0;pass<20;pass++)if(!(await publishDocuments(env,Date.now()+TRANSCRIPT_IDLE_MS*2,limits())).more)break;
     const prompt=await db.prepare(`SELECT prompt_id FROM session_prompts WHERE session_id='portable'`).first<{prompt_id:string}>();
     expect(prompt,name).not.toBeNull();
+    const raw=(await db.prepare("SELECT blob_key FROM transcript_segments WHERE transcript_id=?").bind(tx).first<{blob_key:string}>())!;
+    await db.prepare('DELETE FROM transcript_segments WHERE transcript_id=?').bind(tx).run();
+    expect(await releaseBlobs(db,[{projectId:'project',key:raw.blob_key}],Date.now()),name).toMatchObject({released:1});
+    expect(await one(db,"SELECT COUNT(*) n FROM event_refs WHERE kind='transcript.segment'"),name).toEqual({n:0});
+    await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      SELECT 'project','portable-output','portable',token_id,'tool.use','cli',json_set(?,'$.outputBlob',(SELECT blob_key FROM session_chunks WHERE kind='page' LIMIT 1)),'hash',1,1 FROM events LIMIT 1`)
+      .bind(JSON.stringify({toolCallId:uuid(99200),toolName:'Read',input:{}})).run();
+    const reference=(await db.prepare(`UPDATE event_refs SET output_blob=(SELECT blob_key FROM session_chunks WHERE kind='body' LIMIT 1)
+      WHERE event_id='portable-output' RETURNING event_id,output_blob`).first<Record<string,unknown>>())!;
     const backup=await createBackup(db,blobs,{producer:'test',now:Date.now()});
     artifacts.set(name,{text:(await backupArtifact(db,blobs,backup.id))!.text,blobs,
-      rows:(await db.prepare('SELECT * FROM blobs').all<Record<string,unknown>>()).results,prompt:prompt!.prompt_id});
+      rows:(await db.prepare('SELECT * FROM blobs').all<Record<string,unknown>>()).results,prompt:prompt!.prompt_id,reference});
   });
   await withDocumentStores(async(db,name)=>{
     const source=artifacts.get(name)!,blobs=memoryBlobStore();
@@ -994,6 +1010,7 @@ test('portable backups restore published document bodies and frontiers into dest
       blobs.seed(blobObjectKey(String(row.project_id),String(row.key),generation),original);
     }
     await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    expect(await db.prepare('SELECT event_id,output_blob FROM event_refs WHERE event_id=?').bind(source.reference.event_id).first(),name).toEqual(source.reference);
     await db.prepare('DELETE FROM events').run();
     await db.prepare('DELETE FROM transcript_segments').run();
     const locator=(await db.prepare(`SELECT generation,turn_key AS owner,page FROM session_prompts WHERE session_id='portable' AND prompt_id=?`).bind(source.prompt).first<{generation:number;owner:string;page:number}>())!;
@@ -1026,7 +1043,7 @@ test('a stopped publication retains bounded diagnostics and reread clears them',
   });
 });
 
-test('retirement refuses missing records and preserves archived blob holders through safe event indexes', async () => {
+test('admission refuses missing records and preserves archived blob holders in the reference catalog', async () => {
   await withDocumentStores(async (db,name) => {
     const blobs=memoryBlobStore();
     const retire=SCHEMA_STEPS.find(step=>step.version===117)!;
@@ -1037,7 +1054,9 @@ test('retirement refuses missing records and preserves archived blob holders thr
     await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
     await db.prepare('DELETE FROM prompt_batches').run();
     await db.prepare("DELETE FROM session_documents WHERE session_id='orphan'").run();
-    await captureDocumentSession(db,'project','converted',{blobs});
+    await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('project','converted','machine','token',1,1)`).run();
+    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES('project','converted','live',1,1)`).run();
     await db.prepare('UPDATE session_documents SET build=?').bind(JSON.stringify({report:{classes:{'ids_differ:reply':1}}})).run();
     await expect(run(retire)).rejects.toThrow('documents_retirement_incomplete');
     const doc=await one(db, `SELECT d.*,s.created_by_token_id token_id FROM session_documents d JOIN sessions s USING(project_id,session_id) WHERE d.session_id='converted'`);
@@ -1056,24 +1075,98 @@ test('retirement refuses missing records and preserves archived blob holders thr
       const build=JSON.stringify({report:{classes:{unplaced:batch.unplaced,unresolved_prompt:batch.unresolved}}});
       return {before:[],after:[db.prepare(`UPDATE session_documents SET build=?,${set.sql} WHERE project_id='project' AND session_id='converted'`).bind(build,...set.params)]};
     });
-    const output='b'.repeat(64);
+    const output='b'.repeat(64),input='d'.repeat(64);
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99001)).run();
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(input,uuid(99002)).run();
     await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
-      VALUES('project','archived','converted','token','tool.use','cli','{}','hash',1,1,'archived'),
+      VALUES('project','failed','converted','token','tool.failure','cli','{}','hash',1,1,'archived'),
+        ('project','archived','converted','token','tool.use','cli','{"toolCallId":"tool"}','hash',2,2,'inline'),
         ('project','invalid','converted','token','prompt','cli','not JSON','hash',1,1,'inline')`).run();
-    await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
-      VALUES('project','converted','tool','archived','Read',?,1,1,'token',1)`).bind(output).run();
+    await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,input_blob_key,output_blob_key,success,created_at,token_id,received_at)
+      VALUES('project','converted','tool','archived','Read',?,?,1,1,'token',1)`).bind(input,output).run();
     await db.prepare(`INSERT INTO transcript_publication(project_id,session_id,transcript_id,generation,record_scheme,parser_version,state,failure,updated_at)
       VALUES('project','converted','stopped',1,'native',1,'failed','blob_absent',1)`).run();
     await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id='converted'").run();
     for(const step of SCHEMA_STEPS.filter(step=>step.version>=117))await run(step);
     expect(await one(db,"SELECT due_at FROM session_documents WHERE session_id='converted'"),name).toEqual({due_at:0});
-    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='responses'").first(),name).toBeNull();
+    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='responses'").first(),name).not.toBeNull();
     expect(await readPage({db,blobs},'project','converted',SESSION_OWNER,0),name).toMatchObject(records);
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
     expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
-    expect(await db.prepare(`SELECT json_extract(payload,'$.toolCallId') id FROM events WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
+    expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(input).first(),name).toEqual({held:1});
+    expect(await releaseBlobs(db,[{projectId:'project',key:input}],2),name).toEqual({released:0,deferred:0});
+    expect(await db.prepare(`SELECT record_id id FROM event_refs WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
+  },116);
+});
+
+
+
+test('ranged event references survive archive, deletion and a failed range transaction', async () => {
+  await withDocumentStores(async (db,name)=>{
+    await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('project','ranged','machine','token',1,1)`).run();
+    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES('project','ranged','live',1,1)`).run();
+    const event=(rowid:number,id:string,kind:string,payload='{}',format='archived')=>db.prepare(`INSERT INTO events
+      (rowid,project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
+      VALUES(?,'project',?,'ranged','token',?,'cli',?,'hash',1,1,?)`).bind(rowid,id,kind,payload,format);
+    const output='c'.repeat(64);
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+      VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99100)).run();
+    for(let id=1;id<=96;id++)await db.batch([
+      event(100+id,`legacy-${id}`,'tool.use'),
+      db.prepare(`INSERT INTO tool_calls(rowid,project_id,session_id,tool_call_id,event_id,tool_name,input_blob_key,output_blob_key,success,created_at,token_id,received_at)
+        VALUES(?,'project','ranged',?,?,'Read',?,?,1,1,'token',1)`).bind(id,`tool-${id}`,`legacy-${id}`,`input-${id}`,id===1?output:null),
+      event(200+id,`inline-${id}`,'tool.use',JSON.stringify({toolCallId:`inline-tool-${id}`,blob:`inline-blob-${id}`}),'inline'),
+    ]);
+    await db.batch([db.prepare('DELETE FROM tool_calls WHERE rowid=17'),db.prepare("DELETE FROM events WHERE event_id='legacy-17'")]);
+    for(let id=1;id<=4;id++)await db.batch([
+      event(10+id,`prompt-${id}`,'prompt'),event(20+id,`reply-${id}`,'response'),
+      db.prepare(`INSERT INTO prompt_batches(rowid,project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+        VALUES(?,'project','ranged',?,?,'held','user','hash',1,1,'token',1)`).bind(id,`prompt-id-${id}`,`prompt-${id}`),
+      db.prepare(`INSERT INTO responses(rowid,project_id,session_id,response_id,event_id,text,content_hash,created_at,token_id,received_at)
+        VALUES(?,'project','ranged',?,?,'held','hash',1,'token',1)`).bind(id,`reply-id-${id}`,`reply-${id}`),
+    ]);
+    const advance=async(through:number)=>{
+      const held=await readSchemaVersion(db);
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>held&&step.version<=through))await db.batch(step.statements.map(sql=>db.prepare(sql)));
+    };
+    await advance(117);
+    await event(500,'arrived','response',JSON.stringify({responseId:'arrived-record',blob:'arrived-blob'}),'inline').run();
+    expect(await one(db,"SELECT high FROM _v117_reference_ranges WHERE source='events'"),name).toEqual({high:296});
+    await db.prepare(`UPDATE events SET payload='{"blob":"captured"}' WHERE event_id='legacy-1'`).run();
+    const ranges=SCHEMA_STEPS.filter(step=>step.version>117&&step.version<SERVER_SCHEMA_VERSION);
+    expect(ranges,name).toHaveLength(136);
+    const interrupted=ranges[10]!;
+    await advance(interrupted.version-1);
+    const before=await one(db,'SELECT COUNT(*) n FROM event_refs');
+    await expect(db.batch([...interrupted.statements.map(sql=>db.prepare(sql)),db.prepare('INSERT INTO storage_content_guard(ok) VALUES(0)')])).rejects.toThrow();
+    expect(await readSchemaVersion(db),name).toBe(interrupted.version-1);
+    expect(await one(db,'SELECT COUNT(*) n FROM event_refs'),name).toEqual(before);
+    await db.prepare(`UPDATE events SET payload='{}',payload_format='archived' WHERE event_id='inline-2'`).run();
+    await db.prepare("DELETE FROM events WHERE event_id IN ('legacy-3','inline-3')").run();
+
+    await advance(SERVER_SCHEMA_VERSION);
+    expect(await one(db,`SELECT COUNT(*) n FROM event_refs`),name).toEqual({n:198});
+    expect(await one(db,`SELECT COUNT(*) n FROM events e LEFT JOIN event_refs r USING(project_id,event_id)
+      WHERE e.kind IN ('prompt','response','tool.use','tool.failure') AND (r.record_id IS NULL OR r.session_id<>e.session_id)`),name).toEqual({n:0});
+    expect(await one(db,"SELECT record_id,blob,output_blob FROM event_refs WHERE event_id='legacy-1'"),name)
+      .toEqual({record_id:'tool-1',blob:'captured',output_blob:output});
+    expect(await one(db,"SELECT record_id,blob FROM event_refs WHERE event_id='inline-2'"),name).toEqual({record_id:'inline-tool-2',blob:'inline-blob-2'});
+    expect(await one(db,"SELECT COUNT(*) n FROM event_refs WHERE event_id IN ('legacy-3','inline-3')"),name).toEqual({n:0});
+    expect(await one(db,"SELECT payload FROM events WHERE event_id='legacy-2'"),name).toEqual({payload:'{}'});
+    expect(await one(db,"SELECT blob FROM event_refs WHERE event_id='arrived'"),name).toEqual({blob:'arrived-blob'});
+    expect(await one(db,`SELECT ${blobHeld("'project'",'?1')} held`,output),name).toEqual({held:1});
+    expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
+
+    for(const [sql,indexes] of [
+      [`SELECT 1 FROM ${DOCUMENT_IDENTITIES_SQL} WHERE project_id='project' AND record_id='tool-1' AND session_id<>'other'`,['idx_event_refs_identity']],
+      ["SELECT record_id FROM event_refs WHERE project_id='project' AND session_id='ranged' AND kind='prompt'",['idx_event_refs_session']],
+      [`SELECT ${blobHeld("'project'",`'${output}'`)} held`,['idx_event_refs_blob','idx_event_refs_output_blob']],
+    ] as const){
+      const plan=(await db.prepare('EXPLAIN QUERY PLAN '+sql).all<{detail:string}>()).results.map(row=>row.detail).join('\n');
+      for(const index of indexes)expect(plan,name).toContain(index);
+    }
   },116);
 });

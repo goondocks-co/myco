@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import {
   copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, RECOVERY_RETRY, verifyRecoveryBundle,
@@ -453,16 +454,22 @@ describe('verified recovery artifacts', () => {
     } finally { f.cleanup(); }
   });
 
-  it('refuses a snapshot whose tool payload references missing blob metadata', async () => {
+  it.each([116,SERVER_SCHEMA_VERSION])('refuses a schema %s snapshot whose tool payload references missing blob metadata', async version => {
     const f = fixture();
+    const sqlite=version===SERVER_SCHEMA_VERSION?f.source.sqlite:new Database(':memory:');
     try {
-      f.source.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      if(version!==SERVER_SCHEMA_VERSION){
+        for(const step of SCHEMA_STEPS.filter(step=>step.version<=version))for(const sql of step.statements)sqlite.exec(sql);
+        sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','project',1)`);
+      }
+      sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
         VALUES('proj_1','ev_probe','s_probe','mt_fixture','tool.use','cli',json_object('blob',?),'hash',1,1)`,['a'.repeat(64)]);
-      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow('events.payload.blob');
+      await expect(createRecoveryBundle(f.destination, {...f.adapter,snapshot:async file=>{sqlite.query('VACUUM INTO ?').run(file);return {configuration:{},credentialsRequired:[]};}}))
+        .rejects.toThrow(version<117?'events.payload.blob':'event_refs.blob');
       expect(f.manifest().status).toBe('snapshot');
       expect(fs.existsSync(path.join(f.destination, 'myco.sqlite'))).toBe(false);
       expect(f.reads).toEqual([]);
-    } finally { f.cleanup(); }
+    } finally { if(sqlite!==f.source.sqlite)sqlite.close(); f.cleanup(); }
   });
 
   it('preserves unrelated files and refuses to resume a different Deployment into an owned artifact', async () => {

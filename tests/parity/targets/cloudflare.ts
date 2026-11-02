@@ -202,7 +202,13 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, previousPersist, priorFiles: files.slice(0, -1), latestName: latest.name, step };
       fs.writeFileSync(configPath, config + configTail);
     }
-    await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
+    if(options.latestSchemaUpgrade) {
+      await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
+    } else {
+      const schemaFile=path.join(root,'fresh-schema.sql');
+      fs.writeFileSync(schemaFile,renderMigrationFiles().map(file=>file.sql).join('\n'));
+      await wrangler(['d1','execute','myco-server','--local','-c',configName,'--persist-to',persistDir,'--file',schemaFile]);
+    }
     const databaseFile = localD1File(persistDir);
     if (upgrade !== undefined) {
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);

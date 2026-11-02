@@ -1,3 +1,4 @@
+import { eventPayloadFieldSql } from '@myco-server-worker/db/document-tables.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -309,14 +310,20 @@ function openSnapshot(file: string): Database {
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
     refuseUnsafeNumbers(db);
     const schemaVersion = Number(db.query<{ value: string }, []>("SELECT value FROM schema_meta WHERE key = 'version'").get()?.value);
-    for (const ref of BLOB_REFERENCES) {
+    const references = BLOB_REFERENCES.map(ref=>({table:ref.table,sinceSchema:ref.sinceSchema,
+      column:blobReferenceColumn(ref,'r'),scope:kindFilter(ref),label:referenceLabel(ref)}));
+    if(schemaVersion<117)for(const field of ['blob','outputBlob'])references.push({
+      table:'events',sinceSchema:75,column:eventPayloadFieldSql(field,'r.'),
+      scope:" AND kind IN ('prompt','response','tool.use','tool.failure')",label:`events.payload.${field}`,
+    });
+    for (const ref of references) {
       if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(ref.table) === null) {
         if (schemaVersion >= ref.sinceSchema) throw new Error(`recovery database is missing reference table ${ref.table}`);
         continue;
       }
-      if (db.query(`SELECT 1 FROM ${ref.table} r WHERE ${blobReferenceColumn(ref,'r')} IS NOT NULL${kindFilter(ref)}
-        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${blobReferenceColumn(ref,'r')}) LIMIT 1`).get() !== null) {
-        throw new Error(`recovery database is missing a blob referenced by ${referenceLabel(ref)}`);
+      if (db.query(`SELECT 1 FROM ${ref.table} r WHERE ${ref.column} IS NOT NULL${ref.scope}
+        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${ref.column}) LIMIT 1`).get() !== null) {
+        throw new Error(`recovery database is missing a blob referenced by ${ref.label}`);
       }
     }
     if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_bundles'").get() !== null) {
