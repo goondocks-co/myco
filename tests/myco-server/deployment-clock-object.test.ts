@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'bun:test';
 import { CLOCK_LOCATION_HINT, CLOCK_NAME, clockStub, DeploymentClock, LAUNCHED_WORK_WAKE_MS, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { CHAINED_WAKE_MS, WAKE_INTERVALS, type TickReport } from '@myco-server-worker/core/tick.js';
+import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
+import { budgetFixture } from './helpers/budget-fixture.js';
 
 /** The alarm and waitUntil a Durable Object is given, held where a test can read them. */
 function state() {
@@ -30,6 +32,44 @@ function state() {
     },
   };
 }
+
+it('runs maintenance on each cron floor wake while capture alarms remain paced', async () => {
+  const f = await budgetFixture();
+  const held = state();
+  const env = { CLOCK_MODE: 'manual' };
+  const reports: TickReport[] = [];
+  class FixtureClock extends DeploymentClock {
+    protected override clockEnv() { return { ...f.serverEnv, origin: 'https://myco.example' }; }
+    protected override async tick(now: number): Promise<TickReport> {
+      const report = await super.tick(now);
+      reports.push(report);
+      return report;
+    }
+  }
+  const clock = new FixtureClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = f.now;
+  Date.now = () => now;
+  try {
+    f.sqlite.run('INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)', [LAST_REQUEST_KEY, String(now)]);
+    f.credential('reservation-owner');
+    await clock.wake();
+    f.sqlite.run(`INSERT INTO blob_reservations(reservation_id,project_id,key,token_id,size,expires_at)
+      VALUES('expired','proj_1',?,'reservation-owner',1,1)`, ['e'.repeat(64)]);
+    const remaining = () => f.sqlite.query("SELECT COUNT(*) AS n FROM blob_reservations WHERE reservation_id='expired'").get();
+    await clock.ensure();
+    now += 2_000;
+    await clock.alarm();
+    expect(reports.at(-1)?.drainOnly).toBe(true);
+    expect(remaining()).toEqual({ n: 1 });
+    await clock.wake();
+    expect(reports.at(-1)?.drainOnly).toBe(false);
+    expect(remaining()).toEqual({ n: 0 });
+    await clock.alarm();
+    expect(reports.at(-1)?.drainOnly).toBe(true);
+  } finally { Date.now = realNow; f.sqlite.close(); }
+});
 
 it('keeps the launched-work wake cap throughout failed ticks and their backoff wakes', async () => {
   const held = state();

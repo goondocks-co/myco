@@ -9,8 +9,9 @@ const READY_INTERVAL_MS = 2_000;
 
 function docker(...args) {
   const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 });
-  if (result.status !== 0) throw new Error(`docker ${args[0]} failed: ${result.stderr || result.stdout}`);
-  return result.stdout.trim();
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  if (result.status !== 0) throw new Error(`docker ${args[0]} failed: ${output}`);
+  return args[0] === 'logs' ? output : result.stdout.trim();
 }
 
 async function ready(container) {

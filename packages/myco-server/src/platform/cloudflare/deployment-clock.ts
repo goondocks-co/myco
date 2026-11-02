@@ -194,9 +194,13 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return namespace !== undefined && !this.ctx.id.equals(namespace.idFromName(CLOCK_NAME));
   }
 
-  /** Run the tick now and arm the next alarm from its answer; deep sleep arms none. A retired clock ticks nothing. */
+  /** The cron floor runs maintenance and arms the next alarm; a retired clock ticks nothing. */
   async wake(): Promise<WakeOutcome> {
-    return this.gate.exclusive(() => this.wakeOnce());
+    return this.runWake(true);
+  }
+
+  private runWake(maintenance: boolean): Promise<WakeOutcome> {
+    return this.gate.exclusive(() => this.wakeOnce(maintenance));
   }
 
   private async loadTiming(): Promise<void> {
@@ -215,7 +219,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     });
   }
 
-  private async wakeOnce(): Promise<WakeOutcome> {
+  private async wakeOnce(maintenance: boolean): Promise<WakeOutcome> {
     if (this.retired()) {
       await this.ctx.storage.deleteAlarm();
       emit({ kind: 'clock_retired' });
@@ -248,6 +252,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     });
     await this.schedule(soonestWake(reserved, continuation.nextInMs));
     let report: TickReport;
+    if (maintenance) this.pacer.fullAt = null;
     try { report = await this.tick(now); }
     catch (error) {
       emit({ kind: 'wake_failed', error_class: classify(error) });
@@ -285,7 +290,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
   }
 
   override async alarm(): Promise<void> {
-    try { await this.wake(); }
+    try { await this.runWake(false); }
     catch (error) {
       // Alarm exceptions request provider retries; scheduled tick failures are reported through wake_failed.
       if (!(error instanceof ScheduledTickFailure)) throw error;

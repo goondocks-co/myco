@@ -51,6 +51,30 @@ describe('the image hands PID 1 to the entrypoint as root', () => {
 });
 
 describe('the entrypoint takes the secrets and then drops', () => {
+  it('reports both Docker log streams when a container stops before readiness', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(path.join(tmpdir(), 'container-logs-'));
+    try {
+      const bin = path.join(root, 'bin');
+      mkdirSync(bin);
+      writeFileSync(path.join(bin, 'docker'), `#!/bin/sh
+case "$1" in
+  inspect) printf false ;;
+  logs) printf 'fixture stdout\\n'; printf 'myco-server failed to start: unable to open database file\\n' >&2 ;;
+esac
+`, { mode: 0o700 });
+      const preload = path.join(root, 'fetch.mjs');
+      writeFileSync(preload, "globalThis.fetch = async () => { throw new Error('fixture listener absent'); };\n");
+      const smoke = fileURLToPath(new URL('../../../scripts/smoke-container-persistence.mjs', import.meta.url));
+      const env = sandboxChildEnv(root, { PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+      const child = spawnSync('node', ['--import', preload, smoke, 'fixture-image'], { env, encoding: 'utf8' });
+      expect(child.status).toBe(1);
+      expect(child.stderr).toContain('stopped before readiness');
+      expect(child.stderr).toContain('fixture stdout');
+      expect(child.stderr).toContain('myco-server failed to start: unable to open database file');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('creates storage only for explicit bootstrap and then migrates and serves that same volume', () => {
     if (process.platform === 'win32') return;
     const root = mkdtempSync(path.join(tmpdir(), 'container-bootstrap-'));
