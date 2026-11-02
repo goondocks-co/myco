@@ -2,8 +2,9 @@ import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { materializeArtifact } from '../runtime/artifact-files.js';
 import { join } from 'node:path';
 import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
 
@@ -157,7 +158,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await mkdir(root, { mode: 0o700 });
     ownsRoot = true;
     const askpass = join(directory, 'askpass.sh');
-    await writeFile(askpass, '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "$MYCO_GIT_USERNAME" ;;\n  *Password*) printf "%s\\n" "$MYCO_GIT_TOKEN" ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
+    materializeArtifact(directory, 'askpass.sh', Buffer.from('#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "$MYCO_GIT_USERNAME" ;;\n  *Password*) printf "%s\\n" "$MYCO_GIT_TOKEN" ;;\n  *) exit 1 ;;\nesac\n'));
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
       HOME: directory, TMPDIR: directory,

@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: sec3 security hardening, pinned Bun 1.4.0 darwin-arm64 through npm test with isolated homes. checkout-env.test.ts measured 965.48ms body including a compiled hook and ordinary CLI; artifact-files.test.ts measured 4.45ms body in the 80-pass/1-skip service-boundary recheck (25870ms runner). Weights 4000ms and 500ms cover measured bodies plus startup. Six focused byte/ownership/env/autoload mutations failed as expected. The local Worker bundle prerequisite was frozen and hash-checked after its initial dry-run generation; no further Wrangler execution. No new parity scenario; parity weights unchanged.",
     "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
     "local: split117 CI/review correction, pinned Bun 1.4.0. Nine focused files passed 118 cases in 42.64s. Session lifecycle now includes the native/Miniflare D1 archived-prompt regression; the file measured 1986ms and its weight is 4000ms. The single object-lifecycle parity scenario passed both targets before and after: fresh Cloudflare migration setup measured 25049ms with numbered files at schema 178 and 1470ms with one fresh-store SQL import at schema 250; total runs 32.42s and 7.40s. Upgrade probes keep numbered migrations and all deadlines are unchanged.",
     "local: event reference catalog rework, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. Eleven focused files passed 139 cases in 127.99s. The 45000ms migration and 145000ms publication weights remain above the measured file case totals; no new test file or parity scenario.",
@@ -230,6 +231,7 @@
     "tests/cli/update-member-home.test.ts": 924,
     "tests/cli/update.test.ts": 731,
     "tests/daemon/machine-id.test.ts": 1010,
+    "tests/entries/checkout-env.test.ts": 4000,
     "tests/entries/dispatch-errors.test.ts": 427,
     "tests/hooks/capture-rules.test.ts": 722,
     "tests/hooks/normalize.test.ts": 1002,
@@ -841,6 +843,7 @@
     "tests/runner/update-idle.test.ts": 1338,
     "tests/runner/update-report-order.test.ts": 675,
     "tests/runner/update.test.ts": 4525,
+    "tests/runtime/artifact-files.test.ts": 500,
     "tests/runtime/binary-resolution-adoption.test.ts": 920,
     "tests/runtime/binary-resolution-cjs-agreement.test.ts": 931,
     "tests/runtime/binary-resolution.test.ts": 606,

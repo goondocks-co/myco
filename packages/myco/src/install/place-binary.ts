@@ -18,8 +18,7 @@
  * the file's: see `reloadServiceDetached` in `server/service.ts`.
  */
 import { spawnSync } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
+import { publishArtifact } from '../runtime/artifact-files.js';
 
 /** Longest a program is given to answer `--version`. */
 const PROGRAM_PROBE_TIMEOUT_MS = 30_000;
@@ -88,36 +87,6 @@ export function readyExecutable(file: string, platform: NodeJS.Platform = proces
 }
 
 /**
- * Flush a file to disk. It is opened for writing, which Windows requires of a
- * flush; there the flush is best effort, since the rename alone is what a
- * reader sees.
- */
-function syncFile(file: string, platform: NodeJS.Platform): void {
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(file, 'r+');
-    fs.fsyncSync(fd);
-  } catch (err) {
-    if (platform !== 'win32') throw err;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-  }
-}
-
-/** Flush a directory's entries to disk, where the platform can open a directory for it. */
-function syncDirectory(dir: string): void {
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(dir, 'r');
-    fs.fsyncSync(fd);
-  } catch {
-    /* a directory that cannot be opened for it is left as it is */
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-  }
-}
-
-/**
  * Put the executable at `src` at `dest`, which may be running.
  *
  * The bytes go to a temporary file beside `dest`, are made executable and
@@ -133,24 +102,15 @@ export function placeExecutable(
   options: { platform?: NodeJS.Platform; move?: boolean; ready?: (file: string) => ProgramProbe } = {},
 ): void {
   const platform = options.platform ?? process.platform;
-  const dir = path.dirname(dest);
-  // The temporary file keeps the destination's name, in a directory of its own
-  // beside it: an ad hoc signature made on it takes its identifier from the name.
-  const staging = path.join(dir, `.myco-place-${process.pid}-${Date.now()}`);
-  const tmp = path.join(staging, path.basename(dest));
-  fs.mkdirSync(staging, { recursive: true });
-  try {
-    if (options.move === true) fs.renameSync(src, tmp); else fs.copyFileSync(src, tmp);
-    if (platform !== 'win32') fs.chmodSync(tmp, 0o755);
-    syncFile(tmp, platform);
-    const probe = options.ready?.(tmp);
-    if (probe !== undefined && !probe.runs) {
-      if (probe.error && (probe.error as NodeJS.ErrnoException).code !== 'ETIMEDOUT') throw probe.error;
-      throw new ExecutableVerificationError(`${src} does not run on this machine: ${probe.detail}`);
-    }
-    fs.renameSync(tmp, dest);
-  } finally {
-    fs.rmSync(staging, { recursive: true, force: true });
-  }
-  if (platform !== 'win32') syncDirectory(dir);
+  publishArtifact(dest, src, {
+    mode: platform === 'win32' ? 0o700 : 0o755,
+    move: options.move,
+    prepare: (file) => {
+      const probe = options.ready?.(file);
+      if (probe !== undefined && !probe.runs) {
+        if (probe.error && (probe.error as NodeJS.ErrnoException).code !== 'ETIMEDOUT') throw probe.error;
+        throw new ExecutableVerificationError(`${src} does not run on this machine: ${probe.detail}`);
+      }
+    },
+  });
 }

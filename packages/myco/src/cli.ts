@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 import { isHelpRequest } from './cli/flags.js';
-import { loadEnv } from './cli/env-file.js';
 import { keepLoopbackOffProxy } from './cli/loopback-proxy.js';
 import { isRetiredVerb, retiredVerbMessage } from './cli/retired-verbs.js';
 
 import { COMMANDS, helpForCommand } from './cli/command-registry.js';
-
-loadEnv();
 
 async function main(): Promise<void> {
   keepLoopbackOffProxy();
