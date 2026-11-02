@@ -141,6 +141,23 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
     if (reader != null && reader.getBoundingClientRect().top < 0 && typeof reader.scrollIntoView === 'function') reader.scrollIntoView({ block: 'start' });
   }, [openId, filter, outline.isPending]);
 
+  // A change of open turn can remove the control that made it. Focus then moves to the turn, and back to the turn's row when the list returns.
+  const lastWanted = useRef(wanted);
+  const lastOpen = useRef(openId);
+  useEffect(() => {
+    const before = lastWanted.current;
+    lastWanted.current = wanted;
+    const opened = lastOpen.current;
+    if (openId !== null) lastOpen.current = openId;
+    if (before === wanted) return;
+    if (wanted !== null) {
+      const active = document.activeElement;
+      if (active === null || active === document.body) (readerRef.current?.querySelector<HTMLElement>('article') ?? readerRef.current)?.focus({ preventScroll: true });
+    } else if (compact) {
+      (listRef.current?.querySelector<HTMLElement>(`[data-turn-row="${opened}"]`) ?? listRef.current)?.focus();
+    }
+  }, [wanted, openId, compact]);
+
   const showRail = !compact || wanted === null;
   const showReader = !compact || wanted !== null;
   const back = compact ? <Button variant="secondary" size="sm" onClick={closeTurn}>← Turns</Button> : undefined;
@@ -167,7 +184,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
         />
       )}
       {showReader && (
-        <div ref={readerRef} className="min-w-0 scroll-mt-s3">
+        <div ref={readerRef} tabIndex={-1} className="min-w-0 scroll-mt-s3 outline-none">
           {openTurn !== undefined ? (
             <TurnReader
               key={openTurn.promptId}

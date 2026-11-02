@@ -1598,13 +1598,13 @@ describe('the session reading page', () => {
         asked: 'Build it', done: 'Implemented the sweep.', outcome: 'Done',
         decisions: [{ decision: 'Off by default', reason: 'A sweep deletes data' }], rejected: [{ approach: 'A lifecycle rule', reason: '' }],
         errors: [{ error: 'a blob was deleted', fix: 'Read manifests first' }], corrections: [{ wrong: 'Counts rows', right: 'Sums bytes' }],
-        files: ['a.ts', 'b.ts'], commands: ['npm test'], open_questions: ['Pause the whole sweep?'],
+        files: ['src/card-file.ts', 'src/other.ts'], commands: ['npm test -- sweep'], open_questions: ['Pause the whole sweep?'],
       });
       expect(parseCard(card)).toEqual({
         done: 'Implemented the sweep.', outcome: 'Done',
         decisions: [{ text: 'Off by default', detail: 'A sweep deletes data' }], rejected: [{ text: 'A lifecycle rule', detail: '' }],
         errors: [{ text: 'a blob was deleted', detail: 'Read manifests first' }], corrections: [{ text: 'Counts rows', detail: 'Sums bytes' }],
-        openQuestions: ['Pause the whole sweep?'],
+        files: ['src/card-file.ts', 'src/other.ts'], commands: ['npm test -- sweep'], openQuestions: ['Pause the whole sweep?'],
       });
       expect(parseCard('Not a card')).toBeNull();
       const failure = { toolCallId: 'f1', promptId: P1, toolName: 'Bash', mycoTool: null, mycoOp: null, inputPreview: 'npm test', inputBytes: 8, inputTruncated: false, inputBlobKey: null, outputPreview: null, outputBlobKey: null, success: false, errorMessage: 'FAIL sweep-batch', durationMs: null, filesAffected: null, createdAt: NOW, orderedAt: NOW };
@@ -1625,7 +1625,7 @@ describe('the session reading page', () => {
       for (const mark of ['Decision', 'Rejected', 'Corrected', 'Fixed', 'Open question', '41 failed', 'Myco 20', '1,204 calls']) expect(row.textContent).toContain(mark);
       const reader = await screen.findByTestId(`turn-${P1}`);
       const happened = await within(reader).findByTestId('what-happened');
-      for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
+      for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'src/card-file.ts', 'src/other.ts', 'npm test -- sweep', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
       expect(within(reader).getByText('Key moment')).toBeTruthy();
       expect(within(reader).getByText('Last word')).toBeTruthy();
       expect(within(reader).queryByText('Earlier word')).toBeNull();
@@ -1645,7 +1645,7 @@ describe('the session reading page', () => {
       const { requested } = server(routes({
         '/api/projects/x/sessions/s1/files': (_init, url) => {
           const kind = url!.searchParams.get('kind');
-          if (kind === 'read') return Response.json({ files: [], nextCursor: null, capped: false, shellEditsUnseen: true });
+          if (kind === 'read') return Response.json({ files: [], nextCursor: null, capped: true, shellEditsUnseen: true });
           return url!.searchParams.has('cursor')
             ? Response.json({ files: [{ path: 'src/later.ts', calls: 1, edits: 1, lastTurn: null }], nextCursor: null, capped: true, shellEditsUnseen: true })
             : Response.json({ files: [{ path: 'src/core/retention-sweep.ts', calls: 37, edits: 12, lastTurn: P1 }], nextCursor: 'more', capped: false, shellEditsUnseen: true });
@@ -1664,7 +1664,9 @@ describe('the session reading page', () => {
       expect(await within(list).findByText('src/later.ts')).toBeTruthy();
       expect(screen.getByText(/first 500 files/)).toBeTruthy();
       fireEvent.click(screen.getByRole('button', { name: 'Only read' }));
-      expect(await screen.findByText('No file was only read in this session.')).toBeTruthy();
+      // An empty kind in a capped session speaks only for the files kept, and still says some were not.
+      expect(await screen.findByText('None of the files Myco kept for this session was only read.')).toBeTruthy();
+      expect(screen.getByText(/first 500 files/)).toBeTruthy();
       expect(location()).toBe('/p/x/sessions/s1?tab=files&kind=read');
       fireEvent.click(screen.getByRole('button', { name: 'All' }));
       await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/files?kind=all'));
@@ -1675,11 +1677,14 @@ describe('the session reading page', () => {
       try {
         const { requested } = server(longRoutes());
         const client = mount('/p/x/sessions/s1');
-        const row = await screen.findByTestId(`row-${idOf(396)}`);
+        const row = await screen.findByTestId(`row-${idOf(392)}`);
         await waitFor(() => expect(client.isFetching()).toBe(0));
         expect(bodyReads(requested)).toEqual([]);
+        row.focus();
         fireEvent.click(row);
-        const reader = await screen.findByTestId(`turn-${idOf(396)}`);
+        const reader = await screen.findByTestId(`turn-${idOf(392)}`);
+        // The row goes with the list, so focus moves to the turn, and returns to the row with the list.
+        await waitFor(() => expect(document.activeElement).toBe(reader));
         expect(screen.queryByRole('list', { name: 'Conversation' })).toBeNull();
         expect(screen.queryByRole('tablist')).toBeNull();
         expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
@@ -1687,6 +1692,7 @@ describe('the session reading page', () => {
         expect(await screen.findByRole('list', { name: 'Conversation' })).toBeTruthy();
         expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
         expect(location()).toBe('/p/x/sessions/s1');
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId(`row-${idOf(392)}`)));
       } finally {
         restore();
       }

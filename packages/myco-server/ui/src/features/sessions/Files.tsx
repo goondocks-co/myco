@@ -18,6 +18,13 @@ const EMPTY: Readonly<Record<FileKind, string>> = {
   all: 'No tool named a file in this session.',
 };
 
+/** What an empty list can say when the session named more files than Myco keeps: only what it read of them. */
+const EMPTY_CAPPED: Readonly<Record<FileKind, string>> = {
+  edited: 'No tool edited any of the files Myco kept for this session.',
+  read: 'None of the files Myco kept for this session was only read.',
+  all: 'None of the files this session named could be listed.',
+};
+
 const columns = 'sm:grid sm:grid-file-row sm:items-center sm:gap-s3';
 
 function FileRow({ file }: { file: SessionFile }) {
@@ -58,7 +65,7 @@ export function SessionFiles({ projectId, sessionId }: { projectId: string; sess
       </p>
       {files.isPending ? <LoadingState label="Loading the files" count={3} />
         : files.error && files.rows.length === 0 ? <ErrorState error={files.error} onRetry={files.retry} />
-        : files.rows.length === 0 ? <EmptyState title={EMPTY[kind]} />
+        : files.rows.length === 0 ? <EmptyState title={(files.capped ? EMPTY_CAPPED : EMPTY)[kind]} />
         : (
           <div>
             {files.error && <ErrorState error={files.error} onRetry={files.retry} />}
@@ -69,9 +76,9 @@ export function SessionFiles({ projectId, sessionId }: { projectId: string; sess
               <ul aria-label="Files">{files.rows.map((file) => <FileRow key={file.path} file={file} />)}</ul>
             </div>
             <ShowMore shown={files.rows.length} noun="files" onMore={files.more} pending={files.isFetchingMore} hasMore={files.hasMore} />
-            {files.capped && <p className="t-small text-muted">Myco keeps the first 500 files a session names, so this session’s later files are not listed.</p>}
           </div>
         )}
+      {files.capped && <p className="t-small text-muted">Myco keeps the first 500 files a session names, so this session’s later files are not listed.</p>}
     </div>
   );
 }

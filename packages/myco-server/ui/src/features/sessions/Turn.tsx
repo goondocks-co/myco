@@ -162,6 +162,10 @@ function CardRow({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
+function CodeLines({ lines }: { lines: readonly string[] }) {
+  return <ul className="flex flex-col gap-s1">{lines.map((line, i) => <li key={i} className="t-mono break-all whitespace-pre-wrap">{line}</li>)}</ul>;
+}
+
 /** What the turn's card says happened: laid out by part, or as written when it reads as no card. */
 function WhatHappened({ card }: { card: string | null | undefined }) {
   const parsed = card == null ? null : parseCard(card);
@@ -176,6 +180,8 @@ function WhatHappened({ card }: { card: string | null | undefined }) {
         {parsed.rejected.length > 0 && <CardRow term="Rejected"><Pairs items={parsed.rejected} render={reasoned} /></CardRow>}
         {parsed.corrections.length > 0 && <CardRow term="Corrected"><Pairs items={parsed.corrections} render={(item) => <><span className="line-through">{item.text}</span>{item.detail !== '' && <> → <span className="font-medium text-ink">{item.detail}</span></>}</>} /></CardRow>}
         {parsed.errors.length > 0 && <CardRow term="Errors"><Pairs items={parsed.errors} render={(item) => <><code className="t-mono text-bad">{item.text}</code>{item.detail !== '' && <span className="text-muted"> → {item.detail}</span>}</>} /></CardRow>}
+        {parsed.files.length > 0 && <CardRow term="Files"><CodeLines lines={parsed.files} /></CardRow>}
+        {parsed.commands.length > 0 && <CardRow term="Commands"><CodeLines lines={parsed.commands} /></CardRow>}
         {parsed.openQuestions.length > 0 && <CardRow term="Still open"><ul className="flex flex-col gap-s1">{parsed.openQuestions.map((question, i) => <li key={i} className="break-words">{question}</li>)}</ul></CardRow>}
       </dl>
     );
@@ -303,7 +309,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
   const body = detail.data;
   const elapsed = body?.metrics?.durationMs ?? null;
   return (
-    <article data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} aria-label="Open turn" className="flex min-w-0 max-w-reader flex-col gap-s5">
+    <article tabIndex={-1} data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} aria-label="Open turn" className="flex min-w-0 max-w-reader outline-none flex-col gap-s5">
       <div className="flex flex-wrap items-center justify-between gap-s2">
         <span className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
           {back}

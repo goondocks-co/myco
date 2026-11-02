@@ -43,7 +43,7 @@ function OutlineRow({ turn, to, open, replace, showError, agent }: { turn: TurnR
   const prompt = promptPreview(turn, agent);
   if (isBackground(turn.origin)) {
     return (
-      <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-testid={`row-${turn.promptId}`} data-background="" className={cn(rowFrame, 'py-s1', open && selectedRow)}>
+      <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-turn-row={turn.promptId} data-testid={`row-${turn.promptId}`} data-background="" className={cn(rowFrame, 'py-s1', open && selectedRow)}>
         {time}
         <span className="truncate t-meta text-muted">{turn.headline != null && !isMechanical(turn.headline) ? turn.headline : prompt}</span>
       </Link>
@@ -54,7 +54,7 @@ function OutlineRow({ turn, to, open, replace, showError, agent }: { turn: TurnR
   const typed = turn.origin === 'user';
   const firstError = showError ? turn.toolRollup?.firstError ?? null : null;
   return (
-    <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-testid={`row-${turn.promptId}`} className={cn(rowFrame, open && selectedRow)}>
+    <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-turn-row={turn.promptId} data-testid={`row-${turn.promptId}`} className={cn(rowFrame, open && selectedRow)}>
       {time}
       <span className="flex min-w-0 flex-col gap-px">
         {headline !== null ? (
@@ -101,7 +101,7 @@ function HitRow({ hit, to, open, replace, query, agent }: { hit: ConversationHit
     </>
   );
   if (to === null) return <div className={cn(rowFrame, 'hover:bg-transparent')}>{body}</div>;
-  return <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} className={cn(rowFrame, open && selectedRow)}>{body}</Link>;
+  return <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-turn-row={hit.turn?.prompt_id} className={cn(rowFrame, open && selectedRow)}>{body}</Link>;
 }
 
 /** Turns under the day each happened, as one list. */
@@ -160,7 +160,7 @@ export const TurnRail = forwardRef<HTMLDivElement, TurnRailProps>(function TurnR
           </span>
         )}
       </div>
-      <div ref={listRef} className="min-h-0 flex-auto rounded-card border border-line bg-surface-1 lg:overflow-y-auto">
+      <div ref={listRef} tabIndex={-1} className="min-h-0 flex-auto rounded-card border border-line bg-surface-1 outline-none lg:overflow-y-auto">
         {searching ? <SearchHits found={found} query={query} openId={openId} linkTo={linkTo} replace={replace} agent={agent} now={now} />
           : outline.isPending ? <div className="p-s3"><LoadingState label="Loading the conversation" count={3} /></div>
           : outline.error && outline.rows.length === 0 ? <div className="p-s3"><ErrorState error={outline.error} onRetry={outline.retry} /></div>

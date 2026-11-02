@@ -17,6 +17,8 @@ export interface CardText {
   rejected: CardPair[];
   errors: CardPair[];
   corrections: CardPair[];
+  files: string[];
+  commands: string[];
   openQuestions: string[];
 }
 
@@ -74,6 +76,8 @@ export function parseCard(card: string): CardText | null {
     rejected: pairs(list('Rejected:'), LIST_SECTIONS['Rejected:'][1]),
     errors: pairs(list('Errors:'), LIST_SECTIONS['Errors:'][1]),
     corrections: pairs(list('Corrections:'), LIST_SECTIONS['Corrections:'][1]),
+    files: (found.get('Files: ') ?? []).join('\n').split(', ').filter((file) => file !== ''),
+    commands: items(list('Commands:')),
     openQuestions: items(list('Open questions:')),
   };
 }
