@@ -12,6 +12,16 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "mutates": false
       },
       {
+        "tool": "replace_file_content",
+        "pathField": "TargetFile",
+        "mutates": true
+      },
+      {
+        "tool": "multi_replace_file_content",
+        "pathField": "TargetFile",
+        "mutates": true
+      },
+      {
         "tool": "write_to_file",
         "pathField": "TargetFile",
         "mutates": true

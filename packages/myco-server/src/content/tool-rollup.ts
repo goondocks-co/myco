@@ -1,6 +1,6 @@
 import type { DocRecord } from './document.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { filesNamedByToolInput, mycoToolFields, MAX_FILE_PATH_CHARS } from '@goondocks/myco-shared/member-protocol';
+import { filesNamedByToolInput, mycoToolFields, MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED } from '@goondocks/myco-shared/member-protocol';
 import { getAtPath } from '@goondocks/myco-shared/dot-path';
 
 export const ROLLUP_TOOLS = 8;
@@ -14,7 +14,7 @@ export interface ToolRollup {
   lastRecordAt: number | null;
 }
 
-/** Exact accumulators retained beside the bounded public rollup. */
+/** Scalar totals and the current transaction’s keyed contribution deltas. */
 export interface ToolState {
   calls: Record<string, { known: boolean; name: string; tool: string | null; op: string | null; files: string[]; named: string[] }>;
   tools: [string, number][];
@@ -22,13 +22,14 @@ export interface ToolState {
   files: [string, number][];
   named: [string, number][];
   errors: [string, number, string][];
+  removedErrors: string[];
   total: number;
   failed: number;
   mycoCalls: number;
   last: number | null;
 }
 
-export const emptyToolState = (): ToolState => ({ calls: {}, tools: [], myco: [], files: [], named: [], errors: [], total: 0, failed: 0, mycoCalls: 0, last: null });
+export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], total: 0, failed: 0, mycoCalls: 0, last: null });
 
 export function recordMycoFields(record: DocRecord) {
   let input: unknown = record.input;
@@ -54,7 +55,7 @@ export function toolFiles(record: DocRecord, harness: string | null = null): str
     if (tool.extract === 'patch') paths.push(...filesNamedByToolInput(path) ?? []);
     else if (typeof path === 'string' && path.length > 0 && path.length <= MAX_FILE_PATH_CHARS) paths.push(path);
   }
-  return [...new Set([...paths, ...filesNamedByToolInput(input) ?? []])];
+  return [...new Set([...paths, ...filesNamedByToolInput(input) ?? []])].slice(0, MAX_FILES_AFFECTED);
 }
 
 export function editedFiles(record: DocRecord, harness: string | null): string[] {
@@ -92,22 +93,28 @@ export function adjustToolState(state: ToolState, record: DocRecord, harness: st
     const map = new Map(state.myco.map(([key, count, errors]) => [key, [count, errors]] as const));
     const held = map.get(name) ?? [0, 0];
     const count = held[0]! + sign;
-    if (count === 0) map.delete(name); else map.set(name, [count, held[1]! + sign * failed]);
+    const failures = held[1]! + sign * failed;
+    if (count === 0 && failures === 0) map.delete(name); else map.set(name, [count, failures]);
     state.myco = [...map].map(([key, [calls, errors]]) => [key, calls!, errors!]);
     state.mycoCalls += sign;
   }
+  state.removedErrors.push(record.id);
   state.errors = state.errors.filter(([id]) => id !== record.id);
   if (failed && sign === 1) state.errors.push([record.id, record.created_at, String(record.error_message ?? record.result_reason ?? 'Tool call did not succeed').slice(0, ERROR_EXCERPT_CHARS)]);
 }
 
-export function rollupOf(state: ToolState): ToolRollup {
-  const order = (a: { name: string; count: number }, b: { name: string; count: number }) => b.count - a.count || a.name.localeCompare(b.name);
-  const tools = state.tools.map(([name, count]) => ({ name, count })).sort(order);
-  const other = tools.slice(ROLLUP_TOOLS).reduce((sum, row) => sum + row.count, 0);
-  const errors = [...state.errors].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
-  return {
-    tools: [...tools.slice(0, ROLLUP_TOOLS), ...(other > 0 ? [{ name: 'other', count: other }] : [])],
-    myco: state.myco.map(([name, count, failed]) => ({ name, count, failed })).sort(order).slice(0, ROLLUP_TOOLS),
-    firstError: errors[0]?.[2] ?? null, filesEdited: state.files.length, lastRecordAt: state.last,
-  };
+/** Only declared paths and missing Myco operations can gain information from a spilled input. */
+export function needsToolInput(record: DocRecord, harness: string | null): boolean {
+  if (record.k !== 'tool' || Object.hasOwn(record, 'harness')) return false;
+  const myco = recordMycoFields(record);
+  return (myco.tool !== null && myco.op === null)
+    || (CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === harness)?.fileTools ?? []).some(tool => tool.tool === record.tool_name);
+}
+
+/** The persisted accumulator contains scalars; keyed rows retain distinct contributions. */
+export function scalarToolState(state: ToolState): string {
+  return JSON.stringify({ total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, last: state.last });
+}
+export function parseToolState(text: string): ToolState {
+  return { ...emptyToolState(), ...JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'last'> };
 }

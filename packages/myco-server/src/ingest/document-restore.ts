@@ -181,7 +181,7 @@ async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promi
 }
 
 /** The catalog tables a conversion fills before its flip. */
-const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'myco_tool_calls', 'transcript_publication'] as const;
+const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls', 'transcript_publication'] as const;
 
 /**
  * Restarts the conversion of every session the plan converts that `holder` may hold, in one batch that first refuses

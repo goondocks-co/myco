@@ -1,3 +1,4 @@
+import { heldToolCalls } from './tool-statistics.js';
 /**
  * A turn as the session page reads it, from the turn's own pages of the live document: the prompt, its steering
  * prompts, replies, plan appearances and tool records. What hooks recorded beside the turn (attachments, context
@@ -289,7 +290,8 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
       LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id
       WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.prompt_id=?3`)
       .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null }>();
-    const calls = catalog?.tool_state == null ? {} : (JSON.parse(catalog.tool_state) as ToolState).calls;
+    const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
+      records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
     const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), !read.more, catalog?.agent ?? null, calls);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };

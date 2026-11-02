@@ -278,7 +278,7 @@ class SessionPublication {
   /** Whether the pass must stop before a step that could spend `statements` and `blobCalls`: its commit stays payable. */
   private spent(statements = STEP_STATEMENTS, blobCalls = STEP_BLOB_CALLS): boolean {
     return this.full || this.batch.calls >= this.limits.calls || this.limits.clock() >= this.limits.deadline
-      || !commitAdmitted(this.db, this.batch.writer.versions, statements, blobCalls);
+      || !commitAdmitted(this.db, this.batch.writer.versions, statements + this.batch.commitStatements, blobCalls);
   }
 
   /**

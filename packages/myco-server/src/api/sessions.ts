@@ -223,8 +223,7 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   const order = ctx.url.searchParams.get('order');
   if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
   const promptId = ctx.url.searchParams.get('turn') ?? undefined;
-  const around = ctx.url.searchParams.get('around') ?? undefined;
-  if (around !== undefined && page.cursor !== undefined) return badRequest('around and cursor are mutually exclusive');
+  const around = page.cursor === undefined ? ctx.url.searchParams.get('around') ?? undefined : undefined;
   return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
     filter: filter ?? undefined, around }));
 }

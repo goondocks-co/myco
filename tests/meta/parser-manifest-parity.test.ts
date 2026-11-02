@@ -1,3 +1,5 @@
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { extractAntigravityFilePath } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 /**
  * The server's per-agent parser facts, held equal to the agent's own manifest.
  *
@@ -69,4 +71,25 @@ describe('parser facts against the agent manifests', () => {
       expect({ agent, hookShipsToolCalls: hookShipsToolCalls(agent) }).toEqual({ agent, hookShipsToolCalls: true });
     }
   });
+});
+
+it('declares the known editing tools and the paths the harness parsers handle', () => {
+  const tools: Record<string, Record<string, string>> = {
+    'claude-code': { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', NotebookEdit: 'notebook_path' },
+    cursor: { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Delete: 'file_path' },
+    codex: { apply_patch: 'command' }, opencode: { write: 'filePath', edit: 'filePath', apply_patch: 'patchText' },
+    antigravity: { write_to_file: 'TargetFile', replace_file_content: 'TargetFile', multi_replace_file_content: 'TargetFile', replace: 'file_path' },
+    cline: { editor: 'path', apply_patch: 'input' }, pi: { write: 'path', edit: 'path' },
+    copilot: { replace_string_in_file: 'filePath', create_file: 'filePath', apply_patch: 'filePath', edit: 'path', create: 'path' },
+    windsurf: { post_write_code: 'file_path' },
+  };
+  for (const [harness, editing] of Object.entries(tools)) {
+    const declared = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === harness)?.fileTools ?? [];
+    for (const [tool, pathField] of Object.entries(editing)) {
+      expect(declared.find(entry => entry.tool === tool)).toMatchObject({ mutates: true, pathField });
+      if (harness === 'antigravity' && pathField === 'TargetFile') {
+        expect(extractAntigravityFilePath(tool, { TargetFile: 'edited.ts' })).toBe('edited.ts');
+      }
+    }
+  }
 });
