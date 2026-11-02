@@ -956,7 +956,7 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
       {t:'tool_calls',r:{project_id:'project',session_id:'restored',tool_call_id:'legacy-output',event_id:'legacy-output-event',
         tool_name:'Read',input:'{}',output_blob_key:'a'.repeat(64),success:1,created_at:100,received_at:100,token_id:source.created_by_token_id}});
     const header = {format:BACKUP_FORMAT,deploymentId:await deploymentId(db),schemaVersion:115,createdAt:100,producer:'test',
-      counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
+      counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{plan_promotions:0})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
     const first = await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
     expect(await db.prepare("SELECT output_blob FROM event_refs WHERE event_id='legacy-output-event'").first(),name).toEqual({output_blob:'a'.repeat(64)});
@@ -978,7 +978,6 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     expect(await db.prepare("SELECT session_id FROM plans WHERE plan_key='plan-orphan'").first(),name).toEqual({session_id:'absent'});
     expect(await db.prepare("SELECT restore_hold FROM session_documents WHERE session_id='absent'").first(),name).toBeNull();
     expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
-    expect(await db.prepare(`SELECT 1 FROM sqlite_master WHERE name='prompt_batches'`).first(), name).not.toBeNull();
   });
 });
 
@@ -1096,7 +1095,6 @@ test('admission refuses missing records and preserves archived blob holders in t
     await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id='converted'").run();
     for(const step of SCHEMA_STEPS.filter(step=>step.version>=117))await run(step);
     expect(await one(db,"SELECT due_at FROM session_documents WHERE session_id='converted'"),name).toEqual({due_at:0});
-    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='responses'").first(),name).not.toBeNull();
     expect(await readPage({db,blobs},'project','converted',SESSION_OWNER,0),name).toMatchObject(records);
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
     expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});

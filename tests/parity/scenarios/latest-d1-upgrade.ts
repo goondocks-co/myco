@@ -5,7 +5,7 @@ import type { ParityScenario } from '../harness.ts';
 
 /**
  * Applies the checked-in latest D1 file through Wrangler to populated previous-version
- * workerd D1 built through the same migration mechanism.
+ * workerd D1 imported as one file, with Wrangler's own ledger naming every earlier file.
  * Compares schema, touched rows, version and migration ledger with the canonical step;
  * checks workerd FK/quick_check, one table at a time as maintenance runs it, and the persisted file's full integrity_check.
  * The comparison detects emitted-file drift. A wrong but consistent canonical and

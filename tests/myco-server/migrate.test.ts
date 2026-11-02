@@ -1,4 +1,5 @@
-import { RETIREMENT_SCHEMA_STEPS, RETIRED_CONTENT_TABLES, RETIRED_CONTENT_TRIGGERS } from '@myco-server-worker/db/schema-v117.js';
+import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
+import { DROP_CONTENT_SCHEMA_STEPS, DROPPED_CONTENT_TABLES, DROP_RANGES_TABLE } from '@myco-server-worker/db/schema-v265.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -277,6 +278,206 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0262_v262.sql': '71aa35803e21bf5fdd9cd9a953cec09147e5c1acfc1eb260e747b6c5c0db7303',
   '0263_v263.sql': 'e811f8ac1ca6cebe6bc43eedf1028acf21a1c139b2402a27c29e486eab3ac4e0',
   '0264_v264.sql': '8a2933b14bb5051d1bb1fc044b5c5ead2f4f81b4865fb1b378b3382e4d351cd8',
+  '0265_v265.sql': '8146cce34ea6434eed9bd7a5421f790a1e4b925fe6880eac4b5d8d39f673a783',
+  '0266_v266.sql': 'c7cf35cf88fba4115c6fd3851a4eedd6b43b9a7245354663524e2d497ddecbef',
+  '0267_v267.sql': '542dde134cacb6bde502164202b75123b08c83d275434227d8ea1ef8d7d34938',
+  '0268_v268.sql': 'a8a16d8828047b6c5df4edf0c8aed0872bc468701a24c755f194eaf384d7073b',
+  '0269_v269.sql': '3c290153642f8294b5e907e10034f9ee3327919c9db00ef3790896b6b99a15ff',
+  '0270_v270.sql': '61db01c8024ef66bed4516fe1f25865e855b480de65420ba4479f5b0ab74a91e',
+  '0271_v271.sql': '1a5815b39de724e01544d1b5066d44b7163cd61f2f41f79bbc6896666a36f088',
+  '0272_v272.sql': 'c1092e4c0674c122a0287f862fc0c098fa5a807307e75ec55b07695489793708',
+  '0273_v273.sql': 'ea1eab97282359cec701acb5595df137470134dde6ef8d352be05afebf4e6619',
+  '0274_v274.sql': '70b884256a9f9e730a6bbc17fe9a437754983a667a27065a7c031f574dc7cf06',
+  '0275_v275.sql': 'e6aa9c3e39cd8feeb8c416ac44570e049e1f6b60af2d1a45d1aa5747a17fd715',
+  '0276_v276.sql': '5d0c607cdaca399eb7eba0b3f79c703ee9b41e3fa062af8e5bedef4e8ac8cd25',
+  '0277_v277.sql': '2302366a568bd1852c2f27fb5b21be30a089b55fdbdf7957a343f08337879b44',
+  '0278_v278.sql': '6e3cf4edbfea5bcd817ab72d821d7bb1e56a2c479c3d9acff299c0f255051f49',
+  '0279_v279.sql': '16430496538ee26a1bf5210910fb865575560352bf35f964ce2e94ff0d8811cb',
+  '0280_v280.sql': 'f5f2023c74ccdd428efb05ce809a4a42e421ecaca2194e08a602cbf29ecd2788',
+  '0281_v281.sql': '1682639906d897886e9e013502395d037e11fe796ad8a4a8bb8af3650aee4a4d',
+  '0282_v282.sql': 'e70de7ccac53cc3b40387327e5f6e5bc283d6a424f4f554e5ee11c1f9c1c41bf',
+  '0283_v283.sql': 'fe513aae673a318b3a4019a3fb3af4df186643b5e5b46296d9a42c8436727f9e',
+  '0284_v284.sql': '220fd52a7ed2bd2e096ad997446943bd2981c759cd6cb805bf0af6e809c0e723',
+  '0285_v285.sql': '8e7dc468e2d4f1bbd60122e1110299a1f24291cc03f4b251cbb62e7c93698243',
+  '0286_v286.sql': '8dc29e3da71c3f32f2df36a5ca59f5be0516d56a926722b8a94352b57eb18031',
+  '0287_v287.sql': 'e3ca064cadf1af3eab08f989bdf990c995903d3f32d1ca5b803e245f6f97aab5',
+  '0288_v288.sql': '08c17156edf97280ee437312f845678522128bfcbb7d9b54681661710664248d',
+  '0289_v289.sql': '7dacd5a865b811e2f5ef7d21ca8d07bc90e9b91e7b6310e318714a99c2bedf96',
+  '0290_v290.sql': '3c345fcd80cd192c523480ebe0022154566c291d64566aca62e92da30de96f0d',
+  '0291_v291.sql': 'f57015415682c47385717c008ca105699fd19e3dcf6f10ec0ac697d2e2362932',
+  '0292_v292.sql': 'bda5d09d53d43bf9fd6422dd9a2b791b97e7e5c9817b6ec6eb0a8c9e18aaabc5',
+  '0293_v293.sql': '6dfe9ee1bd15e0a304ff134be56f43b55694ba6a1c4904c488684e1a5189e4de',
+  '0294_v294.sql': '3ad4aa034f83550244c74a7fbc0c137e1caf337e0f33a1bba9dc4a75c6ff9f26',
+  '0295_v295.sql': '94dc871e679e9cab780a45b8ebdf18d0e54c680d98cff5d6ab9916412e5b3d65',
+  '0296_v296.sql': '737badc1ff8ea26b0e8418e4633ef6ad4995c1d9a47b9011e3b69a8e81872ee9',
+  '0297_v297.sql': '6d52b03835e2743d0ca55dfe8872940d3d2f9c398748b97b71e07b5f0a1c22d8',
+  '0298_v298.sql': 'dc8bb5882e5ae27c5c91bb882a0140365f24ad7c02a1aee66cd21a0b456f5c0c',
+  '0299_v299.sql': 'b82701f6770769eb462d3e85479e0682f415d1ab75dcc4b8b8555df66d192cf0',
+  '0300_v300.sql': '2a98d74fcede035a59c1772d794605a38db38dcfbabf9a0cfa70c23458cd446a',
+  '0301_v301.sql': '5274102fb954a7af04dc9a1132eaf6cab26c9b646811114693f24cb95347c72e',
+  '0302_v302.sql': '37aacc16a14bb6bdb16b24afa2fae3be62c614756a86816d08fd3632c2672add',
+  '0303_v303.sql': 'ab69942136848d3a09639a62413548eb7bbc4f847614228e07aa90de0f676319',
+  '0304_v304.sql': 'a5fad0961fad8abeff1d80f5f0b4e4a616c3efce0a5f4e2e953723e21a82cedb',
+  '0305_v305.sql': '30fe124c17d6c15869072fe2beec883d6396d87147c0c10b56b099a947beb9fe',
+  '0306_v306.sql': '130f22da11ba8c636af5750465ce6b9fe0774d7054f46c9811945a9ef226a1ae',
+  '0307_v307.sql': 'b7e1597de67db0d5690a18ff0740fea7fb1af97f5bcc8f3b8b8c020d9451b820',
+  '0308_v308.sql': '0f74259546efa89db3bd6991f95dafb1d0aebd54f755ba15bd65d9fef6dabdba',
+  '0309_v309.sql': '1ba776ed963635a5f74360f0445a12623b092842cf7178a25cd535b924b35ebf',
+  '0310_v310.sql': '379b293a840b8f64cce6aa4537d719e0d2c43115c521ddcb61a4799fdf78f3f5',
+  '0311_v311.sql': '06711b7f8c0904f425a2fcdf907b4c60aaa7ded2d81b8f57b444cc72a991d680',
+  '0312_v312.sql': 'a3ac4bea4c6f699de4c4d2bd7f48fd8fba4f13a311f483a58e3c566cb2f25d4f',
+  '0313_v313.sql': '6e28b72f26a0d88e6f5fb6084f847bd9c3a04d7f6c6bf8d1fd39459c34010545',
+  '0314_v314.sql': '70861dd8b2d0e1f8b0b6eddf9c23dbfb1a359db68cf267bb445b9588347bf49b',
+  '0315_v315.sql': '8f207e6b3e7f604c04df94867d485712466172cfa2cb7169faf93ce90ab3aac9',
+  '0316_v316.sql': 'e819d1f88c65721d3ba770f99d22879090bc0fe4670ae7ad21c787b8c23564c8',
+  '0317_v317.sql': 'f0d9582d478fc8d0d2455ac92c98ebbf6438c1ab3922803038cd794c884855a5',
+  '0318_v318.sql': 'cf90bf117db6635a18b71d52a35002048da9330014d8ee75766f5732e1c10fdc',
+  '0319_v319.sql': 'c0bda83498d6c293e54df3865c63d3ecf5528ce24e5ab98a0aa42940093f563c',
+  '0320_v320.sql': '1063600548bb83bab3604c79b8099df059a87ef9c5169cee5e2b0d27402be908',
+  '0321_v321.sql': '2904d77b397d465b589a9437a9caa19ebd5588aeee32dfc45cc0d82994f02cd3',
+  '0322_v322.sql': '04f5cb7a4a48484ac9faaa0b1fd604f8fcb358903244145b7279927aafb59cfc',
+  '0323_v323.sql': '542391512e5914c4ef5f1bd2cae642b17a6244e350fb0313523c93709fef3f0b',
+  '0324_v324.sql': 'df0c33d944d64ebfa704ad3ae12fe5151053b90e470fff3bfd265e4c94821258',
+  '0325_v325.sql': 'cf4984446b6db28f729c2e6737e621089e2582fddce4cfce80046c767a1cb456',
+  '0326_v326.sql': '29fe8b5ac87de7270f22117a337809c75d9c323d82350352e3704edcfe225e1f',
+  '0327_v327.sql': '90f71bce6ec00e73001d9248866a644a95c96c8dd7d2ad085a7b08b978bfed15',
+  '0328_v328.sql': '810455640d4265059b23c6b7dc80210d88a7c0f562f8513abc1940621288daba',
+  '0329_v329.sql': '03b83a12d87ff44a8653aaf302a20b2c5eefa840fb99550deb8dd2b6c5d1744d',
+  '0330_v330.sql': '0853b02a353dcda949041ca51cccba868d525fec6efe07268b6dbdb556f2f6fe',
+  '0331_v331.sql': 'a3421e79dd16efdf188a226a6b5d4032deb397d7792593e31c1ea66208a50717',
+  '0332_v332.sql': '253a7603125384f2b12c50e1329ef15754e0a12e847016ae4f90cfb06747e933',
+  '0333_v333.sql': '1da798f9fd7dbdd64615941d298f7edc0f8cb561369fdd4efe73ae6b60dc7287',
+  '0334_v334.sql': '76fe3268548665f0e36ceb5ef51a23b457998e09381a0284805e020ac8cbee77',
+  '0335_v335.sql': 'd23f686cf450a31ecda33bc4ebfc23526914ef6ea1a978b6201f9007172620e0',
+  '0336_v336.sql': 'd91c10174d30d17ab076f123a21769c4a6a2a05329e55bdcf425d780793b69b7',
+  '0337_v337.sql': 'dd50c1eca3dc4d3c200f351e76a5743507804813ed1a70776b9a209ff9fb776a',
+  '0338_v338.sql': 'f99578753b3c24ebbe446ea3726035cfbab61dd418bd3550170951b99c861545',
+  '0339_v339.sql': '2b9b81e72a2fc1fee4097234bc2d716d5978b4d832416508caaf69946dc27435',
+  '0340_v340.sql': '47e78407234e3abfe8c1c576b6aab5b790e0e5246007bb04206e9c4543716fa3',
+  '0341_v341.sql': '9b4b3508715de5dc9f0c828d2c2f6df09e4adf03b9f138ec3e326eddaaffa653',
+  '0342_v342.sql': '4f356fed25d1bffc16515ac158b572be7fcd62403a557c89c835b0fa1d78a5a2',
+  '0343_v343.sql': '950b0c1fe890b40b44c9b4b057df4e77596abd7d19845f002d0afef29e4446df',
+  '0344_v344.sql': '8a6fe9369166b5da283bb5b48fd4bd9f23d1270ab8dae8a79d0a9783abbfc741',
+  '0345_v345.sql': 'c58bb9ac0ba7ecc276f0fbc7ed96f7391725f90041c6605a957d4d29c1211e56',
+  '0346_v346.sql': '1f98a06c5225cc49e9049b5edb39dc8f5522654bb9d86946c539a2cb9a3af25b',
+  '0347_v347.sql': '8b018b1c34eec097b619f9c3c0288db96aad712f435d75f31a61b2f5c7aee830',
+  '0348_v348.sql': '3b0797fc6b812e5c2029fbdd8670dff2c9d16d43b50e7d561a0ff1e6f30712f1',
+  '0349_v349.sql': 'fd1aad8f892e66fce9ce51278f0e1e69c2251704b26b6413e8ba7dedb92183ac',
+  '0350_v350.sql': '86843495b37bf41b5385de3a6f1f782344606695ac51330dbe981caae939afc4',
+  '0351_v351.sql': 'a4c740631aaa6c1d3751c2bdf31111cf82fc7e8bc2b1d474b20e3882d6e49575',
+  '0352_v352.sql': '16ad2002dde94529b5545548ceeb9ad8b2d9c8c44404b3e09006756c701ddcc7',
+  '0353_v353.sql': '09ab017d734ebdbe4e392389ddcccb8fba9f0a4791cdd63084da59a896df55c7',
+  '0354_v354.sql': '4e179572b91e3ee9f42d2b54f13a578bf512327400b6890d89be30651b35bf42',
+  '0355_v355.sql': '61d5c0115ca1eb888ec2cd62c6ff8a58ff2695a069490d8699ddf258dd1e702c',
+  '0356_v356.sql': '600213ca0771c6a488e27413e771369b17bf65ef5310ebaa989fe8c9aefe7862',
+  '0357_v357.sql': 'ae9f219b494b56002d71418456f913d9daf33b21be758b49e1c948070c590e18',
+  '0358_v358.sql': '458d0faf343f2f44a9322ab1e4ec8ff413d746b84f2f45d6d75b442ea12b0879',
+  '0359_v359.sql': 'f0f30a1ba5e0d34f654b207cad7c61309aa7e581ab27bb0c653e510cc554d9c4',
+  '0360_v360.sql': 'c54bb434aac394217c73a25070524b1ebba033a03d2ee1ebb184109605f7d8f6',
+  '0361_v361.sql': '3c31727499b6b0add5d247b6807f8aed6c5636487e516f4daccec0558932b3d8',
+  '0362_v362.sql': '71e7c0ebfa8176a6015e2de2f3e4b5b22166347adaea14a3917f95e54ea2f185',
+  '0363_v363.sql': 'af3f3c143a79ced403ee88de7c45bf43e0392ae317bceb198b744956b44251ea',
+  '0364_v364.sql': 'fc725bd9ff542a70a0a4e21f2b6aa7a15d17a6ffd146724fe05977451f419ff5',
+  '0365_v365.sql': 'd048d28901b42c76698a5582640623ddc24afe0c95652b615ff79f318f4707cd',
+  '0366_v366.sql': 'cef96920a9826f13c6a9f23bdc3769aa412e029c62438a8b0f24bebf8f3bc2cd',
+  '0367_v367.sql': '34a2c329722433c514aba1b766e6c0a80d8789e2f7c11e56601f87bc98b2836a',
+  '0368_v368.sql': 'f684bae68087a9468d9d8b1ff2027b9f6fc6dd2628dfe1f742580f71d4a26fdc',
+  '0369_v369.sql': '0417225d2b7852ec5fdcc06129b18bbab8e22f14e7b0402372eee25ab02ccf34',
+  '0370_v370.sql': 'db68a3c7a3adffe2b57ff8101fdc8d75a2efcbda83bd311fe2a773d0f7ddde96',
+  '0371_v371.sql': 'b5081b3bb77a5a950b33d2232f21a5fc4d04bf0a7035f6f3f9d06b07ffbb4e2e',
+  '0372_v372.sql': '96e11eaa0158b1349ca4bb3d888814cd29926a847fdce6b5289b2b0825e9285e',
+  '0373_v373.sql': 'e8eff8b5ade59a851947305b29b2022e6c67d3d0a0a130a184d6752b7fc64c93',
+  '0374_v374.sql': 'fe95be76a614e4444a231cc26c565af281263c0494031c980d8a49bed7069231',
+  '0375_v375.sql': '583de1188007a775185f4adb37aecfe74ea6e886d272b376b41b2f11fcd930c7',
+  '0376_v376.sql': 'a0f16e2501669cb39e92121ed954dcb2a339cb41e5ee27c62f077f6e75c6cd37',
+  '0377_v377.sql': 'c2c979d793afc0863b608bfe15b35717dc8de4f57f9ddc20d4209cb2e320d8e1',
+  '0378_v378.sql': '066d5fa5c2f18e348879960e7c1ad3910c77ae01fc9dd0f13157ae932f51f77b',
+  '0379_v379.sql': '6f8952a145ac44f1d9be4a582fc9cc477f9bdc5b5cf03b7852b533f700ccba63',
+  '0380_v380.sql': '7a5617ec72c9041e9f6e5df332ac79b6b268008c678fd007c9de21ae7efc8b3e',
+  '0381_v381.sql': '0588795933373ba1b74ba35ae8e8ffb506f4622d8c1998a3bde1f0277da49abd',
+  '0382_v382.sql': '9057b905a8b48be39b996a0a2d3c8984ddd6f038a6bcf894cf99f1d8e7f5d3b9',
+  '0383_v383.sql': '0628bd94b499eb7e8e7b15454b0dc9a19dda811bd5aaf3c1f7e3c7ae263c8125',
+  '0384_v384.sql': '886de8c920d1a5209db6bc0faf4d9c508e33a4d74ed88c9f95a522c69e42b165',
+  '0385_v385.sql': '0cc49bde44031f72d6f8cb61b06093f5629e9ad434c48d958b16211e001cf90a',
+  '0386_v386.sql': 'bba20cd4aaf5b46f5a6defe1da9753d1e90f0c5708912449dd9c52a656b112ba',
+  '0387_v387.sql': '4b5589955941341e3702162c3019d4e6b408ff8d2c009765f5edd7a817ec9f27',
+  '0388_v388.sql': '834a25d1e7459e42cad93024d03a2a2f3fd90145b313a7514778d86f72549c1c',
+  '0389_v389.sql': 'ae1f4dc813f2d3063c2b51d470298a0aa2cdcb92de510285e17aa7042abfaf5b',
+  '0390_v390.sql': '1183490c619d25f3d32a3ed68ca025efa9e0946217d5603a387093668540165a',
+  '0391_v391.sql': '124e69ed822b33e174c667244c97114dc1fec6a4369cc8c1551e918adc0d1f02',
+  '0392_v392.sql': '23e28b5fe91ac195860fdb46f5ff3b7ffc4d2775a1fe9b73d2b1a26b9fc81564',
+  '0393_v393.sql': '28bee71a87a3f8a8f8d253b6b7c785cf54c713baae66fa32c9c1731928cc0f0b',
+  '0394_v394.sql': '6aeac7b2118cb45c58672402bea5f8776cda0eff99df036aad0f57f879916a51',
+  '0395_v395.sql': 'e2e34af78cd80099b0002fab7ba55b39bd657ed45d831e4c349cde8ddac60b4f',
+  '0396_v396.sql': '56460bf9b48e48472a708ea88403c4ea0be0cfaa12ff55f27f31835d74d99238',
+  '0397_v397.sql': '700addbb59319d8e3a0530bc999bc0391c3cfabbfa663640e2402df6502c4823',
+  '0398_v398.sql': '2a5621ede85ee6b331d99357332cab1482379a4586be3c2ff96ed34bae8a15c2',
+  '0399_v399.sql': '85c369c74f0686381e2dbfe36fbe6b902e52ee7346bfba1173220d6e59eef500',
+  '0400_v400.sql': '41b1146dc22d71d9e13376f14ae66da2f9851e28aea00b3e1d79328cdd0a0b2a',
+  '0401_v401.sql': '44afc80fc39f503c1b539f736c73ecebbbf8eaef95ac4556b029e0660660be9c',
+  '0402_v402.sql': '88f713c5e24146e8bf4dd7cfe4f92f130a8213b7100558364575044741698907',
+  '0403_v403.sql': 'b2942cf6dee59c85ec85786de9682a04cb48b42fd94a7c0acec4455ad0aebcfe',
+  '0404_v404.sql': '89a199b887ffb26697be4e7735d761c27b7dbc7528372b85b0b8bc3d66e50c93',
+  '0405_v405.sql': '2b6bcf4187f3f51e76579a051d3dbc6bed87349212a12bf3ea59b04a1013c242',
+  '0406_v406.sql': 'c0daf1c4bf6ee0bd6277b499cddf4a11c04920b0cb95b77affde633b35532f6c',
+  '0407_v407.sql': '60e4352c96dea37cf2b6ce44179d53ea68b3a3942ad857673e901fa27092dc04',
+  '0408_v408.sql': 'e38953391057906c0f631d63ec93c03105a2e99747dd31850e5883409322f916',
+  '0409_v409.sql': '3dc32e27b6f50aad23e59c2b24f50542193bfb138123fe0b9425fc6c2fc54942',
+  '0410_v410.sql': '2f8f415037039815237a6d90d957d12dc8a91ee4bbf963c95c94842dd2004591',
+  '0411_v411.sql': '3661b8118897aa0e9cf049b2fe67c57f7961b67f5c0ce6a5fe73d43eaa17d1bf',
+  '0412_v412.sql': 'd88a6d0426016c4a3acf86e44a4c2c351d81fa1fb4245968287877198baa4e58',
+  '0413_v413.sql': '16f2e846888974b4dcea0b28d79f666cd412290dac74d4336db65a3c265fbb8b',
+  '0414_v414.sql': '9abb43f0341f20b0698151d2e120ffc1b145be407ea6fff379926c0ec8830af2',
+  '0415_v415.sql': '72f2a4c19a3b69d59f33c81e52dca55128e97518ac95e6ec0a0a0481a9fae724',
+  '0416_v416.sql': 'a2b7b9477f09f6f870cd0e112f1f98a45b5110a0805b4802ad4a5419fcbb2fe0',
+  '0417_v417.sql': '3825cbca3729d3d18f3c3bf7d6b36194f44bd0d302ccdeff9ab99488f05b0b20',
+  '0418_v418.sql': '8e0f2ee7432d5e809b28c9c614cc84065dc0f608e3b652007e10029a0691b89b',
+  '0419_v419.sql': 'ceff7fca82a13c85bc1c8241d8edae594e33c83ea60b2f9d134208e27a461105',
+  '0420_v420.sql': '60a9a010a59d0d58f7f5c52b1f07797bce9ac5d50255853e7f7e8c32f66bd339',
+  '0421_v421.sql': '70b64d84644105294f32af0a549c47053bdba4591fb8a94753d80395ec57b9d8',
+  '0422_v422.sql': '28cef450a98122251ed56fb266818d21e0ac80910a1ec03a1228fd2f0359e88b',
+  '0423_v423.sql': '9909f0f433aa0bef29c83dcab43d8996ea508d23cf71b312ef479d50c75ce787',
+  '0424_v424.sql': 'b4d62378440cef16f8c6b1a20ae9a463aebdce73403528bda4895f71a0bb73d2',
+  '0425_v425.sql': '1db63a3000094ae4e43dc11a80b4b17a2abf1813a951c906bc0443bd52a8e56b',
+  '0426_v426.sql': '8b6edee96fca592b90403c310c12bc55f20ca9e4c2601b82633a66a29dc5b0df',
+  '0427_v427.sql': '53866e9efdfd74381b6ee79f861116b622cb7bb9fe440b3a72732526615b403e',
+  '0428_v428.sql': '17372baf683400ce84ce385a2a25009a164f8cb79374bbd3bdf852ea36473bcc',
+  '0429_v429.sql': '8c1ddd77178f3bbfabf9bd8e426350cba1c91c9ee890221827ad2de9e47a0922',
+  '0430_v430.sql': 'e52079b83abf6bd6fa9729683836e5fa08f5bd5af69208ea05752ce8f372054c',
+  '0431_v431.sql': '6348252760ded24e4f2b7bf50961a4ded0882ef6187e2c0374d6d0edd9e3ee5e',
+  '0432_v432.sql': '11fbc7b9a49efd388bb97af9560a5c5f112bcb987c891612c825d99b866f4a58',
+  '0433_v433.sql': '5fcef80f6bddd67584e86750d06bda8a2f8f2d29008bbd556d504017e9e75d68',
+  '0434_v434.sql': 'b594ae3a99526762e3881dffd005b907d0e99819b5d8773d614ab2deae21dc83',
+  '0435_v435.sql': '961f24062d2db5163c1872d52fe9aee84137071e19327cbc16d98303a23e8dc3',
+  '0436_v436.sql': 'ae204a8e4045d101bfbb0e75a5457ad1b584f906730210c3b5fe42ecef7ab6b3',
+  '0437_v437.sql': '71d45decee16c99e1286808c0e7cf33314461f84a79564677716ffced48a2e3b',
+  '0438_v438.sql': '0d7dd0324b55dc9e0211c46fa8949859db70225d072da2fbd2cea3797a0014f8',
+  '0439_v439.sql': '4f959c93ffe1963a0bc5723028a53c1a6f00d4275e767560f6ccf324c1979d9f',
+  '0440_v440.sql': 'e1d930201665fdc48fd241a32dadd566bac22c7e08be32448983610c24277b59',
+  '0441_v441.sql': '3255a1b0d3fc61bfb7a327634437d070f0ed4d28cc7bbec9c50e25eb223afc50',
+  '0442_v442.sql': '0b0fdeb9e8aca73c885c064f220799ba3a5894e3a2c15975b13ba405359290f4',
+  '0443_v443.sql': '071c553c436a98c27f980b0c89856a7672dd38327f23cd070eac397db457f24e',
+  '0444_v444.sql': '49e1fbbe4c967c428e320cf93bb2edca976576a005b85faa1a13882ac4b5c1f5',
+  '0445_v445.sql': '748055b3a611099f4f46ed255c2ca458c49984f507a8731aa07e3b213ebbf8b0',
+  '0446_v446.sql': 'bc68f529b63f4c7e9af6f9fe7caf4fa4146cd4aef60bda36209f1260729313ee',
+  '0447_v447.sql': '18ff3b86e0a9f672501baa3d343581b0871790829d6486563d1a0b23c1e06fc7',
+  '0448_v448.sql': '26e42f713ea808d67f04a2bd6a5e79f82e29af4ebfb193c19150fcd9d2e4b211',
+  '0449_v449.sql': 'aad4b9b037736a77eb2c8ccc83232543fa1a06207eb35fdb2b417ed2e62ee12c',
+  '0450_v450.sql': 'd24645c233fbf3ac4bc48896812ee1adf2b2eac9a47260a881edcd69cb09818e',
+  '0451_v451.sql': 'c8ce360cca1364c8b6eba490d4c76ca2b53da24fa49836995118add0fd4142d4',
+  '0452_v452.sql': '24a2d0347a7c5ae64516c37abcaa7a46f58ffb0350db5ba26c601400ab89c181',
+  '0453_v453.sql': '7c7c650baaf54c083728070a9bc13e41dc6b970a99e0238ce13a21c94d9ccded',
+  '0454_v454.sql': 'ddd8dd9eb1eb1e7bfbd478fcded2375517cd0e7805d718a9973a324d2db0f378',
+  '0455_v455.sql': '8f66b5e9ab56a78b00c6ee2858e927fa3a9e8221ebbec0927c9e6cc98c09fb5a',
+  '0456_v456.sql': 'b951ab8429cc49da60d799644433a3bb7c40e4d4969bb7f8382d4a1db697d389',
+  '0457_v457.sql': '886c39f423513a305691822e9c5ba0281717715e2b7f81f85295db9fec060a4b',
+  '0458_v458.sql': 'cfd2365816634b598cfb2d622691a7ede1e490d377534e9f17bdaf27f307e27c',
+  '0459_v459.sql': '179de8be2f2754276fced0dde0520d34b1eeab1b5f7c400a96a7039100d8dd13',
+  '0460_v460.sql': 'dabce2a2027c90e4a5b6e18ac548f14a4ac7e5bdbdee24f40e27bb05cd96b3da',
+  '0461_v461.sql': 'fbf58818a099d2c2bb721e75299404d3b2dcb8a738dd2562418209242e104e43',
+  '0462_v462.sql': 'dbe70dd7f0e89229e852e05691d8326c9cedeafca8b5a8fca50a181be644075c',
+  '0463_v463.sql': '9bb7a86837e9443352f642a7dbceda559eb5cf093ccc7f2af5d1d3c3a2d3a92b',
+  '0464_v464.sql': '45d940f08c5feda6e953f84d47e2010996bfa5c7fa3cbabe4e6294f98b28e1fe',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -288,6 +489,8 @@ const schemaVersionsFrom = (first: number) => SCHEMA_STEPS.filter((step) => step
 const PRE_RETIREMENT_STEPS = SCHEMA_STEPS.filter(step => step.version < 117);
 const preRetirementVersionsFrom = (first: number) => PRE_RETIREMENT_STEPS.filter(step => step.version >= first).map(step => step.version);
 const fresh = () => { const s = new Database(':memory:'); s.exec('PRAGMA foreign_keys = ON'); return s; };
+const DROPPED_CONTENT = new Set<string>(DROPPED_CONTENT_TABLES);
+const namesDroppedContent = (sql: string) => new RegExp(`\\b(${DROPPED_CONTENT_TABLES.join('|')})\\b`).test(sql);
 
 /** Inventories accept only a canonical ordered prefix of schema steps. */
 function assertPrefix(steps: readonly SchemaStep[]): void {
@@ -336,13 +539,18 @@ function declaredIndexes(steps: readonly SchemaStep[]): Map<string, string> {
 }
 
 /** Every trigger a prefix of the steps leaves standing, by name, with its SQL. */
+const triggerInventories = new Map<number, Map<string, string>>();
 function declaredTriggers(steps: readonly SchemaStep[]): Map<string, string> {
   assertPrefix(steps);
+  const cached = triggerInventories.get(steps.length);
+  if (cached !== undefined) return cached;
   const sqlite = fresh();
   for (const step of steps) sqlite.exec(renderMigrationFile(step));
   const rows = sqlite.query(`SELECT name, sql FROM sqlite_master WHERE type='trigger'`).all() as { name: string; sql: string }[];
   sqlite.close();
-  return new Map(rows.map((r) => [r.name, r.sql]));
+  const out = new Map(rows.map((r) => [r.name, r.sql]));
+  triggerInventories.set(steps.length, out);
+  return out;
 }
 
 /** What a trigger does: when it fires, on which event of which table, and which tables its body writes. */
@@ -745,12 +953,13 @@ describe('versioned schema steps', () => {
     ]);
     for (let n = 2; n < SCHEMA_STEPS.length; n++) {
       const retirement = RETIREMENT_SCHEMA_STEPS.some(step => step.version === SCHEMA_STEPS[n]!.version);
+      const dropping = DROP_CONTENT_SCHEMA_STEPS.some(step => step.version === SCHEMA_STEPS[n]!.version);
       const drops = SCHEMA_STEPS[n]!.statements.filter(sql => sql.startsWith('DROP TABLE IF EXISTS ')).map(sql => sql.slice('DROP TABLE IF EXISTS '.length));
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
         if (table==='_v117_reference_ranges' && SCHEMA_STEPS[n]!.statements.includes('DROP TABLE _v117_reference_ranges')) { expect(after.has(table)).toBe(false); continue; }
-        if ((n === 85 && retiredAt86.has(table)) || (retirement && RETIRED_CONTENT_TABLES.some(name => drops.includes(name) && (table === name || name.endsWith('_fts') && table.startsWith(name + '_'))))) {
+        if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -773,7 +982,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (retirement && (RETIRED_CONTENT_TABLES as readonly string[]).includes(dropped));
+          const allowedRetirement = dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -783,7 +992,8 @@ describe('versioned schema steps', () => {
           const table = indexesBefore().get(droppedIndex) ?? null;
           const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
             new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
-          expect({ step: n + 1, droppedIndex, table, replaced }).toEqual({ step: n + 1, droppedIndex, table, replaced: true });
+          const allowed = replaced || (dropping && table !== null && DROPPED_CONTENT.has(table));
+          expect({ step: n + 1, droppedIndex, table, allowed }).toEqual({ step: n + 1, droppedIndex, table, allowed: true });
           continue;
         }
         // A view holds no rows: dropping one loses nothing as long as the same
@@ -800,7 +1010,7 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior);
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
-            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || (retirement && ((RETIRED_CONTENT_TRIGGERS as readonly string[]).includes(droppedTrigger))) })
+            || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
         }
@@ -912,7 +1122,7 @@ describe('versioned schema steps', () => {
     for (const t of tables) {
       const cols = sqlite.query(`PRAGMA table_info(${t})`).all() as { name: string; type: string; notnull: number; dflt_value: string | null }[];
       if (!cols.some((c) => c.name === 'project_id')) continue;
-      if (t === 'member_tokens' || t === 'sessions' || t === 'events' || (RETIRED_CONTENT_TABLES as readonly string[]).includes(t)) continue;
+      if (t === 'member_tokens' || t === 'sessions' || t === 'events') continue;
       sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
         const specimen = writerRows.get(t);
@@ -927,7 +1137,6 @@ describe('versioned schema steps', () => {
         // A step row names a kind and an outcome from its own vocabulary.
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
-          : t === 'transcript_parser_state_chunks' && c.name === 'chunk_count' ? '1'
           : t === 'embedding_work_state' && c.name === 'kind' ? `'embedding'`
           : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
           : t === 'raw_resources' && c.name === 'kind' ? `'blob'` : t === 'raw_resources' && c.name === 'classification' ? `'raw'`
@@ -1052,8 +1261,8 @@ it('retires content storage only after documents are live, preserving the catalo
     sqlite.run(`INSERT INTO view_instances(project_id,session_id,instance_id,parser_version,base,state,created_at) VALUES('retirement','session','instance',1,'full','live',1)`);
     sqlite.run(`INSERT INTO view_checkpoints(project_id,session_id,instance_id,transcript_id,ordinal,start_offset,parsed_offset) VALUES('retirement','session','instance','transcript',0,0,10)`);
     sqlite.run(`INSERT INTO view_checkpoint_chunks(project_id,session_id,instance_id,transcript_id,cursor_offset,chunk_index,chunk_count,payload) VALUES('retirement','session','instance','transcript',10,0,1,'{}')`);
-    for (const next of SCHEMA_STEPS.filter(step => step.version >= 117)) step(sqlite, next);
-    for (const table of RETIRED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).not.toBeNull();
+    for (const next of SCHEMA_STEPS.filter(step => step.version >= 117 && step.version < 265)) step(sqlite, next);
+    for (const table of DROPPED_CONTENT_TABLES) expect(sqlite.query(`SELECT 1 FROM sqlite_master WHERE name=?`).get(table)).not.toBeNull();
     expect(sqlite.query(`SELECT session_id FROM sessions WHERE project_id='retirement'`).get()).toEqual({session_id:'session'});
     expect(sqlite.query(`SELECT generation FROM session_documents WHERE project_id='retirement'`).get()).toEqual({generation:1});
     expect(sqlite.query(`SELECT source,cursor_project,cursor_id,complete FROM raw_provenance_backfill WHERE id=1`).get())
@@ -1067,4 +1276,72 @@ it('backfills only the reference catalog and retains content tables', () => {
     const dropped=/^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(sql)?.[1];
     if(dropped!==undefined)expect(['_v117_documents_guard','_v117_reference_ranges']).toContain(dropped);
   }
+});
+
+describe('content storage removal, steps 265 to 464', () => {
+  const objectsOf = (sqlite: Database) => sqlite.query(`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`).all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
+  const shadow = (name: string) => DROPPED_CONTENT.has(name.replace(/_(data|idx|docsize|config)$/, ''));
+  const dataTables = (sqlite: Database) => objectsOf(sqlite).filter(o => o.type === 'table' && o.name !== 'schema_meta' && !o.name.endsWith('_fts') && !/_fts_(data|idx|docsize|config)$/.test(o.name)).map(o => o.name);
+  const RANGED = ['tool_calls', 'view_tool_calls', 'responses', 'prompt_batches', 'view_prompts', 'view_responses', 'fact_classes', 'material_versions'];
+  const ROWS = (table: string) => RANGED.includes(table) ? 100 : 2;
+  /** Rows in every table, references and checks off, so each drop removes rows, each range deletes some, and each kept table has rows to keep. */
+  const seed = (sqlite: Database) => {
+    sqlite.exec('PRAGMA foreign_keys = OFF; PRAGMA ignore_check_constraints = ON');
+    for (const name of dataTables(sqlite)) {
+      const cols = sqlite.query(`PRAGMA table_info(${name})`).all() as { name: string; type: string }[];
+      for (let k = 0; k < ROWS(name); k++) {
+        try { sqlite.query(`INSERT OR IGNORE INTO ${name} (${cols.map(c => c.name).join(',')}) VALUES (${cols.map(c => /INT|REAL|NUM/i.test(c.type) ? String(k + 1) : `'{"k":${k}}'`).join(',')})`).run(); } catch {}
+      }
+    }
+    sqlite.exec('PRAGMA ignore_check_constraints = OFF; PRAGMA foreign_keys = ON');
+  };
+  const keptRows = (sqlite: Database) => new Map(dataTables(sqlite).filter(name => !DROPPED_CONTENT.has(name) && name !== DROP_RANGES_TABLE)
+    .map(name => [name, JSON.stringify(sqlite.query(`SELECT * FROM ${name}`).all())]));
+  const at264 = () => { const sqlite = fresh(); for (const prior of SCHEMA_STEPS.filter(s => s.version < 265)) step(sqlite, prior); seed(sqlite); return sqlite; };
+
+  it('drops every trigger and index of the retired tables first, deletes their rows in ranges, and leaves every kept row and a fresh store\'s schema', () => {
+    const sqlite = at264();
+    const store = fresh();
+    try {
+      const before = objectsOf(sqlite);
+      expect(before.filter(o => (o.type === 'trigger' || o.type === 'view') && !DROPPED_CONTENT.has(o.tbl_name) && namesDroppedContent(o.sql!)).map(o => o.name)).toEqual([]);
+      expect(DROP_CONTENT_SCHEMA_STEPS[0]!.statements.flatMap(sql => /^DROP TRIGGER IF EXISTS (\w+)/.exec(sql)?.[1] ?? []).sort())
+        .toEqual(before.filter(o => o.type === 'trigger' && DROPPED_CONTENT.has(o.tbl_name)).map(o => o.name).sort());
+      expect(DROP_CONTENT_SCHEMA_STEPS.flatMap(s => s.statements).flatMap(sql => /^DROP INDEX IF EXISTS (\w+)/.exec(sql)?.[1] ?? []).sort())
+        .toEqual(before.filter(o => o.type === 'index' && DROPPED_CONTENT.has(o.tbl_name) && o.sql !== null).map(o => o.name).sort());
+      const count = (table: string) => (sqlite.query(`SELECT COUNT(*) n FROM ${table}`).get() as { n: number }).n;
+      for (const table of DROPPED_CONTENT_TABLES.filter(t => !t.endsWith('_fts'))) expect({ table, rows: count(table) }).toEqual({ table, rows: ROWS(table) });
+      const kept = keptRows(sqlite);
+      for (const table of ['event_refs', 'blobs', 'session_documents', 'session_read_facts', 'storage_cleanup_queue', 'object_releases', 'blob_release_candidates', 'search_blob_queue']) expect({ table, seeded: (kept.get(table) ?? '[]').length > 2 }).toEqual({ table, seeded: true });
+      const keptViolations = () => (sqlite.query('PRAGMA foreign_key_check').all() as { table: string }[]).filter(v => !DROPPED_CONTENT.has(v.table));
+      const violations = keptViolations();
+      const firstDrop = DROP_CONTENT_SCHEMA_STEPS.find(s => s.statements[0]!.startsWith('DROP TABLE'))!.version;
+      for (const next of SCHEMA_STEPS.filter(s => s.version >= 265 && s.version < firstDrop)) step(sqlite, next);
+      expect(RANGED.map(table => ({ table, rows: count(table) }))).toEqual(RANGED.map(table => ({ table, rows: 0 })));
+      expect(DROPPED_CONTENT_TABLES.filter(t => !t.endsWith('_fts') && !RANGED.includes(t)).map(table => count(table))).not.toContain(0);
+      for (const next of SCHEMA_STEPS.filter(s => s.version >= firstDrop)) step(sqlite, next);
+      expect(version(sqlite)).toBe(String(SERVER_SCHEMA_VERSION));
+      const after = objectsOf(sqlite);
+      expect(after.filter(o => DROPPED_CONTENT.has(o.tbl_name) || o.tbl_name === DROP_RANGES_TABLE || shadow(o.name))).toEqual([]);
+      expect(keptRows(sqlite)).toEqual(kept);
+      expect(keptViolations()).toEqual(violations);
+      for (const f of renderMigrationFiles()) store.exec(f.sql);
+      expect(after).toEqual(objectsOf(store));
+    } finally { sqlite.close(); store.close(); }
+  });
+
+  it('leaves a store at the step before a failed drop step, its rows and objects unchanged', async () => {
+    const sqlite = at264();
+    const db = sqliteD1(sqlite);
+    try {
+      for (const pattern of [/^DROP TRIGGER/, /^DELETE FROM tool_calls/, /^DROP TABLE IF EXISTS prompt_batches_fts/, /^DROP TABLE IF EXISTS transcript_parser_state_chunks/]) {
+        const sample = SCHEMA_STEPS.find(s => s.version >= 265 && pattern.test(s.statements[0]!))!;
+        await applySchemaSteps(db, SCHEMA_STEPS.filter(s => s.version < sample.version));
+        const probe = /DELETE FROM (\w+)/.exec(sample.statements[0]!)?.[1] ?? 'view_instances';
+        const held = { version: String(sample.version - 1), objects: objectsOf(sqlite), rows: keptRows(sqlite), probe: sqlite.query(`SELECT COUNT(*) n FROM ${probe}`).get() };
+        await expect(db.batch([...sample.statements.map(sql => db.prepare(sql)), db.prepare('INSERT INTO storage_content_guard(ok) VALUES(0)')])).rejects.toThrow();
+        expect({ version: version(sqlite), objects: objectsOf(sqlite), rows: keptRows(sqlite), probe: sqlite.query(`SELECT COUNT(*) n FROM ${probe}`).get() }).toEqual(held);
+      }
+    } finally { sqlite.close(); }
+  });
 });
