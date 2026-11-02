@@ -30,10 +30,21 @@ export function memberTranscriptRoutingKey(source: CredentialSource, cwd: string
     destination = { serverUrl: deploymentUrl(membership.serverUrl), projectId: null, rootKey };
     key = `${deploymentKeyFor(destination.serverUrl)}/~pending-${rootKey}`;
   }
+  pinTranscriptScope(key, destination, mycoHome);
+  return key;
+}
+
+function pinTranscriptScope(key: string, destination: TranscriptDestination, mycoHome: string): void {
   const dir = path.join(memberRoot(mycoHome), 'transcripts', key);
   ensureMemberDir(dir, mycoHome);
-  const file = path.join(dir, DESTINATION_FILE);
-  pinMemberDestination(file, destination, (held, proposed) => JSON.stringify(held) === JSON.stringify(proposed), 'Plugin transcript');
+  pinMemberDestination(path.join(dir, DESTINATION_FILE), destination, (held, proposed) => JSON.stringify(held) === JSON.stringify(proposed), 'Plugin transcript');
+}
+
+/** Prepare the raw capture namespace for an authenticated Project destination. */
+export function prepareMemberTranscriptScope(route: MemberRoutingIdentity, mycoHome: string): string {
+  const destination = memberRoutingIdentity(route);
+  const key = routingKey(destination);
+  pinTranscriptScope(key, destination, mycoHome);
   return key;
 }
 
@@ -72,6 +83,15 @@ export function assertMemberTranscriptDestination(file: string, route: MemberRou
     if (!adoption.ok) throw new TranscriptDestinationError('held', 'Pending plugin transcript has no matching Project adoption; held locally');
     if (!sameRoutingIdentity(adoption.value, route)) throw new TranscriptDestinationError('mismatch', 'Pending plugin transcript has no matching Project adoption; held locally');
   }
+}
+
+/** The verified namespace of a member-owned raw transcript, or null for a harness-owned file. */
+export function memberTranscriptScopeForPath(file: string, route: MemberRoutingIdentity, mycoHome: string, pendingRootKey?: string): string | null {
+  const relative = path.relative(path.join(memberRoot(mycoHome), 'transcripts'), path.resolve(file));
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  assertMemberTranscriptDestination(file, route, mycoHome, pendingRootKey);
+  const parts = relative.split(path.sep);
+  return parts.length === 4 ? `${parts[0]}/${parts[1]}` : null;
 }
 
 /** Pending capture adopts one Project under the repository's pending lock before its state moves. */

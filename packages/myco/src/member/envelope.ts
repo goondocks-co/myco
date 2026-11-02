@@ -1,3 +1,4 @@
+import { promptPlanKey } from '@goondocks/myco-shared/record-identity';
 import { mycoToolFields } from '@goondocks/myco-shared/member-protocol';
 /**
  * The member envelope: normalized hook input → one phase-1 capture event per
@@ -110,8 +111,9 @@ export function deriveId(...parts: string[]): string {
 export const subagentIdFor = (sessionId: string, agentId: string): string => deriveId('subagent', sessionId, agentId);
 export const planKeyForPath = (projectId: string, planPath: string): string => deriveId('plan', projectId, planPath);
 export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveId('plan-tag', sessionId, tag, String(position));
-/** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
-export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveId('plan-tag', sessionId, tag, 'prompt', promptId);
+/** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt and tag occurrence: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
+export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string, occurrence = 0): string =>
+  promptPlanKey(deriveId, sessionId, tag, promptId, occurrence);
 
 // ---------------------------------------------------------------------------
 // Helpers

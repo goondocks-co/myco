@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'bun:test';
 import { snippetModule } from '../support/plugin-snippet.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -258,7 +258,7 @@ describe('emitted plugin lifecycle recovery', () => {
       else await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'resumed' } } } });
       route = 'fedcba9876543210/reassigned';
       if (agent === 'cline') await hooks.beforeModel({ messages: [{ role: 'user', content: 'new route' }] }, ctx);
-      else await hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'new route' }] });
+      else await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'submission-1' }, parts: [{ type: 'text', text: 'new route' }] });
       expect(routingCalls).toBe(2);
       expect(verbs).toEqual(['session-start', 'session-start', 'user-prompt-submit']);
       const file = path.join(r.env.MYCO_HOME, 'member/transcripts', route, agent, 'resumed.jsonl');
@@ -301,8 +301,8 @@ describe('emitted plugin lifecycle recovery', () => {
         }, () => 0, agent);
         const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
         const hooks = agent === 'cline' ? subject.MycoClinePlugin.hooks : await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
-        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ role: 'user', content: 'same prompt' }] }, ctx)
-          : hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'same prompt' }] });
+        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ id: 'submission-1', role: 'user', content: 'same prompt' }] }, ctx)
+          : hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'submission-1' }, parts: [{ type: 'text', text: 'same prompt' }] });
         await prompt();
         if (agent === 'cline') await prompt();
         const warmRoutingCalls = routingCalls;
@@ -352,8 +352,8 @@ describe('emitted plugin lifecycle recovery', () => {
         const hooks = agent === 'cline' ? subject.MycoClinePlugin.hooks : await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
         const start = () => agent === 'cline' ? subject.MycoClinePlugin.setup({}, ctx)
           : hooks.event({ event: { type: 'session.created', properties: { info: { id: 'resumed' } } } });
-        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ role: 'user', content: 'same prompt' }] }, ctx)
-          : hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'same prompt' }] });
+        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ id: 'submission-1', role: 'user', content: 'same prompt' }] }, ctx)
+          : hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'submission-1' }, parts: [{ type: 'text', text: 'same prompt' }] });
         await start();
         await prompt();
         const before = fs.existsSync(r.transcript) ? fs.readFileSync(r.transcript, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
@@ -369,12 +369,272 @@ describe('emitted plugin lifecycle recovery', () => {
         const records = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         expect(records.filter((line) => line.type === 'session')).toHaveLength(1);
         expect(records[0]).toMatchObject({ type: 'session', cwd: '/repo', agent, sessionId: 'resumed' });
-        expect(records.filter((line) => line.type === 'prompt')).toEqual([expect.objectContaining({ text: 'same prompt', promptId: '00000000-0000-4000-8000-000000000163' })]);
+        expect(records.filter((line) => line.type === 'prompt')).toEqual([expect.objectContaining({ text: 'same prompt', ...(failure === 'claim' ? {} : { promptId: '00000000-0000-4000-8000-000000000163' }) })]);
         expect(verbs.filter((verb) => verb === 'session-start')).toHaveLength(failure === 'session hook' ? attemptedStarts + 1 : 1);
-        expect(verbs.filter((verb) => verb === 'user-prompt-submit')).toHaveLength(1);
+        expect(verbs.filter((verb) => verb === 'user-prompt-submit')).toHaveLength(failure === 'claim' ? 0 : 1);
         const parsed = await parse(fs.readFileSync(r.transcript, 'utf8'), agent);
         expect(parsed.prompts).toEqual([{ text: 'same prompt' }]);
       });
     }
   }
+});
+
+it('Cline names repeated human submissions separately and reuses observations of each message', async () => {
+  const r = rig('cline');
+  let prompts = 0;
+  const subject = snippetModule(r.env, [], [], (_bin, args) => ({
+    status: 0, stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `prompt-${++prompts}` } : {}), stderr: '',
+  }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+  const first = { messages: [{ role: 'user', content: 'continue' }] };
+  const second = { messages: [{ role: 'user', content: 'continue' }] };
+  for (const request of [first, second]) {
+    const stamped = await subject.MycoClinePlugin.hooks.beforeModel(request, ctx) as { messages: unknown[] };
+    await subject.MycoClinePlugin.hooks.beforeModel(structuredClone(stamped), ctx);
+    await subject.MycoClinePlugin.hooks.afterModel({ content: 'reply' }, ctx);
+  }
+  const records = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(records.filter(row => row.type === 'prompt' || row.type === 'response').map(row => [row.type, row.promptId])).toEqual([
+    ['prompt', 'prompt-1'], ['response', 'prompt-1'], ['prompt', 'prompt-2'], ['response', 'prompt-2'],
+  ]);
+  expect(prompts).toBe(2);
+});
+
+it('a replacement Cline host captures immediately after its writer is killed', async () => {
+  const r = rig('cline');
+  const bin = path.join(r.env.MYCO_HOME, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, `#!/bin/sh
+if [ "$1" = member ]; then printf '%s\\n' '${ROUTING_KEY}'; else printf '%s\\n' '{"promptId":"first"}'; fi
+`, { mode: 0o700 });
+  const script = path.join(r.home, 'host.ts');
+  const source = fs.readFileSync(path.resolve(import.meta.dir, '../../packages/myco/src/symbionts/templates/cline/plugin.ts'), 'utf8').replaceAll('{{mycoCredentialSource}}', 'registry');
+  fs.writeFileSync(script, source.replace('import { spawnSync } from "node:child_process";', 'import { spawnSync as nativeSpawnSync } from "node:child_process";\nconst spawnSync = (bin, ...args) => bin === "ps" ? { status: 0, stdout: "Mon Nov 2 12:00:00 2026", stderr: "" } : nativeSpawnSync(bin, ...args);') + `
+const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: process.env.HOME } };
+await MycoClinePlugin.hooks.beforeModel({ messages: [{ id: 'first', role: 'user', content: 'first' }] }, ctx);
+await MycoClinePlugin.hooks.afterModel({ content: 'first reply' }, ctx);
+console.log('ready');
+await Bun.stdin.text();
+`);
+  const child = spawn(process.execPath, ['--no-env-file', script], { env: { ...process.env, ...r.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('host did not capture')), 5000);
+      child.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+      child.once('exit', code => { clearTimeout(timer); reject(new Error(`host exited ${code}`)); });
+    });
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    child.kill('SIGKILL');
+    await exited;
+    const subject = snippetModule(r.env, [], [], () => ({ status: 0, stdout: '{"promptId":"second"}', stderr: '' }), ROUTING_KEY, Date.now, fs, () => 0, 'cline');
+    const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: r.home } };
+    await subject.MycoClinePlugin.hooks.beforeModel({ messages: [{ id: 'second', role: 'user', content: 'second' }] }, ctx);
+    await subject.MycoClinePlugin.hooks.afterModel({ content: 'second reply' }, ctx);
+    const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => row.type === 'prompt' || row.type === 'response').map(row => row.text)).toEqual([
+      'first', 'first reply', 'second', 'second reply',
+    ]);
+  } finally { child.kill('SIGKILL'); }
+}, 10000);
+
+it('retains plugin turns durably while a writer identity cannot be verified and replays them once', async () => {
+  const r = rig('cline');
+  fs.mkdirSync(path.dirname(r.claim), { recursive: true });
+  fs.writeFileSync(r.claim, `legacy-instance ${NOW}`, { mode: 0o600 });
+  const load = () => snippetModule(r.env, [], [], () => ({ status: 0, stdout: '{}', stderr: '' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  const subject = load();
+  const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+  await subject.MycoClinePlugin.hooks.beforeModel({ messages: [{ id: 'held', role: 'user', content: 'held prompt' }] }, ctx);
+  await subject.MycoClinePlugin.hooks.afterModel({ content: 'held reply' }, ctx);
+  expect(fs.existsSync(r.transcript)).toBe(false);
+  expect(fs.readdirSync(`${r.claim}.pending`).length).toBeGreaterThan(0);
+  fs.writeFileSync(r.claim, 'legacy-instance 1', { mode: 0o600 });
+  const dead = spawnSync(process.execPath, ['--no-env-file', '-e', '0'], { env: process.env }).pid;
+  const pending = path.join(`${r.claim}.pending`, `${dead}-exited.jsonl`);
+  const sources = fs.readdirSync(`${r.claim}.pending`).sort().map(name => path.join(`${r.claim}.pending`, name));
+  fs.writeFileSync(pending, sources.map(file => fs.readFileSync(file, 'utf8')).join(''));
+  for (const file of sources) fs.unlinkSync(file);
+  let appended = false;
+  const replacement = snippetModule(r.env, [], [], () => ({ status: 0, stdout: '{}', stderr: '' }), ROUTING_KEY, () => NOW, {
+    ...fs,
+    readFileSync: ((file: fs.PathOrFileDescriptor, options: unknown) => {
+      const content = fs.readFileSync(file, options as BufferEncoding);
+      if (String(file) === pending && !appended) {
+        appended = true;
+        fs.appendFileSync(pending, JSON.stringify({ type: 'prompt', sessionId: 'resumed', text: 'late prompt', captureId: 'late-source-record' }) + '\n');
+      }
+      return content;
+    }) as typeof fs.readFileSync,
+  }, () => 0, 'cline');
+  for (let i = 0; i < 2; i++) await replacement.MycoClinePlugin.hooks.afterTool({ name: 'read' }, ctx);
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'prompt' || row.type === 'response').map(row => row.text)).toEqual(['held prompt', 'held reply', 'late prompt']);
+  expect((await parse(fs.readFileSync(r.transcript, 'utf8'), 'cline')).prompts).toEqual([{ text: 'held prompt' }, { text: 'late prompt' }]);
+});
+
+it('recovers a claim and operation token whose PID now belongs to a newer process instance', () => {
+  const r = rig('cline');
+  const oldBirth = performance.timeOrigin - 60_000;
+  const instance = `${process.pid}-old-instance`;
+  fs.mkdirSync(`${r.claim}.operation`, { recursive: true });
+  fs.writeFileSync(r.claim, `${instance} ${NOW} ${oldBirth}`, { mode: 0o600 });
+  fs.writeFileSync(path.join(`${r.claim}.operation`, `owner-${process.pid}-birth-${oldBirth}-old-instance-1`), '', { mode: 0o600 });
+  const subject = r.load();
+  const status = subject.appendTranscriptLine('/repo', 'cline', 'resumed', { type: 'prompt', text: 'new process' });
+  expect(status).toBe('committed');
+  expect(fs.readFileSync(r.transcript, 'utf8')).toContain('new process');
+  expect(fs.existsSync(`${r.claim}.operation`)).toBe(false);
+  expect(r.first.appendTranscriptLine('/repo', 'cline', 'resumed', { type: 'prompt', text: 'duplicate instance' })).toBe('refused');
+});
+
+it('Cline captures native snapshot callbacks and content parts with stable message ids', async () => {
+  const r = rig('cline');
+  let prompts = 0;
+  const subject = snippetModule(r.env, [], [], (_bin, args) => ({
+    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: 'start context' }),
+  }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  const snapshot = { conversationId: 'resumed', agentId: 'agent', iteration: 1, messages: [] };
+  await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
+  expect(JSON.parse(fs.readFileSync(r.transcript, 'utf8').trim()).type).toBe('session');
+  for (const id of ['first', 'second']) {
+    const input = { snapshot, request: { messages: [{ id, role: 'user', content: [{ type: 'text', text: 'continue' }], createdAt: NOW }] } };
+    const result = await subject.MycoClinePlugin.hooks.beforeModel(input) as { messages: Array<{ content: unknown }> };
+    expect(result.messages.at(-1)?.content).toEqual([{ type: 'text', text: expect.stringContaining(id === 'first' ? 'start context' : 'context') }]);
+    await subject.MycoClinePlugin.hooks.beforeModel(structuredClone(input));
+    await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: `reply-${id}`, content: [{ type: 'text', text: `reply ${id}` }] }, finishReason: 'stop' });
+    await subject.MycoClinePlugin.hooks.afterTool({ snapshot, toolCall: { type: 'tool-call', toolCallId: `tool-${id}`, toolName: 'read' }, input: { path: '/repo/a' }, result: { output: 'ok', isError: false } });
+  }
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'prompt' || row.type === 'response').map(row => [row.type, row.promptId])).toEqual([
+    ['prompt', 'native-1'], ['response', 'native-1'], ['prompt', 'native-2'], ['response', 'native-2'],
+  ]);
+  expect(rows.filter(row => row.type === 'tool').map(row => [row.promptId, row.output])).toEqual([['native-1', 'ok'], ['native-2', 'ok']]);
+  expect(prompts).toBe(2);
+});
+
+it('damaged pending lines are reported while valid retained and new capture continue', async () => {
+  const r = rig('cline');
+  const pending = path.join(`${r.claim}.pending`, `${process.pid}-damaged.jsonl`);
+  fs.mkdirSync(path.dirname(pending), { recursive: true });
+  fs.writeFileSync(pending, '{broken}\n' + JSON.stringify({ type: 'prompt', sessionId: 'resumed', text: 'retained', promptId: 'retained-id', captureId: 'retained-source' }) + '\n');
+  const notes: string[] = [];
+  const subject = snippetModule(r.env, [], notes, () => ({ status: 0, stderr: '', stdout: '{"promptId":"new-id"}' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  const snapshot = { conversationId: 'resumed' };
+  await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'new', role: 'user', content: [{ type: 'text', text: 'new' }] }] } });
+  await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { content: [{ type: 'text', text: 'reply' }] } });
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'prompt' || row.type === 'response').map(row => row.text)).toEqual(['retained', 'new', 'reply']);
+  expect(notes.join('\n')).toContain('damaged pending capture');
+  expect(fs.readFileSync(pending, 'utf8')).toContain('{broken}');
+});
+
+it('replay shares live submission identities and preserves retained prompt stamps', async () => {
+  const r = rig('cline');
+  const subject = snippetModule(r.env, [], [], () => ({ status: 0, stderr: '', stdout: '{"promptId":"live-id"}' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+  await subject.MycoClinePlugin.hooks.beforeModel({ messages: [{ id: 'S', role: 'user', content: 'same' }] }, ctx);
+  const pending = path.join(`${r.claim}.pending`, `${process.pid}-other.jsonl`);
+  fs.mkdirSync(path.dirname(pending), { recursive: true });
+  fs.writeFileSync(pending, [
+    { type: 'prompt', sessionId: 'resumed', text: 'same', submissionId: 'message:S', captureId: 'submission-message:S' },
+    { type: 'response', sessionId: 'resumed', text: 'retained reply', submissionId: 'message:S', captureId: 'retained-reply' },
+    { type: 'prompt', sessionId: 'resumed', text: 'held', promptId: 'minted-before-refusal', submissionId: 'message:H', captureId: 'submission-message:H' },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
+  await subject.MycoClinePlugin.hooks.afterTool({ name: 'read' }, ctx);
+  await subject.MycoClinePlugin.hooks.afterTool({ name: 'read' }, ctx);
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'prompt').map(row => row.promptId)).toEqual(['live-id', 'minted-before-refusal']);
+  expect(rows.find(row => row.text === 'retained reply').promptId).toBe('live-id');
+});
+
+it('verifies another PID birth before replacing its writer and caches unavailable probes', async () => {
+  const child = spawn(process.execPath, ['--no-env-file', '-e', 'console.log("ready"); await Bun.stdin.text()'], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.once('data', () => resolve());
+      child.once('error', reject);
+    });
+    const birth = Date.parse('2026-11-02T12:00:00Z');
+    const r = rig('cline');
+    fs.mkdirSync(path.dirname(r.claim), { recursive: true });
+    fs.writeFileSync(r.claim, `${child.pid}-old ${NOW} ${birth - 60_000}`, { mode: 0o600 });
+    const subject = snippetModule(r.env, [], [], undefined, ROUTING_KEY, () => NOW, fs, () => 0, undefined,
+      () => ({ status: 0, stdout: new Date(birth).toISOString(), stderr: '' }));
+    expect(subject.appendTranscriptLine('/repo', 'cline', 'resumed', { type: 'prompt', text: 'replacement' })).toBe('committed');
+
+    const held = rig('cline');
+    fs.mkdirSync(path.dirname(held.claim), { recursive: true });
+    fs.writeFileSync(held.claim, `${child.pid}-unavailable ${NOW} ${birth}`, { mode: 0o600 });
+    let probes = 0;
+    const waiting = snippetModule(held.env, [], [], undefined, ROUTING_KEY, () => NOW, fs, () => 0, 'cline',
+      () => { probes += 1; return { status: null, stdout: '', stderr: 'probe timed out' }; }, 'win32');
+    const snapshot = { conversationId: 'resumed' };
+    for (let i = 0; i < 5; i++) await waiting.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: `reply-${i}`, content: [{ type: 'text', text: 'held' }] } });
+    expect(probes).toBe(2);
+    const pending = fs.readdirSync(`${held.claim}.pending`).filter(file => file.endsWith('.jsonl'));
+    expect(pending).toHaveLength(5);
+    expect(pending.every(file => JSON.parse(fs.readFileSync(path.join(`${held.claim}.pending`, file), 'utf8')).text === 'held')).toBe(true);
+  } finally { child.kill('SIGKILL'); }
+});
+
+it('a prompt without a submission key cannot reuse a different failed prompt answer', async () => {
+  const r = rig('opencode');
+  let fail = true;
+  let minted = 0;
+  const subject = snippetModule(r.env, [], [], (_bin, args) => ({ status: 0, stderr: '', stdout: args[1] === 'user-prompt-submit' ? JSON.stringify({ promptId: `minted-${++minted}` }) : '{}' }), ROUTING_KEY, () => NOW, {
+    ...fs,
+    appendFileSync: (...args: Parameters<typeof fs.appendFileSync>) => {
+      if (fail && String(args[1]).includes('"type":"prompt"')) {
+        fail = false;
+        throw Object.assign(new Error('temporary full disk'), { code: 'ENOSPC' });
+      }
+      fs.appendFileSync(...args);
+    },
+  }, () => 0, 'opencode');
+  const hooks = await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
+  for (const text of ['first prompt', 'second prompt']) await hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text }] });
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'prompt').map(row => [row.text, row.promptId])).toEqual([
+    ['first prompt', 'minted-1'], ['second prompt', 'minted-2'],
+  ]);
+});
+
+it('a surviving producer retains new callbacks after a partial inbox write', async () => {
+  const r = rig('cline');
+  fs.mkdirSync(path.dirname(r.claim), { recursive: true });
+  fs.writeFileSync(r.claim, `unverified-writer ${NOW}`);
+  let partial = true;
+  const notes: string[] = [];
+  const subject = snippetModule(r.env, [], notes, undefined, ROUTING_KEY, () => NOW, {
+    ...fs,
+    appendFileSync(file, data, ...options) {
+      if (partial && String(data).includes('"type":"response"')) {
+        partial = false;
+        fs.appendFileSync(file, String(data).slice(0, 30));
+        throw Object.assign(new Error('partial write'), { code: 'ENOSPC' });
+      }
+      fs.appendFileSync(file, data, ...options);
+    },
+  }, () => 0, 'cline');
+  const snapshot = { conversationId: 'resumed' };
+  await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'torn', content: [{ type: 'text', text: 'torn' }] } });
+  await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'next', content: [{ type: 'text', text: 'complete' }] } });
+  fs.unlinkSync(r.claim);
+  const resumed = r.load();
+  expect(resumed.initializeTranscriptSession('/repo', 'cline', 'resumed').status).toBe('committed');
+  const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows.filter(row => row.type === 'response').map(row => row.text)).toEqual(['complete']);
+  expect(notes.join('\n')).toContain('partial write');
+});
+
+it('same-process plugin instances share the kernel birth proof across VM clocks', () => {
+  const r = rig('cline');
+  const birth = Date.parse('2020-01-01T00:00:00Z');
+  fs.mkdirSync(path.dirname(r.claim), { recursive: true });
+  const holder = `${process.pid}-another-vm ${NOW} ${birth}`;
+  fs.writeFileSync(r.claim, holder);
+  const subject = snippetModule(r.env, [], [], undefined, ROUTING_KEY, () => NOW, fs, () => 0, undefined,
+    () => ({ status: 0, stdout: new Date(birth).toUTCString(), stderr: '' }));
+  expect(subject.holdsSessionClaim('/repo', 'cline', 'resumed')).toBe(false);
+  expect(fs.readFileSync(r.claim, 'utf8')).toBe(holder);
 });

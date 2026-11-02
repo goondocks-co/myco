@@ -130,7 +130,7 @@ describe('AntigravityJsonlParser', () => {
     expect(turns[0]!.aiResponse).toBe('final reply');
   });
 
-  it('dedupes byte-identical USER_INPUT rows AGY re-emits at step 0 of each execution', () => {
+  it('deduplicates repeated observations carrying the same submission step', () => {
     const content = toJsonl([
       userInput(0, 'one logical prompt'),
       plannerWithTool(3, 'view_file', { AbsolutePath: '/repo/a.ts' }),
@@ -177,4 +177,16 @@ describe('extractAntigravityFilePath', () => {
   ])('maps %s args → %j', (name, args, expected) => {
     expect(extractAntigravityFilePath(name, args)).toBe(expected);
   });
+});
+
+it('keeps equal human inputs separated by replies as separate submissions', () => {
+  const rows = toJsonl([
+    userInput(0, 'continue'), plannerWithReply(1, 'one'),
+    userInput(199, 'continue', '2026-05-23T20:21:53Z'), plannerWithReply(1, 'two'),
+  ]);
+  const parser = new AntigravityJsonlParser();
+  expect(parser.parseTurns(rows).map(turn => [turn.prompt, turn.aiResponse])).toEqual([
+    ['continue', 'one'], ['continue', 'two'],
+  ]);
+  expect(parser.parseTurns(rows)).toEqual(parser.parseTurns(rows));
 });

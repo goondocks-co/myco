@@ -1,3 +1,4 @@
+import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * The commit point. A hook that derives an event also writes the receipt that
  * stops it being derived again — the plan hash, the plan file's content hash,
@@ -98,25 +99,25 @@ describe('capture is never lost permanently at the commit point', () => {
     }
   });
 
-  it('a pasted plan tag killed at the commit point leaves no receipt, and the rerun lands it once', async () => {
+  it('a pasted plan survives a failed transcript commit and source replay stays idempotent', async () => {
     const tx = transcript('/nowhere/plan.md');
+    const rows = fs.readFileSync(tx, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    rows[0].message.content = [{ type: 'text', text: 'Approved: <ultraplan># Pasted</ultraplan>' }];
+    fs.writeFileSync(tx, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
     await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' });
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
-    const prompt = 'Approved:\n<ultraplan>\n# Pasted\n</ultraplan>';
-    const crashed = await crashAtCommit(() => run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt }));
-    // Fail open: the harness still gets its response and the hook exits 0.
+    const input = { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '' };
+    const crashed = await crashAtCommit(() => run('stop', input));
     expect(crashed.stderr).toContain('ENOSPC');
-    expect(crashed.stdout).toContain(`Session:: \`${session}\``);
     expect(rig.rows('plans')).toBe(0);
-    expect(Object.keys(readSessionState(spool.dir, session).planHashes)).toEqual([]);
-
-    await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt });
+    expect(readSessionState(spool.dir, session).transcript).toBeUndefined();
+    await run('stop', input);
+    await publishFixture(rig.env);
     expect(rig.rows('plans')).toBe(1);
-    expect(Object.keys(readSessionState(spool.dir, session).planHashes)).toHaveLength(1);
-    await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt });
-    expect(rig.rows('plans')).toBe(1);
-    // A transcript-first agent keeps no prompt receipt: the prompt row is the parse's.
-    expect(readSessionState(spool.dir, session).promptId).toBeUndefined();
+    const keys = rig.env.sqlite.query('SELECT plan_key FROM plans').all();
+    await run('stop', input);
+    await publishFixture(rig.env);
+    expect(rig.env.sqlite.query('SELECT plan_key FROM plans').all()).toEqual(keys);
   });
 
   it('a spool that cannot be written still answers the harness and exits without a signal', async () => {
