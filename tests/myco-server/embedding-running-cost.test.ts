@@ -9,13 +9,13 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
-import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
+import { reconcileEmbedding, type EmbeddingContext } from '@myco-server-worker/core/embedding/reconcile.js';
 import { EmbeddingUnavailable } from '@myco-server-worker/core/embedding/provider.js';
 import { memoryBlobStore, sqliteEnv } from './helpers/fixtures.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { measuredStore } from './helpers/read-budget.js';
-import { vectorId } from '@myco-server-worker/core/embedding/vectors.js';
+import { vectorId, type StoredVector } from '@myco-server-worker/core/embedding/vectors.js';
 import { reconcileHubness, calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
 import { readDocumentStatus, pendingPublication } from '@myco-server-worker/read/document-status.js';
 
@@ -267,7 +267,7 @@ test('secret changes fence in-flight failures and invalidate holds on insert, up
   try {
     await f.db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('p','p',1)").run();
       await plans(f.db,1);
-    const secrets=deploymentSecretStore(f.db,{material:async()=>new Uint8Array(32),version:async()=> 'test'});
+    const secrets=deploymentSecretStore(f.db,{material:async()=>new ArrayBuffer(32),version:async()=>1});
     let calls=0;
     const c=context(f.db,async()=>{
       if(++calls===1) {
@@ -315,8 +315,11 @@ test('a calibration start whose commit acknowledgement is lost still publishes e
       if(armed){armed=false;throw new Error('lost commit acknowledgement');}
       return result;
     }};
-    const c={...context(db),vectors:{...context(db).vectors,get:async (_scope:unknown,ids:string[])=>{
-      armed=true;return ids.map(id=>({id,values:[1,0]}));
+    const c:EmbeddingContext={...context(db),vectors:{...context(db).vectors,get:async (_scope,ids)=>{
+      armed=true;return ids.map((id):StoredVector=>({id,values:[1,0],metadata:{
+        type:'spore',record_id:id,revision:'fixture',status:'active',session_id:'',created_at:1,
+        observation_type:'decision',release_state:'',release_confidence:'',
+      }}));
     }}};
     await expect(reconcileHubness(c,'p',NOW)).rejects.toThrow('lost commit acknowledgement');
     for(let i=1;i<12;i++) await reconcileHubness(c,'p',NOW+i);
