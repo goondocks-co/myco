@@ -4,138 +4,50 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "paths": {
-      "@goondocks/myco-shared/turn-card": [
-        "../myco-shared/src/turn-card.ts"
-      ],
-      "@goondocks/myco-shared/mcp-protocol": [
-        "../myco-shared/src/mcp-protocol.ts"
-      ],
-      "@goondocks/myco-shared/budget-status": [
-        "../myco-shared/src/budget-status.ts"
-      ],
-      "@goondocks/myco-shared/search-types": [
-        "../myco-shared/src/search-types.ts"
-      ],
-      "@goondocks/myco-shared/runner-fleet": [
-        "../myco-shared/src/runner-fleet.ts"
-      ],
-      "@goondocks/myco-shared/report-order": [
-        "../myco-shared/src/report-order.ts"
-      ],
-      "@goondocks/myco-shared/runner-update": [
-        "../myco-shared/src/runner-update.ts"
-      ],
-      "@goondocks/myco-shared/raw-claims": [
-        "../myco-shared/src/raw-claims.ts"
-      ],
-      "@goondocks/myco-shared/relevance": [
-        "../myco-shared/src/relevance.ts"
-      ],
-      "@goondocks/myco-shared/prompt-text": [
-        "../myco-shared/src/prompt-text.ts"
-      ],
-      "@goondocks/myco-shared/recall": [
-        "../myco-shared/src/recall.ts"
-      ],
-      "@goondocks/myco-shared/repository": [
-        "../myco-shared/src/repository.ts"
-      ],
-      "@goondocks/myco-shared/worker-usage": [
-        "../myco-shared/src/worker-usage.ts"
-      ],
-      "@goondocks/myco-shared/worker-steps": [
-        "../myco-shared/src/worker-steps.ts"
-      ],
-      "@goondocks/myco-shared/harness-health": [
-        "../myco-shared/src/harness-health.ts"
-      ],
-      "@goondocks/myco-shared/command-shape": [
-        "../myco-shared/src/command-shape.ts"
-      ],
-      "@goondocks/myco-shared/run-text": [
-        "../myco-shared/src/run-text.ts"
-      ],
-      "@goondocks/myco-shared/run-protocol": [
-        "../myco-shared/src/run-protocol.ts"
-      ],
-      "@goondocks/myco-shared/run-diagnostic": [
-        "../myco-shared/src/run-diagnostic.ts"
-      ],
-      "@goondocks/myco-shared/execution-profile": [
-        "../myco-shared/src/execution-profile.ts"
-      ],
-      "@goondocks/myco-shared/call-words": [
-        "../myco-shared/src/call-words.ts"
-      ],
-      "@goondocks/myco-shared/settings-contract": [
-        "../myco-shared/src/settings-contract.ts"
-      ],
-      "@goondocks/myco-shared/redact-secrets": [
-        "../myco-shared/src/redact-secrets.ts"
-      ],
-      "@goondocks/myco-shared/canopy": [
-        "../myco-shared/src/canopy.ts"
-      ],
-      "@goondocks/myco-shared/skills": [
-        "../myco-shared/src/skills.generated.ts"
-      ],
-      "@goondocks/myco-shared/run-holds": [
-        "../myco-shared/src/run-holds.ts"
-      ],
-      "@goondocks/myco-shared/harness-providers": [
-        "../myco-shared/src/harness-providers.ts"
-      ],
-      "@goondocks/myco-shared/agent-config": [
-        "../myco-shared/src/agent-config.ts"
-      ],
-      "@goondocks/myco-shared/capture-rule-schema": [
-        "../myco-shared/src/capture-rule-schema.ts"
-      ],
-      "@goondocks/myco-shared/capture-rules": [
-        "../myco-shared/src/capture-rules.ts"
-      ],
-      "@goondocks/myco-shared/prompt-identity": [
-        "../myco-shared/src/prompt-identity.ts"
-      ],
-      "@goondocks/myco-shared/record-identity": [
-        "../myco-shared/src/record-identity.ts"
-      ],
-      "@goondocks/myco-shared/tool-result": [
-        "../myco-shared/src/tool-result.ts"
-      ],
-      "@goondocks/myco-shared/capture-rules-data": [
-        "../myco-shared/src/capture-rules.generated.ts"
-      ],
-      "@goondocks/myco-shared/resume-commands-data": [
-        "../myco-shared/src/resume-commands.generated.ts"
-      ],
-      "@goondocks/myco-shared/session-ids": [
-        "../myco-shared/src/session-ids.ts"
-      ],
-      "@goondocks/myco-shared/dot-path": [
-        "../myco-shared/src/dot-path.ts"
-      ],
-      "@goondocks/myco-shared/setup-guidance": [
-        "../myco-shared/src/setup-guidance.ts"
-      ],
-      "@goondocks/myco-shared/backup-words": [
-        "../myco-shared/src/backup-words.ts"
-      ],
-      "@goondocks/myco-shared/member-protocol": [
-        "../myco-shared/src/member-protocol.ts"
-      ],
-      "@goondocks/myco-shared/run-control": [
-        "../myco-shared/src/run-control.ts"
-      ],
-      "@goondocks/myco-shared/d1-export": [
-        "../myco-shared/src/d1-export.ts"
-      ],
-      "@goondocks/myco-shared/secret-slots": [
-        "../myco-shared/src/secret-slots.ts"
-      ],
-      "@goondocks/myco-shared/shell-command": [
-        "../myco-shared/src/shell-command.ts"
-      ]
+      "@goondocks/myco-shared/shell-command": ["../myco-shared/src/shell-command.ts"],
+      "@goondocks/myco-shared/turn-card": ["../myco-shared/src/turn-card.ts"],
+      "@goondocks/myco-shared/mcp-protocol": ["../myco-shared/src/mcp-protocol.ts"],
+      "@goondocks/myco-shared/budget-status": ["../myco-shared/src/budget-status.ts"],
+      "@goondocks/myco-shared/search-types": ["../myco-shared/src/search-types.ts"],
+      "@goondocks/myco-shared/runner-fleet": ["../myco-shared/src/runner-fleet.ts"],
+      "@goondocks/myco-shared/report-order": ["../myco-shared/src/report-order.ts"],
+      "@goondocks/myco-shared/runner-update": ["../myco-shared/src/runner-update.ts"],
+      "@goondocks/myco-shared/raw-claims": ["../myco-shared/src/raw-claims.ts"],
+      "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
+      "@goondocks/myco-shared/prompt-text": ["../myco-shared/src/prompt-text.ts"],
+      "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],
+      "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
+      "@goondocks/myco-shared/worker-usage": ["../myco-shared/src/worker-usage.ts"],
+      "@goondocks/myco-shared/worker-steps": ["../myco-shared/src/worker-steps.ts"],
+      "@goondocks/myco-shared/harness-health": ["../myco-shared/src/harness-health.ts"],
+      "@goondocks/myco-shared/command-shape": ["../myco-shared/src/command-shape.ts"],
+      "@goondocks/myco-shared/run-text": ["../myco-shared/src/run-text.ts"],
+      "@goondocks/myco-shared/run-protocol": ["../myco-shared/src/run-protocol.ts"],
+      "@goondocks/myco-shared/run-diagnostic": ["../myco-shared/src/run-diagnostic.ts"],
+      "@goondocks/myco-shared/execution-profile": ["../myco-shared/src/execution-profile.ts"],
+      "@goondocks/myco-shared/call-words": ["../myco-shared/src/call-words.ts"],
+      "@goondocks/myco-shared/settings-contract": ["../myco-shared/src/settings-contract.ts"],
+      "@goondocks/myco-shared/redact-secrets": ["../myco-shared/src/redact-secrets.ts"],
+      "@goondocks/myco-shared/canopy": ["../myco-shared/src/canopy.ts"],
+      "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],
+      "@goondocks/myco-shared/run-holds": ["../myco-shared/src/run-holds.ts"],
+      "@goondocks/myco-shared/harness-providers": ["../myco-shared/src/harness-providers.ts"],
+      "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"],
+      "@goondocks/myco-shared/capture-rule-schema": ["../myco-shared/src/capture-rule-schema.ts"],
+      "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
+      "@goondocks/myco-shared/prompt-identity": ["../myco-shared/src/prompt-identity.ts"],
+      "@goondocks/myco-shared/record-identity": ["../myco-shared/src/record-identity.ts"],
+      "@goondocks/myco-shared/tool-result": ["../myco-shared/src/tool-result.ts"],
+      "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
+      "@goondocks/myco-shared/resume-commands-data": ["../myco-shared/src/resume-commands.generated.ts"],
+      "@goondocks/myco-shared/session-ids": ["../myco-shared/src/session-ids.ts"],
+      "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"],
+      "@goondocks/myco-shared/setup-guidance": ["../myco-shared/src/setup-guidance.ts"],
+      "@goondocks/myco-shared/backup-words": ["../myco-shared/src/backup-words.ts"],
+      "@goondocks/myco-shared/member-protocol": ["../myco-shared/src/member-protocol.ts"],
+      "@goondocks/myco-shared/run-control": ["../myco-shared/src/run-control.ts"],
+      "@goondocks/myco-shared/d1-export": ["../myco-shared/src/d1-export.ts"],
+      "@goondocks/myco-shared/secret-slots": ["../myco-shared/src/secret-slots.ts"]
     },
     "lib": [
       "ES2022",

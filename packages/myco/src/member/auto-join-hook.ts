@@ -90,7 +90,6 @@ export function autoJoinHold(opts: {
   try { current = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now); }
   catch (error) {
     process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
-    opts.later(join);
     return hold(null);
   }
   const { standing, leaves, state } = current;

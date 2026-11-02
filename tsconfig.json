@@ -8,194 +8,73 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": [
-      "bun"
-    ],
+    "types": ["bun"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
-      "@goondocks/myco-shared/turn-card": [
-        "./packages/myco-shared/src/turn-card.ts"
-      ],
-      "@goondocks/myco-shared/mcp-protocol": [
-        "./packages/myco-shared/src/mcp-protocol.ts"
-      ],
-      "@myco/*": [
-        "./packages/myco/src/*"
-      ],
-      "@myco-server-worker/*": [
-        "./packages/myco-server/src/*"
-      ],
-      "@goondocks/myco-shared/search-types": [
-        "./packages/myco-shared/src/search-types.ts"
-      ],
-      "@goondocks/myco-shared/json": [
-        "./packages/myco-shared/src/json.ts"
-      ],
-      "@goondocks/myco-shared": [
-        "./packages/myco-shared/src/index.ts"
-      ],
-      "@goondocks/myco-shared/runner-fleet": [
-        "./packages/myco-shared/src/runner-fleet.ts"
-      ],
-      "@goondocks/myco-shared/report-order": [
-        "./packages/myco-shared/src/report-order.ts"
-      ],
-      "@goondocks/myco-shared/runner-update": [
-        "./packages/myco-shared/src/runner-update.ts"
-      ],
-      "@goondocks/myco-shared/relevance": [
-        "./packages/myco-shared/src/relevance.ts"
-      ],
-      "@goondocks/myco-shared/raw-claims": [
-        "./packages/myco-shared/src/raw-claims.ts"
-      ],
-      "@goondocks/myco-shared/prompt-text": [
-        "./packages/myco-shared/src/prompt-text.ts"
-      ],
-      "@goondocks/myco-shared/recall": [
-        "./packages/myco-shared/src/recall.ts"
-      ],
-      "@goondocks/myco-shared/repository": [
-        "./packages/myco-shared/src/repository.ts"
-      ],
-      "@goondocks/myco-shared/budget-status": [
-        "./packages/myco-shared/src/budget-status.ts"
-      ],
-      "@goondocks/myco-shared/worker-usage": [
-        "./packages/myco-shared/src/worker-usage.ts"
-      ],
-      "@goondocks/myco-shared/worker-steps": [
-        "./packages/myco-shared/src/worker-steps.ts"
-      ],
-      "@goondocks/myco-shared/harness-health": [
-        "./packages/myco-shared/src/harness-health.ts"
-      ],
-      "@goondocks/myco-shared/command-shape": [
-        "./packages/myco-shared/src/command-shape.ts"
-      ],
-      "@goondocks/myco-shared/run-text": [
-        "./packages/myco-shared/src/run-text.ts"
-      ],
-      "@goondocks/myco-shared/run-protocol": [
-        "./packages/myco-shared/src/run-protocol.ts"
-      ],
-      "@goondocks/myco-shared/run-diagnostic": [
-        "./packages/myco-shared/src/run-diagnostic.ts"
-      ],
-      "@goondocks/myco-shared/worker-log": [
-        "./packages/myco-shared/src/worker-log.ts"
-      ],
-      "@goondocks/myco-shared/runner-step-words.generated": [
-        "./packages/myco-shared/src/runner-step-words.generated.ts"
-      ],
-      "@goondocks/myco-shared/execution-profile": [
-        "./packages/myco-shared/src/execution-profile.ts"
-      ],
-      "@goondocks/myco-shared/call-words": [
-        "./packages/myco-shared/src/call-words.ts"
-      ],
-      "@goondocks/myco-shared/settings-contract": [
-        "./packages/myco-shared/src/settings-contract.ts"
-      ],
-      "@goondocks/myco-shared/redact-secrets": [
-        "./packages/myco-shared/src/redact-secrets.ts"
-      ],
-      "@goondocks/myco-shared/canopy": [
-        "./packages/myco-shared/src/canopy.ts"
-      ],
-      "@goondocks/myco-shared/skills": [
-        "./packages/myco-shared/src/skills.generated.ts"
-      ],
-      "@goondocks/myco-shared/run-holds": [
-        "./packages/myco-shared/src/run-holds.ts"
-      ],
-      "@goondocks/myco-shared/harness-providers": [
-        "./packages/myco-shared/src/harness-providers.ts"
-      ],
-      "@goondocks/myco-shared/agent-config": [
-        "./packages/myco-shared/src/agent-config.ts"
-      ],
-      "@goondocks/myco-shared/capture-rule-schema": [
-        "./packages/myco-shared/src/capture-rule-schema.ts"
-      ],
-      "@goondocks/myco-shared/capture-rules": [
-        "./packages/myco-shared/src/capture-rules.ts"
-      ],
-      "@goondocks/myco-shared/prompt-identity": [
-        "./packages/myco-shared/src/prompt-identity.ts"
-      ],
-      "@goondocks/myco-shared/record-identity": [
-        "./packages/myco-shared/src/record-identity.ts"
-      ],
-      "@goondocks/myco-shared/tool-result": [
-        "./packages/myco-shared/src/tool-result.ts"
-      ],
-      "@goondocks/myco-shared/capture-rules-data": [
-        "./packages/myco-shared/src/capture-rules.generated.ts"
-      ],
-      "@goondocks/myco-shared/resume-commands-data": [
-        "./packages/myco-shared/src/resume-commands.generated.ts"
-      ],
-      "@goondocks/myco-shared/session-ids": [
-        "./packages/myco-shared/src/session-ids.ts"
-      ],
-      "@goondocks/myco-shared/dot-path": [
-        "./packages/myco-shared/src/dot-path.ts"
-      ],
-      "@goondocks/myco-shared/setup-guidance": [
-        "./packages/myco-shared/src/setup-guidance.ts"
-      ],
-      "@goondocks/myco-shared/backup-words": [
-        "./packages/myco-shared/src/backup-words.ts"
-      ],
-      "@goondocks/myco-shared/member-protocol": [
-        "./packages/myco-shared/src/member-protocol.ts"
-      ],
-      "@goondocks/myco-shared/run-control": [
-        "./packages/myco-shared/src/run-control.ts"
-      ],
-      "@goondocks/myco-shared/d1-export": [
-        "./packages/myco-shared/src/d1-export.ts"
-      ],
-      "@goondocks/myco-shared/provider-slots": [
-        "./packages/myco-shared/src/provider-slots.ts"
-      ],
-      "@goondocks/myco-shared/secret-slots": [
-        "./packages/myco-shared/src/secret-slots.ts"
-      ],
-      "react": [
-        "./node_modules/react"
-      ],
-      "react-dom": [
-        "./node_modules/react-dom"
-      ],
-      "react/jsx-runtime": [
-        "./node_modules/react/jsx-runtime.js"
-      ],
-      "react/jsx-dev-runtime": [
-        "./node_modules/react/jsx-dev-runtime.js"
-      ],
-      "@tanstack/react-query": [
-        "./node_modules/@tanstack/react-query/build/modern/index.js"
-      ],
-      "react-router-dom": [
-        "./node_modules/react-router-dom/dist/index.mjs"
-      ],
-      "react-router": [
-        "./node_modules/react-router/dist/development/index.mjs"
-      ],
-      "@goondocks/myco-shared/shell-command": [
-        "./packages/myco-shared/src/shell-command.ts"
-      ]
+      "@goondocks/myco-shared/shell-command": ["./packages/myco-shared/src/shell-command.ts"],
+      "@goondocks/myco-shared/turn-card": ["./packages/myco-shared/src/turn-card.ts"],
+      "@goondocks/myco-shared/mcp-protocol": ["./packages/myco-shared/src/mcp-protocol.ts"],
+      "@myco/*": ["./packages/myco/src/*"],
+      "@myco-server-worker/*": ["./packages/myco-server/src/*"],
+      "@goondocks/myco-shared/search-types": ["./packages/myco-shared/src/search-types.ts"],
+      "@goondocks/myco-shared/json": ["./packages/myco-shared/src/json.ts"],
+      "@goondocks/myco-shared": ["./packages/myco-shared/src/index.ts"],
+      "@goondocks/myco-shared/runner-fleet": ["./packages/myco-shared/src/runner-fleet.ts"],
+      "@goondocks/myco-shared/report-order": ["./packages/myco-shared/src/report-order.ts"],
+      "@goondocks/myco-shared/runner-update": ["./packages/myco-shared/src/runner-update.ts"],
+      "@goondocks/myco-shared/relevance": ["./packages/myco-shared/src/relevance.ts"],
+      "@goondocks/myco-shared/raw-claims": ["./packages/myco-shared/src/raw-claims.ts"],
+      "@goondocks/myco-shared/prompt-text": ["./packages/myco-shared/src/prompt-text.ts"],
+      "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
+      "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
+      "@goondocks/myco-shared/budget-status": ["./packages/myco-shared/src/budget-status.ts"],
+      "@goondocks/myco-shared/worker-usage": ["./packages/myco-shared/src/worker-usage.ts"],
+      "@goondocks/myco-shared/worker-steps": ["./packages/myco-shared/src/worker-steps.ts"],
+      "@goondocks/myco-shared/harness-health": ["./packages/myco-shared/src/harness-health.ts"],
+      "@goondocks/myco-shared/command-shape": ["./packages/myco-shared/src/command-shape.ts"],
+      "@goondocks/myco-shared/run-text": ["./packages/myco-shared/src/run-text.ts"],
+      "@goondocks/myco-shared/run-protocol": ["./packages/myco-shared/src/run-protocol.ts"],
+      "@goondocks/myco-shared/run-diagnostic": ["./packages/myco-shared/src/run-diagnostic.ts"],
+      "@goondocks/myco-shared/worker-log": ["./packages/myco-shared/src/worker-log.ts"],
+      "@goondocks/myco-shared/runner-step-words.generated": ["./packages/myco-shared/src/runner-step-words.generated.ts"],
+      "@goondocks/myco-shared/execution-profile": ["./packages/myco-shared/src/execution-profile.ts"],
+      "@goondocks/myco-shared/call-words": ["./packages/myco-shared/src/call-words.ts"],
+      "@goondocks/myco-shared/settings-contract": ["./packages/myco-shared/src/settings-contract.ts"],
+      "@goondocks/myco-shared/redact-secrets": ["./packages/myco-shared/src/redact-secrets.ts"],
+      "@goondocks/myco-shared/canopy": ["./packages/myco-shared/src/canopy.ts"],
+      "@goondocks/myco-shared/skills": ["./packages/myco-shared/src/skills.generated.ts"],
+      "@goondocks/myco-shared/run-holds": ["./packages/myco-shared/src/run-holds.ts"],
+      "@goondocks/myco-shared/harness-providers": ["./packages/myco-shared/src/harness-providers.ts"],
+      "@goondocks/myco-shared/agent-config": ["./packages/myco-shared/src/agent-config.ts"],
+      "@goondocks/myco-shared/capture-rule-schema": ["./packages/myco-shared/src/capture-rule-schema.ts"],
+      "@goondocks/myco-shared/capture-rules": ["./packages/myco-shared/src/capture-rules.ts"],
+      "@goondocks/myco-shared/prompt-identity": ["./packages/myco-shared/src/prompt-identity.ts"],
+      "@goondocks/myco-shared/record-identity": ["./packages/myco-shared/src/record-identity.ts"],
+      "@goondocks/myco-shared/tool-result": ["./packages/myco-shared/src/tool-result.ts"],
+      "@goondocks/myco-shared/capture-rules-data": ["./packages/myco-shared/src/capture-rules.generated.ts"],
+      "@goondocks/myco-shared/resume-commands-data": ["./packages/myco-shared/src/resume-commands.generated.ts"],
+      "@goondocks/myco-shared/session-ids": ["./packages/myco-shared/src/session-ids.ts"],
+      "@goondocks/myco-shared/dot-path": ["./packages/myco-shared/src/dot-path.ts"],
+      "@goondocks/myco-shared/setup-guidance": ["./packages/myco-shared/src/setup-guidance.ts"],
+      "@goondocks/myco-shared/backup-words": ["./packages/myco-shared/src/backup-words.ts"],
+      "@goondocks/myco-shared/member-protocol": ["./packages/myco-shared/src/member-protocol.ts"],
+      "@goondocks/myco-shared/run-control": ["./packages/myco-shared/src/run-control.ts"],
+      "@goondocks/myco-shared/d1-export": ["./packages/myco-shared/src/d1-export.ts"],
+      "@goondocks/myco-shared/provider-slots": ["./packages/myco-shared/src/provider-slots.ts"],
+      "@goondocks/myco-shared/secret-slots": ["./packages/myco-shared/src/secret-slots.ts"],
+      "react": ["./node_modules/react"],
+      "react-dom": ["./node_modules/react-dom"],
+      "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],
+      "react/jsx-dev-runtime": ["./node_modules/react/jsx-dev-runtime.js"],
+      "@tanstack/react-query": ["./node_modules/@tanstack/react-query/build/modern/index.js"],
+      "react-router-dom": ["./node_modules/react-router-dom/dist/index.mjs"],
+      "react-router": ["./node_modules/react-router/dist/development/index.mjs"]
     }
   },
-  "include": [
-    "packages/myco/src/**/*",
-    "packages/myco-shared/src/**/*"
-  ],
+  "include": ["packages/myco/src/**/*", "packages/myco-shared/src/**/*"],
   "exclude": [
     "node_modules",
     "dist",

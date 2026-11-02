@@ -354,7 +354,7 @@ async function aliasGate(spellings: string[]): Promise<void> {
 it('alias gate: every symlinked ancestor spelling finds its binding and cannot hold for the default Myco', async () => {
   await aliasGate([root, alias]);
 });
-it.skipIf(process.platform !== 'darwin')('alias gate: /tmp and /private/tmp (host must provide the macOS alias)', async () => {
+it.skipIf(process.platform !== 'darwin' || !/^\/private\/tmp(?:\/|$)/.test(fs.realpathSync.native(os.tmpdir())))('alias gate: /tmp and /private/tmp (host must provide the macOS alias)', async () => {
   const physical = fs.realpathSync.native(root);
   const short = physical.replace(/^\/private\/tmp\//, '/tmp/');
   expect(short).not.toBe(physical);
@@ -744,8 +744,10 @@ it('an orphaned connection for this alias stays local and cannot throw through t
   fs.unlinkSync(path.join(base, 'alias'));
   fs.symlinkSync(path.dirname(other), path.join(base, 'alias'), 'junction');
   cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [key]: 'proj_old' } } }, mycoHome);
-  expect(autoJoinHold({ root: alias, hookName: 'session-end', agent: 'claude-code', sessionId: 'local-choice', mycoHome, now: 2,
-    env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('must not join'); } })).toBe(LEFT_ALONE);
+  const held = autoJoinHold({ root: alias, hookName: 'session-end', agent: 'claude-code', sessionId: 'local-choice', mycoHome, now: 2,
+    env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('must not join'); } });
+  expect(held).not.toBe(LEFT_ALONE);
+  expect(held !== null && typeof held === 'object' && held.spool !== null).toBe(true);
   const lines: string[] = [];
   runStatus([], { cwd: other, mycoHome, stdout: line => lines.push(line), stderr: line => lines.push(line) });
   const checks = await homeReport(mycoHome, { cwd: other, fetch: (async () => new Response('{}', { status: 503 })) as import('@myco/member/transport.js').FetchLike });

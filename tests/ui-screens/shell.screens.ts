@@ -275,7 +275,7 @@ test.describe('dashboard shell', () => {
       const { context, page, watch } = await openPage(browser, { path: `/join#${key}`, viewport, mode });
       try {
         await expect(page.getByRole('heading', { name: 'Connect a machine to Myco' })).toBeInViewport();
-        await expect(page.getByText(`myco login ${new URL(page.url()).origin}/join#${key}`)).toBeVisible();
+        await expect(page.getByText(`myco login '${new URL(page.url()).origin}/join#${key}'`)).toBeVisible();
         await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
         await expectFits(page, viewport);
         await expectAxeClean(page);

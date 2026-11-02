@@ -115,6 +115,7 @@ it('doctor and setup status warn once about a torn agent setup record with a rec
 it('keep-current leaves a torn record alone and logs once until its readable state changes', () => {
   provision('claude-code');
   const file = provisionRecordPath(home);
+  const backup = fs.readFileSync(file, 'utf8');
   fs.writeFileSync(file, '{not json');
   const errors: string[] = [];
   const log = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
@@ -123,6 +124,7 @@ it('keep-current leaves a torn record alone and logs once until its readable sta
     expect(keepCurrent(home)).toBeNull();
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain(file);
+    fs.writeFileSync(file, backup);
     recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['claude-code'] });
     expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
     fs.writeFileSync(file, '{not json');

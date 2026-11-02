@@ -206,10 +206,6 @@ describe('ServerClient classification', () => {
   it('a redirect is never followed and never answers acked: the capture body reaches no other host', async () => {
     const rig = await memberRig();
     const elsewhere: Array<{ path: string; body: string }> = [];
-    // A fetch that behaves the way the platform's does: it honours `redirect`,
-    // following a 307 to the named host when told to, and failing when told
-    // the redirect is an error. Following one would ship the whole envelope to
-    // that host and read its `{persisted:true}` as this server's answer.
     const redirecting: FetchLike = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
@@ -217,9 +213,8 @@ describe('ServerClient classification', () => {
         elsewhere.push({ path: url.pathname, body: await request.clone().text() });
         return new Response(JSON.stringify({ persisted: true }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
-      // The origin answers a redirect. A `follow` client re-sends the body to
-      // the named host and returns ITS answer; an `error` client fails here.
       if (request.redirect === 'error') throw new TypeError('unexpected redirect');
+      if (request.redirect === 'manual') return Response.redirect('https://attacker.example/events', 307);
       return redirecting('https://attacker.example/events', init);
     };
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, redirecting);
