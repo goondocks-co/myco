@@ -20,6 +20,7 @@
  * driven the way a user meets it — as a process, over its `runtime.command`
  * pin — so what is compared is the environment it hands its child.
  */
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -122,6 +123,7 @@ function writeCommandPin(dir: string): void {
 
 /** Run both implementations over `dirs` in a child launched with the given `~` and environment. */
 function resolveBoth(dirs: string[], env: { HOME: string; MYCO_HOME?: string }): Answer[] {
+  for (const dir of dirs) approveFixturePins(dir, env.HOME);
   const driver = path.join(tmpdir('myco-home-driver-'), 'driver.ts');
   fs.writeFileSync(driver, driverScript());
   const childEnv = sandboxChildEnv(fixtureRoot, { HOME: env.HOME,
@@ -135,6 +137,18 @@ function resolveBoth(dirs: string[], env: { HOME: string; MYCO_HOME?: string }):
   return JSON.parse(out) as Answer[];
 }
 
+function approveFixturePins(dir: string, userHome: string): void {
+  let current = dir;
+  while (current !== path.dirname(current)) {
+    if (current === userHome) break;
+    for (const name of ['runtime.home', 'runtime.command']) {
+      const pin = path.join(current, '.myco', name);
+      if (fs.existsSync(pin) && !(fs.lstatSync(pin).mode & 0o022)) trustProjectPin(pin, userHome);
+    }
+    current = path.dirname(current);
+  }
+}
+
 /** Both in-process implementations answered `expected` for this directory. */
 const expectAgreed = (answer: Answer, expected: string): void => {
   expect({ dir: answer.dir, plugin: answer.plugin, binary: answer.binary })
@@ -144,10 +158,30 @@ const expectAgreed = (answer: Answer, expected: string): void => {
 /** The shim, driven as a process, hands its child the same home. */
 const expectShimAgrees = (dir: string, env: { HOME: string; MYCO_HOME?: string }, expected: string): void => {
   if (!POSIX) return;
+  approveFixturePins(dir, env.HOME);
   expect({ dir, shim: shimHomeFor(dir, env) }).toEqual({ dir, shim: expected });
 };
 
 describe('plugin snippet and binary home resolution agree', () => {
+  it('ignores unapproved home and program pins across the binary, installed plugin, and standalone redirect', () => {
+    const fakeHome = tmpdir('myco-unapproved-user-');
+    const project = tmpdir('myco-unapproved-project-');
+    const machineHome = tmpdir('myco-approved-machine-');
+    writePin(project, tmpdir('myco-unapproved-home-'));
+    writeCommandPin(project);
+    writePin(fakeHome, machineHome);
+    writeCommandPin(fakeHome);
+    const machineBinary = fs.readFileSync(path.join(fakeHome, '.myco/runtime.command'), 'utf8').trim();
+    fs.writeFileSync(path.join(machineHome, 'runtime.command'), machineBinary);
+    const driver = path.join(tmpdir('myco-unapproved-driver-'), 'driver.ts');
+    fs.writeFileSync(driver, driverScript().replace('process.stdout.write(JSON.stringify(answers));',
+      'process.stdout.write(JSON.stringify({ ...answers[0], program: resolveMycoBinary(process.argv[2]) }));'));
+    const answer = JSON.parse(execFileSync(process.execPath, [driver, project], {
+      cwd: project, encoding: 'utf8', env: sandboxChildEnv(fixtureRoot, { HOME: fakeHome, MYCO_TEST_UNSET_HOME: '1' }),
+    }));
+    expect(answer).toEqual({ dir: project, plugin: machineHome, binary: machineHome, program: machineBinary });
+    if (POSIX) expect(shimHomeFor(project, { HOME: fakeHome })).toBe(machineHome);
+  });
   it('selects a source installation from the home without command or home pins', () => {
     const fakeHome = tmpdir('myco-source-homedir-');
     const project = tmpdir('myco-source-project-');

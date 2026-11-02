@@ -6,6 +6,7 @@
  */
 
 import { afterEach, describe, it, expect } from 'bun:test';
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -110,6 +111,7 @@ describe('pin layering', () => {
     const projectPin = path.join(project, '.myco', 'runtime.command');
     fs.writeFileSync(projectPin, '/project/dev-myco\n', { mode: 0o644 });
     fs.chmodSync(projectPin, 0o644);
+    trustProjectPin(projectPin);
 
     expect(readLayeredPin({ kind: 'machine' }, fx.env)).toBeNull();
     const walked = readLayeredPin({ kind: 'walk-up', from: path.join(project, 'src') }, fx.env);

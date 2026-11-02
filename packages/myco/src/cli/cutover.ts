@@ -46,6 +46,7 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isSafeProjectRoot } from '../project-root.js';
+import { trustProjectPin } from '../paths/pin-trust.js';
 import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, resolveMachineIdPath, type ResolvedMycoHome } from '../paths/home.js';
 import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
@@ -600,6 +601,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       run: async () => {
         if (!earlierCopyHolds(mycoHome, pin)) backup.take(pin);
         rewriteKeepingMode(pin, `${binary2}\n`);
+        trustProjectPin(pin);
         return { lines: [`pointed ${pin} at ${binary2}`], made: fs.readFileSync(pin, 'utf8').trim() === binary2 ? [`runtime ${pin}`] : [] };
       },
     }))] },

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,13 +22,15 @@ export function snippetModule(
   const source = fs.readFileSync(plugin ? path.join(TEMPLATES, plugin, 'plugin.ts') : path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const snippet = plugin ? source.replace(/^import .*;\n/gm, '').replace(/^const \{.*\} = nodeFs;\n/gm, '').replace(/^export default .*;\n/gm, '').replace(/^export /gm, '') : source;
   const realStart = performance.now();
-  const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
+  const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.replace(/^import .*;\n/gm, '').split('{{mycoCredentialSource}}').join('registry'));
   return new Function(
-    'nodeFs', 'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
+    'nodeFs', 'pinFs', 'pinOs', 'pinPath', 'pinHash', 'pinNonce',
+    'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
     'writeSync', 'unlinkSync', 'fstatSync', 'readSync', 'renameSync', 'rmdirSync', 'readdirSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'spawnSync', 'process', 'Date', 'performance',
     `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, releaseSessionClaim, runMycoHook, withClaimGate, initializeTranscriptSession, CLAIM_STALE_MS, CLAIM_RECHECK_MS ${plugin ? `, ${plugin === "cline" ? "MycoClinePlugin" : "MycoPlugin"}` : ""} };`,
   )(
-    fileSystem, fileSystem.readFileSync, fileSystem.appendFileSync, fileSystem.mkdirSync, fileSystem.statSync, fileSystem.lstatSync, fileSystem.accessSync, fileSystem.openSync, fileSystem.closeSync,
+    fileSystem, fileSystem, { homedir: () => env.HOME }, path, createHash, randomUUID,
+    fileSystem.readFileSync, fileSystem.appendFileSync, fileSystem.mkdirSync, fileSystem.statSync, fileSystem.lstatSync, fileSystem.accessSync, fileSystem.openSync, fileSystem.closeSync,
     fileSystem.writeSync, fileSystem.unlinkSync, fileSystem.fstatSync, fileSystem.readSync, fileSystem.renameSync, fileSystem.rmdirSync, fileSystem.readdirSync, fileSystem.constants, path.join, path.dirname, path.resolve, () => env.HOME,
     (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
       if (args[0] === 'member' && args[1] === 'routing-key') {

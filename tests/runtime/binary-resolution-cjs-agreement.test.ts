@@ -6,6 +6,7 @@
  */
 
 import { afterEach, describe, it, expect } from 'bun:test';
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -88,6 +89,7 @@ describe('layered pin agreement', () => {
     const projectPin = path.join(project, '.myco', 'runtime.command');
     fs.writeFileSync(projectPin, '/project/myco\n', { mode: 0o644 });
     fs.chmodSync(projectPin, 0o644);
+    trustProjectPin(projectPin);
     const machinePin = path.join(home, 'runtime.command');
     fs.writeFileSync(machinePin, '/machine/myco\n', { mode: 0o644 });
     fs.chmodSync(machinePin, 0o644);

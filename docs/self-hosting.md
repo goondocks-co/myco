@@ -208,3 +208,16 @@ The plain server image runs the server and keeps its data on a mounted volume. I
 Search indexing runs inside the server, including behind a trusted reverse proxy. Agent work needs a separately registered runner, just as it does on a native server. For cloud execution, register a runner on a cloud VM and sign its coding agent in there.
 
 The Compose lifecycle target and harness image are retired. `myco server create --target local` creates a native Deployment. If you already have one, `--target local` selects it even when an old Compose bundle is still held on disk. Keep that bundle and its data until you have chosen how to move them.
+
+
+### Runtime pins for source development
+
+An explicit `MYCO_HOME` takes precedence. Otherwise a project can select a home with `.myco/runtime.home` and a program with `.myco/runtime.command` only after you approve those pin paths on this machine:
+
+```bash
+myco member trust-pins --root /absolute/path/to/repository
+```
+
+Review both files before approving them. Approval is stored under `~/.myco/project-pin-trust/`, outside the checkout and independent of the selected Myco home. Registered Git worktrees share that approval and can select their own build and home paths; separate clones require approval. `myco member join` records approval when it creates a project home pin, and cutover records approval when it rewrites a project program pin. Source installation itself creates no project pins.
+
+An unapproved or unreadable pin is ignored. Capture continues through the machine pin or default home, with at most one warning on stderr. To stop using an override, remove its project pin files. For an isolated source test, use the absolute build artifact and scratch home variables described in the dogfood-worktree skill.

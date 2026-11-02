@@ -27,6 +27,7 @@ import { defaultMembership, readDefaultDeployment } from '../member/default-depl
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
+import { trustProjectPin } from '../paths/pin-trust.js';
 import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1262,13 +1263,14 @@ type PinOutcome =
 function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   const pinPath = path.join(root, '.myco', RUNTIME_HOME_FILENAME);
   const home = path.resolve(mycoHome);
-  const existing = readHomePin(pinPath);
+  const existing = readHomePin(pinPath, { projectPin: true });
   if (existing !== null && existing !== home) return { kind: 'conflict', pinPath, pinned: existing };
   if (existing === home || pathsEquivalentHome(home, defaultMycoHome())) return { kind: 'settled' };
   try {
     fs.mkdirSync(path.dirname(pinPath), { recursive: true });
     ensureGitIgnored(root, pinPath);
     createHomePin(pinPath, home);
+    trustProjectPin(pinPath);
     return { kind: 'written', pinPath };
   } catch {
     // A read-only checkout still holds the membership; only the pin is missing.
@@ -1509,6 +1511,20 @@ const memberHelpCommand: MemberCommandRegistration = {
 };
 
 export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
+  'trust-pins': {
+    help: `  trust-pins [--root <dir>]  Approve this folder's runtime pin paths on this machine.`,
+    run: async (rest, deps) => {
+      if (rest.length !== 0 && (rest.length !== 2 || rest[0] !== '--root')) throw new Error('usage: myco member trust-pins [--root <dir>]');
+      const root = rest.length === 2 ? rest[1] : (deps.cwd ?? process.cwd());
+      if (!root) throw new Error('trust-pins requires a folder');
+      for (const name of ['runtime.home', 'runtime.command']) {
+        const pin = path.join(root, '.myco', name);
+        if (!fs.existsSync(pin)) continue;
+        trustProjectPin(pin);
+        (deps.stdout ?? console.log)(`trusted ${pin}`);
+      }
+    },
+  },
   '--help': memberHelpCommand,
   '-h': memberHelpCommand,
   'join': {

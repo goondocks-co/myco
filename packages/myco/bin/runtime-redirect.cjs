@@ -47,7 +47,7 @@ function checkRuntimeCommandTrust(filePath) {
   return resolution.checkPinTrust(filePath);
 }
 
-function readPinAt(filePath, traceRefusal) {
+function readPinAt(filePath, traceRefusal, projectPin = false) {
   const trust = resolution.checkPinTrust(filePath);
   if (!trust.ok) {
     if (typeof traceRefusal === 'function') traceRefusal(`${filePath}: ${trust.reason}`);
@@ -55,6 +55,7 @@ function readPinAt(filePath, traceRefusal) {
   }
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    if (projectPin && raw && !resolution.projectPinIsTrusted(filePath)) return null;
     return raw || null;
   } catch {
     return null;
@@ -70,7 +71,7 @@ function readProjectRuntimeCommand(startDir, traceRefusal) {
   let dir = path.resolve(startDir);
   while (true) {
     const candidate = path.join(dir, '.myco', RUNTIME_COMMAND_FILENAME);
-    const pin = readPinAt(candidate, traceRefusal);
+    const pin = readPinAt(candidate, traceRefusal, dir !== os.homedir());
     if (pin) return { pin, source: candidate };
     const parent = path.dirname(dir);
     if (parent === dir) return null;
@@ -117,7 +118,7 @@ function expandHome(value) {
  */
 function readRuntimeHomeBeside(commandSource, traceRefusal) {
   const filePath = path.join(path.dirname(commandSource), RUNTIME_HOME_FILENAME);
-  const home = readPinAt(filePath, traceRefusal);
+  const home = readPinAt(filePath, traceRefusal, path.dirname(path.dirname(filePath)) !== os.homedir());
   if (!home) return null;
   const expanded = expandHome(home);
   if (!path.isAbsolute(expanded)) {

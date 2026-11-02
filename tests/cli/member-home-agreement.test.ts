@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,6 +45,7 @@ describe('the home a pinned repository uses', () => {
     fs.mkdirSync(repo, { recursive: true });
     execFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'ignore' });
     process.env.HOME = userHome;
+    trustProjectPin(pinPath, userHome);
     delete process.env.MYCO_HOME;
     out = [];
     err = [];
