@@ -136,9 +136,9 @@ export function placeExecutable(
   const dir = path.dirname(dest);
   // The temporary file keeps the destination's name, in a directory of its own
   // beside it: an ad hoc signature made on it takes its identifier from the name.
-  const staging = path.join(dir, `.myco-place-${process.pid}-${Date.now()}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(dir, '.myco-place-'));
   const tmp = path.join(staging, path.basename(dest));
-  fs.mkdirSync(staging, { recursive: true });
   try {
     if (options.move === true) fs.renameSync(src, tmp); else fs.copyFileSync(src, tmp);
     if (platform !== 'win32') fs.chmodSync(tmp, 0o755);

@@ -75,7 +75,7 @@ function buildSingleTarget() {
       'bun',
       // `--splitting` makes every dynamic import a chunk the binary reads only when it is reached: a hook loads its own
       // chunk (`entries/dispatch.ts`) and never parses the rest of the CLI.
-      ['build', '--compile', '--splitting', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
+      ['build', '--compile', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', '--splitting', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
       { stdio: 'inherit', cwd: pkgRoot, env: process.env },
     );
     status = result.status ?? 1;

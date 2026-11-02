@@ -4,9 +4,8 @@
  *
  * Built with `--splitting`, each dynamic import below is a chunk the binary reads only when it is reached, so a hook
  * never parses the CLI, the daemon or the server code a hook does not run. The steps the CLI takes before it dispatches
- * a hook are taken here in the same order: loopback dials kept off any proxy, then the start directory's `.env`.
+ * a hook are taken here too: loopback dials stay off any proxy.
  */
-import { loadEnv } from '../cli/env-file.js';
 import { keepLoopbackOffProxy } from '../cli/loopback-proxy.js';
 
 /** Whether argv asks for help, which the CLI answers for every verb. */
@@ -20,7 +19,6 @@ export async function dispatch(registerNativeDeps: () => Promise<void>): Promise
   try {
     const [cmd, ...args] = process.argv.slice(2);
     if (cmd === 'hook' && !asksForHelp(args)) {
-      loadEnv();
       keepLoopbackOffProxy();
       await (await import('../hooks/entry.js')).runHook(args);
       return;
