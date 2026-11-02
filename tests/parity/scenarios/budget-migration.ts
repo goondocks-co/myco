@@ -4,7 +4,7 @@ import {type ParityScenario} from '../harness.ts';
 
 export const budgetMigrationParity:ParityScenario={
   name:'budget: populated schema upgrade keeps activation and its refusal visible',
-  dedicated:{cloudflare:{latestSchemaUpgrade:true},timeoutMs:600_000},
+  dedicated:{cloudflare:{latestSchemaUpgrade:true},timeoutMs:240_000},
   async run(target) {
     expect(await target.sql("SELECT COUNT(*) AS n FROM schema_meta WHERE key='budget_enabled_at'")).toEqual([{n:1}]);
     expect(await target.sql("SELECT COUNT(*) AS n FROM agent_runs WHERE status IN ('pending','running','queued') AND origin IS NULL")).toEqual([{n:0}]);

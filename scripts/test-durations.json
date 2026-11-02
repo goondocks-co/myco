@@ -165,7 +165,7 @@
     "local: restored parser-continuity suite measured 229ms with pinned Bun 1.4.0 on darwin-arm64; 1500ms weight.",
     "local: uxserver review fixes, pinned Bun 1.4.0; session-long four critical native/Miniflare D1 flows measured 43647ms final body (bulk 1500 turns, growing 9000-call turn, catch-up fairness and missing object isolation included); file weighted 45000ms. No new test file or parity scenario.",
     "local: uxserver N1 tail completion regression on pinned Bun1.4.0, native SQLite and Miniflare D1, new flow measured2159ms; session-long plus gates ran46150ms. Session-long weight50000ms; no new test file or parity scenario.",
-    "local: droptables CI fix, pinned Bun 1.4.0 darwin-arm64. wrangler d1 migrations apply --local measured 33.7s for 264 files and 57.9s for 458 files (126ms per file in wrangler itself); the two seeded-upgrade scenarios apply 457 files before their own work, so their weights become 200000ms and 300000ms and their dedicated timeouts 600000ms, with the parity helper giving a migration apply 600000ms before it is killed. No new test file or parity scenario."
+    "local: droptables parity upgrade path, pinned Bun 1.4.0 darwin-arm64. The seeded-upgrade boot now imports the previous 463 files as one d1 execute --file with the wrangler ledger seeded, then d1 migrations apply applies exactly the latest file; locally the import, the single-file apply and one omission probe measured through the same wrangler commands (see the lane report). Scenario weights return to 70000ms and 240000ms and their dedicated timeouts to 240000ms. No new test file or parity scenario."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -999,7 +999,7 @@
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,
-    "D1: latest migration upgrades seeded previous schema to expected state": 200000,
+    "D1: latest migration upgrades seeded previous schema to expected state": 70000,
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
     "a join refused as identity_claimed writes no member and leaves the invitation redeemable, over the route and myco login": 17000,
     "a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent": 41000,
@@ -1010,7 +1010,7 @@
     "backup: interrupted report restore resumes through the owner HTTP route": 64000,
     "bounded import: the plan's answers, imports read beside live work, and the off switch": 19000,
     "budget: a manual first poll bypasses held heads and its priced spend survives worker end": 150000,
-    "budget: populated schema upgrade keeps activation and its refusal visible": 300000,
+    "budget: populated schema upgrade keeps activation and its refusal visible": 240000,
     "budget: portable restore preserves every attempt cost and dispatch origin": 150000,
     "canopy: a worker map run pinned to its commit, closed on its map, and read over MCP": 18000,
     "capability hold: a queued map run names the capability no worker heard from lately reports": 31000,
