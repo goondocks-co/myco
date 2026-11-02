@@ -42,11 +42,11 @@
     "directory": "packages/myco"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.309",
-    "@inquirer/prompts": "^8.7.4",
-    "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "@modelcontextprotocol/server": "2.3.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.314",
+    "@inquirer/prompts": "^8.7.5",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "@openai/agents": "^0.21.0",
     "fflate": "^0.8.2",
     "gray-matter": "^4.0.3",
@@ -60,7 +60,7 @@
   "devDependencies": {
     "@goondocks/myco-shared": "*",
     "@types/bun": "^1.4.4",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/semver": "^7.8.0",
     "@types/shell-quote": "^1.7.5",
     "@vscode/ripgrep": "^1.15.14",
