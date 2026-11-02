@@ -1,5 +1,4 @@
 import { contentAssertion } from './registered-content.js';
-import { RETIRED_CONTENT_TABLES } from '../db/schema-v117.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
@@ -102,18 +101,16 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  ...RETIRED_CONTENT_TABLES,
-  ...RETIRED_CONTENT_TABLES.filter(table=>table.endsWith('_fts')).flatMap(table=>['_data','_idx','_docsize','_config'].map(suffix=>table+suffix)),
-  'learning_sessions', 'plan_promotions',
+  'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks',
-  'session_read_facts', 'project_session_counts', 'learning_init_queue',
+  'session_read_facts', 'project_session_counts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
-  'backup_restore_progress', 'recovery_forget_commands', 'cutover_progress',
+  'backup_restore_progress', 'recovery_forget_commands',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots',

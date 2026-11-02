@@ -1,4 +1,5 @@
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
+import { DROP_CONTENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v265.js';
 import { V255_STATEMENTS, UX_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v255.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -132,6 +133,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...DROP_CONTENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE TABLE/.test(sql)).map(sql=>({step,sql,reason:'Retired content storage leaves in bounded transactions: triggers, then indexes, then rowid ranges, then the tables.'}))),
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
   ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({
     step:255,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
