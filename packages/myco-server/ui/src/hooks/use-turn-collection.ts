@@ -48,30 +48,36 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
   }, [client, key, initial, cursor, query.data, query.isFetching, query.refetch]);
   const rows = useMemo(() => [...new Map((query.data?.pages ?? []).flatMap((page) => page.rows).map((row) => [rowKey(row), row])).values()], [query.data, rowKey]);
   // A page can hold none of this collection's rows: one ask reads on until a new row, the turn's end or its bound.
-  const asked = useRef<{ rows: number; pages: number } | null>(null);
-  const [stalled, setStalled] = useState(false);
+  // The ask and its stop belong to this query: a hook reused for another turn holds neither.
+  const asked = useRef<{ key: typeof key; rows: number; pages: number } | null>(null);
+  const [stalledOn, setStalledOn] = useState<typeof key | null>(null);
   useEffect(() => {
     const ask = asked.current;
-    if (ask === null || query.isFetching) return;
+    if (ask === null) return;
+    if (ask.key !== key) {
+      asked.current = null;
+      return;
+    }
+    if (query.isFetching) return;
     if (rows.length > ask.rows || !query.hasNextPage || query.isError) asked.current = null;
     else if (ask.pages >= PAGES_PER_ASK) {
       asked.current = null;
-      setStalled(true);
+      setStalledOn(key);
     } else {
       ask.pages += 1;
       void query.fetchNextPage({ cancelRefetch: false });
     }
-  }, [rows, query.hasNextPage, query.isFetching, query.isError, query.fetchNextPage]);
+  }, [key, rows, query.hasNextPage, query.isFetching, query.isError, query.fetchNextPage]);
   return {
     rows,
     /** The last ask reached its bound with nothing new. */
-    stalled,
+    stalled: stalledOn === key,
     hasMore: query.hasNextPage,
     pending: query.isPending || query.isFetchingNextPage,
     error: query.error,
     more: () => {
-      asked.current = { rows: rows.length, pages: 1 };
-      setStalled(false);
+      asked.current = { key, rows: rows.length, pages: 1 };
+      setStalledOn(null);
       void query.fetchNextPage({ cancelRefetch: false });
     },
     retry: () => { if (query.isFetchNextPageError) void query.fetchNextPage({ cancelRefetch: false }); else void query.refetch(); },
