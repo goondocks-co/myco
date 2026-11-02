@@ -28,7 +28,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
     });
     let inserted = false;
     let unavailable = finding === 4;
-    const turn = { promptId: 'review-turn', origin: 'user', promptKind: null, threadLabel: null, preview: 'A reply arrived while this view was closed', blobKey: null, textChars: 45, createdAt: now - 100000, orderedAt: now - 100000, responseCount: 61, toolCallCount: 0, childCount: 0, attachmentCount: 0, planCount: 0 };
+    const turn = { promptId: 'review-turn', origin: 'user', promptKind: null, threadLabel: null, preview: 'A reply arrived while this view was closed', blobKey: null, textChars: 45, createdAt: now - 100000, orderedAt: now - 100000, responseCount: 61, toolCallCount: 0, childCount: 0, attachmentCount: 0, planCount: finding === '1-plans' ? 51 : 0 };
     const reply = (i: number) => ({ responseId: `reply-${i}`, promptId: turn.promptId, text: `Reply ${i}`, blobKey: null, createdAt: now - 10000 + i, orderedAt: now - 10000 + i });
     const extra = { ...reply(25.5), text: 'Inserted reply: the missing detail is now captured.' };
     const plan = (i: number) => ({ planKey: `plan-${i}`, promptId: turn.promptId, title: `Plan ${i}`, status: 'active', content: null, blobKey: null, originPath: null, updatedBy: null, progress: null, createdAt: now - 10000 + i, updatedAt: now - 10000 + i, orderedAt: now - 10000 + i });

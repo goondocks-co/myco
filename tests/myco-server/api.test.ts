@@ -52,7 +52,7 @@ describe('sessions', () => {
       sessionId: 's1', machineId: 'machine_1', createdByTokenId: 'tok_1',
       agent: 'claude-code', branch: 'main', originPath: '/repo',
     });
-    expect(body.counts).toEqual({ prompts: 0, toolCalls: 0, failedTools: 0, responses: 0, plans: 0, attachments: 0 });
+    expect(body.counts).toEqual({ prompts: 0, userPrompts: 0, toolCalls: 0, failedTools: 0, mycoCalls: 0, responses: 0, plans: 0, attachments: 0 });
   });
 
   it('never serves another project\'s session under the same id', async () => {
