@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { managedBinDir, managedBinaryPath } from '../../scripts/managed-paths.mjs';
-import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
+import { isDefaultMycoHome, resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { selfExecOf } from './self-exec.js';
@@ -106,6 +106,8 @@ export interface ResolvedBinary {
 /** Injectable environment so the full matrix is testable without a real host. */
 export interface ResolutionEnv {
   mycoHome?: string;
+  homeDir?: string;
+  projectPin?: boolean;
   platform?: NodeJS.Platform;
   localAppData?: string | undefined;
   execPath?: string;
@@ -143,7 +145,7 @@ export function readLayeredPin(
     let dir = path.resolve(scope.from);
     while (true) {
       const candidate = path.join(dir, '.myco', MACHINE_RUNTIME_COMMAND_FILENAME);
-      const pin = readTrustedPin(candidate, env);
+      const pin = readTrustedPin(candidate, { ...env, projectPin: dir !== (env.homeDir ?? resolveHomeDir()) });
       if (pin) return { pin, pinPath: candidate, pinScope: 'project' };
       const parent = path.dirname(dir);
       if (parent === dir) break;

@@ -9,6 +9,7 @@
  * `.myco/runtime.home` pin, and hold the precedence, the trust check, and the
  * count a missed membership leaves behind.
  */
+import { trustProjectPin } from '@myco/paths/pin-trust.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -54,7 +55,8 @@ function pinnedProject(home: string, mode = 0o644): string {
   const project = tmpdir('myco-pinned-project-');
   fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
   const pin = path.join(project, '.myco', 'runtime.home');
-  fs.writeFileSync(pin, `${home}\n`, { mode });
+  fs.writeFileSync(pin, `${home}\n`, { mode: 0o600 });
+  trustProjectPin(pin);
   fs.chmodSync(pin, mode);
   return project;
 }
@@ -123,6 +125,7 @@ describe('resolveMycoHome precedence', () => {
     const fromMachine = tmpdir('myco-machine-home-');
     const pinnedHomeDir = machinePinnedHomeDir(fromMachine);
     const project = pinnedProject(fromProject);
+    trustProjectPin(path.join(project, '.myco/runtime.home'), pinnedHomeDir);
 
     expect(resolveMycoHomeWithSource({ cwd: project, homeDir: pinnedHomeDir, env: { MYCO_HOME: fromEnv } }))
       .toEqual({ home: fromEnv, source: 'env' });
@@ -157,7 +160,7 @@ describe('resolveMycoHome precedence', () => {
     } finally {
       (process.stderr as unknown as { write: unknown }).write = origErr;
     }
-    expect(lines.filter((l) => l.includes('ignoring runtime home pin'))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes('ignoring runtime pin'))).toHaveLength(1);
   });
 });
 
@@ -317,6 +320,7 @@ describe('a pin value that is not an absolute path', () => {
     const pin = path.join(project, '.myco', 'runtime.home');
     fs.writeFileSync(pin, 'vendor/home\n');
     fs.chmodSync(pin, 0o644);
+    trustProjectPin(pin);
     const refusals: string[] = [];
     expect(resolveMycoHome({ cwd: project, homeDir, env: {}, reportPinRefusal: (_p, reason) => { refusals.push(reason); } }))
       .toBe(path.join(homeDir, '.myco'));
@@ -482,6 +486,7 @@ describe('`myco member join` under a non-default home', () => {
     const pin = path.join(project, '.myco', RUNTIME_HOME_FILENAME);
     fs.writeFileSync(pin, `${theirs}\n`, { mode: 0o644 });
     fs.chmodSync(pin, 0o644);
+    trustProjectPin(pin);
     const out: string[] = [];
 
     await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, ours, out));
@@ -503,6 +508,7 @@ describe('`myco member join` under a non-default home', () => {
     const pin = path.join(project, '.myco', RUNTIME_HOME_FILENAME);
     fs.writeFileSync(pin, `${stale}\n`, { mode: 0o644 });
     fs.chmodSync(pin, 0o644);
+    trustProjectPin(pin);
     const out: string[] = [];
 
     await runJoin(

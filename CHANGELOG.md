@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Project runtime pins require approval of their values on this machine. After upgrading, review existing `.myco/runtime.home` and `.myco/runtime.command` files and run `myco member trust-pins --root <repository>`. Hooks ignore unapproved values and continue through the machine pin or default home. Registered worktrees share approval for the same values; a new clone requires approval. Re-joining approves an existing home pin when it matches the home being joined.
+
 ## [1.4.8] - 2026-08-15
 
 ### Fixed

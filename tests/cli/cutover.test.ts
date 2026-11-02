@@ -1,3 +1,4 @@
+import { projectPinIsTrusted } from '../../packages/myco/scripts/project-pin-trust.mjs';
 import { CutoverBackup,cutoverBackupDir } from '@myco/member/cutover-backup.js';
 import { legacyWindowsUnit } from '../helpers/legacy-windows-unit.ts';
 import { refuseImportAfter } from '../setup/fixtures/interruption.js';
@@ -416,16 +417,34 @@ describe('myco cutover', () => {
     });
   });
 
-  it('points a connected folder\'s runtime pin at the 2.0 binary when it names a 1.4 binary, and backs it up', async () => {
+  it.each([0o600, 0o664])('points a connected folder\'s runtime pin at the 2.0 binary when it names a 1.4 binary, and backs it up (mode %i)', async mode => {
     const pin = path.join(m.root, '.myco', 'runtime.command');
     fs.mkdirSync(path.dirname(pin), { recursive: true });
-    fs.writeFileSync(pin, `${path.join(m.legacyHome, 'bin', 'myco')}\n`, { mode: 0o644 });
+    fs.writeFileSync(pin, `${path.join(m.legacyHome, 'bin', 'myco')}\n`, { mode });
+    fs.chmodSync(pin, mode);
     const dry = await m.run(['--dry-run']);
     expect(dry.out.join('\n')).toContain(`would point ${pin} (now \`${path.join(m.legacyHome, 'bin', 'myco')}\`, a 1.4 binary) at ${resolveManagedBinaryPath(m.mycoHome)}`);
     const result = await m.run();
     expect(result.ok).toBe(true);
     expect(fs.readFileSync(pin, 'utf8').trim()).toBe(resolveManagedBinaryPath(m.mycoHome));
     expect(backupsOf(pin)).toHaveLength(1);
+    expect(fs.statSync(pin).mode & 0o777).toBe(mode & ~0o022);
+    expect(projectPinIsTrusted(pin, m.home)).toBe(true);
+  });
+
+  it('refuses an unavailable pin approval destination before changing a legacy program pin', async () => {
+    const pin = path.join(m.root, '.myco/runtime.command');
+    const value = `${path.join(m.legacyHome, 'bin', 'myco')}\n`;
+    fs.mkdirSync(path.dirname(pin), { recursive: true });
+    fs.writeFileSync(pin, value, { mode: 0o600 });
+    const approvals = path.join(m.home, '.myco/project-pin-trust');
+    fs.mkdirSync(path.dirname(approvals), { recursive: true });
+    fs.writeFileSync(approvals, 'blocked');
+    const result = await m.run();
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain('approval path is not a directory');
+    expect(fs.readFileSync(pin, 'utf8')).toBe(value);
+    expect(backupsOf(pin)).toHaveLength(0);
   });
 
   it('fails when a 1.4 registration is still there once every change is made', async () => {

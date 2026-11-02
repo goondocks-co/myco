@@ -101,6 +101,7 @@ const ALLOWLIST: readonly string[] = [
   // Source install-marker validation read by the member: Node built-ins only.
   'packages/myco/scripts/install-marker-schema.mjs',
   'packages/myco/scripts/home-role.mjs',
+  'packages/myco/scripts/project-pin-trust.mjs',
   // The member helper's detached start: `node:child_process` on POSIX, `CreateProcessW` through
   // `bun:ffi` on Windows; it reaches nothing else.
   'runtime/spawn-detached.ts',

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { writeApprovedProjectPin } from '../support/project-runtime-pin.js';
 
 const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
 
@@ -142,14 +143,14 @@ describe('readProjectRuntimeCommand', () => {
 
   it('returns the pin when startDir itself has .myco/runtime.command', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/dev/myco-dev\n');
+    writeApprovedProjectPin(tmpRoot, 'runtime.command', '/dev/myco-dev\n');
     const { readProjectRuntimeCommand } = loadModule();
     expect(readProjectRuntimeCommand(tmpRoot)?.pin).toBe('/dev/myco-dev');
   });
 
   it('walks up from a nested subdirectory to find an ancestor pin', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/dev/myco-dev');
+    writeApprovedProjectPin(tmpRoot, 'runtime.command', '/dev/myco-dev');
     const nested = path.join(tmpRoot, 'a', 'b', 'c');
     fs.mkdirSync(nested, { recursive: true });
     const { readProjectRuntimeCommand } = loadModule();
@@ -158,10 +159,10 @@ describe('readProjectRuntimeCommand', () => {
 
   it('returns the closest ancestor when multiple .myco/runtime.command files exist', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/outer/myco');
+    writeApprovedProjectPin(tmpRoot, 'runtime.command', '/outer/myco');
     const inner = path.join(tmpRoot, 'inner');
     fs.mkdirSync(path.join(inner, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(inner, '.myco', 'runtime.command'), '/inner/myco');
+    writeApprovedProjectPin(inner, 'runtime.command', '/inner/myco');
     const { readProjectRuntimeCommand } = loadModule();
     expect(readProjectRuntimeCommand(inner)?.pin).toBe('/inner/myco');
   });
@@ -174,7 +175,7 @@ describe('readProjectRuntimeCommand', () => {
 describe('readLayeredRuntimeCommand', () => {
   it('returns project pin when both project and machine pins exist', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/project/myco-dev');
+    writeApprovedProjectPin(tmpRoot, 'runtime.command', '/project/myco-dev');
     const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
     fs.writeFileSync(path.join(home, 'runtime.command'), '/machine/myco');
     const { readLayeredRuntimeCommand } = loadModule();
@@ -211,7 +212,7 @@ describe('readRuntimeHomeBeside', () => {
   it('returns the absolute home when a trusted runtime.home sits beside the command pin', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
     const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.home'), '/home/user/.myco-dev\n');
+    writeApprovedProjectPin(tmpRoot, 'runtime.home', '/home/user/.myco-dev\n');
     const { readRuntimeHomeBeside } = loadModule();
     expect(readRuntimeHomeBeside(commandSource)).toBe('/home/user/.myco-dev');
   });
@@ -219,7 +220,7 @@ describe('readRuntimeHomeBeside', () => {
   it('expands a leading ~ in the runtime.home value', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
     const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
-    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.home'), '~/.myco-dev');
+    writeApprovedProjectPin(tmpRoot, 'runtime.home', '~/.myco-dev');
     const { readRuntimeHomeBeside } = loadModule();
     expect(readRuntimeHomeBeside(commandSource)).toBe(path.join(os.homedir(), '.myco-dev'));
   });
@@ -229,7 +230,7 @@ describe('readRuntimeHomeBeside', () => {
     fs.mkdirSync(path.join(tmpRoot, '.myco'));
     const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
     const homePin = path.join(tmpRoot, '.myco', 'runtime.home');
-    fs.writeFileSync(homePin, '/home/user/.myco-dev');
+    writeApprovedProjectPin(tmpRoot, 'runtime.home', '/home/user/.myco-dev');
     fs.chmodSync(homePin, 0o664);
     const traces: string[] = [];
     const { readRuntimeHomeBeside } = loadModule();
@@ -456,7 +457,7 @@ describe('maybeRedirect (integration)', () => {
 
     const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-'));
     fs.mkdirSync(path.join(projectRoot, '.myco'));
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), projectPinned);
+    writeApprovedProjectPin(projectRoot, 'runtime.command', projectPinned);
     fs.writeFileSync(path.join(home, 'runtime.command'), machinePinned);
 
     const res = spawnSync(process.execPath, [shimPath, 'doctor'], {
@@ -521,8 +522,8 @@ describe('maybeRedirect (integration)', () => {
     const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-'));
     const devHome = fs.mkdtempSync(path.join(tmpRoot, 'dev-home-'));
     fs.mkdirSync(path.join(projectRoot, '.myco'));
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), devHome);
+    writeApprovedProjectPin(projectRoot, 'runtime.command', pinned);
+    writeApprovedProjectPin(projectRoot, 'runtime.home', devHome);
 
     // Nothing exported (a `make dev-link` contributor's shell): the pin decides.
     const res = spawnSync(process.execPath, [shimPath], {
@@ -552,10 +553,10 @@ describe('maybeRedirect (integration)', () => {
     const pinned = makeHomeEchoBinary('home-echo-relative.sh');
     const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-relative-'));
     fs.mkdirSync(path.join(projectRoot, '.myco'));
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
+    writeApprovedProjectPin(projectRoot, 'runtime.command', pinned);
     // The shape a repository could carry: relative, so it would resolve inside
     // whatever checkout the reader happens to be standing in.
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), 'vendor/home');
+    writeApprovedProjectPin(projectRoot, 'runtime.home', 'vendor/home');
 
     const res = spawnSync(process.execPath, [shimPath], {
       cwd: projectRoot,
@@ -596,9 +597,9 @@ describe('maybeRedirect (integration)', () => {
     // pin, so this gate would pass without the refusal ever running.
     const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-untrusted-'));
     fs.mkdirSync(path.join(projectRoot, '.myco'));
-    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
+    writeApprovedProjectPin(projectRoot, 'runtime.command', pinned);
     const homePin = path.join(projectRoot, '.myco', 'runtime.home');
-    fs.writeFileSync(homePin, devHome);
+    writeApprovedProjectPin(projectRoot, 'runtime.home', devHome);
     fs.chmodSync(homePin, 0o664); // group-writable → refused by G7
 
     const res = spawnSync(process.execPath, [shimPath], {

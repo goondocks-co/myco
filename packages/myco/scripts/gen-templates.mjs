@@ -38,6 +38,32 @@ function syncCaptureStore() {
   fs.writeFileSync(file, rendered, 'utf-8');
 }
 
+function syncProjectPinTrust() {
+  const shared = readTextFile(path.join(PKG_ROOT, 'scripts/project-pin-trust.mjs'));
+  const esm = shared.replace(/^export /gm, '');
+  const cjs = esm
+    .replace("import pinFs from 'node:fs';", "const pinFs = require('node:fs');")
+    .replace("import pinOs from 'node:os';", "const pinOs = require('node:os');")
+    .replace("import pinPath from 'node:path';", "const pinPath = require('node:path');")
+    .replace("import { createHash as pinHash, randomUUID as pinNonce } from 'node:crypto';", "const { createHash: pinHash, randomUUID: pinNonce } = require('node:crypto');");
+  for (const [file, body] of [
+    [path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet'), esm],
+    [path.join(TEMPLATES_DIR, 'myco-run.cjs'), cjs],
+    [path.join(PKG_ROOT, 'bin/binary-resolution.cjs'), cjs],
+  ]) {
+    const source = readTextFile(file);
+    const start = '// <myco:project-pin-trust>';
+    const end = '// </myco:project-pin-trust>';
+    const block = `${start}\n${body.trim()}\n${end}`;
+    const updated = source.includes(start)
+      ? source.slice(0, source.indexOf(start)) + block + source.slice(source.indexOf(end) + end.length)
+      : source + `\n${block}\n`;
+    if (source === updated) continue;
+    if (process.argv.includes('--check')) throw new Error(`Stale project pin trust in ${file}`);
+    fs.writeFileSync(file, updated);
+  }
+}
+
 /** Keep every native plugin's inline helper block equal to the shared source. */
 function syncSharedPluginHelpers() {
   const snippet = readTextFile(path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet')).trim();
@@ -85,6 +111,7 @@ ${serialized}
 }
 
 syncCaptureStore();
+syncProjectPinTrust();
 syncSharedPluginHelpers();
 const { content, count } = buildBundle();
 emitBundle({

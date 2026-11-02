@@ -24,6 +24,7 @@ import { MCP_ROOT_FLAG, MCP_CLIENT_ROOTS_FLAG, mcpHasExplicitRoot, mcpProjectFol
 import { runStatus, runExport, runMcpHeaders } from '@myco/cli/member.js';
 import { logoutDeployment } from '@myco/symbionts/logout-runtime.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { writeApprovedProjectPin } from '../support/project-runtime-pin.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 
 const CLI = path.resolve('packages/myco/src/cli.ts');
@@ -248,7 +249,7 @@ it('reports the actual project pin source when diagnostics use an explicitly sel
   for (const agent of ['claude-code', 'codex']) installer(agent).installMemberMcp();
   const pin = path.join(work, '.myco/runtime.home');
   fs.mkdirSync(path.dirname(pin));
-  fs.writeFileSync(pin, memberHome, { mode: 0o600 });
+  writeApprovedProjectPin(work, 'runtime.home', memberHome);
   delete process.env.MYCO_HOME;
   const output: string[] = [];
   const deps = { mycoHome: memberHome, cwd: work, stdout: (line: string) => output.push(line), worker: { platform: 'darwin' as const, runner: recordingPlatform().runner } };
@@ -258,7 +259,7 @@ it('reports the actual project pin source when diagnostics use an explicitly sel
   await runExport([], deps);
   const checks = JSON.parse(output.join('\n')).checks;
   for (const agent of ['claude-code', 'codex']) expect(checks).toContainEqual(expect.objectContaining({ symbiont: agent, memberHome, homeSource: 'project-pin', toolsDeployment: 'https://work.example' }));
-  fs.writeFileSync(pin, path.join(scratch, 'different-home'));
+  writeApprovedProjectPin(work, 'runtime.home', path.join(scratch, 'different-home'));
   expect(checkMemberMcpResolution(path.join(work, '.myco'), process.env, { mycoHome: memberHome, folder: work })).toContainEqual(expect.objectContaining({ reason: 'mcp_home_mismatch', status: 'warn', toolsDeployment: undefined }));
 });
 
@@ -364,13 +365,13 @@ it.skipIf(process.platform === 'win32')('refuses a changed home pin before sendi
   const entry = codex().mcp_servers.myco;
   const pin = path.join(work, '.myco/runtime.home');
   fs.mkdirSync(path.dirname(pin));
-  fs.writeFileSync(pin, memberHome, { mode: 0o600 });
+  writeApprovedProjectPin(work, 'runtime.home', memberHome);
   writeInScratch(entry.command, file => fs.writeFileSync(file, `#!${process.execPath}\ndelete process.env.MYCO_HOME;\nawait import(${JSON.stringify(pathToFileURL(CLI).href)});\n`));
   const client = await connect(entry.command, entry.args, work);
   const sent = a.requests.length;
   const otherHome = path.join(scratch, 'other-home');
   fs.mkdirSync(otherHome);
-  fs.writeFileSync(pin, otherHome);
+  writeApprovedProjectPin(work, 'runtime.home', otherHome);
   await expect(client.callTool({ name: 'myco_plans', arguments: { op: 'list', project: 'proj_shared' } })).rejects.toThrow(/home changed/);
   expect(a.requests).toHaveLength(sent);
   expect(b.requests).toHaveLength(0);
@@ -625,10 +626,10 @@ it('refuses distinct Projects on one Deployment and changed client-root home pin
   delete env.MYCO_HOME;
   const pin = path.join(work, '.myco/runtime.home');
   fs.mkdirSync(path.dirname(pin));
-  fs.writeFileSync(pin, memberHome, { mode: 0o600 });
+  writeApprovedProjectPin(work, 'runtime.home', memberHome);
   const destination = clientRootDestination([pathToFileURL(work).href], env);
   expect(destination().projectId).toBe('proj_shared');
-  fs.writeFileSync(pin, path.join(scratch, 'other-home'));
+  writeApprovedProjectPin(work, 'runtime.home', path.join(scratch, 'other-home'));
   expect(() => destination()).toThrow(/home changed/);
 });
 
@@ -785,7 +786,7 @@ it('uses the named home for wholly unconnected roots and refuses roots naming di
   delete env.MYCO_HOME;
   const pin = path.join(personal, '.myco/runtime.home');
   fs.mkdirSync(path.dirname(pin));
-  fs.writeFileSync(pin, otherHome, { mode: 0o600 });
+  writeApprovedProjectPin(personal, 'runtime.home', otherHome);
   const destination = clientRootDestination([pathToFileURL(personal).href], env)();
   expect(destination.serverUrl).toBe('https://personal.example');
   expect(destination.headers[PROJECT_HEADER]).toBeUndefined();
@@ -801,7 +802,7 @@ it.skipIf(process.platform === 'win32')('reports a no-roots client using its mac
   writeRegistryEntry({ version: REGISTRY_VERSION, root: personal, projectId: 'proj_shared', serverUrl: b.url,
     token: 'B'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }, { mycoHome: otherHome });
   fs.mkdirSync(path.join(personal, '.myco'));
-  fs.writeFileSync(path.join(personal, '.myco/runtime.home'), otherHome, { mode: 0o600 });
+  writeApprovedProjectPin(personal, 'runtime.home', otherHome);
   fs.writeFileSync(path.join(memberHome, 'runtime.home'), memberHome, { mode: 0o600 });
   const otherBinary = managedBinaryPath(otherHome, process.platform);
   fs.mkdirSync(path.dirname(otherBinary), { recursive: true });
