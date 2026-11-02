@@ -5,6 +5,38 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "antigravity",
     "rules": [],
+    "fileTools": [
+      {
+        "tool": "view_file",
+        "pathField": "AbsolutePath",
+        "mutates": false
+      },
+      {
+        "tool": "replace_file_content",
+        "pathField": "TargetFile",
+        "mutates": true
+      },
+      {
+        "tool": "multi_replace_file_content",
+        "pathField": "TargetFile",
+        "mutates": true
+      },
+      {
+        "tool": "write_to_file",
+        "pathField": "TargetFile",
+        "mutates": true
+      },
+      {
+        "tool": "read_file",
+        "pathField": "file_path",
+        "mutates": false
+      },
+      {
+        "tool": "replace",
+        "pathField": "file_path",
+        "mutates": true
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
@@ -156,6 +188,33 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "set_origin": "system"
       }
     ],
+    "fileTools": [
+      {
+        "tool": "Read",
+        "pathField": "file_path",
+        "mutates": false
+      },
+      {
+        "tool": "Write",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "Edit",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "MultiEdit",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "NotebookEdit",
+        "pathField": "notebook_path",
+        "mutates": true
+      }
+    ],
     "displayEnvelopeTags": [
       "command-message",
       "command-args",
@@ -279,6 +338,24 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           "close": "</user_input>"
         },
         "trim": true
+      }
+    ],
+    "fileTools": [
+      {
+        "tool": "read_files",
+        "pathField": "path",
+        "mutates": false
+      },
+      {
+        "tool": "editor",
+        "pathField": "path",
+        "mutates": true
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "input",
+        "mutates": true,
+        "extract": "patch"
       }
     ],
     "displayEnvelopeTags": [],
@@ -465,6 +542,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "set_origin": "system"
       }
     ],
+    "fileTools": [
+      {
+        "tool": "apply_patch",
+        "pathField": "command",
+        "mutates": true,
+        "extract": "patch"
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
@@ -548,6 +633,48 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "copilot",
     "rules": [],
+    "fileTools": [
+      {
+        "tool": "read_file",
+        "pathField": "filePath",
+        "mutates": false
+      },
+      {
+        "tool": "replace_string_in_file",
+        "pathField": "filePath",
+        "mutates": true
+      },
+      {
+        "tool": "create_file",
+        "pathField": "filePath",
+        "mutates": true
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "filePath",
+        "mutates": true
+      },
+      {
+        "tool": "view",
+        "pathField": "path",
+        "mutates": false
+      },
+      {
+        "tool": "edit",
+        "pathField": "path",
+        "mutates": true
+      },
+      {
+        "tool": "create",
+        "pathField": "path",
+        "mutates": true
+      },
+      {
+        "tool": "grep",
+        "pathField": "path",
+        "mutates": false
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
@@ -571,6 +698,38 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           "close": "</user_query>"
         },
         "trim": true
+      }
+    ],
+    "fileTools": [
+      {
+        "tool": "Read",
+        "pathField": "file_path",
+        "mutates": false
+      },
+      {
+        "tool": "Write",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "Edit",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "MultiEdit",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "Delete",
+        "pathField": "file_path",
+        "mutates": true
+      },
+      {
+        "tool": "Grep",
+        "pathField": "file_path",
+        "mutates": false
       }
     ],
     "displayEnvelopeTags": [
@@ -608,6 +767,29 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "opencode",
     "rules": [],
+    "fileTools": [
+      {
+        "tool": "read",
+        "pathField": "filePath",
+        "mutates": false
+      },
+      {
+        "tool": "write",
+        "pathField": "filePath",
+        "mutates": true
+      },
+      {
+        "tool": "edit",
+        "pathField": "filePath",
+        "mutates": true
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "patchText",
+        "mutates": true,
+        "extract": "patch"
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
@@ -653,6 +835,23 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "pi",
     "rules": [],
+    "fileTools": [
+      {
+        "tool": "read",
+        "pathField": "path",
+        "mutates": false
+      },
+      {
+        "tool": "write",
+        "pathField": "path",
+        "mutates": true
+      },
+      {
+        "tool": "edit",
+        "pathField": "path",
+        "mutates": true
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
@@ -718,6 +917,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "windsurf",
     "rules": [],
+    "fileTools": [
+      {
+        "tool": "post_write_code",
+        "pathField": "file_path",
+        "mutates": true
+      }
+    ],
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {

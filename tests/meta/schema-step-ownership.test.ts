@@ -1,4 +1,5 @@
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
+import { V255_STATEMENTS, UX_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v255.js';
 import { readdirSync } from 'node:fs';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
@@ -89,6 +90,12 @@ const LISTED: readonly Exception[] = [
 ];
 const EXCEPTIONS: readonly Exception[] = [
   ...LISTED,
+  ...UX_SCHEMA_STEPS.flatMap(step => step.statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || /session_turn_entries/.test(match[2]!) ? [] : [{
+      step: step.version, object: match[1]!, table: match[2]!, reason: 'Session outline and file reads use stored summaries and bounded catch-up indexes.',
+    }];
+  })),
   ...LISTED.filter((exception) => exception.step === 106).map((exception) => ({ ...exception, step: 108 })),
   ...['idx_learning_eligible', 'idx_learning_eligible_all', 'idx_learning_completed', 'idx_learning_init_pending'].map((object) => ({
     step: 110,
@@ -126,6 +133,13 @@ interface StatementException {
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
+  ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({
+    step:255,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
+  })),
+  ...UX_SCHEMA_STEPS.flatMap(step => step.statements.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
+    step: step.version, sql, reason: 'The ordered turn index is replaced in its own transaction.',
+  }))),
+
   ...V115_STATEMENTS.filter((sql) => !sql.startsWith('CREATE INDEX')).map((sql) => ({
     step: 115, sql, reason: 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.',
   })),
@@ -515,7 +529,7 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
 
 it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
   expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
-    Array.from({ length: 254 }, (_, index) => index + 1),
+    Array.from({ length: SERVER_SCHEMA_VERSION }, (_, index) => index + 1),
   );
   expect(
     readdirSync('packages/myco-server/migrations')

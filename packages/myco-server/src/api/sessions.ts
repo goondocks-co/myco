@@ -13,6 +13,7 @@ import { parseOrigins, sessionTurnContexts } from '../read/turns.js';
 import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
 import { documentSessionActivity } from '../content/session-activity.js';
+import { sessionFiles } from '../read/session-files.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
@@ -24,6 +25,7 @@ import { sessionCommits } from '../read/session-commits.js';
 import { sessionLineage } from '../read/lineage.js';
 import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
+import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 
 /** A cursor naming a document generation that is no longer live: the reader restarts from the first page. */
 export const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
@@ -113,10 +115,12 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   const counters = await documentCounters(env.db, scope, sessionId);
   return ok({
+    filesEdited: counters?.filesEdited ?? 0,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
     counts: {
+      userPrompts: counters?.userPrompts ?? 0, mycoCalls: counters?.mycoCalls ?? 0,
       prompts: counters?.prompts ?? 0, toolCalls: counters?.toolCalls ?? 0, failedTools: counters?.failedTools ?? 0,
       responses: counters?.replies ?? 0, plans: counters?.plans ?? 0, attachments: counters?.attachments ?? 0,
     },
@@ -186,7 +190,7 @@ export async function handleSessionLineage(env: ServerEnv, ctx: OwnerContext): P
   return lineage === null ? notFound() : ok(lineage);
 }
 
-/** The session's stored tool outcome facts, narrowed by structured metadata. */
+/** The session's related sessions, narrowed by relationship type. */
 export async function handleSessionActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
@@ -196,14 +200,11 @@ export async function handleSessionActivity(env: ServerEnv, ctx: OwnerContext): 
   if (page instanceof Response) return page;
   const type = ctx.url.searchParams.get('type');
   if (type !== null && !SESSION_ACTIVITY_TYPES.some(value => value === type)) return badRequest('unknown activity type');
-  const failed = ctx.url.searchParams.get('failed');
-  if (failed !== null && failed !== 'true' && failed !== 'false') return badRequest('failed must be true or false');
-  const tool = ctx.url.searchParams.get('tool');
+  if (ctx.url.searchParams.has('tool') || ctx.url.searchParams.has('failed')) return badRequest('tool outcomes are listed in turns');
   const activity = await documentSessionActivity(env, scope, sessionId, {
     ...page, type: type === null ? undefined : type as SessionActivityType,
-    tool: tool === null ? undefined : tool, failed: failed === null ? undefined : failed === 'true',
   });
-  return activity === null ? badRequest('malformed cursor') : activity === 'stale' ? staleCursor() : ok(activity);
+  return ok(activity);
 }
 
 /** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */
@@ -215,12 +216,28 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  const origins = parseOrigins(ctx.url.searchParams.get('origins'));
+  const filter = ctx.url.searchParams.get('filter');
+  if (filter !== null && filter !== 'key' && filter !== 'failed' && filter !== 'myco') return badRequest('filter must be key, failed or myco');
+  const origins = parseOrigins(ctx.url.searchParams.get('origins') ?? (filter === null ? null : PROMPT_ORIGINS.join(',')));
   if (origins === null) return badRequest('origins must name prompt origins');
   const order = ctx.url.searchParams.get('order');
   if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
   const promptId = ctx.url.searchParams.get('turn') ?? undefined;
-  return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId }));
+  const around = page.cursor === undefined ? ctx.url.searchParams.get('around') ?? undefined : undefined;
+  return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
+    filter: filter ?? undefined, around }));
+}
+
+export async function handleSessionFiles(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null || !(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const args = paging(ctx.url);
+  if (args instanceof Response) return args;
+  const kind = ctx.url.searchParams.get('kind') ?? 'all';
+  if (kind !== 'edited' && kind !== 'read' && kind !== 'all') return badRequest('kind must be edited, read or all');
+  return ok(await sessionFiles(env.db, scope, sessionId, { ...args, kind }));
 }
 
 /** One turn's body: the prompt, its responses, attachments and steering children. */

@@ -25,7 +25,7 @@ export interface BodyChunkWrite { chunkNo: number; text: string; ref: BodyRef }
 export interface PageWrite { owner: string; page: number; chunkNo: number; records: number; bytes: number }
 export interface DocumentLayout { pageChunks: PageChunkWrite[]; bodyChunks: BodyChunkWrite[]; pages: PageWrite[] }
 
-export type Upsert = { outcome: 'inserted'; record: DocRecord } | { outcome: 'merged'; record: DocRecord; held: DocRecord } | { outcome: 'unchanged' };
+export type Upsert = { outcome: 'inserted'; owner: string; record: DocRecord } | { outcome: 'merged'; owner: string; record: DocRecord; held: DocRecord } | { outcome: 'unchanged' };
 
 /** The writer's changes as they stood at a mark, restored by `undo`. */
 export interface WriterMark {
@@ -266,12 +266,12 @@ export class DocumentWriter {
           if (this.sealedPages.get(candidate)?.has(page.page)) this.moved.push({ o: candidate, k: record.k, i: record.id });
           this.append(candidate, pages, fitted);
         }
-        return { outcome: 'merged', record: fitted, held };
+        return { outcome: 'merged', owner: candidate, record: fitted, held };
       }
     }
     const fitted = this.fit(record);
     this.append(owner, await this.pagesOf(owner), fitted);
-    return { outcome: 'inserted', record: fitted };
+    return { outcome: 'inserted', owner, record: fitted };
   }
 
   /** Whether anything changed that must be written. */

@@ -102,7 +102,7 @@ for (const finding of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
         if (!before) { await page.getByRole('button', { name: 'Show more replies' }).click(); await expect(page.getByText('Final answer on the second page')).toBeVisible(); }
         await page.getByText(before ? 'Reply 50' : 'Final answer on the second page', { exact: true }).scrollIntoViewIfNeeded();
       } else {
-        const last = page.getByText(`Conversation turn ${before ? 5000 : 5001}`, { exact: true });
+        const last = page.getByText(`Conversation turn ${before ? 5000 : 5001}`, { exact: true }).first();
         await expect(last).toBeVisible();
         await last.scrollIntoViewIfNeeded();
       }

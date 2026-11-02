@@ -1,3 +1,4 @@
+import { heldToolCalls } from './tool-statistics.js';
 /**
  * A turn as the session page reads it, from the turn's own pages of the live document: the prompt, its steering
  * prompts, replies, plan appearances and tool records. What hooks recorded beside the turn (attachments, context
@@ -14,6 +15,8 @@ import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
 import { receiptPlans } from '../read/catalog-store.js';
 import { promptPlace, promptTurn } from '../read/document-catalog.js';
 import { SESSION_OWNER, type DocRecord, type Page as DocPage } from './document.js';
+import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
+import { liveGenerationSql } from '../read/document-catalog.js';
 import {
   pageCursor, promptRow, readPageCursor, responseRow, SessionDocument, toolCallRow, TURN_PAGES,
   type PageLocator, type PromptWireRow, type ResponseWireRow, type ToolCallWireRow,
@@ -32,8 +35,8 @@ interface Located { record: DocRecord; at: PageLocator }
 
 export interface ToolUsage { toolName: string; count: number }
 /**
- * A prompt's tool calls in brief: counts by tool, every failure up to a bound, the files its tool inputs name and the Myco calls.
- * `complete` is false when the turn has pages the read did not open: the counts then cover only the calls it read.
+ * A prompt's tool calls in brief: counts by tool, every failure up to a bound, the files changed and the Myco calls.
+ * `complete` is false when its lists cover only the opened pages; catalog rollups supply the full turn's counts.
  */
 export interface ToolSummary {
   complete: boolean;
@@ -42,6 +45,7 @@ export interface ToolSummary {
   byTool: ToolUsage[];
   failures: ToolCallWireRow[];
   files: string[];
+  filesNamed: number;
   myco: { tool: string; op: string | null; count: number; failed: number }[];
 }
 export interface PlanAppearanceRow {
@@ -58,6 +62,7 @@ export interface PromptAnswer {
   selection: Record<string, number>;
 }
 export interface DocumentTurnDetail {
+  card: string | null;
   prompt: PromptWireRow;
   responses: ResponseWireRow[];
   attachments: AttachmentRow[];
@@ -65,6 +70,7 @@ export interface DocumentTurnDetail {
   injection: (PromptInjection & { planIds: string[]; plans: { planKey: string; title: string | null }[] }) | null;
   metrics: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
   tools: ToolSummary;
+  toolCounts: { total: number; shown: number };
   answers: PromptAnswer[];
   children: DocumentTurnChild[];
   cursors: Record<TurnCollection, string | null>;
@@ -78,14 +84,17 @@ const located = (pages: readonly DocPage[], generation: number): Located[] =>
   pages.flatMap((page) => page.records.map((record) => ({ record, at: { generation, owner: page.owner, page: page.page } })));
 
 /** Summarizes the tool records of one prompt; `complete` says whether they are all of its calls. */
-export function toolSummary(tools: readonly Located[], complete: boolean): ToolSummary {
+export function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}): ToolSummary {
   const byTool = new Map<string, number>();
   const myco = new Map<string, { tool: string; op: string | null; count: number; failed: number }>();
   const files = new Set<string>();
+  const named = new Set<string>();
   const failures: ToolCallWireRow[] = [];
   let failed = 0;
   for (const { record, at } of tools) {
-    const row = toolCallRow(record, at);
+    const facts = Object.hasOwn(calls, record.id) ? calls[record.id] : undefined;
+    for (const path of facts?.named ?? toolFiles(record, harness)) named.add(path);
+    const row = toolCallRow(facts === undefined ? record : { ...record, tool_name: facts.name, myco_tool: facts.tool, myco_op: facts.op }, at);
     byTool.set(row.toolName, (byTool.get(row.toolName) ?? 0) + 1);
     if (!row.success) {
       failed += 1;
@@ -98,12 +107,12 @@ export function toolSummary(tools: readonly Located[], complete: boolean): ToolS
       if (!row.success) held.failed += 1;
       myco.set(key, held);
     }
-    for (const path of Array.isArray(record.files_affected) ? record.files_affected : []) {
+    for (const path of facts?.files ?? editedFiles(record, harness)) {
       if (typeof path === 'string' && files.size < SUMMARY_FILES) files.add(path);
     }
   }
   return {
-    complete, total: tools.length, failed, failures, files: [...files], myco: [...myco.values()],
+    complete, total: tools.length, failed, failures, files: [...files], filesNamed: named.size, myco: [...myco.values()],
     byTool: [...byTool].map(([toolName, count]) => ({ toolName, count })).sort((a, b) => b.count - a.count || (a.toolName < b.toolName ? -1 : 1)),
   };
 }
@@ -237,16 +246,17 @@ async function windowBodies(env: ContentStore, scope: ReadScope, sessionId: stri
     const id = held.record.id;
     const tools = of('tool', id);
     const replies = of('reply', id);
-    const summary = toolSummary(tools, window.next === null);
+    const summary = toolSummary(tools, window.next === null, agent?.agent ?? null);
     const lastReply = replies.reduce<number | null>((at, { record }) => Math.max(at ?? 0, record.created_at), null);
     const children = depth > 8 ? [] : prompts.filter(({ record }) => record.parent_prompt_id === id).map((child) => turnChild(body(child, depth + 1)));
     const attachments = hooks.attachments.get(id) ?? { rows: [], cursor: null };
     const answers = hooks.answers.get(id) ?? { rows: [], cursor: null };
     return {
+      card: null,
       prompt: promptRow(held.record, held.at), responses: replies.map(({ record, at }) => responseRow(record, at)),
       attachments: attachments.rows, plans: planRows(of('plan', id), canonical), injection: hooks.injection(id),
       metrics: { tools: summary.byTool, durationMs: !timed || lastReply === null ? null : Math.max(0, lastReply - held.record.created_at), tokens: null },
-      tools: summary, answers: answers.rows, children,
+      tools: summary, toolCounts: { total: summary.total, shown: summary.total }, answers: answers.rows, children,
       cursors: { responses: more, plans: more, children: more, attachments: attachments.cursor, answers: answers.cursor },
     };
   };
@@ -259,9 +269,10 @@ const turnChild = (body: DocumentTurnDetail): DocumentTurnChild => ({
 });
 
 /**
- * One prompt's body, or null when no prompt of that id sits in the session's live document. The read opens
- * `TURN_PAGES` of its turn's pages from the page the catalog records for the prompt's record, or from the turn's first
- * page when it records none or found no page holding it; the rest are reached through the collection cursors.
+ * One prompt's body, or null when no prompt of that id sits in the session's live document. The read opens at most
+ * `TURN_PAGES` of its turn's pages: those from the page the catalog records for the prompt's record, or from the turn's
+ * first page when it records none or found no page holding it, and the turn's last page for its closing replies and
+ * plans. The pages between are reached through the collection cursors.
  */
 export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string): Promise<DocumentTurnDetail | null> {
   const place = await promptPlace(env.db, scope, sessionId, promptId);
@@ -269,11 +280,32 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
   if (doc === null) return null;
   const from = place.page !== null && place.page >= 0 ? place.page : 0;
-  const read = await doc.ownerPages(place.turn ?? SESSION_OWNER, from, TURN_PAGES);
-  const records = located(read.pages, doc.generation);
+  const owner = place.turn ?? SESSION_OWNER;
+  const head = await doc.ownerPages(owner, from, TURN_PAGES - 1);
+  const last = head.more ? await doc.lastPage(owner) : null;
+  const tail = last === null ? [] : located((await doc.ownerPages(owner, last, 1)).pages, doc.generation);
+  const after = from + head.pages.length;
+  const whole = !head.more || last === after;
+  const records = [...located(head.pages, doc.generation), ...(whole ? tail : tail.filter(({ record }) => record.k === 'reply' || record.k === 'plan'))];
   const top = records.find(({ record }) => record.k === 'prompt' && record.id === promptId);
   if (top === undefined) return null;
-  return (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: read.more ? from + read.pages.length : null })).body(top, 0);
+  const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
+  if (place.turn === promptId) {
+    const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card FROM session_prompts p
+      JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
+      LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id
+      WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.prompt_id=?3`)
+      .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null }>();
+    const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
+      records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
+    const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
+    const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
+    body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
+    body.card = catalog?.card ?? null;
+    body.tools = rollup === null ? shown : { ...shown, total: catalog!.tools, failed: catalog!.failed_tools,
+      filesNamed: catalog!.files_named, byTool: rollup.tools.map(row => ({ toolName: row.name, count: row.count })) };
+  }
+  return body;
 }
 
 /** One prompt's tool calls in source order, a turn's pages at a time; the cursor names the next page. */

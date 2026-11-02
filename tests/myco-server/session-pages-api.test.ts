@@ -336,7 +336,7 @@ describe('a session\'s lineage', () => {
       ['continuation', 'Session parent', 'This session continues its conversation · fork', 'parent'],
     ]);
     expect(rows((await get(`${base}?type=child_session`)).body)).toEqual([['child_session', 'Session launched', 'Child of this session', 'launched']]);
-    expect(rows((await get(`${base}?failed=false`)).body).map((r) => r[0])).toEqual(['continuation', 'child_session', 'continuation']);
+    expect((await get(`${base}?failed=false`)).status).toBe(400);
     sqlite.run(`DELETE FROM sessions WHERE project_id = 'proj_1' AND session_id = 'parent'`);
     expect(rows((await get(`${base}?type=continuation`)).body).at(-1)).toEqual(['continuation', 'A session not captured here', 'This session continues its conversation · fork', null]);
   });

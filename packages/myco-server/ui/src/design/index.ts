@@ -35,6 +35,8 @@ export { DataTable, type DataTableProps, type DataTableColumn, type DataTableGro
 export { Markdown, type MarkdownProps } from './patterns/Markdown';
 export { DayGroup, dayLabel, type DayGroupProps } from './patterns/DayGroup';
 export { ShowMore, type ShowMoreProps } from './patterns/ShowMore';
+export { FilterPills } from './patterns/FilterPills';
+export { CountButton, type CountButtonProps } from './patterns/CountButton';
 export { FactsPanel, FactRow, type FactsPanelProps, type FactRowProps } from './patterns/FactsPanel';
 export { Stat, type StatProps } from './patterns/Stat';
 export { EmptyState, type EmptyStateProps } from './patterns/EmptyState';

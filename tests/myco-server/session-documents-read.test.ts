@@ -79,10 +79,8 @@ test('a published session reads its turns, a turn with its tools and their full 
     expect(typeof input === 'string' && input.length > 300_000 && JSON.parse(input).command === 'npm test', name).toBe(true);
     expect(await documentBody(env, 'project', 'session', 'tool-input', shell.toolCallId, { ...shell.locator, generation: shell.locator.generation + 1 }), name).toBe('stale');
 
-    // The call the transcript never answered is the session's one activity row, placed on its turn.
     const activity = await documentSessionActivity(env, scope, 'session', {});
-    if (activity === null || activity === 'stale') throw new Error('activity missing');
-    expect(activity.rows.map((row) => [row.type, row.toolName, row.promptId]).sort(), name).toEqual([['no_result', 'shell', turns.rows[1]!.promptId], ['no_result', 'shell', null]].sort());
+    expect(activity.rows, name).toEqual([]);
     const unplaced = await documentUnplacedRecords(env, scope, 'session', undefined);
     if (unplaced === null || unplaced === 'stale') throw new Error('unplaced records missing');
     expect(unplaced.rows.map((row) => [row.kind, row.label, row.failed]), name).toEqual([['tool', 'shell', true]]);
@@ -114,7 +112,6 @@ test('a published session reads its turns, a turn with its tools and their full 
     const related: string[] = [];
     for (let cursor: string | undefined; ;) {
       const read = await documentSessionActivity(env, scope, 'session', { type: 'child_session', limit: 50, cursor });
-      if (read === null || read === 'stale') throw new Error('activity page missing');
       related.push(...read.rows.map((row) => row.id));
       if (read.cursor === null) break;
       cursor = read.cursor;

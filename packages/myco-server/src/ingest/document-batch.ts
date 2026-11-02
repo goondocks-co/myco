@@ -1,3 +1,4 @@
+import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
 /**
  * One write to a session document: records placed by owner in memory, the turns they changed settled from their
  * pages, every new chunk version registered, and the catalog statements that describe them. The publisher and the
@@ -11,16 +12,18 @@ import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
-import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
+import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
 import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
+import { sessionEditStatements } from './session-edits.js';
+import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
 
-/** Distinct paths a session's tools touched that the catalog keeps. */
-export const SESSION_PATHS_LIMIT = 500;
+export { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 /** Statements and blob calls a pass keeps for its registration and commit, above the wake's reserve for later jobs. */
 export const PASS_CLOSING_STATEMENTS = 64;
 export const PASS_CLOSING_BLOB_CALLS = 12;
@@ -160,7 +163,7 @@ interface TurnAdded { tools: number; replies: number; children: number; plans: n
 
 export class DocumentBatch {
   readonly writer: DocumentWriter;
-  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0 };
+  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
   records = 0;
   calls = 0;
   lastRecordAt: number | null = null;
@@ -181,7 +184,10 @@ export class DocumentBatch {
   private readonly turns = new Map<string, string | null>();
   private readonly resolved = new Set<string>();
   private readonly newPrompts: { record: DocRecord; turnKey: string | null }[] = [];
-  private readonly paths = new Map<string, { n: number; at: number }>();
+  private readonly paths = new Map<string, { n: number; edits: number; at: number; turn: string | null }>();
+  private readonly toolChanges: { owner: string; record: DocRecord; held: DocRecord | null; harness: string | null }[] = [];
+  private rewrittenBefore: number | null = null;
+  private fallbackHarness: string | null | undefined;
   private readonly mycoCalls = new Map<string, DocRecord & { harness: string | null }>();
   /**
    * When set, every placement keeps the batch's commit payable: a chunk read or a placement whose commit the
@@ -207,7 +213,7 @@ export class DocumentBatch {
     this.openTurn = doc.open_turn_key;
     this.firstPrompt = doc.first_prompt;
     this.writer = new DocumentWriter(directoryOf(doc.generation, chunks, pages), doc.next_chunk, async (row) => {
-      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.versions), 0, 1)) throw new DocumentPassFull();
+      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.versions), this.commitStatements, 1)) throw new DocumentPassFull();
       return readPageChunk(env, row);
     });
   }
@@ -306,7 +312,7 @@ export class DocumentBatch {
     const mark = this.mark();
     try {
       const placed = await this.placeAll(records, harness);
-      if (!commitAdmitted(this.db, this.writer.versions)) throw new DocumentPassFull();
+      if (!commitAdmitted(this.db, this.writer.versions, this.commitStatements)) throw new DocumentPassFull();
       return placed;
     } catch (error) {
       if (error instanceof DocumentPassFull) this.undo(mark);
@@ -316,17 +322,25 @@ export class DocumentBatch {
     }
   }
 
+  /** Upper bound for summary reads and byte-split writes, above the fixed closing reserve. */
+  get commitStatements(): number {
+    const bytes = this.toolChanges.reduce((sum, change) => sum + 500 + new TextEncoder().encode(JSON.stringify({
+      name: change.record.tool_name, myco: change.record.myco_tool, op: change.record.myco_op, files: change.record.files_affected,
+    })).length * 8, 0) + this.writer.touched.size * 1_000;
+    return 4 + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5;
+  }
+
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     added: Map<string, TurnAdded>;
-    resolved: Set<string>; paths: Map<string, { n: number; at: number }>; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
+    resolved: Set<string>; paths: Map<string, { n: number; edits: number; at: number; turn: string | null }>; toolChanges: number; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
     transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
-      mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
+      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
     };
   }
 
@@ -337,6 +351,7 @@ export class DocumentBatch {
       unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
+    this.toolChanges.splice(mark.toolChanges);
     for (const [into, from] of [[this.turns, mark.turns], [this.added, mark.added], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
       [this.transcriptPlans, mark.transcriptPlans]] as const) {
       (into as Map<string, unknown>).clear();
@@ -379,15 +394,32 @@ export class DocumentBatch {
   }
 
   private async placeAll(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
+    if (harness === null) {
+      if (this.fallbackHarness === undefined) {
+        const session = await this.db.prepare('SELECT agent FROM sessions WHERE project_id=? AND session_id=?')
+          .bind(this.projectId, this.sessionId).first<{ agent: string | null }>();
+        this.calls += 1;
+        this.fallbackHarness = session?.agent ?? null;
+      }
+      harness = this.fallbackHarness;
+    }
     await this.resolve(records);
     this.assignPrompts(records);
     await this.locateSealed(records);
     const reads = this.writer.reads;
     const out: (DocRecord | null)[] = [];
-    for (const record of records) {
-      const owner = this.ownerOf(record);
+    for (const incoming of records) {
+      const record = incoming.k === 'tool' ? { ...incoming, harness: incoming.harness ?? harness } : incoming;
+      if (record.k === 'tool') {
+        record.files_affected = toolFiles(record, harness);
+        const myco = recordMycoFields(record);
+        record.myco_tool = myco.tool;
+        record.myco_op = myco.op;
+      }
+      let owner = this.ownerOf(record);
       const newPlan = record.k === 'plan' && !(await this.planHeld(owner, planKeyOf(record)));
       const placed = await this.writer.upsert(record, owner);
+      if (placed.outcome !== 'unchanged') owner = placed.owner;
       out.push(placed.outcome === 'unchanged' ? null : placed.record);
       if (placed.outcome === 'unchanged') continue;
       this.records += 1;
@@ -400,8 +432,25 @@ export class DocumentBatch {
           record: placed.record, hash: await sha256Hex(content), spilled: placed.record.bodies?.content !== undefined,
         });
       }
+      this.toolChanges.push({ owner, record: placed.record, held: placed.outcome === 'merged' ? placed.held : null, harness });
+      if (record.k === 'tool') {
+        const prior = placed.outcome === 'merged' ? placed.held : null;
+        const before = prior === null ? [] : toolFiles(prior);
+        const after = toolFiles(placed.record);
+        const beforeEdits = prior === null ? [] : editedFiles(prior, harness);
+        const afterEdits = editedFiles(placed.record, harness);
+        for (const path of new Set([...before, ...after])) {
+          const held = this.paths.get(path);
+          this.paths.set(path, {
+            n: (held?.n ?? 0) + Number(after.includes(path)) - Number(before.includes(path)),
+            edits: (held?.edits ?? 0) + Number(afterEdits.includes(path)) - Number(beforeEdits.includes(path)),
+            at: Math.max(held?.at ?? 0, record.created_at), turn: held !== undefined && held.at > record.created_at ? held.turn : owner === SESSION_OWNER ? null : owner,
+          });
+        }
+      }
       if (placed.outcome === 'merged') {
         if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
+        if (record.k === 'tool') this.counts.myco_calls += Number(recordMycoFields(placed.record).tool !== null) - Number(recordMycoFields(placed.held).tool !== null);
         continue;
       }
       this.inserted.push([record.k, record.k === 'plan' ? planKeyOf(record) : record.id]);
@@ -432,12 +481,8 @@ export class DocumentBatch {
       }
       else {
         this.counts.tool_calls += 1;
+        if (recordMycoFields(record).tool !== null) this.counts.myco_calls += 1;
         if (record.success === 0) this.counts.failed_tools += 1;
-        for (const path of Array.isArray(record.files_affected) ? record.files_affected : []) {
-          if (typeof path !== 'string') continue;
-          const held = this.paths.get(path);
-          this.paths.set(path, { n: (held?.n ?? 0) + 1, at: Math.max(held?.at ?? 0, record.created_at) });
-        }
       }
     }
     for (const owner of this.writer.touched) if (owner !== SESSION_OWNER) await this.writer.readTurnHead(owner);
@@ -452,20 +497,50 @@ export class DocumentBatch {
    */
   async settledTurns(): Promise<Record<string, unknown>[]> {
     const settled: Record<string, unknown>[] = [];
-    for (const owner of this.writer.touched) {
-      if (owner === SESSION_OWNER) continue;
+    const owners = [...this.writer.touched].filter(owner => owner !== SESSION_OWNER);
+    const priors = new Map<string, { tool_state: string | null; tool_revision: number }>();
+    for (const page of jsonPages(owners)) {
+      const rows = (await this.db.prepare(`SELECT p.prompt_id,p.tool_state,p.tool_revision FROM json_each(?4) j CROSS JOIN session_prompts p
+        ON p.project_id=?1 AND p.session_id=?2 AND p.generation=?3 AND p.prompt_id=j.value`)
+        .bind(this.projectId, this.sessionId, this.doc.generation, JSON.stringify(page))
+        .all<{ prompt_id: string; tool_state: string | null; tool_revision: number }>()).results;
+      for (const row of rows) priors.set(row.prompt_id, row);
+      this.calls += 1;
+    }
+    const opaque = this.toolChanges.filter(change => change.record.k === 'tool' && change.record.bodies?.input !== undefined)
+      .map(change => ({ owner: change.owner, id: change.record.id }));
+    const calls = await heldToolCalls(this.db, [this.projectId, this.sessionId, this.doc.generation], opaque);
+    for (const owner of owners) {
       const { pages, complete } = await this.writer.turnPages(owner);
       const records = pages.flatMap((page) => page.records);
+      const prior = priors.get(owner);
+      let state: ToolState | null = prior?.tool_state ? parseToolState(prior.tool_state) : null;
+      const reset = state === null;
+      if (state !== null) {
+        for (const change of this.toolChanges.filter(change => change.owner === owner)) {
+          const held = calls[change.record.id];
+          if (held !== undefined) Object.defineProperty(state.calls, change.record.id, { value: held, enumerable: true, configurable: true, writable: true });
+          if (change.held !== null) adjustToolState(state, change.held, change.harness, -1);
+          adjustToolState(state, change.record, change.harness, 1);
+        }
+      } else if (complete && records.every(record => record.k !== 'tool' || record.bodies?.input === undefined || Object.hasOwn(record, 'harness'))) {
+        state = emptyToolState();
+        const harness = this.toolChanges.find(change => change.owner === owner)?.harness ?? null;
+        for (const record of records) adjustToolState(state, record, harness, 1);
+      }
+      const statistics = { expected_revision: prior?.tool_revision ?? 0, ...(state === null ? {} : {
+        failed_tools: state.failed, myco_calls: state.mycoCalls, tool_state: scalarToolState(state), statistics: { id: owner, state, reset },
+      }) };
       const input = turnInput(owner, records);
       const added = this.added.get(owner) ?? { tools: 0, replies: 0, children: 0, plans: 0 };
       if (input === null) {
-        if (!complete) settled.push({ id: owner, added });
+        if (!complete) settled.push({ id: owner, added, ...statistics });
         continue;
       }
       const trimmed = trimTurn(input);
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
-        id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
+        ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
         ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
         input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
@@ -544,14 +619,20 @@ export class DocumentBatch {
   }
 
   /** The directory, prompt, turn, path and Myco-call statements of a commit. */
-  statements(layout: DocumentLayout | null, registered: readonly ChunkVersion[], settled: readonly Record<string, unknown>[], chunkState: 'building' | 'live', now: number): PreparedStatement[] {
+  statements(layout: DocumentLayout | null, registered: readonly ChunkVersion[], allSettled: readonly Record<string, unknown>[], chunkState: 'building' | 'live', now: number): PreparedStatement[] {
     const db = this.db;
     const p = this.projectId, s = this.sessionId, g = this.doc.generation;
+    const settled = allSettled.map(({ statistics: _statistics, ...turn }) => turn);
+    const statistics = allSettled.flatMap(turn => turn.statistics === undefined ? [] : [turn.statistics as StatisticsChange]);
     const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId })));
     const statements: PreparedStatement[] = [
       ...contentAssertion(db, `(SELECT COUNT(*) FROM json_each(?) j JOIN retired_objects r ON r.project_id=? AND r.session_id=?
         AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i'))=?`, [rows, p, s, registered.length]),
     ];
+    for (const page of jsonPages(settled)) statements.push(...contentAssertion(db, `NOT EXISTS (
+      SELECT 1 FROM json_each(?4) j CROSS JOIN session_prompts sp
+        ON sp.project_id=?1 AND sp.session_id=?2 AND sp.generation=?3 AND sp.prompt_id=json_extract(j.value,'$.id')
+        WHERE sp.tool_revision<>json_extract(j.value,'$.expected_revision'))`, [p, s, g, JSON.stringify(page)]));
     if (registered.length > 0) {
       statements.push(
         registeredBlobsGuard(db, registered.map((row) => ({ projectId: p, key: row.key }))),
@@ -576,17 +657,18 @@ export class DocumentBatch {
         ON CONFLICT (project_id,session_id,generation,owner,page) DO UPDATE SET chunk_no=excluded.chunk_no,records=excluded.records,bytes=excluded.bytes`)
         .bind(p, s, g, JSON.stringify(layout.pages)));
     }
-    if (this.newPrompts.length > 0) {
+    const prompts = this.newPrompts.map(({ record, turnKey }, index) => ({
+      id: record.id, turn: turnKey, parent: record.parent_prompt_id ?? null, ord: this.doc.prompts + index, origin: record.origin ?? null, kind: record.prompt_kind ?? null,
+      label: record.thread_label ?? null, at: record.created_at, claim: record.claim ?? null, source: record.source_key ?? null,
+      hash: record.prompt_key_hash ?? null, preview: preview(record.text), chars: typeof record.text === 'string' ? record.text.length : 0,
+    }));
+    for (const page of jsonPages(prompts)) {
       statements.push(db.prepare(`INSERT OR IGNORE INTO session_prompts (project_id,session_id,generation,prompt_id,turn_key,parent_hint,ord,origin,
           prompt_kind,thread_label,created_at,claim,source_key,prompt_key_hash,preview,text_chars)
-        SELECT ?,?,?,json_extract(value,'$.id'),json_extract(value,'$.turn'),json_extract(value,'$.parent'),?+key,json_extract(value,'$.origin'),
+        SELECT ?,?,?,json_extract(value,'$.id'),json_extract(value,'$.turn'),json_extract(value,'$.parent'),json_extract(value,'$.ord'),json_extract(value,'$.origin'),
           json_extract(value,'$.kind'),json_extract(value,'$.label'),json_extract(value,'$.at'),json_extract(value,'$.claim'),
           json_extract(value,'$.source'),json_extract(value,'$.hash'),json_extract(value,'$.preview'),json_extract(value,'$.chars') FROM json_each(?)`)
-        .bind(p, s, g, this.doc.prompts, JSON.stringify(this.newPrompts.map(({ record, turnKey }) => ({
-          id: record.id, turn: turnKey, parent: record.parent_prompt_id ?? null, origin: record.origin ?? null, kind: record.prompt_kind ?? null,
-          label: record.thread_label ?? null, at: record.created_at, claim: record.claim ?? null, source: record.source_key ?? null,
-          hash: record.prompt_key_hash ?? null, preview: preview(record.text), chars: typeof record.text === 'string' ? record.text.length : 0,
-        })))));
+        .bind(p, s, g, JSON.stringify(page)));
     }
     const placed = layout === null ? [] : layout.pageChunks.flatMap((write) => write.chunk.pages.flatMap((page) =>
       page.records.filter((record) => record.k === 'prompt').map((record) => ({ id: record.id, page: page.page }))));
@@ -596,32 +678,43 @@ export class DocumentBatch {
         WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
         .bind(JSON.stringify(placed), p, s, g));
     }
-    if (settled.length > 0) statements.push(...this.cardStatements(settled, chunkState === 'building', now));
-    if (settled.length > 0) {
+    for (const page of jsonPages(settled)) statements.push(...this.cardStatements(page, chunkState === 'building', now));
+    for (const page of jsonPages(settled)) {
       const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field}+COALESCE(json_extract(j.value,'$.added.${field}'),0))`;
       const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
       statements.push(db.prepare(`UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
-          ${count('plans')},${kept('input_hash')},${kept('input_chars')}
-        FROM json_each(?) j WHERE project_id=? AND session_id=? AND generation=? AND prompt_id=json_extract(j.value,'$.id')`)
-        .bind(JSON.stringify(settled), p, s, g));
+          ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')}
+        FROM json_each(?1) j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=json_extract(j.value,'$.id')
+          AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
+        .bind(JSON.stringify(page), p, s, g));
     }
+    statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));
     if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
-      statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at)
-        SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at') FROM json_each(?) j
-          WHERE EXISTS (SELECT 1 FROM session_paths h WHERE h.project_id=? AND h.session_id=? AND h.generation=? AND h.path=json_extract(j.value,'$.path'))
-            OR (SELECT COUNT(*) FROM session_paths h WHERE h.project_id=? AND h.session_id=? AND h.generation=?) < ${SESSION_PATHS_LIMIT}
-        ON CONFLICT (project_id,session_id,generation,path) DO UPDATE SET tool_calls=tool_calls+excluded.tool_calls,last_at=MAX(last_at,excluded.last_at)`)
-        .bind(p, s, g, JSON.stringify([...this.paths].map(([path, held]) => ({ path, n: held.n, at: held.at }))), p, s, g, p, s, g));
+      statements.push(...sessionEditStatements(db, p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
+      for (const page of jsonPages([...this.paths].filter(([, held]) => held.n <= 0).map(([path, held]) => ({ path, ...held })))) {
+        const rows = JSON.stringify(page);
+        statements.push(db.prepare(`UPDATE session_paths SET tool_calls=tool_calls+json_extract(j.value,'$.n'),edits=edits+json_extract(j.value,'$.edits'),
+          last_turn=CASE WHEN json_extract(j.value,'$.at')>=last_at THEN json_extract(j.value,'$.turn') ELSE last_turn END,
+          last_at=MAX(last_at,json_extract(j.value,'$.at')) FROM json_each(?4) j
+          WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND session_paths.path=json_extract(j.value,'$.path')
+            AND session_paths.path IN (SELECT json_extract(value,'$.path') FROM json_each(?4))`).bind(p, s, g, rows),
+          db.prepare(`DELETE FROM session_paths WHERE project_id=?1 AND session_id=?2 AND generation=?3
+            AND path IN (SELECT json_extract(value,'$.path') FROM json_each(?4)) AND tool_calls<=0`).bind(p, s, g, rows));
+      }
+      for (const page of jsonPages([...this.paths].filter(([, held]) => held.n > 0).map(([path, held]) => ({ path, ...held })))) statements.push(db.prepare(`INSERT INTO session_paths (project_id,session_id,generation,path,tool_calls,last_at,edits,last_turn)
+        SELECT ?,?,?,json_extract(j.value,'$.path'),json_extract(j.value,'$.n'),json_extract(j.value,'$.at'),json_extract(j.value,'$.edits'),json_extract(j.value,'$.turn') FROM json_each(?) j
+          WHERE true
+        ON CONFLICT (project_id,session_id,generation,path) DO UPDATE SET tool_calls=tool_calls+excluded.tool_calls,edits=edits+excluded.edits,
+          last_turn=CASE WHEN excluded.last_at >= last_at THEN excluded.last_turn ELSE last_turn END,last_at=MAX(last_at,excluded.last_at)`)
+        .bind(p, s, g, JSON.stringify(page)));
     }
     if (this.mycoCalls.size > 0) {
-      statements.push(db.prepare(`INSERT INTO myco_tool_calls (project_id,session_id,generation,tool_call_id,myco_tool,myco_op,success,created_at,harness)
+      for (const page of jsonPages([...this.mycoCalls.values()].map(record => ({ id: record.id, tool: record.myco_tool, op: record.myco_op ?? null, ok: record.success, at: record.created_at, harness: record.harness })))) statements.push(db.prepare(`INSERT INTO myco_tool_calls (project_id,session_id,generation,tool_call_id,myco_tool,myco_op,success,created_at,harness)
         SELECT ?,?,?,json_extract(value,'$.id'),json_extract(value,'$.tool'),json_extract(value,'$.op'),json_extract(value,'$.ok'),
           json_extract(value,'$.at'),json_extract(value,'$.harness') FROM json_each(?) WHERE true
         ON CONFLICT (project_id,session_id,generation,tool_call_id) DO UPDATE SET myco_op=excluded.myco_op,success=excluded.success`)
-        .bind(p, s, g, JSON.stringify([...this.mycoCalls.values()].map((record) => ({
-          id: record.id, tool: record.myco_tool, op: record.myco_op ?? null, ok: record.success, at: record.created_at, harness: record.harness,
-        })))));
+        .bind(p, s, g, JSON.stringify(page)));
     }
     statements.push(...this.sealStatements());
     return statements;
@@ -657,10 +750,19 @@ export class DocumentBatch {
   /** The counter, chunk numbering and turn fields of the session's catalog row, as SET terms and their parameters. */
   documentSet(now: number): { sql: string; params: unknown[] } {
     const c = this.counts;
+    const rewritten = this.rewrittenBefore;
+    const restart = rewritten === null ? '0' : `(rollup_after IS NOT NULL AND (rollup_after>=${rewritten}
+      OR ((rollup_page>0 OR rollup_record>0) AND ${rewritten}=(SELECT c.chunk_no FROM session_chunks c
+        WHERE c.project_id=session_documents.project_id AND c.session_id=session_documents.session_id AND c.generation=session_documents.generation
+          AND c.kind='page' AND c.chunk_no>session_documents.rollup_after ORDER BY c.chunk_no LIMIT 1))))`;
     return {
-      sql: `prompts=prompts+?,user_prompts=user_prompts+?,replies=replies+?,tool_calls=tool_calls+?,failed_tools=failed_tools+?,plans=plans+?,
+      sql: `prompts=prompts+?,user_prompts=user_prompts+?,replies=replies+?,tool_calls=tool_calls+?,failed_tools=failed_tools+?,plans=plans+?,myco_calls=myco_calls+?,
+        rollup_after=CASE WHEN ${restart} THEN -1 ELSE rollup_after END,
+        rollup_page=CASE WHEN ${restart} THEN 0 ELSE rollup_page END,rollup_record=CASE WHEN ${restart} THEN 0 ELSE rollup_record END,
+        rollup_epoch=rollup_epoch+CASE WHEN ${restart} THEN 1 ELSE 0 END,
+        paths_build=CASE WHEN ${restart} THEN NULL ELSE paths_build END,myco_build=CASE WHEN ${restart} THEN 0 ELSE myco_build END,
         first_prompt=?,open_turn_key=?,last_record_at=MAX(COALESCE(last_record_at,0),COALESCE(?,0)),next_chunk=?,updated_at=?`,
-      params: [c.prompts, c.user_prompts, c.replies, c.tool_calls, c.failed_tools, c.plans, this.firstPrompt, this.openTurn, this.lastRecordAt,
+      params: [c.prompts, c.user_prompts, c.replies, c.tool_calls, c.failed_tools, c.plans, c.myco_calls, this.firstPrompt, this.openTurn, this.lastRecordAt,
         this.writer.nextChunk, now],
     };
   }
@@ -674,6 +776,8 @@ export class DocumentBatch {
     statements: (versions: readonly ChunkVersion[]) => Commit | Promise<Commit>): Promise<number> {
     this.sealed = this.pagesToSeal();
     const layout = write ? this.writer.layout() : null;
+    const rewrites = layout?.pageChunks.filter(write => write.previous !== undefined).map(write => write.chunkNo) ?? [];
+    this.rewrittenBefore = rewrites.length === 0 ? null : Math.min(...rewrites);
     const settled = write ? await this.settledTurns() : [];
     const encoded = layout === null ? [] : await this.encode(layout);
     const versions = encoded.map(({ version }) => version);
@@ -692,7 +796,9 @@ export class DocumentBatch {
         this.calls += 4;
       }
       const own = await statements(versions);
-      await this.db.batch([...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after]);
+      const transaction = [...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after];
+      if (this.admitted && reserveReached(this.db, transaction.length, 0)) throw new DocumentPassFull();
+      await this.db.batch(transaction);
     } catch (error) {
       if (holders.length > 0) await releaseHolders(this.db, holders, now);
       throw error;

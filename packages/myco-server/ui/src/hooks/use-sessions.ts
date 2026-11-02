@@ -1,5 +1,5 @@
 import type { ReleaseStatus } from './use-release-provenance';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
 import type { ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
@@ -40,7 +40,10 @@ export interface SessionRow {
 export interface SessionCounts {
   prompts: number;
   toolCalls: number;
-  failedTools?: number;
+  failedTools: number;
+  /** The prompts a person typed, of all `prompts`. */
+  userPrompts: number;
+  mycoCalls: number;
   responses: number;
   plans: number;
   attachments: number;
@@ -64,6 +67,8 @@ export interface SessionResponse {
   /** Why the ended session has no title; null when it has one or is still open. */
   untitled?: UntitledReason | null;
   counts: SessionCounts;
+  /** How many files the agent's editing tools changed. */
+  filesEdited: number;
   metrics?: { tools: ToolUsage[]; tokens: number | null; durationMs?: number | null };
   turnContexts?: Record<string, { subagents: number }>;
   /** Whether the session's work is released, or null when it has no release state. */
@@ -212,6 +217,36 @@ export interface TurnRow {
   childCount: number;
   planCount: number;
   attachmentCount: number;
+  /** What the turn's card says happened; null until the turn has a card. */
+  headline: string | null;
+  signal: TurnSignal | null;
+  marks: TurnMarks | null;
+  /** Calls that failed or left no result. */
+  failedTools: number;
+  mycoCalls: number;
+  /** Null until this session's document catches up: only `toolCallCount` is known then. */
+  toolRollup: ToolRollup | null;
+}
+
+export type TurnSignal = 'high' | 'low' | 'none';
+
+/** Which parts of the turn's card hold anything. */
+export interface TurnMarks {
+  decisions: boolean;
+  rejected: boolean;
+  errors: boolean;
+  corrections: boolean;
+  openQuestions: boolean;
+}
+
+/** A turn's tool calls counted whole, however long the turn. */
+export interface ToolRollup {
+  /** The top tools by count, then one `other`. */
+  tools: Array<{ name: string; count: number }>;
+  myco: Array<{ name: string; count: number; failed: number }>;
+  firstError: string | null;
+  filesEdited: number;
+  lastRecordAt: number | null;
 }
 
 export interface TurnPrompt {
@@ -253,6 +288,10 @@ export interface TurnInjection {
 
 /** One turn's body; its tool calls are read on their own when opened. */
 export interface TurnDetail {
+  /** The turn's card as written, or null until it has one. */
+  card: string | null;
+  /** All the turn's calls, and how many of them the failures, files and Myco lists cover. */
+  toolCounts: { total: number; shown: number };
   prompt: TurnPrompt;
   responses: ResponseRow[];
   attachments: AttachmentRow[];
@@ -262,7 +301,7 @@ export interface TurnDetail {
   injection: TurnInjection | null;
   children: TurnChild[];
   metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
-  /** The prompt's tool calls in brief: counts by tool, failures, files named and Myco calls. */
+  /** The prompt's tool calls in brief: counts by tool, failures, files edited and Myco calls. */
   tools?: ToolSummary;
   context?: { subagents: number };
   answers?: PromptAnswer[];
@@ -350,10 +389,10 @@ export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'act
 }
 
 /** A named turn or its steering parent, resolved without walking prior pages. */
-export function useNamedTurn(projectId: string, sessionId: string, promptId: string | null) {
+export function useNamedTurn(projectId: string, sessionId: string, promptId: string | null, enabled = true) {
   return useQuery({
     queryKey: ['turns', projectId, sessionId, 'named', promptId],
-    enabled: promptId !== null,
+    enabled: enabled && promptId !== null,
     queryFn: ({ signal }) => fetchJson<{ rows: TurnRow[]; cursor: string | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${PROMPT_ORIGINS.join(',')}&turn=${seg(promptId!)}`, signal),
   });
 }
@@ -365,6 +404,58 @@ export const TURN_PAGE = 200;
 export function useTurns(projectId: string, sessionId: string, origins: readonly PromptOrigin[]) {
   const named = [...origins].sort().join(',');
   return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=${TURN_PAGE}&order=desc`);
+}
+
+/** What the conversation's outline can list: a person's prompts, the key moments, the turns with failures or Myco calls, or every turn. */
+export const TURN_FILTERS = ['you', 'key', 'failed', 'myco', 'all'] as const;
+export type TurnFilter = (typeof TURN_FILTERS)[number];
+
+export type TurnOrder = 'asc' | 'desc';
+
+const promptRowId = (row: TurnRow) => row.promptId;
+
+/** One page of the outline at a time; `around` opens the pages centred on that turn. */
+export function useTurnOutline(projectId: string, sessionId: string, filter: TurnFilter, opts: { order: TurnOrder; around: string | null; enabled?: boolean }) {
+  const origins = filter === 'you' ? 'user' : [...PROMPT_ORIGINS].sort().join(',');
+  const query = `origins=${encodeURIComponent(origins)}&limit=${TURN_PAGE}&order=${opts.order}${filter === 'you' || filter === 'all' ? '' : `&filter=${filter}`}${opts.around === null ? '' : `&around=${seg(opts.around)}`}`;
+  return usePaged<TurnRow>(['turns', projectId, sessionId, filter, opts.order, opts.around], `${project(projectId)}/sessions/${seg(sessionId)}/turns?${query}`, { enabled: opts.enabled ?? true, rowKey: promptRowId });
+}
+
+export type FileKind = 'edited' | 'read' | 'all';
+
+/** A file the agent's tools named, and the last turn that did. */
+export interface SessionFile {
+  path: string;
+  calls: number;
+  edits: number;
+  lastTurn: string | null;
+}
+
+interface SessionFilesPage {
+  files: SessionFile[];
+  nextCursor: string | null;
+  /** The session named more files than Myco keeps. */
+  capped: boolean;
+}
+
+/** The files a session's tools named, a page at a time. */
+export function useSessionFiles(projectId: string, sessionId: string, kind: FileKind) {
+  const query = useInfiniteQuery({
+    queryKey: ['session-files', projectId, sessionId, kind],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => fetchJson<SessionFilesPage>(`${project(projectId)}/sessions/${seg(sessionId)}/files?kind=${kind}${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  return {
+    rows: query.data?.pages.flatMap((one) => one.files) ?? [],
+    capped: query.data?.pages.some((one) => one.capped) ?? false,
+    isPending: query.isPending,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void query.refetch(); },
+  };
 }
 
 /** One turn's body, read when its card opens. */
@@ -577,7 +668,10 @@ export interface ToolSummary {
   failed: number;
   byTool: ToolUsage[];
   failures: ToolCallRow[];
+  /** The files the calls read here edited. */
   files: string[];
+  /** How many files those calls named, edited or not. */
+  filesNamed: number;
   myco: { tool: string; op: string | null; count: number; failed: number }[];
 }
 export interface PromptAnswer {
@@ -587,40 +681,27 @@ export interface PromptAnswer {
   selection: Record<string, number>;
 }
 
-/** A diagnostic event with a prompt target verified by the Deployment. */
+/** A session related to this one by a parent edge. */
 export interface SessionActivityRow {
   id: string;
-  type: 'failure' | 'no_result' | 'child_session' | 'continuation';
+  type: 'child_session' | 'continuation';
   title: string;
   detail: string;
   at: number;
-  promptId: string | null;
-  /** The tool a tool row records; null on a session row. */
-  toolName: string | null;
-  resultReason: string | null;
-  failed: boolean;
-  /** The related session a session row opens; null on a tool row and for a session the Project does not hold. */
+  /** The related session a row opens; null for a session the Project does not hold. */
   sessionId: string | null;
   agent: string | null;
 }
 
-interface SessionActivityPage {
-  rows: SessionActivityRow[];
-  cursor: string | null;
-  /** Every tool represented in the session, independent of filters and paging. */
-  tools: string[];
-}
-
-/** Session diagnostics, filtered only by their structured metadata. */
+/** What the session set off, filtered only by its structured metadata. */
 export function useSessionActivity(projectId: string, sessionId: string, filters: Readonly<Record<string, string>>) {
   const params = new URLSearchParams({ limit: '100' });
   for (const [key, value] of Object.entries(filters)) params.set(key, value);
   const query = params.toString();
-  const read = usePaged<SessionActivityRow, SessionActivityPage>(
+  return usePaged<SessionActivityRow>(
     ['session-activity', projectId, sessionId, query],
     `${project(projectId)}/sessions/${seg(sessionId)}/activity?${query}`,
   );
-  return { ...read, tools: read.pages?.[0]?.tools ?? [] };
 }
 
 /** How a child relates to its parent: started by it, or continuing its conversation under a new id. */
