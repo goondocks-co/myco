@@ -66,7 +66,7 @@ function ToolCallItem({ projectId, sessionId, row }: { projectId: string; sessio
   );
 }
 
-/** A prompt's tool calls in brief: Myco calls named, every failure shown with its error, and the files changed. */
+/** A prompt's tool calls in brief: Myco calls named, every failure shown with its error, and the files its tool inputs name. */
 export function ToolSummary({ projectId, sessionId, summary }: { projectId: string; sessionId: string; summary: ToolSummaryRow }) {
   if (summary.total === 0) return null;
   return (
@@ -88,8 +88,8 @@ export function ToolSummary({ projectId, sessionId, summary }: { projectId: stri
         </ul>
       )}
       {summary.files.length > 0 && (
-        <Disclosure summary={<span>{count(summary.files.length, 'file')} changed</span>}>
-          <ul className="flex flex-col t-mono text-muted" aria-label="Files changed">
+        <Disclosure summary={<span>{count(summary.files.length, 'file')} named</span>}>
+          <ul className="flex flex-col t-mono text-muted" aria-label="Files named">
             {summary.files.map((file) => <li key={file} className="truncate">{file}</li>)}
           </ul>
         </Disclosure>
