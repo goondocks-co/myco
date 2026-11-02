@@ -1311,12 +1311,13 @@ function excludedTasks(tasks: readonly string[]): string {
 }
 
 /** The oldest queued run a worker may take, or null when the queue holds none it may. */
-export async function nextClaimable(db: RelationalStore, excluded: readonly string[]): Promise<ClaimCandidate | null> {
+export async function nextClaimable(db: RelationalStore, excluded: readonly string[], budget?: ClaimBudget, now = Date.now()): Promise<ClaimCandidate | null> {
+  const money = budget === undefined ? { sql: '1', params: [] } : budgetClaimPredicate(budget, now);
   return db.prepare(
     `SELECT project_id AS projectId, id, task, instruction, dispatch_spec AS dispatchSpec FROM agent_runs
-      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excludedTasks(excluded)}
+      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excludedTasks(excluded)} AND ${money.sql}
       ORDER BY queued_at LIMIT 1`,
-  ).bind(...excluded).first<ClaimCandidate>();
+  ).bind(...excluded, ...money.params).first<ClaimCandidate>();
 }
 
 /** A task name as an SQL literal: catalogue task names only, quoted. */

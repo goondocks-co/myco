@@ -19,7 +19,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
+import { main, bootstrapDatabase, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { bunPlatform } from '@myco-server-worker/platform/bun/env.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { THIN_LEARNING_STEPPING_STONE_REQUIRED } from '@myco-server-worker/db/thin-learning-admission.js';
@@ -49,9 +49,18 @@ afterEach(() => {
 });
 
 describe('migrateOnly', () => {
-  it('brings a fresh volume to a servable schema', () => {
+  it('refuses an absent mounted database before migration or serving can create it', async () => {
+    const databasePath = join(scratch(), 'missing.sqlite');
+    expect(() => migrateOnly(databasePath)).toThrow();
+    expect(existsSync(databasePath)).toBe(false);
+    const { createBunHandler } = await import('@myco-server-worker/entry/bun.js');
+    await expect(createBunHandler({ databasePath, blobDir: join(scratch(), 'blobs') })).rejects.toThrow();
+    expect(existsSync(databasePath)).toBe(false);
+  });
+
+  it('explicit bootstrap brings a fresh volume to a servable schema', () => {
     const path = join(scratch(), 'myco.sqlite');
-    migrateOnly(path);
+    bootstrapDatabase(path);
 
     const sqlite = new Database(path);
     const tables = sqlite.query(
@@ -65,7 +74,7 @@ describe('migrateOnly', () => {
 
   it('is idempotent — the entrypoint runs it on every container start', () => {
     const path = join(scratch(), 'myco.sqlite');
-    const first = migrateOnly(path);
+    const first = bootstrapDatabase(path);
     expect(first).toBeGreaterThan(0);
 
     // A second pass applies nothing, leaving the CREATE TABLE statements alone.
@@ -373,7 +382,7 @@ describe('secrets arrive as files', () => {
     process.env.MYCO_DATABASE = join(root, 'myco.sqlite');
     process.env.MYCO_BLOB_DIR = join(root, 'blobs');
     process.env.MYCO_PORT = '0';
-    migrateOnly(process.env.MYCO_DATABASE);
+    bootstrapDatabase(process.env.MYCO_DATABASE);
 
     // A clean start proves the file is read and trimmed, not passed through
     // with its surrounding whitespace.
@@ -407,7 +416,7 @@ describe('bind mode', () => {
 it.each(['socket', 'proxy'] as const)('main binds embedding in process with %s source identity', async (sourceFrom) => {
   const root = scratch();
   const databasePath = join(root, 'myco.sqlite');
-  migrateOnly(databasePath);
+  bootstrapDatabase(databasePath);
   const sqlite = new Database(databasePath);
   sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','fixture',1)");
   sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','memory','user','A durable decision','decision',1)");

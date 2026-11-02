@@ -75,11 +75,47 @@ describe('the wake loop', () => {
     expect(ticks).toBe(1);
   });
 
-  it('comes back after a tick that throws', async () => {
+  it('backs failures off within a bound, holds ensure at that deadline, and resets after success', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const realNow = Date.now;
+    let now = 1_000_000;
+    let timer: { callback: () => void; at: number } | null = null;
     let ticks = 0;
-    const loop = startWakeLoop(async () => { ticks += 1; if (ticks === 1) throw new Error('boom'); return { nextWakeMs: 5 }; }, { floorMs: 5 });
-    await settle(30);
-    expect(ticks).toBeGreaterThanOrEqual(2);
-    loop.stop();
+    let fails = true;
+    globalThis.setTimeout = ((callback: () => void, delay: number) => { timer = { callback, at: now + delay }; return 1; }) as typeof setTimeout;
+    globalThis.clearTimeout = (() => { timer = null; }) as typeof clearTimeout;
+    Date.now = () => now;
+    const loop = startWakeLoop(async () => {
+      ticks++;
+      if (fails) throw new Error('fixture tick failure');
+      return { nextWakeMs: 300_000 };
+    }, { floorMs: 900_000 });
+    const advance = async () => {
+      const pending = timer!;
+      now = pending.at;
+      timer = null;
+      pending.callback();
+      await new Promise<void>(resolve => { realSetTimeout(resolve, 0); });
+    };
+    try {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await advance();
+        const at = now + Math.min(30_000 * 2 ** attempt, 300_000);
+        expect(timer!.at).toBe(at);
+        await loop.ensure();
+        expect(timer!.at).toBe(at);
+      }
+      fails = false;
+      await advance();
+      await loop.ensure();
+      expect(timer!.at).toBe(now + 1_000);
+      expect(ticks).toBe(9);
+    } finally {
+      await loop.stop();
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+      Date.now = realNow;
+    }
   });
 });

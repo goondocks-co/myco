@@ -1,6 +1,6 @@
 import { expect,it } from 'bun:test';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
-import { readSpendRows,budgetHeld } from '@myco-server-worker/core/run-budget.js';
+import { readSpendRows,budgetHeld,automaticFits } from '@myco-server-worker/core/run-budget.js';
 import { queueHeads } from '@myco-server-worker/core/queue-heads.js';
 import { settleLapsedLease,guardedStateStatement,claimQueuedRun } from '@myco-server-worker/core/runs.js';
 import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
@@ -25,6 +25,27 @@ import { measuredStore } from './helpers/read-budget.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import type { WorkerPrincipal } from '@myco-server-worker/core/worker-lease.js';
 import { PULL_FIXTURE_TABLE, testPulledStage } from '../helpers/pulled-test-stage.js';
+
+it('holds automatic work through activation refusal and resumes under the preserved budget after operator migration', async () => {
+  const f = await budgetFixture(false);
+  try {
+    await f.setting(1);
+    f.sqlite.exec('CREATE TABLE idx_attempts_claimed(id INTEGER)');
+    expect(await completeBudgetMigration(f.db, f.now)).toMatchObject({ active: false });
+    expect(await automaticFits(f.db, 1_000_000, f.now)).toBe(false);
+    const automatic = f.queue('activation-held');
+    expect(await budgetHeld(f.db, automatic.projectId, automatic.id, 0.1, f.now)).toBe(true);
+    expect(await f.claim(automatic)).toBeNull();
+    expect(await pollBudget(f, f.now)).toMatchObject({ claimed: false });
+    expect(f.sqlite.query("SELECT held_by FROM agent_runs WHERE id='activation-held'").get()).toEqual({ held_by: 'budget' });
+    expect(await f.claim(f.queue('activation-manual', 'manual'))).not.toBeNull();
+    f.sqlite.exec('DROP TABLE idx_attempts_claimed');
+    expect(await completeBudgetMigration(f.db, f.now + 1)).toEqual({ active: true, reason: null });
+    expect((await readBudgetStatus(f.db, f.now + 1)).dailyUsd).toBe(1);
+    expect(await automaticFits(f.db, 1_000_000, f.now + 1)).toBe(false);
+    expect(await f.claim(automatic, f.now + 1)).not.toBeNull();
+  } finally { f.sqlite.close(); }
+});
 
 it('governs across Projects atomically and lets manual work spend past the budget',async()=>{
   const f=await budgetFixture();
@@ -127,8 +148,9 @@ for(const active of [true,false])it(`records and reports task limit holds with b
   const f=await budgetFixture(active);
   try {
     await settingsWriter(f.db).setLeaf('agent.limits.task_concurrent_runs',1,'mem_worker',f.now);
-    f.queue('first');expect(await pollBudget(f,f.now)).toMatchObject({claimed:true});
-    f.queue('second','automatic','proj_1','title-summary',f.now+1);
+    const origin=active?'automatic':'manual';
+    f.queue('first',origin);expect(await pollBudget(f,f.now)).toMatchObject({claimed:true});
+    f.queue('second',origin,'proj_1','title-summary',f.now+1);
     expect(await pollBudget(f,f.now+2)).toEqual({claimed:false,reason:'at_limit'});
     expect(f.sqlite.query("SELECT held_by FROM agent_runs WHERE id='second'").get()).toEqual({held_by:'task_concurrent_runs'});
   }finally{f.sqlite.close();}

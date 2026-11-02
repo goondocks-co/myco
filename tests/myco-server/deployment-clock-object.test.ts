@@ -27,6 +27,70 @@ function state() {
   };
 }
 
+it('advances a later alarm for new work while retaining an earlier deadline', async () => {
+  const held = state();
+  const env = {};
+  const clock = new DeploymentClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const now = Date.now();
+  await held.ctx.storage.setAlarm(now + 300_000);
+  await clock.ensure();
+  expect(held.alarm()! - now).toBeLessThan(2_000);
+  await held.ctx.storage.setAlarm(now + 100);
+  await clock.ensure();
+  expect(held.alarm()).toBe(now + 100);
+  class RequestingClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      await this.ensure();
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const requesting = new RequestingClock(held.ctx as never, env as never);
+  Object.assign(requesting, { ctx: held.ctx, env });
+  await requesting.wake();
+  expect(held.alarm()! - now).toBeLessThan(2_000);
+});
+
+it('backs failed ticks off to a bounded deadline that new work cannot bypass, then resets after success', async () => {
+  const held = state();
+  const env = {};
+  let fails = true;
+  class FaultClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      if (fails) throw new Error('fixture tick failure');
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new FaultClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (attempt % 2 === 0) await expect(clock.wake()).rejects.toThrow('fixture tick failure');
+      else await clock.alarm();
+      const delay = held.alarm()! - now;
+      expect(delay).toBe(Math.min(30_000 * 2 ** attempt, 300_000));
+      await clock.ensure();
+      expect(held.alarm()).toBe(now + delay);
+      expect(await clock.wake()).toEqual({ ticked: false, heldBy: 'tick_backoff', retryInMs: delay });
+      now += delay;
+    }
+    fails = false;
+    await clock.wake();
+    await clock.ensure();
+    expect(held.alarm()).toBe(now + 1_000);
+    fails = true;
+    const setAlarm = held.ctx.storage.setAlarm;
+    held.ctx.storage.setAlarm = async (at) => {
+      if (at > now + 2_000) throw new Error('fixture retry storage unavailable');
+      await setAlarm(at);
+    };
+    await expect(clock.alarm()).rejects.toThrow('fixture retry storage unavailable');
+  } finally { Date.now = realNow; }
+});
+
 /** A clock whose tick launches work through the environment every tick gets, and never lets it settle. */
 class LaunchingClock extends DeploymentClock {
   readonly started: number[] = [];

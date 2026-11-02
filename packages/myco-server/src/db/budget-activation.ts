@@ -13,7 +13,7 @@ export const BUDGET_INDEXES = [
 export interface BudgetActivation { active: boolean; reason: string | null }
 export type BudgetCompletion = BudgetActivation | { active: null; reason: string };
 export const budgetCompletionMessage = (result: BudgetCompletion): string | null => result.active === true ? null
-  : result.active === null ? `Budget governor state not verified: ${result.reason}` : `Budget governor inactive: ${result.reason}`;
+  : `${result.active === null ? 'Budget governor state not verified' : 'Budget governor inactive'}: ${result.reason}. Automatic work requires an active validated governor; capture and manual work remain available.`;
 export interface BudgetMigrationStatement { sql: string; read: boolean }
 const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 const normalize = (sql: string): string => sql.toLowerCase().replace(/\bif not exists\b|[\s"`\[\]]/g, '');

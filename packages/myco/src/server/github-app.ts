@@ -30,7 +30,7 @@ import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
-import { missingDeploymentRecordMessage, deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
+import { missingDeploymentRecordMessage, deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, updateDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
 import type { CommandRunner } from './runner.js';
 import { configureLocalSignIn, localDeploymentPresent, readLocalSecrets, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { composeRetiredMessage, retiredComposeBundle } from './targets.js';
@@ -580,8 +580,8 @@ function registrationResult(app: RegisteredApp, url: string, verified: VerifyRes
 }
 
 function recordSignInUrl(options: RegisterOptions): void {
-  if (options.target.kind === 'cloudflare' && options.target.record.url !== new URL(options.url).origin) {
-    writeDeploymentRecord({ ...options.target.record, url: new URL(options.url).origin }, options.target.mycoHome);
+  if (options.target.kind === 'cloudflare') {
+    updateDeploymentRecord({ url: new URL(options.url).origin }, options.target.mycoHome);
   }
 }
 

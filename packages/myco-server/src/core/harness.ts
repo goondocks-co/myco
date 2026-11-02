@@ -965,6 +965,7 @@ export async function claimNextRun(
   }
   const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
   const activation = await budgetActivation(env.db);
+  if (!activation.active && queued) await recordTaskHolder(env.db, BUDGET_WORKER_TASKS, [null, 'worker'], 'budget');
   const claimLimits = await readDispatchLimits({ ...env, db: policy.view });
   const refusedHeads = new Set<string>();
   const headKey=(row:ClaimCandidate)=>JSON.stringify([row.projectId,row.id]);
@@ -972,7 +973,7 @@ export async function claimNextRun(
   let limitHeld=false;
   const next = async () => {
     if(!queued)return null;
-    if(!activation.active)return nextClaimable(env.db,excluded);
+    if(!activation.active)return nextClaimable(env.db,excluded,{active:false,estimate:0,profileJson:''},worker.now);
     const heads=await queueHeads(env.db,excluded);
     for(const task of new Set(heads.map(row=>row.task))) {
       if(limitHolders.has(task))continue;

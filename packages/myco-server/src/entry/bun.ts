@@ -22,7 +22,7 @@ import {
   LOOPBACK_V6,
   assertBothLoopbackFamiliesBound,
   assertLoopbackLiteral,
-  isAllowedLoopbackHost,
+  loopbackHostAdmission,
 } from '../platform/bun/loopback.js';
 
 export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, TrustedProxyConfig {
@@ -135,13 +135,13 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
 }
 
 export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void>; env: BunServerEnv; handleInProcess: BunHandler['handleInProcess'] }> {
-  const handler = await createBunHandler(options);
   const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
+  const allowsHost = loopbackOnly ? loopbackHostAdmission(options.origin) : null;
+  const handler = await createBunHandler(options);
 
   // Resolved after the first bind. Port 0 asks the kernel to choose, and the
   // second family lands on the SAME port: two families on two ports is not one
-  // deployment. The Host allowlist compares against this, never the requested
-  // value.
+  // deployment. An origin with no configured authority uses the bound port.
   let servingPort = options.port ?? 8787;
 
   // The runtime's own fallback page embeds the thrown message and surrounding
@@ -149,7 +149,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
   // turned off and replaced with the same bodiless refusal the core would give.
   const fetchImpl = loopbackOnly
     ? (request: Request): Response | Promise<Response> => (
-      isAllowedLoopbackHost(request.headers.get('host'), servingPort)
+      allowsHost!(request.headers.get('host'), servingPort)
         ? handler.fetch(request)
         // Bodiless. A distinguishing message tells a prober which Host values
         // this deployment answers.

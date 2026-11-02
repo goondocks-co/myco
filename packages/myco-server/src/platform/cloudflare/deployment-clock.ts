@@ -11,6 +11,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { runTick, tickPacer, type TickReport } from '../../core/tick.js';
 import { serialGate } from '../../core/serial-gate.js';
+import { CONTINUATION_FLOOR_MS, ENSURE_SOON_MS, soonestWake, wakePolicy } from '../../core/wake-policy.js';
+export { CONTINUATION_FLOOR_MS, soonestWake } from '../../core/wake-policy.js';
 import { WAKE_CONTINUATIONS } from '../../core/jobs.js';
 import { classify, emit } from '../../telemetry.js';
 import { serverEnvFromBindings, type CloudflareBindings } from './env.js';
@@ -24,9 +26,6 @@ export { CLOCK_LOCATION_HINT, CLOCK_NAME, RETIRED_CLOCK_NAMES } from './clock-na
 export function clockStub(namespace: DurableObjectNamespace<DeploymentClock>): DurableObjectStub<DeploymentClock> {
   return namespace.get(namespace.idFromName(CLOCK_NAME), { locationHint: CLOCK_LOCATION_HINT });
 }
-
-/** How soon `ensure` wakes when no alarm is set. */
-const ENSURE_SOON_MS = 1_000;
 
 /**
  * The clock that ticks only when a caller asks it to.
@@ -62,13 +61,6 @@ export async function armNextWake(
 }
 
 /**
- * The floor a wake arms before it does anything that can throw, so a reset or a failure leaves a usable wake. It is
- * shorter than the ordinary tick interval: a continuation in flight needs the next one soon, and it never
- * pushes an alarm that is already sooner.
- */
-export const CONTINUATION_FLOOR_MS = 2_000;
-
-/**
  * The longest a clock waits for its next wake while work a tick launched still runs. An object that receives no event
  * for a while can be evicted, taking that work with it; a wake at least this often keeps events arriving until the
  * work ends.
@@ -81,13 +73,6 @@ export async function armFloor(storage: AlarmStore, bindings: { CLOCK_MODE?: str
   if (held === null || held > now + CONTINUATION_FLOOR_MS) await storage.setAlarm(now + CONTINUATION_FLOOR_MS);
 }
 
-/** The sooner of the tick's own next wake and a continuation's deadline; neither may cancel the other. */
-export function soonestWake(tickMs: number | null, continuationMs: number | null): number | null {
-  if (tickMs === null) return continuationMs;
-  if (continuationMs === null) return tickMs;
-  return Math.min(tickMs, continuationMs);
-}
-
 /**
  * What one wake did. A wake that could not tick says so rather than answering an empty tick: the Deployment's
  * database is unreadable while its own export runs, and a fabricated report would read as a quiet success.
@@ -95,7 +80,14 @@ export function soonestWake(tickMs: number | null, continuationMs: number | null
 export type WakeOutcome =
   | { ticked: true; report: TickReport }
   | { ticked: false; heldBy: 'recovery_export'; attempt: number | null; stage: string }
+  | { ticked: false; heldBy: 'tick_backoff'; retryInMs: number }
   | { ticked: false; heldBy: 'retired_clock' };
+
+class ScheduledTickFailure extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
 
 /**
  * Runs each continuation the registry declares, before any storage read, and reports the soonest deadline they ask
@@ -136,10 +128,12 @@ export const CONTINUATION_IMPLEMENTATIONS: Record<string, (bindings: CloudflareB
   },
 };
 
-/** Wake soon, unless an alarm is already set or this clock keeps none. */
-export async function armSoon(storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number): Promise<void> {
+/** Advance to requested work's deadline while preserving any earlier alarm. */
+export async function armSoon(storage: AlarmStore, bindings: { CLOCK_MODE?: string }, now: number, notBefore = now): Promise<void> {
   if (!clockArmsAlarms(bindings)) return;
-  if ((await storage.getAlarm()) === null) await storage.setAlarm(now + ENSURE_SOON_MS);
+  const at = Math.max(now + ENSURE_SOON_MS, notBefore);
+  const held = await storage.getAlarm();
+  if (held === null || held > at) await storage.setAlarm(at);
 }
 
 /** The cron floor's wake: the clock's tick, on a configuration that declares a clock. */
@@ -152,8 +146,11 @@ export async function wakeClock(bindings: CloudflareBindings): Promise<void> {
 export class DeploymentClock extends DurableObject<CloudflareBindings> {
   /** One wake at a time in this object: an alarm and a cron floor arriving together run back to back rather than doubling store calls. */
   private readonly gate = serialGate();
+  private readonly alarms = serialGate();
+  private requestedAt: number | null = null;
   /** What this clock keeps between its wakes: which of them run every job, and which only drain (`TickPacer`). */
   private readonly pacer = tickPacer();
+  private readonly timing = wakePolicy();
   /** Work a tick launched that is still running: kept alive by this object, never by the wake that launched it. */
   private readonly launched = new Set<Promise<void>>();
 
@@ -199,6 +196,14 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return this.gate.exclusive(() => this.wakeOnce());
   }
 
+  private async schedule(nextInMs: number | null): Promise<void> {
+    await this.alarms.exclusive(async () => {
+      const now = Date.now();
+      const requested = this.requestedAt === null ? null : Math.max(0, this.timing.workAt(now, this.requestedAt - now) - now);
+      await armNextWake(this.ctx.storage, this.env, now, soonestWake(nextInMs, requested));
+    });
+  }
+
   private async wakeOnce(): Promise<WakeOutcome> {
     if (this.retired()) {
       await this.ctx.storage.deleteAlarm();
@@ -208,37 +213,54 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     const now = Date.now();
     // Armed before anything that can throw: the continuation below can leave the Deployment's own database
     // unreadable, which makes the tick throw, and an unarmed clock stays dark until the cron floor.
-    await armFloor(this.ctx.storage, this.env, now);
+    await this.alarms.exclusive(async () => {
+      this.requestedAt = null;
+      await armFloor(this.ctx.storage, this.env, now);
+    });
     const continuation = await runContinuations(this.env);
     if (continuation.sourcePaused) {
       emit({ kind: 'tick_held', held_by: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage });
-      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
+      await this.schedule(soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
       return { ticked: false, heldBy: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage };
     }
-    try {
-      const report = await this.tick(now);
-      const next = soonestWake(report.nextWakeMs, continuation.nextInMs);
-      await armNextWake(this.ctx.storage, this.env, Date.now(), this.launched.size > 0 ? soonestWake(next, LAUNCHED_WORK_WAKE_MS) : next);
-      return { ticked: true, report };
-    } catch (error) {
-      // The failure is the answer: the alarm stays armed at least at the floor, and the wake raises rather than
-      // answering a quiet empty tick. A failing tick must never leave the Deployment with no wake at all.
-      emit({ kind: 'wake_failed', error_class: classify(error) });
-      await armNextWake(this.ctx.storage, this.env, Date.now(), soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
-      throw error;
+    const retryInMs = this.timing.remaining(Date.now());
+    if (retryInMs > 0) {
+      await this.schedule(soonestWake(retryInMs, continuation.nextInMs));
+      return { ticked: false, heldBy: 'tick_backoff', retryInMs };
     }
+    let report: TickReport;
+    try { report = await this.tick(now); }
+    catch (error) {
+      emit({ kind: 'wake_failed', error_class: classify(error) });
+      const retryInMs = this.timing.failed(Date.now());
+      await this.schedule(soonestWake(retryInMs, continuation.nextInMs));
+      throw new ScheduledTickFailure(error);
+    }
+    this.timing.succeeded();
+    const next = soonestWake(report.nextWakeMs, continuation.nextInMs);
+    await this.schedule(this.launched.size > 0 ? soonestWake(next, LAUNCHED_WORK_WAKE_MS) : next);
+    return { ticked: true, report };
   }
 
-  /** Wake soon, unless an alarm is already set. A retired clock holds no alarm at all. */
+  /** Request earlier work under the alarm gate. A retired clock holds no alarm. */
   async ensure(): Promise<void> {
-    if (this.retired()) {
-      await this.ctx.storage.deleteAlarm();
-      return;
-    }
-    await armSoon(this.ctx.storage, this.env, Date.now());
+    await this.alarms.exclusive(async () => {
+      if (this.retired()) {
+        await this.ctx.storage.deleteAlarm();
+        return;
+      }
+      const now = Date.now();
+      const requested = this.timing.workAt(now);
+      this.requestedAt = this.requestedAt === null ? requested : Math.min(this.requestedAt, requested);
+      await armSoon(this.ctx.storage, this.env, now, this.timing.workAt(now));
+    });
   }
 
   override async alarm(): Promise<void> {
-    await this.wake();
+    try { await this.wake(); }
+    catch (error) {
+      // Alarm exceptions request provider retries; scheduled tick failures are reported through wake_failed.
+      if (!(error instanceof ScheduledTickFailure)) throw error;
+    }
   }
 }

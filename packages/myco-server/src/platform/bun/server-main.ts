@@ -36,6 +36,7 @@ import type { StaticAssets } from './static.js';
 import type { NativeSqlite } from './native.js';
 import type { BunServerEnv } from './env.js';
 import type { TrustedProxyConfig } from './source.js';
+import { openDatabase } from './database.js';
 
 class StartupError extends Error {}
 
@@ -109,8 +110,7 @@ export interface StartedDeployment {
  */
 export function migrateOnly(databasePath: string, native?: NativeSqlite, recovery?: PrivateRecoveryCopy): number {
   if (recovery !== undefined) assertPrivateRecoveryCopy(recovery, databasePath);
-  configureSqliteLibrary(native);
-  const sqlite = new Database(databasePath, { create: true });
+  const sqlite = openDatabase(databasePath, native);
   try {
     sqlite.exec('PRAGMA foreign_keys = ON');
 
@@ -171,6 +171,15 @@ export function migrateOnly(databasePath: string, native?: NativeSqlite, recover
   } finally {
     sqlite.close();
   }
+}
+
+/** Explicit bootstrap creates the database before applying the normal volume migration. */
+export function bootstrapDatabase(databasePath: string, native?: NativeSqlite): number {
+  if (!databasePath) throw new StartupError('bootstrap requires a database path on its mounted volume');
+  configureSqliteLibrary(native);
+  const sqlite = new Database(databasePath, { create: true });
+  sqlite.close();
+  return migrateOnly(databasePath, native);
 }
 
 /**
@@ -366,6 +375,10 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
 }
 
 export async function main(): Promise<StartedDeployment | undefined> {
+  if (process.argv.includes('--bootstrap-only')) {
+    bootstrapDatabase(requireEnv('MYCO_DATABASE'));
+    return undefined;
+  }
   if (process.argv.includes('--migrate-only')) {
     migrateOnly(requireEnv('MYCO_DATABASE'));
     return undefined;

@@ -63,6 +63,20 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' |
   report?: (line: string) => void;
 }
 
+/** Admit the held Deployment's account before a lifecycle command can reach a provider. */
+function lifecycleOperation<Options extends LifecycleOptions, Result>(
+  operation: (options: Options, record: DeploymentRecord | null) => Promise<Result>,
+): (options: Options) => Promise<Result> {
+  return cloudflareOperation(async (supplied: Options) => {
+    const options = { ...supplied };
+    const record = readDeploymentRecord(options.mycoHome);
+    if (record !== null && options.accountId !== record.accountId) {
+      throw new Error('Cloudflare operation refused: selected account does not match the deployment record');
+    }
+    return operation(options, record);
+  });
+}
+
 /**
  * Stage this record's deploy directory and answer the options every wrangler
  * command in the deploy runs under. One render, so the config a deploy reads
@@ -187,10 +201,8 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
  * record's ids are kept, and a re-run converges on the same Deployment —
  * which also makes this the adopt path for resources created by hand.
  */
-export const createCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { url?: string }): Promise<CreateResult> => {
+export const createCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions & { url?: string }, existing): Promise<CreateResult> => {
   await preflight(options);
-  const existing = readDeploymentRecord(options.mycoHome);
-  if (existing !== null && existing.accountId !== options.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
@@ -305,7 +317,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   return lines;
 }
 
-export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
+export const updateCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions, held): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
   const summary: CloudflareUpdateSummary = {
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
     schema: 'not attempted', worker: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
@@ -331,11 +343,10 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
     },
   } };
   try {
-    let record = readDeploymentRecord(options.mycoHome);
+    let record = held;
     if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
     summary.releaseBefore = record.release;
     await preflight(options);
-    if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     record = await applyCloudflareSchema({ ...withConfig, record,
@@ -389,9 +400,8 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
  * already recorded the bad version, and that caller passes the pre-deploy
  * version it captured.
  */
-export const rollbackCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> => {
+export const rollbackCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
   await preflight(options);
-  const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
   const target = options.versionId ?? record.versionId ?? '';
   if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
@@ -409,11 +419,9 @@ export interface CloudflareDeploymentStatus {
   schemaError: string | null;
 }
 
-export async function cloudflareDeploymentStatus(options: LifecycleOptions): Promise<CloudflareDeploymentStatus | null> {
+export const cloudflareDeploymentStatus = lifecycleOperation(async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
   await preflight(options);
-  const record = readDeploymentRecord(options.mycoHome);
   if (record === null) return null;
-  if (options.accountId !== record.accountId) throw new Error('status refused: selected account does not match the deployment record');
   const [worker, schema] = await Promise.allSettled([
     cloudflareStatus({ ...bareCommand(options), workerName: record.workerName }),
     cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
@@ -424,16 +432,15 @@ export async function cloudflareDeploymentStatus(options: LifecycleOptions): Pro
     schema: schema.status === 'fulfilled' ? schema.value : null,
     workerError: worker.status === 'rejected' ? detail(worker.reason) : null,
     schemaError: schema.status === 'rejected' ? detail(schema.reason) : null };
-}
+});
 
 /**
  * Remove the Worker. The database, the bucket, the store, and the record all
  * stand: the Worker is re-creatable from the binary, the data is not, and
  * data removal stays a by-hand act this command refuses to own.
  */
-export const destroyCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ kept: string[] }> => {
+export const destroyCloudflareDeployment = lifecycleOperation(async (options: LifecycleOptions, record): Promise<{ kept: string[] }> => {
   await preflight(options);
-  const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to destroy.`);
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });

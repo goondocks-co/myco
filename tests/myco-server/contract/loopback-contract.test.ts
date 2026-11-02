@@ -118,6 +118,16 @@ function migratedVolume(): { databasePath: string; blobDir: string } {
 }
 
 describe('serve() enforces the contract at startup', () => {
+  it('admits the configured public loopback authority across a mapped container port', async () => {
+    const { serve } = await import('@myco-server-worker/entry/bun.js');
+    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', bind: 'all', port: 0, origin: 'http://127.0.0.1:9000', wakeLoop: false });
+    try {
+      for (const [host, status] of [['127.0.0.1:9000', 200], ['127.0.0.1:9001', 421], ['evil.example:9000', 421], [`127.0.0.1:${started.port}`, 421]] as const) {
+        expect((await fetch(`http://127.0.0.1:${started.port}/health`, { headers: { host } })).status).toBe(status);
+      }
+    } finally { await started.stop(); }
+  });
+
   it('binds BOTH loopback families and refuses a foreign Host', async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
 

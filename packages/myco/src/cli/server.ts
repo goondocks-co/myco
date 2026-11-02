@@ -3,7 +3,7 @@ import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
@@ -592,8 +592,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       if (fleetFlag !== undefined) {
         const fleet = Number(fleetFlag);
         if (fleetFlag === 'true' || !Number.isInteger(fleet) || fleet < 1) fail('--fleet needs a whole number of runtimes, 1 or more.');
-        record = { ...record, fleet };
-        writeDeploymentRecord(record);
+        record = updateDeploymentRecord({ fleet });
         console.log(`Fleet set to ${fleet} runtime${fleet === 1 ? '' : 's'}; the next \`server update\` deploys it.`);
       }
       const rendered = renderDeployConfig(record, deploymentRecordPath());
