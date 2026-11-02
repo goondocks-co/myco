@@ -1,43 +1,8 @@
 import { EVENT_REFERENCE_COLUMNS, eventReferenceUpdates } from './event-references.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentRecordIdSql, eventPayloadFieldSql, liveDocumentPromptSql, documentPromptUnreadSql, sessionDocumentUnreadSql } from './document-tables.js';
-/** Content relations retired after every session has a live document. */
-export const RETIRED_CONTENT_TABLES = [
-  "prompt_batches",
-  "tool_calls",
-  "responses",
-  "transcript_parser_state_chunks",
-  "prompt_key_owners",
-  "view_visible",
-  "view_checkpoint_chunks",
-  "view_checkpoints",
-  "view_key_owners",
-  "view_prompts",
-  "view_responses",
-  "view_tool_calls",
-  "view_plans",
-  "view_content_proofs",
-  "view_findings",
-  "fact_classes",
-  "plan_promotions",
-  "view_prompts_fts",
-  "view_responses_fts",
-  "view_plans_fts",
-  "material_versions",
-  "view_publication_material",
-  "view_build_work",
-  "view_legacy_ack_feed",
-  "view_flip_calibrations",
-  "view_work_samples",
-  "learning_init_queue",
-  "cutover_progress",
-  "prompt_batches_fts",
-  "responses_fts",
-  "session_views",
-  "view_instances"
-] as const;
-
-export const RETIRED_CONTENT_TRIGGERS = [
+/** Step 172 drops the triggers that read or write the relational content tables. */
+const LEGACY_CONTENT_TRIGGERS = [
   "clear_inline_parser_chunks",
   "extraction_acks_session_read_insert",
   "plans_legacy_class_insert",
@@ -151,7 +116,7 @@ export const RETIREMENT_SCHEMA_STEPS = [
   [
     `UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0`,
     'ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT',
-    ...RETIRED_CONTENT_TRIGGERS.map(name=>`DROP TRIGGER IF EXISTS ${name}`),
+    ...LEGACY_CONTENT_TRIGGERS.map(name=>`DROP TRIGGER IF EXISTS ${name}`),
     ...documentCounters,
     `DROP TABLE ${rangeTable}`,
   ],

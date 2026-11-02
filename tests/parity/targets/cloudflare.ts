@@ -53,6 +53,13 @@ async function wrangler(args: string[], env: Record<string, string | undefined> 
   return out;
 }
 
+/** The ledger wrangler keeps of applied migration files, in the shape its own apply creates, naming the files a joined import executed. */
+function migrationLedger(names: readonly string[]): string {
+  return `CREATE TABLE IF NOT EXISTS "d1_migrations"(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL);
+INSERT INTO "d1_migrations" (name) VALUES ${names.map((name) => `('${name}')`).join(',')};
+`;
+}
+
 /** The derived config with its `main` pointed at another entry; the shipped entry when none is named. */
 export function entryConfig(config: string, main: string | undefined): string {
   if (main === undefined) return config;
@@ -178,11 +185,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       if (latest === undefined || preceding === undefined || step === undefined || latestVersion !== step.version
         || Number(/^\d+_v(\d+)\.sql$/.exec(preceding.name)?.[1]) !== previousVersion
         || step.statements.length < 2) throw new Error(`unsupported D1 upgrade fixture: expected previous and latest migration with a removable statement; latest is ${latest?.name ?? 'missing'}`);
-      const previousDir = path.join(root, 'previous-migrations');
-      fs.mkdirSync(previousDir);
-      for (const file of files.slice(0, -1)) fs.writeFileSync(path.join(previousDir, file.name), file.sql);
-      fs.writeFileSync(configPath, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(previousDir)}`) + configTail);
-      await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
+      // The previous state arrives as one import, as a fresh store does, with the ledger naming its files, so the apply below applies exactly the latest file.
+      const previousSchema = path.join(root, 'previous-schema.sql');
+      fs.writeFileSync(previousSchema, [...files.slice(0, -1).map((file) => file.sql), migrationLedger(files.slice(0, -1).map((file) => file.name))].join('\n'));
+      await wrangler(['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--file', previousSchema]);
       const previousFile = localD1File(persistDir);
       const touched = seedPreviousSchema(previousFile, step.statements, step.version);
       const previous = new Database(previousFile);
@@ -200,7 +206,6 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       const previousPersist = path.join(root, 'previous-state');
       fs.cpSync(persistDir, previousPersist, { recursive: true });
       upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, previousPersist, priorFiles: files.slice(0, -1), latestName: latest.name, step };
-      fs.writeFileSync(configPath, config + configTail);
     }
     if(options.latestSchemaUpgrade) {
       await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);

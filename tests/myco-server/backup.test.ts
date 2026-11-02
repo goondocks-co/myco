@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import {
   BACKUP_FORMAT, BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
-  EMPTY_ONLY_TABLES, EXCLUDED_TABLES, RETIRED_TABLES, listBackups, previewRestore, pruneBackups,
+  EMPTY_ONLY_TABLES, EXCLUDED_TABLES, RETIRED_INPUT_TABLES, RETIRED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, restoreArtifact, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -43,6 +43,7 @@ describe('table dispositions', () => {
     expect([...ddlTables].filter((t) => !named.has(t)).sort()).toEqual([]);
     expect([...named].filter((t) => !ddlTables.has(t) && !droppedHistorically.has(t)).sort()).toEqual([]);
     expect(BACKUP_TABLES.filter((t) => EXCLUDED_TABLES.has(t))).toEqual([]);
+    expect([...RETIRED_INPUT_TABLES].filter((t) => ddlTables.has(t) || named.has(t) || !droppedHistorically.has(t.replace(/_(data|idx|docsize|config)$/, '')))).toEqual([]);
     for (const [table, version] of RETIRED_TABLES) {
       expect(ddlTables.has(table)).toBe(false);
       expect(SCHEMA_STEPS.find(step => step.version === version)?.statements)
