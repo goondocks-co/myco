@@ -64,6 +64,10 @@ if [ "$(id -u)" = "0" ]; then
   exec setpriv --reuid="$RUNTIME_USER" --regid="$RUNTIME_USER" --init-groups "$0" "$@"
 fi
 
+if [ "${1:-}" = "--bootstrap-only" ]; then
+  exec bun run /app/server.js --bootstrap-only
+fi
+
 if [ "${MYCO_SKIP_MIGRATIONS:-}" = "1" ]; then
   echo "myco-server: MYCO_SKIP_MIGRATIONS=1, serving the volume as it stands" >&2
 else

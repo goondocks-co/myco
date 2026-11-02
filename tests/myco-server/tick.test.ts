@@ -340,14 +340,30 @@ describe('a clock\'s chained wakes (#1510)', () => {
     expect(pacer.fullAt).toBe(NOW);
   });
 
-  it('runs every job on a clock\'s first wake, on a wake no job left work before, and on every wake an owner requests', async () => {
-    for (const [label, pacer] of [['first', tickPacer()], ['nothing draining', paced(5_000, [])], ['requested', undefined]] as const) {
+  it('runs every job on a clock\'s first wake and on every wake an owner requests', async () => {
+    for (const [label, pacer] of [['first', tickPacer()], ['requested', undefined]] as const) {
       const f = fixture();
       f.seedSession('s1', NOW - 60_000);
       staleRun(f);
       const report = await runTick(f.env, NOW, pacer === undefined ? {} : { wake: 'clock', pacer });
       expect({ label, drainOnly: report.drainOnly, swept: f.runRow('run_stale')!.status }).toEqual({ label, drainOnly: false, swept: 'failed' });
     }
+  });
+
+  it('serves capture nudges inside the cadence without repeating maintenance or schedules', async () => {
+    const f = fixture();
+    f.seedSession('s1', NOW - 60_000);
+    staleRun(f);
+    const pacer = paced(5_000, []);
+    const report = await runTick(f.env, NOW, { wake: 'clock', pacer, workRequested: true });
+    expect(report.drainOnly).toBe(true);
+    expect(report.jobs.map(job => job.name).sort()).toEqual(['search-index', 'session-titling', 'transcript-parse']);
+    expect(report.scheduled).toEqual({ dispatched: 0, skipped: 0 });
+    expect(f.runRow('run_stale')!.status).toBe('running');
+    const full = await runTick(f.env, NOW + WAKE_INTERVALS.activeMs, { wake: 'clock', pacer });
+    expect(full.drainOnly).toBe(false);
+    expect(f.runRow('run_stale')!.status).toBe('failed');
+    f.sqlite.close();
   });
 
   it('reads the store a handful of times on a draining wake, whatever the full wake reads', async () => {

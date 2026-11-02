@@ -40,6 +40,8 @@ export interface ServerJob {
    * wake, the self-hosted wake loop — and never a tick an owner requests. `jobsDueAt` applies it for every tick.
    */
   wake?: 'clock';
+  /** Capture nudges may run this job inside the ordinary maintenance cadence. */
+  onWorkWake?: true;
 }
 
 /** Which wake a tick is: the target's own clock, or one an owner asked for. */
@@ -95,7 +97,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'sleep',
     converges: 'no External Agent grant past its expiry is left live: each is ended at the instant it expired and named as expired, and every row, agent and attribution survives',
   },
-  { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
+  { name: 'search-index', runsThrough: 'idle', onWorkWake: true, converges: 'every referenced text blob has a complete full-text index' },
   { name: 'embedding-reconcile', runsThrough: 'sleep', dispatchThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
   // #1158 join UX
   {
@@ -107,11 +109,13 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'transcript-parse',
     runsThrough: 'idle',
+    onWorkWake: true,
     converges: 'every live session document holds its transcripts\' bytes and its queued member events, and its unfinished turns close once quiet; a transcript nothing can parse names its failure; every turn whose card waits for settlement has been read once and carded by rule or reuse, or made due for a model',
   },
   {
     name: 'session-titling',
     runsThrough: 'idle',
+    onWorkWake: true,
     converges: 'every live session-end request whose document is published and holds a user prompt has had its first titling attempt; a retry, and every other session, is the titling backfill\'s',
   },
   {

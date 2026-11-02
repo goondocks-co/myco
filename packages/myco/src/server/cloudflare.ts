@@ -1030,6 +1030,20 @@ export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resol
   });
 }
 
+/** Apply operator configuration to the current record under its publication lease. */
+export function updateDeploymentRecord(patch: Pick<DeploymentRecord, 'fleet' | 'url'>, mycoHome = resolveMycoHome()): DeploymentRecord {
+  return withCloudflareOperation(mycoHome, () => {
+    if (Object.keys(patch).some(key => key !== 'fleet' && key !== 'url')) {
+      throw new Error('Cloudflare configuration updates accept only fleet and url');
+    }
+    const record = readDeploymentRecord(mycoHome);
+    if (record === null) throw new Error(missingDeploymentRecordMessage(mycoHome));
+    const updated = { ...record, ...patch };
+    writeDeploymentRecord(updated, mycoHome);
+    return updated;
+  });
+}
+
 /**
  * The deployment record as it stands, read without moving any file: the per-target path, else the single-directory
  * layout's. A plan reads this so it writes nothing under the home.

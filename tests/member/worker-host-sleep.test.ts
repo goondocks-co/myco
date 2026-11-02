@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from '../myco-server/helpers/running-env.js';
 /**
  * Two workers, one run, and a host that sleeps (#1424).
  *
@@ -30,7 +31,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
-import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
+import { turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../helpers/stub-profile-harness.ts';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 

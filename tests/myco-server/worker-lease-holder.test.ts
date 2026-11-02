@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -9,7 +10,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
  * won a run is read off the run rather than recovered from worker logs.
  */
 import { describe, expect, it } from 'bun:test';
-import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID, claimNextRun, endLeasedRun, expireLeases, renewLease } from '@myco-server-worker/core/harness.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';

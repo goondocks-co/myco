@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -8,7 +9,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
  * before it.
  */
 import { describe, expect, it } from 'bun:test';
-import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
@@ -79,7 +80,7 @@ describe('the claim queue', () => {
     ]);
     expect([a.claimed, b.claimed].filter(Boolean)).toHaveLength(1);
     const loser = a.claimed ? b : a;
-    expect(loser).toEqual({ claimed: false, reason: 'lost_race' });
+    expect(loser).toEqual({ claimed: false, reason: 'no_work' });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
   });
 

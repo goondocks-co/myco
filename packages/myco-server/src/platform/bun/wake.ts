@@ -11,7 +11,7 @@ import { startWakeLoop, WAKE_FLOOR_MS, type WakeLoop } from './wake-loop.js';
 export function startBunWake(env: ServerEnv): WakeLoop {
   // Paced as every target's own clock is: a chained wake inside the cadence only drains (`TickPacer`).
   const pacer = tickPacer();
-  const loop = startWakeLoop(() => runTick(env, Date.now(), { wake: 'clock', pacer }), { floorMs: WAKE_FLOOR_MS });
+  const loop = startWakeLoop(workRequested => runTick(env, Date.now(), { wake: 'clock', pacer, workRequested }), { floorMs: WAKE_FLOOR_MS });
   env.wake = loop.ensure;
   return loop;
 }

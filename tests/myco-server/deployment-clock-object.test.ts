@@ -8,16 +8,22 @@
 import { describe, expect, it } from 'bun:test';
 import { CLOCK_LOCATION_HINT, CLOCK_NAME, clockStub, DeploymentClock, LAUNCHED_WORK_WAKE_MS, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { CHAINED_WAKE_MS, WAKE_INTERVALS, type TickReport } from '@myco-server-worker/core/tick.js';
+import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
+import { budgetFixture } from './helpers/budget-fixture.js';
 
 /** The alarm and waitUntil a Durable Object is given, held where a test can read them. */
 function state() {
   let alarm: number | null = null;
+  const stored = new Map<string, unknown>();
   const kept: Promise<unknown>[] = [];
   return {
     kept,
     alarm: () => alarm,
     ctx: {
       storage: {
+        get: async <T,>(key: string) => stored.get(key) as T | undefined,
+        put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); },
+        delete: async (key: string) => stored.delete(key),
         getAlarm: async () => alarm,
         setAlarm: async (at: number) => { alarm = at; },
         deleteAlarm: async () => { alarm = null; },
@@ -26,6 +32,177 @@ function state() {
     },
   };
 }
+
+it('runs maintenance on each cron floor wake while capture alarms remain paced', async () => {
+  const f = await budgetFixture();
+  const held = state();
+  const env = { CLOCK_MODE: 'manual' };
+  const reports: TickReport[] = [];
+  class FixtureClock extends DeploymentClock {
+    protected override clockEnv() { return { ...f.serverEnv, origin: 'https://myco.example' }; }
+    protected override async tick(now: number): Promise<TickReport> {
+      const report = await super.tick(now);
+      reports.push(report);
+      return report;
+    }
+  }
+  const clock = new FixtureClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = f.now;
+  Date.now = () => now;
+  try {
+    f.sqlite.run('INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)', [LAST_REQUEST_KEY, String(now)]);
+    f.credential('reservation-owner');
+    await clock.wake();
+    f.sqlite.run(`INSERT INTO blob_reservations(reservation_id,project_id,key,token_id,size,expires_at)
+      VALUES('expired','proj_1',?,'reservation-owner',1,1)`, ['e'.repeat(64)]);
+    const remaining = () => f.sqlite.query("SELECT COUNT(*) AS n FROM blob_reservations WHERE reservation_id='expired'").get();
+    await clock.ensure();
+    now += 2_000;
+    await clock.alarm();
+    expect(reports.at(-1)?.drainOnly).toBe(true);
+    expect(remaining()).toEqual({ n: 1 });
+    await clock.wake();
+    expect(reports.at(-1)?.drainOnly).toBe(false);
+    expect(remaining()).toEqual({ n: 0 });
+    await clock.alarm();
+    expect(reports.at(-1)?.drainOnly).toBe(true);
+  } finally { Date.now = realNow; f.sqlite.close(); }
+});
+
+it('keeps the launched-work wake cap throughout failed ticks and their backoff wakes', async () => {
+  const held = state();
+  const env = { MYCO_ORIGIN: 'https://myco.example' };
+  let ticks = 0;
+  class BusyClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      if (ticks++ > 0) throw new Error('fixture tick failure');
+      this.clockEnv().afterResponse(() => new Promise<void>(() => {}));
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new BusyClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await clock.alarm();
+    for (let wake = 0; wake < 12; wake++) {
+      expect(held.alarm()! - now).toBeLessThanOrEqual(LAUNCHED_WORK_WAKE_MS);
+      now = held.alarm()!;
+      await clock.alarm();
+    }
+    expect(ticks).toBeGreaterThan(3);
+  } finally { Date.now = realNow; }
+});
+
+it('retains retry deadlines and escalation across object resets and an interrupted tick', async () => {
+  const held = state();
+  const env = {};
+  class FaultClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> { throw new Error('fixture tick failure'); }
+  }
+  const fresh = () => {
+    const clock = new FaultClock(held.ctx as never, env as never);
+    Object.assign(clock, { ctx: held.ctx, env });
+    return clock;
+  };
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await fresh().alarm();
+    const first = held.alarm()!;
+    now += 1_000;
+    await fresh().ensure();
+    expect(held.alarm()).toBe(first);
+    expect(await fresh().wake()).toMatchObject({ ticked: false, heldBy: 'tick_backoff' });
+    now = first;
+    await fresh().alarm();
+    expect(held.alarm()).toBe(now + 60_000);
+    now = held.alarm()!;
+    let began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    class InterruptedClock extends DeploymentClock {
+      protected override async tick(): Promise<TickReport> { began(); return new Promise(() => {}); }
+    }
+    const interrupted = new InterruptedClock(held.ctx as never, env as never);
+    Object.assign(interrupted, { ctx: held.ctx, env });
+    void interrupted.wake();
+    await started;
+    const retry = held.alarm()!;
+    expect(retry).toBe(now + 120_000);
+    now += 1_000;
+    await fresh().ensure();
+    expect(held.alarm()).toBe(retry);
+  } finally { Date.now = realNow; }
+});
+
+it('advances a later alarm for new work while retaining an earlier deadline', async () => {
+  const held = state();
+  const env = {};
+  const clock = new DeploymentClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const now = Date.now();
+  await held.ctx.storage.setAlarm(now + 300_000);
+  await clock.ensure();
+  expect(held.alarm()! - now).toBeLessThan(2_000);
+  await held.ctx.storage.setAlarm(now + 100);
+  await clock.ensure();
+  expect(held.alarm()).toBe(now + 100);
+  class RequestingClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      await this.ensure();
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const requesting = new RequestingClock(held.ctx as never, env as never);
+  Object.assign(requesting, { ctx: held.ctx, env });
+  await requesting.wake();
+  expect(held.alarm()! - now).toBeLessThan(2_000);
+});
+
+it('backs failed ticks off to a bounded deadline that new work cannot bypass, then resets after success', async () => {
+  const held = state();
+  const env = {};
+  let fails = true;
+  class FaultClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      if (fails) throw new Error('fixture tick failure');
+      return { nextWakeMs: 300_000, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new FaultClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (attempt % 2 === 0) await expect(clock.wake()).rejects.toThrow('fixture tick failure');
+      else await clock.alarm();
+      const delay = held.alarm()! - now;
+      expect(delay).toBe(Math.min(30_000 * 2 ** attempt, 300_000));
+      await clock.ensure();
+      expect(held.alarm()).toBe(now + delay);
+      expect(await clock.wake()).toEqual({ ticked: false, heldBy: 'tick_backoff', retryInMs: delay });
+      now += delay;
+    }
+    fails = false;
+    await clock.wake();
+    await clock.ensure();
+    expect(held.alarm()).toBe(now + 1_000);
+    fails = true;
+    const setAlarm = held.ctx.storage.setAlarm;
+    held.ctx.storage.setAlarm = async (at) => {
+      if (at > now + 2_000) throw new Error('fixture retry storage unavailable');
+      await setAlarm(at);
+    };
+    await expect(clock.alarm()).rejects.toThrow('fixture retry storage unavailable');
+  } finally { Date.now = realNow; }
+});
 
 /** A clock whose tick launches work through the environment every tick gets, and never lets it settle. */
 class LaunchingClock extends DeploymentClock {

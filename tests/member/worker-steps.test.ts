@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from '../myco-server/helpers/running-env.js';
 import { CORPUS } from '../helpers/secret-corpus.ts';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
@@ -29,7 +30,7 @@ import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { harnessStoppedError } from '@goondocks/myco-shared/run-text';
 import { MAX_RUN_STEPS, WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
+import { turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, stubProfileHarness } from '../helpers/stub-profile-harness.ts';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';

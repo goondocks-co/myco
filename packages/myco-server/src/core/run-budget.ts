@@ -2,7 +2,7 @@ import type { RelationalStore } from './adapters.js';
 import { budgetActivation, BUDGET_ENABLED } from '../db/budget-activation.js';
 import { runOriginSql } from '../db/run-context.js';
 import { LIVE_RUN_STATUSES } from './runs.js';
-import { BUDGET_DEFAULT_USD, BUDGET_LEAF, BUDGET_MINIMUM_USD, BUDGET_WINDOW_MS, stageSeedSql, workerTaskSql } from './budget-policy.js';
+import { BUDGET_WINDOW_MS, stageSeedSql, workerTaskSql } from './budget-policy.js';
 
 export { effectiveBudgetSql } from './settings.js';
 import { effectiveBudgetSql } from './settings.js';
@@ -32,24 +32,23 @@ export async function readSpendRows(db: RelationalStore, now: number): Promise<S
 
 export interface ClaimBudget { active: boolean; estimate: number; profileJson: string; stateKey?: string; observedEstimate?: string | null }
 export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: string; params: unknown[] } {
-  if (!budget.active) return { sql: `(origin='manual' OR NOT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}'))`, params: [] };
+  if (!budget.active) return { sql: `(origin='manual')`, params: [] };
   return {
-    sql: `(origin='manual' OR (${budget.stateKey===undefined?'1':`(SELECT value FROM agent_state WHERE project_id=agent_runs.project_id AND agent_id='myco-agent' AND key=?) IS ?`} AND (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql('?')})) + ? <= ${effectiveBudgetSql()}))`,
+    sql: `(origin='manual' OR (EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${budget.stateKey===undefined?'1':`(SELECT value FROM agent_state WHERE project_id=agent_runs.project_id AND agent_id='myco-agent' AND key=?) IS ?`} AND (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql('?')})) + ? <= ${effectiveBudgetSql()}))`,
     params: [...(budget.stateKey===undefined?[]:[budget.stateKey,budget.observedEstimate ?? null]),now-BUDGET_WINDOW_MS,budget.estimate],
   };
 }
 
-/** Whether an automatic item of this estimate fits the budget now; a governor that is not active admits it. */
+/** Automatic work requires an active governor and sufficient headroom. */
 export async function automaticFits(db: RelationalStore, estimate: number, now: number): Promise<boolean> {
-  if (!(await budgetActivation(db)).active) return true;
+  if (!(await budgetActivation(db)).active) return false;
   const predicate = budgetClaimPredicate({ active: true, estimate, profileJson: '' }, now);
   return (await db.prepare(`SELECT 1 AS fits FROM (SELECT 'automatic' AS origin) WHERE ${predicate.sql}`).bind(...predicate.params).first()) !== null;
 }
 
 export async function budgetHeld(db: RelationalStore, projectId: string, runId: string, estimate: number, now: number): Promise<boolean> {
   const active = await budgetActivation(db);
-  if (!active.active) return false;
-  const predicate = budgetClaimPredicate({ active: true, estimate, profileJson: '' },now);
+  const predicate = budgetClaimPredicate({ active: active.active, estimate, profileJson: '' },now);
   return (await db.prepare(`SELECT 1 AS held FROM agent_runs WHERE project_id=? AND id=? AND status='queued' AND NOT (${predicate.sql})`)
     .bind(projectId,runId,...predicate.params).first()) !== null;
 }

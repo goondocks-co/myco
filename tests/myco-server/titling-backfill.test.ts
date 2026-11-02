@@ -18,7 +18,8 @@ import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { overwriteTitle, writeTitle } from '@myco-server-worker/read/sessions.js';
 import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
-import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { count, withHarness } from './helpers/fixtures.js';
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;

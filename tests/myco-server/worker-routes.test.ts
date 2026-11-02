@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 let observedOrder = 0;
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -14,7 +15,7 @@ import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import { MODEL_CATALOG_FRESH_MS } from '@goondocks/myco-shared/execution-profile';

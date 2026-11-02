@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_DIGEST_TASKS, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -26,7 +27,7 @@ import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEED
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { publishFixture, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { publishFixture, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';

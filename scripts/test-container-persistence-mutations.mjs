@@ -11,10 +11,10 @@ const mutations = [
   {
     name: 'clear-data',
     dockerfile: `FROM ${image}\nRUN printf '#!/bin/sh\\nrm -f /data/myco.sqlite /data/myco.sqlite-wal /data/myco.sqlite-shm\\nexec /app/docker-entrypoint.sh "$@"\\n' > /app/clear-entrypoint.sh && chmod +x /app/clear-entrypoint.sh\nENTRYPOINT ["/app/clear-entrypoint.sh"]\nCMD ["bun", "run", "/app/server.js"]\n`,
-    refusal: /HTTP 401, expected 200/,
+    refusal: /myco-server failed to start: unable to open database file/,
   },
   { name: 'move-blobs', dockerfile: `FROM ${image}\nENV MYCO_BLOB_DIR=/tmp/blobs\n`, refusal: /HTTP 404, expected 200/ },
-  { name: 'ignore-volume', dockerfile: `FROM ${image}\nENV MYCO_DATABASE=/tmp/myco.sqlite MYCO_BLOB_DIR=/tmp/blobs\n`, refusal: /HTTP 401, expected 200/ },
+  { name: 'ignore-volume', dockerfile: `FROM ${image}\nENV MYCO_DATABASE=/tmp/myco.sqlite MYCO_BLOB_DIR=/tmp/blobs\n`, refusal: /myco-server failed to start: unable to open database file/ },
 ];
 
 for (const mutation of mutations) {

@@ -181,6 +181,7 @@ describe('the whole flow on a loopback listener', () => {
     const home = mkdtempSync(join(tmpdir(), 'myco-flow-'));
     writeDeploymentRecord(RECORD, home);
     const target = resolveSignInTarget(undefined, home);
+    writeDeploymentRecord({ ...RECORD, versionId: 'new-version', fleet: 3 }, home);
     const r = runner();
     const okLocation = `https://github.com/login/oauth/authorize?client_id=Iv1.deadbeef&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}`;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -214,6 +215,7 @@ describe('the whole flow on a loopback listener', () => {
     for (const call of calls) expect({ args: call.args.join(' '), cwd: call.options?.cwd }).toEqual({ args: call.args.join(' '), cwd: dirname(deploymentRecordPath(home)) });
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
+    expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8'))).toMatchObject({ versionId: 'new-version', fleet: 3 });
     expect(logs.join('\n')).not.toContain('s3cr3t');
     expect(logs.join('\n')).toContain('owned by goondocks-co');
   });

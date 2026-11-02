@@ -53,8 +53,10 @@ for(const table of ['agent_runs','agent_run_attempts'])it(`keeps preflight refus
     }:f.db.prepare(sql)};
     expect(await completeBudgetMigration(db,100)).toMatchObject({active:false,reason:expect.stringContaining(table)});
     expect(await budgetActivation(f.db)).toMatchObject({active:false,reason:expect.stringContaining('100001')});
-    expect(await f.claim(f.queue('legacy-claim'))).not.toBeNull();
+    const candidate=f.queue('legacy-claim');
+    expect(await f.claim(candidate)).toBeNull();
     expect(await completeBudgetMigration(f.db,200)).toMatchObject({active:true});
+    expect(await f.claim(candidate)).not.toBeNull();
   }finally{f.sqlite.close();}
 });
 
@@ -78,8 +80,9 @@ for(const reply of ['missing','null','negative','fractional','error'])it(`keeps 
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
     expect(f.sqlite.query("SELECT name FROM sqlite_master WHERE name IN ('idx_attempts_claimed','idx_agent_runs_queue_head')").all()).toEqual([]);
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toBeNull();
-    expect(await f.claim(candidate)).not.toBeNull();
+    expect(await f.claim(candidate)).toBeNull();
     expect(await completeBudgetMigration(f.db,200)).toEqual({active:true,reason:null});
+    expect(await f.claim(candidate)).not.toBeNull();
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_activation_refusal'").get()).toBeNull();
   }finally{f.sqlite.close();}
 });
@@ -322,7 +325,8 @@ it('keeps profiled claims from an inactive interval when activation is retried l
       ...f.db.prepare(sql),all:async<T,>()=>({results:[] as T[]}),
     }:f.db.prepare(sql)};
     expect(await completeBudgetMigration(unavailable,f.now)).toMatchObject({active:false});
-    expect(await f.claim(f.queue('during-refusal'),f.now+1)).not.toBeNull();
+    expect(await f.claim(f.queue('automatic-during-refusal'),f.now+1)).toBeNull();
+    expect(await f.claim(f.queue('during-refusal','manual'),f.now+1)).not.toBeNull();
     const row=f.sqlite.query<{attemptId:string},[]>("SELECT dispatched_by AS attemptId FROM agent_runs WHERE id='during-refusal'").get()!;
     expect(await endLeasedRun(f.serverEnv,{principal:f.principal,now:f.now+2},{projectId:'proj_1',runId:'during-refusal',attemptId:row.attemptId,status:'failed',error:'fixture ending',usage:{costUsd:0.2,inputTokens:1,outputTokens:1}})).toMatchObject({ended:true});
     expect(await completeBudgetMigration(f.db,f.now+1000)).toEqual({active:true,reason:null});
@@ -352,7 +356,7 @@ for(const fault of ['stamps','catalogue'])it(`keeps an active budget enforced af
     expect(await completeBudgetMigration(db,f.now+1)).toMatchObject({active:null,reason:expect.stringContaining('transient')});
     expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all()).toEqual(before);
     expect(await budgetActivation(f.db)).toEqual({active:true,reason:null});
-    expect(budgetCompletionMessage({active:null,reason:'fixture transient read'})).toBe('Budget governor state not verified: fixture transient read');
+    expect(budgetCompletionMessage({active:null,reason:'fixture transient read'})).toBe('Budget governor state not verified: fixture transient read. Automatic work requires an active validated governor; capture and manual work remain available.');
     expect(await f.claim(f.queue('over-budget'))).toBeNull();
   }finally{f.sqlite.close();}
 });

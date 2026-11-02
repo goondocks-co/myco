@@ -1261,17 +1261,19 @@ export interface QueuedRunRef {
   heldBy: string | null;
   budgetQuoteUsd:number|null;
   dispatchSpec: string | null;
+  origin: 'manual' | 'automatic';
   /** The credential a re-queued row still carries, for the child a late answer may have started; null for a row that never launched. */
   dispatchedBy: string | null;
 }
 
 const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy,
-    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy,${contextValue(BUDGET_QUOTE_USD_KEY)} AS budgetQuoteUsd
-  FROM agent_runs WHERE status = 'queued' ORDER BY queued_at ASC, id ASC LIMIT ?`;
+    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy,${runOriginSql()} AS origin,${contextValue(BUDGET_QUOTE_USD_KEY)} AS budgetQuoteUsd
+  FROM agent_runs WHERE status = 'queued'`;
 
 /** Every queued run on the Deployment, oldest first: the drain's read, across Projects like the sweep's. */
-export async function listQueuedAcrossProjects(db: RelationalStore, limit: number): Promise<QueuedRunRef[]> {
-  const { results } = await db.prepare(QUEUED_RUNS_SQL).bind(limit).all<QueuedRunRef>();
+export async function listQueuedAcrossProjects(db: RelationalStore, limit: number, excludeAutomaticTasks: readonly string[] = []): Promise<QueuedRunRef[]> {
+  const admitted = excludeAutomaticTasks.length === 0 ? '' : ` AND (${runOriginSql()}<>'automatic' OR task IS NULL OR task NOT IN (${excludeAutomaticTasks.map(() => '?').join(',')}))`;
+  const { results } = await db.prepare(`${QUEUED_RUNS_SQL}${admitted} ORDER BY queued_at ASC, id ASC LIMIT ?`).bind(...excludeAutomaticTasks, limit).all<QueuedRunRef>();
   return results;
 }
 
@@ -1311,12 +1313,13 @@ function excludedTasks(tasks: readonly string[]): string {
 }
 
 /** The oldest queued run a worker may take, or null when the queue holds none it may. */
-export async function nextClaimable(db: RelationalStore, excluded: readonly string[]): Promise<ClaimCandidate | null> {
+export async function nextClaimable(db: RelationalStore, excluded: readonly string[], budget?: ClaimBudget, now = Date.now()): Promise<ClaimCandidate | null> {
+  const money = budget === undefined ? { sql: '1', params: [] } : budgetClaimPredicate(budget, now);
   return db.prepare(
     `SELECT project_id AS projectId, id, task, instruction, dispatch_spec AS dispatchSpec FROM agent_runs
-      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excludedTasks(excluded)}
+      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excludedTasks(excluded)} AND ${money.sql}
       ORDER BY queued_at LIMIT 1`,
-  ).bind(...excluded).first<ClaimCandidate>();
+  ).bind(...excluded, ...money.params).first<ClaimCandidate>();
 }
 
 /** A task name as an SQL literal: catalogue task names only, quoted. */

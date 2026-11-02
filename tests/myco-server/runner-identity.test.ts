@@ -1,3 +1,4 @@
+import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 let updateOrder = 0;
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
@@ -36,7 +37,7 @@ import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-work
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { PROTOCOL, publishFixture, memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { PROTOCOL, publishFixture, memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
