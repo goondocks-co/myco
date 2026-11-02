@@ -102,7 +102,7 @@ const references = (alias: string, old?: string) => [documentRecordIdSql(alias),
 const captureReferences = (old?: string) => {
   const fields=references('NEW.',old);
   return `INSERT INTO event_refs (${EVENT_REFERENCE_COLUMNS}) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,${fields.join(',')}
-    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure') OR ${fields[1]} IS NOT NULL OR ${fields[2]} IS NOT NULL
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure')
     ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
       ${eventReferenceUpdates(false)};`;
 };
@@ -118,10 +118,10 @@ const referenceSchema = [
   `CREATE TRIGGER IF NOT EXISTS events_refs_delete AFTER DELETE ON events BEGIN DELETE FROM event_refs WHERE project_id=OLD.project_id AND event_id=OLD.event_id; END`,
 ];
 const rangeSources = [
-  {table:'tool_calls',parts:24,id:'tool_call_id',field:'toolCallId',blob:'input_blob_key',kinds:"'tool.use','tool.failure'"},
+  {table:'tool_calls',parts:64,id:'tool_call_id',field:'toolCallId',blob:'input_blob_key',kinds:"'tool.use','tool.failure'"},
   {table:'prompt_batches',parts:2,id:'prompt_id',field:'promptId',blob:'blob_key',kinds:"'prompt'"},
   {table:'responses',parts:2,id:'response_id',field:'responseId',blob:'blob_key',kinds:"'response'"},
-  {table:'events',parts:32},
+  {table:'events',parts:64},
 ] as const;
 const rangeTable = '_v117_reference_ranges';
 const range = (table: string, parts: number, partition: number) => {
@@ -135,17 +135,17 @@ const backfills = rangeSources.flatMap(source=>Array.from({length:source.parts},
   if(source.table==='events') {
     const fields=references('p.');
     return [fillReferences(`SELECT p.project_id,p.event_id,p.session_id,p.kind,${fields.join(',')} FROM events p
-      WHERE ${within} AND p.payload_format='inline' AND (p.kind IN ('prompt','response','tool.use','tool.failure') OR ${fields[1]} IS NOT NULL OR ${fields[2]} IS NOT NULL)`)];
+      WHERE ${within} AND p.payload_format='inline' AND p.kind IN ('prompt','response','tool.use','tool.failure')`)];
   }
   return [fillReferences(`SELECT p.project_id,p.event_id,e.session_id,e.kind,p.${source.id},p.${source.blob},${source.table==='tool_calls'?'p.output_blob_key':'NULL'}
     FROM ${source.table} p CROSS JOIN events e WHERE ${within}
-      AND e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN (${source.kinds}) AND e.payload_format='archived'`)];
+      AND e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN (${source.kinds}) AND (e.payload_format='archived' OR p.${source.blob} IS NOT NULL${source.table==='tool_calls'?' OR p.output_blob_key IS NOT NULL':''})`)];
 }));
 
 /** Reference backfills use fixed rowid ranges and never rewrite their event sources. */
 export const RETIREMENT_SCHEMA_STEPS = [
   [documentGuard[0]!,emptyDocuments,...documentGuard.slice(1),clearableStopWake,...referenceSchema,
-    `CREATE TABLE ${rangeTable} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
+    `CREATE TABLE IF NOT EXISTS ${rangeTable} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
     ...rangeSources.map(({table})=>`INSERT INTO ${rangeTable} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`)],
   ...backfills,
   [

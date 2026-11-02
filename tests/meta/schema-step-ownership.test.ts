@@ -515,7 +515,7 @@ it('maintenance statement exceptions pin the step, exact SQL and reason', () => 
 
 it('schema steps are contiguous from one through the server version and migration names match exactly', () => {
   expect(SCHEMA_STEPS.map((step) => step.version)).toEqual(
-    Array.from({ length: 178 }, (_, index) => index + 1),
+    Array.from({ length: 250 }, (_, index) => index + 1),
   );
   expect(
     readdirSync('packages/myco-server/migrations')

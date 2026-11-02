@@ -1,10 +1,11 @@
+import { withDocumentStores, captureDocumentSession } from './helpers/document-stores.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 /**
  * A session's lifecycle at its two projections: an end on any channel applies
  * only when it is not older than the newest captured human turn, a newer human
  * turn reopens, a replayed event changes nothing, an import's end applies over
- * the turns it brings and requests no title, and none of it reads the raw
- * event log.
+ * the turns it brings and requests no title. Retained prompt references keep
+ * archived human turns distinct.
  */
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -162,5 +163,24 @@ describe('a session\'s lifecycle', () => {
     expect(r.row()).toMatchObject({ endedAt: null, endedBy: null });
     await r.end(6_000, { channel: 'import' });
     expect(r.row()).toMatchObject({ endedAt: 6_000, endedBy: null, requestedAt: 2_000 });
+  });
+});
+
+
+it('keeps the newest archived user prompt distinct when no prompt directory exists', async () => {
+  await withDocumentStores(async(db,name)=>{
+    const token=await captureDocumentSession(db,'project','archived-user');
+    await db.prepare(`UPDATE events SET created_at=0 WHERE session_id='archived-user'`).run();
+    for(const at of [100,300])await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES('project',?,'archived-user',?,'prompt','cli',?,'hash',?,?)`)
+      .bind(`prompt-${at}`,token.tokenId,JSON.stringify({promptId:uuid(at),origin:'user'}),at,at).run();
+    await db.prepare(`UPDATE events SET payload='{}',payload_format='archived',archived_prompt_origin='user' WHERE event_id IN ('prompt-100','prompt-300')`).run();
+    expect(await db.prepare("SELECT COUNT(*) n FROM session_prompts WHERE session_id='archived-user'").first(),name).toEqual({n:0});
+    for(const at of [200,400]){
+      const result=await ingestEvent(db,{projectId:'project',machineId:'machine',tokenId:token.tokenId,bodyBytes:1,now:1000},
+        envelope({eventId:uuid(10000+at),sessionId:'archived-user',kind:'session.end',createdAt:at,payload:{endedAt:at}}));
+      expect(result.persisted,name).toBe(true);
+      expect(await db.prepare("SELECT ended_at FROM sessions WHERE session_id='archived-user'").first(),name).toEqual({ended_at:at===200?null:400});
+    }
   });
 });

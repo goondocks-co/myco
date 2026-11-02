@@ -988,8 +988,15 @@ test('portable backups restore published document bodies and frontiers into dest
     for(let pass=0;pass<20;pass++)if(!(await publishDocuments(env,Date.now()+TRANSCRIPT_IDLE_MS*2,limits())).more)break;
     const prompt=await db.prepare(`SELECT prompt_id FROM session_prompts WHERE session_id='portable'`).first<{prompt_id:string}>();
     expect(prompt,name).not.toBeNull();
+    const raw=(await db.prepare("SELECT blob_key FROM transcript_segments WHERE transcript_id=?").bind(tx).first<{blob_key:string}>())!;
+    await db.prepare('DELETE FROM transcript_segments WHERE transcript_id=?').bind(tx).run();
+    expect(await releaseBlobs(db,[{projectId:'project',key:raw.blob_key}],Date.now()),name).toMatchObject({released:1});
+    expect(await one(db,"SELECT COUNT(*) n FROM event_refs WHERE kind='transcript.segment'"),name).toEqual({n:0});
+    await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      SELECT 'project','portable-output','portable',token_id,'tool.use','cli',?,'hash',1,1 FROM events LIMIT 1`)
+      .bind(JSON.stringify({toolCallId:uuid(99200),toolName:'Read',input:{}})).run();
     const reference=(await db.prepare(`UPDATE event_refs SET output_blob=(SELECT blob_key FROM session_chunks LIMIT 1)
-      WHERE event_id=(SELECT event_id FROM event_refs WHERE session_id='portable' LIMIT 1) RETURNING event_id,output_blob`).first<Record<string,unknown>>())!;
+      WHERE event_id='portable-output' RETURNING event_id,output_blob`).first<Record<string,unknown>>())!;
     const backup=await createBackup(db,blobs,{producer:'test',now:Date.now()});
     artifacts.set(name,{text:(await backupArtifact(db,blobs,backup.id))!.text,blobs,
       rows:(await db.prepare('SELECT * FROM blobs').all<Record<string,unknown>>()).results,prompt:prompt!.prompt_id,reference});
@@ -1068,13 +1075,15 @@ test('admission refuses missing records and preserves archived blob holders in t
       const build=JSON.stringify({report:{classes:{unplaced:batch.unplaced,unresolved_prompt:batch.unresolved}}});
       return {before:[],after:[db.prepare(`UPDATE session_documents SET build=?,${set.sql} WHERE project_id='project' AND session_id='converted'`).bind(build,...set.params)]};
     });
-    const output='b'.repeat(64);
+    const output='b'.repeat(64),input='d'.repeat(64);
     await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(output,uuid(99001)).run();
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,1,'text/plain','token',1,?)`).bind(input,uuid(99002)).run();
     await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_format)
-      VALUES('project','archived','converted','token','tool.use','cli','{}','hash',1,1,'archived'),
+      VALUES('project','failed','converted','token','tool.failure','cli','{}','hash',1,1,'archived'),
+        ('project','archived','converted','token','tool.use','cli','{"toolCallId":"tool"}','hash',2,2,'inline'),
         ('project','invalid','converted','token','prompt','cli','not JSON','hash',1,1,'inline')`).run();
-    await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,output_blob_key,success,created_at,token_id,received_at)
-      VALUES('project','converted','tool','archived','Read',?,1,1,'token',1)`).bind(output).run();
+    await db.prepare(`INSERT INTO tool_calls(project_id,session_id,tool_call_id,event_id,tool_name,input_blob_key,output_blob_key,success,created_at,token_id,received_at)
+      VALUES('project','converted','tool','archived','Read',?,?,1,1,'token',1)`).bind(input,output).run();
     await db.prepare(`INSERT INTO transcript_publication(project_id,session_id,transcript_id,generation,record_scheme,parser_version,state,failure,updated_at)
       VALUES('project','converted','stopped',1,'native',1,'failed','blob_absent',1)`).run();
     await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id='converted'").run();
@@ -1085,6 +1094,8 @@ test('admission refuses missing records and preserves archived blob holders in t
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
     expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
+    expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(input).first(),name).toEqual({held:1});
+    expect(await releaseBlobs(db,[{projectId:'project',key:input}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare(`SELECT record_id id FROM event_refs WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
   },116);
@@ -1122,11 +1133,11 @@ test('ranged event references survive archive, deletion and a failed range trans
       for(const step of SCHEMA_STEPS.filter(step=>step.version>held&&step.version<=through))await db.batch(step.statements.map(sql=>db.prepare(sql)));
     };
     await advance(117);
-    await event(500,'arrived','compaction.pre',JSON.stringify({blob:'arrived-blob'}),'inline').run();
+    await event(500,'arrived','response',JSON.stringify({responseId:'arrived-record',blob:'arrived-blob'}),'inline').run();
     expect(await one(db,"SELECT high FROM _v117_reference_ranges WHERE source='events'"),name).toEqual({high:296});
     await db.prepare(`UPDATE events SET payload='{"blob":"captured"}' WHERE event_id='legacy-1'`).run();
     const ranges=SCHEMA_STEPS.filter(step=>step.version>117&&step.version<SERVER_SCHEMA_VERSION);
-    expect(ranges,name).toHaveLength(60);
+    expect(ranges,name).toHaveLength(132);
     const interrupted=ranges[10]!;
     await advance(interrupted.version-1);
     const before=await one(db,'SELECT COUNT(*) n FROM event_refs');

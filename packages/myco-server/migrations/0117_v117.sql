@@ -40,18 +40,18 @@ CREATE INDEX IF NOT EXISTS idx_event_refs_output_blob ON event_refs(project_id,o
 CREATE INDEX IF NOT EXISTS idx_event_refs_session ON event_refs(project_id,session_id,kind,record_id);
 
 CREATE TRIGGER IF NOT EXISTS events_refs_insert AFTER INSERT ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob')
-    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure') OR json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob') IS NOT NULL OR json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob') IS NOT NULL
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure')
     ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
       record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
 
 CREATE TRIGGER IF NOT EXISTS events_refs_update AFTER UPDATE OF payload ON events BEGIN INSERT INTO event_refs (project_id,event_id,session_id,kind,record_id,blob,output_blob) SELECT NEW.project_id,NEW.event_id,NEW.session_id,NEW.kind,COALESCE(CASE NEW.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.toolCallId') END,CASE OLD.kind WHEN 'prompt' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.promptId') WHEN 'response' THEN json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.responseId') ELSE json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.toolCallId') END),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob')),COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob'))
-    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure') OR COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.blob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.blob')) IS NOT NULL OR COALESCE(json_extract(CASE WHEN json_valid(NEW.payload) THEN NEW.payload END,'$.outputBlob'),json_extract(CASE WHEN json_valid(OLD.payload) THEN OLD.payload END,'$.outputBlob')) IS NOT NULL
+    WHERE NEW.kind IN ('prompt','response','tool.use','tool.failure')
     ON CONFLICT(project_id,event_id) DO UPDATE SET session_id=excluded.session_id,kind=excluded.kind,
       record_id=COALESCE(excluded.record_id,event_refs.record_id),blob=COALESCE(excluded.blob,event_refs.blob),output_blob=COALESCE(excluded.output_blob,event_refs.output_blob); END;
 
 CREATE TRIGGER IF NOT EXISTS events_refs_delete AFTER DELETE ON events BEGIN DELETE FROM event_refs WHERE project_id=OLD.project_id AND event_id=OLD.event_id; END;
 
-CREATE TABLE _v117_reference_ranges (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS _v117_reference_ranges (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID;
 
 INSERT INTO _v117_reference_ranges SELECT 'tool_calls',COALESCE(MAX(rowid),0) FROM tool_calls;
 
