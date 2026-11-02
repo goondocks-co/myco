@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
-import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, ReadState, StatusChip, TypeChip } from '../../design';
-import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator, type TurnPrompt } from '../../hooks/use-sessions';
+import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, Markdown, ReadState, StatusChip, TypeChip } from '../../design';
+import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator, type TurnPrompt, type PlanRow } from '../../hooks/use-sessions';
 import { useTurnCollection } from '../../hooks/use-turn-collection';
 import { cn } from '../../lib/cn';
 import { PlanLine } from '../knowledge/PlanLine';
@@ -9,7 +9,7 @@ import { TextOrBlob } from './StoredText';
 import { ToolUse } from './ToolCalls';
 import { formatElapsed } from '../../lib/format';
 import { projectPath, PLAN_SUFFIX } from '../../routes/nav';
-import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
+import { displayPrompt, promptDisplay, replyDisplay } from '@goondocks/myco-shared/prompt-text';
 import { clockTime, count, dateTime, sporeTypeWord } from './words';
 
 /** How much of a prompt the list row carries, and so what a turn shows before its body is read. */
@@ -40,11 +40,19 @@ function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cur
   held?: number;
 }) {
   const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor, rowKey, unloaded);
+  return <ReadPages pages={pages} label={label} unloaded={unloaded} held={held}>{children}</ReadPages>;
+}
+
+/** The rows of a collection already being read, and the way to read more of them. */
+function ReadPages<T>({ pages, label, unloaded = false, held, children }: {
+  pages: ReturnType<typeof useTurnCollection<T>>; label: string; unloaded?: boolean; held?: number; children: (rows: T[]) => ReactNode;
+}) {
   const hasMore = pages.hasMore && (held === undefined || pages.rows.length < held);
   return <>
     {unloaded && pages.pending && pages.rows.length === 0 && <p role="status" className="t-small text-muted">Reading {label}…</p>}
     {children(pages.rows)}
     {pages.error && <p role="alert" className="t-small text-bad">More {label} could not be read. The items above are still available.</p>}
+    {pages.stalled && hasMore && !pages.pending && <p role="status" className="t-small text-muted">Still reading this turn…</p>}
     {(hasMore || pages.error) && <Button variant="secondary" className="w-fit" onClick={pages.error ? pages.retry : pages.more} disabled={pages.pending}>
       {pages.pending ? `Reading more ${label}…` : pages.error ? `Retry reading ${label}` : `Show more ${label}`}
     </Button>}
@@ -73,17 +81,20 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
   );
 }
 
-function Reply({ projectId, sessionId, reply }: { projectId: string; sessionId: string; reply: ResponseRow }) {
+function Reply({ projectId, sessionId, agent, reply, shownPlans }: { projectId: string; sessionId: string; agent: string | null; reply: ResponseRow; shownPlans: readonly string[] }) {
   return (
     <div className="flex flex-col gap-s1" data-testid="turn-response">
       <time dateTime={new Date(reply.createdAt).toISOString()} className="t-meta text-faint">{clockTime(reply.createdAt)}</time>
-      <TextOrBlob projectId={projectId} text={reply.text} blobKey={reply.blobKey} body={{ kind: 'response', id: reply.responseId, at: reply.locator === undefined ? undefined : { ...reply.locator, sessionId } }} markdown />
+      <TextOrBlob projectId={projectId} text={reply.text} blobKey={reply.blobKey} body={{ kind: 'response', id: reply.responseId, at: reply.locator === undefined ? undefined : { ...reply.locator, sessionId } }} render={(text) => {
+        const shown = replyDisplay(text, agent, shownPlans);
+        return shown === '' && text.trim() !== '' ? <p className="t-small text-muted">This reply is a plan.</p> : <Markdown content={shown} />;
+      }} />
     </div>
   );
 }
 
 /** The last reply in view, with those before it folded above it. */
-function Replies({ projectId, sessionId, responses }: { projectId: string; sessionId: string; responses: ResponseRow[] }) {
+function Replies({ projectId, sessionId, agent, responses, shownPlans }: { projectId: string; sessionId: string; agent: string | null; responses: ResponseRow[]; shownPlans: readonly string[] }) {
   const inOrder = [...responses].sort((a, b) => a.orderedAt - b.orderedAt);
   const last = inOrder.at(-1);
   if (last === undefined) return null;
@@ -92,10 +103,10 @@ function Replies({ projectId, sessionId, responses }: { projectId: string; sessi
     <div className="flex flex-col gap-s3">
       {earlier.length > 0 && (
         <Disclosure summary={count(earlier.length, 'earlier reply', 'earlier replies')}>
-          <div className="flex flex-col gap-s4">{earlier.map((reply) => <Reply key={reply.responseId} projectId={projectId} sessionId={sessionId} reply={reply} />)}</div>
+          <div className="flex flex-col gap-s4">{earlier.map((reply) => <Reply key={reply.responseId} projectId={projectId} sessionId={sessionId} agent={agent} reply={reply} shownPlans={shownPlans} />)}</div>
         </Disclosure>
       )}
-      <Reply projectId={projectId} sessionId={sessionId} reply={last} />
+      <Reply projectId={projectId} sessionId={sessionId} agent={agent} reply={last} shownPlans={shownPlans} />
     </div>
   );
 }
@@ -218,6 +229,8 @@ function PromptBubble({ origin, thread, at, steering = false, children }: { orig
   );
 }
 
+const planRowKey = (row: PlanRow) => row.planKey;
+
 /** What a body holds besides its prompt and its card: steering prompts, replies, plans and tool use, each read a page at a time. */
 function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, total, failed, rollup, held, deferChildren = 0 }: {
   projectId: string; sessionId: string; promptId: string; agent: string | null; contexts?: Record<string, { subagents: number }>;
@@ -228,6 +241,8 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
   deferChildren?: number;
 }) {
   const [showChildren, setShowChildren] = useState(false);
+  const plans = useTurnCollection(projectId, sessionId, promptId, 'plans', body.plans, body.cursors?.plans, planRowKey);
+  const shownPlans = plans.rows.flatMap((plan) => plan.content === null ? [] : [plan.content.trim()]);
   const subagents = (contexts?.[promptId] ?? body.context)?.subagents ?? 0;
   const injected = body.injection !== null && (body.injection.sporeIds.length > 0 || (body.injection.planIds ?? []).length > 0);
   const hasAnswers = (body.answers ?? []).length > 0;
@@ -255,15 +270,15 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
       {(rows) => rows.length > 0 && (
         <section aria-label="Reply" className="flex flex-col gap-s2">
           <h2 className="t-h3 text-ink">Reply</h2>
-          <Replies projectId={projectId} sessionId={sessionId} responses={rows} />
+          <Replies projectId={projectId} sessionId={sessionId} agent={agent} responses={rows} shownPlans={shownPlans} />
         </section>
       )}
     </TurnPages>
-    <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="plans" initial={body.plans} cursor={body.cursors?.plans} rowKey={(row) => row.planKey} label="plans" held={held?.plans}>
+    <ReadPages pages={plans} label="plans" held={held?.plans}>
       {(rows) => rows.length > 0 && <div className="flex flex-col gap-s2" data-testid="turn-plans">
         {rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={Date.now()} />)}
       </div>}
-    </TurnPages>
+    </ReadPages>
     {(hasTools || injected || hasAnswers || subagents > 0) && (
       <ToolUse projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} failed={failed} rollup={rollup} summary={body.tools} shown={body.toolCounts} added={added} />
     )}
