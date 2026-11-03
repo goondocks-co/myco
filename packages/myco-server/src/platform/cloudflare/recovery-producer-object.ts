@@ -229,7 +229,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
           );
         });
       },
-      clearParts: (id) => { if (stillWritable(id)) sql.exec('DELETE FROM parts WHERE attempt = ?', id); },
+      clearParts: (id) => { if (stillWritable(id) || this.row("id = ? AND stage = 'failed'", id) !== null) sql.exec('DELETE FROM parts WHERE attempt = ?', id); },
       recordInventory: (id, progress, objects) => {
         // The cursor, the reading, the digest over the bytes read and the objects they name commit as one step.
         storage.transactionSync(() => {
@@ -568,8 +568,11 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     return this.gate.exclusive(async () => {
       const row = this.row('id = ?', attempt);
       if (row !== null && row.stage !== 'failed' && row.stage !== 'complete' && row.completed_at === null) {
-        await this.ctx.storage.delete(`signed:${attempt}`);
-        this.ctx.storage.sql.exec("UPDATE attempts SET stage = 'failed', error = 'schema_disagrees' WHERE id = ?", attempt);
+        const state = stateOf(row);
+        const ports = cloudflareProducerPorts(this.target(state.tables), this.bucket(), this.env.BUCKET, {
+          testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record', requestMs: PRODUCER_LIMITS.requestMs,
+        });
+        await failAttempt(state, this.checkpoint(), ports, 'schema_disagrees');
       }
       return this.status();
     });

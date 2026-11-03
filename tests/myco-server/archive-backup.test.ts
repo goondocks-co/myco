@@ -12,7 +12,8 @@ import { reconcileArchivePreparations, verifyBundleArtifact } from '@myco-server
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 
 import { createRecoveryBundle, verifyRecoveryBundle } from '@myco/server/recovery-bundle.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { memoryBlobStore, sqliteEnv } from './helpers/fixtures.js';
+import { withDocumentStores } from './helpers/document-stores.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const project = 'proj_archive_backup';
@@ -270,7 +271,7 @@ it('verifies a full recovery after its original object source is unavailable',as
 
 
 it('restores dangling captured event references and reports them without altering the recorded event', async () => {
-  const source = sqliteEnv(), target = sqliteEnv();
+  const source = sqliteEnv();
   try {
     const key = 'a'.repeat(64);
     source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','session','m','token',1,1)`);
@@ -280,15 +281,22 @@ it('restores dangling captured event references and reports them without alterin
     const stored = seed(source);
     source.sqlite.run('UPDATE events SET blob_key=? WHERE event_id=?', [key, eventId]);
     const artifact = await artifactOf(source);
-    registerTarget(target, stored.event, randomUUID());
-    const restored = await restoreArtifact(target.db, { blobs: target.bucket, text: artifact, allowForeignLineage: true, authorization: { kind: 'recovery' } });
-    expect(restored.tables.events?.inserted).toBe(5);
-    expect(restored.danglingEventBlobs?.map(row => row.eventId)).toContain('plan');
-    expect(restored.danglingEventBlobs?.map(row => row.eventId)).toContain(eventId);
-    expect(target.sqlite.query("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all())
-      .toEqual(source.sqlite.query("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all());
-    expect(target.sqlite.query('SELECT event_id,blob_key FROM events ORDER BY event_id').all())
-      .toEqual(source.sqlite.query('SELECT event_id,blob_key FROM events ORDER BY event_id').all());
-    expect(await eventContent(target.serverEnv, project, eventId)).toBe(original);
-  } finally { source.sqlite.close(); target.sqlite.close(); }
+    await withDocumentStores(async (db, store) => {
+      const blobs = memoryBlobStore(), generation = randomUUID();
+      for (const [key, text] of [[stored.event.bodyKey,stored.event.bodyText],[stored.event.receiptKey,stored.event.receiptText]] as const) {
+        await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+          VALUES(?,?,?,?,?,?,?)`).bind(project,key,Buffer.byteLength(text),'application/json','token',1,generation).run();
+        await blobs.put(blobObjectKey(project,key,generation),new Response(text).body!);
+      }
+      const restored = await restoreArtifact(db, { blobs, text: artifact, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+      expect(restored.tables.events?.inserted, store).toBe(5);
+      expect(restored.danglingEventBlobs?.map(row => row.eventId), store).toContain('plan');
+      expect(restored.danglingEventBlobs?.map(row => row.eventId), store).toContain(eventId);
+      expect((await db.prepare("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all()).results, store)
+        .toEqual(source.sqlite.query<{event_id:string;payload:string},[]>("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all());
+      expect((await db.prepare('SELECT event_id,blob_key FROM events ORDER BY event_id').all()).results, store)
+        .toEqual(source.sqlite.query<{event_id:string;blob_key:string|null},[]>('SELECT event_id,blob_key FROM events ORDER BY event_id').all());
+      expect(await eventContent({db,blobs},project,eventId), store).toBe(original);
+    });
+  } finally { source.sqlite.close(); }
 });

@@ -1,3 +1,4 @@
+import { clearArchivedTranscriptRanges } from './transcript-ranges.js';
 import { learningHolds, learningHoldsSql } from './learning-hold.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
@@ -135,9 +136,7 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
     db.prepare(`UPDATE raw_archive_refs SET archive_key=?,receipt_key=?,digest=?,size=?,disposition='archived'
       WHERE project_id=? AND source_kind='transcript' AND source_id=? AND disposition='hot'`)
       .bind(body.key,receipt.key,body.digest,body.size,row.project_id,row.source_id),
-    db.prepare(`DELETE FROM transcript_segments WHERE project_id=? AND transcript_id=? AND base_offset=?
-      AND blob_key=? AND length=? AND received_at=?`)
-      .bind(row.project_id,row.transcript_id,row.base_offset,row.source_blob_key,row.length,row.received_at),
+    clearArchivedTranscriptRanges(db,row.project_id,row.transcript_id,row.base_offset),
     ...contentAssertion(db,`EXISTS (SELECT 1 FROM raw_archive_refs r JOIN blobs b
       ON b.project_id=r.project_id AND b.key=r.archive_key AND b.size=r.size
       WHERE r.project_id=? AND r.source_kind='transcript' AND r.source_id=? AND r.disposition='archived'
