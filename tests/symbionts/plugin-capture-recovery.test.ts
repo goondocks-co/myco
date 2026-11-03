@@ -493,7 +493,8 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
   const subject = snippetModule(r.env, [], [], (_bin, args) => ({
     status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: 'start context' }),
   }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
-  const snapshot = { conversationId: 'resumed', agentId: 'agent', iteration: 1, messages: [] };
+  subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+  const snapshot = { conversationId: 'conv_native', agentId: 'agent', iteration: 1, messages: [] };
   await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
   expect(JSON.parse(fs.readFileSync(r.transcript, 'utf8').trim()).type).toBe('session');
   for (const id of ['first', 'second']) {
@@ -519,7 +520,8 @@ it('damaged pending lines are reported while valid retained and new capture cont
   fs.writeFileSync(pending, '{broken}\n' + JSON.stringify({ type: 'prompt', sessionId: 'resumed', text: 'retained', promptId: 'retained-id', captureId: 'retained-source' }) + '\n');
   const notes: string[] = [];
   const subject = snippetModule(r.env, [], notes, () => ({ status: 0, stderr: '', stdout: '{"promptId":"new-id"}' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
-  const snapshot = { conversationId: 'resumed' };
+  subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+  const snapshot = { conversationId: 'conv_pending' };
   await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'new', role: 'user', content: [{ type: 'text', text: 'new' }] }] } });
   await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { content: [{ type: 'text', text: 'reply' }] } });
   const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -568,7 +570,7 @@ it('verifies another PID birth before replacing its writer and caches unavailabl
     let probes = 0;
     const waiting = snippetModule(held.env, [], [], undefined, ROUTING_KEY, () => NOW, fs, () => 0, 'cline',
       () => { probes += 1; return { status: null, stdout: '', stderr: 'probe timed out' }; }, 'win32');
-    const snapshot = { conversationId: 'resumed' };
+    const snapshot = { session: { sessionId: 'resumed' }, conversationId: 'conv_pending' };
     for (let i = 0; i < 5; i++) await waiting.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: `reply-${i}`, content: [{ type: 'text', text: 'held' }] } });
     expect(probes).toBe(2);
     const pending = fs.readdirSync(`${held.claim}.pending`).filter(file => file.endsWith('.jsonl'));
@@ -616,7 +618,8 @@ it('a surviving producer retains new callbacks after a partial inbox write', asy
       fs.appendFileSync(file, data, ...options);
     },
   }, () => 0, 'cline');
-  const snapshot = { conversationId: 'resumed' };
+  subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+  const snapshot = { conversationId: 'conv_pending' };
   await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'torn', content: [{ type: 'text', text: 'torn' }] } });
   await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'next', content: [{ type: 'text', text: 'complete' }] } });
   fs.unlinkSync(r.claim);
@@ -637,4 +640,48 @@ it('same-process plugin instances share the kernel birth proof across VM clocks'
     () => ({ status: 0, stdout: new Date(birth).toUTCString(), stderr: '' }));
   expect(subject.holdsSessionClaim('/repo', 'cline', 'resumed')).toBe(false);
   expect(fs.readFileSync(r.claim, 'utf8')).toBe(holder);
+});
+
+it('Cline keeps one session across run ids and a replacement plugin host', async () => {
+  const r = rig('cline');
+  const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+  let prompt = 0;
+  const load = () => snippetModule(r.env, [], [], (_bin, args) => ({ status: 0, stdout: args[1] === 'user-prompt-submit' ? JSON.stringify({ promptId: `prompt-${++prompt}` }) : '{}', stderr: '' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  let subject = load();
+  subject.MycoClinePlugin.setup({}, ctx);
+  try {
+    for (const [i, conversationId] of ['conv_first', 'conv_second', 'conv_restarted'].entries()) {
+      if (i === 2) {
+        subject.releaseSessionClaim('/repo', 'cline', 'resumed');
+        subject = load();
+        subject.MycoClinePlugin.setup({}, ctx);
+      }
+      const snapshot = { agentId: 'agent', conversationId, parentAgentId: null, iteration: 1, messages: [] };
+      await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
+      await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: `message-${i}`, role: 'user', content: [{ type: 'text', text: `prompt ${i}` }] }] } });
+      await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: `reply-${i}`, content: [{ type: 'text', text: `reply ${i}` }] } });
+      await subject.MycoClinePlugin.hooks.afterRun({ snapshot });
+    }
+    const root = path.dirname(r.transcript);
+    expect(fs.readdirSync(root)).toEqual(['resumed.jsonl']);
+    const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(new Set(rows.filter(row => row.type === 'session').map(row => row.sessionId))).toEqual(new Set(['resumed']));
+    expect(rows.filter(row => row.type === 'prompt').map(row => row.text)).toEqual(['prompt 0', 'prompt 1', 'prompt 2']);
+    expect(rows.filter(row => row.type === 'response').map(row => row.text)).toEqual(['reply 0', 'reply 1', 'reply 2']);
+    expect(rows.every(row => row.sessionId === 'resumed')).toBe(true);
+  } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
+});
+
+it('Cline subagent task callbacks do not capture a human turn', async () => {
+  const r = rig('cline');
+  const subject = snippetModule(r.env, [], [], () => ({ status: 0, stdout: '{}', stderr: '' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  try {
+    subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+    const snapshot = { agentId: 'child', parentAgentId: 'parent', conversationId: 'conv_child', iteration: 1, messages: [] };
+    await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
+    await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'task', role: 'user', content: [{ type: 'text', text: 'delegated task' }] }] } });
+    const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(fs.readdirSync(path.dirname(r.transcript))).toEqual(['resumed.jsonl']);
+    expect(rows.filter(row => row.type === 'prompt')).toEqual([]);
+  } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
 });

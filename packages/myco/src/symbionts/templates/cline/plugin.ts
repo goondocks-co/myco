@@ -1186,6 +1186,7 @@ const sessions = new Map<string, { directory: string; promptId?: string; lastSub
 const SUBMISSION_METADATA_KEY = "mycoSubmissionId";
 const submissionKeys = new WeakMap<object, string>();
 let submissionOrdinal = 0;
+let hostSession: { sessionId: string; directory: string } | undefined;
 
 
 function nowIso(): string {
@@ -1209,8 +1210,8 @@ function isMycoMessage(message: any): boolean {
 
 function clineContext(input: any, context: any) {
   const snapshot = input?.snapshot ?? context;
-  const sessionId = snapshot?.conversationId ?? snapshot?.session?.sessionId;
-  const directory = snapshot?.workspaceRoot ?? snapshot?.workspaceInfo?.rootPath ?? sessions.get(sessionId)?.directory ?? process.cwd();
+  const sessionId = snapshot?.parentAgentId ? undefined : snapshot?.session?.sessionId ?? hostSession?.sessionId;
+  const directory = snapshot?.workspaceRoot ?? snapshot?.workspaceInfo?.rootPath ?? hostSession?.directory ?? sessions.get(sessionId)?.directory ?? process.cwd();
   return { sessionId, directory };
 }
 
@@ -1236,7 +1237,10 @@ export const MycoClinePlugin = {
   setup(_api: any, ctx: any) {
     const sessionId = ctx?.session?.sessionId;
     const directory = ctx?.workspaceInfo?.rootPath ?? process.cwd();
-    if (sessionId) openSession(sessionId, directory);
+    if (sessionId) {
+      hostSession = { sessionId, directory };
+      openSession(sessionId, directory);
+    }
   },
 
   hooks: {

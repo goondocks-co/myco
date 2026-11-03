@@ -17,7 +17,7 @@ export interface BlobReference {
   column: string;
   /** First snapshot schema version that must contain this table. */
   sinceSchema: number;
-  /** For the raw event log: the kinds whose event row is the blob's only home. Absent on a projected column. */
+  /** For the raw event log: the kinds whose retained event independently holds its blob. Absent on a projected column. */
   kinds?: readonly string[];
 }
 
@@ -33,14 +33,14 @@ const projected: ReferenceColumns[] = [...new Map(KINDS.flatMap((kind) =>
   }),
 )).values()];
 
-const rawKinds = KINDS.filter((kind) => ['raw','prompt_batches','responses','tool_calls'].includes(kind.projection) && blobFields(kind).length > 0).map((kind) => kind.name);
+const retainedKinds = KINDS.filter((kind) => blobFields(kind).length > 0).map((kind) => kind.name);
 
 /** Every reference the catalogue declares, projected columns first and the raw event log last. */
 export const BLOB_REFERENCES: readonly BlobReference[] = [
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, projected),
   ...atSchema(117,[{table:'event_refs',column:'blob'},{table:'event_refs',column:'output_blob'}]),
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, [
-    ...(rawKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: rawKinds }] : []),
+    ...(retainedKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: retainedKinds }] : []),
     { table: 'archive_bundles', column: 'archive_key' },
     { table: 'archive_bundles', column: 'receipt_key' },
     { table: 'raw_archive_refs', column: 'archive_key' },

@@ -7,7 +7,7 @@ import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { contentAssertion, prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
-import { registeredBlobsGuard, releaseBlobs } from '../core/object-release.js';
+import { registeredBlobsGuard, recordBlobCandidates, releaseBlobs } from '../core/object-release.js';
 import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { turnInput } from '../content/turn-material.js';
@@ -69,6 +69,7 @@ export async function releaseHolders(db: RelationalStore, rows: readonly Holder[
         AND r.session_id=json_extract(j.value,'$.s') AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
        WHERE NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=r.project_id AND c.blob_key=r.blob_key AND c.source_id=r.source_id))`)
       .bind(page),
+    ...recordBlobCandidates(db, rows.map(row => ({ projectId: row.p, key: row.k })), now),
     db.prepare(`DELETE FROM retired_objects WHERE (project_id,session_id,blob_key,source_id) IN
       (SELECT json_extract(value,'$.p'),json_extract(value,'$.s'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(page),
   ]);
@@ -109,6 +110,12 @@ export function directoryStatements(db: RelationalStore, projectId: string, sess
 
 /** A plan a transcript holds, as placed, with the digest of its whole body and whether the body moved to a body chunk. */
 interface TranscriptPlan { record: DocRecord; hash: string; spilled: boolean }
+const PLAN_STATEMENTS_PER_PAGE = 2;
+
+const transcriptPlanRows = (plans: ReadonlyMap<string, TranscriptPlan>) => [...plans].map(([key, { record, hash, spilled }]) => ({
+  key, id: record.id, title: record.title ?? null, content: spilled ? null : record.content, blob: spilled ? hash : null, hash,
+  status: record.status ?? 'active', path: record.origin_path ?? null, at: record.created_at, prompt: record.prompt_id ?? null, source: record.source ?? null,
+}));
 
 /**
  * What a live publication tells the session's canonical rows. A plan a transcript holds is inserted, or its title and
@@ -122,11 +129,8 @@ interface TranscriptPlan { record: DocRecord; hash: string; spilled: boolean }
 function sessionRowStatements(db: RelationalStore, projectId: string, sessionId: string, generation: number, tokenId: string,
   plans: ReadonlyMap<string, TranscriptPlan>, latestUserPrompt: number | null, lastRecordAt: number | null, now: number): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
-  if (plans.size > 0) {
-    const rows = JSON.stringify([...plans].map(([key, { record, hash, spilled }]) => ({
-      key, id: record.id, title: record.title ?? null, content: spilled ? null : record.content, blob: spilled ? hash : null, hash,
-      status: record.status ?? 'active', path: record.origin_path ?? null, at: record.created_at, prompt: record.prompt_id ?? null, source: record.source ?? null,
-    })));
+  for (const page of jsonPages(transcriptPlanRows(plans))) {
+    const rows = JSON.stringify(page);
     statements.push(db.prepare(`INSERT INTO plans (project_id,plan_key,session_id,event_id,machine_id,title,content,blob_key,content_hash,status,origin_path,
         created_at,updated_at,token_id,received_at,prompt_id,source)
       SELECT ?1,json_extract(j.value,'$.key'),?2,json_extract(j.value,'$.id'),
@@ -326,7 +330,7 @@ export class DocumentBatch {
     const bytes = this.toolChanges.reduce((sum, change) => sum + 500 + new TextEncoder().encode(JSON.stringify({
       name: change.record.tool_name, myco: change.record.myco_tool, op: change.record.myco_op, files: change.record.files_affected,
     })).length * 8, 0) + this.writer.touched.size * 1_000;
-    return 4 + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5;
+    return 4 + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
   }
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
