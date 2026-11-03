@@ -36,10 +36,12 @@ const DOCUMENT_QUEUE_WRITES = 5;
 const DOCUMENT_DUE_WRITES = 2;
 /** A transcript header's session page index stores one entry. */
 const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
+/** One-card learning completion writes coverage, attribution and session progress. */
+const LEARNING_SLICE_COMPLETION_WRITES = 19;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES,
-  'publication-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
+  'publication-progress UPDATE': 3, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -321,7 +323,7 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:memoryBlobStore(),SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
       await publishDocuments({...configured,blobs:memoryBlobStore()},now,{calls:500,deadline:Infinity,clock:()=>now});
       const acknowledge = await preparePromptAcknowledgement(measured.db, { projectId: PROJECT }, promptIds[0]!);
-      await capture('markPromptProcessed', async () => { expect(await acknowledge()).toBe(true); });
+      await capture('learning slice completion', async () => { expect(await acknowledge()).toBe(true); });
       for (const name of CAPTURE_WRITE_NAMES) captureWrites.get(name)!.push(writes.get(name)!);
     } finally { await mf.dispose(); }
   }

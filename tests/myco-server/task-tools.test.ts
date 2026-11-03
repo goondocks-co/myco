@@ -17,7 +17,8 @@ describe('the task tool table', () => {
   });
 
   it('preserves the frozen task tool contract', () => {
-    const retained = Object.fromEntries(Object.entries(FROZEN_TASK_TOOLS).map(([task, tools]) => [task, tools.filter(tool => tool !== 'vault_unprocessed')]));
+    const retired = ['vault_unprocessed', 'vault_mark_processed'];
+    const retained = Object.fromEntries(Object.entries(FROZEN_TASK_TOOLS).map(([task, tools]) => [task, tools.filter(tool => !retired.includes(tool))]));
     expect(TASK_TOOLS).toEqual(retained);
     expect(Object.values(TASK_TOOLS).flat()).not.toContain('vault_unprocessed');
   });

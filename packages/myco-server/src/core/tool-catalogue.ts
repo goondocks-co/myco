@@ -40,7 +40,6 @@ export const RUN_TOOLS = [
   'myco_run',
   'myco_run_spores',
   'myco_run_sessions',
-  'myco_run_prompts',
   'myco_run_map',
   'myco_run_cards',
   'myco_run_learning',
@@ -50,8 +49,6 @@ export type RunTool = (typeof RUN_TOOLS)[number];
 
 /** The run tool a titling run's write of its session lands through; the close rule reads the write back under this name. */
 export const TITLE_WRITE_TOOL: RunTool = 'myco_run_sessions';
-/** The run tool an extraction run's mark of a read prompt lands through; the close rule reads the write back under this name. */
-export const PROMPT_MARK_TOOL: RunTool = 'myco_run_prompts';
 /** The run tool a map run reads its prior map and writes its new one through. */
 export const MAP_WRITE_TOOL: RunTool = 'myco_run_map';
 
@@ -119,7 +116,6 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   // and still files the report the close gate reads.
   myco_run: ['state_set'],
   myco_run_sessions: ['title'],
-  myco_run_prompts: ['mark_processed'],
   myco_run_map: ['write'],
   myco_run_cards: ['write'],
   myco_run_learning: ['complete'],

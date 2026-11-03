@@ -153,7 +153,7 @@ it('allows an extraction already under lease to report and complete during the p
     const claim=await f.claimThin();
     if(!claim.claimed) throw new Error('the pre-pause extraction did not acquire its lease');
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
-    await recordRunWrite(f.db,{projectId:'proj_1'},{runId:'finishing',toolName:'myco_run_prompts',op:'mark_processed',recordedAt:NOW+1,detail:{served_id:'fixture-served'}});
+    await recordRunWrite(f.db,{projectId:'proj_1'},{runId:'finishing',toolName:'myco_run_learning',op:'complete',recordedAt:NOW+1,detail:{served_id:'fixture-served'}});
     expect(await recordReport(f.db,{projectId:'proj_1'},{
       runId:'finishing',agentId:'myco-agent',action:'extract',summary:'Served material acknowledged',details:null,createdAt:NOW+2,
       audit:{steps:['Read eligible prompts'],examined:[],commands:[],failures:[],reasoning:'The Project has no unread extraction material'},

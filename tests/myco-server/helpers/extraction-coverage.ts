@@ -2,8 +2,8 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
+import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
+import { prepareLearningSlice } from './extraction.js';
 import { BACKUP_FORMAT, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuid } from './fixtures.js';
@@ -54,11 +54,12 @@ export async function fill(db: RelationalStore, prompts = PROMPTS, acks = ACKS) 
 export async function acknowledgeHistory(db: RelationalStore, end = ACKS, begin = 0) {
   for (let start = begin; start < end; start += WRITE_BATCH) {
     const rows = Array.from({ length: Math.min(WRITE_BATCH, end - start) }, (_, offset) => ({ promptId: uuid(start + offset), sessionId: 'session', createdAt: start + offset, endedAt: 1 }));
-    const served = await recordServedPrompts(db, scope, runId, rows, 1);
-    await Promise.all(served.map(async item => {
-      const ack = await acknowledgePrompt(db, scope, runId, { servedId: item.servedId }, 1);
-      if (!('marked' in ack) || !ack.marked) throw new Error(JSON.stringify(ack));
-    }));
+    const sliceRun = `${runId}-${start}`;
+    await recordDispatch(db, scope, { id: sliceRun, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,
+      runContext: null, dispatchedBy: null, startedAt: Date.now() });
+    const assignment = await prepareLearningSlice(db, scope, sliceRun, 'session', rows, 1);
+    const completedSlice = await completeLearning(db, scope.projectId, 'session', sliceRun, assignment, '', 1);
+    if (!completedSlice.completed || completedSlice.covered !== rows.length) throw new Error(JSON.stringify(completedSlice));
     const completed = Math.min(start + WRITE_BATCH, end);
     if (completed === end || completed % PROGRESS_EVERY === 0) console.info('EXTRACTION_FIXTURE_PROGRESS', { stage: 'ack', completed, total: end });
   }

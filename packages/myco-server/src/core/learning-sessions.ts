@@ -40,20 +40,22 @@ const UNCOVERED = (project: string, session: string) => `(SELECT COUNT(*) FROM t
  * its card and no due card has finished its learning; when cards were written after its last completion, that is
  * recorded as a completion with reason `no_signal`.
  */
-export function sessionProgressStatements(db: RelationalStore, projectId: string, sessionId: string, now: number): PreparedStatement[] {
+export function sessionProgressStatements(db: RelationalStore, projectId: string, sessionId: string, now: number,
+  guard: { sql: string; params: readonly unknown[] } = { sql: '1', params: [] }): PreparedStatement[] {
   const key = [projectId, sessionId];
   return [
     db.prepare(`UPDATE learning_sessions SET due_cards = ${UNCOVERED('learning_sessions.project_id', 'learning_sessions.session_id')}
-      WHERE project_id = ? AND session_id = ?`).bind(...key),
+      WHERE project_id = ? AND session_id = ? AND ${guard.sql}`).bind(...key, ...guard.params),
     db.prepare(`UPDATE learning_sessions SET
         eligible_at = CASE WHEN init_state = 'ready' AND skipped_by_owner = 0 AND pending_cards = 0 AND due_cards > 0
           THEN COALESCE(eligible_at, ?) ELSE NULL END
-      WHERE project_id = ? AND session_id = ?`).bind(now, ...key),
+      WHERE project_id = ? AND session_id = ? AND ${guard.sql}`).bind(now, ...key, ...guard.params),
     db.prepare(`UPDATE learning_sessions SET learned_seq = max_seq, last_completed_at = ?,
         last_completed_reason = CASE WHEN last_completed_at = ? AND last_completed_reason = 'completed' THEN 'completed' ELSE 'no_signal' END
       WHERE project_id = ? AND session_id = ? AND init_state = 'ready' AND pending_cards = 0 AND due_cards = 0
         AND EXISTS (SELECT 1 FROM turn_cards c WHERE c.project_id = learning_sessions.project_id AND c.session_id = learning_sessions.session_id
-          AND c.state = 'carded' AND c.carded_at > COALESCE(learning_sessions.last_completed_at, -1))`).bind(now, now, ...key),
+          AND c.state = 'carded' AND c.carded_at > COALESCE(learning_sessions.last_completed_at, -1))
+        AND ${guard.sql}`).bind(now, now, ...key, ...guard.params),
   ];
 }
 
@@ -72,14 +74,6 @@ export function pendingCardsStatement(db: RelationalStore, projectId: string, se
 export function learningIncompleteSql(project: string, session: string): string {
   return `NOT EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ${project} AND l.session_id = ${session}
       AND (l.init_state = 'ready' AND l.pending_cards = 0 AND l.due_cards = 0 OR l.skipped_by_owner = 1))`;
-}
-
-/** Whether a run predates the resumption of learning, or learning has not resumed. */
-export async function dispatchedBeforeResume(db: RelationalStore, projectId: string, runId: string): Promise<boolean> {
-  const later = await db.prepare(`SELECT 1 AS later FROM agent_runs r JOIN schema_meta m ON m.key = ?
-    WHERE r.project_id = ? AND r.id = ? AND COALESCE(r.queued_at, r.started_at) >= CAST(m.value AS INTEGER)`)
-    .bind(LEARNING_RESUMED_AT, projectId, runId).first();
-  return later === null;
 }
 
 /** Whether whole-session learning has resumed; the progress hold applies from then on. */
@@ -136,7 +130,7 @@ export interface LearningCard { turnKey: string; card: string; signal: string; r
 /** The assigned cards as they stand, verbatim, with the prompts each covers. */
 export async function assignedCards(db: RelationalStore, projectId: string, sessionId: string, assignment: LearningAssignment): Promise<LearningCard[]> {
   const { results } = await db.prepare(`SELECT c.turn_key AS turnKey, c.card, c.signal, c.records FROM json_each(?) j
-    JOIN turn_cards c ON c.project_id = ? AND c.session_id = ? AND c.turn_key = json_extract(j.value, '$.turnKey')
+    CROSS JOIN turn_cards c ON c.project_id = ? AND c.session_id = ? AND c.turn_key = json_extract(j.value, '$.turnKey')
       AND c.input_hash = json_extract(j.value, '$.inputHash') AND c.state = 'carded'
     ORDER BY CAST(j.key AS INTEGER)`).bind(JSON.stringify(assignment.turns), projectId, sessionId)
     .all<{ turnKey: string; card: string; signal: string; records: string }>();
@@ -160,25 +154,37 @@ export async function completeLearning(
   const cards = await assignedCards(db, projectId, sessionId, assignment);
   const prompts = cards.flatMap((card) => card.promptIds);
   if (prompts.some((id) => !servedIds.has(id))) return { completed: false, covered: 0 };
-  const turns = JSON.stringify(cards.map((card) => card.turnKey));
-  const landed = `EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ? AND l.revision = ? AND l.last_completed_at = ?)`;
-  const landedParams = [projectId, sessionId, assignment.expectedRevision + 1, now];
+  const hashes = new Map(assignment.turns.map(turn => [turn.turnKey, turn.inputHash]));
+  const assigned = JSON.stringify(cards.map(card => ({ turnKey: card.turnKey, inputHash: hashes.get(card.turnKey) })));
+  const surviving = `FROM json_each(?) j CROSS JOIN turn_cards c ON c.turn_key = json_extract(j.value, '$.turnKey')
+      AND c.input_hash = json_extract(j.value, '$.inputHash')
+    WHERE c.project_id = ? AND c.session_id = ? AND c.state = 'carded'`;
+  const survivingParams = [assigned, projectId, sessionId];
+  const landed = `EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ? AND l.revision = ? AND l.last_completed_run = ?)`;
+  const landedParams = [projectId, sessionId, assignment.expectedRevision + 1, runId];
+  const guard = { sql: landed, params: landedParams };
   const result = await commitAttributedWrite(db, { projectId },
-    db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = ?, last_completed_at = ?, last_completed_reason = 'completed',
+    db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = ?, last_completed_at = ?, last_completed_run = ?, last_completed_reason = 'completed',
         failures = 0, eligible_at = NULL,
-        learned_seq = MAX(learned_seq, COALESCE((SELECT MAX(c.last_seq) FROM turn_cards c WHERE c.project_id = ? AND c.session_id = ?
-          AND c.turn_key IN (SELECT value FROM json_each(?))), learned_seq))
-      WHERE project_id = ? AND session_id = ? AND revision = ?`)
-      .bind(handoff, now, projectId, sessionId, turns, projectId, sessionId, assignment.expectedRevision),
+        learned_seq = MAX(learned_seq, COALESCE((SELECT MAX(c.last_seq) ${surviving}), learned_seq))
+      WHERE project_id = ? AND session_id = ? AND revision = ?
+      RETURNING (SELECT COUNT(*) ${surviving}) AS covered`)
+      .bind(handoff, now, runId, ...survivingParams, projectId, sessionId, assignment.expectedRevision, ...survivingParams),
     { runId, toolName: LEARNING_TOOL, op: 'complete', recordedAt: now, detail: { session_id: sessionId, cards: cards.length } },
     [
-      db.prepare(`UPDATE turn_cards SET covered = 1 WHERE project_id = ? AND session_id = ? AND turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(?))
+      db.prepare(`UPDATE turn_cards SET covered = 1 WHERE state = 'carded' AND project_id = ? AND session_id = ? AND turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(?))
         AND input_hash = (SELECT json_extract(value, '$.inputHash') FROM json_each(?) WHERE json_extract(value, '$.turnKey') = turn_cards.turn_key) AND ${landed}`)
-        .bind(projectId, sessionId, JSON.stringify(assignment.turns), JSON.stringify(assignment.turns), ...landedParams),
-      ...prompts.map((promptId) => prepareRecordAcknowledgement(db, projectId, runId, servedIds.get(promptId), servedIds.get(promptId), crypto.randomUUID(), now)),
-      ...sessionProgressStatements(db, projectId, sessionId, now),
+        .bind(projectId, sessionId, assigned, assigned, ...landedParams),
+      ...cards.flatMap(card => card.promptIds.map(promptId => prepareRecordAcknowledgement(db, projectId, runId,
+        servedIds.get(promptId)!, crypto.randomUUID(), now, {
+          sql: `${landed} AND EXISTS (SELECT 1 FROM turn_cards c WHERE c.project_id = ? AND c.session_id = ?
+            AND c.turn_key = ? AND c.input_hash = ? AND c.state = 'carded')`,
+          params: [...landedParams, projectId, sessionId, card.turnKey, hashes.get(card.turnKey)],
+        }))),
+      ...sessionProgressStatements(db, projectId, sessionId, now, guard),
     ]);
-  return { completed: (result.meta.changes ?? 0) > 0, covered: (result.meta.changes ?? 0) > 0 ? cards.length : 0 };
+  const completed = result.results[0] as { covered: number } | undefined;
+  return { completed: completed !== undefined, covered: completed?.covered ?? 0 };
 }
 
 /** Counts the status line caps; a count at the cap reads "at least". */
