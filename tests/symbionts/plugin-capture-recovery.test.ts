@@ -27,21 +27,23 @@ function rig(agent: string) {
   return { home, env, first, load, claim, transcript, notes, setWall: (ms: number) => { now = ms; }, advance: (ms: number) => { now += ms; elapsed += ms; } };
 }
 
-async function parse(text: string, agent: string) {
+async function parse(text: string, agent: string, options: { endedAt?: number; sessionId?: string } = {}) {
   const { sqlite, serverEnv } = sqliteEnv();
+  const sessionId = options.sessionId ?? 'resumed';
   const { tokenId } = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW);
   const bytes = new TextEncoder().encode(text);
   const key = await sha256HexOf(bytes);
   const objectKey = registerBlob(sqlite, { projectId: 'proj_1', key, size: bytes.length, tokenId, receivedAt: NOW });
   await serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-    VALUES ('proj_1', 'resumed', 'machine_1', ?, ?, ?)`, [tokenId, NOW, NOW]);
+    VALUES ('proj_1', ?, 'machine_1', ?, ?, ?)`, [sessionId, tokenId, NOW, NOW]);
   sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
-    VALUES ('proj_1', 'tx_recovery', 'resumed', 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [agent, bytes.length, NOW, NOW, tokenId, declaredScheme(agent)]);
+    VALUES ('proj_1', 'tx_recovery', ?, 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [sessionId, agent, bytes.length, NOW, NOW, tokenId, declaredScheme(agent)]);
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
     VALUES ('proj_1', 'tx_recovery', 0, ?, ?, 'segment', ?, ?, ?)`, [bytes.length, key, NOW, NOW, tokenId]);
+  if (options.endedAt !== undefined) sqlite.run("UPDATE sessions SET ended_at=? WHERE session_id=?", [options.endedAt, sessionId]);
   const target = { recordScheme: 'legacy-session-v1' as const,
-    projectId: 'proj_1', transcriptId: 'tx_recovery', sessionId: 'resumed', machineId: 'machine_1',
+    projectId: 'proj_1', transcriptId: 'tx_recovery', sessionId, machineId: 'machine_1',
     tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
   };
   const diagnostics: unknown[] = [];
@@ -51,13 +53,16 @@ async function parse(text: string, agent: string) {
     console.log = (line: string) => { diagnostics.push(JSON.parse(line)); };
     report = await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
   } finally { console.log = log; }
-  const prompts = (await readFixtureRecords(serverEnv,'proj_1','resumed')).filter(row=>row.k==='prompt').map(row=>({text:row.text}));
+  const records = await readFixtureRecords(serverEnv,'proj_1',sessionId);
+  const prompts = records.filter(row=>row.k==='prompt').map(row=>({text:row.text}));
   const state = sqlite.query('SELECT published_offset AS parsed_offset, failure AS parse_error FROM transcript_publication').get();
   // A retry with the committed cursor must derive nothing twice.
   await publishDocuments(serverEnv,NOW,{ calls: 30, deadline: Infinity, clock: () => NOW, completeFile: true });
-  expect((await readFixtureRecords(serverEnv,'proj_1','resumed')).filter(row=>row.k==='prompt').map(row=>({text:row.text}))).toEqual(prompts);
+  expect((await readFixtureRecords(serverEnv,'proj_1',sessionId)).filter(row=>row.k==='prompt').map(row=>({text:row.text}))).toEqual(prompts);
+  const document = sqlite.query("SELECT prompts,user_prompts,replies,tool_calls,first_prompt FROM session_documents WHERE session_id=?").get(sessionId);
+  const session = sqlite.query("SELECT ended_at FROM sessions WHERE session_id=?").get(sessionId);
   sqlite.close();
-  return { report, prompts, state, diagnostics };
+  return { report, prompts, state, diagnostics, records, document, session };
 }
 
 describe('plugin capture recovery', () => {
@@ -715,7 +720,46 @@ it('Cline teammates keep tasks and prompt ownership outside the lead session', a
     expect(child).toBeDefined();
     const childRows = fs.readFileSync(path.join(path.dirname(r.transcript), child!), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(childRows.filter(row => row.type === 'prompt').map(row => row.text)).toEqual(['delegated team task']);
-    expect(childRows.filter(row => row.type === 'response' || row.type === 'tool').map(row => row.promptId)).toEqual(['p-2', 'p-2']);
+    const childPrompt = childRows.find(row => row.type === 'prompt');
+    expect(childPrompt.origin).toBe('agent_dispatch');
+    expect(childRows.filter(row => row.type === 'response' || row.type === 'tool').map(row => row.promptId)).toEqual([childPrompt.promptId, childPrompt.promptId]);
+    expect(prompts).toBe(1);
     expect(stops).toEqual(['resumed-agent-teammate', 'resumed']);
   } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
+});
+
+
+it('Cline child dispatches retain a non-human origin through capture and document publication', async () => {
+  for (const parented of [false, true]) {
+    const r = rig('cline');
+    let promptHooks = 0;
+    const subject = snippetModule(r.env, [], [], (_bin, args) => {
+      if (args[1] === 'user-prompt-submit') promptHooks += 1;
+      return { status: 0, stdout: JSON.stringify({ promptId: '11111111-1111-4111-8111-111111111111', additionalContext: 'served context' }), stderr: '' };
+    }, ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+    try {
+      subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+      await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot: { agentId: 'lead', conversationId: 'conv_lead' } });
+      const snapshot = { agentId: 'child', conversationId: 'conv_child', ...(parented ? { parentAgentId: 'lead' } : {}), iteration: 1, messages: [] };
+      await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
+      const input = { snapshot, request: { messages: [{ id: 'task', role: 'user', content: [{ type: 'text', text: 'delegated task' }] }] } };
+      const response = await subject.MycoClinePlugin.hooks.beforeModel(input) as { messages: unknown[] };
+      await subject.MycoClinePlugin.hooks.beforeModel(structuredClone(input));
+      await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'reply', content: [{ type: 'text', text: 'delegated reply' }] } });
+      await subject.MycoClinePlugin.hooks.afterTool({ snapshot, toolCall: { toolCallId: 'call', toolName: 'read' }, input: { path: 'a' }, result: { output: 'ok' } });
+      const file = subject.transcriptPathFor('/repo', 'cline', 'resumed-agent-child');
+      const text = fs.readFileSync(file, 'utf8');
+      const raw = text.trim().split('\n').map(line => JSON.parse(line));
+      const prompt = raw.find(row => row.type === 'prompt');
+      expect(prompt.origin).toBe('agent_dispatch');
+      expect(raw.filter(row => row.type === 'prompt')).toHaveLength(1);
+      expect(response.messages).toHaveLength(1);
+      expect(promptHooks).toBe(0);
+      const parsed = await parse(text, 'cline', { endedAt: NOW - 1, sessionId: 'resumed-agent-child' });
+      expect(parsed.records.filter(row => row.k === 'prompt').map(row => [row.id, row.origin])).toEqual([[prompt.promptId, 'agent_dispatch']]);
+      expect(parsed.records.filter(row => row.k === 'reply' || row.k === 'tool').map(row => row.prompt_id)).toEqual([prompt.promptId, prompt.promptId]);
+      expect(parsed.document).toEqual({ prompts: 1, user_prompts: 0, replies: 1, tool_calls: 1, first_prompt: null });
+      expect(parsed.session).toEqual({ ended_at: NOW - 1 });
+    } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
+  }
 });

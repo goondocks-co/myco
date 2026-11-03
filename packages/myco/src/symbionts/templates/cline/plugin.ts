@@ -870,9 +870,9 @@ function captureTranscriptLine(directory: string, agent: string, sessionId: stri
   return status === "refused" ? retainPendingCapture(directory, agent, sessionId, record) : status;
 }
 
-/** Keep a successful prompt hook answer until its transcript append commits. */
-function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string, submission?: string): CaptureResult {
-  const record = { type: "prompt", sessionId, submissionId: submission, text, origin: "human", at: new Date().toISOString() };
+/** Retain a prompt identity until its transcript append commits. */
+function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string, submission?: string, origin: "human" | "agent_dispatch" = "human"): CaptureResult {
+  const record = { type: "prompt", sessionId, submissionId: submission, text, origin, at: new Date().toISOString() };
   const routingKey = routingKeyFor(directory);
   const initialized = initializeTranscriptSession(directory, agent, sessionId, routingKey);
   if (initialized.status !== "committed") return initialized.status === "refused"
@@ -897,6 +897,7 @@ function captureTranscriptPrompt(directory: string, agent: string, sessionId: st
         if (captured !== undefined) return { status: "committed", answer: captured };
       }
       const answer = submission !== undefined && state.pendingPrompt !== undefined && state.pendingPrompt.submission === submission ? state.pendingPrompt.answer
+        : origin === "agent_dispatch" ? { promptId: globalThis.crypto.randomUUID() }
         : runMycoHook(directory, agent, sessionId, "user-prompt-submit", { ...transcriptHookPayload(directory, agent, sessionId, routingKey), prompt: text }, routingKey);
       if (answer !== null && submission !== undefined) state.pendingPrompt = { submission, answer };
       const status = appendTranscriptLine(directory, agent, sessionId, { ...record, promptId: answer?.promptId });
@@ -1216,7 +1217,7 @@ function clineContext(input: any, context: any) {
   const child = snapshot?.parentAgentId || (agentId !== undefined && hostSession?.leadAgentId !== undefined && agentId !== hostSession.leadAgentId);
   const sessionId = child ? (rootSessionId !== undefined && agentId !== undefined ? `${rootSessionId}-agent-${agentId}` : undefined) : rootSessionId;
   const directory = snapshot?.workspaceRoot ?? snapshot?.workspaceInfo?.rootPath ?? hostSession?.directory ?? sessions.get(sessionId)?.directory ?? process.cwd();
-  return { sessionId, directory };
+  return { sessionId, directory, child: Boolean(child) };
 }
 
 function contentText(content: unknown): string | undefined {
@@ -1255,7 +1256,7 @@ export const MycoClinePlugin = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     beforeModel: async (input: any, ctx?: any) => {
       const request = input?.request ?? input;
-      const { sessionId, directory } = clineContext(input, ctx);
+      const { sessionId, directory, child } = clineContext(input, ctx);
       if (!sessionId) return undefined;
       const startContext = openSession(sessionId, directory);
 
@@ -1275,14 +1276,14 @@ export const MycoClinePlugin = {
       const state = sessions.get(sessionId);
       let context = startContext;
       if (text && text.trim() && submission !== state?.lastSubmission) {
-        const result = captureTranscriptPrompt(directory, AGENT, sessionId, text, submission);
+        const result = captureTranscriptPrompt(directory, AGENT, sessionId, text, submission, child ? "agent_dispatch" : "human");
         if (result.status !== "committed") return undefined;
         const answer = result.answer;
         sessions.set(sessionId, { ...sessions.get(sessionId), directory, promptId: answer?.promptId, lastSubmission: submission });
         context = answer?.additionalContext ?? context;
       }
 
-      if (!context) return { messages: stampedMessages };
+      if (child || !context) return { messages: stampedMessages };
       delete sessions.get(sessionId)!.startContext;
       return {
         messages: [

@@ -532,3 +532,13 @@ it('plugin source submission links survive interleaved prompts and parser contin
   expect(resumed.filter(row => row.kind === 'prompt')).toHaveLength(0);
   expect(resumed.find(row => row.kind === 'response')?.payload.promptId).toBe(first[0]!.payload.promptId);
 });
+
+
+it('plugin parsers preserve canonical prompt origins and distinguish legacy human prompts from unknown origins', async () => {
+  const origins = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown', 'human', undefined, 'unrecognized'];
+  for (const agent of ['cline', 'opencode']) {
+    const lines = linesOfText(origins.map((origin, i) => JSON.stringify({ v: 1, type: 'prompt', text: `prompt ${i}`, origin })).join('\n') + '\n');
+    const events = await PARSERS[agent].parse({ transcriptId: 'origins', recordScheme: 'legacy-session-v1', scheme: READ_BEFORE_PIN[agent]!, lines, sessionId: SESSION, now: NOW });
+    expect(only(events, 'prompt').map(row => row.payload.origin)).toEqual(['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown', 'user', 'user', 'unknown']);
+  }
+});

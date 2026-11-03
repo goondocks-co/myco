@@ -845,9 +845,9 @@ function captureTranscriptLine(directory: string, agent: string, sessionId: stri
   return status === "refused" ? retainPendingCapture(directory, agent, sessionId, record) : status;
 }
 
-/** Keep a successful prompt hook answer until its transcript append commits. */
-function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string, submission?: string): CaptureResult {
-  const record = { type: "prompt", sessionId, submissionId: submission, text, origin: "human", at: new Date().toISOString() };
+/** Retain a prompt identity until its transcript append commits. */
+function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string, submission?: string, origin: "human" | "agent_dispatch" = "human"): CaptureResult {
+  const record = { type: "prompt", sessionId, submissionId: submission, text, origin, at: new Date().toISOString() };
   const routingKey = routingKeyFor(directory);
   const initialized = initializeTranscriptSession(directory, agent, sessionId, routingKey);
   if (initialized.status !== "committed") return initialized.status === "refused"
@@ -872,6 +872,7 @@ function captureTranscriptPrompt(directory: string, agent: string, sessionId: st
         if (captured !== undefined) return { status: "committed", answer: captured };
       }
       const answer = submission !== undefined && state.pendingPrompt !== undefined && state.pendingPrompt.submission === submission ? state.pendingPrompt.answer
+        : origin === "agent_dispatch" ? { promptId: globalThis.crypto.randomUUID() }
         : runMycoHook(directory, agent, sessionId, "user-prompt-submit", { ...transcriptHookPayload(directory, agent, sessionId, routingKey), prompt: text }, routingKey);
       if (answer !== null && submission !== undefined) state.pendingPrompt = { submission, answer };
       const status = appendTranscriptLine(directory, agent, sessionId, { ...record, promptId: answer?.promptId });
