@@ -1,6 +1,6 @@
 import { abortable } from '@myco/utils/abortable.js';
 
-/** Maximum time for a runner control request or release download, including its response body. */
+/** Maximum request time, or time without response progress during a release download. */
 export const RUNNER_REQUEST_TIMEOUT_MS = 30_000;
 export const RUNNER_POLL_INTERVAL_MS = 2_000;
 export const RUNNER_CONTACT_RECORD_MS = RUNNER_POLL_INTERVAL_MS * 5;

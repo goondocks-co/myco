@@ -10,7 +10,6 @@
  */
 import { MODEL_CATALOG_REFRESH_MS, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { isReportOrder } from '@goondocks/myco-shared/report-order';
-import { runnerRequest } from './request.js';
 import type { HarnessListing } from './models.js';
 import type { WorkerAnswer } from './loop.js';
 
@@ -58,7 +57,7 @@ export function modelCatalogs(options: {
     listing = true;
     const revision = generation;
     orderFloor = undefined;
-    const work = runnerRequest(signal => options.list(harnesses, AbortSignal.any([signal, listingStop.signal]))).then((listed) => {
+    const work = options.list(harnesses, listingStop.signal).then((listed) => {
       if (revision !== generation || stopping.signal.aborted) return;
       const catalogs: ModelCatalog[] = [];
       for (const result of listed) {

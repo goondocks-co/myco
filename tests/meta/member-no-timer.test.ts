@@ -66,6 +66,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/runner/loop.ts': {
     calls: 6, form: 'cleared', bound: "one claimed run's budget, lease heartbeat, accepted lease expiry, canceled read and cleanup bound, and the sleep between empty claims",
   },
+  'packages/myco/src/upgrade/apply-binary.ts': {
+    calls: 1, form: 'cleared', bound: 'one release download idle deadline resets on response progress and clears when the download settles',
+  },
   'packages/myco/src/runner/process-group.ts': {
     calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",
   },
@@ -100,7 +103,6 @@ const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string 
   'packages/myco/src/runner/repository-checkout.ts': { calls: 1, bound: "one run's source checkout request" },
   'packages/myco/src/runner/repository.ts': { calls: 1, bound: "one run's source checkout" },
   'packages/myco/src/runner/request.ts': { calls: 1, bound: 'one runner control request, harness probe, or release-discovery request, including its body' },
-  'packages/myco/src/upgrade/apply-binary.ts': { calls: 1, bound: 'one runner release download, including its body and file write' },
 };
 
 /** A repeating timer is allowed only where a run holds it, and only if the same module ends it. */

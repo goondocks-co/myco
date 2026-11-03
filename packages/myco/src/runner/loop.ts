@@ -979,7 +979,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
             ...contactBody(), arch: process.arch, availability: 'settling', readinessReason: 'Waiting to settle after waking.',
           }));
           if (contact.kind === 'refused') return { driven, refused: contact.code };
-          if (contact.kind === 'answered' && !await admitIdentity(contact.body)) return { driven, refused: 'unauthorized' };
+          if (contact.kind === 'answered' && !await admitIdentity(contact.body)) return { driven, refused: options.signal.aborted ? null : 'unauthorized' };
         }
         await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
         continue;

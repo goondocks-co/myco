@@ -125,6 +125,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const instanceLockDir = deps.lockDir ?? workerLockDir(deps.home);
   const outcome = await runWorker({
     serverUrl,
+    clock: deps.now,
     token: tokenReader(serverUrl, mycoHome, log),
     renew: runnerRenewer(serverUrl, { mycoHome, fetch: deps.fetch, now: deps.now, notify: log }),
     compatibilityPath: RUNNER_CONTACT_PATH,

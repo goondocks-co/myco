@@ -151,6 +151,7 @@ export interface RunnerUpdateOptions {
 }
 export interface RunnerUpdateDeps {
   now?: () => number;
+  alive?: (pid: number) => boolean;
   random?: () => number;
   fetch?: typeof fetch;
   stage?: typeof stageBinary;
@@ -763,14 +764,32 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (abandoned) cleanupGuardian();
     return abandoned;
   };
+  const ownerAlive = (pid: number): boolean => {
+    if (deps.alive) return deps.alive(pid);
+    try { process.kill(pid, 0); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return true;
+      throw error;
+    }
+  };
   const recoverGuardian = (tx: RunnerUpdateTransaction): void => {
-    if (now() - (tx.recoveryAt ?? tx.startedAt) < GUARDIAN_RECOVERY_MS) return;
-    const needsRecovery = tx.phase !== 'waiting';
-    if (!needsRecovery && (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES) return;
-    changeState(state => { if (state.transaction?.id === tx.id) { state.transaction.recoveryAt = now(); state.transaction.recoveryAttempts = (state.transaction.recoveryAttempts ?? 0) + 1; } });
     try {
-      const guardian = read().guardian;
-      if (!guardian) throw new Error('update guardian is absent');
+      const orphaned = read().guardian === undefined && !ownerAlive(tx.ownerPid);
+      if (!orphaned && now() - (tx.recoveryAt ?? tx.startedAt) < GUARDIAN_RECOVERY_MS) return;
+      const needsRecovery = tx.phase !== 'waiting';
+      if (!orphaned && !needsRecovery && (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES) return;
+      const guardian = changeState(state => {
+        if (state.transaction?.id !== tx.id) return null;
+        if (state.guardian === undefined) {
+          if (ownerAlive(state.transaction.ownerPid)) return null;
+          state.guardian = runnerUpdateGuardianSpec(state.transaction);
+        }
+        state.transaction.recoveryAt = now();
+        state.transaction.recoveryAttempts = (state.transaction.recoveryAttempts ?? 0) + 1;
+        return state.guardian;
+      });
+      if (guardian === null) return;
       const outcome = (deps.installGuardian ?? ((spec, targetPlatform) => installService(spec, { platform: targetPlatform, keepRunning: true })))(guardian, platform);
       if (!outcome.loaded || !outcome.running) throw new Error(outcome.detail ?? 'update guardian is not running');
     } catch (error) { log('runner update watcher recovery failed: ' + sanitizeRunnerUpdateReason(String(error))); }
@@ -941,7 +960,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         } catch (error) { refuse(error instanceof Error ? error.message : String(error)); return 'continue'; }
       }
       const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData }, {
-        ...(deps.stageDeps ?? createBinaryUpdateDeps({ downloadTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS })), ready: file => probe(file, version, platform),
+        ...(deps.stageDeps ?? createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS })), ready: file => probe(file, version, platform),
       });
       if ('error' in staged) { refuse(staged.error); return 'continue'; }
       const live = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);

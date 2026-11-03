@@ -1,4 +1,3 @@
-import { RUNNER_CONTACT_RECORD_MS, RUNNER_POLL_INTERVAL_MS, RUNNER_REQUEST_TIMEOUT_MS } from '../runner/request.js';
 import { stopService } from '../server/service.js';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import path from 'node:path';
@@ -18,9 +17,9 @@ import { parseFlags } from './flags.js';
 import { runnerUpdater, type RunnerUpdateCliDeps } from './runner-update.js';
 
 export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps & { silentAbsentUninstall?: boolean; renew?: boolean };
-const STALLED_POLL_INTERVALS = 5;
+const STALLED_CONTACT_MS = 2 * 60_000;
 const contactStalled = (at: number | undefined, now: number): boolean => at !== undefined
-  && now - at > RUNNER_CONTACT_RECORD_MS + RUNNER_REQUEST_TIMEOUT_MS + RUNNER_POLL_INTERVAL_MS * STALLED_POLL_INTERVALS;
+  && now - at > STALLED_CONTACT_MS;
 
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
 export const RUNNER_IDENTITY_REMAINS = 'The Deployment identity remains; remove it on the dashboard.';

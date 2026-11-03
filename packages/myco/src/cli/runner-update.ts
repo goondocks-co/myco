@@ -62,6 +62,21 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   const options = { platform: target.platform, runner: deps.runner };
   if (!workerServiceStatus(target, options).installed) throw new Error('runner service is not installed; run myco runner install first');
   const out = deps.stdout ?? console.log;
+  const restart = (): void => {
+    out('Starting runner service.');
+    const started = startService(spec, options);
+    if (!started.running) throw new Error(started.detail ?? 'runner service did not start');
+  };
+  const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
+  const handlers = Object.entries(signals).map(([signal, code]) => {
+    const handler = (): void => {
+      try { restart(); }
+      catch (error) { (deps.stderr ?? console.error)(`runner service restart failed: ${error instanceof Error ? error.message : String(error)}`); }
+      process.exit(code);
+    };
+    process.once(signal, handler);
+    return { signal, handler };
+  });
   out('Stopping runner service for immediate update.');
   try {
     stopService(spec, options);
@@ -69,14 +84,12 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
     out('Applying runner update under the instance lock.');
     return await updateRunnerIdle(serverUrl, false, { ...deps, binaryPath: target.binaryPath }, selection, true);
   } finally {
-    const pending = readRunnerUpdateState(home);
-    if (target.platform === 'win32' && pending.guardian && pending.transaction?.ownerPid === process.pid) {
-      out('The update helper starts the runner service after this command exits.');
-    } else {
-      out('Starting runner service.');
-      const started = startService(spec, options);
-      if (!started.running) throw new Error(started.detail ?? 'runner service did not start');
-    }
+    try {
+      const pending = readRunnerUpdateState(home);
+      if (target.platform === 'win32' && pending.guardian && pending.transaction?.ownerPid === process.pid) {
+        out('The update helper starts the runner service after this command exits.');
+      } else restart();
+    } finally { for (const { signal, handler } of handlers) process.off(signal, handler); }
   }
 }
 

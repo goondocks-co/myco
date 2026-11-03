@@ -19,6 +19,7 @@ import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
 import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/update.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 
 const SERVER = 'https://runner.example';
@@ -53,6 +54,57 @@ const deps = (os_: 'darwin' | 'linux' | 'win32' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  it('records lease contact during a run that spans the stalled threshold', async () => {
+    await enroll();
+    const before = { ...process.env };
+    const release = path.join(root, 'release-run');
+    let now = Date.now(), renewals = 0;
+    const scoped = { ...deps('linux'), now: () => now, version: '0.0.0-dev+fixture.b1', ownDeploymentUrls: async () => [] };
+    try {
+      stubProfileHarness({ holdUntil: release });
+      const fetch_ = (async (input: RequestInfo | URL) => {
+        const route = new URL(String(input)).pathname;
+        if (route === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini' } },
+          { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        if (route === '/worker/claim') return Response.json({ persisted: true, claimed: true, heartbeatMs: 20, leaseMs: 90_000,
+          run: { id: 'long-run', projectId: 'proj_1', task: 'title-summary', harness: 'claude-code', profile: STUB_PROFILE,
+            instruction: 'do it', instructions: null, runToken: 'fixture', credentialEnv: {}, timeoutSeconds: 600 } });
+        if (route === '/worker/lease') {
+          now += 4_000;
+          if (++renewals === 40) fs.writeFileSync(release, '');
+          return Response.json({ persisted: true, held: true, leaseMs: 90_000 });
+        }
+        return Response.json({ persisted: true, ended: true });
+      }) as typeof fetch;
+      expect(await run(['run', '--once', '--harness', 'claude-code'], { ...scoped, fetch: fetch_ })).toBe(true);
+      expect(renewals).toBeGreaterThanOrEqual(40);
+      expect(now - readRunnerRecord(SERVER, mycoHome)!.lastContactAt!).toBeLessThan(10_000);
+    } finally {
+      fs.writeFileSync(release, '');
+      for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key];
+      Object.assign(process.env, before);
+    }
+  });
+
+  for (const os_ of ['darwin', 'linux'] as const) it(`install restarts a stalled service and preserves a runner within its lease on ${os_}`, async () => {
+    await enroll();
+    const scoped = deps(os_);
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, 'fixture', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 1, mycoHome);
+    platform.commands.length = 0;
+    expect(await run(['install', '--server', SERVER], { ...scoped, now: () => 90_001 })).toBe(true);
+    expect(platform.commands.some(line => line.includes(' unload ') || line.includes(' disable '))).toBe(false);
+    platform.commands.length = 0;
+    expect(await run(['install', '--server', SERVER], { ...scoped, now: () => 180_001 })).toBe(true);
+    const stop = platform.commands.findIndex(line => line.includes(' unload ') || line.includes(' disable '));
+    const start = platform.commands.findIndex((line, i) => i > stop && (line.includes(' load ') || line.includes(' restart ')));
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(start).toBeGreaterThan(stop);
+    expect(platform.running.size).toBe(1);
+  });
+
   it('reports stale service contact with a restart command and clears it after fresh contact', async () => {
     await enroll();
     const scoped = deps('linux');
@@ -60,11 +112,11 @@ describe('explicit runner service opt-in', () => {
     fs.writeFileSync(scoped.binaryPath, 'fixture', { mode: 0o755 });
     installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
     await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 1, mycoHome);
-    const status = { ...scoped, now: () => 60_000, version: '2.0.0-alpha.1' };
+    const status = { ...scoped, now: () => 180_000, version: '2.0.0-alpha.1' };
     expect(await run(['status', '--server', SERVER], status)).toBe(true);
     expect(output.join('\n')).toContain(`stalled since ${new Date(1).toISOString()}; restart it with myco runner install --server ${SERVER}`);
     output.length = 0;
-    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 60_000, mycoHome);
+    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 180_000, mycoHome);
     expect(await run(['status', '--server', SERVER], status)).toBe(true);
     expect(output.join('\n')).toContain('runner service: running at login');
     expect(output.join('\n')).not.toContain('stalled since');

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRunnerUpdateController, cleanupRunnerUpdateGuardian, readRunnerUpdateState, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateDeps } from '../../packages/myco/src/runner/update.js';
+import { createRunnerUpdateController, runnerUpdateStatePath, cleanupRunnerUpdateGuardian, readRunnerUpdateState, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateDeps } from '../../packages/myco/src/runner/update.js';
 import { HELPER_INSTALLATION_WAIT_MS, runRunnerUpdateHelper } from '../../packages/myco/src/runner/update-helper.js';
 import { writeInstallMarker, versionBinaryPath } from '../../packages/myco/src/install/managed-binary.js';
 import { atomicWriteFileSync } from '../../packages/myco/src/utils/atomic-write.js';
@@ -14,7 +14,6 @@ import { runnerProgramVersion } from '../../packages/myco/src/runner/program.js'
 import { acquireInstallationLease, beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
 import { updateBinary, type BinaryUpdateDeps } from '../../packages/myco/src/upgrade/guarded-binary.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
-import { RUNNER_REQUEST_TIMEOUT_MS } from '@myco/runner/request.js';
 import { stageBinary, createBinaryUpdateDeps } from '../../packages/myco/src/upgrade/apply-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
 
@@ -59,7 +58,7 @@ describe('runner release handoff', () => {
       currentVersion: from, serviceSpec: serviceSpec(f.binaryPath, f.home), platform: 'linux', log: () => {}, deps: {
         now: () => 1000, serviceInstalled: () => true, targetTriple: () => `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}` as ReturnType<typeof import('../../packages/myco/src/upgrade/release-assets.js').resolveTargetTriple>,
         fetch: f.fetch,
-        stageDeps: createBinaryUpdateDeps({ downloadTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS,
+        stageDeps: createBinaryUpdateDeps({ downloadIdleTimeoutMs: 30,
           fetch: async () => hung === 'headers' ? new Promise<Response>(() => {}) : new Response(new ReadableStream({ start() {} })),
         }),
       },
@@ -70,6 +69,36 @@ describe('runner release handoff', () => {
       expect(controller.statusPayload().lastResult?.result).toBe('refused');
       expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
     } finally { deadlines.mockRestore(); }
+  });
+
+  for (const phase of ['placing', 'rollback'] as const) it(`recovers a guardian-less ${phase} transaction after its caller dies`, async () => {
+    const f = fixture(`orphan-${phase}`);
+    const installed: string[] = [];
+    let ownerCheckFails = true;
+    const controller = createRunnerUpdateController({ home: f.home, serverUrl: 'https://deployment.invalid', binaryPath: f.binaryPath,
+      currentVersion: from, serviceSpec: serviceSpec(f.binaryPath, f.home), platform: 'linux', log: () => {}, deps: {
+        fetch: f.fetch, stageDeps: f.stageDeps, probe: () => ({ runs: true }), now: () => 1000,
+        serviceInstalled: () => true, alive: () => { if (ownerCheckFails) throw new Error('owner liveness unavailable'); return false; },
+        installGuardian: spec => { installed.push(spec.binaryPath); return installGuardian(); },
+      },
+    });
+    controller.queueManual();
+    expect(await controller.idle('caller')).toBe('restart');
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = phase; });
+    expect(readRunnerUpdateState(f.home).guardian).toBeUndefined();
+    expect(await controller.idle()).toBe('hold');
+    expect(installed).toHaveLength(0);
+    ownerCheckFails = false;
+    expect(await controller.idle()).toBe('hold');
+    expect(installed).toHaveLength(1);
+    expect(readRunnerUpdateState(f.home).guardian?.binaryPath).toBe(installed[0]);
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
+      now: () => 1000, alive: () => false, stop: () => {}, stopped: () => true,
+      start: () => ({ unitFile: 'fixture', loaded: true, running: true, changed: true }),
+      probe: () => ({ runs: true }), removeGuardian: () => {},
+    });
+    expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+    expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
   });
 
   it('refuses an invalid macOS signature and an incorrect --version', () => {
@@ -304,7 +333,7 @@ describe('runner release handoff', () => {
     expect(fs.existsSync(versionBinaryPath(f.home, process.platform, from))).toBe(true);
     expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
     let running = true;
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: (() => { let tick = 0; return () => tick += 1000; })(), alive: () => false, wait: async () => {},
       stop: () => { running = false; }, stopped: () => !running,
       start: () => {
@@ -346,7 +375,7 @@ describe('runner release handoff', () => {
     const previousMarker = JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'));
     writeInstallMarker(f.home, { channel: 'stable', source: 'npm', bin: path.join(f.home, 'other-bin'), prerelease: false });
     let running = true;
-    await expect(runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await expect(runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: (() => { let tick = 0; return () => tick += 5000; })(), alive: () => false, wait: async () => {},
       stop: () => { running = false; }, stopped: () => !running,
       start: () => { running = true; return { unitFile: 'fixture', loaded: true, running: true, changed: true }; },
@@ -381,7 +410,7 @@ describe('runner release handoff', () => {
       } });
     expect(await controller.idle()).toBe('restart');
     let starts = 0;
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: () => 2000, alive: () => false, stop: () => {}, stopped: () => true,
       start: () => ({ unitFile: 'fixture', loaded: true, running: ++starts > 1, changed: true }),
       probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
@@ -498,7 +527,7 @@ function localFixture(label: string, currentVersion = from, overrides: RunnerUpd
 }
 async function healthyLocal(f: ReturnType<typeof localFixture>) {
   let running = true;
-  await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
     now: () => 2000, alive: () => false, wait: async () => {},
     stop: () => { running = false; }, stopped: () => !running,
     start: () => {
@@ -548,7 +577,7 @@ describe('runner local artifact handoff', () => {
     const candidate = readRunnerUpdateState(f.home).transaction!.localCandidate!;
     fs.appendFileSync(candidate.binaryPath, '# changed\n');
     let stops = 0;
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: () => 2000, alive: () => false, stopped: () => false,
       stop: () => { stops++; }, removeGuardian,
       probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
@@ -602,7 +631,7 @@ it('restores the exact source marker and binary when the next local build fails 
   f.queue();
   expect(await f.controller.idle()).toBe('restart');
   let running = true;
-  await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
     now: () => 2000, alive: () => false, stop: () => { running = false; }, stopped: () => !running,
     start: () => {
       running = true;
@@ -840,7 +869,7 @@ it('excludes local queueing and a helper while an automatic guarded update is st
     };
     withRunnerUpdateState(f.home, state => { state.transaction = tx; });
     let helperTime = 0;
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: () => helperTime, wait: async ms => { helperTime += ms; }, alive: () => false,
       stopped: () => false, removeGuardian, log: () => {},
       stop: () => { throw new Error('contending helper stopped the runner'); },
@@ -870,7 +899,7 @@ it('uses the pending transaction to exclude binary updates during helper health'
   };
   let running = true;
   let waits = 0;
-  await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
     now: () => 2000, alive: () => false,
     stop: () => { running = false; }, stopped: () => !running,
     start: () => { running = true; return installGuardian(); },
@@ -949,7 +978,7 @@ for (const phase of ['placing', 'rollback'] as const) {
     expect(fs.existsSync(candidate.binaryPath)).toBe(true);
     expect(fs.readFileSync(path.join(f.home, 'install.json'))).toEqual(marker);
     let running = true;
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: () => 2000, alive: () => false,
       stop: () => { running = false; }, stopped: () => !running,
       start: () => {
@@ -1305,7 +1334,7 @@ it('automatically restores an exhausted rollback after installation contention o
   let running = true;
   const currentBytes = fs.readFileSync(f.binaryPath);
   try {
-    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), {
       now: () => 2_000_000 + elapsed, alive: () => false, log: () => {}, removeGuardian,
       wait: async ms => {
         elapsed += ms;

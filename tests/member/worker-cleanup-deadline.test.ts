@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { driverFor } from '@myco/runner/drivers/registry.js';
 import * as repository from '@myco/runner/repository.js';
+import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { runWorker } from '@myco/runner/loop.js';
 import { spawnOwnedGroup } from '@myco/runner/process-group.js';
 import { retryPendingRunDirectoryDiscards } from '@myco/runner/run-directory.js';
@@ -125,6 +127,39 @@ async function exercise(kind: 'return' | 'checkout' | 'both', mode: 'hung' | 'fa
 }
 
 describe('worker attempt cleanup is bounded', () => {
+  it('abandons a nonresponsive iterator after lease loss and returns to contact', async () => {
+    stubProfileHarness();
+    const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-lost-iterator-')));
+    const stopping = new AbortController();
+    let contacts = 0, endings = 0, returned = false;
+    const driver = spyOn(driverFor(PROFILE_STUB_HARNESS)!, 'run').mockImplementation(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<RunEvent>>(() => {}),
+        return: async () => { returned = true; return { done: true, value: undefined }; },
+      }),
+    }));
+    try {
+      const worker = runWorker({ serverUrl: SERVER, token: 'fixture', lockDir: null, runRoot: root,
+        only: [PROFILE_STUB_HARNESS], signal: stopping.signal, pollIdleMs: 1, log: () => {},
+        onIdle: async () => contacts > 1 ? 'restart' : undefined,
+        fetchImpl: (async input => {
+          const route = new URL(String(input)).pathname;
+          if (route === '/members/status') { contacts++; return Response.json({ persisted: true }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } }); }
+          if (route === '/worker/claim') return Response.json({ persisted: true, claimed: true, heartbeatMs: 25, leaseMs: 100,
+            run: { id: 'hung', projectId: 'proj_1', task: 'title-summary', harness: PROFILE_STUB_HARNESS, profile: STUB_PROFILE,
+              instruction: 'do it', instructions: null, runToken: 'fixture', credentialEnv: {}, timeoutSeconds: 60 } });
+          if (route === '/worker/end') endings++;
+          return Response.json({ persisted: true, held: false });
+        }) as typeof fetch,
+      });
+      const outcome = await Promise.race([worker, wait(8_000).then(() => 'stalled')]);
+      expect(outcome).toMatchObject({ driven: 1, refused: null, replaced: true });
+      expect(returned).toBe(true);
+      expect(endings).toBe(0);
+      expect(contacts).toBeGreaterThan(1);
+    } finally { stopping.abort(); driver.mockRestore(); }
+  }, 10_000);
+
   it('permits healthy cleanup while several short leases renew', () => exercise('return', 'renewed'), 10_000);
   it('reports nothing after iterator cleanup times out while a registered process still owns the directory', () => exercise('return', 'hung', true), 20_000);
   for (const kind of ['return', 'checkout', 'both'] as const) it(`does not renew forever while ${kind} cleanup never settles`, () => exercise(kind, 'hung'), 20_000);

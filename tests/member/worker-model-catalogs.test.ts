@@ -9,7 +9,7 @@
  * the list. A listing that never answers is stopped, and leaves no process behind. The reporter sends what was listed
  * one harness at a time, keeps a report the Deployment could not be reached for, and never holds up its caller.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import { listHarnessModels, MAX_LISTING_PAGES, runListing, valuesAt, type Harnes
 import { startHarness } from '@myco/runner/drivers/stream.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { issueReportOrder } from '@myco/utils/order-stamp.js';
+import { RUNNER_REQUEST_TIMEOUT_MS } from '@myco/runner/request.js';
 import { modelCatalogs } from '@myco/runner/catalogs.js';
 import type { WorkerAnswer } from '@myco/runner/loop.js';
 
@@ -162,6 +163,26 @@ describe('reporting what was listed', () => {
       await settle();
       expect(sent).toEqual(['opencode']);
     } finally { reporter.stop(); }
+  });
+
+  it('keeps a healthy catalog when the listing sequence outlasts one request deadline', async () => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const deadlines = spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(ms === RUNNER_REQUEST_TIMEOUT_MS ? 20 : ms));
+    const sent: string[] = [];
+    const reporter = modelCatalogs({ harnesses: ['codex', 'opencode'], issueOrder: () => 1, clock: () => 0, log: () => {},
+      list: async () => {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return [{ ok: false, harness: 'codex', reason: 'listing timed out' }, { ok: true, catalog: catalog('opencode') }];
+      },
+      send: async value => { sent.push(value.harness); return ANSWERED; },
+    });
+    try {
+      reporter.due();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      reporter.due();
+      await settle();
+      expect(sent).toEqual(['opencode']);
+    } finally { await reporter.stop(); deadlines.mockRestore(); }
   });
 
   function rig(answers: WorkerAnswer[], listed: HarnessListing[] = [{ ok: true, catalog: catalog('codex') }, { ok: true, catalog: catalog('opencode') }]) {

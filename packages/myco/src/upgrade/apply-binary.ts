@@ -40,11 +40,12 @@ async function download(
   headers: Record<string, string>,
   maxBytes: number,
   fetchFn: ReleaseFetch,
-  { signal }: { signal?: AbortSignal },
+  { signal, progress }: { signal?: AbortSignal; progress?: () => void },
 ): Promise<void> {
   const res = await (signal === undefined ? fetchFn(url, { headers, redirect: 'follow' })
     : abortable(signal, () => fetchFn(url, { headers, redirect: 'follow', signal })));
   signal?.throwIfAborted();
+  progress?.();
   if (!res.ok) {
     throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
   }
@@ -81,6 +82,7 @@ async function download(
       for (;;) {
         const next = signal === undefined ? await reader.read() : await abortable(signal, () => reader.read());
         if (next.done) { complete = true; return; }
+        if (next.value.byteLength > 0) progress?.();
         received += next.value.byteLength;
         if (received > maxBytes) throw new Error(`download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`);
         yield next.value;
@@ -118,16 +120,28 @@ export interface BinaryUpdateDepsOptions {
   /** Byte cap on one download. Defaults to `MAX_DOWNLOAD_BYTES`. */
   maxDownloadBytes?: number;
   fetch?: ReleaseFetch;
-  /** Deadline for each complete download. */
-  downloadTimeoutMs?: number;
+  /** Maximum time without response headers or body bytes. */
+  downloadIdleTimeoutMs?: number;
 }
 
 /** The real download and hash for `stageBinary`, with the download capped at `maxDownloadBytes`. */
 export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): StageBinaryDeps {
   const maxBytes = options.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
   return {
-    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch,
-      { signal: options.downloadTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.downloadTimeoutMs) }),
+    download: async (url, destPath, headers = {}) => {
+      const controller = new AbortController();
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const progress = (): void => {
+        clearTimeout(deadline);
+        if (options.downloadIdleTimeoutMs !== undefined) deadline = setTimeout(() => {
+          controller.abort(new Error('release download stopped making progress'));
+        }, options.downloadIdleTimeoutMs);
+      };
+      progress();
+      try {
+        await download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch, { signal: controller.signal, progress });
+      } finally { clearTimeout(deadline); }
+    },
     computeSha256,
   };
 }

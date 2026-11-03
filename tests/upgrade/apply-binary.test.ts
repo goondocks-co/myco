@@ -472,6 +472,25 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     try { fs.rmSync(destPath, { force: true }); } catch { /* best-effort */ }
   });
 
+  it('keeps a progressing download alive past its idle deadline and stops an idle read', async () => {
+    const idleMs = 250;
+    const chunks = 12;
+    let produced = 0;
+    const deps = createBinaryUpdateDeps({ downloadIdleTimeoutMs: idleMs, fetch: async () => new Response(new ReadableStream({
+      async pull(controller) {
+        await new Promise(resolve => setTimeout(resolve, idleMs / 10));
+        if (produced++ < chunks) controller.enqueue(new Uint8Array([1])); else controller.close();
+      },
+    }, { highWaterMark: 0 })) });
+    await deps.download('https://fixture.invalid/slow', destPath);
+    expect(fs.statSync(destPath).size).toBe(chunks);
+    const stalled = createBinaryUpdateDeps({ downloadIdleTimeoutMs: idleMs, fetch: async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+    })) });
+    await expect(stalled.download('https://fixture.invalid/stalled', destPath)).rejects.toThrow();
+    expect(fs.existsSync(destPath)).toBe(false);
+  });
+
   it('streams a response of exactly the cap successfully to disk', async () => {
     const half = TEST_CAP / 2;
     const { response } = fakeResponse([
