@@ -186,11 +186,9 @@ export function declaredTestTimeout(root, test) {
     if (!ts.isStringLiteralLike(node)) return undefined;
     return escape(node.text).replace(/%[sdifjoOp#%$]|\\?\$[a-zA-Z_]\w*(?:\\.\w+)*/g, '[\\s\\S]*');
   };
-  const filename = path.resolve(root, test.file);
-  const inventory = inventoryFor(filename);
-  const inventories = test.file.startsWith('target/test-bundles/')
-    ? inventory.source.statements.filter(ts.isImportDeclaration).map(node => inventoryFor(path.resolve(path.dirname(filename), node.moduleSpecifier.text)))
-    : [inventory];
+  const files = test.file.startsWith('target/test-bundles/') ? test.sourceFiles : [test.file];
+  assert.ok(Array.isArray(files) && files.length > 0, `${test.file}: missing persisted bundle source list`);
+  const inventories = files.map(file => inventoryFor(path.resolve(root, file)));
   let matches = inventories.flatMap(inventory => inventory.calls.flatMap(call => {
     const pattern = patternOf(call.name, inventory);
     const scopes = [...call.scopes].reverse().map(node => patternOf(node, inventory));

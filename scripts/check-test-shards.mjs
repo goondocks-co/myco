@@ -46,10 +46,13 @@ function auditTestHeadroom(reports) {
   assert.ok(workload.testRuns?.length, 'Per-test headroom needs recorded CI test samples');
   let samples = workload.testRuns;
   if (reports) {
-    samples = fs.readdirSync(reports, { recursive: true }).filter(file => file.endsWith('.junit.xml')).map(file => ({
-      source: path.join(reports, file),
-      tests: testDurationSamples(fs.readFileSync(path.join(reports, file), 'utf8')),
-    }));
+    samples = fs.readdirSync(reports, { recursive: true }).filter(file => file.endsWith('.junit.xml')).map(file => {
+      const source = path.join(reports, file);
+      const tests = testDurationSamples(fs.readFileSync(source, 'utf8'));
+      const bundles = tests.some(test => test.file.startsWith('target/test-bundles/'))
+        ? JSON.parse(fs.readFileSync(path.join(path.dirname(source), 'bundle-sources.json'), 'utf8')) : {};
+      return { source, tests: tests.map(test => ({ ...test, sourceFiles: bundles[test.file] })) };
+    });
   }
   assertTestCaseHeadroom(samples, test => declaredTestTimeout(root, test));
   console.log(`Per-test headroom: ${samples.reduce((sum, run) => sum + run.tests.length, 0)} recorded cases within limit`);

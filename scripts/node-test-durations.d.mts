@@ -1,4 +1,4 @@
-export interface TestDurationSample { file: string; name: string; classname?: string; line: number; milliseconds: number }
+export interface TestDurationSample { file: string; sourceFiles?: string[]; name: string; classname?: string; line: number; milliseconds: number }
 export interface TestDurationRun { source: string; tests: TestDurationSample[] }
 export interface NodeWorkload {
   testRuns?: TestDurationRun[];

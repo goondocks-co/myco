@@ -1474,6 +1474,9 @@ const dom = selectedDomFiles.length > 0
   : null;
 const phaseManifest = phases => phases.map((phase) => ({ label: phase.label, files: sourceFiles(phase.args), estimatedMs: estimate(sourceFiles(phase.args)) }));
 const manifest = phaseManifest(selected);
+fs.writeFileSync(path.join(RUN_REPORT_DIR, 'bundle-sources.json'), JSON.stringify(Object.fromEntries(selected.flatMap(phase =>
+  testFiles(phase.args).filter(file => file.startsWith('target/test-bundles/')).map(file => [file, bundledFiles(file)]),
+))) + '\n');
 console.log(`[run-bun-tests] ${testKind} shard ${shard.index}/${shard.count}: ${selected.length} groups, estimated ${Math.round(manifest.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
 if (process.env.MYCO_RUNNER_PLAN_FILE) {
   fs.writeFileSync(process.env.MYCO_RUNNER_PLAN_FILE, JSON.stringify(manifest, null, 2) + '\n');

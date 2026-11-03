@@ -1,3 +1,4 @@
+import { testDurationSamples } from '../../scripts/node-test-durations.mjs';
 import { readTestProcessTable } from '../../scripts/test-process-tree.mjs';
 /**
  * Two guards of the test runner, each driven through the real runner:
@@ -506,17 +507,23 @@ describe('run-bun-tests guards', () => {
     expect(fs.readFileSync(path.join(REPO, 'bunfig.toml'), 'utf8')).toBe(canonical);
   }), RUN_BOUND_MS + 10_000);
 
-  test('concurrent bundle plans use different generated paths', () => withReportDir(async (base) => {
-    const env = { MYCO_RUNNER_DRY_RUN: '1', MYCO_TEST_KIND: 'node', MYCO_TEST_PROFILE: 'fast', MYCO_RUNNER_REPORT_DIR: path.join(base, 'reports') };
-    const [first, second] = await Promise.all([
-      runRunner(null, env),
-      runRunner(null, env),
-    ]);
-    expect([first.status, second.status]).toEqual([0, 0]);
-    const bundlePath = (output: string) => output.match(/target\/test-bundles\/node-env-mt-[^;\s]+/)?.[0];
-    expect(bundlePath(first.output)).toBeTruthy();
-    expect(bundlePath(second.output)).toBeTruthy();
-    expect(bundlePath(first.output)).not.toBe(bundlePath(second.output));
+  test('bundled reports pass the headroom audit after concurrent runners clean their generated paths', () => withReportDir(async (base) => {
+    const reports = path.join(base, 'reports');
+    const env = { MYCO_TEST_KIND: 'node', MYCO_TEST_GROUP: 'node env isolated 1', MYCO_RUNNER_REPORT_DIR: reports };
+    const runs = await Promise.all([runRunner(null, env), runRunner(null, env)]);
+    expect(runs.map(run => run.status)).toEqual([0, 0]);
+    const bundles = runs.map(run => run.output.match(/target\/test-bundles\/node-env-mt-[^;\s]+/)?.[0]);
+    expect(bundles.every(Boolean)).toBe(true);
+    expect(new Set(bundles).size).toBe(2);
+    for (const bundle of bundles) expect(fs.existsSync(path.join(REPO, bundle!))).toBe(false);
+    const cases = fs.readdirSync(reports, { recursive: true, encoding: 'utf8' }).filter(file => file.endsWith('.junit.xml'))
+      .flatMap(file => testDurationSamples(fs.readFileSync(path.join(reports, file), 'utf8')));
+    expect(cases.some(test => test.file.startsWith('target/test-bundles/'))).toBe(true);
+    const audit = spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], { cwd: REPO, encoding: 'utf8' });
+    expect({ status: audit.status, error: audit.stderr }).toEqual({ status: 0, error: '' });
+    expect(audit.stdout).toMatch(/Per-test headroom: [1-9]\d* recorded cases within limit/);
+    for (const run of fs.readdirSync(reports)) fs.rmSync(path.join(reports, run, 'bundle-sources.json'));
+    expect(spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], { cwd: REPO }).status).not.toBe(0);
   }), RUN_BOUND_MS + 10_000);
 
   test.skipIf(process.platform === 'win32')('ends fixture children when writing their PID receipt fails', () => withReportDir(async (reports) => {
