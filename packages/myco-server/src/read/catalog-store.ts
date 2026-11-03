@@ -3488,7 +3488,8 @@ export function prepareExtractionAckItem(db: sessions_import_RelationalStore, pr
   return db.prepare(extractionAckSource(servedId)).bind(runId, projectId, recordId);
 }
 
-export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore, projectId: string, runId: string, recordId: string | undefined, servedId: string | undefined, ackId: string, now: number) {
+export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore, projectId: string, runId: string, recordId: string | undefined, servedId: string | undefined, ackId: string, now: number,
+  guard: { sql: string; params: readonly unknown[] } = { sql: '1', params: [] }) {
   const source = extractionAckSource(servedId);
   const params = [runId, projectId, recordId];
   return db.prepare(`INSERT INTO extraction_acks
@@ -3497,9 +3498,10 @@ export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore
     FROM (${source}) material
     JOIN sessions s ON s.project_id = material.project_id AND s.session_id = material.session_id
     WHERE ${sessions_import_notTombstonedSql('s')}
+      AND ${guard.sql}
       AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id = material.project_id
         AND a.record_id = material.record_id AND a.kind = 'record' AND a.run_id = ? AND a.served_id IS material.served_id)
-    ON CONFLICT (project_id, served_id) DO NOTHING`).bind(ackId, runId, now, ...params, runId);
+    ON CONFLICT (project_id, served_id) DO NOTHING`).bind(ackId, runId, now, ...params, ...guard.params, runId);
 }
 
 const release_PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN COALESCE((SELECT d.tool_calls FROM session_documents d WHERE d.project_id = g.project_id AND d.session_id = g.session_id), 0) ELSE 0 END';

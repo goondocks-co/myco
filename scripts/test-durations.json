@@ -210,7 +210,8 @@
     "local: #2066 t9 Opus correction, pinned Bun1.4.0 darwin-arm64 and scratch homes. Added admission regression measured24.20ms, Cline teammate isolation19.39ms, historical-start reading457.98ms with migration seed, legacy/current dangling-event snapshots829.48/498.61ms, and combined inline/archived dangling-event restore542.63ms with seed. Existing file weights retained above measured cases; no new test file or parity scenario. Restored the published template carrier and updated existing session-commits parity expectations. Verification uses the repository driver with only the prohibited Wrangler prerequisite omitted.",
     "local: #2045/#2064 t9, pinned Bun1.4.0 darwin-arm64, direct bun test tests/myco-server/publication-data.test.ts measured four passing native cases in944ms including migration seed;3000ms file weight covers twice measured runner plus startup. Existing Cline recovery file retained its weight. No new parity scenario. The npm driver invokes Wrangler, forbidden in this lane, so measurements use the same pinned Bun and sandbox preload directly.",
     "local: t10 backup/restore fixes, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1/R2. The seven-case backup-restore-boundaries file measured 19757.73ms summed test bodies in the npm driver after schema 537; weight 22000ms rounds up with 2000ms startup. recovery-producer-object measured 1278.47ms summed bodies including real local multipart abort; raised to 3500ms with startup. recovery-sql measured 121.66ms summed bodies including native/D1 wide-row import and retains its 1144ms floor. No new parity scenario; existing parity weights retained.",
-    "local: t10 Opus review correction, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1. The extended thirteen-case backup-restore-boundaries file measured 31166ms npm runner wall; weight 32000ms rounds up. Includes saved knowledge, receipt ownership, deletion interleaving, bundle retry cleanup, exact archive ranges and measured D1 row reads. No new parity scenario; existing file and parity floors retained."
+    "local: t10 Opus review correction, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1. The extended thirteen-case backup-restore-boundaries file measured 31166ms npm runner wall; weight 32000ms rounds up. Includes saved knowledge, receipt ownership, deletion interleaving, bundle retry cleanup, exact archive ranges and measured D1 row reads. No new parity scenario; existing file and parity floors retained.",
+    "local: #2028 learning completion, pinned Bun 1.4.0 darwin-arm64 with scratch homes and native SQLite. Five new learning-completion cases measured 641.50ms summed bodies; focused runner with task-tools measured 958ms wall. New file weight 3000ms covers startup and observed duration. No parity scenario added or run."
   ],
   "files": {
     "tests/agent/skill-content-lint-script.test.ts": 2211,
@@ -1053,7 +1054,8 @@
     "tests/utils/lock-file-identity.test.ts": 4872,
     "tests/utils/order-stamp.test.ts": 13,
     "tests/utils/repository-name.test.ts": 482,
-    "tests/utils/windows-atomic-replace.test.ts": 7
+    "tests/utils/windows-atomic-replace.test.ts": 7,
+    "tests/myco-server/learning-completion.test.ts": 3000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

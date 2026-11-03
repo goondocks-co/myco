@@ -52,7 +52,7 @@ it('removes thin prompt discovery and returns named refusals without writing or 
     expect(RUN_TOOL_MAP).not.toHaveProperty('vault_unprocessed');
     expect(Object.values(TASK_TOOLS).flat()).not.toContain('vault_unprocessed');
     const before = f.sqlite.query('SELECT * FROM agent_run_events').all();
-    for (const args of [{op:'unprocessed'}, {}, {op:'unprocessed',include_text:true}]) {
+    for (const args of [{op:'unprocessed'}, {}, {op:'unprocessed',include_text:true}, {op:'mark_processed',prompt_id:'first'}]) {
       expect((await f.call(f.harness.token,'myco_run_prompts',args)).error?.data.code).toBe('unknown_tool');
       expect((await f.call(f.member.token,'myco_run_prompts',args)).error?.data.code).toBe('unknown_tool');
     }
@@ -60,7 +60,8 @@ it('removes thin prompt discovery and returns named refusals without writing or 
     expect(f.sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
     expect(f.sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
     expect((await f.call(f.harness.token,'myco_run_spores',{op:'list'})).result).toMatchObject({total:0});
-    expect(await f.list(f.harness.token)).toContain('myco_run_prompts');
+    expect(await f.list(f.harness.token)).not.toContain('myco_run_prompts');
+    expect(await f.list(f.harness.token)).toContain('myco_run_learning');
   } finally { f.sqlite.close(); }
 });
 
@@ -150,7 +151,7 @@ describe('the run surface and the member surface do not overlap', () => {
       await f.dispatch('query-count', SWEEP);
       const count = () => f.executed.filter((sql) => sql.includes('SELECT EXISTS') && sql.includes('FROM project_capabilities')).length;
       let before = count();
-      expect(await f.list(f.harness.token)).toContain('myco_run_prompts');
+      expect(await f.list(f.harness.token)).toContain('myco_run_learning');
       expect(count() - before).toBe(1);
       before = count();
       await f.call(f.harness.token, 'myco_run_spores', { op: 'list' });
@@ -171,7 +172,7 @@ describe('the run surface and the member surface do not overlap', () => {
     const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, 'copilot', 'owner', NOW);
 
     const forRun = await list(harness.token);
-    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores']);
+    expect(forRun.filter((n) => RUN_TOOLS.includes(n as never)).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_sessions', 'myco_run_spores']);
     expect((await list(member.token)).filter((n) => RUN_TOOLS.includes(n as never))).toEqual([]);
 
     const res = await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env);

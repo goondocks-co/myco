@@ -249,6 +249,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason: 'Each session carries its learning progress, eligibility and last completion.',
   })),
   {
+    step: 545,
+    sql: 'ALTER TABLE learning_sessions ADD COLUMN last_completed_run TEXT',
+    reason: 'Dependent learning writes belong to the run that completed the guarded revision.',
+  },
+  {
     step: 110,
     sql: `INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('learning_resumed_at', CAST(unixepoch() * 1000 AS TEXT))`,
     reason: 'The Deployment records when whole-session learning resumed.',
