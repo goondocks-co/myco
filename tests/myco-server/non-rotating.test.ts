@@ -1,3 +1,5 @@
+import ts from 'typescript-v6';
+import { sourceProgram } from '../helpers/source-program.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -19,12 +21,12 @@ import {
 } from '@myco-server-worker/auth/tokens.js';
 import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { sourceCalls } from './helpers/source-calls.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV } from './helpers/owner.js';
@@ -176,45 +178,67 @@ describe('every route that mints an authority able to outlive the credential (#1
     expect(declared).toEqual(['POST /tokens/refresh', 'POST /worker/claim', 'POST /worker/repository', 'POST /members/link-github', 'POST /members/ownership', 'POST /members/ownership/transfer', 'POST /members/roles']);
   });
 
-  it('is the only member route that reaches a minter or a secret opener: every call site is pinned by the function that makes it, and the door that reaches it', () => {
-    // A minter answers a new token or key; an opener answers a decrypted secret. Each call site is named here by the
-    // function that makes it, with the door that reaches it, so a new caller fails this gate until it is placed.
-    const MINTERS = new Set(['enrollmentInsert', 'issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential', 'openHarnessCredential']);
-    const OPENERS = new Set(['secrets.get', 'repositories.access']);
-    const sites: string[] = [];
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const file = join(dir, name);
-        if (statSync(file).isDirectory()) { walk(file); continue; }
-        if (!file.endsWith('.ts')) continue;
-        for (const { called, owner } of sourceCalls(readFileSync(file, 'utf8'))) {
-          if (MINTERS.has(called) || OPENERS.has(called)) sites.push(`${relative(SRC, file)} ${owner} -> ${called}`);
+  it('requires authority admission on every member route that reaches a minter or secret opener', () => {
+    const graph = sourceProgram([join(SRC, 'routes.ts')]);
+    const source = graph.program.getSourceFile(join(SRC, 'routes.ts'))!;
+    const authorityWrites = new Map<ts.Declaration, boolean>();
+    const writesAuthority = (target: ts.Declaration): boolean => {
+      if (authorityWrites.has(target)) return authorityWrites.get(target)!;
+      let found = false;
+      const visit = (node: ts.Node): void => {
+        const text = ts.isStringLiteralLike(node) ? node.text : ts.isTemplateExpression(node)
+          ? node.head.text + node.templateSpans.map(span => span.literal.text).join('') : '';
+        if (/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO)\s+(?:member_credentials|enrollment_authorities|identity_link_authorities|external_grants)\b/i.test(text)) found = true;
+        ts.forEachChild(node, visit);
+      };
+      visit(target);
+      authorityWrites.set(target, found);
+      return found;
+    };
+    const terminal = (_call: ts.CallExpression, target: ts.Declaration | undefined): boolean => {
+      if (!target) return false;
+      const name = 'name' in target ? (target.name as ts.Node | undefined)?.getText() : undefined;
+      return writesAuthority(target)
+        || name === 'get' && ts.isInterfaceDeclaration(target.parent) && target.parent.name.text === 'SecretStore'
+        || name === 'access' && target.getSourceFile().fileName.endsWith('/core/repositories.ts');
+    };
+    const doors: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const fields = new Map(node.properties.filter(ts.isPropertyAssignment).map(p => [p.name.getText(source), p.initializer]));
+        if (fields.get('auth')?.getText(source) === "'member'"
+          && ROUTES.find(route => route.path === (fields.get('path') as ts.StringLiteral | undefined)?.text)?.authorization.subjects.includes('member')) {
+          const path = fields.get('path');
+          const handlers = ['handler', 'deployment', 'unbound'].flatMap(key => fields.get(key) ? [fields.get(key)!] : []);
+          const reaches = handlers.some(handler => {
+            const target = graph.declaration(handler);
+            return target !== undefined && graph.reaches(target, terminal);
+          });
+          if (reaches) {
+            doors.push(path!.getText(source));
+            expect({ path: path!.getText(source), guarded: fields.get('mintsAuthority')?.kind === ts.SyntaxKind.TrueKeyword })
+              .toEqual({ path: path!.getText(source), guarded: true });
+          }
         }
       }
+      ts.forEachChild(node, visit);
     };
-    walk(SRC);
-    expect([...new Set(sites)].sort()).toEqual([
-      'api/access.ts handleIssueMemberLink -> issueIdentityLinkAuthority', // owner session, an admin's
-      'api/access.ts handleMintInvitation -> issueEnrollmentAuthority', // owner session
-      'auth/enrollment.ts issueEnrollmentAuthority -> enrollmentInsert',
-      'auth/device.ts handleDeviceApprove -> enrollmentInsert', // authenticated dashboard self-enrollment
-      'api/grants.ts handleMintGrant -> issueExternalGrant', // owner session
-      'api/grants.ts handleRotateGrant -> rotateExternalGrant', // owner session
-      'auth/join.ts joinMember -> mintInsert', // invite join or device poll, admitted enrollment evidence
-      'auth/members.ts handleLinkGithub -> issueIdentityLinkAuthority', // POST /members/link-github — mintsAuthority
-      'auth/tokens.ts issueMemberToken -> mintInsert', // the insert itself
-      'auth/tokens.ts refreshMemberToken -> mintInsert', // POST /tokens/refresh — mintsAuthority
-      'core/embedding/configured-provider.ts embeddingProviderFor -> openProviderCredential', // the Deployment's own embedding job and its model switch
-      'core/worker-claim.ts claimWorkerRun -> mintInsert', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
-      'core/harness.ts claimLogin -> openHarnessCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
-      'core/harness.ts launchDispatch -> mintInsert', // an owner dispatch or the tick; a run credential minted not to rotate
-      'core/release-provenance.ts checkProject -> secrets.get', // the Deployment's own release job
-      'core/repositories.ts projectRepositories -> secrets.get', // the store behind repositories.access
-      'core/run-repository.ts prepareRunRepository -> repositories.access', // a run's held task, or POST /worker/repository — mintsAuthority
-    ].sort());
-    const harness = ['harness.ts','worker-claim.ts'].flatMap(file=>readFileSync(join(SRC,'core',file),'utf8').split('\n')).filter((line) => /mintInsert\(/.test(line) && !/^import/.test(line));
-    expect(harness.length).toBe(2);
-    for (const line of harness) expect(line).toMatch(/\{\s*rotates:\s*false(?:\s*,|\s*\})/);
+    visit(source);
+    expect(doors.length).toBeGreaterThan(0);
+  });
+
+  it('refuses every authority door before its handler for a non-rotating credential', async () => {
+    const { e, issued } = await envCredential(DAY_MS);
+    try {
+      const doors = ROUTES.filter(route => route.auth === 'member' && 'mintsAuthority' in route && route.mintsAuthority);
+      expect(doors.length).toBeGreaterThan(0);
+      for (const route of doors) {
+        const response = await worker.fetch(new Request('https://s' + route.path, {
+          method: route.method, headers: memberHeaders(issued.token), body: '{}',
+        }), e.env);
+        expect(await jsonBody(response), route.path).toMatchObject({ code: 'non_rotating' });
+      }
+    } finally { e.sqlite.close(); }
   });
 
   it('refuses a GitHub link key to a credential that does not rotate, live, and mints no key, on a Deployment with no linked admin', async () => {

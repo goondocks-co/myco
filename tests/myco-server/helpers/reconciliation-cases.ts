@@ -11,3 +11,8 @@ export const RECONCILIATION_MATRICES = {
 
 export type ReconciliationCase = keyof typeof RECONCILIATION_MATRICES;
 export const RECONCILIATION_CASES = Object.keys(RECONCILIATION_MATRICES) as ReconciliationCase[];
+
+export const PLATFORM_RECONCILIATION_MATRICES = {
+  'platform/bun/vectors.ts#upsert': ['content-key'],
+  'platform/cloudflare/recovery-producer-object.ts#checkpoint': ['checkpoint-transaction', 'checkpoint-transaction'],
+} satisfies Record<string, UpsertRule[]>;

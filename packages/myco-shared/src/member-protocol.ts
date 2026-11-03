@@ -394,3 +394,8 @@ export interface JoinedMemberIdentity {
 
 /** The invitation key issued by a Deployment. */
 export const ENROLLMENT_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** Credential rotation window and replay refusal shared by both sides of the wire. */
+export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
+export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';

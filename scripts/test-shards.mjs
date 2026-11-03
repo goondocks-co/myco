@@ -1,3 +1,4 @@
+export const DEFAULT_TEST_TIMEOUT_MS = 30_000;
 const MAX_SHARDS = 256;
 export const PARITY_PLAN_PREFIX = '[myco-parity-plan] ';
 /** Fill execution groups in input order within duration and worker limits. */

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript-v6';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -18,11 +19,28 @@ const FOREIGN: Readonly<Record<string, string>> = {
   'upgrade/release-assets.ts': 'the GitHub release assets API',
 };
 
-/**
- * Composing a bearer: `authorization` given a `Bearer` template, as an object
- * property, a bracketed key or a plain assignment, in either case of the name.
- */
-const COMPOSES_BEARER = /authorization['"]?\]?\s*[:=]\s*`Bearer\s/i;
+function composesBearer(text: string): boolean {
+  const source = ts.createSourceFile('headers.ts', text, ts.ScriptTarget.Latest, true);
+  const header = (node: ts.Node): boolean => /^(?:authorization|['"]authorization['"])$/i.test(node.getText(source));
+  const bearer = (node: ts.Node): boolean => {
+    if (ts.isStringLiteralLike(node)) return /^Bearer\s/i.test(node.text);
+    if (ts.isTemplateExpression(node)) return /^Bearer\s/i.test(node.head.text);
+    return ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken && bearer(node.left);
+  };
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && header(node.name) && bearer(node.initializer)) found = true;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const key = ts.isPropertyAccessExpression(node.left) ? node.left.name : ts.isElementAccessExpression(node.left) ? node.left.argumentExpression : undefined;
+      if (key && header(key) && bearer(node.right)) found = true;
+    }
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ['set', 'append'].includes(node.expression.name.text)
+      && node.arguments[0] && header(node.arguments[0]) && node.arguments[1] && bearer(node.arguments[1])) found = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
 
 const transpiler = new Bun.Transpiler({ loader: 'ts', deadCodeElimination: false });
 
@@ -59,7 +77,7 @@ function composers(): Composer[] {
   const out: Composer[] = [];
   for (const file of [...listTs(SRC_ROOT), path.join(REPO_ROOT, 'packages/myco-shared/src/member-protocol.ts')]) {
     const code = codeOf(file);
-    if (!COMPOSES_BEARER.test(code)) continue;
+    if (!composesBearer(code)) continue;
     const module = file.endsWith('myco-shared/src/member-protocol.ts') ? MEMBER_COMPOSER : key(file);
     out.push({
       module,
@@ -112,11 +130,13 @@ describe('one composer for a member request\'s headers', () => {
   });
 
   it('reads code, not comments, and sees both the property and the assignment form', () => {
-    expect(COMPOSES_BEARER.test('headers: { authorization: `Bearer ${t}`, a: 1 }')).toBe(true);
-    expect(COMPOSES_BEARER.test('headers.authorization = `Bearer ${t}`;')).toBe(true);
-    expect(COMPOSES_BEARER.test("headers['Authorization'] = `Bearer ${t}`;")).toBe(true);
-    expect(COMPOSES_BEARER.test('const parsed = parseBearer(headers.authorization);')).toBe(false);
-    expect(transpiler.transformSync('// authorization: `Bearer x`\nexport const a = 1;')).not.toMatch(COMPOSES_BEARER);
+    expect(composesBearer('const headers = { authorization: `Bearer ${t}`, a: 1 }')).toBe(true);
+    expect(composesBearer('headers.authorization = `Bearer ${t}`;')).toBe(true);
+    expect(composesBearer("headers['Authorization'] = `Bearer ${t}`;")).toBe(true);
+    expect(composesBearer('headers.set("Authorization", "Bearer " + token);')).toBe(true);
+    expect(composesBearer('headers.append("authorization", `Bearer ${token}`);')).toBe(true);
+    expect(composesBearer('const parsed = parseBearer(headers.authorization);')).toBe(false);
+    expect(composesBearer('// authorization: `Bearer x`\nexport const a = 1;')).toBe(false);
   });
 
   it('names every foreign API it exempts, so an exemption cannot be an empty entry', () => {

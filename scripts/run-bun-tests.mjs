@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
-import { groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
+import { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -971,7 +971,7 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
       // comments gate keeps them honest), so this budget masks nothing but
       // runner load; a genuinely hung test still fails, just at 30s. An
       // explicit --timeout from the caller wins.
-      ...(extraArgs.some((a) => a === '--timeout' || a.startsWith('--timeout=')) ? [] : ['--timeout', '30000']),
+      ...(extraArgs.some((a) => a === '--timeout' || a.startsWith('--timeout=')) ? [] : ['--timeout', String(DEFAULT_TEST_TIMEOUT_MS)]),
       '--reporter=junit',
       `--reporter-outfile=${reportFile}`,
       ...extraArgs,

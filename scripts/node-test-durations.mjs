@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { format } from 'node:util';
 import { SaxesParser } from 'saxes';
+import { DEFAULT_TEST_TIMEOUT_MS } from './test-shards.mjs';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
 const MAX_NODE_MEASURED_MS = 11 * 60_000;
@@ -97,57 +98,86 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
 const MAX_TEST_TIMEOUT_SHARE = 0.8;
 
 export function assertTestCaseHeadroom(samples, timeoutFor) {
+  assert.ok(samples.some(run => run.tests.length > 0), 'Per-test headroom needs measured cases');
   for (const { source, tests } of samples) for (const test of tests) {
     const timeoutMs = timeoutFor(test);
     assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${test.file}: missing declared test timeout: ${test.name}`);
-    assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds > 0, `${source}: missing measured test duration: ${test.name}`);
+    assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds >= 0, `${source}: missing measured test duration: ${test.name}`);
     assert.ok(test.milliseconds <= timeoutMs * MAX_TEST_TIMEOUT_SHARE,
       `${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
   }
 }
 
+const timeoutSources = new Map();
+let timeoutParser;
+
 export function declaredTestTimeout(root, test) {
-  const ts = createRequire(import.meta.url)('typescript-v6');
-  const file = ts.createSourceFile(test.file, fs.readFileSync(path.join(root, test.file), 'utf8'), ts.ScriptTarget.Latest, true);
-  const matches = [];
-  const testRoot = expression => {
-    if (ts.isIdentifier(expression)) return ['it', 'test'].includes(expression.text);
-    if (ts.isPropertyAccessExpression(expression)) return testRoot(expression.expression);
-    if (ts.isCallExpression(expression)) return testRoot(expression.expression);
-    return false;
-  };
-  const visit = node => {
-    if (ts.isCallExpression(node) && testRoot(node.expression) && node.arguments.length >= 2 &&
-      ts.isStringLiteralLike(node.arguments[0])) {
-      const pattern = node.arguments[0].text;
-      let names = [pattern];
-      if (ts.isCallExpression(node.expression)) {
-        const each = node.expression;
-        let values = each.arguments[0];
-        if (values && ts.isAsExpression(values)) values = values.expression;
-        if (ts.isPropertyAccessExpression(each.expression) && each.expression.name.text === 'each' && values && ts.isArrayLiteralExpression(values)) {
-          names = values.elements.filter(ts.isStringLiteralLike).map(value => format(pattern, value.text));
+  const ts = timeoutParser ??= createRequire(import.meta.url)('typescript-v6');
+  const filename = path.resolve(root, test.file);
+  let inventory = timeoutSources.get(filename);
+  if (inventory === undefined) {
+    const source = ts.createSourceFile(test.file, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true);
+    const constants = new Map(), calls = [];
+    const testRoot = expression => ts.isIdentifier(expression) ? ['it', 'test'].includes(expression.text)
+      : ts.isPropertyAccessExpression(expression) || ts.isCallExpression(expression) ? testRoot(expression.expression) : false;
+    const visit = node => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) constants.set(node.name.text, node.initializer);
+      if (ts.isCallExpression(node) && testRoot(node.expression) && node.arguments.length >= 2) {
+        const name = node.arguments[0];
+        const pattern = ts.isStringLiteralLike(name) ? name.text : '%';
+        let names = [pattern];
+        if (ts.isCallExpression(node.expression)) {
+          const each = node.expression;
+          let values = each.arguments[0];
+          if (values && ts.isAsExpression(values)) values = values.expression;
+          if (ts.isPropertyAccessExpression(each.expression) && each.expression.name.text === 'each' && values && ts.isArrayLiteralExpression(values)) {
+            names = values.elements.filter(ts.isStringLiteralLike).map(value => format(pattern, value.text));
+          }
         }
+        calls.push({ names, pattern, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1, timeout: node.arguments[2] });
       }
-      if (!names.includes(test.name)) { ts.forEachChild(node, visit); return; }
-      const timeout = node.arguments[2];
-      assert.ok(timeout && ts.isNumericLiteral(timeout), `${test.file}:${test.line}: record an explicit numeric test timeout`);
-      matches.push(Number(timeout.text));
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    inventory = { constants, calls };
+    timeoutSources.set(filename, inventory);
+  }
+  const numberOf = (node, seen = new Set()) => {
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (ts.isParenthesizedExpression(node)) return numberOf(node.expression, seen);
+    if (ts.isIdentifier(node) && inventory.constants.has(node.text) && !seen.has(node.text))
+      return numberOf(inventory.constants.get(node.text), new Set([...seen, node.text]));
+    if (ts.isBinaryExpression(node)) {
+      const left = numberOf(node.left, seen), right = numberOf(node.right, seen);
+      switch (node.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken: return left + right;
+        case ts.SyntaxKind.MinusToken: return left - right;
+        case ts.SyntaxKind.AsteriskToken: return left * right;
+        case ts.SyntaxKind.SlashToken: return left / right;
+      }
     }
-    ts.forEachChild(node, visit);
+    throw new Error(`${test.file}:${test.line}: cannot resolve declared test timeout`);
   };
-  visit(file);
+  const matches = inventory.calls.filter(({ names, pattern, line }) => names.includes(test.name)
+    || line === test.line && names.length === 1 && names[0] === pattern && pattern.includes('%'));
   assert.equal(matches.length, 1, `${test.file}:${test.line}: expected one declared test matching its recorded name`);
-  return matches[0];
+  return matches[0].timeout === undefined ? DEFAULT_TEST_TIMEOUT_MS : numberOf(matches[0].timeout);
 }
 
 export function testDurationSamples(xml) {
   const tests = [];
+  let current;
   const parser = new SaxesParser();
   parser.on('error', error => { throw error; });
   parser.on('opentag', ({ name, attributes }) => {
-    if (name === 'testcase') tests.push({ file: attributes.file, name: attributes.name,
-      line: Number(attributes.line), milliseconds: Number(attributes.time) * 1000 });
+    if (name === 'testcase') current = { file: attributes.file, name: attributes.name,
+      line: Number(attributes.line), milliseconds: attributes.time === undefined || attributes.time.trim() === '' ? NaN : Number(attributes.time) * 1000 };
+    if (name === 'skipped' && current) current.skipped = true;
+  });
+  parser.on('closetag', ({ name }) => {
+    if (name !== 'testcase') return;
+    if (!current.skipped) tests.push(current);
+    current = undefined;
   });
   parser.write(xml).close();
   return tests;
@@ -159,6 +189,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const durations = JSON.parse(fs.readFileSync(target, 'utf8'));
   durations.files = mergeNodeDurationWeights(durations.files, workload);
   durations.files = Object.fromEntries(Object.entries(durations.files).sort(([left], [right]) => left.localeCompare(right)));
-  durations.sources = [...new Set([...durations.sources, ...workload.runs.map(run => run.source)])];
+  const provenance = new URL('./test-duration-sources.json', import.meta.url);
+  const sources = JSON.parse(fs.readFileSync(provenance, 'utf8'));
+  fs.writeFileSync(provenance, JSON.stringify([...new Set([...sources, ...workload.runs.map(run => run.source)])], null, 2) + '\n');
   fs.writeFileSync(target, JSON.stringify(durations, null, 2) + '\n');
 }

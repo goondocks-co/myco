@@ -1,3 +1,4 @@
+import { knowledgeRoutesPaths, routeGroup } from './declarations';
 import { useParams, type RouteObject } from 'react-router-dom';
 import { CodeMap } from '../features/knowledge/CodeMap';
 import { KnowledgeFrame, type KnowledgeSection } from '../features/knowledge/KnowledgeFrame';
@@ -6,7 +7,6 @@ import { PlansBoard } from '../features/knowledge/PlansBoard';
 import { SporeArticle } from '../features/knowledge/SporeArticle';
 import { SporeStream } from '../features/knowledge/SporeStream';
 import { NotFound } from '../pages/NotFound';
-import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX } from './nav';
 import { useRouteProject } from './route-project';
 
 /**
@@ -16,15 +16,15 @@ import { useRouteProject } from './route-project';
  * plan's page. The older Spores and Plans addresses that lead here are in
  * `routes/moved.tsx`.
  */
-export const knowledgeRoutes: RouteObject[] = [
-  { path: KNOWLEDGE_SUFFIX, element: <KnowledgeRoute section="spores" /> },
-  { path: PLANS_SUFFIX, element: <KnowledgeRoute section="plans" /> },
-  { path: `/p/:projectId${KNOWLEDGE_SUFFIX}`, element: <KnowledgeRoute section="spores" /> },
-  { path: `/p/:projectId${PLANS_SUFFIX}`, element: <KnowledgeRoute section="plans" /> },
-  { path: '/p/:projectId/knowledge/map', element: <KnowledgeRoute section="map" /> },
-  { path: '/p/:projectId/spores/:sporeId', element: <SporeRoute /> },
-  { path: '/p/:projectId/plans/:planKey', element: <PlanRoute /> },
-];
+export const knowledgeRoutes: RouteObject[] = routeGroup(knowledgeRoutesPaths, {
+  spores: <KnowledgeRoute section="spores" />,
+  plans: <KnowledgeRoute section="plans" />,
+  projectSpores: <KnowledgeRoute section="spores" />,
+  projectPlans: <KnowledgeRoute section="plans" />,
+  map: <KnowledgeRoute section="map" />,
+  spore: <SporeRoute />,
+  plan: <PlanRoute />,
+});
 
 function KnowledgeRoute({ section }: { section: KnowledgeSection }) {
   const { projectId, standIn, projectName } = useRouteProject();

@@ -1,3 +1,4 @@
+import { MAX_BLOB_BYTES } from '@myco-server-worker/constants.js';
 import { describe, expect, it } from 'bun:test';
 import { utf8 } from '@myco-server-worker/hash.js';
 import { MAX_PAYLOAD_BYTES, parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
@@ -20,6 +21,7 @@ function linesOf(values: Record<string, unknown>[]): ParsedLine[] {
 }
 
 function expectAdmitted(events: DerivedEvent[]): void {
+  expect(events.length).toBeGreaterThan(0);
   for (const event of events) {
     const spec = kindSpec(event.kind);
     expect(spec).toBeDefined();
@@ -158,4 +160,14 @@ describe('registered parser payload admission', () => {
     expectAdmitted(events);
     expect(events.find((event) => event.kind === 'tool.use')?.payload.input).toEqual({ omitted: 'transcript tool input exceeds ingest bounds' });
   });
+});
+
+it('view parsing retains a reply at the document limit and refuses one byte beyond it', async () => {
+  const parse = (text: string) => PARSERS.cline.parse({ view: true, transcriptId: 'view-limit', recordScheme: 'legacy-session-v1',
+    scheme: 'stamp-or-offset-v1', sessionId: SESSION, now: NOW,
+    lines: linesOf([{ v: 1, type: 'response', text, at: TIME }]) });
+  const text = 'x'.repeat(MAX_BLOB_BYTES);
+  const events = await parse(text);
+  expect(events.find(event => event.kind === 'response')?.payload.text).toBe(text);
+  await expect(parse(text + 'x')).rejects.toThrow('view_record_too_large');
 });

@@ -24,7 +24,7 @@ import ts from 'typescript-v6';
 const SRC = fileURLToPath(new URL('../../packages/myco/src/', import.meta.url));
 
 /** The member-side trees: what a hook, a member verb, a bridge, the installer or the worker runner runs. */
-const MEMBER_TREES = ['member', 'cli', 'hooks', 'mcp', 'symbionts', 'runner', 'install'] as const;
+const MEMBER_TREES = ['.'] as const;
 
 const RULE = 'member/server-url.ts';
 const RULE_EXPORTS = { admit: 'admitMemberServerUrl', bypass: 'keepLoopbackOffProxy' } as const;
@@ -33,7 +33,14 @@ const RULE_MODULE = /(^|\/)(server-url|loopback-proxy)\.js$/;
 
 /** Scheme tests that admit no member server URL, each with why. */
 const ADMITTED: Record<string, string> = {
-  'member/diagnostics.ts': 'strips userinfo, query and fragment from a URL it exports in a support bundle; it admits nothing',
+  'setup/answers.ts#AnswersSchema': 'operator provisioning address schema',
+  'setup/answers.ts#setupCloudflareUrl': 'operator hosted origin admission',
+  'server/github-app.ts#isDeploymentUrl': 'OAuth callback origin admission',
+  'server/github-app.ts#defaultAppName': 'display name from an OAuth origin',
+  'server/github-app.ts#discardSignInPending': 'validates a GitHub App link before display',
+  'server/cloudflare-d1-export.ts#redacted': 'redacts provider download URLs',
+  'server/cloudflare.ts#deployWorker': 'extracts the provider deployment URL',
+  'member/diagnostics.ts#exportedServerUrl': 'sanitizes a URL for the support bundle',
 };
 
 /** The functions that admit a member's server URL, and so must call the rule. */
@@ -81,9 +88,10 @@ function tested(node: ts.Node): boolean {
 }
 
 /** Every scheme test in a module, as `line: source text`. */
-function schemeTests(source: ts.SourceFile): string[] {
+function schemeTests(source: ts.SourceFile, allowed: readonly ts.Node[] = []): string[] {
   const found: string[] = [];
   const flag = (node: ts.Node): void => {
+    if (allowed.some(scope => node.pos >= scope.pos && node.end <= scope.end)) return;
     const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
     found.push(`${line}: ${node.getText(source).replace(/\s+/g, ' ').slice(0, 120)}`);
   };
@@ -238,8 +246,11 @@ describe('the member server URL rule', () => {
     for (const tree of MEMBER_TREES) {
       for (const file of allFiles(join(SRC, tree)).filter((f) => f.endsWith('.ts'))) {
         const rel = relative(SRC, file);
-        if (rel === RULE || rel in ADMITTED) continue;
-        for (const hit of schemeTests(parse(rel, readFileSync(file, 'utf8')))) offenders.push(`${rel}:${hit}`);
+        if (rel === RULE) continue;
+        const source = parse(rel, readFileSync(file, 'utf8'));
+        const allowed = Object.keys(ADMITTED).filter(key => key.startsWith(rel + '#'))
+          .map(key => functionNamed(source, key.split('#')[1]!)).filter((scope): scope is ts.Node => scope !== null);
+        for (const hit of schemeTests(source, allowed)) offenders.push(`${rel}:${hit}`);
       }
     }
     expect(offenders).toEqual([]);
@@ -289,6 +300,12 @@ describe('the member server URL rule', () => {
   });
 
   it('admits only files that still exist and still test a scheme', () => {
-    for (const rel of Object.keys(ADMITTED)) expect({ rel, tests: schemeTests(read(rel)).length > 0 }).toEqual({ rel, tests: true });
+    for (const key of Object.keys(ADMITTED)) {
+      const [rel, name] = key.split('#');
+      const source = read(rel!);
+      const scope = functionNamed(source, name!);
+      expect(scope, key).not.toBeNull();
+      expect(schemeTests(source).length - schemeTests(source, [scope!]).length, key).toBeGreaterThan(0);
+    }
   });
 });

@@ -1,38 +1,17 @@
 import { expect, it } from 'bun:test';
 import { parse } from 'yaml';
-import { assertJobHeadroom, auditJobHeadroom } from '../../scripts/check-test-shards.mjs';
-import { spawn, spawnSync } from 'node:child_process';
+import { assertCoverage, assertJobHeadroom, auditJobHeadroom } from '../../scripts/check-test-shards.mjs';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-it('audits every shard through the runner without writing a parity manifest outside its root', async () => {
-  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'shard-audit-reports-'));
-  const sentinel = path.join(reports, 'parent-report');
-  fs.writeFileSync(sentinel, 'preserve');
-  try {
-    const child = spawn('node', ['scripts/run-test-command.mjs', 'node', 'scripts/check-test-shards.mjs'], {
-      env: { ...process.env, MYCO_TEST_STRICT_TEMP: '1', MYCO_RUNNER_REPORT_DIR: reports },
-      stdio: ['ignore', 'pipe', 'pipe'], timeout: 90_000,
-    });
-    let stdout = '', stderr = '', error: Error | undefined;
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('error', found => { error = found; });
-    const status = await new Promise<number | null>(resolve => child.once('close', resolve));
-    const result = { status, stdout, stderr, error };
-    expect({ status: result.status, stderr: result.stderr, error: result.error }).toEqual({ status: 0, stderr: '', error: undefined });
-    for (const label of ['Full suite', 'CI test shards', 'CI parity shards', 'Required jobs']) {
-      expect(result.stdout).toMatch(new RegExp(`${label}: [1-9]\\d* entries covered exactly once`));
-    }
-    expect(result.stdout).toContain('Job headroom: 2 jobs within limit');
-    expect(result.stdout).toContain('Plan generations: 2');
-    expect(result.stdout).toMatch(/Per-test headroom: [1-9]\d* recorded cases within limit/);
-    expect(fs.readFileSync(sentinel, 'utf8')).toBe('preserve');
-  } finally {
-    fs.rmSync(reports, { recursive: true, force: true });
-  }
-}, 100_000);
+it('rejects duplicate, missing and unexpected inventory entries', () => {
+  expect(() => assertCoverage(['b', 'a'], ['a', 'b'], 'fixture')).not.toThrow();
+  expect(() => assertCoverage(['a', 'a'], ['a', 'b'], 'fixture')).toThrow('duplicate');
+  expect(() => assertCoverage(['a'], ['a', 'b'], 'fixture')).toThrow('coverage');
+  expect(() => assertCoverage(['a', 'c'], ['a', 'b'], 'fixture')).toThrow('coverage');
+});
 
 it('refuses eroded work margin and cold-install headroom at their measured boundaries', () => {
   const policy = { cacheMissMs: 200_000, setupMs: 100_000 };

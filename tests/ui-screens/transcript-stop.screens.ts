@@ -26,7 +26,7 @@ for (const viewport of ['desktop', 'phone'] as const) {
         await expectNoRawIds(page);
         await expectAxeClean(page);
         expectQuiet(opened.watch);
-        await shoot(page, 'transcript-stop', viewport, mode, path.resolve('tests/ui-screens/evidence/parser-stops'));
+        await shoot(page, 'transcript-stop', viewport, mode, path.resolve('target/ui-screens/shots/parser-stops'));
       } finally { await opened.context.close(); }
     });
   }

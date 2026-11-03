@@ -1,8 +1,8 @@
 import ts from 'typescript-v6';
 
-export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'unverified';
+export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'content-key' | 'checkpoint-transaction' | 'arrival-order' | 'unverified';
 export interface UpsertDeclaration { tables: string[]; order: UpsertRule }
-export interface UpsertOccurrence { owner: string; table: string | null }
+export interface UpsertOccurrence { owner: string; table: string | null; replacement: boolean }
 
 /** Inventory literal conflict updates by their nearest named function or module fragment. */
 export function upsertOccurrences(file: string, source: string): UpsertOccurrence[] {
@@ -20,10 +20,10 @@ export function upsertOccurrences(file: string, source: string): UpsertOccurrenc
   const visit = (node: ts.Node): void => {
     if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node) || ts.isStringLiteral(node)) {
       const text = ts.isTemplateExpression(node) ? node.head.text + node.templateSpans.map(span => span.literal.text).join('') : node.text;
-      const updates = [...text.matchAll(/\bDO\s+UPDATE\b/gi)];
+      const updates = [...text.matchAll(/\bDO\s+UPDATE\b|\b(?:INSERT\s+OR\s+REPLACE|REPLACE)\s+INTO\b/gi)];
       if (updates.length > 0) {
-        const table = /\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+([a-zA-Z_][a-zA-Z_0-9]*)\b/i.exec(text)?.[1] ?? null;
-        for (const _ of updates) occurrences.push({ owner: `${file}#${ownerOf(node)}`, table });
+        const table = /\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO)\s+([a-zA-Z_][a-zA-Z_0-9]*)\b/i.exec(text)?.[1] ?? null;
+        for (const update of updates) occurrences.push({ owner: `${file}#${ownerOf(node)}`, table, replacement: !/^DO/i.test(update[0]) });
       }
       if (ts.isTemplateExpression(node)) for (const span of node.templateSpans) visit(span.expression);
       return;
@@ -45,7 +45,8 @@ export function validateUpserts(occurrences: UpsertOccurrence[], manifest: Recor
     sites.forEach((site, i) => {
       const declared = declarations[i];
       if (declared === undefined || declared.tables.length === 0 || declared.tables.some(t => !/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(t))) errors.push(`${owner}[${i}]: unresolved tables`);
-      else if (declared.order !== (matrices[owner]?.[i] ?? 'unverified')) errors.push(`${owner}[${i}]: order has no matching runtime matrix`);
+      else if (site.replacement && !['arrival-order', 'checkpoint-transaction'].includes(declared.order)) errors.push(`${owner}[${i}]: replacement needs a declared reconciliation order`);
+      else if (declared.order === 'arrival-order' ? !site.replacement : declared.order !== (matrices[owner]?.[i] ?? 'unverified')) errors.push(`${owner}[${i}]: order has no matching runtime matrix`);
       if (declared !== undefined && site.table !== null && !declared.tables.includes(site.table)) errors.push(`${owner}[${i}]: undeclared table ${site.table}`);
     });
   }

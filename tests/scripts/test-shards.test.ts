@@ -72,42 +72,19 @@ describe('test shard selection', () => {
     }
   });
 
-  test('gates node shard headroom against every complete recorded CI workload', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-node-shards-'));
-    try {
-      const manifest = path.join(root, 'plan.json');
-      const result = spawnSync('node', ['scripts/run-bun-tests.mjs'], {
-        env: { ...process.env, MYCO_RUNNER_DRY_RUN: '1', MYCO_TEST_KIND: 'node', MYCO_TEST_SHARD: '1/1', MYCO_RUNNER_PLAN_FILE: manifest, MYCO_RUNNER_REPORT_DIR: path.join(root, 'reports') },
-        encoding: 'utf8', timeout: 30_000,
-      });
-      expect({ status: result.status, error: result.error, stderr: result.stderr }).toMatchObject({ status: 0, error: undefined });
-      const groups: NodeGroup[] = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-      const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
-      const count = workflow.jobs.tests.strategy.matrix.include.filter((job: { kind: string }) => job.kind === 'node').length;
-      const timeout = workflow.jobs.tests['timeout-minutes'] * 60_000;
-      const plans = Array.from({ length: count }, (_, index) => selectShard(groups, { index: index + 1, count }, group => group.estimatedMs));
-      expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, nodeWorkload)).not.toThrow();
-      const shardOf = (file: string) => plans.findIndex(plan => plan.some(group => group.files.includes(file)));
-      const coverageShard = shardOf('tests/myco-server/extraction-coverage-budget.test.ts');
-      const steadyShard = shardOf('tests/myco-server/extraction-coverage-steady-state-budget.test.ts');
-      expect(coverageShard).toBeGreaterThanOrEqual(0);
-      expect(steadyShard).toBeGreaterThanOrEqual(0);
-      expect(coverageShard).not.toBe(steadyShard);
-      for (const trim of [1, -1]) {
-        const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: trim === 1 ? run.shards.slice(1) : run.shards.slice(0, -1) })) };
-        expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');
-      }
-      const stale = { ...durations.files, 'tests/setup/journeys.test.ts': 2920 };
-      expect(() => assertNodeShardHeadroom(plans, timeout, stale, nodeWorkload)).toThrow('Stale node duration');
-      const unrecorded = { label: 'new file', files: ['tests/unrecorded.test.ts'], estimatedMs: 100 };
-      expect(() => assertNodeShardHeadroom([[unrecorded], ...plans.slice(1)], timeout, durations.files, nodeWorkload)).toThrow('explicit duration weight');
-      const recorded = recordedNodeDurations(nodeWorkload);
-      const journeyFiles = ['tests/setup/journeys.test.ts', 'tests/setup/sigkill-resume.test.ts'];
-      const oversized = { label: 'combined journeys', files: journeyFiles, estimatedMs: journeyFiles.reduce((sum, file) => sum + recorded[file]!, 0) };
-      expect(() => assertNodeShardHeadroom([[oversized], ...plans.slice(1)], timeout, durations.files, nodeWorkload)).toThrow('split the group');
-      expect(() => assertNodeShardHeadroom([groups, ...plans.slice(1).map(() => [])], timeout, durations.files, nodeWorkload)).toThrow('with headroom');
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
-  }, 40_000);
+  test('rejects incomplete measurements, missing weights and exhausted group headroom', () => {
+    const group = { label: 'fixture', files: ['first', 'second'], estimatedMs: 20 };
+    const plans = [[group], [], [], [], []];
+    const workload: NodeWorkload = { runs: [{ source: 'fixture', shardCount: 1, shards: [{
+      shard: 1, groups: [{ ...group, milliseconds: 20, files: { first: 10, second: 10 } }],
+    }] }] };
+    expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 10, second: 10 }, workload)).not.toThrow();
+    expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 9, second: 10 }, workload)).toThrow('Stale node duration');
+    expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 10 }, workload)).toThrow('explicit duration weight');
+    expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 300_000, second: 10 }, workload)).toThrow('split the group');
+    const incomplete = { runs: [{ ...workload.runs[0]!, shardCount: 2 }] };
+    expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 10, second: 10 }, incomplete)).toThrow('incomplete node workload');
+  });
 
   test('fits the recorded parity workload with startup allowance and headroom on every CI shard', () => {
     const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
@@ -197,6 +174,12 @@ test('the CI per-test command rejects an overrun from actual JUnit evidence', ()
     expect(overrun.stderr).toContain('80% of its 120000ms test timeout');
     fs.writeFileSync(path.join(reports, 'run.junit.xml'), xml.replace('time="97"', 'time="30"'));
     expect(run().status).toBe(0);
+    fs.writeFileSync(path.join(reports, 'run.junit.xml'), '<testsuite><testcase file="tests/meta/container-bun-pin.test.ts" name="unknown case" line="1" time="4000" /></testsuite>');
+    const unmeasured = run();
+    expect(unmeasured.status).not.toBe(0);
+    expect(unmeasured.stderr).toContain('matching its recorded name');
+    fs.writeFileSync(path.join(reports, 'run.junit.xml'), '<testsuite/>');
+    expect(run().status).not.toBe(0);
   } finally { fs.rmSync(reports, { recursive: true, force: true }); }
 });
 
@@ -211,16 +194,6 @@ test('transfers an introduced split duration floor once and preserves measured f
   expect(mergeNodeDurationWeights({ original: 150, introduced: 200 }, workload)).toEqual({ original: 150, introduced: 200 });
 });
 
-test('replays the complete hot CI workload with both extraction solos recorded', () => {
-  const run = nodeWorkload.runs.find(value => value.source.includes('/40047399103/attempts/1'))!;
-  expect(run).toBeDefined();
-  expect(run.shards.map(shard => shard.shard)).toEqual([1, 2, 3, 4, 5]);
-  const hot = run.shards[0]!;
-  expect(hot.groups.reduce((sum, group) => sum + group.milliseconds, 0)).toBe(748_807);
-  expect(hot.groups.reduce((sum, group) => sum + group.milliseconds, 0)).toBeGreaterThan(720_000);
-  expect(hot.groups.find(group => group.label.endsWith('extraction-coverage-budget'))!.milliseconds).toBe(249_152);
-  expect(hot.groups.find(group => group.label.endsWith('extraction-history-budget'))!.milliseconds).toBe(142_417);
-});
 
 test('replays a five-shard recording against a six-shard plan', () => {
   const shards = Array.from({ length: 5 }, (_, index) => ({

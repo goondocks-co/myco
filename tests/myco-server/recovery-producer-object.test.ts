@@ -1,3 +1,5 @@
+import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
+import type { AttemptCheckpoint } from '@myco-server-worker/core/recovery-producer.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 /**
  * The hosted producer's own admission and hold settlement, over its real storage statements.
@@ -806,4 +808,48 @@ it('schema drift aborts the multipart upload and retires its parts through failu
     expect(await response.json()).toEqual({ aborted: true, attempt: { stage: 'failed', upload_id: null }, parts: [] });
     expect(native).toEqual({ aborted: 1, attempt: { stage: 'failed', upload_id: null }, parts: [] });
   } finally { await mf.dispose(); }
+});
+
+it('producer checkpoints replace parts and inventory atomically, including replay, clearing and faults', async () => {
+  expect(PLATFORM_RECONCILIATION_MATRICES['platform/cloudflare/recovery-producer-object.ts#checkpoint'])
+    .toEqual(['checkpoint-transaction', 'checkpoint-transaction']);
+  const sql = new Database(':memory:');
+  try {
+    const producer = producerOver(sql, []);
+    const first = await producer.admit(admission('checkpoint-matrix'));
+    const id = first.attempt!;
+    const checkpoint = (producer as unknown as { checkpoint(): AttemptCheckpoint }).checkpoint();
+    const progress = { defined: {}, scan: newInventoryProgress().scan, scanBytes: '' };
+    const part = (bytes: number) => ({ part: 1, bytes, sha256: 'a'.repeat(64), etag: 'part-' + bytes });
+    for (const order of [[4, 8], [8, 4]]) {
+      checkpoint.clearParts(id);
+      expect(checkpoint.parts(id)).toEqual([]);
+      for (const bytes of order) checkpoint.recordPart(id, part(bytes), bytes, progress);
+      const last = order[1]!;
+      checkpoint.recordPart(id, part(last), last, progress);
+      expect(checkpoint.parts(id)).toEqual([part(last)]);
+      expect(checkpoint.open()?.downloadOffset).toBe(last);
+    }
+    const inventory = { ...newInventoryProgress(), parts: 1, bytes: 4 };
+    const object = { key: 'backups/matrix', source: 'backups/matrix', bytes: 4, sha256: 'a'.repeat(64) };
+    checkpoint.recordInventory(id, inventory, [object]);
+    checkpoint.recordInventory(id, inventory, [object]);
+    expect(checkpoint.pendingObjects(id, 10)).toEqual([{ ...object, stagedSha256: null, stagedBytes: null }]);
+    for (const operation of ['part', 'inventory'] as const) {
+      const before = { parts: checkpoint.parts(id), state: checkpoint.open(), objects: checkpoint.pendingObjects(id, 10) };
+      sql.exec("CREATE TRIGGER fault BEFORE UPDATE ON attempts BEGIN SELECT RAISE(ABORT, 'checkpoint fault'); END");
+      expect(() => operation === 'part' ? checkpoint.recordPart(id, part(16), 16, progress)
+        : checkpoint.recordInventory(id, { ...inventory, parts: 2, bytes: 16 }, [{ ...object, bytes: 16 }])).toThrow('checkpoint fault');
+      sql.exec('DROP TRIGGER fault');
+      expect({ parts: checkpoint.parts(id), state: checkpoint.open(), objects: checkpoint.pendingObjects(id, 10) }).toEqual(before);
+    }
+    checkpoint.clearParts(id);
+    checkpoint.clearParts(id);
+    expect(checkpoint.parts(id)).toEqual([]);
+    checkpoint.update(id, { stage: 'failed' });
+    checkpoint.recordPart(id, part(32), 32, progress);
+    checkpoint.recordInventory(id, inventory, [{ ...object, bytes: 32 }]);
+    expect(checkpoint.parts(id)).toEqual([]);
+    expect(checkpoint.pendingObjects(id, 10)[0]?.bytes).toBe(4);
+  } finally { sql.close(); }
 });
