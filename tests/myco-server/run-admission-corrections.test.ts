@@ -1,3 +1,4 @@
+import { prepareLearningSlice } from './helpers/extraction.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -51,7 +52,7 @@ for (const code of ['no_project', 'body_cap', 'no_machine_identity'] as const) f
   });
 }
 
-for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease', 'revocation', 'mid_batch_revocation', 'none'] as const) {
+for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lease', 'revocation', 'mid_batch_revocation', 'none'] as const) {
   it(`${op} commits its domain write and attribution together under ${loss}`, async () => {
     let armed = false;
     const f = await setup({ onSql: (sql, sqlite) => {
@@ -64,7 +65,10 @@ for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess' AS session_id,'prompt' AS prompt_id,'ev' AS event_id,'hello' AS text,'user' AS origin,'h' AS content_hash,0 AS created_at,0 AS updated_at,'t' AS token_id,0 AS received_at)");
       await publishFixture(f);
-      if (op === 'prompt') await recordServedPrompts(f.db, {projectId:'proj_1'}, 'target', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
+      if (op === 'learning') {
+        const assignment = await prepareLearningSlice(f.db, { projectId: 'proj_1' }, 'target', 'sess', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
+        f.sqlite.run("UPDATE agent_runs SET run_context=? WHERE id='target'", [JSON.stringify({ timeoutSeconds: 300, session_id: 'sess', assignment })]);
+      }
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {
         const repository = { url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) };
@@ -72,14 +76,14 @@ for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease
         f.sqlite.run("UPDATE agent_runs SET task = 'canopy-map', run_context = ? WHERE id = 'target'", [JSON.stringify({ timeoutSeconds: 300, repository, canopy: { inputHash: 'b'.repeat(64), priorRevision: null } })]);
       }
       if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'title' ? 'UPDATE' : 'INSERT'}
-        ON ${op === 'prompt' ? 'extraction_acks' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
+        ON ${op === 'learning' ? 'extraction_acks' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
       armed = true;
-      const answer = op === 'prompt' ? await f.call('myco_run_prompts', { op: 'mark_processed', prompt_id: 'prompt' })
+      const answer = op === 'learning' ? await f.call('myco_run_learning', { op: 'complete', handoff: '' })
         : op === 'title' ? await f.call('myco_run_sessions', { op: 'title', title: 'title', summary: 'summary' })
         : await f.call('myco_run_map', { op: 'write', artifact: { directories: [{ path: 'src', annotation: 'Source', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }], domains: [{ id: 'main', title: 'Main', files: [{ path: 'src/a.ts', annotation: 'Entry', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }] }] } });
       const count = (sql: string) => (f.sqlite.query(sql).get() as { n: number }).n;
-      const changed = op === 'prompt' ? count("SELECT COUNT(*) AS n FROM extraction_acks WHERE record_id = 'prompt'")
+      const changed = op === 'learning' ? count("SELECT COUNT(*) AS n FROM extraction_acks WHERE record_id = 'prompt'")
         : op === 'title' ? count("SELECT COUNT(*) AS n FROM sessions WHERE title IS NOT NULL") : count('SELECT COUNT(*) AS n FROM canopy_maps');
       const attributed = count("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type = 'run_write'");
       expect(changed).toBe(loss === 'none' ? 1 : 0);

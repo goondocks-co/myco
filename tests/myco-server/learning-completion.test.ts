@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { buildLearningAssignment, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js';
-import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
+import { ensureAgent, recordDispatch, getRun } from '@myco-server-worker/core/runs.js';
+import { learningCompletedBy } from '@myco-server-worker/core/run-postconditions.js';
 import { taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { isRunCall, runAllowlist } from '@myco-server-worker/mcp/run-allowlist.js';
 import { seedCredential, seededSqlite, sqliteD1 } from './helpers/d1.js';
@@ -13,7 +14,7 @@ let sqlite: Database;
 let db: RelationalStore;
 let assignment: LearningAssignment;
 
-beforeEach(async () => {
+async function setup() {
   sqlite = seededSqlite();
   db = sqliteD1(sqlite);
   const token = seedCredential(sqlite);
@@ -34,8 +35,9 @@ beforeEach(async () => {
       VALUES('proj_1',?,'run','session',?,?)`).run(`served-${turn}`, turn, NOW);
   }
   assignment = (await buildLearningAssignment(db, 'proj_1', 'session'))!;
-});
+}
 
+beforeEach(setup);
 afterEach(() => sqlite.close());
 
 const progress = () => sqlite.query(`SELECT * FROM learning_sessions WHERE project_id='proj_1' AND session_id='session'`).get();
@@ -60,14 +62,23 @@ it('refuses a rival completion in the same millisecond without dependent writes'
   await expectRefused();
 });
 
-it('refuses cards changed between reading and the completion batch without acknowledging or advancing', async () => {
-  let before: unknown;
-  const raced = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), async () => {
-    sqlite.query(`UPDATE turn_cards SET input_hash='changed' WHERE turn_key='first'`).run();
-    before = progress();
-  }, true);
-  await expectRefused(raced);
-  expect(progress()).toEqual(before);
+it('completes surviving cards when a card goes pending before the batch', async () => {
+  for (const timing of ['before_read', 'before_batch'] as const) {
+    if (timing === 'before_batch') { sqlite.close(); await setup(); }
+    const pending = async () => { sqlite.query(`UPDATE turn_cards SET state='pending' WHERE turn_key='second'`).run(); };
+    if (timing === 'before_read') await pending();
+    const raced = timing === 'before_read' ? db : beforeWriteBatch(db,
+      sql => sql.startsWith('UPDATE learning_sessions SET revision'), pending, true);
+    expect(await completeLearning(raced, 'proj_1', 'session', 'run', assignment, 'handoff', NOW))
+      .toEqual({ completed: true, covered: 1 });
+    expect(sqlite.query('SELECT record_id FROM extraction_acks').all()).toEqual([{ record_id: 'first' }]);
+    expect(sqlite.query('SELECT turn_key,state,covered FROM turn_cards ORDER BY turn_key').all()).toEqual([
+      { turn_key: 'first', state: 'carded', covered: 1 }, { turn_key: 'second', state: 'pending', covered: 0 },
+    ]);
+    expect(progress()).toMatchObject({ revision: 1, learned_seq: 10, due_cards: 0, pending_cards: 1,
+      handoff: 'handoff', failures: 0, last_completed_run: 'run' });
+    expect(await learningCompletedBy(db, { projectId: 'proj_1' }, (await getRun(db, { projectId: 'proj_1' }, 'run'))!)).toBe(true);
+  }
 });
 
 it('completes unchanged cards, acknowledges their served prompts and keeps the handoff', async () => {
@@ -83,5 +94,5 @@ it('completes unchanged cards, acknowledges their served prompts and keeps the h
 it('admits learning completion and refuses a separate prompt acknowledgement on a learning run', () => {
   const allow = runAllowlist(taskTools('extract-curate'), { dryRun: false });
   expect(isRunCall(allow, 'myco_run_learning', 'complete')).toBe(true);
-  expect(isRunCall(allow, 'myco_run_prompts', 'mark_processed')).toBe(false);
+  expect([...allow.keys()]).not.toContain('myco_run_prompts');
 });

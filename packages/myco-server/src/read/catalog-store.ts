@@ -3474,24 +3474,11 @@ export function prepareRestoredSessionUnread(db: sessions_import_RelationalStore
   WHERE (project_id, session_id) IN (SELECT json_extract(value, '$.projectId'), json_extract(value, '$.sessionId') FROM json_each(?))`).bind(sessions);
 }
 
-function extractionAckSource(servedId: string | undefined): string {
-  return servedId === undefined
-    ? `SELECT p.project_id, p.prompt_id AS record_id, p.session_id, NULL AS served_id FROM session_prompts p
-        JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
-        JOIN agent_runs r ON r.project_id = p.project_id AND r.id = ?
-        WHERE p.project_id = ? AND p.prompt_id = ?`
-    : `SELECT m.project_id, m.record_id, m.session_id, m.served_id FROM run_served_material m
-        WHERE m.run_id = ? AND m.project_id = ? AND m.served_id = ?`;
-}
-
-export function prepareExtractionAckItem(db: sessions_import_RelationalStore, projectId: string, runId: string, recordId: string | undefined, servedId: string | undefined) {
-  return db.prepare(extractionAckSource(servedId)).bind(runId, projectId, recordId);
-}
-
-export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore, projectId: string, runId: string, recordId: string | undefined, servedId: string | undefined, ackId: string, now: number,
-  guard: { sql: string; params: readonly unknown[] } = { sql: '1', params: [] }) {
-  const source = extractionAckSource(servedId);
-  const params = [runId, projectId, recordId];
+export function prepareRecordAcknowledgement(db: sessions_import_RelationalStore, projectId: string, runId: string, servedId: string, ackId: string, now: number,
+  guard: { sql: string; params: readonly unknown[] }) {
+  const source = `SELECT m.project_id, m.record_id, m.session_id, m.served_id FROM run_served_material m
+    WHERE m.run_id = ? AND m.project_id = ? AND m.served_id = ?`;
+  const params = [runId, projectId, servedId];
   return db.prepare(`INSERT INTO extraction_acks
     (project_id, ack_id, session_id, kind, record_id, served_id, run_id, acknowledged_at)
     SELECT material.project_id, ?, material.session_id, 'record', material.record_id, material.served_id, ?, ?

@@ -81,21 +81,6 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
     },
   },
   {
-    name: 'myco_run_prompts',
-    description: 'Acknowledge material served to this run using its ledger identity.',
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    inputSchema: {
-      type: 'object',
-      properties: {
-        op: { type: 'string', enum: ['mark_processed'], description: 'mark_processed: acknowledge one item using its served_id.' },
-        served_id: { type: 'string', description: 'For mark_processed: acknowledge this item using the served_id from its served material.' },
-        prompt_id: { type: 'string', description: 'Compatibility for mark_processed: a prompt served to this run. Ambiguous instances require served_id.' },
-        [PROJECT_PIVOT]: project,
-      },
-      required: ['op'],
-    },
-  },
-  {
     name: 'myco_run_map',
     description: 'This Project\'s repository map, for the run that keeps it: the current map and whether it was already read from this run\'s commit, and the one write of the new map.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

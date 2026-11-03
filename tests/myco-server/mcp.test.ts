@@ -771,7 +771,7 @@ describe('POST /mcp over a run credential', () => {
     expect(listed.status).toBe(200);
     const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
     expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
-    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_prompts', 'myco_run_sessions', 'myco_run_spores', 'myco_search', 'myco_spores']);
+    expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_sessions', 'myco_run_spores', 'myco_search', 'myco_spores']);
     const spores = listed.body.result.tools.find((t: any) => t.name === 'myco_spores');
     expect(spores.inputSchema.properties.op.enum.sort()).toEqual(['consolidate', 'obsolete', 'save', 'supersede']);
 

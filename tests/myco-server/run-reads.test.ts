@@ -14,7 +14,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { MAX_RUN_READS, pruneTerminalRuns, recordDispatch, recordRunReads, recordRunWrite } from '@myco-server-worker/core/runs.js';
-import { PROMPT_MARK_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
+import { LEARNING_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { OUTCOME_RUN_LIMIT, OUTCOME_SPORE_LIMIT } from '@myco-server-worker/read/run-reads.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { createBackup, restoreBackup } from '@myco-server-worker/core/backup.js';
@@ -294,7 +294,7 @@ describe('what a session\'s outcome counts and lists', () => {
     await recordRunReads(db, {projectId:'proj_1'}, {runId:'run_other',tokenId:other.tokenId,sessionIds:['sess_1'],receivedAt:NOW});
     // A run dispatched on this session whose only landed write is another tool's.
     await dispatch('run_marked', TITLING, { startedAt: NOW - 1_000 });
-    await recordRunWrite(db, { projectId: 'proj_1' }, { runId: 'run_marked', toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: NOW, detail: { prompt_id: 'p1' } });
+    await recordRunWrite(db, { projectId: 'proj_1' }, { runId: 'run_marked', toolName: LEARNING_TOOL, op: 'complete', recordedAt: NOW, detail: { prompt_id: 'p1' } });
 
     const runs = (await get('/api/projects/proj_1/sessions/sess_1')).body.outcome.runs as Array<{ runId: string; target: boolean; titled: boolean }>;
     expect(runs.map(({ runId, target, titled }) => ({ runId, target, titled }))).toEqual([

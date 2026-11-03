@@ -44,8 +44,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
 import { countSpores, sporeAuthoredBy } from './spores.js';
-import { CARD_TOOL, LEARNING_TOOL, PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
-import { dispatchedBeforeResume } from './learning-sessions.js';
+import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 import { titlingParamsOf } from './titling-params.js';
@@ -114,24 +113,9 @@ export async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run:
   return (await runRecordedWrite(db, scope, run.id, TITLE_WRITE_TOOL)) && (await sessionCarriesTitle(db, scope, sessionId));
 }
 
-/**
- * Whether THIS run marked at least one prompt read.
- *
- * The mark is the extraction run's own landed write: it says the run read the
- * prompt and decided what it taught, and it is what moves the cursor so the next
- * pass reads on. A run that wrote spores and marked nothing has left the next
- * pass to read the same prompts again, and is held to the mark rather than to
- * the spores; a run that read a page and judged none of it worth a spore has
- * still done the pass, and the mark is the row that says so.
- */
-export async function promptsMarkedBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
-  return runRecordedWrite(db, scope, run.id, PROMPT_MARK_TOOL);
-}
-
-/** Whether THIS run completed its learning slice; a run dispatched before learning resumed closes on a prompt it marked read. */
+/** Whether THIS run completed its learning slice. */
 export async function learningCompletedBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
-  if (await runRecordedWrite(db, scope, run.id, LEARNING_TOOL)) return true;
-  return (await dispatchedBeforeResume(db, scope.projectId, run.id)) && (await promptsMarkedBy(db, scope, run));
+  return runRecordedWrite(db, scope, run.id, LEARNING_TOOL);
 }
 
 /** Whether THIS run wrote at least one turn card. */
@@ -164,7 +148,7 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   // named, which is why it names an artifact and not the report alone.
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
   [TITLING_TASK]: { description: ['A report with its audit and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands, audited: true },
-  [EXTRACTION_TASK]: { description: ['A report with its audit and the learning slice completed by this run, or, for a run dispatched before learning resumed, a prompt it marked read.'], reports: [EXTRACTION_REPORT_ACTION], artifact: learningCompletedBy, audited: true },
+  [EXTRACTION_TASK]: { description: ['A report with its audit and the learning slice completed by this run.'], reports: [EXTRACTION_REPORT_ACTION], artifact: learningCompletedBy, audited: true },
   [CARD_TASK]: { description: ['A report and the turn cards written by this run.'], reports: [CARD_REPORT_ACTION], artifact: cardsWrittenBy },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
   [SEEDING_TASK]: { description: ['A report with its audit and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope), audited: true },

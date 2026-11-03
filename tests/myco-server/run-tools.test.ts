@@ -45,10 +45,8 @@ it('removes thin prompt discovery and returns named refusals without writing or 
   const f = await setup();
   try {
     await f.dispatch('removed-reader', SWEEP);
-    const definition = runDefinitionOf('myco_run_prompts')!;
-    expect(definition.inputSchema.properties.op!.enum).toEqual(['mark_processed']);
-    expect(Object.keys(definition.inputSchema.properties).sort()).toEqual(['op', 'project', 'prompt_id', 'served_id']);
-    expect(RUN_TOOL_REGISTRY.myco_run_prompts!.ops).not.toHaveProperty('unprocessed');
+    expect(runDefinitions(runAllowlist(TASK_TOOLS[SWEEP]!, { dryRun: false })).map(definition => definition.name)).not.toContain('myco_run_prompts');
+    expect(RUN_TOOL_REGISTRY).not.toHaveProperty('myco_run_prompts');
     expect(RUN_TOOL_MAP).not.toHaveProperty('vault_unprocessed');
     expect(Object.values(TASK_TOOLS).flat()).not.toContain('vault_unprocessed');
     const before = f.sqlite.query('SELECT * FROM agent_run_events').all();
