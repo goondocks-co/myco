@@ -55,8 +55,8 @@ export type CapturePoint = 'session_start' | 'session_end';
 /** A session's observed commit, as the release check classifies it. */
 export interface ReleaseSource { point: CapturePoint; headSha: string; cleanliness: Cleanliness }
 
-/** A git provenance row `g`'s cleanliness as `Cleanliness`; a row that records an observation error is `unknown`. */
-export const CLEANLINESS_SQL = "CASE WHEN g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
+/** A git provenance row `g`'s cleanliness as `Cleanliness`; session starts and rows with an observation error are `unknown`. */
+export const CLEANLINESS_SQL = "CASE WHEN g.capture_point = 'session_start' OR g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
 
 /** The captured commit a release state is classified from, as `evidence_json.source` records it: a new one is classified afresh. */
 export const sourceOf = (c: ReleaseSource) => `${c.point}:${c.headSha}:${c.cleanliness}`;

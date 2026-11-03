@@ -40,11 +40,13 @@ const isBackupKey = (key: string): boolean => key.startsWith(BACKUP_KEY_PREFIX)
 const backupSchema = blobSchema.omit({ sha256: true }).extend({ key: z.string().refine(isBackupKey, 'invalid recovery backup key') });
 /** A catalogued backup as its snapshot records it: the digest written with the row, or null for a row that carries none. */
 const cataloguedBackupSchema = backupSchema.extend({ sha256: z.string().regex(DIGEST).nullable() });
+const danglingEventBlobSchema = z.object({ table: z.string(), column: z.string(), kind: z.string(), count: z.number().int().positive() });
 const snapshotSchema = z.object({
   deploymentId: z.string().min(1), schemaVersion: z.number().int().positive(),
   database: fingerprintSchema, blobCount: z.number().int().nonnegative(), blobBytes: z.number().int().nonnegative(),
   configuration: z.record(z.string(), z.unknown()),
   credentialsRequired: z.array(z.string()), capturedAt: z.string().datetime(),
+  danglingEventBlobs: z.array(danglingEventBlobSchema).optional(),
 });
 const manifestFields = {
   source: sourceSchema, startedAt: z.string().datetime(),
@@ -302,6 +304,16 @@ function refuseUnsafeNumbers(db: Database): void {
   }
 }
 
+function snapshotReferences(schemaVersion: number) {
+  const references = BLOB_REFERENCES.map(ref=>({table:ref.table,sinceSchema:ref.sinceSchema,
+      column:blobReferenceColumn(ref,'r'),scope:kindFilter(ref),label:referenceLabel(ref),onMissing:ref.onMissing}));
+  if(schemaVersion<117)for(const field of ['blob','outputBlob'])references.push({
+      table:'events',sinceSchema:75,column:eventPayloadFieldSql(field,'r.'),
+      scope:" AND kind IN ('prompt','response','tool.use','tool.failure')",label:`events.payload.${field}`,onMissing:'report',
+    });
+  return references;
+}
+
 function openSnapshot(file: string): Database {
   const db = new Database(file, { readonly: true, create: false });
   try {
@@ -310,17 +322,13 @@ function openSnapshot(file: string): Database {
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
     refuseUnsafeNumbers(db);
     const schemaVersion = Number(db.query<{ value: string }, []>("SELECT value FROM schema_meta WHERE key = 'version'").get()?.value);
-    const references = BLOB_REFERENCES.map(ref=>({table:ref.table,sinceSchema:ref.sinceSchema,
-      column:blobReferenceColumn(ref,'r'),scope:kindFilter(ref),label:referenceLabel(ref)}));
-    if(schemaVersion<117)for(const field of ['blob','outputBlob'])references.push({
-      table:'events',sinceSchema:75,column:eventPayloadFieldSql(field,'r.'),
-      scope:" AND kind IN ('prompt','response','tool.use','tool.failure')",label:`events.payload.${field}`,
-    });
+    const references = snapshotReferences(schemaVersion);
     for (const ref of references) {
       if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(ref.table) === null) {
         if (schemaVersion >= ref.sinceSchema) throw new Error(`recovery database is missing reference table ${ref.table}`);
         continue;
       }
+      if (ref.onMissing === 'report') continue;
       if (db.query(`SELECT 1 FROM ${ref.table} r WHERE ${ref.column} IS NOT NULL${ref.scope}
         AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${ref.column}) LIMIT 1`).get() !== null) {
         throw new Error(`recovery database is missing a blob referenced by ${ref.label}`);
@@ -379,7 +387,14 @@ function snapshotFacts(db: Database) {
     throw new Error('recovery database has no supported Deployment identity and schema');
   }
   const counts = db.query<{ blobCount: number; blobBytes: number }, []>('SELECT COUNT(*) AS blobCount, COALESCE(SUM(size), 0) AS blobBytes FROM blobs').get()!;
-  return { deploymentId, schemaVersion, ...counts };
+  const danglingEventBlobs = snapshotReferences(schemaVersion).flatMap(ref => {
+    if (ref.onMissing !== 'report' || db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(ref.table) === null) return [];
+    return db.query<{ kind: string; count: number }, []>(`SELECT r.kind,COUNT(*) count FROM ${ref.table} r
+      WHERE ${ref.column} IS NOT NULL${ref.scope}
+        AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id=r.project_id AND b.key=${ref.column}) GROUP BY r.kind ORDER BY r.kind`).all()
+      .map(row => ({ table: ref.table, column: ref.label, ...row }));
+  });
+  return { deploymentId, schemaVersion, ...counts, ...(danglingEventBlobs.length === 0 ? {} : { danglingEventBlobs }) };
 }
 
 function assertOwnedDirectory(root: string): void {
@@ -933,6 +948,12 @@ async function writeRecoveryBundle(
       if (facts.deploymentId !== snapshot.deploymentId || facts.schemaVersion !== snapshot.schemaVersion
         || facts.blobCount !== snapshot.blobCount || facts.blobBytes !== snapshot.blobBytes) throw new Error('recovery manifest does not describe its database');
       assertSnapshotHold(db, facts, held);
+      if (facts.danglingEventBlobs !== undefined) {
+        manifest = { ...manifest, snapshot: { ...snapshot, danglingEventBlobs: facts.danglingEventBlobs } };
+        writeManifest(root, manifest);
+        const missing = facts.danglingEventBlobs.reduce((sum, row) => sum + row.count, 0);
+        report(`${missing} retained event references have missing content; their rows and reference counts are preserved in this artifact.`);
+      }
       const complete = manifest.status === 'complete';
       /**
        * One object read from the source and stored, retried on a transient failure. The store publishes an object under

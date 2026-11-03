@@ -440,10 +440,22 @@ export interface RestoreDocuments {
 export const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
 
 export interface RestoreOutcome {
+  danglingEventBlobs?: { table: string; projectId: string; eventId: string; key: string }[];
   retiredNotice?: string;
   documents?: DocumentRestoreSummary;
   /** `reused` counts `blobs` rows this Deployment already registers, kept as they stand. */
   tables: Record<string, { rows: number; inserted: number; skipped?: string; reused?: number }>;
+}
+
+async function restoredCaptureReferences(db: RelationalStore, table: string, row: Readonly<Record<string, unknown>>, outcome: RestoreOutcome): Promise<PreparedStatement[]> {
+  const missing = await unregisteredAmong(db, referencedBlobsOf(table, row, 'report'));
+  if (missing.length > 0) {
+    outcome.danglingEventBlobs ??= [];
+    outcome.danglingEventBlobs.push(...missing.map(ref => ({ table, ...ref, eventId: String(row.event_id) })));
+  }
+  const absent = new Set(missing.map(ref => ref.key));
+  const references = [...referencedBlobsOf(table, row, 'required'), ...referencedBlobsOf(table, row, 'report').filter(ref => !absent.has(ref.key))];
+  return references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
 }
 
 interface RestoreProgress {
@@ -790,16 +802,16 @@ export async function restoreArtifact(
       let inserted = 0;
       for (const row of rows) {
         try {
+          const references = await restoredCaptureReferences(db, table, row, outcome);
           if (row.payload_format === 'archived') {
             const bundle = bundles.get(transcriptIdentity(row.project_id, row.bundle_id));
             if (bundle === undefined) throw new BackupApplyError(table, 'an archived event lacks its bundle');
             const restoredId = restoredBundleIds.get(transcriptIdentity(row.project_id,row.bundle_id));
             if (restoredId === undefined) throw new BackupApplyError(table, 'an archived event lacks its restored bundle');
-            inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId});
+            inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId}, references);
           } else {
-            const references = referencedBlobsOf(table, row);
             const columns = Object.keys(row);
-            const statements = [...(references.length === 0 ? [] : [registeredBlobsGuard(db, references)]),
+            const statements = [...references,
               db.prepare(`INSERT OR IGNORE INTO events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
                 .bind(...columns.map(column => row[column] ?? null))];
             const applied = await db.batch(statements);
@@ -816,7 +828,7 @@ export async function restoreArtifact(
     if (table === 'event_refs') {
       let inserted=0;
       for(const row of rows) {
-        const result=await db.batch([registeredBlobsGuard(db,referencedBlobsOf(table,row)),
+        const result=await db.batch([...await restoredCaptureReferences(db, table, row, outcome),
           ...contentAssertion(db,'EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND kind=?)',
             [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,false)]);
         inserted+=result.at(-1)!.results.length;

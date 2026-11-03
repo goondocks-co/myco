@@ -17,6 +17,7 @@
  * produced it — the turn is still the user's work, and dropping it loses a
  * prompt at the moment capture is already degraded.
  */
+import { PROMPT_ORIGINS } from '@goondocks/myco-shared/member-protocol';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
@@ -125,7 +126,7 @@ export function pluginEventsParser(options: {
             payload: {
               promptId: named,
               text,
-              origin: str(line.origin) === 'system' ? 'system' : 'user',
+              origin: PROMPT_ORIGINS.find(origin => origin === line.origin) ?? (line.origin === undefined || line.origin === 'human' ? 'user' : 'unknown'),
               promptKind: 'user_prompt',
             },
             createdAt,
