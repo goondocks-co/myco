@@ -6,10 +6,10 @@ export const archivedTranscriptRangeSql = (project: string, transcript: string, 
     AND r.base_offset=${offset} AND r.source_kind='transcript' AND r.disposition='archived')`;
 
 /** The archive selection and removal of its hot representation share the caller's transaction. */
-export function clearArchivedTranscriptRanges(db: RelationalStore, project: string, transcript: string): PreparedStatement {
-  return db.prepare(`DELETE FROM transcript_segments WHERE project_id=? AND transcript_id=?
+export function clearArchivedTranscriptRanges(db: RelationalStore, project: string, transcript: string, offset: number): PreparedStatement {
+  return db.prepare(`DELETE FROM transcript_segments WHERE project_id=? AND transcript_id=? AND base_offset=?
     AND ${archivedTranscriptRangeSql('transcript_segments.project_id','transcript_segments.transcript_id','transcript_segments.base_offset')}`)
-    .bind(project, transcript);
+    .bind(project, transcript, offset);
 }
 
 /** Additive restore admits a hot range only while its canonical range has no archived selection. */

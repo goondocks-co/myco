@@ -49,7 +49,7 @@ function consumeBackupPublications(db: RelationalStore, where: string, params: r
 }
 
 /** A private backup key owns durable pending authority before upload; index publication consumes it atomically. */
-export async function publishBackupObject<T>(db: RelationalStore, key: string, upload: () => Promise<{ size: number }>,
+export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobStore, key: string, upload: () => Promise<{ size: number }>,
   commit: (size: number) => { row: T; statement: PreparedStatement }): Promise<T> {
   const expires = Date.now() + BLOB_RESERVATION_TTL_MS;
   await db.prepare('INSERT INTO backup_publications(key,expires_at) VALUES(?,?)').bind(key,expires).run();
@@ -65,6 +65,7 @@ export async function publishBackupObject<T>(db: RelationalStore, key: string, u
     return publication.row;
   } catch (error) {
     try {
+      if (await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs,key);
       await db.batch([
         db.prepare(`INSERT INTO object_releases(physical,kind,created_at)
           SELECT ?,'backup',? WHERE NOT EXISTS(SELECT 1 FROM backups WHERE key=?)
@@ -461,8 +462,7 @@ export async function drainObjectReleases(
   report.expired = consumed!.meta.changes + backups!.meta.changes;
 
   const { results: journal } = await db
-    .prepare(`SELECT physical FROM object_releases WHERE NOT EXISTS(SELECT 1 FROM backups WHERE key=physical)
-      ORDER BY created_at, physical LIMIT ?`).bind(DRAIN_PAGE)
+    .prepare(`SELECT physical FROM object_releases ORDER BY created_at, physical LIMIT ?`).bind(DRAIN_PAGE)
     .all<{ physical: string }>();
   for (const { physical } of journal) {
     try {

@@ -249,10 +249,10 @@ function portableRow(table: string, row: Record<string, unknown>): Record<string
   return table === 'machine_claims' ? Object.fromEntries(Object.entries(row).filter(([column]) => !MACHINE_REPORT_COLUMNS.has(column))) : row;
 }
 
-/** Create one backup artifact and its index row; answers the index row written. */
-export async function createBackup(
+/** Encodes the tables held by one schema snapshot without publishing or changing its store. */
+export async function backupSnapshot(
   db: RelationalStore, blobs: BlobStore, opts: { producer: string; now: number },
-): Promise<BackupIndexRow> {
+): Promise<{ header: BackupHeader; bytes: Uint8Array<ArrayBuffer> }> {
   // A store at an older schema carries the tables its schema holds; its header names that schema.
   const held = await db.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (SELECT value FROM json_each(?))`)
     .bind(JSON.stringify(BACKUP_TABLES)).all<{ name: string }>();
@@ -287,11 +287,17 @@ export async function createBackup(
   const headerLine = JSON.stringify(header);
   assertBackupSize(`${headerLine}\n`, bytes);
 
+  return { header, bytes: utf8([headerLine, ...lines].join('\n') + '\n') };
+}
+
+/** Create one backup artifact and its index row; answers the index row written. */
+export async function createBackup(db: RelationalStore, blobs: BlobStore, opts: { producer: string; now: number }): Promise<BackupIndexRow> {
+  const { header, bytes: artifact } = await backupSnapshot(db,blobs,opts);
+  const { deploymentId: lineage, schemaVersion: stamped, counts } = header;
   const id = `bk_${crypto.randomUUID()}`;
   const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}__${id}.jsonl`;
-  const artifact = utf8([headerLine, ...lines].join('\n') + '\n');
   const sha256 = await sha256HexOf(artifact);
-  return publishBackupObject(db, key,
+  return publishBackupObject(db, blobs, key,
     () => blobs.put(key, new Response(artifact).body, { sha256, httpMetadata: { contentType: 'application/jsonl' } }),
     size => {
       const row: BackupIndexRow = {
@@ -714,7 +720,7 @@ export async function restoreArtifact(
   const transcriptRows = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   const bundles = new Map((byTable.get('archive_bundles') ?? []).map((row) => [transcriptIdentity(row.project_id, row.id), row]));
   const restoredBundleIds = new Map<string, number>();
-  const insertedBundles: Array<{projectId:string;id:number;archiveKey:string;receiptKey:string}> = [];
+  const restoredBundles: Array<{projectId:string;id:number;archiveKey:string;receiptKey:string;inserted:boolean}> = [];
   const artifactEvents = new Map((byTable.get('events') ?? []).map(row => [transcriptIdentity(row.project_id, row.event_id), row]));
   const transcriptSegments = new Map<string, Record<string, unknown>[]>();
   for (const row of byTable.get('transcript_segments') ?? []) {
@@ -772,8 +778,8 @@ export async function restoreArtifact(
         if (held === null || columns.some(column => held[column] !== (row[column] ?? null))
           || !Number.isSafeInteger(held.id)) throw new BackupApplyError(table, 'a bundle conflicts with the destination');
         restoredBundleIds.set(transcriptIdentity(row.project_id,row.id),held.id as number);
-        if (applied!.results.length > 0) insertedBundles.push({projectId:row.project_id as string,id:held.id as number,
-          archiveKey:row.archive_key as string,receiptKey:row.receipt_key as string});
+        restoredBundles.push({projectId:row.project_id as string,id:held.id as number,
+          archiveKey:row.archive_key as string,receiptKey:row.receipt_key as string,inserted:applied!.results.length>0});
       }
       outcome.tables[table] = {rows:rows.length,inserted};
       continue;
@@ -918,8 +924,8 @@ export async function restoreArtifact(
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
       }));
-      if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && typeof row.transcript_id === 'string')
-        .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string)));
+      if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && row.disposition === 'archived' && typeof row.transcript_id === 'string')
+        .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string, row.base_offset as number)));
       if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
       if (ordered) {
         statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
@@ -968,7 +974,7 @@ export async function restoreArtifact(
   }
   await restoreLegacyEventReferences(db,byTable);
   await documents?.apply(restoredAt);
-  for (const bundle of insertedBundles) {
+  for (const bundle of restoredBundles) {
     const unused = `NOT (${bundleHeld('?', '?')})`;
     const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
     const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
@@ -982,7 +988,7 @@ export async function restoreArtifact(
     ]);
     if (results[1]!.meta.changes > 0) {
       await releaseBlobs(db,pairs,header.createdAt);
-      if (outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
+      if (bundle.inserted && outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
     }
   }
   return outcome;

@@ -202,7 +202,8 @@
     "local: fix-1944 t3 publication recovery, pinned Bun 1.4.0 darwin-arm64 through npm test with native SQLite and Miniflare D1. Five focused cases measured 11590ms process wall including both stores; 26000ms file weight covers twice measured wall plus startup. No new parity scenario. The Wrangler bundle prerequisite was skipped with a scratch-only subprocess shim to honor the no-Wrangler lane; test execution and assertions were unchanged.",
     "local/projected: PR2056 CI and Opus review follow-up, pinned Bun1.4.0 through npm test, native SQLite and Miniflare D1. Focused file case sums: publication-ci-contracts.test.ts 9628ms (two existing parity scenarios through a local HTTP front door), publication-review.test.ts 14083ms, document-publication-recovery.test.ts 13884ms; weights are local x3.5 rounded up to 1000ms: 34000/50000/49000ms. stored-text.test.tsx measured73ms and retains147ms. No new parity scenario; existing raw-privacy110000ms and storage-cleanup106000ms parity weights retained; the full parity suite was not run under the lane host-load rule.",
     "local: PR2056 node-shard fixture follow-up on pinned Bun1.4.0 through npm test. Complete events-read-budget-runtime.test.ts measured27259ms in the bounded importer batch, including verified text admission and all planning/write-batch reads at1000 and10000 unrelated records; weight rounded up to30000ms. Complete migrate.test.ts measured42293ms and retains its45000ms weight. No new test file or parity scenario; existing parity weights retained.",
-    "local: t10 backup/restore fixes, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1/R2. The seven-case backup-restore-boundaries file measured 19757.73ms summed test bodies in the npm driver after schema 537; weight 22000ms rounds up with 2000ms startup. recovery-producer-object measured 1278.47ms summed bodies including real local multipart abort; raised to 3500ms with startup. recovery-sql measured 121.66ms summed bodies including native/D1 wide-row import and retains its 1144ms floor. No new parity scenario; existing parity weights retained."
+    "local: t10 backup/restore fixes, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1/R2. The seven-case backup-restore-boundaries file measured 19757.73ms summed test bodies in the npm driver after schema 537; weight 22000ms rounds up with 2000ms startup. recovery-producer-object measured 1278.47ms summed bodies including real local multipart abort; raised to 3500ms with startup. recovery-sql measured 121.66ms summed bodies including native/D1 wide-row import and retains its 1144ms floor. No new parity scenario; existing parity weights retained.",
+    "local: t10 Opus review correction, pinned Bun 1.4.0 darwin-arm64, isolated scratch homes and local native SQLite/Miniflare D1. The extended thirteen-case backup-restore-boundaries file measured 31166ms npm runner wall; weight 32000ms rounds up. Includes saved knowledge, receipt ownership, deletion interleaving, bundle retry cleanup, exact archive ranges and measured D1 row reads. No new parity scenario; existing file and parity floors retained."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -1044,7 +1045,7 @@
     "tests/myco-server/publication-review.test.ts": 60000,
     "tests/member/setup-review.test.ts": 11000,
     "tests/myco-server/publication-data.test.ts": 3000,
-    "tests/myco-server/backup-restore-boundaries.test.ts": 22000
+    "tests/myco-server/backup-restore-boundaries.test.ts": 32000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
