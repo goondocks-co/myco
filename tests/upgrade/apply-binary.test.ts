@@ -436,9 +436,10 @@ const PRODUCTION_CAP = 256 * 1024 * 1024;
 function fakeResponse(
   chunks: Uint8Array[],
   headers: Record<string, string> = {},
-): { response: Response; pulls: () => number } {
+): { response: Response; pulls: () => number; canceled: () => boolean } {
   let i = 0;
   let pulled = 0;
+  let canceled = false;
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
       pulled++;
@@ -448,8 +449,9 @@ function fakeResponse(
         controller.close();
       }
     },
+    cancel() { canceled = true; },
   }, { highWaterMark: 0 });
-  return { response: new Response(stream, { status: 200, headers }), pulls: () => pulled };
+  return { response: new Response(stream, { status: 200, headers }), pulls: () => pulled, canceled: () => canceled };
 }
 
 describe('download() — byte-cap DoS guard (E1)', () => {
@@ -470,6 +472,25 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     try { fs.rmSync(destPath, { force: true }); } catch { /* best-effort */ }
   });
 
+  it('keeps a progressing download alive past its idle deadline and stops an idle read', async () => {
+    const idleMs = 250;
+    const chunks = 12;
+    let produced = 0;
+    const deps = createBinaryUpdateDeps({ downloadIdleTimeoutMs: idleMs, fetch: async () => new Response(new ReadableStream({
+      async pull(controller) {
+        await new Promise(resolve => setTimeout(resolve, idleMs / 10));
+        if (produced++ < chunks) controller.enqueue(new Uint8Array([1])); else controller.close();
+      },
+    }, { highWaterMark: 0 })) });
+    await deps.download('https://fixture.invalid/slow', destPath);
+    expect(fs.statSync(destPath).size).toBe(chunks);
+    const stalled = createBinaryUpdateDeps({ downloadIdleTimeoutMs: idleMs, fetch: async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+    })) });
+    await expect(stalled.download('https://fixture.invalid/stalled', destPath)).rejects.toThrow();
+    expect(fs.existsSync(destPath)).toBe(false);
+  });
+
   it('streams a response of exactly the cap successfully to disk', async () => {
     const half = TEST_CAP / 2;
     const { response } = fakeResponse([
@@ -488,7 +509,7 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     // Two chunks of cap/2 + 1: the first is written to disk, the second takes
     // the running total to cap + 2 and must abort and remove that partial file.
     const halfCap = TEST_CAP / 2 + 1;
-    const { response } = fakeResponse([
+    const { response, canceled } = fakeResponse([
       new Uint8Array(halfCap).fill(0xcc),
       new Uint8Array(halfCap).fill(0xdd),
     ]);
@@ -499,6 +520,7 @@ describe('download() — byte-cap DoS guard (E1)', () => {
     ).rejects.toThrow(new RegExp(`exceeded ${TEST_CAP} bytes \\(cap\\)`));
 
     expect(fs.existsSync(destPath)).toBe(false);
+    expect(canceled()).toBe(true);
   });
 
   it('rejects on a lying Content-Length (small header, large body still caught by streaming counter)', async () => {

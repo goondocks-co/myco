@@ -14,6 +14,7 @@ import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goo
  * that is loose, unreadable or malformed is an error, never an absence.
  */
 import crypto from 'node:crypto';
+import { RUNNER_CONTACT_RECORD_MS } from './request.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
@@ -33,7 +34,7 @@ const RUNNER_DIR_MODE = 0o700;
 const RUNNER_FILE_MODE = 0o600;
 const LOCK_COMMAND = 'myco runner';
 const TEMP_SUFFIX_CHARS = 6;
-const CONTACT_RECORD_INTERVAL_MS = 5 * 60 * 1000;
+const OFFER_RECORD_INTERVAL_MS = 5 * 60 * 1000;
 
 /** A registration in flight: the candidate sent to start it and, once the Deployment answers, the device grant it is polled on. */
 export interface PendingRegister {
@@ -321,9 +322,9 @@ function sameOffer(left: RunnerRecord['lastOffer'], right: Omit<NonNullable<Runn
 }
 
 function contactRecordChange(record: RunnerRecord, at: number, offer?: Omit<NonNullable<RunnerRecord['lastOffer']>, 'observedAt'>): RunnerRecord | null {
-  const contactDue = record.lastContactAt === undefined || at - record.lastContactAt >= CONTACT_RECORD_INTERVAL_MS;
+  const contactDue = record.lastContactAt === undefined || at - record.lastContactAt >= RUNNER_CONTACT_RECORD_MS;
   const offerDue = offer !== undefined && at >= (record.lastOffer?.observedAt ?? 0)
-    && (!sameOffer(record.lastOffer, offer) || at - (record.lastOffer?.observedAt ?? 0) >= CONTACT_RECORD_INTERVAL_MS);
+    && (!sameOffer(record.lastOffer, offer) || at - (record.lastOffer?.observedAt ?? 0) >= OFFER_RECORD_INTERVAL_MS);
   if (!contactDue && !offerDue) return null;
   return { ...record,
     lastContactAt: Math.max(record.lastContactAt ?? 0, at),

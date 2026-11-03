@@ -3,7 +3,7 @@
  * credential rotation. Both present the runner's own bearer on the Deployment-scoped headers a worker sends, name
  * no Project, and are classified by the member classifier.
  */
-import { unboundedBudget } from '../member/budget.js';
+import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
 import { classifyEventAnswer, ServerClient, type FetchLike, type Outcome } from '../member/transport.js';
 import type { RunnerUpdateContact } from './update.js';
 
@@ -26,12 +26,17 @@ export interface RunnerContact {
 }
 
 /** Send one runner route request under `token`, and classify the answer. */
-export async function postRunnerRoute(serverUrl: string, token: string, path: string, body: unknown, fetchImpl: FetchLike = globalThis.fetch): Promise<Outcome> {
+export async function postRunnerRoute(serverUrl: string, token: string, path: string, body: unknown, fetchImpl: FetchLike = globalThis.fetch, signal?: AbortSignal): Promise<Outcome> {
   const client = new ServerClient({ serverUrl, token }, fetchImpl);
-  const raw = await client.request('POST', path, {
-    body: JSON.stringify(body), headers: { 'content-type': JSON_CONTENT_TYPE }, budget: unboundedBudget(), scope: 'deployment',
-  });
-  return classifyEventAnswer(raw);
+  try {
+    const raw = await runnerRequest(bounded => client.request('POST', path, {
+      body: JSON.stringify(body), headers: { 'content-type': JSON_CONTENT_TYPE },
+      budget: { signal: bounded, connectTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS, requestTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS }, scope: 'deployment',
+    }), signal);
+    return classifyEventAnswer(raw);
+  } catch (error) {
+    return classifyEventAnswer({ kind: 'transport', detail: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 /** Read a contact answer's runner and credential, or null where the body is not that shape. */

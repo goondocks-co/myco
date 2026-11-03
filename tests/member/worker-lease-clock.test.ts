@@ -91,26 +91,31 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
 describe('the lease a worker holds', () => {
   it('holds renewal and wake protection until the terminal request settles', async () => {
     let protectedNow = false;
-    let leasesDuringEnd = 0;
+    let endAborted = false;
     let ending = false;
     const r = rig({
       keepAwake: () => { protectedNow = true; return () => { protectedNow = false; }; },
       lease: () => {
-        if (ending) leasesDuringEnd += 1;
+        if (ending) expect(protectedNow).toBe(true);
         return Response.json({ persisted: true, held: true, leaseMs: LEASE_MS });
       },
-      end: async (body) => {
+      end: (_body, signal) => {
         ending = true;
         expect(protectedNow).toBe(true);
-        await wait(HEARTBEAT_MS * 3);
-        expect(protectedNow).toBe(true);
-        return Response.json({ persisted: true, ended: true, status: body.status });
+        return new Promise<Response>((_resolve, reject) => {
+          signal!.addEventListener('abort', () => {
+            endAborted = true;
+            expect(protectedNow).toBe(true);
+            reject(signal!.reason);
+          }, { once: true });
+        });
       },
     });
     try {
       r.release();
       expect(await r.start()).toEqual({ driven: 1, refused: null });
-      expect(leasesDuringEnd).toBeGreaterThanOrEqual(2);
+      expect(endAborted).toBe(true);
+      expect(r.lines.some(line => line.startsWith('could not report the outcome'))).toBe(true);
       expect(protectedNow).toBe(false);
     } finally { r.release(); r.stopping.abort(); }
   });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   publishRunnerRecord, readRunnerRecord, recordRunnerContact, runnerRecordPath, withRunnerLock, RUNNER_RECORD_VERSION,
 } from '@myco/runner/runner-registry.js';
+import { RUNNER_CONTACT_RECORD_MS } from '@myco/runner/request.js';
 
 const SERVER = 'https://runner.example';
 const IDENTITY = { runnerId: 'runner-one', deploymentId: 'deployment-one' };
@@ -20,7 +21,7 @@ beforeEach(async () => {
 });
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 
-it('publishes one changed offer across one hundred identical acknowledged polls', async () => {
+it('throttles contact writes while preserving one offer across one hundred identical acknowledged polls', async () => {
   const file = runnerRecordPath(SERVER, home);
   const before = fs.statSync(file).ino;
   let first: number | null = null;
@@ -28,10 +29,10 @@ it('publishes one changed offer across one hundred identical acknowledged polls'
     expect(await recordRunnerContact(SERVER, IDENTITY, 1_000 + poll * 2_000, home, OFFER)).toBe(true);
     const written = fs.statSync(file).ino;
     if (poll === 0) { expect(written).not.toBe(before); first = written; }
-    else expect(written).toBe(first!);
+    else if (poll * 2_000 < RUNNER_CONTACT_RECORD_MS) expect(written).toBe(first!);
   }
   const observed = readRunnerRecord(SERVER, home)!;
-  expect(observed.lastContactAt).toBe(1_000);
+  expect(observed.lastContactAt).toBeGreaterThanOrEqual(1_000 + 99 * 2_000 - RUNNER_CONTACT_RECORD_MS);
   expect(observed.lastOffer).toEqual({ ...OFFER, observedAt: 1_000 });
 });
 

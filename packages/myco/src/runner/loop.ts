@@ -1,3 +1,5 @@
+import { abortable } from '@myco/utils/abortable.js';
+import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -92,7 +94,7 @@ export interface WorkerOptions {
    * Deployment refuses the credential (`force` true) before that refusal is
    * taken as final. The next read of `token` presents whatever it wrote.
    */
-  renew?: (force: boolean) => Promise<RefreshStatus>;
+  renew?: (force: boolean, signal?: AbortSignal) => Promise<RefreshStatus>;
   /**
    * Where this machine's worker locks live (`instance.ts`), or null for a worker
    * that shares the Deployment with nothing — a test's own server.
@@ -140,6 +142,8 @@ export interface WorkerOptions {
   contactBody?: () => Record<string, unknown>;
   /** Runs under the instance lock between attempts, before another claim. */
   onIdle?: () => Promise<'restart' | 'hold' | void>;
+  /** Successful lease contact keeps the local service observation current. */
+  onLeaseRenewed?: (at: number) => Promise<void>;
   /** The run is admitted under this executor's lease. */
   onClaim?: () => void;
   /** A driven attempt's terminal outcome was accepted by the Deployment. */
@@ -188,7 +192,16 @@ class SerializedBody {
 }
 
 async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
-  await options.renew?.(false);
+  try {
+    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal);
+  } catch (error) {
+    return { kind: 'unreachable', detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function postWithin(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
+  await options.renew?.(false, options.signal);
+  options.signal.throwIfAborted();
   const token = credentialOf(options);
   if (token === null) return NO_MEMBERSHIP;
   const answer = await postAs(options, token, path, body);
@@ -224,7 +237,7 @@ async function afterRefusal(options: Requester, refused: string): Promise<
     if (current === null) return { kind: 'gone' };
     if (current !== refused) return { kind: 'present', token: current };
     if (options.renew === undefined) return { kind: 'final' };
-    const status = await options.renew(true);
+    const status = await options.renew(true, options.signal);
     const renewed = credentialOf(options);
     if (renewed === null || status === 'no-entry') return { kind: 'gone' };
     if (renewed !== refused) return { kind: 'present', token: renewed };
@@ -258,6 +271,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let repositoryFailure = false;
   let harnessStop = false;
   try {
+    options.signal.throwIfAborted();
     const res = await send(memberServerDialUrl(new URL(path, options.serverUrl).toString()), {
       method: 'POST',
       headers: { ...deploymentScopedHeaders({ token }), 'content-type': 'application/json' },
@@ -307,7 +321,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
 
 /** What the Deployment said, when it said a positive number; the fallback otherwise. */
 function waitOf(told: unknown, fallback: number): number {
-  return typeof told === 'number' && Number.isFinite(told) && told > 0 ? told : fallback;
+  return typeof told === 'number' && Number.isFinite(told) && told > 0 ? Math.min(told, RUNNER_REQUEST_TIMEOUT_MS) : fallback;
 }
 
 /**
@@ -333,7 +347,7 @@ const leaseDeadline = (sentAt: number, leaseMs: unknown): number =>
 const DEFAULT_HEARTBEAT_MS = 30_000;
 
 /** What a worker waits between claims before its first answer tells it the Deployment's own cadence. */
-export const CLAIM_IDLE_POLL_MS = 2_000;
+export { RUNNER_POLL_INTERVAL_MS as CLAIM_IDLE_POLL_MS } from './request.js';
 
 /**
  * How long past its own budget a run's child is left alone before the worker
@@ -427,6 +441,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
         acceptedSequence = sequence;
         deadline = renewed;
         scheduleExpiry();
+        void options.onLeaseRenewed?.(clock()).catch((error: unknown) => options.log(`could not record lease contact: ${error instanceof Error ? error.message : String(error)}`));
         return;
       }
       losing(answer.kind === 'refused'
@@ -510,9 +525,14 @@ async function drive(
   let previousUsage: WorkerUsage | null = null;
 
   const stopping = new AbortController();
-  const onAbort = (): void => { stopping.abort(); };
+  const readDeadline = new AbortController();
+  let cancellationTimer: ReturnType<typeof setTimeout> | undefined;
+  const onAbort = (): void => {
+    stopping.abort();
+    cancellationTimer ??= setTimeout(() => readDeadline.abort(), RUN_CLEANUP_TIMEOUT_MS);
+  };
   options.signal.addEventListener('abort', onAbort, { once: true });
-  if (options.signal.aborted) stopping.abort();
+  if (options.signal.aborted) onAbort();
   let lost = false;
   let overran = false;
   const cleanupDeadline = clock() + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
@@ -573,7 +593,7 @@ async function drive(
     stream = start();
     let retriedLogin = false;
     for (;;) {
-      const step = await Promise.race([stream.next(), overrunReached]);
+      const step = await abortable(readDeadline.signal, () => Promise.race([stream!.next(), overrunReached]));
       if (step === 'overran') break;
       if (step.done === true) {
         const last = events.at(-1);
@@ -583,10 +603,10 @@ async function drive(
           && !events.some((event) => event.kind === 'tool_call') && !stopping.signal.aborted) {
           retriedLogin = true;
           if (last.detail !== null) keepRunDiagnostic(options, run, harnessStoppedError('error', classifyDiagnostic(run.harness, last)), last.detail);
-          await stream.return?.();
+          await runnerRequest(async () => { await stream!.return?.(); }, stopping.signal);
           if (await recheckLogin() && !stopping.signal.aborted && clock() < lease.deadline) {
             options.log(`run ${run.id}: login readiness rechecked; retrying the first ${run.harness} run once`);
-            await checkout?.dispose();
+            await runnerRequest(() => checkout?.dispose() ?? Promise.resolve(), stopping.signal);
             checkout = undefined;
             ({ scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
               serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
@@ -626,6 +646,7 @@ async function drive(
     };
   } finally {
     clearTimeout(budget);
+    clearTimeout(cancellationTimer);
     options.signal.removeEventListener('abort', onAbort);
     stopping.abort();
     const deadline = Math.min(cleanupDeadline, clock() + RUN_CLEANUP_TIMEOUT_MS);
@@ -918,7 +939,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
   const detection = harnessDetection({ detect: async () => {
-    const detected = await detectHarnessesAsync(options.only, options.signal, options.detection);
+    const detected = await runnerRequest(signal => detectHarnessesAsync(options.only, signal, options.detection), options.signal);
     for (const harness of detected) if (harness.error !== undefined) options.log(`${harness.id} unavailable: ${harness.error}`);
     return detected;
   }, clock });
@@ -958,6 +979,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
             ...contactBody(), arch: process.arch, availability: 'settling', readinessReason: 'Waiting to settle after waking.',
           }));
           if (contact.kind === 'refused') return { driven, refused: contact.code };
+          if (contact.kind === 'answered' && !await admitIdentity(contact.body)) return { driven, refused: options.signal.aborted ? null : 'unauthorized' };
         }
         await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
         continue;
@@ -1000,7 +1022,14 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         return { driven, refused: null, replaced: true };
       }
       if (idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
-      const { offered: harnesses, withheld } = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read()));
+      let offer: ReturnType<typeof offerOf>;
+      try { offer = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read())); }
+      catch (error) {
+        options.log(`harness detection failed: ${error instanceof Error ? error.message : String(error)}; still polling`);
+        await pause(options.pollIdleMs);
+        continue;
+      }
+      const { offered: harnesses, withheld } = offer;
       if (options.signal.aborted) break;
       if (!wake.settled()) continue;
       const ready = harnesses.filter((h) => h.installed && h.authenticated).map((h) => h.id);

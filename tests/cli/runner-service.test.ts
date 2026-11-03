@@ -17,8 +17,9 @@ import { runnerUpdater } from '@myco/cli/runner-update.js';
 import { publishAdoptedMarker } from '@myco/install/adoption.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
-import { readRunnerUpdateState } from '@myco/runner/update.js';
+import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/update.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 
 const SERVER = 'https://runner.example';
@@ -46,13 +47,160 @@ const contact = (refuse = false, state: 'enabled' | 'paused' | 'removed' = 'enab
   authorizations.push(request.headers.get('authorization')!);
   return refuse ? Response.json({ error: 'unauthorized' }, { status: 401 }) : Response.json({ persisted: true, runner: { id: 'runner-one', name: 'mini', deploymentId: 'dep-one', state }, credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } });
 }) as typeof fetch;
-const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
+const deps = (os_: 'darwin' | 'linux' | 'win32' = 'darwin') => ({
   mycoHome, home, binaryPath: path.join(root, 'bin', 'myco'), platform: os_, runner: platform.runner,
   lockDir: path.join(root, 'locks'), harnessDirs: () => ['/fixture/harness/bin'], detect: () => [{ id: 'codex', installed: true, authenticated: true }],
   fetch: contact(), now: () => 1000, stdout: (line: string) => output.push(line), stderr: (line: string) => errors.push(line),
 });
 
 describe('explicit runner service opt-in', () => {
+  it('records lease contact during a run that spans the stalled threshold', async () => {
+    await enroll();
+    const before = { ...process.env };
+    const release = path.join(root, 'release-run');
+    let now = Date.now(), renewals = 0;
+    const scoped = { ...deps('linux'), now: () => now, version: '0.0.0-dev+fixture.b1', ownDeploymentUrls: async () => [] };
+    try {
+      stubProfileHarness({ holdUntil: release });
+      const fetch_ = (async (input: RequestInfo | URL) => {
+        const route = new URL(String(input)).pathname;
+        if (route === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini' } },
+          { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        if (route === '/worker/claim') return Response.json({ persisted: true, claimed: true, heartbeatMs: 20, leaseMs: 90_000,
+          run: { id: 'long-run', projectId: 'proj_1', task: 'title-summary', harness: 'claude-code', profile: STUB_PROFILE,
+            instruction: 'do it', instructions: null, runToken: 'fixture', credentialEnv: {}, timeoutSeconds: 600 } });
+        if (route === '/worker/lease') {
+          now += 4_000;
+          if (++renewals === 40) fs.writeFileSync(release, '');
+          return Response.json({ persisted: true, held: true, leaseMs: 90_000 });
+        }
+        return Response.json({ persisted: true, ended: true });
+      }) as typeof fetch;
+      expect(await run(['run', '--once', '--harness', 'claude-code'], { ...scoped, fetch: fetch_ })).toBe(true);
+      expect(renewals).toBeGreaterThanOrEqual(40);
+      expect(now - readRunnerRecord(SERVER, mycoHome)!.lastContactAt!).toBeLessThan(10_000);
+    } finally {
+      fs.writeFileSync(release, '');
+      for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key];
+      Object.assign(process.env, before);
+    }
+  });
+
+  for (const os_ of ['darwin', 'linux'] as const) it(`install restarts a stalled service and preserves a runner within its lease on ${os_}`, async () => {
+    await enroll();
+    const scoped = deps(os_);
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, 'fixture', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 1, mycoHome);
+    platform.commands.length = 0;
+    expect(await run(['install', '--server', SERVER], { ...scoped, now: () => 90_001 })).toBe(true);
+    expect(platform.commands.some(line => line.includes(' unload ') || line.includes(' disable '))).toBe(false);
+    platform.commands.length = 0;
+    expect(await run(['install', '--server', SERVER], { ...scoped, now: () => 180_001 })).toBe(true);
+    const stop = platform.commands.findIndex(line => line.includes(' unload ') || line.includes(' disable '));
+    const start = platform.commands.findIndex((line, i) => i > stop && (line.includes(' load ') || line.includes(' restart ')));
+    expect(stop).toBeGreaterThanOrEqual(0);
+    expect(start).toBeGreaterThan(stop);
+    expect(platform.running.size).toBe(1);
+  });
+
+  it('reports stale service contact with a restart command and clears it after fresh contact', async () => {
+    await enroll();
+    const scoped = deps('linux');
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, 'fixture', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 1, mycoHome);
+    const status = { ...scoped, now: () => 180_000, version: '2.0.0-alpha.1' };
+    expect(await run(['status', '--server', SERVER], status)).toBe(true);
+    expect(output.join('\n')).toContain(`stalled since ${new Date(1).toISOString()}; restart it with myco runner install --server ${SERVER}`);
+    output.length = 0;
+    await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 180_000, mycoHome);
+    expect(await run(['status', '--server', SERVER], status)).toBe(true);
+    expect(output.join('\n')).toContain('runner service: running at login');
+    expect(output.join('\n')).not.toContain('stalled since');
+  });
+
+  for (const os_ of ['darwin', 'linux', 'win32'] as const) it(`stops a busy service, checks under the instance lock, and starts it for update --now on ${os_}`, async () => {
+    await enroll();
+    const scoped = deps(os_);
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, '#!/bin/sh\necho 2.0.0-alpha.1\n', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: scoped.binaryPath });
+    const held = LifecycleLock.acquire(workerLockPath(scoped.lockDir, SERVER), { command: 'fixture runner' });
+    if (!held.acquired) throw new Error('fixture lock unavailable');
+    const events: string[] = [];
+    try {
+      const runner = (command: string, args: readonly string[]) => {
+        if ((command === 'launchctl' && args[0] === 'unload') || (command === 'systemctl' && args.includes('disable')) || (command === 'schtasks' && args[0] === '/End')) {
+          events.push('stop'); held.lock.release();
+        }
+        return platform.runner(command, args);
+      };
+      expect(await run(['update', '--now', '--server', SERVER], { ...scoped, runner, version: '2.0.0-alpha.1',
+        update: { fetch: (async () => {
+          expect(events).toContain('stop');
+          expect(workerHolder(scoped.lockDir, SERVER)?.pid).toBe(process.pid);
+          events.push('check'); return Response.json([]);
+        }) as typeof fetch },
+      })).toBe(true);
+      expect(events).toContain('check');
+      expect(platform.running.size).toBe(1);
+      expect(output.join('\n')).toContain('Stopping runner service');
+      expect(output.join('\n')).toContain('Starting runner service');
+      expect(readRunnerUpdateState(mycoHome).requests?.[SERVER]).toBeUndefined();
+      expect(workerHolder(scoped.lockDir, SERVER)).toBeNull();
+    } finally { held.lock.release(); }
+  });
+
+  it('applies update --now before returning and restarts after verification failure', async () => {
+    await enroll();
+    const scoped = deps('linux');
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, '#!/bin/sh\necho 2.0.0-alpha.1\n', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: scoped.binaryPath });
+    const candidate = '#!/bin/sh\necho 2.0.0-alpha.2\n';
+    const asset = 'myco-linux-arm64';
+    const runner = (command: string, args: readonly string[]) => {
+      const result = platform.runner(command, args);
+      if (command === 'systemctl' && args.includes('restart') && fs.readFileSync(scoped.binaryPath, 'utf8') === candidate) {
+        expect(workerHolder(scoped.lockDir, SERVER)).toBeNull();
+        withRunnerUpdateState(mycoHome, state => { state.transaction!.phase = 'healthy'; });
+      }
+      return result;
+    };
+    const fetch_ = (async () => Response.json([{ tag_name: 'myco/v2.0.0-alpha.2', prerelease: true, assets: [
+      { name: asset, browser_download_url: 'https://fixture.invalid/binary' },
+      { name: 'SHA256SUMS', browser_download_url: 'https://fixture.invalid/sums' },
+    ] }])) as typeof fetch;
+    const update = { fetch: fetch_, targetTriple: () => 'linux-arm64' as const, probe: () => ({ runs: true as const }),
+      stageDeps: { download: async (url: string, dest: string) => {
+        expect(workerHolder(scoped.lockDir, SERVER)?.pid).toBe(process.pid);
+        expect(platform.running.size).toBe(0);
+        fs.writeFileSync(dest, url.endsWith('/binary') ? candidate : `${'a'.repeat(64)}  ${asset}\n`);
+      }, computeSha256: async () => 'a'.repeat(64) },
+    };
+    const updated = await run(['update', '--now', '--server', SERVER], { ...scoped, runner, version: '2.0.0-alpha.1', update,
+      updateHelper: { probe: () => ({ runs: true }) },
+    });
+    expect({ updated, output, errors }).toMatchObject({ updated: true });
+    expect(fs.readFileSync(scoped.binaryPath, 'utf8')).toBe(candidate);
+    expect(readRunnerUpdateState(mycoHome).lastResults?.[SERVER]?.result).toBe('updated');
+    expect(platform.running.size).toBe(1);
+    const newer = (async () => Response.json([{ tag_name: 'myco/v2.0.0-alpha.3', prerelease: true, assets: [
+      { name: asset, browser_download_url: 'https://fixture.invalid/binary' },
+      { name: 'SHA256SUMS', browser_download_url: 'https://fixture.invalid/sums' },
+    ] }])) as typeof fetch;
+    expect(await run(['update', '--now', '--server', SERVER], { ...scoped, runner, version: '2.0.0-alpha.2',
+      update: { ...update, fetch: newer, stageDeps: { ...update.stageDeps, computeSha256: async () => 'b'.repeat(64) } },
+    })).toBe(false);
+    expect(fs.readFileSync(scoped.binaryPath, 'utf8')).toBe(candidate);
+    expect(platform.running.size).toBe(1);
+  });
+
   it('publishes local-artifact support for the actual custom-lock owner before its first claim', async () => {
     await enroll();
     const scoped = deps('linux');

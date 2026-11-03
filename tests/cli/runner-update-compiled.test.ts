@@ -13,6 +13,7 @@ import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-prof
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-update-compiled-'));
 const versions = ['2.0.0-alpha.2', '2.0.0-alpha.3'] as const;
 const files = versions.map(version => path.join(root, `myco-${version}`));
+const INTERRUPT_TEST_BOUND_MS = 8_000;
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 beforeAll(() => {
@@ -26,12 +27,15 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow', () => {
-  for (const trigger of ['cli', 'dashboard'] as const) {
+  for (const trigger of ['cli', 'dashboard', 'now', 'SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
     it(`registers, applies the local fixture release from ${trigger}, restarts via stub and reports outcome`, async () => {
       const cwd = path.join(root, trigger); fs.mkdirSync(cwd);
       const binary = path.join(cwd, 'service-bin', 'myco'); fs.mkdirSync(path.dirname(binary)); fs.copyFileSync(files[0]!, binary);
       const asset = `myco-darwin-${process.arch}`;
       const sum = crypto.createHash('sha256').update(fs.readFileSync(files[1]!)).digest('hex');
+      const interrupted = trigger.startsWith('SIG');
+      let active: ReturnType<typeof spawn> | undefined;
+      let finishDownload: (() => void) | undefined;
       let report: Record<string, unknown> | undefined;
       let requested = trigger === 'dashboard';
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async request => {
@@ -42,7 +46,15 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
           { name: asset, browser_download_url: `${server.url.origin}/binary` }, { name: 'SHA256SUMS', browser_download_url: `${server.url.origin}/sums` },
         ] }], { headers: { etag: 'fixture' } });
         }
-        if (url.pathname === '/binary') return new Response(Bun.file(files[1]!));
+        if (url.pathname === '/binary') {
+          if (interrupted) {
+            return new Promise<Response>(resolve => {
+              finishDownload = () => resolve(new Response('interrupted'));
+              setTimeout(() => active!.kill(trigger as NodeJS.Signals), 20);
+            });
+          }
+          return new Response(Bun.file(files[1]!));
+        }
         if (url.pathname === '/sums') return new Response(`${sum}  ${asset}\n`);
         if (url.pathname === '/auth/runner/start') return Response.json({ device_code: 'd'.repeat(43), user_code: 'BCDF-2345', expires_in: 600, interval: 1 });
         if (url.pathname === '/auth/runner/poll') return Response.json({ registered: true, runnerId: 'runner_fixture', deploymentId: 'dep_fixture', name: 'mini' });
@@ -61,9 +73,11 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
       const env = sandboxChildEnv(cwd, { MYCO_UPDATE_FIXTURE_BINARY: binary, MYCO_UPDATE_FIXTURE_SERVER: serverUrl, GITHUB_TOKEN: '', GH_TOKEN: '' });
       const invoke = (...args: string[]) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
         const child = spawn(binary, ['runner', ...args], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+        active = child;
+        const watchdog = interrupted && args.includes('--now') ? setTimeout(() => child.kill('SIGKILL'), INTERRUPT_TEST_BOUND_MS) : undefined;
         let stdout = '', stderr = '';
         child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
-        child.once('error', reject); child.once('close', code => resolve({ code, stdout, stderr }));
+        child.once('error', reject); child.once('close', code => { clearTimeout(watchdog); resolve({ code, stdout, stderr }); });
       });
       try {
         writeInstallMarker(env.MYCO_HOME!, { channel: 'alpha', source: 'curl', bin: path.join(cwd, 'wrong-destination') });
@@ -71,8 +85,16 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
         expect(await invoke('install', '--server', serverUrl)).toMatchObject({ code: 0 });
         const checked = await invoke('update', '--check');
         expect(checked.code).toBe(0); expect(checked.stdout).toContain(versions[1]);
-        const updating = await invoke(trigger === 'cli' ? 'update' : 'run', '--server', serverUrl);
-        expect(updating.code).toBe(trigger === 'cli' ? 0 : 1);
+        const updating = await invoke(...(trigger === 'now' || interrupted ? ['update', '--now'] : [trigger === 'cli' ? 'update' : 'run']), '--server', serverUrl);
+        if (interrupted) {
+          expect(updating).toMatchObject({ code: { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[trigger as 'SIGINT' | 'SIGTERM' | 'SIGHUP'] });
+          const state = JSON.parse(fs.readFileSync(path.join(env.MYCO_HOME!, 'fixture-service-state.json'), 'utf8')) as { commands: string[]; running: string[] };
+          const stopped = state.commands.findLastIndex(command => command.startsWith('launchctl unload'));
+          expect(state.commands.slice(stopped + 1).some(command => command.startsWith('launchctl load'))).toBe(true);
+          expect(state.running).toHaveLength(1);
+          return;
+        }
+        expect({ code: updating.code, stdout: updating.stdout, stderr: updating.stderr }).toMatchObject({ code: trigger === 'dashboard' ? 1 : 0 });
         for (let tries = 0; tries < 200 && !report; tries++) await wait(50);
         expect(report).toMatchObject({ channel: 'alpha', currentVersion: versions[1], lastResult: { fromVersion: versions[0], toVersion: versions[1], result: 'updated', ...(trigger === 'dashboard' ? { requestId: 'dashboard_fixture' } : {}) } });
         expect(readRunnerUpdateState(env.MYCO_HOME!).transaction).toBeUndefined();
@@ -81,6 +103,7 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
         const probe = spawnSync(binary, ['--version'], { cwd, env, encoding: 'utf8' });
         expect(probe.status).toBe(0); expect(probe.stdout.trim()).toBe(versions[1]);
       } finally {
+        finishDownload?.();
         await server.stop(true);
         const pidFile = path.join(env.MYCO_HOME!, 'fixture-pids');
         if (fs.existsSync(pidFile)) for (const line of fs.readFileSync(pidFile, 'utf8').trim().split('\n')) {
