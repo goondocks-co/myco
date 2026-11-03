@@ -36,8 +36,8 @@ Usage:
                                   Claim and drive the Deployment's runs in this terminal.
   myco runner rotate [--server <url>]
                                   Rotate this runner's credential now.
-  myco runner update [--check] [--server <url>] [--channel <alpha|beta|stable>] [--target-version <version>]
-                                  Update within the installed channel between runs.
+  myco runner update [--check | --now] [--server <url>] [--channel <alpha|beta|stable>] [--target-version <version>]
+                                  Update between runs; --now stops the service and updates immediately.
   myco runner status [--server <url>]
                                   Show registration, service, contact and harnesses.
   myco runner doctor [--server <url>]
@@ -145,6 +145,11 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
       updater.onContact(body);
       updater.acknowledgeHealthy();
     },
+    onLeaseRenewed: async at => {
+      if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome)) {
+        log('runner record busy; lease contact timestamp was not saved');
+      }
+    },
     onOfferAcknowledged: async (offer, at) => {
       if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome, offer)) {
         if (!offerBusyLogged) log('runner record busy; acknowledged harness offer was not saved');
@@ -236,9 +241,10 @@ export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Pr
       const targetVersion = flags.get('target-version');
       if (channel !== undefined && !RELEASE_CHANNELS.includes(channel as ReleaseChannel)) { err('myco runner update: invalid channel'); return false; }
       if (targetVersion !== undefined && !semver.valid(targetVersion)) { err('myco runner update: invalid target version'); return false; }
+      if (flags.has('now') && flags.has('check')) { err('myco runner update: --now and --check cannot be combined'); return false; }
       try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }, {
         ...(channel === undefined ? {} : { channel: channel as ReleaseChannel }), ...(targetVersion === undefined ? {} : { targetVersion }),
-      }); }
+      }, flags.get('now') === 'true'); }
       catch (error) { err(`myco runner update: ${error instanceof Error ? error.message : String(error)}`); return false; }
     }
     case 'status':

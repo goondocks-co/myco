@@ -26,7 +26,7 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow', () => {
-  for (const trigger of ['cli', 'dashboard'] as const) {
+  for (const trigger of ['cli', 'dashboard', 'now'] as const) {
     it(`registers, applies the local fixture release from ${trigger}, restarts via stub and reports outcome`, async () => {
       const cwd = path.join(root, trigger); fs.mkdirSync(cwd);
       const binary = path.join(cwd, 'service-bin', 'myco'); fs.mkdirSync(path.dirname(binary)); fs.copyFileSync(files[0]!, binary);
@@ -71,8 +71,8 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
         expect(await invoke('install', '--server', serverUrl)).toMatchObject({ code: 0 });
         const checked = await invoke('update', '--check');
         expect(checked.code).toBe(0); expect(checked.stdout).toContain(versions[1]);
-        const updating = await invoke(trigger === 'cli' ? 'update' : 'run', '--server', serverUrl);
-        expect(updating.code).toBe(trigger === 'cli' ? 0 : 1);
+        const updating = await invoke(...(trigger === 'now' ? ['update', '--now'] : [trigger === 'cli' ? 'update' : 'run']), '--server', serverUrl);
+        expect({ code: updating.code, stdout: updating.stdout, stderr: updating.stderr }).toMatchObject({ code: trigger === 'dashboard' ? 1 : 0 });
         for (let tries = 0; tries < 200 && !report; tries++) await wait(50);
         expect(report).toMatchObject({ channel: 'alpha', currentVersion: versions[1], lastResult: { fromVersion: versions[0], toVersion: versions[1], result: 'updated', ...(trigger === 'dashboard' ? { requestId: 'dashboard_fixture' } : {}) } });
         expect(readRunnerUpdateState(env.MYCO_HOME!).transaction).toBeUndefined();

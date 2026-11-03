@@ -1,3 +1,4 @@
+import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
 import { isReportOrder } from '@goondocks/myco-shared/report-order';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { issueReportOrder } from '@myco/utils/order-stamp.js';
@@ -14,7 +15,7 @@ import { readInstallMarker, versionBinaryPath, versionsDir, type InstallMarker }
 import { acquireInstallationLease, recoverInterruptedBinaryPublication, assertSourceAdoptionAllowed, validateSourceIntent } from '../install/adoption.js';
 import { validInstallMarker } from '../install/marker-reader.js';
 import { placeExecutable, type ProgramProbe } from '../install/place-binary.js';
-import { stageBinary, pruneVersions, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from '../upgrade/apply-binary.js';
+import { stageBinary, pruneVersions, createBinaryUpdateDeps, type StageBinaryDeps } from '../upgrade/apply-binary.js';
 import { assetName, githubHeaders, mycoReleasesApiUrl, pickRelease, resolveAssetRefs, resolveTargetTriple, type AssetRefs, type GitHubRelease } from '../upgrade/release-assets.js';
 import { installService, servicePathEnv, servicePaths, uninstallService, type ServiceOutcome, type ServiceSpec } from '../server/service.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
@@ -30,7 +31,6 @@ const CHECK_MIN_MS = 6 * 60 * 60 * 1000;
 const CHECK_JITTER_MS = 4 * 60 * 60 * 1000;
 const FAILURE_BACKOFF_MS = 60 * 60 * 1000;
 const MAX_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 10_000;
 const MAX_RELEASE_PAGES = 3;
 const PROBE_TIMEOUT_MS = 30_000;
 const TX_DEADLINE_MS = 3 * 60 * 1000;
@@ -371,14 +371,17 @@ async function releases(channel: ReleaseChannel, currentVersion: string, etag: s
   let firstEtag: string | undefined;
   for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
     const url = mycoReleasesApiUrl() + (page === 1 ? '' : `&page=${page}`);
-    const response = await fetchFn(url, {
-      headers: { ...githubHeaders(), ...(page === 1 && etag ? { 'If-None-Match': etag } : {}) },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    const result = await runnerRequest(async signal => {
+      const response = await fetchFn(url, {
+        headers: { ...githubHeaders(), ...(page === 1 && etag ? { 'If-None-Match': etag } : {}) }, signal,
+      });
+      if (page === 1 && response.status === 304) return { unchanged: true as const };
+      if (!response.ok) throw new Error(`GitHub releases responded with ${response.status}`);
+      return { unchanged: false as const, etag: response.headers.get('etag') ?? undefined, batch: await response.json() };
     });
-    if (page === 1 && response.status === 304) return { refs: null, etag, unchanged: true };
-    if (!response.ok) throw new Error(`GitHub releases responded with ${response.status}`);
-    if (page === 1) firstEtag = response.headers.get('etag') ?? undefined;
-    const batch = await response.json();
+    if (result.unchanged) return { refs: null, etag, unchanged: true };
+    if (page === 1) firstEtag = result.etag;
+    const batch = result.batch;
     if (!Array.isArray(batch)) throw new Error('GitHub releases response must be an array');
     all.push(...batch as GitHubRelease[]);
     if (batch.length < 100) {
@@ -481,7 +484,7 @@ export interface RunnerUpdateController {
   queueLocal(input: RunnerLocalArtifactInput): void;
   check(selection?: RunnerUpdateSelection): Promise<RunnerUpdateContact>;
   /** Called only between runs; the from-version program holds claims for its bounded handoff. */
-  idle(): Promise<'continue' | 'restart' | 'hold'>;
+  idle(handoff?: 'caller'): Promise<'continue' | 'restart' | 'hold'>;
 }
 
 export function createRunnerUpdateController(options: RunnerUpdateOptions): RunnerUpdateController {
@@ -772,7 +775,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       if (!outcome.loaded || !outcome.running) throw new Error(outcome.detail ?? 'update guardian is not running');
     } catch (error) { log('runner update watcher recovery failed: ' + sanitizeRunnerUpdateReason(String(error))); }
   };
-  const idle = async (): Promise<'continue' | 'restart' | 'hold'> => {
+  const idle = async (handoff?: 'caller'): Promise<'continue' | 'restart' | 'hold'> => {
     const state = decodeState(home);
     if (state.metadataFailure) return 'continue';
     if (state.transaction) {
@@ -938,7 +941,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         } catch (error) { refuse(error instanceof Error ? error.message : String(error)); return 'continue'; }
       }
       const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData }, {
-        ...(deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS), ready: file => probe(file, version, platform),
+        ...(deps.stageDeps ?? createBinaryUpdateDeps({ downloadTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS })), ready: file => probe(file, version, platform),
       });
       if ('error' in staged) { refuse(staged.error); return 'continue'; }
       const live = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
@@ -962,11 +965,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       };
       const guardian = runnerUpdateGuardianSpec(tx);
       changeState(next => { if (next.transaction || next.guardian || next.cleanup) throw new Error('runner update already in progress');
-        next.transaction = tx; next.guardian = guardian;
+        next.transaction = tx; if (handoff !== 'caller') next.guardian = guardian;
         if (request && next.requests?.[serverUrl]?.id === request.id) delete next.requests[serverUrl];
       });
       installation.release();
       installationReleased = true;
+      if (handoff === 'caller') return 'restart';
       try {
         const installedGuardian = (deps.installGuardian ?? ((spec, targetPlatform) => installService(spec, { platform: targetPlatform })))(guardian, platform);
         if (!installedGuardian.loaded || !installedGuardian.running) throw new Error(installedGuardian.detail ?? 'update guardian is not running');

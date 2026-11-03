@@ -14,7 +14,8 @@ import { runnerProgramVersion } from '../../packages/myco/src/runner/program.js'
 import { acquireInstallationLease, beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
 import { updateBinary, type BinaryUpdateDeps } from '../../packages/myco/src/upgrade/guarded-binary.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
-import { stageBinary } from '../../packages/myco/src/upgrade/apply-binary.js';
+import { RUNNER_REQUEST_TIMEOUT_MS } from '@myco/runner/request.js';
+import { stageBinary, createBinaryUpdateDeps } from '../../packages/myco/src/upgrade/apply-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-update-test-'));
@@ -50,6 +51,27 @@ function fixture(label: string) {
 }
 
 describe('runner release handoff', () => {
+  for (const hung of ['headers', 'body'] as const) it(`returns from idle after a release download hangs at ${hung}`, async () => {
+    const f = fixture(`hung-${hung}`);
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const deadlines = spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(Math.min(ms, 30)));
+    const controller = createRunnerUpdateController({ home: f.home, serverUrl: 'https://deployment.invalid', binaryPath: f.binaryPath,
+      currentVersion: from, serviceSpec: serviceSpec(f.binaryPath, f.home), platform: 'linux', log: () => {}, deps: {
+        now: () => 1000, serviceInstalled: () => true, targetTriple: () => `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}` as ReturnType<typeof import('../../packages/myco/src/upgrade/release-assets.js').resolveTargetTriple>,
+        fetch: f.fetch,
+        stageDeps: createBinaryUpdateDeps({ downloadTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS,
+          fetch: async () => hung === 'headers' ? new Promise<Response>(() => {}) : new Response(new ReadableStream({ start() {} })),
+        }),
+      },
+    });
+    try {
+      controller.queueManual();
+      expect(await Promise.race([controller.idle(), new Promise<'stalled'>(resolve => setTimeout(() => resolve('stalled'), 500))])).toBe('continue');
+      expect(controller.statusPayload().lastResult?.result).toBe('refused');
+      expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
+    } finally { deadlines.mockRestore(); }
+  });
+
   it('refuses an invalid macOS signature and an incorrect --version', () => {
     const f = fixture('probe');
     expect(strictRunnerReleaseProbe(f.source, to, 'darwin').runs).toBe(false);

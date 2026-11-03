@@ -1,3 +1,5 @@
+import { RUNNER_CONTACT_RECORD_MS, RUNNER_POLL_INTERVAL_MS, RUNNER_REQUEST_TIMEOUT_MS } from '../runner/request.js';
+import { stopService } from '../server/service.js';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import path from 'node:path';
 import { listDeploymentMemberships } from '@myco/member/registry.js';
@@ -16,6 +18,10 @@ import { parseFlags } from './flags.js';
 import { runnerUpdater, type RunnerUpdateCliDeps } from './runner-update.js';
 
 export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps & { silentAbsentUninstall?: boolean; renew?: boolean };
+const STALLED_POLL_INTERVALS = 5;
+const contactStalled = (at: number | undefined, now: number): boolean => at !== undefined
+  && now - at > RUNNER_CONTACT_RECORD_MS + RUNNER_REQUEST_TIMEOUT_MS + RUNNER_POLL_INTERVAL_MS * STALLED_POLL_INTERVALS;
+
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
 export const RUNNER_IDENTITY_REMAINS = 'The Deployment identity remains; remove it on the dashboard.';
 
@@ -150,6 +156,11 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         if (legacy.some((state) => state?.installed === true) || (!workerServiceStatus(target, options).installed && legacy.some((state) => state?.serving != null))) {
           ok = fail(`${LEGACY_WORKER_WORDS} or another executor already serves ${url}; let its active run finish, then stop it explicitly with \`myco worker uninstall --server ${url}\`. No service changed.`); continue;
         }
+        if (contactStalled(record.lastContactAt, (deps.now ?? Date.now)()) && workerServiceStatus(target, options).running) {
+          out(`${url}: restarting stalled runner service.`);
+          stopService(workerServiceSpec(target, []), { platform: target.platform, ...options });
+          if (workerServiceStatus(target, options).running) throw new ServiceStopFailed('runner service did not stop');
+        }
         const harnessDirs = (deps.harnessDirs ?? harnessDirectories)();
         out('  Coding agents (preview in the service PATH; confirmed by its acknowledged offer):');
         const preview = await preflightRunnerService(target, harnessDirs, deps);
@@ -173,7 +184,8 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       const lastUpdate = updateStatus.lastResult;
       out(`  last update result: ${lastUpdate === undefined ? 'none' : `${lastUpdate.result}: ${lastUpdate.fromVersion} → ${lastUpdate.toVersion}${lastUpdate.reason === undefined ? '' : ` (${lastUpdate.reason})`}`}`);
       const state = workerServiceStatus(target, options);
-      const service = !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
+      const stalled = state.running && contactStalled(record?.lastContactAt, (deps.now ?? Date.now)());
+      const service = stalled ? `stalled since ${new Date(record!.lastContactAt!).toISOString()}; restart it with myco runner install --server ${url}` : !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
       out(`  runner service: ${service}${state.detail === undefined ? '' : ` (${state.detail})`}`);
       const blocked = await runnerExecutionRefusal(scoped);
       if (blocked !== null) out(`  execution refused: ${blocked}`);

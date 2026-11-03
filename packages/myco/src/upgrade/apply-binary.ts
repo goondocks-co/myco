@@ -1,5 +1,6 @@
 /** Downloads and verifies release binaries into versioned slots, and prunes retained slots. */
 import crypto from 'node:crypto';
+import { abortable } from '@myco/utils/abortable.js';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import fs from 'node:fs';
@@ -39,8 +40,11 @@ async function download(
   headers: Record<string, string>,
   maxBytes: number,
   fetchFn: ReleaseFetch,
+  { signal }: { signal?: AbortSignal },
 ): Promise<void> {
-  const res = await fetchFn(url, { headers, redirect: 'follow' });
+  const res = await (signal === undefined ? fetchFn(url, { headers, redirect: 'follow' })
+    : abortable(signal, () => fetchFn(url, { headers, redirect: 'follow', signal })));
+  signal?.throwIfAborted();
   if (!res.ok) {
     throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
   }
@@ -71,14 +75,27 @@ async function download(
   // orchestrator even when Content-Length is absent or lying.
   let received = 0;
   const chunks = async function* () {
-    for await (const value of res.body!) {
-      received += value.byteLength;
-      if (received > maxBytes) throw new Error(`download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`);
-      yield value;
+    const reader = res.body!.getReader();
+    let complete = false;
+    try {
+      for (;;) {
+        const next = signal === undefined ? await reader.read() : await abortable(signal, () => reader.read());
+        if (next.done) { complete = true; return; }
+        received += next.value.byteLength;
+        if (received > maxBytes) throw new Error(`download exceeded ${maxBytes} bytes (cap) — aborting to prevent OOM (${url})`);
+        yield next.value;
+      }
+    } finally {
+      try {
+        if (!complete) {
+          const cancel = reader.cancel(signal?.reason);
+          await (signal === undefined ? cancel : Promise.race([cancel, abortable(signal, () => cancel)]));
+        }
+      } finally { reader.releaseLock(); }
     }
   };
   try {
-    await pipeline(Readable.from(chunks()), fs.createWriteStream(destPath));
+    await pipeline(Readable.from(chunks()), fs.createWriteStream(destPath), { signal });
   } catch (error) {
     rmSafe(destPath);
     throw error;
@@ -101,13 +118,16 @@ export interface BinaryUpdateDepsOptions {
   /** Byte cap on one download. Defaults to `MAX_DOWNLOAD_BYTES`. */
   maxDownloadBytes?: number;
   fetch?: ReleaseFetch;
+  /** Deadline for each complete download. */
+  downloadTimeoutMs?: number;
 }
 
 /** The real download and hash for `stageBinary`, with the download capped at `maxDownloadBytes`. */
 export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): StageBinaryDeps {
   const maxBytes = options.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
   return {
-    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch),
+    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch,
+      { signal: options.downloadTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.downloadTimeoutMs) }),
     computeSha256,
   };
 }

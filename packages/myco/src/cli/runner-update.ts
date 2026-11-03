@@ -7,10 +7,12 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { holdWorkerInstance, workerHolder, workerLockDir } from '../runner/instance.js';
 import { isLiveRunner, readRunnerRecord } from '../runner/runner-registry.js';
-import { workerServiceSpec, installedRunnerTarget } from '../runner/service.js';
+import { workerServiceSpec, installedRunnerTarget, workerServiceStatus } from '../runner/service.js';
 import { runnerProgramVersion } from '../runner/program.js';
-import { createRunnerUpdateController, readRunnerUpdateState, type RunnerLocalArtifactInput, type RunnerUpdateController, type RunnerUpdateDeps, type RunnerUpdateSelection } from '../runner/update.js';
-import type { RunnerUpdateHelperDeps } from '../runner/update-helper.js';
+import { createRunnerUpdateController, readRunnerUpdateState, runnerUpdateStatePath, type RunnerLocalArtifactInput, type RunnerUpdateController, type RunnerUpdateDeps, type RunnerUpdateSelection } from '../runner/update.js';
+import { runRunnerUpdateHelper, type RunnerUpdateHelperDeps } from '../runner/update-helper.js';
+import { startService, stopService } from '../server/service.js';
+import { RUNNER_REQUEST_TIMEOUT_MS } from '../runner/request.js';
 import { executorServiceTarget, executionDeploymentUrls } from './worker-service.js';
 import type { RunnerServiceDeps } from './runner-service.js';
 
@@ -50,7 +52,35 @@ export function runnerUpdater(serverUrl: string, deps: RunnerUpdateCliDeps, log:
 }
 
 /** Check immediately, or queue the same idle operation the running supervisor executes. */
-export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: RunnerUpdateCliDeps, selection: RunnerUpdateSelection = {}): Promise<boolean> {
+export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: RunnerUpdateCliDeps, selection: RunnerUpdateSelection = {}, immediate = false): Promise<boolean> {
+  if (!immediate) return updateRunnerIdle(serverUrl, checkOnly, deps, selection);
+  if (checkOnly) throw new Error('--now and --check cannot be combined');
+  const home = deps.mycoHome ?? resolveMycoHome();
+  if (!isLiveRunner(readRunnerRecord(serverUrl, home))) throw new Error(`this machine is not registered with ${serverUrl}`);
+  const target = installedRunnerTarget(executorServiceTarget(serverUrl, { ...deps, mycoHome: home }, 'runner'));
+  const spec = workerServiceSpec(target, []);
+  const options = { platform: target.platform, runner: deps.runner };
+  if (!workerServiceStatus(target, options).installed) throw new Error('runner service is not installed; run myco runner install first');
+  const out = deps.stdout ?? console.log;
+  out('Stopping runner service for immediate update.');
+  try {
+    stopService(spec, options);
+    if (workerServiceStatus(target, options).running) throw new Error('runner service did not stop; no update applied');
+    out('Applying runner update under the instance lock.');
+    return await updateRunnerIdle(serverUrl, false, { ...deps, binaryPath: target.binaryPath }, selection, true);
+  } finally {
+    const pending = readRunnerUpdateState(home);
+    if (target.platform === 'win32' && pending.guardian && pending.transaction?.ownerPid === process.pid) {
+      out('The update helper starts the runner service after this command exits.');
+    } else {
+      out('Starting runner service.');
+      const started = startService(spec, options);
+      if (!started.running) throw new Error(started.detail ?? 'runner service did not start');
+    }
+  }
+}
+
+async function updateRunnerIdle(serverUrl: string, checkOnly: boolean, deps: RunnerUpdateCliDeps, selection: RunnerUpdateSelection, immediate = false): Promise<boolean> {
   const out = deps.stdout ?? console.log;
   const home = deps.mycoHome ?? resolveMycoHome();
   const record = readRunnerRecord(serverUrl, home);
@@ -61,7 +91,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
     const status = checked ?? update.statusPayload();
     const transaction = readRunnerUpdateState(home).transaction;
     const target = checked ? checked.latestVersion ?? checked.currentVersion
-      : transaction?.toVersion ?? status.currentVersion;
+      : transaction?.toVersion ?? status.lastResult?.toVersion ?? status.currentVersion;
     const channel = checked?.channel ?? selection.channel ?? transaction?.installMarker.channel ?? status.channel ?? 'unavailable';
     out(`Myco: from ${status.currentVersion} to ${target} on channel ${channel} (${suffix}).`);
   };
@@ -77,7 +107,15 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
     return status.channel !== null;
   }
   const lockDir = deps.lockDir ?? workerLockDir(deps.home);
-  const instance = holdWorkerInstance(lockDir, await executionDeploymentUrls(serverUrl, deps), record.deploymentId);
+  const aliases = await executionDeploymentUrls(serverUrl, deps);
+  let instance = holdWorkerInstance(lockDir, aliases, record.deploymentId);
+  const deadline = performance.now() + RUNNER_REQUEST_TIMEOUT_MS;
+  const lockPollMs = 100;
+  while (immediate && !instance.held && performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, lockPollMs));
+    instance = holdWorkerInstance(lockDir, aliases, record.deploymentId);
+  }
+  if (immediate && !instance.held) throw new Error('runner did not release its instance lock; no update applied');
   const queue = (): void => {
     if (deps.sourceArtifact) update.queueLocal(deps.sourceArtifact);
     else update.queueManual(selection);
@@ -99,7 +137,33 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
     return true;
   }
   let result: Awaited<ReturnType<RunnerUpdateController['idle']>>;
-  try { queue(); result = await update.idle(); } finally { instance.release(); }
+  try {
+    // Windows requires the process holding the executable to exit before its replacement.
+    const applyHere = immediate && (deps.platform ?? process.platform) !== 'win32';
+    queue(); result = await update.idle(applyHere ? 'caller' : undefined);
+    if (applyHere && result === 'restart') {
+      const target = installedRunnerTarget(executorServiceTarget(serverUrl, deps, 'runner'));
+      const options = { platform: target.platform, runner: deps.runner };
+      await runRunnerUpdateHelper(runnerUpdateStatePath(home), {
+        ...deps.updateHelper,
+        now: deps.updateHelper?.now ?? deps.now,
+        alive: pid => {
+          if (pid === process.pid) return false;
+          if (deps.updateHelper?.alive) return deps.updateHelper.alive(pid);
+          try { process.kill(pid, 0); return true; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+        },
+        stop: spec => stopService(spec, options),
+        stopped: () => !workerServiceStatus(target, options).running,
+        start: spec => {
+          instance.release();
+          out('Starting runner service with the updated program.');
+          return deps.updateHelper?.start?.(spec, target.platform ?? process.platform) ?? startService(spec, options);
+        },
+      });
+      result = 'continue';
+    }
+  } finally { instance.release(); }
   if (result === 'restart') {
     if (leavingSource) out('Source build replacement with the selected channel release is staged; the runner handoff is pending.');
     summary('verified and staged; awaiting idle service handoff');
