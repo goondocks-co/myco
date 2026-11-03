@@ -94,6 +94,6 @@ export function restoreBlobReferences(table: string, row: Readonly<Row>): BlobRe
   const columns: Readonly<Record<string, readonly string[]>> = {
     session_chunks: ['blob_key'], prepared_archive_bundles: ['archive_key'],
   };
-  return [...referencedBlobsOf(table, row), ...(columns[table] ?? []).flatMap(column =>
+  return [...referencedBlobsOf(table, row, 'required'), ...(columns[table] ?? []).flatMap(column =>
     typeof row.project_id === 'string' && typeof row[column] === 'string' ? [{ projectId: row.project_id, key: row[column] as string }] : [])];
 }
