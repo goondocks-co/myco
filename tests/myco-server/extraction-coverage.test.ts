@@ -1,3 +1,5 @@
+import { prepareLearningSlice } from './helpers/extraction.js';
+import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import {statementRecorder} from '../helpers/statement-recorder.js';
 import { describe, expect, it } from 'bun:test';
@@ -5,11 +7,6 @@ import type { Database } from 'bun:sqlite';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { handleRunPrompts } from '@myco-server-worker/mcp/tools/run-prompts.js';
-import type { ToolContext } from '@myco-server-worker/mcp/context.js';
-import { readWindowFor } from '@myco-server-worker/core/read-window.js';
-import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
-import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 import { hasProcessedPrompts } from '@myco-server-worker/read/prompts.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
@@ -49,10 +46,13 @@ async function fixture() {
   const run = async (runId = crypto.randomUUID(), projectId = scope.projectId, startedAt = now) => {
     expect(await recordDispatch(f.db, { projectId }, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null,
       model: null, runContext: null, dispatchedBy: null, startedAt })).toBe(true);
-    const ctx: ToolContext = { env, projectId, now, principal: { kind: 'run', runId, task: 'extract-curate', agentId: 'coverage',
-      sessionId: null, runContext: null, model: null, tokenId: 'capture', allow: runAllowlist(TASK_TOOLS['extract-curate']!, { dryRun: false }), window: readWindowFor('extract-curate') } };
-    return { id: runId, ctx, call: (input: Parameters<typeof handleRunPrompts>[0]) => handleRunPrompts(input, ctx),
+    return { id: runId,
+      complete: async (rows: Parameters<typeof recordServedPrompts>[3]) => {
+        const assignment = await prepareLearningSlice(f.db, { projectId }, runId, rows[0]!.sessionId, rows, now);
+        return completeLearning(f.db, projectId, rows[0]!.sessionId, runId, assignment, '', now);
+      },
       serve: (rows: Parameters<typeof recordServedPrompts>[3], instanceId: string | null = null) => recordServedPrompts(f.db, { projectId }, runId, rows, now, instanceId) };
+
   };
   const count = () => f.sqlite.query('SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id = ? AND session_id = ?').get('proj_1', 'session');
   const assertCounts = () => {
@@ -82,7 +82,7 @@ describe('served extraction coverage', () => {
       await f.capture('other-session', 3);
       const r = await f.run();
       const [item] = await r.serve([a]);
-      await r.call({ op: 'mark_processed', served_id: item!.servedId });
+      await r.complete([a]);
       f.sqlite.run("UPDATE agent_runs SET status='completed'");
       const backup = await createBackup(f.db, f.env.blobs, { producer: 'test', now: f.now });
       const { text } = (await backupArtifact(f.db, f.env.blobs, backup.id))!;
@@ -116,8 +116,7 @@ describe('served extraction coverage', () => {
       const tie = await f.capture('session', 200);
       const r = await f.run();
       const [served] = await r.serve([first, tie]);
-      expect(await r.call({ op: 'mark_processed', served_id: served!.servedId })).toMatchObject({ marked: true });
-      expect(await r.call({ op: 'mark_processed', served_id: served!.servedId })).toMatchObject({ marked: false });
+      expect(await r.complete([first])).toEqual({ completed: true, covered: 1 });
       const hole = await f.capture('session', 100);
       const next = await f.run();
       const rest = await next.serve([hole, tie]);
@@ -125,77 +124,10 @@ describe('served extraction coverage', () => {
       expect(await hasProcessedPrompts(f.db, f.scope)).toBe(true);
       expect(f.count()).toEqual({ n: 2 });
       f.assertCounts();
-      for (const item of rest) expect(await next.call({ op: 'mark_processed', served_id: item.servedId })).toMatchObject({ marked: true });
+      expect(await next.complete([hole, tie])).toEqual({ completed: true, covered: 2 });
       expect(f.count()).toEqual({ n: 0 });
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM session_prompts').get()).toEqual({n:3});
-      expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type='run_write' AND tool_name='myco_run_prompts'").get()).toEqual({ n: 3 });
-      f.assertCounts();
-    } finally { f.sqlite.close(); }
-  });
-
-  it('re-serves one identity and requires served_id when instances differ', async () => {
-    const f = await fixture();
-    try {
-      const row = await f.capture('session', 1);
-      const r = await f.run();
-      const [a] = await r.serve([row]);
-      expect((await r.serve([row]))[0]!.servedId).toBe(a!.servedId);
-      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM run_served_material').get()).toEqual({ n: 1 });
-      const [b] = await r.serve([row], 'second-instance');
-      expect(await r.call({ op: 'mark_processed', prompt_id: row.promptId })).toEqual({ ok: false, error: 'prompt_id names material from multiple instances; use served_id' });
-      expect(await r.call({ op: 'mark_processed', served_id: b!.servedId })).toMatchObject({ marked: true });
-      expect(await r.call({ op: 'mark_processed', served_id: a!.servedId })).toMatchObject({ marked: true });
-      expect(f.count()).toEqual({ n: 0 });
-      f.assertCounts();
-    } finally { f.sqlite.close(); }
-  });
-
-  it('refuses compatibility ambiguity introduced between resolution and the acknowledgement transaction', async () => {
-    const f = await fixture();
-    try {
-      const row = await f.capture('session', 1);
-      const r = await f.run();
-      const [item] = await r.serve([row]);
-      let raced = false;
-      r.ctx.env = { ...r.ctx.env, db: { prepare: sql => f.db.prepare(sql), batch: async statements => {
-        if (!raced) { raced = true; await r.serve([row], 'concurrent-instance'); }
-        return f.db.batch(statements);
-      } } };
-      expect(await r.call({ op: 'mark_processed', prompt_id: row.promptId })).toEqual({ ok: false, error: 'prompt_id names material from multiple instances; use served_id' });
-      expect(f.sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
-      expect(f.sqlite.query('SELECT * FROM agent_run_events').all()).toEqual([]);
-      expect(await r.call({ op: 'mark_processed', served_id: item!.servedId })).toMatchObject({ marked: true });
-      f.assertCounts();
-    } finally { f.sqlite.close(); }
-  });
-
-  it('refuses unserved, foreign-run, foreign-Project and deleted-session items, retaining pre-ledger prompt compatibility', async () => {
-    const f = await fixture();
-    try {
-      const row = await f.capture('session', 1);
-      const r = await f.run();
-      expect(await r.call({ op: 'mark_processed', prompt_id: row.promptId })).toMatchObject({ ok: false });
-      const other = await f.run();
-      const [item] = await other.serve([row]);
-      expect(await r.call({ op: 'mark_processed', served_id: item!.servedId })).toMatchObject({ ok: false });
-      const foreignRow = await f.capture('session', 1, 'proj_2');
-      const foreign = await f.run(crypto.randomUUID(), 'proj_2');
-      const [foreignItem] = await foreign.serve([foreignRow]);
-      expect(await r.call({ op: 'mark_processed', served_id: foreignItem!.servedId })).toMatchObject({ ok: false });
-      const boundary = Number((f.sqlite.query("SELECT value FROM schema_meta WHERE key='ledger_enabled_at'").get() as { value: string }).value);
-      const old = await f.run(crypto.randomUUID(), 'proj_1', boundary - 1);
-      expect(await old.call({ op: 'mark_processed', prompt_id: row.promptId })).toEqual({ prompt_id: row.promptId, marked: true });
-      expect(f.sqlite.query('SELECT served_id FROM extraction_acks').all()).toEqual([{ served_id: null }]);
-      const historicalSystem = await f.capture('session', 2, 'proj_1', 'system');
-      expect(await old.call({ op: 'mark_processed', prompt_id: historicalSystem.promptId })).toEqual({ prompt_id: historicalSystem.promptId, marked: true });
-      expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE run_id=? AND event_type='run_write' AND tool_name='myco_run_prompts'").get(old.id)).toEqual({ n: 2 });
-      f.assertCounts();
-      const current = await f.run(crypto.randomUUID(), 'proj_1', boundary);
-      expect(await current.call({ op: 'mark_processed', prompt_id: row.promptId })).toMatchObject({ ok: false });
-      await tombstoneSession(f.env, f.scope, 'session', 'test', f.now);
-      expect(await other.call({ op: 'mark_processed', served_id: item!.servedId })).toMatchObject({ ok: false });
-      expect(await old.call({ op: 'mark_processed', prompt_id: row.promptId })).toMatchObject({ ok: false });
-      expect(f.sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
+      expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type='run_write' AND tool_name='myco_run_learning'").get()).toEqual({ n: 2 });
       f.assertCounts();
     } finally { f.sqlite.close(); }
   });
@@ -212,9 +144,9 @@ describe('served extraction coverage', () => {
       const [first] = await r.serve([a]);
       const [second] = await other.serve([a]);
       f.assertCounts();
-      await r.call({ op: 'mark_processed', served_id: first!.servedId });
+      await r.complete([a]);
       f.assertCounts();
-      await other.call({ op: 'mark_processed', served_id: second!.servedId });
+      await other.complete([a]);
       expect(f.count()).toEqual({ n: 1 });
       expect(() => f.sqlite.run('UPDATE extraction_acks SET acknowledged_at=2')).toThrow('extraction acknowledgements are immutable');
       f.assertCounts();
@@ -245,7 +177,7 @@ describe('served extraction coverage', () => {
       const second = await f.run();
       for (const r of [first, second]) {
         const [item] = await r.serve([row]);
-        await r.call({ op: 'mark_processed', served_id: item!.servedId });
+        await r.complete([row]);
       }
       f.sqlite.run('DELETE FROM agent_runs WHERE id=?', [first.id]);
       f.sqlite.run("UPDATE agent_runs SET status='completed',completed_at=1 WHERE id=?", [second.id]);

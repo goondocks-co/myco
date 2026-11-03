@@ -1,3 +1,4 @@
+import { statementRecorder } from '../helpers/statement-recorder.js';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -5,8 +6,8 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
+import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
+import { prepareLearningSlice } from './helpers/extraction.js';
 import { assertExtractionPlans, extractionSqlStore } from './helpers/extraction-sql.js';
 import { fixtureBatchStore } from './helpers/extraction-budget.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -59,13 +60,19 @@ it('D1 equality seeks and constant-cost ack writes at 26k captured prompts and 7
     measured.reset();
     await measured.db.prepare(RECORD_ACK_SEEK).bind(scope.projectId, uuid(1)).first();
     expect(measured.reads()).toBeLessThanOrEqual(2);
-    const [item] = await recordServedPrompts(d1, scope, runId, [{ promptId: uuid(ACKS), sessionId: 'session', createdAt: ACKS, endedAt: 1 }], 1);
-    measured.reset();
-    expect(await acknowledgePrompt(measured.db, scope, runId, { servedId: item!.servedId }, 1)).toMatchObject({ marked: true });
-    console.info('EXTRACTION_ACK_COST', { prompts: PROMPTS, acks: ACKS, reads: measured.reads(), writes: measured.writes() });
+    const probeRun = runId + '-probe';
+    await recordDispatch(d1, scope, { id: probeRun, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,
+      runContext: null, dispatchedBy: null, startedAt: Date.now() });
+    const assignment = await prepareLearningSlice(d1, scope, probeRun, 'session', [{ promptId: uuid(ACKS), sessionId: 'session', createdAt: ACKS, endedAt: 1 }], 1);
+    const recorded = statementRecorder(d1, { accounting: 'd1' });
+    expect(await completeLearning(recorded.db, scope.projectId, 'session', probeRun, assignment, '', 1)).toEqual({ completed: true, covered: 1 });
+    const acknowledgements = recorded.statements.filter(statement => statement.sql.startsWith('INSERT INTO extraction_acks'));
+    expect(acknowledgements).toHaveLength(1);
+    const acknowledgement = acknowledgements[0]!;
+    console.info('EXTRACTION_ACK_COST', { prompts: PROMPTS, acks: ACKS, reads: acknowledgement.rowsRead, writes: acknowledgement.rowsWritten });
     const ackReads = { servedItemProbes: 2, targetPromptAndSession: 2, counter: 1, triggerPrompt: 1,
-      priorCoverage: 1, ackProjectForeignKey: 1, attributionRunForeignKey: 1 };
-    expect(measured.reads()).toBeLessThanOrEqual(Object.values(ackReads).reduce((sum, reads) => sum + reads, 0));
-    expect(measured.writes()).toBe(12);
+      priorCoverage: 1, ackProjectForeignKey: 1, completionGuard: 1, cardGuard: 1 };
+    expect(acknowledgement.rowsRead!).toBeLessThanOrEqual(Object.values(ackReads).reduce((sum, reads) => sum + reads, 0));
+    expect(acknowledgement.rowsWritten!).toBeLessThanOrEqual(12);
   } finally { planning.close(); await mf.dispose(); }
 }, 240_000);

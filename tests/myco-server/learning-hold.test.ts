@@ -6,9 +6,6 @@ import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { withDocumentStores, captureDocumentSession } from './helpers/document-stores.js';
 import { envelope, publishFixture, sqliteEnv, uuid, memoryBlobStore } from './helpers/fixtures.js';
-import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { acknowledgePrompt } from '@myco-server-worker/core/extraction-acks.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 
 const NOW = 1_800_000_000_000;
@@ -24,12 +21,7 @@ it('releases acknowledged facts while retaining the same prompt identity in anot
     await captureDocumentSession(f.db,'proj_2','shared-session');
     await publishFixture(f);
     f.sqlite.run(enable);
-    await ensureAgent(f.db,{id:'held-reader',name:'reader',provider:null,model:null,enabled:true},NOW);
-    await recordDispatch(f.db,{projectId:'proj_1'},{id:'held-run',agentId:'held-reader',task:'extract-curate',
-      provider:null,model:null,runContext:null,dispatchedBy:null,startedAt:NOW});
-    const served=await recordServedPrompts(f.db,{projectId:'proj_1'},'held-run',[{promptId:uuid(20),sessionId:'shared-session',createdAt:1,endedAt:null}],NOW);
-    expect(await acknowledgePrompt(f.db,{projectId:'proj_1'},'held-run',{servedId:served[0]!.servedId},NOW+1))
-      .toMatchObject({marked:true});
+    expect(await markPromptProcessed(f.db,{projectId:'proj_1'},uuid(20))).toBe(true);
     expect(await learningHolds(f.db,'proj_1','shared-session')).toBe(false);
     expect(await learningHolds(f.db,'proj_2','shared-session')).toBe(true);
     await tombstoneSession(f.serverEnv,{projectId:'proj_2'},'shared-session','owner',NOW+2);

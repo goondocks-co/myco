@@ -52,15 +52,6 @@ describe('tool parity', () => {
     for (const definition of [...TOOL_DEFINITIONS, ...RUN_DEFINITIONS, ...externalDefinitions(), ...FROZEN_DEFINITIONS]) visit(definition.inputSchema, definition.name);
   });
 
-  it('excepts the revised run acknowledgement property while preserving the frozen member contract', () => {
-    const revisedProperties = { myco_run_prompts: ['served_id'] };
-    const current = RUN_DEFINITIONS.find(def => def.name === 'myco_run_prompts')!;
-    for (const property of revisedProperties.myco_run_prompts) expect(current.inputSchema.properties[property]).toMatchObject({ type: 'string', description: expect.stringContaining('mark_processed') });
-    expect(current.inputSchema.properties.prompt_id).toMatchObject({ description: expect.stringContaining('Compatibility') });
-    expect(FROZEN_DEFINITIONS.some(def => String(def.name) === current.name)).toBe(false);
-    expect(Object.keys(current.inputSchema.properties).filter(property => !revisedProperties.myco_run_prompts.includes(property)).sort())
-      .toEqual(['project', 'op', 'prompt_id'].sort());
-  });
   it('declares session citation and accepts the old extraction prompt argument', () => {
     for (const defs of [TOOL_DEFINITIONS, FROZEN_DEFINITIONS]) {
       const properties = defs.find(def => def.name === 'myco_spores')!.inputSchema.properties;
@@ -264,7 +255,7 @@ describe('tool parity', () => {
     const extraction = runAllowlist(TASK_TOOLS['extract-curate'], { dryRun: false });
     expect([...extraction.entries()].map(([tool, ops]) => [tool, [...ops].sort()]).sort())
       .toEqual([
-        ['myco_run', ['report', 'state_get', 'state_set']], ['myco_run_learning', ['complete', 'get', 'material']], ['myco_run_prompts', ['mark_processed']],
+        ['myco_run', ['report', 'state_get', 'state_set']], ['myco_run_learning', ['complete', 'get', 'material']],
         ['myco_run_sessions', ['list']], ['myco_run_spores', ['get', 'list']],
         ['myco_search', [NO_OP]], ['myco_spores', ['consolidate', 'obsolete', 'save', 'supersede']],
       ]);
@@ -272,7 +263,7 @@ describe('tool parity', () => {
     // which the close gate reads whether or not the run wrote anything.
     const dry = runAllowlist(TASK_TOOLS['extract-curate'], { dryRun: true });
     expect([...dry.get('myco_spores') ?? []]).toEqual([]);
-    expect(dry.has('myco_run_prompts')).toBe(false);
+    expect([...dry.keys()]).not.toContain('myco_run_prompts');
     expect([...dry.get('myco_run')!].sort()).toEqual([ALWAYS_ALLOWED.op, 'state_get']);
     // A task declaring no tools of its own still closes.
     const bare = runAllowlist(TASK_TOOLS['embedding-reconcile'], { dryRun: false });

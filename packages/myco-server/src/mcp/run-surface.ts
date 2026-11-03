@@ -10,7 +10,7 @@
  * of vault content, and search — it calls the catalogued tools, so one
  * operation has one implementation and one attribution path. Where the
  * operation is the run's own — material reads bounded by its window, its state,
- * its material acknowledgements, its session's material and title, the map it keeps — it calls the run-only
+ * its learning slices, its session's material and title, the map it keeps — it calls the run-only
  * tools (`run-definitions.ts`), which no member and no grant can see.
  *
  * `report` is the exception to the allowlist and is served to every run. A
@@ -29,7 +29,6 @@ import { toolPolicy, type RegistryEntry, type ToolHandler } from './registry.js'
 import type { Action } from '../auth/authorization.js';
 import { handleRun } from './tools/run.js';
 import { handleRunMap } from './tools/run-map.js';
-import { handleRunPrompts } from './tools/run-prompts.js';
 import { handleRunSessions } from './tools/run-sessions.js';
 import { handleRunSpores } from './tools/run-spores.js';
 import { handleRunCards } from './tools/run-cards.js';
@@ -42,7 +41,6 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   myco_run: { defaultOp: 'report', ops: { report: runOperation(handleRun, 'execute'), state_get: runOperation(handleRun, 'read'), state_set: runOperation(handleRun, 'execute') } },
   myco_run_spores: { defaultOp: 'list', ops: { list: runOperation(handleRunSpores, 'read'), get: runOperation(handleRunSpores, 'read') } },
   myco_run_sessions: { defaultOp: 'list', ops: { list: runOperation(handleRunSessions, 'read'), material: runOperation(handleRunSessions, 'read'), title: runOperation(handleRunSessions, 'execute') } },
-  myco_run_prompts: { defaultOp: NO_OP, ops: { mark_processed: runOperation(handleRunPrompts, 'execute') } },
   myco_run_map: { defaultOp: 'get', ops: { get: runOperation(handleRunMap, 'read'), write: runOperation(handleRunMap, 'execute') } },
   myco_run_cards: { defaultOp: 'material', ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') } },
   myco_run_learning: { defaultOp: 'material', ops: { material: runOperation(handleRunLearning, 'read'), get: runOperation(handleRunLearning, 'read'), complete: runOperation(handleRunLearning, 'execute') } },
