@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { ActionLink, Disclosure, ErrorState, ExternalLink, FactRow, FactsPanel, LoadingState, ShowMore } from '../../design';
 import {
-  blobUrl, processedBodyUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTurns,
+  blobUrl, processedBodyUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTranscriptPieces, useTurns,
   SESSION_ANSWER_KIND_PREFIX, type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
 } from '../../hooks/use-sessions';
 import { formatBytes } from '../../lib/format';
@@ -79,32 +79,60 @@ function Transcripts({ projectId, sessionId, now }: { projectId: string; session
   if (transcript.error instanceof ApiError && transcript.error.status === 403) return <p role="alert" className="t-small text-muted">Raw transcripts are private to the member whose machine uploaded them.</p>;
   if (transcript.error) return <ErrorState error={transcript.error} onRetry={() => void transcript.refetch()} />;
   const held = Array.isArray(transcript.data?.transcripts) ? transcript.data.transcripts : [];
-  if (held.length === 0) return <p className="t-small text-muted">No transcript captured.</p>;
+  if (held.length === 0 && !transcript.hasNextPage) return <p className="t-small text-muted">No transcript captured.</p>;
   return (
     <div className="flex flex-col gap-s3">
-      {held.map((t) => (
-        <FactsPanel
-          key={t.transcriptId}
-          title={t.role === 'subagent' ? 'A sub-agent’s transcript' : 'The session’s transcript'}
-          actions={(
-            <ul aria-label="Transcript segments" className="flex w-full flex-col gap-s1">
-              {(t.segments ?? []).map((s) => (
-                <li key={s.baseOffset} className="flex flex-wrap items-baseline gap-x-s3 t-small">
-                  <ExternalLink href={blobUrl(projectId, s.blobKey)} className="t-mono">bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}</ExternalLink>
-                  <span className="text-muted">{formatBytes(s.length)} · {dateTime(s.createdAt, now)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        >
-          <FactRow term="Size">{formatBytes(t.size)} · {count(t.segmentCount, 'piece')}</FactRow>
-          <FactRow term="State">{readState(t)}</FactRow>
-          {t.originPath !== null && <FactRow term="File" mono>{t.originPath}</FactRow>}
-          <FactRow term="First received">{dateTime(t.firstReceivedAt, now)}</FactRow>
-          <FactRow term="Last received">{dateTime(t.lastReceivedAt, now)}</FactRow>
-        </FactsPanel>
-      ))}
+      {held.map(t=><TranscriptFile key={t.transcriptId} projectId={projectId} sessionId={sessionId} t={t} now={now} />)}
+      {transcript.hasNextPage && <ShowMore shown={held.length} noun="files" onMore={()=>void transcript.fetchNextPage()} pending={transcript.isFetchingNextPage} hasMore />}
     </div>
+  );
+}
+
+function TranscriptFile({ projectId, sessionId, t, now }: { projectId: string; sessionId: string; t: TranscriptRecord; now: number }) {
+  const pieces = useTranscriptPieces(projectId, sessionId, t);
+  return (
+    <FactsPanel
+      key={t.transcriptId}
+      title={t.role === 'subagent' ? 'A sub-agent’s transcript' : 'The session’s transcript'}
+      actions={
+        <>
+          <ul aria-label="Transcript segments" className="flex w-full flex-col gap-s1">
+            {pieces.segments.map((s) => (
+              <li key={s.baseOffset} className="flex flex-wrap items-baseline gap-x-s3 t-small">
+                <ExternalLink href={blobUrl(projectId, s.blobKey)} className="t-mono">
+                  bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}
+                </ExternalLink>
+                <span className="text-muted">
+                  {formatBytes(s.length)} · {dateTime(s.createdAt, now)}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {pieces.error && <ErrorState error={pieces.error} onRetry={() => void pieces.fetchNextPage()} />}
+          {pieces.hasNextPage && (
+            <ShowMore
+              shown={pieces.segments.length}
+              noun="pieces"
+              onMore={() => void pieces.fetchNextPage()}
+              pending={pieces.isFetchingNextPage}
+              hasMore
+            />
+          )}
+        </>
+      }
+    >
+      <FactRow term="Size">
+        {formatBytes(t.size)} · {count(t.segmentCount, 'piece')}
+      </FactRow>
+      <FactRow term="State">{readState(t)}</FactRow>
+      {t.originPath !== null && (
+        <FactRow term="File" mono>
+          {t.originPath}
+        </FactRow>
+      )}
+      <FactRow term="First received">{dateTime(t.firstReceivedAt, now)}</FactRow>
+      <FactRow term="Last received">{dateTime(t.lastReceivedAt, now)}</FactRow>
+    </FactsPanel>
   );
 }
 

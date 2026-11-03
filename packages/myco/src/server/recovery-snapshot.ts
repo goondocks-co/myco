@@ -4,7 +4,7 @@
  */
 import { Database } from 'bun:sqlite';
 import { identifierAt, importTableDump, runOneStatement, significantStatement } from './sql-dump.js';
-import { exportedTables, quoteIdentifier, recoverableVirtualTables, SCHEMA_QUERY, schemaObjects } from './recovery-schema.js';
+import { exportedTables, recoverableVirtualTables, virtualTableRebuilds, SCHEMA_QUERY, schemaObjects } from './recovery-schema.js';
 
 export { exportedTables };
 
@@ -53,10 +53,7 @@ export async function buildSnapshotDatabase(file: string, sqlPath: string, schem
     for (const type of ['index', 'view', 'trigger'] as const) {
       for (const row of schema.filter((item) => item.type === type)) createSchemaObject(db, row);
     }
-    for (const row of virtual) {
-      const name = quoteIdentifier(row.name);
-      runOneStatement(db, `INSERT INTO ${name}(${name}) VALUES('rebuild')`);
-    }
+    for (const sql of virtualTableRebuilds(schema)) runOneStatement(db, sql);
     const reconstructed = schemaObjects.parse(db.query(SCHEMA_QUERY).all());
     if (JSON.stringify(schema) !== JSON.stringify(reconstructed)) throw new Error('exported database schema does not match its source');
     db.exec('COMMIT');

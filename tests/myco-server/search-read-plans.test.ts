@@ -13,10 +13,11 @@ import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/sc
 import { searchAcross, searchProject, type SearchOptions } from '@myco-server-worker/read/search.js';
 import { getReleaseStatesAcross } from '@myco-server-worker/core/provenance.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
+import { sqliteD1 } from './helpers/d1.js';
 
 type Statement = { sql: string; params: unknown[] };
 
-/** A store that answers no rows and remembers every statement, with the values bound to it, batched or not. */
+/** An empty store that remembers every statement, with the values bound to it, batched or not. */
 function recordingStore(): { db: RelationalStore; statements: Statement[] } {
   const statements: Statement[] = [];
   const db: RelationalStore = {
@@ -25,7 +26,7 @@ function recordingStore(): { db: RelationalStore; statements: Statement[] } {
       statements.push(record);
       const statement: PreparedStatement = {
         bind(...values: unknown[]) { record.params = values; return statement; },
-        first: async () => null,
+        first: async <T,>() => sqliteD1(STORES.unanalyzed).prepare(sql).bind(...record.params).first<T>(),
         all: async () => ({ results: [] }),
         run: async () => ({ results: [], meta: { changes: 0 } }),
       };

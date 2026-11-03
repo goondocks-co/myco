@@ -19,6 +19,7 @@ it('preserves exact typed values, rowids, sequence high-water and FTS through bo
       INSERT INTO parents VALUES(9223372036854775806);
       INSERT INTO children(id) VALUES(71); DELETE FROM children;
       CREATE VIRTUAL TABLE children_fts USING fts5(body,content='children',content_rowid='id');
+      CREATE VIRTUAL TABLE children_terms USING fts5vocab(children_fts,'row');
       CREATE TRIGGER child_update AFTER UPDATE ON children BEGIN
         INSERT INTO children_fts(children_fts,rowid,body) VALUES('delete',old.id,old.body);
         INSERT INTO children_fts(rowid,body) VALUES(new.id,new.body);
@@ -36,6 +37,7 @@ it('preserves exact typed values, rowids, sequence high-water and FTS through bo
     expect(recovered.query('SELECT *,typeof(untyped) AS stored_type FROM children').get())
       .toEqual({ id: 42n, parent_id: 9223372036854775806n, body: text, payload: bytes, untyped: 1, stored_type: 'real' });
     expect(recovered.query("SELECT rowid FROM children_fts WHERE children_fts MATCH 'Recovery'").get()).toEqual({ rowid: 42n });
+    expect(recovered.query("SELECT doc FROM children_terms WHERE term='recovery'").get()).toEqual({ doc: 1n });
     recovered.exec("UPDATE children SET body='Updated finding' WHERE id=42");
     expect(recovered.query("SELECT rowid FROM children_fts WHERE children_fts MATCH 'Updated'").get()).toEqual({ rowid: 42n });
     expect(recovered.query('INSERT INTO children(body) VALUES(\'next\') RETURNING id').get()).toEqual({ id: 72n });

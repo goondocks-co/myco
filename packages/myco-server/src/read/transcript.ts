@@ -1,5 +1,6 @@
+import { transcriptRoleSql } from '../db/transcript-order.js';
 import type { RelationalStore } from '../core/adapters.js';
-import { inListChunks, type ReadScope } from './scope.js';
+import { binaryOrder,clampLimit,decodeCursor,inListChunks,page,type Page,type ReadScope } from './scope.js';
 
 export interface TranscriptRow {
   transcriptId: string;
@@ -106,14 +107,50 @@ function toTranscript(row: Record<string, unknown>): TranscriptRow {
  * shows one of several chosen by the store. Ordering by role then id makes the
  * answer the same on every target and on every call.
  */
-export async function listTranscripts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<TranscriptRow[]> {
+export async function listTranscripts(
+  db: RelationalStore,
+  scope: ReadScope,
+  sessionId: string,
+  paging?: { after?: string; limit: number; transcriptId?: string },
+): Promise<TranscriptRow[]> {
+  const after = paging?.after === undefined ? null : decodeCursor(paging.after);
+  if (paging?.after !== undefined && (after === null || (after.createdAt !== 0 && after.createdAt !== 1))) return [];
+  const joins = `LEFT JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
+    LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation`;
+  let sql: string, binds: unknown[];
+  if (paging === undefined) {
+    sql = `SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts t ${joins}
+      WHERE t.project_id=? AND t.session_id=? ORDER BY ${transcriptRoleSql('t')},t.transcript_id`;
+    binds = [scope.projectId, sessionId];
+  } else {
+    const arms = [0, 1]
+      .filter((role) => after === null || role >= after.createdAt)
+      .map((role) => {
+        const seek = after !== null && role === after.createdAt;
+        return {
+          sql: `SELECT * FROM (SELECT project_id,transcript_id,${role} AS role_order FROM transcripts
+        INDEXED BY idx_transcripts_session_page WHERE project_id=? AND session_id=? AND ${transcriptRoleSql()}=${role}
+          ${seek ? 'AND transcript_id>?' : ''} ${paging.transcriptId === undefined ? '' : 'AND transcript_id=?'}
+        ORDER BY transcript_id LIMIT ?)`,
+          binds: [
+            scope.projectId,
+            sessionId,
+            ...(seek ? [after!.id] : []),
+            ...(paging.transcriptId === undefined ? [] : [paging.transcriptId]),
+            paging.limit + 1,
+          ],
+        };
+      });
+    sql = `WITH candidates AS MATERIALIZED (${arms.map((arm) => arm.sql).join(' UNION ALL ')}),
+      selected AS MATERIALIZED (SELECT * FROM candidates ORDER BY role_order,transcript_id LIMIT ?)
+      SELECT ${TRANSCRIPT_COLUMNS} FROM selected k CROSS JOIN transcripts t
+        ON t.project_id=k.project_id AND t.transcript_id=k.transcript_id ${joins}
+      ORDER BY k.role_order,k.transcript_id`;
+    binds = [...arms.flatMap((arm) => arm.binds), paging.limit + 1];
+  }
   const { results } = await db
-    .prepare(`SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts t
-      LEFT JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
-      LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation
-      WHERE t.project_id = ? AND t.session_id = ?
-              ORDER BY CASE WHEN t.role = 'subagent' THEN 1 ELSE 0 END, t.transcript_id`)
-    .bind(scope.projectId, sessionId)
+    .prepare(sql)
+    .bind(...binds)
     .all<Record<string, unknown>>();
   return results.map(toTranscript);
 }
@@ -137,4 +174,53 @@ export async function listSegments(db: RelationalStore, scope: ReadScope, transc
     createdAt: r.created_at as number,
     availability: r.availability as 'hot' | 'archived',
   }));
+}
+
+
+/** Hot and archived segment sources each seek and bound their complete order before merging. */
+export async function pageSegments(
+  db: RelationalStore,
+  scope: ReadScope,
+  transcriptId: string,
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<Page<SegmentRow>> {
+  const limit = clampLimit(opts.limit),
+    after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const rows: SegmentRow[] = [];
+  for (const [table, key, availability, extra] of [
+    ['transcript_segments', 'blob_key', 'hot', ''],
+    [
+      'raw_archive_refs INDEXED BY idx_raw_archive_transcript_page',
+      'archive_key',
+      'archived',
+      "AND source_kind='transcript' AND disposition='archived'",
+    ],
+  ] as const) {
+    const result = await db
+      .prepare(
+        `SELECT base_offset,length,${key} AS blobKey,created_at FROM ${table}
+      WHERE project_id=? AND transcript_id=? ${extra}
+      ${after === null ? '' : `AND base_offset>=? AND (base_offset>? OR (base_offset=? AND ?||':'||${key}>?))`}
+      ORDER BY base_offset,${key} LIMIT ?`,
+      )
+      .bind(
+        scope.projectId,
+        transcriptId,
+        ...(after === null ? [] : [after.createdAt, after.createdAt, after.createdAt, availability, after.id]),
+        limit + 1,
+      )
+      .all<{ base_offset: number; length: number; blobKey: string; created_at: number }>();
+    rows.push(
+      ...result.results.map((row) => ({
+        baseOffset: row.base_offset,
+        length: row.length,
+        blobKey: row.blobKey,
+        createdAt: row.created_at,
+        availability,
+      })),
+    );
+  }
+  rows.sort((a, b) => a.baseOffset - b.baseOffset || binaryOrder(a.availability, b.availability) || binaryOrder(a.blobKey, b.blobKey));
+  return page(rows, limit, (row) => ({ createdAt: row.baseOffset, id: row.availability + ':' + row.blobKey }));
 }

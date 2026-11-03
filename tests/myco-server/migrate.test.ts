@@ -551,6 +551,13 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0535_v535.sql': 'b99897b1179cc34cd730f53fe830e7ebc9f5956fbe617765b47382041e1662c7',
   '0536_v536.sql': 'f0b34bfd0c49982b96f64ee4951507cc125c1f25b287ee20808cdc4a3a40fdf8',
   '0537_v537.sql': '6bcde09f0f1fccc95aa8e1c35c109ccf95a3b6e1bf31d7253f5cc333fc1d909a',
+  '0538_v538.sql': '01077684dcbbd66714607f7c6026ea7014faaca14943696f7d03adb815893192',
+  '0539_v539.sql': 'a053534ad2a153f1aa95eb3862ff96eaa28c2505fc715dda5c54b0ef09da4495',
+  '0540_v540.sql': '4822de864e078b7288adce46ac509214d819ced441b799410af7868b39a6aba3',
+  '0541_v541.sql': '19fd35d1125173ef722fec5dcb6edefb373ba25f80665d931f6b683cb791ad9c',
+  '0542_v542.sql': 'edfdf7d0fa45879670252eddc42455f1498c372f768268be4216b18451829d5d',
+  '0543_v543.sql': '2a6c0e0999a47b6e3f843dcb9d4e2218079e5168ced119fd56ccb6474e1e24b5',
+  '0544_v544.sql': '541f114de1c6becf93e187c61e352a1342ffa2c96584c9cade5986e8d7b94953',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1233,7 +1240,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',

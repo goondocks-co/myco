@@ -106,27 +106,69 @@ export async function listMachines(
   return { machines, cursor: claims.length > limit ? encodeCursor(Number(last.claimed_at), String(last.machine_id)) : null };
 }
 
-/** A machine's merged event stream; one bounded page no matter how many credentials it used. */
+/** Machine history merges indexed credential pages behind one statement. */
 export async function machineActivity(
-  db: RelationalStore, machineId: string, opts: { limit?: number; cursor?: string } = {},
+  db: RelationalStore,
+  machineId: string,
+  opts: { limit?: number; cursor?: string } = {},
 ): Promise<Page<ActivityRow>> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const { results } = await db.prepare(`SELECT event_id, project_id, session_id, kind, created_at, received_at FROM events
-      WHERE token_id IN (SELECT id FROM member_credentials WHERE machine_id = ?)
-        ${after === null ? '' : `AND (created_at < ? OR (created_at = ? AND (project_id < ? OR (project_id = ? AND event_id < ?))))`}
-      ORDER BY created_at DESC, project_id DESC, event_id DESC LIMIT ?`)
-    .bind(machineId, ...(after === null ? [] : [after.createdAt, after.createdAt, ...cursorEvent(after.id)]), limit + 1).all<Record<string, unknown>>();
-  const rows = results.map((r): ActivityRow => ({ eventId: String(r.event_id), projectId: String(r.project_id), sessionId: String(r.session_id), kind: String(r.kind), createdAt: Number(r.created_at), receivedAt: Number(r.received_at) }));
+  const window =
+    after === null
+      ? ''
+      : `AND e.created_at<=(SELECT at FROM args)
+    AND (e.created_at,e.project_id,e.event_id)<(SELECT at,pid,eid FROM args)`;
+  const columns = 'event_id,project_id,session_id,kind,created_at,received_at';
+  const head = `SELECT id FROM heads WHERE at IS NOT NULL ORDER BY at DESC,id LIMIT 1`;
+  const { results } = await db
+    .prepare(
+      `WITH args(machine,n,at,pid,eid) AS (VALUES(?,?,?,?,?)),
+    heads AS MATERIALIZED (
+      SELECT c.id,(SELECT e.created_at FROM events e INDEXED BY idx_events_token_only
+        WHERE e.token_id=c.id ${window} ORDER BY e.created_at DESC LIMIT 1) AS at
+      FROM member_credentials c WHERE c.machine_id=(SELECT machine FROM args)),
+    anchor AS MATERIALIZED (
+      SELECT ${columns} FROM events e INDEXED BY idx_events_token_only
+      WHERE e.token_id=(${head}) ${window}
+      ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)),
+    bounds AS MATERIALIZED (SELECT MAX(at) AS at FROM (
+      SELECT MIN(created_at) AS at FROM anchor HAVING COUNT(*)=(SELECT n FROM args)
+      UNION ALL SELECT at FROM (SELECT at FROM heads WHERE at IS NOT NULL ORDER BY at DESC LIMIT 1 OFFSET (SELECT n-1 FROM args)))),
+    candidates AS MATERIALIZED (
+      SELECT ${columns} FROM anchor UNION ALL
+      SELECT json_extract(j.value,'$.event_id'),json_extract(j.value,'$.project_id'),json_extract(j.value,'$.session_id'),
+        json_extract(j.value,'$.kind'),json_extract(j.value,'$.created_at'),json_extract(j.value,'$.received_at')
+      FROM heads h CROSS JOIN bounds b CROSS JOIN json_each((
+        SELECT json_group_array(json_object('event_id',event_id,'project_id',project_id,'session_id',session_id,
+          'kind',kind,'created_at',created_at,'received_at',received_at)) FROM (
+          SELECT ${columns} FROM events e INDEXED BY idx_events_token_only WHERE e.token_id=h.id ${window}
+            AND e.created_at>=COALESCE(b.at,${Number.MIN_SAFE_INTEGER})
+          ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)))) j
+      WHERE h.id<>(${head}) AND h.at IS NOT NULL AND (b.at IS NULL OR h.at>=b.at))
+    SELECT * FROM candidates ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)`,
+    )
+    .bind(machineId, limit + 1, after?.createdAt ?? null, ...(after === null ? [null, null] : cursorEvent(after.id)))
+    .all<Record<string, unknown>>();
+  const rows = results.map(
+    (r): ActivityRow => ({
+      eventId: String(r.event_id),
+      projectId: String(r.project_id),
+      sessionId: String(r.session_id),
+      kind: String(r.kind),
+      createdAt: Number(r.created_at),
+      receivedAt: Number(r.received_at),
+    }),
+  );
   return page(rows, limit, (r) => ({ createdAt: r.createdAt, id: `${r.projectId}:${r.eventId}` }));
 }
 
-function cursorEvent(value: string): [string, string, string] {
+function cursorEvent(value: string): [string, string] {
   const split = value.indexOf(':');
   const project = value.slice(0, split);
   const event = value.slice(split + 1);
-  return [project, project, event];
+  return [project, event];
 }
 
 /** The same machine claim owns summary, activity, rename, and stop. */
