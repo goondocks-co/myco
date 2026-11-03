@@ -48,7 +48,7 @@ describe('raw ownership schema step 71', () => {
         .toEqual({ owner_member_id: null });
       expect(sqlite.query('SELECT COUNT(*) AS n FROM transcript_segments').get()).toEqual({ n: 2 });
       const reader = new RawResourceReader({ db, blobs: memoryBlobStore() }, { projectId: 'p' }, { kind: 'member', memberId: 'a' });
-      expect(await reader.transcripts('session')).toEqual([]);
+      expect((await reader.transcripts('session')).transcripts).toEqual([]);
     } finally { sqlite.close(); }
   });
 

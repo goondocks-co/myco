@@ -97,8 +97,8 @@ export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSp
   const cmp = spec.direction === 'DESC' ? '<' : '>';
   return {
     limit,
-    where: `(${spec.order} ${cmp} ? OR (${spec.order} = ? AND ${spec.id} ${cmp} ?))`,
-    params: [after.createdAt, after.createdAt, after.id],
+    where: `${spec.order} ${cmp}= ? AND (${spec.order} ${cmp} ? OR (${spec.order} = ? AND ${spec.id} ${cmp} ?))`,
+    params: [after.createdAt, after.createdAt, after.createdAt, after.id],
   };
 }
 

@@ -124,15 +124,39 @@ function sqlIdentifiers(statement: string): string[] {
 }
 
 export function referencedExistingTables(db: Database, statements: readonly string[]): string[] {
-  const objects = db.query("SELECT name, tbl_name, type FROM sqlite_master WHERE type IN ('table', 'index', 'trigger')").all() as Array<{ name: string; tbl_name: string; type: string }>;
-  const tableNames = new Set(objects.filter((item) => item.type === 'table').map((item) => item.name.toLowerCase()));
+  const objects = db.query(`SELECT m.name,m.tbl_name,m.type,m.sql,t.type AS storage FROM sqlite_master m
+    LEFT JOIN pragma_table_list t ON t.schema='main' AND t.name=m.tbl_name
+    WHERE m.type IN ('table','index','trigger')`).all() as Array<{ name: string; tbl_name: string; type: string; sql: string | null; storage: string }>;
+  const definitions = new Map(objects.filter(item => item.type === 'table').map(item => [item.name.toLowerCase(), item]));
+  const sqlName = (value: string) => value.startsWith("'") ? value.slice(1,-1).replaceAll("''", "'")
+    : value.startsWith('"') ? value.slice(1,-1).replaceAll('""','"')
+      : value.startsWith('`') ? value.slice(1,-1).replaceAll('``','`')
+        : value.startsWith('[') ? value.slice(1,-1).replaceAll(']]',']') : value;
+  // Full-text indexes and vocabulary tables resolve to their ordinary content owner.
+  const contentOwner = (name: string, visiting = new Set<string>()): string => {
+    const key = name.toLowerCase(), row = definitions.get(key);
+    if (row?.storage === 'table') return row.name;
+    if (row?.storage !== 'virtual' || visiting.has(key)) throw new Error(`unsupported D1 upgrade fixture content owner ${name}`);
+    visiting.add(key);
+    const sql = row.sql!;
+    const content = /\bUSING\s+fts5\s*\(/i.test(sql)
+      ? /\bcontent\s*=\s*('(?:[^']|'')*'|"(?:[^"]|"")*"|\w+)/i.exec(sql)?.[1] : undefined;
+    const vocabulary = /\bUSING\s+fts5vocab\s*\(([\s\S]*)\)/i.exec(sql)?.[1]
+      ?.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]]|\]\])*\]|\w+/g)?.map(sqlName);
+    const source = content === undefined ? vocabulary?.[vocabulary.length === 3 ? 1 : 0] : sqlName(content);
+    if (source === undefined || source === '' || (vocabulary?.length === 3 && vocabulary[0]!.toLowerCase() !== 'main')) {
+      throw new Error(`unsupported D1 upgrade fixture virtual table ${name}`);
+    }
+    return contentOwner(source, visiting);
+  };
   const owners = new Map(objects.map((item) => [item.name.toLowerCase(), item.tbl_name]));
   const tables = new Set<string>();
   for (const statement of statements) {
     // A foreign key's target is a parent the statement names, not a table it changes; the seed reaches parents through their children.
     const resolved = sqlIdentifiers(statement.replace(/\bREFERENCES\s+("[^"]*"|\w+)/gi, '')).map((name) => owners.get(name.toLowerCase()))
-      .filter((owner): owner is string => owner !== undefined && tableNames.has(owner.toLowerCase())
-        && owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_'));
+      .filter((owner): owner is string => owner !== undefined && definitions.has(owner.toLowerCase())
+        && owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_'))
+      .map(owner => contentOwner(owner));
     if (resolved.length === 0 && /^\s*(?:DROP\s+(?:INDEX|TRIGGER)|ALTER\s+TABLE|UPDATE|DELETE\s+FROM)/i.test(statement)) {
       throw new Error(`unsupported D1 upgrade fixture: no previous object resolves for ${statement.slice(0, 100)}`);
     }
@@ -253,7 +277,8 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
   const touched = referencedExistingTables(db, statements);
   for (const table of touched) seedTable(table, new Set());
   if (!includeDescendants) return touched;
-  const candidateChildren = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`).all() as Array<{ name: string }>;
+  const candidateChildren = db.query(`SELECT name FROM pragma_table_list WHERE schema='main' AND type='table'
+    AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`).all() as Array<{ name: string }>;
   const visited = new Set<string>();
   const queue = [...touched];
   while (queue.length > 0) {

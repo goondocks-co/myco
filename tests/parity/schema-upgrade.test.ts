@@ -43,6 +43,29 @@ it('resolves quoted trigger and dropped index owners, seeds FK children, and det
   } finally { for (const db of databases) db.close(); }
 });
 
+it('seeds external full-text content behind vocabulary migrations and observes an omitted vocabulary', async () => {
+  const db = new Database(':memory:');
+  const migration = `CREATE VIRTUAL TABLE vocabulary USING fts5vocab("body search",'row')`;
+  try {
+    db.exec(`CREATE TABLE "search bodies"(id TEXT PRIMARY KEY,body TEXT NOT NULL);
+      CREATE VIRTUAL TABLE "body search" USING fts5(body,content='search bodies');
+      CREATE TRIGGER index_body AFTER INSERT ON "search bodies" BEGIN
+        INSERT INTO "body search"(rowid,body) VALUES(NEW.rowid,NEW.body);
+      END;`);
+    expect(seedReferencedTables(db, [migration])).toEqual(['search bodies']);
+    expect(db.query('SELECT COUNT(*) AS n FROM "search bodies"').get()).toEqual({n: 1});
+    expect(db.query(`SELECT COUNT(*) AS n FROM "body search" WHERE "body search" MATCH 'upgrade'`).get()).toEqual({n: 1});
+    db.exec(migration);
+    expect(db.query("SELECT doc FROM vocabulary WHERE term='upgrade'").get()).toEqual({doc: 1});
+    expect(seedReferencedTables(db, ['CREATE VIEW words AS SELECT * FROM vocabulary'])).toEqual(['search bodies']);
+    const expected = schemaObjects(db);
+    db.exec('DROP TABLE vocabulary');
+    await assertMigrationMutationDetected(migration, async () => {}, () => {
+      if (JSON.stringify(expected) !== JSON.stringify(schemaObjects(db))) throw new UpgradeStateMismatchError('vocabulary missing');
+    });
+  } finally {db.close();}
+});
+
 it('counts an omitted prerequisite SQL rejection as a detected mutation', () => {
   const db = previousSchema();
   try {

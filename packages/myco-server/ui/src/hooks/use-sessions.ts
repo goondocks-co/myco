@@ -180,14 +180,16 @@ export interface TranscriptRecord {
   parseError: string | null;
   parseFailedAt: number | null;
   segments: TranscriptSegment[];
+  segmentsCursor: string | null;
 }
 
 export interface TranscriptResponse {
   /** The session's own transcript. */
-  transcript: TranscriptRecord;
+  transcript: TranscriptRecord | null;
   /** Every transcript the session holds, the primary first; a subagent adds one beside it. */
   transcripts: TranscriptRecord[];
   segments: TranscriptSegment[];
+  cursor: string | null;
 }
 
 export type SessionChild = 'unplaced' | 'unplaced-records' | 'plans' | 'attachments' | 'context-injections';
@@ -630,22 +632,60 @@ export function useSessionArtifacts(projectId: string, sessionId: string) {
   return usePaged<SessionArtifact>(['session-artifacts', projectId, sessionId], `${project(projectId)}/sessions/${seg(sessionId)}/artifacts`, { rowKey: (row) => row.id });
 }
 
-/** The transcript record, or null when the session has none — the one 404 here that is an answer rather than an error. */
+/** Paged transcript files; a session with no visible files yields an empty list. */
 export function useTranscript(projectId: string, sessionId: string, enabled = true) {
-  return useQuery({
+  const query = useInfiniteQuery({
     enabled,
     queryKey: ['transcript', projectId, sessionId],
-    queryFn: async ({ signal }) => {
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last: TranscriptResponse | null) => last?.cursor ?? undefined,
+    queryFn: async ({ signal, pageParam }) => {
       try {
-        return await fetchJson<TranscriptResponse>(`${project(projectId)}/sessions/${seg(sessionId)}/transcript`, signal);
+        return await fetchJson<TranscriptResponse>(
+          `${project(projectId)}/sessions/${seg(sessionId)}/transcript${pageParam === undefined ? '' : '?cursor=' + seg(pageParam)}`,
+          signal,
+        );
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) return null;
         throw err;
       }
     },
   });
+  return {
+    ...query,
+    data: query.data === undefined ? undefined : { transcripts: query.data.pages.flatMap((page) => page?.transcripts ?? []) },
+  };
 }
 
+/** A file's next segment page is fetched only when the reader asks for more pieces. */
+export function useTranscriptPieces(projectId: string, sessionId: string, initial: TranscriptRecord) {
+  const query = useInfiniteQuery({
+    queryKey: [
+      'transcript-pieces',
+      projectId,
+      sessionId,
+      initial.transcriptId,
+      initial.lastReceivedAt,
+      initial.size,
+      initial.segmentCount,
+      initial.segments,
+    ],
+    enabled: false,
+    initialPageParam: undefined as string | undefined,
+    initialData: { pages: [initial], pageParams: [undefined] },
+    getNextPageParam: (last: TranscriptRecord) => last.segmentsCursor ?? undefined,
+    queryFn: async ({ signal, pageParam }) => {
+      const response = await fetchJson<TranscriptResponse>(
+        `${project(projectId)}/sessions/${seg(sessionId)}/transcript?transcriptId=${seg(initial.transcriptId)}${pageParam === undefined ? '' : '&segmentCursor=' + seg(pageParam)}`,
+        signal,
+      );
+      const transcript = response.transcripts[0];
+      if (transcript === undefined) throw new Error('Transcript is no longer available');
+      return transcript;
+    },
+  });
+  return { ...query, segments: query.data.pages.flatMap((page) => page.segments) };
+}
 
 /** A processed row's complete field, resolved by its identity rather than its storage hash. */
 export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revision: string) {
