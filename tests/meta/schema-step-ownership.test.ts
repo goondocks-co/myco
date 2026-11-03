@@ -93,6 +93,9 @@ const LISTED: readonly Exception[] = [
   },
 ];
 const EXCEPTIONS: readonly Exception[] = [
+  { step: 536, object: 'publish_queue_facts_insert', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
+  { step: 536, object: 'publish_queue_facts_delete', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
+  { step: 536, object: 'publish_queue_facts_update', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
   ...[{version:466,statements:V466_STATEMENTS},...PUBLICATION_FACT_STEPS,...PUBLICATION_QUEUE_STEPS].flatMap(step => step.statements.flatMap(sql => {
     const match=/^CREATE TRIGGER(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     const existing=['embedding_switches','document_publication_facts','embedding_versions','embedding_receipts','embedding_hubness_members','deployment_settings','deployment_secrets',
@@ -100,6 +103,8 @@ const EXCEPTIONS: readonly Exception[] = [
     return match === null || !existing.includes(match[2]!) ? [] : [{step:step.version,object:match[1]!,table:match[2]!,
       reason:'Catalog mutations maintain embedding and publication facts atomically.'}];
   })),
+  { step: 536, object: 'idx_publish_queue_read_retries', table: 'publish_queue', reason: 'Independent prompt read retries retain their order through a partial queue index.' },
+  { step: 535, object: 'idx_publish_queue_active', table: 'publish_queue', reason: 'Publication selection skips retained terminal holds through its active queue index.' },
   ...LISTED,
   ...UX_SCHEMA_STEPS.flatMap(step => step.statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
@@ -143,6 +148,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_insert', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
+  { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_delete', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
+  { step: 536, sql: 'ALTER TABLE publish_queue ADD COLUMN retry_cause TEXT CHECK (retry_cause IS NULL OR json_valid(retry_cause))', reason: 'Publication waits retain read and parent dependency causes independently of their retry deadline.' },
   { step: 465, sql: 'ALTER TABLE turn_cards ADD COLUMN fields TEXT', reason: 'Cards retain their structured fields in a nullable column added without rewriting rows or rebuilding search.' },
   ...V466_STATEMENTS.filter(sql=>sql.startsWith('INSERT OR IGNORE INTO schema_meta')).map(sql=>({step:466,sql,
     reason:'Provider configuration changes fence pending provider failures.'})),
@@ -150,6 +158,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     reason:'Calibration cursors carry their publication revision; publication queue identities enter disjoint rowid ranges, catalog triggers net changed facts and switch lifecycle changes release model holds.'}))),
   ...PUBLICATION_FACT_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!sql.startsWith('CREATE')).map(sql=>({step,sql,
     reason:'Publication facts initialize from disjoint document rowid ranges, with queue counts and the range boundary captured once.'}))),
+  { step: 535, sql: 'ALTER TABLE publish_queue ADD COLUMN failure TEXT', reason: 'The publication owner retains a named failure on an unreadable queued event.' },
+  { step: 535, sql: 'ALTER TABLE publish_queue ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0', reason: 'Each queued event waits for its own retry deadline while other content publishes.' },
   ...DROP_CONTENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE TABLE/.test(sql)).map(sql=>({step,sql,reason:'Retired content storage leaves in bounded transactions: triggers, then indexes, then rowid ranges, then the tables.'}))),
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
   ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({

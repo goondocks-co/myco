@@ -14,12 +14,12 @@ import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
 import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
 import { receiptPlans } from '../read/catalog-store.js';
 import { promptPlace, promptTurn } from '../read/document-catalog.js';
-import { SESSION_OWNER, type DocRecord, type Page as DocPage } from './document.js';
+import { SESSION_OWNER, type DocRecord } from './document.js';
 import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
 import { liveGenerationSql } from '../read/document-catalog.js';
 import {
   pageCursor, promptRow, readPageCursor, responseRow, SessionDocument, toolCallRow, TURN_PAGES,
-  type PageLocator, type PromptWireRow, type ResponseWireRow, type ToolCallWireRow,
+  type LocatedPage, type PageLocator, type PromptWireRow, type ResponseWireRow, type ToolCallWireRow,
 } from './session-pages.js';
 
 /** Rows each hook collection carries before its continuation. */
@@ -80,8 +80,8 @@ export interface DocumentTurnChild {
   body: DocumentTurnDetail; childCount: number;
 }
 
-const located = (pages: readonly DocPage[], generation: number): Located[] =>
-  pages.flatMap((page) => page.records.map((record) => ({ record, at: { generation, owner: page.owner, page: page.page } })));
+const located = (pages: readonly LocatedPage[], generation: number): Located[] =>
+  pages.flatMap((page) => page.records.map((record) => ({ record, at: { generation, owner: page.owner, page: page.page, revision: page.revision } })));
 
 /** Summarizes the tool records of one prompt; `complete` says whether they are all of its calls. */
 export function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}): ToolSummary {

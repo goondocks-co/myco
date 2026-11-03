@@ -1,3 +1,4 @@
+import { DOCUMENT_TEXT_FIELDS } from './document-text.js';
 import { MAX_BLOB_BYTES } from '../constants.js';
 
 import { kindSpec, parsePayload, type KindSpec, type Bound } from './kinds.js';
@@ -54,22 +55,11 @@ export async function sourceReceipts(
 
 
 
-const payloadBodies: Readonly<Record<string, readonly string[]>> = {
-  prompt: ['text'],
-  response: ['text'],
-  plan: ['content'],
-  'tool.use': ['input', 'output'],
-  'tool.failure': ['input', 'output'],
-};
-
-
-
-
 /** Document bodies use verified blob admission; all other fields retain catalogue bounds. */
 export function admittedDocumentEvent(event: DerivedEvent, now: number): DerivedEvent {
-  const spec = kindSpec(event.kind),
-    bodies = payloadBodies[event.kind];
-  if (!spec || !bodies) throw new Error('view_record_kind_unsupported');
+  const spec = kindSpec(event.kind), fields = DOCUMENT_TEXT_FIELDS[event.kind];
+  if (!spec || fields === undefined) throw new Error('view_record_kind_unsupported');
+  const bodies = Object.values(fields);
   if (event.payload.blob !== undefined || event.payload.outputBlob !== undefined)
     throw new Error('view_record_refused: parser bodies require inline source content');
   const placeholder = { ...event.payload };

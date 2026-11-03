@@ -20,6 +20,7 @@ import {
   type WriteContext,
 } from './projections.js';
 import type { Delivery } from '../core/injection.js';
+import { DOCUMENT_TEXT_FIELDS, documentText } from './document-text.js';
 import { prepareContextDelivery } from '../core/context-writes.js';
 
 import {
@@ -291,6 +292,22 @@ export async function planEventWrite(
   const liveAdmission = charged ? credentialLive(ctx.tokenId) : ALWAYS;
   const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
   const admission: Fragment[] = [liveAdmission, ...checks.map((c) => c.admission), ...plan.admission];
+  const textKeys = Object.keys(DOCUMENT_TEXT_FIELDS[e.kind] ?? {}).flatMap(field => typeof p[field] === 'string' ? [p[field] as string] : []);
+  if (textKeys.length > 0) {
+    const permitted = await db.prepare(`SELECT 1 AS admitted WHERE ${admission.map(fragment => `(${fragment.sql})`).join(' AND ')}
+      AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=?)`)
+      .bind(...admission.flatMap(fragment => fragment.params), ctx.projectId, e.eventId).first();
+    if (permitted !== null) {
+      if (env === undefined) throw new StorageContractError('Document text admission requires a content store');
+      for (const key of new Set(textKeys)) {
+        try { await documentText(env, ctx.projectId, key); }
+        catch (error) {
+          if (!(error instanceof Error) || error.message !== 'content_text_invalid') throw error;
+          return { ok: false, ...refusal('Referenced document text must be valid UTF-8', 'invalid_field') };
+        }
+      }
+    }
+  }
   const replayChecks = plan.replay === undefined ? undefined : [...admission, plan.replay.compatible, sourceProof!];
   const replayGate: Fragment | undefined =
     replayChecks === undefined

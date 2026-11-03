@@ -1,3 +1,4 @@
+import type { PageLocator } from '@myco-server-worker/content/session-pages.js';
 import { expect } from 'bun:test';
 import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
@@ -76,13 +77,20 @@ export const storageCleanupParity: ParityScenario = {
     const tool = lit(toolCallId);
     const transcript = lit(transcriptId);
     const base=`/api/projects/${target.projectId}/sessions/${sessionId}`;
+    type LocatedRow = Record<string, unknown> & { locator: PageLocator };
+    const contentRows = (rows: readonly LocatedRow[]) => rows.map(({ locator: _locator, ...content }) => content);
+    const processedBody = (kind: string, id: string, locator: PageLocator) => {
+      const params = new URLSearchParams({ session: sessionId, generation: String(locator.generation), owner: locator.owner, page: String(locator.page),
+        ...(locator.revision === undefined ? {} : { revision: locator.revision }) });
+      return ownerGet(`/api/projects/${target.projectId}/processed/${kind}/${id}?${params}`);
+    };
     const responseRows=async()=>{
       const response=await ownerGet(`${base}/turns/${promptId}`);expect(response.status).toBe(200);
-      return ((await response.json()) as {responses:{responseId:string;text:string}[]}).responses.filter(row=>row.responseId===responseId);
+      return ((await response.json()) as {responses:(LocatedRow & {responseId:string;text:string})[]}).responses.filter(row=>row.responseId===responseId);
     };
     const toolFacts=async()=>{
       const response=await ownerGet(`${base}/turns/${promptId}/tool-calls`);expect(response.status).toBe(200);
-      return ((await response.json()) as {rows:Record<string,unknown>[]}).rows.filter(row=>row.toolCallId===toolCallId);
+      return ((await response.json()) as {rows:LocatedRow[]}).rows.filter(row=>row.toolCallId===toolCallId);
     };
     const counts=()=>target.sql(`SELECT (SELECT COUNT(*) FROM events WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS events,
       prompts,replies AS responses,tool_calls AS tools FROM session_documents WHERE project_id=${project} AND session_id=${lit(sessionId)}`);
@@ -153,12 +161,17 @@ export const storageCleanupParity: ParityScenario = {
     expect(typeof eventRef.receipt_key).toBe('string');
     const [toolState]=await toolFacts();
     expect(Number(toolState!.inputBytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
-    const locator=toolState!.locator as {generation:number;owner:string;page:number};
-    const params=new URLSearchParams({session:sessionId,generation:String(locator.generation),owner:locator.owner,page:String(locator.page)});
-    const fullResponse=await ownerGet(`/api/projects/${target.projectId}/processed/tool-input/${toolCallId}?${params}`);
+    const fullResponse=await processedBody('tool-input',toolCallId,toolState!.locator);
     expect(fullResponse.status).toBe(200);expect(await fullResponse.text()).toBe(fullInput);
-    expect(await responseRows()).toEqual(before.responses);
-    expect(await toolFacts()).toEqual(before.tool);
+    const responses = await responseRows(), tools = await toolFacts();
+    expect(contentRows(responses)).toEqual(contentRows(before.responses));
+    expect(contentRows(tools)).toEqual(contentRows(before.tool));
+    const responseBody = await processedBody('response',responseId,responses[0]!.locator);
+    expect(responseBody.status).toBe(200);
+    expect(await responseBody.text()).toBe(responseText);
+    const previousInput = await processedBody('tool-input',toolCallId,before.tool[0]!.locator);
+    if (previousInput.status === 409) expect(await previousInput.json()).toEqual({ error: 'stale_cursor' });
+    else { expect(previousInput.status).toBe(200); expect(await previousInput.text()).toBe(fullInput); }
     expect(await counts()).toEqual(before.counts);
 
     const [rawRef] = await target.sql(`SELECT disposition,archive_key,receipt_key,length FROM raw_archive_refs WHERE project_id=${project}

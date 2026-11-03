@@ -27,8 +27,7 @@
  * each merges into the record it already is.
  */
 import type { ContentStore, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
-import { contentAssertion, readVerifiedContentText } from '../core/registered-content.js';
-import { blobObjectKey } from '../core/blob-objects.js';
+import { contentAssertion } from '../core/registered-content.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { eventContent } from '../core/event-content.js';
 import { emit } from '../telemetry.js';
@@ -39,7 +38,7 @@ import { documentRecord } from '../content/document-records.js';
 import { type ChunkRow, type PageRow } from '../content/document-reader.js';
 import {
   commitAdmitted, DocumentBatch, DocumentPassFull, directoryStatements, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement,
-  publishedPromptScheme, PUBLISHED_RECORD_SCHEME, releaseHolders, reserveReached, type ChunkVersion, type Holder,
+  releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { settleCards } from './card-settle.js';
@@ -49,6 +48,9 @@ import {
 } from './parse.js';
 import { promptOwners, type ParserState } from './parsers/index.js';
 import { admittedDocumentEvent, sourceReceipts } from './document-admission.js';
+import { DOCUMENT_TEXT_FIELDS, documentText } from './document-text.js';
+import { publicationPolicy } from './publication-policy.js';
+import { UnknownPluginFormat } from './parsers/plugin-events.js';
 import { isPromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Sessions one wake publishes. */
@@ -62,29 +64,33 @@ const RETIRE_PAGE = 100;
 const STEP_STATEMENTS = 24;
 const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
 /** What reading one queued event may spend: its row, its bundle and its spilled body, and resolving its prompt. */
-const QUEUED_STATEMENTS = 6;
+const QUEUED_STATEMENTS = 8;
 const QUEUED_BLOB_CALLS = 4;
-/** How long a session whose pass failed by name waits before its next pass: the time from its last advance, within bounds. */
+/** How long a failed session pass waits before retrying: the time from its last advance, within bounds. */
 export const PUBLISH_BACKOFF_MIN_MS = 60_000;
 export const PUBLISH_BACKOFF_MAX_MS = 30 * 60_000;
-/** A failure named by a server code rather than a store fault: one the session's own input repeats. */
+/** A named diagnostic code when an exception carries one. */
 const namedFailure = (error: unknown): string | undefined =>
   error instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(error.message) ? error.message : undefined;
-/** Errors that stop one transcript's publication by name rather than failing the pass. */
+/** Failures with a declared terminal hold or source-recovery policy. */
 const PUBLISH_FAILURES: Readonly<Record<string, string>> = {
   view_record_too_large: 'record_too_large',
   document_record_too_large: 'record_too_large',
   view_record_kind_unsupported: 'event_refused',
   view_source_receipt_absent: 'receipt_absent',
   view_parser_absent: 'parser_absent',
+  content_text_invalid: 'content_text_invalid',
+  document_event_payload_invalid: 'document_event_payload_invalid',
 };
 /** Stops that can clear on the same bytes. A publication holding one, however it came to, is retried. */
 const CLEARABLE_FAILURES: ReadonlySet<string | null> = new Set(['blob_absent', 'receipt_absent']);
-const failureOf = (error: unknown): string | undefined => {
-  if (!(error instanceof Error)) return undefined;
-  if (error.message.startsWith('view_record_refused:')) return 'event_refused';
-  return PUBLISH_FAILURES[error.message];
-};
+function publicationOutcome(error: unknown): { failure: string; terminal: boolean; propagate: boolean } {
+  const declared = error instanceof Error && Object.hasOwn(PUBLISH_FAILURES, error.message) ? PUBLISH_FAILURES[error.message] : undefined;
+  const known = error instanceof UnknownPluginFormat ? 'format_unsupported'
+    : error instanceof Error && error.message.startsWith('view_record_refused:') ? 'event_refused' : declared;
+  const failure = known ?? namedFailure(error) ?? 'publication_failed';
+  return { failure, terminal: known !== undefined && !CLEARABLE_FAILURES.has(failure), propagate: known === undefined && namedFailure(error) === undefined };
+}
 
 interface DocumentRow {
   generation: number; next_chunk: number; first_prompt: string | null; open_turn_key: string | null;
@@ -99,7 +105,7 @@ interface TranscriptRow {
   placed_records: number | null; placed_digest: string | null;
 }
 interface QueuedRow {
-  event_id: string; rank: number; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
+  event_id: string; rank: number; retry_at: number; retry_cause: string | null; queued_created_at: number; kind: string; payload: string; payload_format: string; created_at: number;
   received_at: number;
 }
 
@@ -123,17 +129,19 @@ interface Publication {
   changed: boolean;
   /** A fault this pass met that can clear: the transcript waits at its frontier. */
   fault?: string;
+  faultError?: unknown;
   diagnostic?: import('./parse.js').ParseDiagnostic;
 }
 
 /**
  * A session's publication input and progress as a pass finds it. Every write that changes them moves one part on: an
  * enqueue raises the newest queued event's row (the events table keeps the rows of consumed events, so a new one sorts
- * above every earlier one), a consume lowers the queued count, a transcript write raises its transcript count or bytes,
+ * above every earlier one), a consume or terminal hold lowers the active queue count, and a retry advances its deadline.
+ * A transcript write raises its transcript count or bytes,
  * and a commit raises the generation's published offsets or the records placed of a line.
  */
-const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0) FROM publish_queue q
-    JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id)
+const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0)||':'||COALESCE(SUM(q.retry_at),0) FROM publish_queue q
+    JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id AND q.failure IS NULL)
   ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)
   ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0)||':'||COALESCE(SUM(p.placed_records),0) FROM transcript_publication p
     WHERE p.project_id=${table}.project_id AND p.session_id=${table}.session_id AND p.generation IS ${table}.generation)`;
@@ -163,11 +171,13 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       const report = await new SessionPublication(env, ref.project_id, ref.session_id, now, limits).run(index === 0);
       changed += report.records;
       more ||= report.more;
+      if (report.failure?.propagate) failure ??= report.failure.error;
     } catch (error) {
-      const named = namedFailure(error);
-      emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: named ?? 'unknown' });
-      await deferFailedSession(env.db, ref, named, now);
-      if (named === undefined) failure ??= error;
+      const outcome = publicationOutcome(error);
+      emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: outcome.failure });
+      try { await deferFailedSession(env.db, ref, outcome.failure, now); }
+      catch (deferralError) { failure ??= deferralError; }
+      if (outcome.propagate) failure ??= error;
     }
   }
   if (!more) {
@@ -185,19 +195,18 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
 }
 
 /**
- * Records a failed pass, and moves a session that failed by name past its backoff while its input is still the input
- * its selection found; input that arrived during the pass keeps the session due. Neither may fail the wake.
+ * Records a failed pass and defers unchanged input through its retry deadline.
+ * Input that arrived during the pass keeps the session due.
  */
-async function deferFailedSession(db: RelationalStore, ref: DueSession, named: string | undefined, now: number): Promise<void> {
+async function deferFailedSession(db: RelationalStore, ref: DueSession, failure: string, now: number): Promise<void> {
   const { project_id: projectId, session_id: sessionId } = ref;
   try {
-    if (named !== undefined) {
-      await db.prepare(`UPDATE session_documents SET due_at=?3+MIN(MAX(?3-updated_at,${PUBLISH_BACKOFF_MIN_MS}),${PUBLISH_BACKOFF_MAX_MS})
+    await db.prepare(`UPDATE session_documents SET due_at=?3+MIN(MAX(?3-updated_at,${PUBLISH_BACKOFF_MIN_MS}),${PUBLISH_BACKOFF_MAX_MS})
         WHERE project_id=?1 AND session_id=?2 AND state='live' AND ${inputRevision('session_documents')}=?4`).bind(projectId, sessionId, now, ref.revision).run();
-    }
-    await recordDocumentPublishFailure(db, { projectId, sessionId, failure: named ?? 'unknown' }, now);
+    await recordDocumentPublishFailure(db, { projectId, sessionId, failure }, now);
   } catch (error) {
     emit({ kind: 'document_publish_deferral_failed', projectId, sessionId, error: namedFailure(error) ?? 'unknown' });
+    throw error;
   }
 }
 
@@ -216,40 +225,37 @@ export async function retireSupersededObjects(db: RelationalStore, now: number):
   return rows.length;
 }
 
-/** The body field a spilled payload `blob` holds for an event kind. */
-const SPILLED_FIELD: Readonly<Record<string, string>> = { prompt: 'text', response: 'text', plan: 'content', 'tool.use': 'input', 'tool.failure': 'input' };
-
-/** A spilled tool input as the field held it: its JSON value, or its text when the member spilled text that is not JSON. */
+/** A spilled tool input retains its JSON value or its original text. */
 function spilledInput(text: string): unknown {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-/**
- * A queued event's payload, with each spilled body read back into the field it stands for: the body `blob` names, and a
- * tool's output `outputBlob` names, of which the document keeps the preview. Only an inline payload is read from its
- * row; any other is read through the verified event content reader, an archived one from its bundle.
- */
-async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow): Promise<Record<string, unknown>> {
+/** A queued event's complete payload, read from its original evidence and verified text references. */
+async function hydratedPayload(env: ContentStore, projectId: string, row: QueuedRow, observe: (payload: Record<string, unknown>) => void): Promise<Record<string, unknown>> {
   const body = row.payload_format === 'inline' ? row.payload : await eventContent(env, projectId, row.event_id);
   if (body === null) throw new Error('document_event_body_missing');
-  const { blob: spilled, outputBlob, ...payload } = JSON.parse(body) as Record<string, unknown>;
-  const read = async (key: string): Promise<string> => {
-    const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
-      .bind(projectId, key).first<{ generation: string | null; size: number }>();
-    if (blob === null) throw new Error('document_event_body_missing');
-    return readVerifiedContentText(env, blobObjectKey(projectId, key, blob.generation), blob.size, key);
-  };
-  const field = SPILLED_FIELD[row.kind];
-  if (typeof spilled === 'string') {
-    if (field === undefined) payload.blob = spilled;
-    else { const text = await read(spilled); payload[field] = field === 'input' ? spilledInput(text) : text; }
-  }
-  if (typeof outputBlob === 'string') {
-    if (field === 'input') payload.output = await read(outputBlob);
-    else payload.outputBlob = outputBlob;
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('document_event_payload_invalid');
+    payload = parsed as Record<string, unknown>;
+  } catch (error) { throw new Error('document_event_payload_invalid', { cause: error }); }
+  observe(payload);
+  for (const [reference, field] of Object.entries(DOCUMENT_TEXT_FIELDS[row.kind] ?? {})) {
+    const key = payload[reference];
+    if (typeof key !== 'string') continue;
+    const text = await documentText(env, projectId, key);
+    payload[field] = field === 'input' ? spilledInput(text) : text;
+    delete payload[reference];
   }
   return payload;
 }
+
+interface QueuedRef { r: number; c: number; e: string; t: number; w: string | null }
+type QueuedWaitCause = { kind: 'read'; parentId: string | null } | { kind: 'prompt' | 'order'; eventId: string };
+interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; cause: QueuedWaitCause | null; error?: unknown }
+interface QueuedRecord { consumed: QueuedRef; record: DocRecord | null; failure?: QueuedFailure }
+interface PublicationReport { records: number; more: boolean; failure?: { error: unknown; propagate: boolean } }
 
 /** What a run of records holds, in order. */
 const recordsDigest = (records: readonly DocRecord[]): Promise<string> => sha256Hex(JSON.stringify(records));
@@ -260,7 +266,9 @@ class SessionPublication {
   private doc!: DocumentRow;
   private batch!: DocumentBatch;
   private publications: Publication[] = [];
-  private consumed: { r: number; c: number; e: string }[] = [];
+  private consumed: QueuedRef[] = [];
+  private failedQueued: QueuedFailure[] = [];
+  private readonly placedPrompts = new Set<string>();
   private more = false;
   private full = false;
   private continuationChanged = false;
@@ -285,9 +293,10 @@ class SessionPublication {
    * Publishes what the pass can pay for and commits it. A pass that leads its wake and cannot place even one record
    * fails as `document_pass_unaffordable`: every later pass on the same input would stop at the same place.
    */
-  async run(leads = false): Promise<{ records: number; more: boolean }> {
+  async run(leads = false): Promise<PublicationReport> {
     const db = this.db;
     const generation = '(SELECT generation FROM session_documents WHERE project_id=?1 AND session_id=?2)';
+    const policy = publicationPolicy('t.prompt_identity_scheme');
     const [docs, chunks, pages, transcripts, queued] = await db.batch([
       db.prepare(`SELECT d.generation,d.next_chunk,d.first_prompt,d.open_turn_key,d.prompts,s.created_by_token_id token_id,
           s.ended_at,s.working_since,s.last_turn_end_at
@@ -295,16 +304,18 @@ class SessionPublication {
         WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live' AND d.generation IS NOT NULL`).bind(this.projectId, this.sessionId),
       ...directoryStatements(db, this.projectId, this.sessionId),
       db.prepare(`SELECT t.transcript_id,t.agent,t.role,t.size,t.machine_id,t.token_id,t.prompt_identity_scheme,t.imported_at,t.last_received_at,
-          p.parser_version AS publication_parser_version,p.diagnostic,p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,p.prompt_scheme,p.record_scheme,
+          p.parser_version AS publication_parser_version,p.diagnostic,p.published_offset,p.segment_lines,p.open_prompt_id,p.unfinished,p.reply_unfinished,p.reply_latest_at,
+          CASE WHEN p.published_offset IS NULL THEN ${policy.prompt} ELSE p.prompt_scheme END prompt_scheme,
+          CASE WHEN p.published_offset IS NULL THEN ${policy.record} ELSE p.record_scheme END record_scheme,
           p.state,p.failure,p.awaited_size,p.updated_at,p.placed_records,p.placed_digest
         FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=${generation}
         WHERE t.project_id=?1 AND t.session_id=?2 ORDER BY CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END,t.first_received_at,t.transcript_id`)
         .bind(this.projectId, this.sessionId),
-      db.prepare(`SELECT q.event_id,q.rank,q.created_at queued_created_at,e.kind,e.payload,e.payload_format,e.created_at,e.received_at
-        FROM (SELECT rank,created_at,event_id FROM publish_queue WHERE project_id=?1 AND session_id=?2
+      db.prepare(`SELECT q.event_id,q.rank,q.retry_at,q.retry_cause,q.created_at queued_created_at,e.kind,e.payload,e.payload_format,e.created_at,e.received_at
+        FROM (SELECT rank,created_at,event_id,retry_at,retry_cause FROM publish_queue WHERE project_id=?1 AND session_id=?2 AND failure IS NULL AND (retry_at<=?3 OR retry_cause IS NULL)
           ORDER BY rank,created_at,event_id LIMIT ${PUBLISH_QUEUE_PER_PASS}) q
         JOIN events e ON e.project_id=?1 AND e.event_id=q.event_id ORDER BY q.rank,q.created_at,q.event_id`)
-        .bind(this.projectId, this.sessionId),
+        .bind(this.projectId, this.sessionId, this.now),
     ]);
     const doc = docs!.results[0] as DocumentRow | undefined;
     if (doc === undefined) return { records: 0, more: false };
@@ -318,15 +329,15 @@ class SessionPublication {
       return {
         transcript: t, held: t.published_offset, offset: t.published_offset ?? 0, segmentLines: t.segment_lines ?? 0,
         openPromptId: t.open_prompt_id, unfinished: t.unfinished ?? 0, replyUnfinished: t.reply_unfinished ?? 0,
-        replyLatestAt: t.reply_latest_at, promptScheme: t.published_offset === null ? publishedPromptScheme(t.prompt_identity_scheme) : t.prompt_scheme,
-        recordScheme: t.record_scheme ?? PUBLISHED_RECORD_SCHEME, state: (cleared ? 'active' : t.state ?? 'active') as Publication['state'],
+        replyLatestAt: t.reply_latest_at, promptScheme: t.prompt_scheme,
+        recordScheme: t.record_scheme!, state: (cleared ? 'active' : t.state ?? 'active') as Publication['state'],
         diagnostic: cleared || t.diagnostic===null ? undefined : JSON.parse(t.diagnostic), failure: cleared ? null : t.failure, awaitedSize: t.awaited_size, placedRecords: t.placed_records, placedDigest: t.placed_digest,
         changed: cleared || t.published_offset === null,
       };
     });
     for (const publication of this.publications) await this.publishTranscript(publication);
     await this.publishQueued(queued!.results as QueuedRow[]);
-    const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0 || this.batch.writer.sealing().length > 0;
+    const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0 || this.failedQueued.length > 0 || this.batch.writer.sealing().length > 0;
     if (leads && this.full && !placed) throw new Error('document_pass_unaffordable');
     const written = await this.batch.commit(this.batch.writer.changed || this.continuationChanged, 'live', this.now, (version) => ({
       sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)
@@ -334,9 +345,16 @@ class SessionPublication {
       params: [this.projectId, this.sessionId, doc.generation, this.projectId, this.sessionId, version.key, version.sourceId],
     }), (versions) => this.frontier(versions));
     if (written > 0) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.batch.records, chunks: written });
-    const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault;
-    if (fault !== undefined) await recordDocumentPublishFailure(db, { projectId: this.projectId, sessionId: this.sessionId, failure: fault }, this.now);
-    return { records: this.batch.records, more: this.more };
+    const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault
+      ?? this.failedQueued.find(row => row.error !== undefined)?.code;
+    const retryError = this.publications.find(publication => publication.faultError !== undefined)?.faultError
+      ?? this.failedQueued.find(row => row.failure === null && row.error !== undefined)?.error;
+    let failure: PublicationReport['failure'] = retryError === undefined ? undefined : { error: retryError, propagate: publicationOutcome(retryError).propagate };
+    if (fault !== undefined) {
+      try { await recordDocumentPublishFailure(db, { projectId: this.projectId, sessionId: this.sessionId, failure: fault }, this.now); }
+      catch (error) { failure = { error, propagate: true }; }
+    }
+    return { records: this.batch.records, more: this.more, failure };
   }
 
   private target(publication: Publication, persistence: ParsePersistence): ParseTarget {
@@ -443,9 +461,9 @@ class SessionPublication {
         if (report.nextOffset === null || publication.state !== 'active') return;
         if (publication.offset === from && (from < t.size || publication.unfinished === wasUnfinished)) return;
       } catch (error) {
-        const failure = failureOf(error);
-        if (failure === undefined) throw error;
-        if (CLEARABLE_FAILURES.has(failure)) {
+        const { failure, terminal } = publicationOutcome(error);
+        if (!terminal) {
+          if (!CLEARABLE_FAILURES.has(failure)) publication.faultError = error;
           this.recordFault(publication, failure);
           return;
         }
@@ -501,29 +519,157 @@ class SessionPublication {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
     const content = bundleContentEnv(this.env);
     for (let at = 0, size = 1; at < rows.length; size *= 2) {
-      const group: { consumed: { r: number; c: number; e: string }; record: DocRecord | null }[] = [];
+      const group: QueuedRecord[] = [];
       for (const row of rows.slice(at, at + size)) {
         if (this.spent(QUEUED_STATEMENTS, QUEUED_BLOB_CALLS)) { this.more = true; break; }
-        const payload = await hydratedPayload(content, this.projectId, row);
-        group.push({
-          consumed: { r: row.rank, c: row.queued_created_at, e: row.event_id },
-          record: documentRecord(row.kind, payload, row.created_at, { ev: row.event_id, received_at: row.received_at }),
-        });
-      }
-      let take = group.length;
-      for (; take > 0; take = Math.floor(take / 2)) {
+        const ref = { r: row.rank, c: row.queued_created_at, e: row.event_id, t: row.retry_at, w: row.retry_cause };
+        const origin = { ev: row.event_id, received_at: row.received_at };
+        let parentId: string | null = null;
         try {
-          await this.batch.place(group.slice(0, take).flatMap(({ record }) => (record === null ? [] : [record])), null);
+          const payload = await hydratedPayload(content, this.projectId, row, payload => {
+            const header = row.kind === 'prompt' ? documentRecord(row.kind, payload, row.created_at, origin) : null;
+            parentId = header?.k === 'prompt' && typeof header.parent_prompt_id === 'string' ? header.parent_prompt_id : null;
+          });
+          group.push({ consumed: ref, record: documentRecord(row.kind, payload, row.created_at, origin) });
+        } catch (error) {
+          const outcome = publicationOutcome(error);
+          const delay = Math.min(Math.max(row.retry_at - row.received_at, PUBLISH_BACKOFF_MIN_MS), PUBLISH_BACKOFF_MAX_MS);
+          group.push({ consumed: ref, record: null, failure: { ...ref, failure: outcome.terminal ? outcome.failure : null,
+            retry: this.now + delay, code: outcome.failure, cause: outcome.terminal ? null : { kind: 'read', parentId }, error } });
+        }
+      }
+      let take = group.length, ready: QueuedRecord[] = [];
+      for (; take > 0; take = Math.floor(take / 2)) {
+        ready = await this.readyQueued(group.slice(0, take));
+        try {
+          await this.batch.place(ready.flatMap(({ record }) => (record === null ? [] : [record])), null);
           break;
         } catch (error) {
           if (!(error instanceof DocumentPassFull)) throw error;
           this.full = this.more = true;
         }
       }
-      this.consumed.push(...group.slice(0, take).map(({ consumed }) => consumed));
+      for (const row of ready.slice(0, take)) {
+        if (row.record?.k === 'prompt') this.placedPrompts.add(row.record.id);
+        if (row.failure === undefined) this.consumed.push(row.consumed);
+        else this.failedQueued.push(row.failure);
+      }
       if (take < size || this.full) return;
       at += take;
     }
+  }
+
+  /** Dependency cycles publish as unrooted session content. */
+  private async cyclicQueued(heads: readonly { head: string; start: string }[], outcomes: readonly Pick<QueuedFailure, 'e' | 'failure' | 'retry' | 'cause'>[]): Promise<ReadonlySet<string>> {
+    if (heads.length === 0) return new Set();
+    const cause = 'COALESCE(o.cause,q.retry_cause)';
+    const result = await this.db.prepare(`WITH RECURSIVE
+      staged AS MATERIALIZED (SELECT json_extract(value,'$.e') e,json_extract(value,'$.failure') failure,json_extract(value,'$.cause') cause FROM json_each(?4)),
+      walk(head,id) AS (
+        SELECT json_extract(value,'$.head'),json_extract(value,'$.start') FROM json_each(?3)
+        UNION
+        SELECT w.head,json_extract(${cause},'$.eventId') FROM walk w CROSS JOIN events e CROSS JOIN publish_queue q
+          LEFT JOIN staged o ON o.e=q.event_id
+        WHERE e.project_id=?1 AND e.event_id=w.id AND q.project_id=?1 AND q.session_id=?2 AND q.rank=0
+          AND q.created_at=e.created_at AND q.event_id=w.id AND q.failure IS NULL AND o.failure IS NULL
+          AND json_extract(${cause},'$.kind')='prompt' AND json_extract(${cause},'$.eventId') IS NOT NULL
+      )
+      SELECT w.head,MAX(w.id=w.head) closes,MIN(CASE WHEN q.event_id IS NOT NULL AND q.failure IS NULL AND o.failure IS NULL
+        AND json_extract(${cause},'$.kind')='prompt' THEN 1 ELSE 0 END) cycle
+      FROM walk w LEFT JOIN events e ON e.project_id=?1 AND e.event_id=w.id
+        LEFT JOIN publish_queue q ON q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=w.id
+        LEFT JOIN staged o ON o.e=q.event_id GROUP BY w.head`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(heads), JSON.stringify(outcomes))
+      .all<{ head: string; closes: number; cycle: number }>();
+    this.batch.calls += 1;
+    return new Set(result.results.filter(row => row.closes === 1 || row.cycle === 1).map(row => row.head));
+  }
+
+  /** Read faults can hold turn order; parent waits retain their own dependency. */
+  private async readyQueued(rows: readonly QueuedRecord[]): Promise<QueuedRecord[]> {
+    const parentOf = (record: DocRecord): unknown => record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
+    const independent = (record: DocRecord | null): boolean => record?.k === 'prompt' && typeof parentOf(record) !== 'string';
+    const ids = [...new Set(rows.flatMap(({ record }) => {
+      const id = record === null ? null : parentOf(record);
+      return typeof id === 'string' && !this.placedPrompts.has(id) ? [id] : [];
+    }))];
+    if (ids.length === 0 && !rows.some(row => independent(row.record))) return [...rows];
+    const faults = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])];
+    const outcomes = faults.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause }));
+    const held = ids.length === 0 ? [] : (await this.db.prepare(`WITH held AS MATERIALIZED (
+      SELECT j.value id,(SELECT json_object('e',q.event_id,'retry',COALESCE(
+        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at))
+      FROM event_refs r CROSS JOIN events e CROSS JOIN publish_queue q
+      WHERE r.project_id=?1 AND r.session_id=?2 AND r.kind='prompt' AND r.record_id=j.value AND r.record_id IS NOT NULL
+        AND e.project_id=r.project_id AND e.event_id=r.event_id
+        AND q.project_id=r.project_id AND q.session_id=r.session_id AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=r.event_id
+        AND q.failure IS NULL AND NOT EXISTS (SELECT 1 FROM json_each(?4)
+          WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL)
+        ORDER BY q.created_at,q.event_id LIMIT 1) wait
+      FROM json_each(?3) j WHERE NOT EXISTS (SELECT 1 FROM session_prompts p
+        WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value))
+      SELECT id,json_extract(wait,'$.e') event_id,json_extract(wait,'$.retry') retry FROM held`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(ids), JSON.stringify(outcomes), this.doc.generation)
+      .all<{ id: string; event_id: string | null; retry: number | null }>()).results;
+    this.batch.calls += Number(ids.length > 0);
+    const pending = new Map(held.flatMap(row => row.event_id === null || row.retry === null ? [] : [[row.id, { eventId: row.event_id, retry: row.retry }] as const]));
+    const heads = rows.flatMap(row => {
+      const id = row.record === null ? null : parentOf(row.record), parent = typeof id === 'string' ? pending.get(id) : undefined;
+      return parent === undefined ? [] : [{ head: row.consumed.e, start: parent.eventId }];
+    });
+    const cyclic = await this.cyclicQueued(heads, outcomes);
+    const prompts = new Map<string, DocRecord>();
+    for (const { record } of rows) if (record?.k === 'prompt' && !prompts.has(record.id)) prompts.set(record.id, record);
+    const waitingFor = (id: string, head: string, seen = new Set<string>()): { eventId: string; retry: number } | null => {
+      if (cyclic.has(head) || this.placedPrompts.has(id) || !pending.has(id) || seen.has(id)) return null;
+      const prompt = prompts.get(id);
+      if (prompt === undefined) return { ...pending.get(id)!, retry: Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!.retry) };
+      const parent = parentOf(prompt);
+      if (typeof parent !== 'string') return null;
+      seen.add(id);
+      return waitingFor(parent, head, seen);
+    };
+    const defer = (row: QueuedRecord, retry: number, cause: QueuedWaitCause): QueuedRecord => ({ consumed: row.consumed, record: null,
+      failure: { ...row.consumed, failure: null, retry, code: 'prompt_pending', cause } });
+    const dependencies = (row: QueuedRecord): QueuedRecord => {
+      const id = row.record === null ? null : parentOf(row.record);
+      const wait = typeof id === 'string' ? waitingFor(id, row.consumed.e) : null;
+      return wait === null ? row : defer(row, wait.retry, { kind: 'prompt', eventId: wait.eventId });
+    };
+    let ready = rows.map(dependencies);
+    if (!ready.some(row => independent(row.record))) return ready;
+    const skipped = [...this.consumed.filter(row => row.r === 0).map(row => row.e),
+      ...rows.flatMap(row => row.record?.k === 'prompt' ? [row.consumed.e] : [])];
+    const outside = await this.db.prepare(`SELECT q.created_at c,q.event_id e,COALESCE(
+        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at) retry
+      FROM publish_queue q WHERE q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.failure IS NULL
+        AND json_extract(q.retry_cause,'$.kind')='read' AND json_extract(q.retry_cause,'$.parentId') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM json_each(?3) WHERE value=q.event_id)
+        AND NOT EXISTS (SELECT 1 FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id
+          AND (json_extract(value,'$.failure') IS NOT NULL OR json_extract(value,'$.cause.kind') IS NOT 'read' OR json_extract(value,'$.cause.parentId') IS NOT NULL))
+      ORDER BY q.created_at,q.event_id LIMIT 1`)
+      .bind(this.projectId, this.sessionId, JSON.stringify(skipped), JSON.stringify(outcomes))
+      .first<{ c: number; e: string; retry: number }>();
+    this.batch.calls += 1;
+    const roots = faults.flatMap(row => row.r === 0 && row.cause?.kind === 'read' && row.cause.parentId === null
+      ? [{ c: row.c, e: row.e, retry: row.retry }] : []);
+    const earlier = (left: Pick<QueuedRef, 'c' | 'e'>, right: Pick<QueuedRef, 'c' | 'e'>) => left.c < right.c || (left.c === right.c && left.e < right.e);
+    const first = [...(outside === null ? [] : [outside]), ...roots]
+      .reduce<{ c: number; e: string; retry: number } | null>((first, row) => first === null || earlier(row, first) ? row : first, null);
+    if (first === null) return ready;
+    const retry = first.retry > this.now ? first.retry : this.now + PUBLISH_BACKOFF_MIN_MS;
+    const ordered = ready.map(row => independent(row.record) && earlier(first, row.consumed)
+      ? defer(row, retry, { kind: 'order', eventId: first.e }) : row);
+    const readyPrompts = new Set(ordered.flatMap(row => row.record?.k === 'prompt' ? [row.record.id] : []));
+    for (const [index, row] of ordered.entries()) {
+      const original = rows[index]!.record;
+      if (original?.k === 'prompt' && row.failure?.failure === null && !readyPrompts.has(original.id)) {
+        prompts.delete(original.id);
+        pending.set(original.id, { eventId: row.consumed.e, retry: row.failure.retry });
+      }
+    }
+    ready = ordered.map(dependencies);
+    return ready;
   }
 
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */
@@ -533,15 +679,17 @@ class SessionPublication {
     const publications = this.publications.filter((publication) => publication.changed);
     const expectedOffsets = publications.map((publication) => ({ t: publication.transcript.transcript_id, o: publication.held }));
     const consumed = JSON.stringify(this.consumed);
+    const settled = JSON.stringify([...this.consumed, ...this.failedQueued].map(({ r, c, e, t, w }) => ({ r, c, e, t, w })));
     const before = contentAssertion(db, `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=? AND next_chunk=?)
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN session_chunks c ON c.project_id=? AND c.session_id=? AND c.generation=?
           AND c.chunk_no=json_extract(j.value,'$.n') WHERE c.blob_key IS NOT json_extract(j.value,'$.k'))
         AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN transcript_publication t ON t.project_id=? AND t.generation=?
           AND t.transcript_id=json_extract(j.value,'$.t') WHERE t.published_offset IS NOT json_extract(j.value,'$.o'))
         AND (SELECT COUNT(*) FROM json_each(?) j JOIN publish_queue q ON q.project_id=? AND q.session_id=? AND q.rank=json_extract(j.value,'$.r')
-          AND q.created_at=json_extract(j.value,'$.c') AND q.event_id=json_extract(j.value,'$.e'))=?`,
+          AND q.created_at=json_extract(j.value,'$.c') AND q.event_id=json_extract(j.value,'$.e')
+          AND q.failure IS NULL AND q.retry_at=json_extract(j.value,'$.t') AND q.retry_cause IS json_extract(j.value,'$.w'))=?`,
       [p, s, g, this.doc.next_chunk, this.batch.expectedChunks(versions), p, s, g, JSON.stringify(expectedOffsets), p, g,
-        consumed, p, s, this.consumed.length]);
+        settled, p, s, this.consumed.length + this.failedQueued.length]);
     const after: PreparedStatement[] = [];
     if (publications.length > 0) after.push(publicationStatement(db, p, s, g, this.now, publications.map((pub) => ({
       t: pub.transcript.transcript_id, o: pub.offset, l: pub.segmentLines, p: pub.openPromptId, u: pub.unfinished, r: pub.replyUnfinished,
@@ -553,6 +701,12 @@ class SessionPublication {
           (SELECT ?,?,json_extract(value,'$.r'),json_extract(value,'$.c'),json_extract(value,'$.e') FROM json_each(?))`)
         .bind(p, s, consumed));
     }
+    if (this.failedQueued.length > 0) after.push(db.prepare(`UPDATE publish_queue SET
+        failure=(SELECT json_extract(value,'$.failure') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
+        retry_at=(SELECT json_extract(value,'$.retry') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
+        retry_cause=(SELECT json_extract(value,'$.cause') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id)
+      WHERE project_id=?1 AND session_id=?2 AND event_id IN (SELECT json_extract(value,'$.e') FROM json_each(?3))`)
+      .bind(p, s, JSON.stringify(this.failedQueued.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause })))));
     const sizes = Object.fromEntries(this.publications.map((pub) => [pub.transcript.transcript_id, pub.transcript.size]));
     const behind = this.publications.some((pub) => pub.state === 'active' && pub.fault === undefined && pub.offset < pub.transcript.size);
     const laterDue = [
@@ -565,9 +719,10 @@ class SessionPublication {
     after.push(db.prepare(`UPDATE session_documents SET ${set.sql},
         due_at=CASE WHEN EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id=? AND t.session_id=?
           AND t.size IS NOT json_extract(?, '$."' || t.transcript_id || '"'))
-          OR EXISTS (SELECT 1 FROM publish_queue q WHERE q.project_id=? AND q.session_id=?) THEN 0 ELSE ? END
+          THEN 0 ELSE (SELECT MIN(due) FROM (SELECT ? due UNION ALL
+            SELECT MIN(retry_at) FROM publish_queue WHERE project_id=? AND session_id=? AND failure IS NULL)) END
       WHERE project_id=? AND session_id=?`)
-      .bind(...set.params, p, s, JSON.stringify(sizes), p, s, dueAt, p, s));
+      .bind(...set.params, p, s, JSON.stringify(sizes), dueAt, p, s, p, s));
     return { before, after };
   }
 }

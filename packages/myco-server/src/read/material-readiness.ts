@@ -22,10 +22,10 @@ export const transcriptsPublishedSql = (alias: string): string => `NOT EXISTS (S
 
 /**
  * The publisher has caught up with the session: its transcripts are published, and no member event of the session waits
- * in the publish queue. Titling material is read only then.
+ * in the active publish queue. Terminal event holds retain their diagnostics separately.
  */
 export const sessionMaterialReadySql = (alias: string): string => `(${transcriptsPublishedSql(alias)}
-  AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.project_id = ${alias}.project_id AND q.session_id = ${alias}.session_id))`;
+  AND NOT EXISTS (SELECT 1 FROM publish_queue q WHERE q.project_id = ${alias}.project_id AND q.session_id = ${alias}.session_id AND q.failure IS NULL))`;
 
 export class SessionMaterialPendingError extends Error {
   constructor() { super('Session capture is incomplete or has errors; retry after its transcripts are fully published.'); }
