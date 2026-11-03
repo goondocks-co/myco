@@ -1,3 +1,4 @@
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 /**
  * The hosted producer's own admission and hold settlement, over its real storage statements.
  *
@@ -776,4 +777,33 @@ it('accepts only issued recovery commands, replays them once, and binds delayed 
     expect(await producer.forgetUnsettledExport(delayed)).toEqual({ forgotten: null });
     expect(sql.query('SELECT * FROM attempts').all()).toEqual(before);
   } finally { sql.close(); }
+});
+
+
+it('schema drift aborts the multipart upload and retires its parts through failure settlement', async () => {
+  const sql = new Database(':memory:');
+  let aborted = 0;
+  let native: unknown;
+  const producer = producerOver(sql, [], undefined, { abort: async () => { aborted++; } });
+  try {
+    const admitted = await producer.admit(admission('schema-drift'));
+    sql.run("UPDATE attempts SET stage='download',upload_id='pending-upload' WHERE id=?", [admitted.attempt]);
+    sql.run("INSERT INTO parts(attempt,part,bytes,sha256,etag) VALUES(?,1,4,?,'etag')", [admitted.attempt,'a'.repeat(64)]);
+    expect((await producer.noteSchemaDrift(admitted.attempt!)).error).toBe('schema_disagrees');
+    native = { aborted, attempt: sql.query('SELECT stage,upload_id FROM attempts').get(), parts: sql.query('SELECT * FROM parts').all() };
+  } finally { sql.close(); }
+  const bundle = await Bun.build({ entrypoints: [`${import.meta.dir}/helpers/recovery-drift-entry.ts`], format: 'esm', target: 'browser', external: ['cloudflare:workers'] });
+  if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: await bundle.outputs[0]!.text(),
+    compatibilityDate: '2026-08-01', compatibilityFlags: ['nodejs_compat'],
+    d1Databases: ['MYCO_DB'], r2Buckets: ['BUCKET','RECOVERY_BUCKET'],
+    durableObjects: { RECOVERY: { className: 'RecoveryProducer', useSQLite: true } },
+    bindings: { MYCO_RECOVERY_ACCOUNT_ID: RECORDED_CONFIGURATION.accountId, MYCO_RECOVERY_DATABASE_ID: RECORDED_CONFIGURATION.databaseId,
+      MYCO_RECOVERY_CONFIGURATION: JSON.stringify(RECORDED_CONFIGURATION), RECOVERY_EXPORT_TOKEN: 'local-fake-token' },
+  }));
+  try {
+    const response = await mf.dispatchFetch('http://local/test');
+    expect(await response.json()).toEqual({ aborted: true, attempt: { stage: 'failed', upload_id: null }, parts: [] });
+    expect(native).toEqual({ aborted: 1, attempt: { stage: 'failed', upload_id: null }, parts: [] });
+  } finally { await mf.dispose(); }
 });

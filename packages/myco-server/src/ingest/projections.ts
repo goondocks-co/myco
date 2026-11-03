@@ -1,3 +1,4 @@
+import { archivedTranscriptRangeSql } from '../core/transcript-ranges.js';
 import { DOCUMENT_ID_FIELDS, DOCUMENT_IDENTITIES_SQL } from '../db/document-tables.js';
 import { processedResourceProofSql } from '../core/processed-resources.js';
 
@@ -874,7 +875,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
       db
         .prepare(
           `INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE}
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND NOT ${archivedTranscriptRangeSql('?', '?', '?')}
           ON CONFLICT (project_id, transcript_id, base_offset) DO NOTHING`,
         )
         .bind(
@@ -888,6 +889,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
           ctx.now,
           ctx.tokenId,
           ...rawGateParams(ctx, e),
+          ctx.projectId, transcriptId, baseOffset,
         ),
       // `imported_at` is the lane of the NEWEST segment, not of the first: a
       // session imported and then continued live is live work, and a COALESCE

@@ -56,7 +56,7 @@ export function writeRecoverySql(databasePath: string, destination: string, sour
       result.statements++;
       result.bytes += bytes.length;
     };
-    const value = (input: unknown, slot: number): string => {
+    const value = (input: unknown, slot: number, staged = false, preview = false): string => {
       if (input === null) return 'NULL';
       if (typeof input === 'bigint') return String(input);
       if (typeof input === 'number') {
@@ -66,10 +66,10 @@ export function writeRecoverySql(databasePath: string, destination: string, sour
       if (typeof input !== 'string' && !(input instanceof Uint8Array)) throw new Error('unsupported recovery SQL value');
       const bytes = Buffer.from(input);
       let expression: string;
-      if (bytes.length <= VALUE_CHUNK_BYTES) expression = `X'${bytes.toString('hex')}'`;
+      if (!staged && bytes.length <= VALUE_CHUNK_BYTES) expression = `X'${bytes.toString('hex')}'`;
       else {
-        emit(`INSERT OR REPLACE INTO ${VALUE_TABLE} VALUES(${slot},X'')`);
-        for (let offset = 0; offset < bytes.length; offset += VALUE_CHUNK_BYTES) {
+        if (!preview) emit(`INSERT OR REPLACE INTO ${VALUE_TABLE} VALUES(${slot},X'')`);
+        for (let offset = 0; !preview && offset < bytes.length; offset += VALUE_CHUNK_BYTES) {
           emit(`UPDATE ${VALUE_TABLE} SET value=CAST(value||X'${bytes.subarray(offset, offset + VALUE_CHUNK_BYTES).toString('hex')}' AS BLOB) WHERE slot=${slot}`);
         }
         expression = `(SELECT value FROM ${VALUE_TABLE} WHERE slot=${slot})`;
@@ -94,7 +94,10 @@ export function writeRecoverySql(databasePath: string, destination: string, sour
       const names = columns.map(identifier).join(',');
       const selected = columns.map((name) => `${identifier(name)} AS ${identifier(name)}`).join(',');
       for (const row of db.query<Record<string, unknown>, []>(`SELECT ${selected} FROM ${identifier(table.name)}`).iterate()) {
-        emit(`INSERT INTO ${identifier(table.name)}(${names}) VALUES(${columns.map((name, slot) => value(row[name], slot)).join(',')})`);
+        const prefix = `INSERT INTO ${identifier(table.name)}(${names}) VALUES(`;
+        const inline = columns.map((name, slot) => value(row[name], slot, false, true));
+        const staged = Buffer.byteLength(prefix + inline.join(',') + ');\n') > MAX_STATEMENT_BYTES;
+        emit(prefix + columns.map((name, slot) => value(row[name], slot, staged)).join(',') + ')');
         result.rows++;
       }
     }

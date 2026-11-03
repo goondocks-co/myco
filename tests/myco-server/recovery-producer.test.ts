@@ -520,7 +520,7 @@ it('names a range the provider keeps answering encoded as an unexpected answer, 
   const first = await continueAttempt(state, port, limits);
   expect([first.stage, first.error, state.state.attempts, state.state.downloadOffset]).toEqual(['download', 'provider_unexpected', 1, 4]);
   const second = await continueAttempt(state, port, limits);
-  expect([second.stage, second.error, state.state.downloadOffset, state.held.length]).toEqual(['failed', 'provider_unexpected', 4, 1]);
+  expect([second.stage, second.error, state.state.downloadOffset, state.held.length]).toEqual(['failed', 'provider_unexpected', 4, 0]);
 });
 
 it('bounds how many times one attempt may ask for a fresh export', async () => {

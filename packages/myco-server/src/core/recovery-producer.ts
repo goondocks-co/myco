@@ -465,6 +465,7 @@ export async function failAttempt(
   const upload = attempt.uploadId;
   // The terminal state is durable before it is announced, and the clearing up that follows cannot change it.
   checkpoint.update(attempt.id, { stage: 'failed', error: refusal, uploadId: null });
+  checkpoint.clearParts(attempt.id);
   // Each clean-up step has its own deadline, so one that never settles cannot hold back the next or the announcement.
   const reached = (work: () => Promise<void>): Promise<boolean> => within(work, cleanupMs, ports.now).then(() => true, () => false);
   const aborted = upload === null ? true : await reached(() => ports.abortUpload(attempt.prefix, upload));
