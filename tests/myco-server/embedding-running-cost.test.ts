@@ -79,6 +79,7 @@ test('positive work facts survive repeated admission until source invalidation',
       expect(m.writes()).toBe(0);
       await m.db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
         SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions`).run();
+      for(let page=0;page<40&&await hasEmbeddingWork(m.db,'p',MODEL,NOW+4);page++) await reconcileEmbedding(context(m.db),'p',NOW+4);
       expect(await hasEmbeddingWork(m.db, 'p', MODEL, NOW + 4)).toBe(false);
     }
   });
@@ -193,6 +194,7 @@ test('current provider quota holds admission and calls until its persisted deadl
     const until = NOW + 86_400_000;
     const c = context(m.db, async () => { calls++; throw new EmbeddingUnavailable('quota', { kind: 'quota', resetsAt: until, detail: 'quota' }); });
     await expect(reconcileEmbedding(c, 'p', NOW)).rejects.toThrow('quota');
+    if(await hasEmbeddingWork(m.db,'p',MODEL,NOW+1)) await reconcileEmbedding(c,'p',NOW+1);
     expect(await hasEmbeddingWork(m.db,'p',MODEL,NOW+1)).toBe(false);
     m.reset();
     for (const at of [NOW + 60_000, NOW + 120_000]) {

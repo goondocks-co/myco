@@ -1,3 +1,5 @@
+import { queueRetirementSql } from '../db/embedding-retirement.js';
+import { retirementWorkChanged, WORK_SWEEP_MAX_MS as RETIREMENT_SWEEP_MS } from '../core/embedding/work-state.js';
 import { INPUT_REFUSAL_RETRY_MS as EMBEDDING_INPUT_REFUSAL_RETRY_MS } from '../db/embedding-due.js';
 import { eligibleEmbeddingSource as core_embedding_source_state_eligibleSource } from '../db/embedding-sources.js';
 import { sessionDocumentUnreadSql } from '../db/document-tables.js';
@@ -2429,6 +2431,7 @@ async function prompts_extractionSourceSession(db: prompts_import_RelationalStor
 }
 
 const search_SEARCH_MAX_TERMS = 16;
+const search_TERM_PROBE = 32;
 
 /** Control characters a query may not carry: every C0 control but the tab and line breaks a pasted query splits on, and DEL. */
 const search_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -2518,12 +2521,37 @@ function search_reachOf(reach: search_SearchReach): { sql: string; params: strin
   return 'projectId' in reach ? { sql: 'd.project_id = ?', params: [reach.projectId] } : search_import_projectsBoundOnce(reach, 'd');
 }
 
-async function search_searchType(db: search_import_RelationalStore, reach: search_SearchReach, type: search_import_SearchType, terms: string[], opts: search_import_SearchOptions, limit: number, listing: search_Listing): Promise<search_TypeHits> {
+async function search_searchType(
+  db: search_import_RelationalStore,
+  reach: search_SearchReach,
+  type: search_import_SearchType,
+  terms: string[],
+  opts: search_import_SearchOptions,
+  limit: number,
+  listing: search_Listing,
+): Promise<search_TypeHits> {
   const s = search_SOURCES[type];
   const none: search_TypeHits = { hits: [], cursor: null };
   if ((opts.status !== undefined && s.status === undefined) || (opts.observation_type !== undefined && type !== 'spore')) return none;
   if (opts.session_id !== undefined && s.session === 'NULL') return none;
   const fts = `${s.table}_fts`;
+  if (s.blob === undefined) terms = [terms.join(' AND ')];
+  else if (terms.length > 1) {
+    const counts = await Promise.all(
+      terms.map(async (term) => {
+        const row = await db
+          .prepare(
+            `SELECT (SELECT COUNT(*) FROM (SELECT rowid FROM ${fts} WHERE ${fts} MATCH ? LIMIT ${search_TERM_PROBE}))
+        +(SELECT COUNT(*) FROM (SELECT rowid FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH ? LIMIT ${search_TERM_PROBE})) AS n`,
+          )
+          .bind(term, term)
+          .first<{ n: number }>();
+        return row!.n;
+      }),
+    );
+    const first = counts.indexOf(Math.min(...counts));
+    terms = [terms[first]!, ...terms.filter((_, index) => index !== first)];
+  }
   const inReach = search_reachOf(reach);
   // The full-text match drives each branch, and `CROSS JOIN` holds that order: a planner free to choose may instead read
   // every row of the reach and evaluate the match once per row.
@@ -2533,11 +2561,13 @@ async function search_searchType(db: search_import_RelationalStore, reach: searc
   const first = `SELECT d.rowid AS source_rowid, ${fts}.rank AS rank, 0 AS branch, ${fts}.rowid AS match_rowid
     FROM ${fts} CROSS JOIN ${s.table} d ON d.rowid = ${fts}.rowid
     WHERE ${fts} MATCH ? AND ${inReach.sql}`;
-  const blob = s.blob ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank, 1 AS branch,
+  const blob = s.blob
+    ? ` UNION ALL SELECT d.rowid AS source_rowid, search_blob_chunks_fts.rank AS rank, 1 AS branch,
     search_blob_chunks_fts.rowid AS match_rowid
     FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
     CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
-    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql} AND ${search_import_processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')}` : '';
+    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql} AND ${search_import_processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')}`
+    : '';
   if (s.blob) params.push(terms[0], ...inReach.params);
   // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
   // rowid: `CROSS JOIN` holds that order, so no statistics can turn it into a walk of the table.
@@ -2555,7 +2585,10 @@ async function search_searchType(db: search_import_RelationalStore, reach: searc
     where.push(`(${exists})`);
   }
   const filter = (value: string | number | undefined, expression: string) => {
-    if (value !== undefined) { where.push(expression); params.push(value); }
+    if (value !== undefined) {
+      where.push(expression);
+      params.push(value);
+    }
   };
   filter(opts.status, `${s.status} = ?`);
   filter(opts.session_id, `${s.session} = ?`);
@@ -2565,8 +2598,14 @@ async function search_searchType(db: search_import_RelationalStore, reach: searc
   if (opts.release_state !== undefined || opts.release_confidence !== undefined) {
     let condition = 'k.project_id = d.project_id AND k.namespace = ? AND k.record_id = d.' + s.id;
     params.push(s.namespace);
-    if (opts.release_state !== undefined) { condition += ' AND k.state = ?'; params.push(opts.release_state); }
-    if (opts.release_confidence !== undefined) { condition += ' AND k.confidence = ?'; params.push(opts.release_confidence); }
+    if (opts.release_state !== undefined) {
+      condition += ' AND k.state = ?';
+      params.push(opts.release_state);
+    }
+    if (opts.release_confidence !== undefined) {
+      condition += ' AND k.confidence = ?';
+      params.push(opts.release_confidence);
+    }
     where.push(`EXISTS (SELECT 1 FROM knowledge_release_state k WHERE ${condition})`);
   }
   // Listed by time, a page after another starts past that page's last match in an order of keys no capture changes: the record's own
@@ -2588,34 +2627,59 @@ async function search_searchType(db: search_import_RelationalStore, reach: searc
   // A conversation hit names its turn: the hit's own prompt reference, kept only where the Project's session holds that prompt, and a
   // steering prompt resolved to the turn it steers, as the named-turn read does. Both reads are by primary key.
   const turnColumns = s.turn ? `, tp.prompt_id AS turn_id, tp.preview AS turn_preview, tp.text_chars AS turn_chars, 0 AS turn_stored` : '';
-  const turnJoins = s.turn ? `LEFT JOIN session_documents td ON td.project_id = kept.project_id AND td.session_id = kept.session_id AND td.state = 'live'
+  const turnJoins = s.turn
+    ? `LEFT JOIN session_documents td ON td.project_id = kept.project_id AND td.session_id = kept.session_id AND td.state = 'live'
     LEFT JOIN session_prompts tp ON tp.project_id = td.project_id AND tp.session_id = td.session_id AND tp.generation = td.generation
-      AND tp.prompt_id = kept.prompt_id AND tp.turn_key = tp.prompt_id` : '';
+      AND tp.prompt_id = kept.prompt_id AND tp.turn_key = tp.prompt_id`
+    : '';
   const keptOrder = listing.by === 'time' ? 'created_at, id, d.project_id' : 'rank, created_at DESC, id, d.project_id';
-  const listedOrder = listing.by === 'time' ? 'kept.created_at, kept.id, kept.project_id' : 'kept.rank, kept.created_at DESC, kept.id, kept.project_id';
-  const found = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob}),
+  const listedOrder =
+    listing.by === 'time' ? 'kept.created_at, kept.id, kept.project_id' : 'kept.rank, kept.created_at DESC, kept.id, kept.project_id';
+  const found = (
+    await db
+      .prepare(
+        `WITH candidates AS NOT MATERIALIZED (${first}${blob}),
     kept AS MATERIALIZED (SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, MIN(candidates.rank) AS rank,
       candidates.branch, candidates.match_rowid, ${s.line ?? 'NULL'} AS line,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
     FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
     ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY ${keptOrder} LIMIT ?)
     SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, (SELECT agent FROM sessions WHERE project_id = kept.project_id AND session_id = kept.session_id) AS agent, ${preview} AS preview${turnColumns}
-    FROM kept ${turnJoins} ORDER BY ${listedOrder}`).bind(...params).all<search_Hit>()).results;
+    FROM kept ${turnJoins} ORDER BY ${listedOrder}`,
+      )
+      .bind(...params)
+      .all<search_Hit>()
+  ).results;
   const more = listing.by === 'time' && found.length > limit;
   const rows = more ? found.slice(0, limit) : found;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
   const tools: Partial<Record<search_import_SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   const tool = tools[type];
   const last = rows.at(-1);
-  const hits = rows.filter((r) => r.id.length > 0).map((r): search_import_SearchAcrossResult => ({
-    projectId: r.project_id, id: r.id, type, title: type === 'session' ? search_import_displayPrompt(r.title, r.agent) : r.title, preview: (type === 'session' || type === 'prompt' ? search_import_displayPrompt(r.preview ?? '', r.agent) : r.preview ?? '').slice(0, search_import_SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
-    created_at: r.created_at,
-    ...(r.session_id === null ? {} : { session_id: r.session_id }),
-    ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
-    ...(s.turn ? { turn: search_turnOf(r) } : {}),
-    ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),
-  }));
-  const cursor = more && last !== undefined ? search_encodeCursor({ type, created_at: last.created_at, id: last.id, project_id: last.project_id }) : null;
+  const hits = rows
+    .filter((r) => r.id.length > 0)
+    .map(
+      (r): search_import_SearchAcrossResult => ({
+        projectId: r.project_id,
+        id: r.id,
+        type,
+        title: type === 'session' ? search_import_displayPrompt(r.title, r.agent) : r.title,
+        preview: (type === 'session' || type === 'prompt'
+          ? search_import_displayPrompt(r.preview ?? '', r.agent)
+          : (r.preview ?? '')
+        ).slice(0, search_import_SEARCH_PREVIEW_CHARS),
+        score: Math.abs(r.rank) / best,
+        created_at: r.created_at,
+        ...(r.session_id === null ? {} : { session_id: r.session_id }),
+        ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
+        ...(s.turn ? { turn: search_turnOf(r) } : {}),
+        ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),
+      }),
+    );
+  const cursor =
+    more && last !== undefined
+      ? search_encodeCursor({ type, created_at: last.created_at, id: last.id, project_id: last.project_id })
+      : null;
   return { hits, cursor };
 }
 
@@ -2972,26 +3036,136 @@ function core_embedding_selection_retirementQueries(projectId: string, retained:
   const ranges = Array.from({ length: models.length + 1 }, (_, index) => {
     const lower = models[index - 1], upper = models[index];
     return {
-      sql: `${prefix} AND r.ready >= ${core_embedding_selection_import_RECEIPT.journaled}${lower === undefined ? '' : ' AND r.model_key > ?'}${upper === undefined ? '' : ' AND r.model_key < ?'}${order}`,
+      sql: `${prefix} AND r.ready >= ${core_embedding_selection_import_RECEIPT.journaled}${lower === undefined ? '' : ' AND r.model_key > ?'}${upper === undefined ? '' : ' AND r.model_key < ?'} ORDER BY r.model_key,r.updated_at,r.id LIMIT 1`,
       binds: [projectId, ...(lower === undefined ? [] : [lower]), ...(upper === undefined ? [] : [upper])],
     };
   });
   return [
     ...ranges,
-    ...models.map((model) => ({ sql: `${prefix} AND r.model_key = ? AND r.ready >= ${core_embedding_selection_import_RECEIPT.journaled} AND NOT ${core_embedding_source_state_currentSource('r')}${order}`, binds: [projectId, model] })),
     ...core_embedding_selection_import_DELETION_RETRIES.map(({ state, waitMs }) => ({
       sql: `${prefix} AND r.ready < ${core_embedding_selection_import_RECEIPT.journaled} AND r.ready = ? AND r.updated_at <= ?${order}`, binds: [projectId, state, now - waitMs],
     })),
   ];
 }
 
-async function core_embedding_selection_retiringReceipt(db: core_embedding_selection_import_RelationalStore, projectId: string, retained: readonly string[], now: number): Promise<core_embedding_selection_RetiringReceipt | null> {
+async function core_embedding_selection_retiringReceipt(
+  db: core_embedding_selection_import_RelationalStore,
+  projectId: string,
+  retained: readonly string[],
+  now: number,
+): Promise<core_embedding_selection_RetiringReceipt | null> {
+  await core_embedding_selection_scanRetirement(db, projectId, retained, now);
   const candidates: core_embedding_selection_RetiringReceipt[] = [];
+  const queued = (
+    await db
+      .prepare(
+        `WITH page AS MATERIALIZED (SELECT * FROM embedding_retirement_queue
+    WHERE project_id=? ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
+    SELECT r.*,q.model_key AS queued_model,q.id AS queued_id,q.revision AS queue_revision,
+      ${core_embedding_source_state_currentSource('r')} AS current
+    FROM page q LEFT JOIN embedding_receipts r ON r.project_id=q.project_id AND r.model_key=q.model_key AND r.id=q.id`,
+      )
+      .bind(projectId)
+      .all<
+        core_embedding_selection_RetiringReceipt & { queued_model: string; queued_id: string; queue_revision: number; current: number }
+      >()
+  ).results;
+  const clean = queued.filter((row) => {
+    const retiring =
+      row.id != null &&
+      row.ready >= core_embedding_selection_import_RECEIPT.journaled &&
+      (!retained.includes(row.model_key) || row.current === 0);
+    if (retiring) candidates.push(row);
+    return !retiring;
+  });
+  if (clean.length > 0)
+    await db.batch([
+      ...clean.map((row) =>
+        db
+          .prepare(
+            `DELETE FROM embedding_retirement_queue
+    WHERE project_id=? AND model_key=? AND id=? AND revision=?`,
+          )
+          .bind(projectId, row.queued_model, row.queued_id, row.queue_revision),
+      ),
+      retirementWorkChanged(db, projectId),
+    ]);
   for (const { sql, binds } of core_embedding_selection_retirementQueries(projectId, retained, now)) {
-    const row = await db.prepare(sql).bind(...binds).first<core_embedding_selection_RetiringReceipt>();
+    const row = await db
+      .prepare(sql)
+      .bind(...binds)
+      .first<core_embedding_selection_RetiringReceipt>();
     if (row !== null) candidates.push(row);
   }
   return candidates.sort((a, b) => a.updated_at - b.updated_at || core_embedding_selection_import_binaryOrder(a.id, b.id))[0] ?? null;
+}
+
+/** One checkpointed receipt page repairs missed invalidations; source writes queue their own identities atomically. */
+async function core_embedding_selection_scanRetirement(
+  db: core_embedding_selection_import_RelationalStore,
+  projectId: string,
+  retained: readonly string[],
+  now: number,
+): Promise<void> {
+  const scope = JSON.stringify([...new Set(retained)].sort(core_embedding_selection_import_binaryOrder));
+  await db
+    .prepare(
+      `INSERT INTO embedding_retirement_scan(project_id,scope) VALUES(?,?)
+    ON CONFLICT(project_id) DO UPDATE SET scope=excluded.scope,model_key='',id='',due_at=0 WHERE scope<>excluded.scope`,
+    )
+    .bind(projectId, scope)
+    .run();
+  const cursor = await db
+    .prepare('SELECT model_key,id,due_at FROM embedding_retirement_scan WHERE project_id=?')
+    .bind(projectId)
+    .first<{ model_key: string; id: string; due_at: number }>();
+  if (cursor === null || cursor.due_at > now) return;
+  const rows = (
+    await db
+      .prepare(
+        `WITH page AS MATERIALIZED (SELECT * FROM embedding_receipts WHERE project_id=?
+    AND (model_key,id)>(?,?) ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
+    SELECT r.*,${core_embedding_source_state_currentSource('r')} AS current FROM page r`,
+      )
+      .bind(projectId, cursor.model_key, cursor.id)
+      .all<core_embedding_selection_RetiringReceipt & { current: number }>()
+  ).results;
+  const last = rows.at(-1),
+    more = rows.length === core_embedding_work_sweep_import_WORK_SWEEP_PAGE;
+  await db.batch([
+    ...rows
+      .filter(
+        (row) => row.ready >= core_embedding_selection_import_RECEIPT.journaled && (!retained.includes(row.model_key) || row.current === 0),
+      )
+      .map((row) => db.prepare(queueRetirementSql('project_id=? AND model_key=? AND id=?')).bind(projectId, row.model_key, row.id)),
+    db
+      .prepare(
+        `UPDATE embedding_retirement_scan SET model_key=?,id=?,due_at=?
+      WHERE project_id=? AND scope=? AND model_key=? AND id=?`,
+      )
+      .bind(
+        more ? last!.model_key : '',
+        more ? last!.id : '',
+        more ? now : now + RETIREMENT_SWEEP_MS,
+        projectId,
+        scope,
+        cursor.model_key,
+        cursor.id,
+      ),
+    ...(rows.length > 0 || cursor.model_key !== '' || cursor.id !== '' ? [retirementWorkChanged(db, projectId)] : []),
+  ]);
+}
+
+/** Queued identities and an unfinished safety page keep the reconciliation job admitted. */
+export async function embeddingRetirementPending(
+  db: core_embedding_selection_import_RelationalStore,
+  projectId: string,
+  now: number,
+): Promise<boolean> {
+  return (
+    (await db.prepare(`SELECT 1 FROM embedding_retirement_queue WHERE project_id=? LIMIT 1`).bind(projectId).first()) !== null ||
+    (await db.prepare('SELECT 1 FROM embedding_retirement_scan WHERE project_id=? AND due_at<=?').bind(projectId, now).first()) !== null
+  );
 }
 
 /** Source work starts at the version index; eligibility is a point lookup in its owning source table. */
@@ -3060,6 +3234,9 @@ async function core_embedding_work_sweep_embeddingSweep(
     WHERE project_id = ? AND (model_key,id) > (?,?) ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
     SELECT r.*,${core_embedding_source_state_currentSource('r')} AS current FROM page r`).bind(projectId, cursor.a, cursor.b)
     .all<{ model_key: string; id: string; ready: number; updated_at: number; current: number }>()).results;
+  const stale=rows.filter(row=>row.ready>=core_embedding_work_sweep_import_RECEIPT.journaled
+    &&(!retained.includes(row.model_key)||row.current===0));
+  if(stale.length>0) await db.batch(stale.map(row=>db.prepare(queueRetirementSql('project_id=? AND model_key=? AND id=?')).bind(projectId,row.model_key,row.id)));
   const pending = rows.some((row) => row.ready >= core_embedding_work_sweep_import_RECEIPT.journaled ? !retained.includes(row.model_key) || row.current === 0
     : core_embedding_work_sweep_import_deletionRetryDue(row.ready, row.updated_at, now));
   const last = rows.at(-1);

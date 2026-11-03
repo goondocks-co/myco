@@ -114,7 +114,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts',
-  'embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_hubness_population','embedding_provider_holds',
+  'embedding_retirement_queue','embedding_retirement_scan','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_hubness_population','embedding_provider_holds',
   'document_due','document_status_totals','document_difference_totals','document_publication_facts','document_due_totals',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]

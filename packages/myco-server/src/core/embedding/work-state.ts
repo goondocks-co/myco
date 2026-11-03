@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../adapters.js';
 
 export const WORK_SWEEP_PAGE = 256;
-export const WORK_PREDICATE_VERSION = 2;
+export const WORK_PREDICATE_VERSION = 3;
 export const WORK_SWEEP_CONTINUE_MS = 30_000;
 export const WORK_SWEEP_MIN_MS = 5 * 60_000;
 export const WORK_SWEEP_MAX_MS = 30 * 60_000;
@@ -61,3 +61,12 @@ export async function recordedWork(
     .bind(result.pending ? 1 : 0, wakeAt, now + interval, cursor, rounds, ...identity, scope, row.revision).run();
   return committed.meta.changes !== 1 || result.pending;
 }
+
+/** Retirement consumption invalidates an admitted backlog in the same transaction that removes its work. */
+export const retirementWorkChanged = (db: RelationalStore, projectId: string) =>
+  db
+    .prepare(
+      `UPDATE embedding_work_state
+  SET revision=revision+1 WHERE project_id=? AND kind='embedding'`,
+    )
+    .bind(projectId);

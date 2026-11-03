@@ -332,10 +332,20 @@ export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promi
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const withSegments = await new RawResourceReader(env, scope, { kind: 'member', memberId: ctx.member.id }).transcripts(sessionId);
-  if (withSegments.length === 0) return Response.json({ error: 'not_found' }, { status: 404, headers: RAW_CACHE_HEADERS });
+  const { url } = ctx;
+  const held = await new RawResourceReader(env, scope, { kind: 'member', memberId: ctx.member.id }).transcripts(sessionId, {
+    cursor: url.searchParams.get('cursor') ?? undefined,
+    transcriptId: url.searchParams.get('transcriptId') ?? undefined,
+    segmentCursor: url.searchParams.get('segmentCursor') ?? undefined,
+  });
+  const withSegments = held.transcripts;
+  if (withSegments.length === 0 && held.cursor === null && !url.searchParams.has('cursor') && !url.searchParams.has('segmentCursor'))
+    return Response.json({ error: 'not_found' }, { status: 404, headers: RAW_CACHE_HEADERS });
   const primary = withSegments.find((t) => t.role !== 'subagent') ?? withSegments[0]!;
-  return Response.json({ transcript: primary, transcripts: withSegments, segments: primary.segments }, { headers: RAW_CACHE_HEADERS });
+  return Response.json(
+    { transcript: primary ?? null, transcripts: withSegments, segments: primary?.segments ?? [], cursor: held.cursor },
+    { headers: RAW_CACHE_HEADERS },
+  );
 }
 
 /**

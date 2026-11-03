@@ -117,19 +117,34 @@ export interface ScheduleFacts {
 const NO_RUNS: TaskRunFacts = { live: false, lastEntryAt: null, entriesSince: 0 };
 
 /** The facts `decideTask` reads for `tasks`, for every Project or the one named. */
-export async function readScheduleFacts(env: ServerEnv, tasks: readonly string[], now: number, projectId?: string): Promise<ScheduleFacts> {
+export async function readScheduleFacts(
+  env: ServerEnv,
+  tasks: readonly string[],
+  now: number,
+  projectId?: string | readonly string[],
+): Promise<ScheduleFacts> {
   if (tasks.length === 0) return { runs: new Map(), capabilities: new Set() };
-  const gated = [...new Set(tasks.flatMap((task) => {
-    const gate = admissionForTask(task);
-    return gate?.kind === 'capability' ? [gate.capability as ProjectCapability] : [];
-  }))];
+  const gated = [
+    ...new Set(
+      tasks.flatMap((task) => {
+        const gate = admissionForTask(task);
+        return gate?.kind === 'capability' ? [gate.capability as ProjectCapability] : [];
+      }),
+    ),
+  ];
   const runs = taskRunFacts(env.db, tasks, now - DAY_MS, CLOCK_ACTOR, projectId);
-  const capabilities = gated.length === 0 ? null : enabledCapabilities(env.db, gated, projectId);
+  const capabilities =
+    gated.length === 0 ? null : enabledCapabilities(env.db, gated, typeof projectId === 'string' ? projectId : undefined);
   const [runRows, capabilityRows] = await env.db.batch([runs.statement, ...(capabilities === null ? [] : [capabilities.statement])]);
   return {
     runs: runs.read(runRows!.results as ReadonlyArray<Record<string, unknown>>),
-    capabilities: new Set(capabilities === null ? [] : capabilities.read(capabilityRows!.results as ReadonlyArray<Record<string, unknown>>)
-      .map(({ projectId: held, capability }) => taskFactsKey(held, capability))),
+    capabilities: new Set(
+      capabilities === null
+        ? []
+        : capabilities
+            .read(capabilityRows!.results as ReadonlyArray<Record<string, unknown>>)
+            .map(({ projectId: held, capability }) => taskFactsKey(held, capability)),
+    ),
   };
 }
 
@@ -191,7 +206,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   if (!leaves.enabled) return report;
   const tasks = scheduledTasks(leaves.overrides);
   if (tasks.length === 0) return report;
-  const facts = await readScheduleFacts(env, tasks.map(({ task }) => task), now);
+  const projects=await listProjects(env.db);
+  const eligible=projects.filter(project=>project.lastActivityAt!==null && now-project.lastActivityAt<=leaves.activeWindowDays*DAY_MS
+    && (tasks.some(({schedule})=>schedule.runWhenCold===true)||now-project.lastActivityAt<=leaves.coldThresholdDays*DAY_MS));
+  const facts = await readScheduleFacts(env, tasks.map(({ task }) => task), now,eligible.map(project=>project.projectId));
   const workers = new Map<string, Promise<boolean>>();
   const workerAvailable = (task: string): Promise<boolean> => {
     let available = workers.get(task);
@@ -201,7 +219,7 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
     }
     return available;
   };
-  for (const project of await listProjects(env.db)) {
+  for (const project of projects) {
     try {
       for (const { task, schedule } of tasks) {
         const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now, facts, workerAvailable);
@@ -258,4 +276,3 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
   }
   return report;
 }
-

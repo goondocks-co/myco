@@ -1,3 +1,4 @@
+import { READ_COST_STEPS } from '@myco-server-worker/db/schema-v538.js';
 import { PUBLICATION_QUEUE_STEPS } from '@myco-server-worker/db/schema-v501.js';
 import { V466_STATEMENTS } from '@myco-server-worker/db/schema-v466.js';
 import { PUBLICATION_FACT_STEPS } from '@myco-server-worker/db/schema-v467.js';
@@ -105,6 +106,11 @@ const EXCEPTIONS: readonly Exception[] = [
   })),
   { step: 536, object: 'idx_publish_queue_read_retries', table: 'publish_queue', reason: 'Independent prompt read retries retain their order through a partial queue index.' },
   { step: 535, object: 'idx_publish_queue_active', table: 'publish_queue', reason: 'Publication selection skips retained terminal holds through its active queue index.' },
+  ...READ_COST_STEPS.flatMap(step=>step.statements.flatMap(sql=>{
+    const match=/^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match===null?[]:[{step:step.version,object:match[1]!,table:match[2]!,
+      reason:sql.startsWith('CREATE INDEX')?'Bounded history pages seek their complete scope and cursor order.':'Source changes queue affected retirement identities atomically.'}];
+  })),
   ...LISTED,
   ...UX_SCHEMA_STEPS.flatMap(step => step.statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);

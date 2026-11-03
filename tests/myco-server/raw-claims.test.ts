@@ -166,11 +166,11 @@ describe('explicit owner claim of missing raw uploader', () => {
         { resource_id: 'foreign-partial', provenance: 'missing', claim_member_id: 'mem_machine_2' },
         { resource_id: 'own-partial', provenance: 'missing', claim_member_id: 'mem_machine_1' },
       ]);
-      expect(await reader(e, 'mem_machine_1').transcripts('partial-session')).toEqual([]);
+      expect((await reader(e, 'mem_machine_1').transcripts('partial-session')).transcripts).toEqual([]);
       const preview = await rawClaimPreview(e.db, 'mem_machine_1');
       expect(preview.projects[0]!.kinds).toEqual([{ kind: 'blob', count: 1, oldestAt: 1, newestAt: 1 }, { kind: 'transcript', count: 1, oldestAt: 1, newestAt: 1 }]);
       await claimUnknownRaw(e.db, 'mem_machine_1', preview.revision, 2);
-      expect((await reader(e, 'mem_machine_1').transcripts('partial-session')).map((row) => row.transcriptId)).toEqual(['own-partial']);
+      expect((await reader(e, 'mem_machine_1').transcripts('partial-session')).transcripts.map((row) => row.transcriptId)).toEqual(['own-partial']);
       for (const actor of ['mem_machine_1','mem_machine_2']) expect(await reader(e, actor).allows({ kind: 'transcript', id: 'foreign-partial' }, 'read')).toBe(false);
       expect(() => e.sqlite.run("UPDATE raw_resources SET claim_member_id = 'mem_machine_1' WHERE resource_id = 'foreign-partial'")).toThrow('immutable');
     } finally { e.sqlite.close(); }

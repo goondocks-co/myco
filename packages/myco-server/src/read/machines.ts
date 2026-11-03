@@ -3,7 +3,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { machineContactsOf, type ReportedHarness } from '../core/worker-contacts.js';
 import { CAPTURE_WINDOW_MS } from './capture.js';
 import { credentialLive } from '../db/liveness.js';
-import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
+import { binaryOrder, clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
 
 export interface MachineCapture {
@@ -108,25 +108,54 @@ export async function listMachines(
 
 /** A machine's merged event stream; one bounded page no matter how many credentials it used. */
 export async function machineActivity(
-  db: RelationalStore, machineId: string, opts: { limit?: number; cursor?: string } = {},
+  db: RelationalStore,
+  machineId: string,
+  opts: { limit?: number; cursor?: string } = {},
 ): Promise<Page<ActivityRow>> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const { results } = await db.prepare(`SELECT event_id, project_id, session_id, kind, created_at, received_at FROM events
-      WHERE token_id IN (SELECT id FROM member_credentials WHERE machine_id = ?)
-        ${after === null ? '' : `AND (created_at < ? OR (created_at = ? AND (project_id < ? OR (project_id = ? AND event_id < ?))))`}
-      ORDER BY created_at DESC, project_id DESC, event_id DESC LIMIT ?`)
-    .bind(machineId, ...(after === null ? [] : [after.createdAt, after.createdAt, ...cursorEvent(after.id)]), limit + 1).all<Record<string, unknown>>();
-  const rows = results.map((r): ActivityRow => ({ eventId: String(r.event_id), projectId: String(r.project_id), sessionId: String(r.session_id), kind: String(r.kind), createdAt: Number(r.created_at), receivedAt: Number(r.received_at) }));
+  const { results: credentials } = await db
+    .prepare('SELECT id FROM member_credentials WHERE machine_id = ?')
+    .bind(machineId)
+    .all<{ id: string }>();
+  const results: Record<string, unknown>[] = [];
+  for (const credential of credentials) {
+    const held = await db
+      .prepare(
+        `SELECT event_id, project_id, session_id, kind, created_at, received_at FROM events INDEXED BY idx_events_token_only
+      WHERE token_id = ?
+        ${after === null ? '' : 'AND created_at <= ? AND (created_at,project_id,event_id) < (?,?,?)'}
+      ORDER BY created_at DESC, project_id DESC, event_id DESC LIMIT ?`,
+      )
+      .bind(credential.id, ...(after === null ? [] : [after.createdAt, after.createdAt, ...cursorEvent(after.id)]), limit + 1)
+      .all<Record<string, unknown>>();
+    results.push(...held.results);
+  }
+  results.sort(
+    (a, b) =>
+      Number(b.created_at) - Number(a.created_at) ||
+      binaryOrder(String(b.project_id), String(a.project_id)) ||
+      binaryOrder(String(b.event_id), String(a.event_id)),
+  );
+  const rows = results.map(
+    (r): ActivityRow => ({
+      eventId: String(r.event_id),
+      projectId: String(r.project_id),
+      sessionId: String(r.session_id),
+      kind: String(r.kind),
+      createdAt: Number(r.created_at),
+      receivedAt: Number(r.received_at),
+    }),
+  );
   return page(rows, limit, (r) => ({ createdAt: r.createdAt, id: `${r.projectId}:${r.eventId}` }));
 }
 
-function cursorEvent(value: string): [string, string, string] {
+function cursorEvent(value: string): [string, string] {
   const split = value.indexOf(':');
   const project = value.slice(0, split);
   const event = value.slice(split + 1);
-  return [project, project, event];
+  return [project, event];
 }
 
 /** The same machine claim owns summary, activity, rename, and stop. */

@@ -1,3 +1,4 @@
+import { INPUT_UNCHANGED,SCHEDULE_ACTOR_SQL,SCHEDULE_ENTRY_SQL } from '../db/schedule-entry.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
 export { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
 import { runOriginSql } from '../db/run-context.js';
@@ -60,7 +61,7 @@ export const RUN_CONTEXT_OBJECT_SQL = `CASE
   ELSE json_object('unparsedRunContext', run_context) END`;
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
-export const INPUT_UNCHANGED = 'input_unchanged';
+export { INPUT_UNCHANGED };
 
 /** The context a skipped run carries: one shape, written by both skip paths and matched exactly by the interval clock. */
 export const skipContext = (reason: string): string => JSON.stringify({ reason });
@@ -1602,31 +1603,51 @@ export interface TaskRunFacts {
 /** The key `taskRunFacts` answers a Project and task under. */
 export const taskFactsKey = (projectId: string, task: string): string => `${projectId}\u0000${task}`;
 
-/**
- * `hasLiveTaskRun`, `lastTaskEntryAt` and `taskEntriesSince` for every Project (or the one named) and each of `tasks`,
- * in one statement: the reads the clock's schedule makes of each Project, made once for the Deployment. It reads
- * through the Project-and-task index by way of the Projects' own keys. A Project and task with no run answers no row,
- * which reads as no live run and no entry at all.
- */
-export function taskRunFacts(db: RelationalStore, tasks: readonly string[], sinceMs: number, actor: string, projectId?: string): {
+/** Latest entries, live admission and the rolling window use separate indexed questions for each eligible Project. */
+export function taskRunFacts(
+  db: RelationalStore,
+  tasks: readonly string[],
+  sinceMs: number,
+  actor: string,
+  projectId?: string | readonly string[],
+): {
   statement: PreparedStatement;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Map<string, TaskRunFacts>;
 } {
-  const statement = db.prepare(
-    `SELECT project_id AS projectId, task,
-            MAX(CASE WHEN ${IN_FLIGHT_RUN_STATUSES} THEN 1 ELSE 0 END) AS live,
-            MAX(CASE WHEN (status != 'skipped' OR run_context = ?) AND ${ACTOR_MATCH_SQL} THEN COALESCE(queued_at, started_at) END) AS lastEntryAt,
-            SUM(CASE WHEN status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
-                      AND COALESCE(queued_at, started_at) >= ? AND ${ACTOR_MATCH_SQL} THEN 1 ELSE 0 END) AS entriesSince
-       FROM agent_runs
-      WHERE project_id IN (SELECT project_id FROM projects${projectId === undefined ? '' : ' WHERE project_id = ?'})
-        AND task IN (${tasks.map(() => '?').join(', ')})
-      GROUP BY project_id, task`,
-  ).bind(skipContext(INPUT_UNCHANGED), ...actorParams(actor), sinceMs, ...actorParams(actor), ...(projectId === undefined ? [] : [projectId]), ...tasks);
-  const read = (rows: ReadonlyArray<Record<string, unknown>>): Map<string, TaskRunFacts> => new Map(rows.map((row) => [
-    taskFactsKey(String(row.projectId), String(row.task)),
-    { live: Number(row.live) === 1, lastEntryAt: row.lastEntryAt === null ? null : Number(row.lastEntryAt), entriesSince: Number(row.entriesSince ?? 0) },
-  ]));
+  const latest = lastTaskEntryQueries({ projectId: '' }, '', actor, { project: 'p.project_id', task: 't.value' });
+  const projects =
+    projectId === undefined
+      ? ''
+      : typeof projectId === 'string'
+        ? 'AND p.project_id = ?'
+        : 'AND p.project_id IN (SELECT value FROM json_each(?))';
+  const statement = db
+    .prepare(
+      `SELECT p.project_id AS projectId,t.value AS task,
+    EXISTS(SELECT 1 FROM agent_runs WHERE project_id=p.project_id AND task=t.value AND ${IN_FLIGHT_RUN_STATUSES}) AS live,
+    (SELECT MAX(at) FROM (${latest.map(({ sql }) => 'SELECT * FROM (' + sql + ')').join(' UNION ALL ')})) AS lastEntryAt,
+    (${taskEntriesSql('p.project_id', 't.value', actor)}) AS entriesSince
+    FROM projects p CROSS JOIN json_each(?) t WHERE 1=1 ${projects}
+      AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=p.project_id AND task=t.value LIMIT 1)`,
+    )
+    .bind(
+      ...latest.flatMap(({ binds }) => binds),
+      sinceMs,
+      actor,
+      JSON.stringify(tasks),
+      ...(projectId === undefined ? [] : [typeof projectId === 'string' ? projectId : JSON.stringify(projectId)]),
+    );
+  const read = (rows: ReadonlyArray<Record<string, unknown>>): Map<string, TaskRunFacts> =>
+    new Map(
+      rows.map((row) => [
+        taskFactsKey(String(row.projectId), String(row.task)),
+        {
+          live: Number(row.live) === 1,
+          lastEntryAt: row.lastEntryAt === null ? null : Number(row.lastEntryAt),
+          entriesSince: Number(row.entriesSince ?? 0),
+        },
+      ]),
+    );
   return { statement, read };
 }
 
@@ -1685,15 +1706,30 @@ export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, tas
 }
 
 /** The newest admitted and unchanged-input entries, each ordered by its index. */
-export function lastTaskEntryQueries(scope: ReadScope, task: string, actor?: string): Array<{ sql: string; binds: unknown[] }> {
+export function lastTaskEntryQueries(
+  scope: ReadScope,
+  task: string,
+  actor?: string,
+  columns?: { project: string; task: string },
+): Array<{ sql: string; binds: unknown[] }> {
+  const project = columns?.project ?? '?',
+    taskColumn = columns?.task ?? '?';
+  const identity = columns === undefined ? [scope.projectId, task] : [];
+  if (actor !== undefined)
+    return [...new Set([actor, UNATTRIBUTED_DISPATCH_ACTOR])].map((held) => ({
+      sql: `SELECT COALESCE(queued_at,started_at) AS at FROM agent_runs INDEXED BY idx_agent_runs_schedule_entry
+      WHERE project_id=${project} AND task=${taskColumn} AND ${SCHEDULE_ENTRY_SQL} AND ${SCHEDULE_ACTOR_SQL}=?
+      ORDER BY COALESCE(queued_at,started_at) DESC LIMIT 1`,
+      binds: [...identity, held],
+    }));
   return [
     { predicate: "status != 'skipped'", values: [] },
     { predicate: "status = 'skipped' AND run_context = ?", values: [skipContext(INPUT_UNCHANGED)] },
   ].map(({ predicate, values }) => ({
     sql: `SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs
-      WHERE project_id = ? AND task = ? AND ${predicate} ${ACTOR_FILTER_SQL}
+      WHERE project_id = ${project} AND task = ${taskColumn} AND ${predicate} ${ACTOR_FILTER_SQL}
       ORDER BY COALESCE(queued_at, started_at) DESC LIMIT 1`,
-    binds: [scope.projectId, task, ...values, ...actorParams(actor)],
+    binds: [...identity, ...values, ...actorParams(actor)],
   }));
 }
 
@@ -1743,6 +1779,12 @@ export async function deploymentTaskRunTally(db: RelationalStore, task: string, 
   return row ?? { inFlight: 0, completed: 0, failed: 0 };
 }
 
+/** The indexed rolling entry window shared by standalone and schedule reads. */
+function taskEntriesSql(project = '?', task = '?', actor?: string): string {
+  return `SELECT COUNT(*) AS c FROM agent_runs ${actor === undefined ? '' : 'INDEXED BY idx_agent_runs_schedule_entry'} WHERE project_id = ${project} AND task = ${task} AND status != 'skipped'
+    AND COALESCE(${contextValue('replaced')},0)!=1 AND COALESCE(queued_at,started_at)>=? ${actor === undefined ? '' : `AND ${SCHEDULE_ACTOR_SQL} IN (?, '')`}`;
+}
+
 /**
  * Runs of this task the Project entered from the instant on, skips excluded.
  *
@@ -1757,11 +1799,7 @@ export async function deploymentTaskRunTally(db: RelationalStore, task: string, 
  * dispatch it again the same instant.
  */
 export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number, actor?: string): Promise<number> {
-  const row = await db.prepare(
-    `SELECT COUNT(*) AS c FROM agent_runs WHERE project_id = ? AND task = ? AND status != 'skipped'
-       AND COALESCE(${contextValue('replaced')}, 0) != 1
-       AND COALESCE(queued_at, started_at) >= ? ${ACTOR_FILTER_SQL}`,
-  ).bind(scope.projectId, task, sinceMs, ...actorParams(actor)).first<{ c: number }>();
+  const row = await db.prepare(taskEntriesSql('?','?',actor)).bind(scope.projectId, task, sinceMs, ...(actor===undefined?[]:[actor])).first<{ c: number }>();
   return row?.c ?? 0;
 }
 
