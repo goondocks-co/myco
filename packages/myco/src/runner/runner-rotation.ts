@@ -25,6 +25,7 @@ const LINEAGE_EXPIRED = 'lineage_expired';
 
 export interface RotationOptions {
   mycoHome?: string;
+  signal?: AbortSignal;
   fetch?: FetchLike;
   now?: () => number;
   /** Send the rotation whether or not the window is open. */
@@ -112,7 +113,7 @@ export async function rotateRunnerCredential(serverUrl: string, options: Rotatio
       ...(held.tokenId === undefined ? {} : { predecessorTokenId: held.tokenId }),
     }, held.name);
     const candidate = staged.pending!.candidate;
-    const outcome = await postRunnerRoute(serverUrl, held.token, RUNNER_ROTATE_PATH, { candidate }, options.fetch);
+    const outcome = await postRunnerRoute(serverUrl, held.token, RUNNER_ROTATE_PATH, { candidate }, options.fetch, options.signal);
     return settle(lock, { ...staged, token: held.token }, candidate, outcome);
   }, options.mycoHome);
   return locked.held ? locked.value : { status: 'busy', record: before };
@@ -124,12 +125,12 @@ export async function rotateRunnerCredential(serverUrl: string, options: Rotatio
  * Deployment stays quiet for `RETRY_BACKOFF_MS`. `notify` is told of every
  * outcome that needs words.
  */
-export function runnerRenewer(serverUrl: string, options: RotationOptions & { notify?: (line: string) => void } = {}): (force: boolean) => Promise<RefreshStatus> {
+export function runnerRenewer(serverUrl: string, options: RotationOptions & { notify?: (line: string) => void } = {}): (force: boolean, signal?: AbortSignal) => Promise<RefreshStatus> {
   const now = options.now ?? Date.now;
   let quietUntil = 0;
-  return async (force) => {
+  return async (force, signal) => {
     if (!force && now() < quietUntil) return 'not-due';
-    const report = await rotateRunnerCredential(serverUrl, { ...options, force });
+    const report = await rotateRunnerCredential(serverUrl, { ...options, force, signal });
     if (report.status === 'retry') quietUntil = now() + RETRY_BACKOFF_MS;
     if (report.detail !== undefined && report.status !== 'too-early') options.notify?.(`credential rotation ${report.status}: ${report.detail}`);
     return report.status;

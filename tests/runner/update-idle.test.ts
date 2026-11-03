@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -14,6 +14,40 @@ const answer = (body: Record<string, unknown>) => Response.json(body, {
 });
 
 describe('runner update idle admission', () => {
+  for (const hung of ['contact', 'claim', 'body', 'renew'] as const) it(`returns to contact and idle after a hung ${hung}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-hung-'));
+    const stopping = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const deadlines = spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(Math.min(ms, 25)));
+    let injected = false, contacts = 0, idle = 0;
+    const never = <T>(): Promise<T> => new Promise(() => {});
+    const worker = runWorker({
+      serverUrl: 'https://hung.invalid', token: 'fixture', lockDir: null, runRoot: root,
+      only: ['fixture-missing'], signal: stopping.signal, pollIdleMs: 1, log: () => {},
+      renew: async () => {
+        if (hung === 'renew' && !injected) { injected = true; return never(); }
+        return 'not-due';
+      },
+      onIdle: async () => { idle++; if (injected) return 'restart'; },
+      fetchImpl: (async input => {
+        const contact = new URL(String(input)).pathname !== '/worker/claim';
+        if (contact) contacts++;
+        if (!injected && (hung === 'claim' ? !contact : contact)) {
+          injected = true;
+          if (hung === 'body') return new Response(new ReadableStream({ start() {} }));
+          return never<Response>();
+        }
+        return answer({ persisted: true, claimed: false, pollAfterMs: 1 });
+      }) as typeof fetch,
+    });
+    try {
+      const result = await Promise.race([worker, new Promise<'stalled'>(resolve => setTimeout(() => resolve('stalled'), 500))]);
+      expect(result).toMatchObject({ driven: 0, refused: null, replaced: true });
+      expect(contacts).toBeGreaterThanOrEqual(hung === 'renew' ? 1 : 2);
+      expect(idle).toBeGreaterThan(0);
+    } finally { stopping.abort(); deadlines.mockRestore(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('defers a mid-run request through attempt completion, then restarts before another claim', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-update-idle-'));
     const before = { ...process.env };

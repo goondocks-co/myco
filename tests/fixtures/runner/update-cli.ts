@@ -37,7 +37,7 @@ if (process.argv[2] === '--version') {
   const serverUrl = process.env.MYCO_UPDATE_FIXTURE_SERVER!;
   const ok = await run(process.argv.slice(3), {
     mycoHome: home, home: process.env.HOME!, platform: 'darwin', binaryPath,
-    runner: platform.runner, lockDir: path.join(home, 'locks'), ownDeploymentUrls: async () => [],
+    runner: (command, args) => { const result = platform.runner(command, args); save(); return result; }, lockDir: path.join(home, 'locks'), ownDeploymentUrls: async () => [],
     detect: () => [], harnessDirs: () => [], signal: stopped.signal, sleep: async () => {},
     machineId: 'fixture-machine', hostname: () => 'mini',
     update: {
