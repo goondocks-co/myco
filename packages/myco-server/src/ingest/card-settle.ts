@@ -24,11 +24,11 @@ export const SETTLE_TURNS_PER_WAKE = 50;
 
 interface SettleRow extends DueTurn { projectId: string; sessionId: string }
 
-/** Settles the turns due for it, oldest first, within the wake's remaining budget. */
+/** Settles the turns due for it, newest source activity first, within the wake's remaining budget. */
 export async function settleCards(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ settled: number; more: boolean }> {
   const { results } = await env.db.prepare(`SELECT project_id AS projectId, session_id AS sessionId, turn_key AS turnKey, changes
-    FROM turn_cards INDEXED BY idx_turn_cards_settle WHERE state = 'pending' AND settle_at <= ?
-    ORDER BY settle_at, project_id, session_id, turn_key LIMIT ?`).bind(now, SETTLE_TURNS_PER_WAKE + 1).all<SettleRow>();
+    FROM turn_cards INDEXED BY idx_turn_cards_source_settle WHERE state = 'pending' AND settle_at <= ?
+    ORDER BY source_activity_at DESC, project_id, session_id, turn_key LIMIT ?`).bind(now, SETTLE_TURNS_PER_WAKE + 1).all<SettleRow>();
   const documents = new Map<string, Promise<SessionDocument | null>>();
   let settled = 0;
   for (const row of results.slice(0, SETTLE_TURNS_PER_WAKE)) {

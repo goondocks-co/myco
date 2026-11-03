@@ -17,12 +17,12 @@ import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql } from './settings.js';
+import { learningRecencySql } from './learning-recency.js';
+export { FRESH_LEARNING_MS } from './learning-recency.js';
 export { LEARNING_TOOL };
 
 /** Due cards one slice reads at most. */
 export const LEARNING_SLICE_CARDS = 200;
-/** A learning session counts as fresh for this long after it became eligible. */
-export const FRESH_LEARNING_MS = 86_400_000;
 /** How long a claimed learning slice keeps its session out of the eligible set before the claim is presumed lost. */
 export const LEARNING_CLAIM_MS = 900_000;
 /** Backoff after repeated claims that never completed: 1 h, 6 h, then each 24 h. */
@@ -61,7 +61,8 @@ export function sessionProgressStatements(db: RelationalStore, projectId: string
 
 /** The statement that gives a published session its learning row, ready. */
 export function learningSessionStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
-  return db.prepare(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id, init_state) VALUES (?, ?, 'ready')`).bind(projectId, sessionId);
+  return db.prepare(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id, init_state, source_activity_at)
+    VALUES (?1, ?2, 'ready', (SELECT last_record_at FROM session_documents WHERE project_id = ?1 AND session_id = ?2))`).bind(projectId, sessionId);
 }
 
 /** The statement that recounts a session's turns waiting for their card. */
@@ -88,11 +89,11 @@ export interface LearningAssignment {
   handoff: string | null;
 }
 
-/** The project's eligible session with the newest eligibility inside the range, or null. */
+/** The project's eligible session with the newest source activity inside the range, or null. */
 export async function learningHead(db: RelationalStore, projectId: string, now: number, fresh: boolean): Promise<string | null> {
-  const row = await db.prepare(`SELECT session_id AS sessionId FROM learning_sessions INDEXED BY idx_learning_eligible
-    WHERE project_id = ? AND eligible_at <= ? AND eligible_at ${fresh ? '>' : '<='} ? ORDER BY eligible_at DESC LIMIT 1`)
-    .bind(projectId, now, now - FRESH_LEARNING_MS).first<{ sessionId: string }>();
+  const row = await db.prepare(`SELECT session_id AS sessionId FROM learning_sessions INDEXED BY idx_learning_source_eligible
+    WHERE project_id = ? AND eligible_at <= ? AND ${learningRecencySql(fresh, now)} ORDER BY source_activity_at DESC, session_id LIMIT 1`)
+    .bind(projectId, now).first<{ sessionId: string }>();
   return row?.sessionId ?? null;
 }
 

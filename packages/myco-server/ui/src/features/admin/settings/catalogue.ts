@@ -80,6 +80,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'When Myco learns, titles and maps on its own, without being asked.',
     leaves: [
       { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
+      { leaf: 'agent.learning_history_enabled', label: 'Learn from session history', kind: 'toggle', note: 'Off by default. When enabled, Myco cards and learns sessions whose last activity was more than 24 hours ago, after new work.' },
       { leaf:'agent.budget.daily_usd',label:'Daily automatic work budget',kind:'number',min:1,step:0.01,unit:'USD',note:'Default $20. Hand-started runs always remain available and their spend counts.' },
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },

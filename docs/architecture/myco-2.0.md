@@ -1003,6 +1003,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `release_provenance.reconcile_interval_minutes` | REPLACE | Deployment | Core | The only Deployment-shaped leaf here; already split out as its own grove-homed entry | #915 |
 | `agent.summary_batch_interval` | DROP | — | — | Server titling uses the declared job and fixed batch defaults. | settings audit |
 | `agent.scheduled_tasks_enabled` | REPLACE | Deployment | Core | Whether the Deployment runs scheduled intelligence | #915 |
+| `agent.learning_history_enabled` | NEW | Deployment | Core | Allow automatic carding and learning of session history at levels 3.5 and 4; off by default. Source activity determines history independently of readiness and retries | #1941 |
 | `agent.event_tasks_enabled` | DROP | — | — | Session-title requests are request-driven; periodic work uses `agent.scheduled_tasks_enabled`. | settings audit |
 | `agent.semantic_write_check_enabled` | DROP | — | — | Write validation and task close evidence are mandatory; no optional semantic-validation pass. | settings audit |
 | `agent.cold_project_threshold_days` | REPLACE | Deployment | Core | Deployment-side scheduling policy | #915 |
