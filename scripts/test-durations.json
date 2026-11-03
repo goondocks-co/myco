@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #2056 blocking recheck F1/N2, pinned Bun1.4.0 darwin-arm64 through canonical npm test, native SQLite and local Miniflare D1. Final schema536 pass-line timing sums: publication-review9 cases22916.51ms and migrate31 cases13661.53ms; retained60000ms weights exceed twice measured bodies plus startup. Recovery49000ms and exact CI contracts34000ms floors retained. No new test file or parity scenario. Four restored publication mutations failed their named regressions on both stores (8/8); an active queue-total mutation failed the terminal-hold regression on each store (2/2). Both duration catalogs and all main measurement notes retained during rebase.",
     "local: PR2061 review correction on pinned Bun1.4.0 darwin-arm64. The three failed CI files reproduced16 failing cases, then passed102 tests in15300ms after explicit fixture approval. Review contracts passed292 cases in66750ms; project-pin-trust bodies3110.45ms and final12-case wall7720ms use18000ms weight. New purge bodies59.71/105.73ms extend the7159ms CI file floor to8000ms; cutover preflight211.39ms extends78112ms to80000ms including the private-mode preservation variant; standalone layering2.92ms extends931ms to1000ms. No new test file or parity scenario, deadline or assertion reduction. Six restored mutations caught guard, layered CJS, worktree backlink, cutover approval, value binding and publication rollback removals.",
     "local: #1944 project pin approval, pinned Bun1.4.0 darwin-arm64 via npm test -- tests/cli/project-pin-trust.test.ts: three dispatch/approval contracts measured888ms Bun wall and912ms runner. New file weight3000ms covers twice measured runtime plus startup. Added mirror agreement contract measured90.41ms; existing plugin-home-agreement weight grows from1134ms to1500ms for twice that body plus startup. No new parity scenario; member routing only.",
     "local: hot-read pins, pinned Bun 1.4.0 through npm test on native SQLite and Miniflare D1. The new raw-proof-plan.test.ts measured 1374ms for its one case with a 24000-row proof table and its weight is 1500ms; twelve focused files passed 251 cases in 29.45s. No new parity scenario.",
@@ -185,7 +186,10 @@
     "local: #1944 t4 final settings-token correction, pinned Bun 1.4.0 through npm test with the seven focused settings/read-text files. The same 21-case review file, including the expanded 42-shape reserved-userinfo table, measured 817.72ms summed bodies. Retained the existing 5000ms allowance above observed file startup and bodies; no new test file or parity scenario.",
     "local: #1944 t4 review correction, pinned Bun 1.4.0 darwin-arm64 through npm test -- tests/myco-server/review-permissions.test.ts. Final 21 cases including import-source repair measured 1042.90ms summed bodies / 1418ms runner; earlier corrected 21-case run measured 2685ms runner. Retained 5000ms file weight above observed startup and bodies. Six added behavior controls and the extended import-repair control failed before their fixes. Existing parity scenarios only gained required editorial fixtures; existing measured parity weights retained, with no parity run or new scenario.",
     "local: #1944 t4 N1/N2 recheck on origin/main da8d2c42b, pinned Bun1.4.0 darwin-arm64. The expanded 22-case review file measured 536.03ms summed bodies in npm test with the direct settings importer, existing CLI settings regression and guarded parity file (45pass/1skip,2430ms Bun wall). Retained 5000ms file allowance above observed file work. No new test file or parity scenario; existing legacy-import parity fixtures gained required metadata only.",
-    "local: #1944 t4 CI fixture correction on origin/main ef5b285a3, pinned Bun 1.4.0 darwin-arm64. The 12 existing spore-stream screen cases passed in 19.6s Playwright wall with two workers; the complete 61-case Knowledge file passed in 1.6m after the original fixture reproduced expected 2 unlined spores versus 0. A native SQLite request/read probe checks ordinary agent-line previews and imported content previews; no parity scenarios ran under the lane host-load restriction. Existing file and parity duration floors retained; no new test file or parity scenario."
+    "local: #1944 t4 CI fixture correction on origin/main ef5b285a3, pinned Bun 1.4.0 darwin-arm64. The 12 existing spore-stream screen cases passed in 19.6s Playwright wall with two workers; the complete 61-case Knowledge file passed in 1.6m after the original fixture reproduced expected 2 unlined spores versus 0. A native SQLite request/read probe checks ordinary agent-line previews and imported content previews; no parity scenarios ran under the lane host-load restriction. Existing file and parity duration floors retained; no new test file or parity scenario.",
+    "local: fix-1944 t3 publication recovery, pinned Bun 1.4.0 darwin-arm64 through npm test with native SQLite and Miniflare D1. Five focused cases measured 11590ms process wall including both stores; 26000ms file weight covers twice measured wall plus startup. No new parity scenario. The Wrangler bundle prerequisite was skipped with a scratch-only subprocess shim to honor the no-Wrangler lane; test execution and assertions were unchanged.",
+    "local/projected: PR2056 CI and Opus review follow-up, pinned Bun1.4.0 through npm test, native SQLite and Miniflare D1. Focused file case sums: publication-ci-contracts.test.ts 9628ms (two existing parity scenarios through a local HTTP front door), publication-review.test.ts 14083ms, document-publication-recovery.test.ts 13884ms; weights are local x3.5 rounded up to 1000ms: 34000/50000/49000ms. stored-text.test.tsx measured73ms and retains147ms. No new parity scenario; existing raw-privacy110000ms and storage-cleanup106000ms parity weights retained; the full parity suite was not run under the lane host-load rule.",
+    "local: PR2056 node-shard fixture follow-up on pinned Bun1.4.0 through npm test. Complete events-read-budget-runtime.test.ts measured27259ms in the bounded importer batch, including verified text admission and all planning/write-batch reads at1000 and10000 unrelated records; weight rounded up to30000ms. Complete migrate.test.ts measured42293ms and retains its45000ms weight. No new test file or parity scenario; existing parity weights retained."
   ],
   "files": {
     "tests/myco-server/session-long.test.ts": 50000,
@@ -602,7 +606,7 @@
     "tests/myco-server/enrollment-authorization.test.ts": 582,
     "tests/myco-server/enrollment.test.ts": 5044,
     "tests/myco-server/envelope.test.ts": 96,
-    "tests/myco-server/events-read-budget-runtime.test.ts": 16628,
+    "tests/myco-server/events-read-budget-runtime.test.ts": 30000,
     "tests/myco-server/execution-profile-settings.test.ts": 1753,
     "tests/myco-server/execution-profile.test.ts": 735,
     "tests/myco-server/extraction-coverage-budget.test.ts": 221256,
@@ -662,7 +666,7 @@
     "tests/myco-server/member-status.test.ts": 44,
     "tests/myco-server/member-write-store.test.ts": 104,
     "tests/myco-server/membership-migration.test.ts": 59,
-    "tests/myco-server/migrate.test.ts": 45000,
+    "tests/myco-server/migrate.test.ts": 60000,
     "tests/myco-server/model-catalog-availability.test.ts": 177,
     "tests/myco-server/native-blob-durability.test.ts": 371,
     "tests/myco-server/non-rotating.test.ts": 868,
@@ -1021,7 +1025,10 @@
     "tests/cli/project-pin-trust.test.ts": 18000,
     "tests/myco-server-ui/dashboard-freshness.test.tsx": 6000,
     "tests/myco-server/embedding-running-cost.test.ts": 120000,
-    "tests/myco-server/review-permissions.test.ts": 5000
+    "tests/myco-server/review-permissions.test.ts": 5000,
+    "tests/myco-server/document-publication-recovery.test.ts": 49000,
+    "tests/myco-server/publication-ci-contracts.test.ts": 34000,
+    "tests/myco-server/publication-review.test.ts": 60000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

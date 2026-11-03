@@ -18,7 +18,6 @@ import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, t
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
-import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { sessionEditStatements } from './session-edits.js';
 import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
@@ -805,15 +804,6 @@ export class DocumentBatch {
     }
     return versions.length;
   }
-}
-
-/** The record identity scheme a newly published transcript is minted under. */
-export const PUBLISHED_RECORD_SCHEME = 'source-record-v1';
-
-/** The prompt scheme a transcript first published is minted under: the view mapping of its pinned scheme. */
-export function publishedPromptScheme(pinned: unknown): PromptIdScheme | null {
-  const mapped = pinned === 'offset-v1' ? 'offset-v2' : pinned === 'stamp-or-offset-v1' ? 'stamp-or-offset-v2' : pinned;
-  return isPromptIdScheme(mapped) ? mapped : null;
 }
 
 /** Upserts publisher frontiers, one JSON object per transcript. */

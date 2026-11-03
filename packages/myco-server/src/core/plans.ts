@@ -96,7 +96,7 @@ export function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unkno
  };
 }
 
-export const savePlan=createPlanSave((env,ctx,body)=>ingestEvent(env.db,ctx,body));
+export const savePlan=createPlanSave((env,ctx,body)=>ingestEvent(env.db,ctx,body,env));
 
 /** Sets a plan's status as an administrative edit by a member and answers the row as it stands; null when no such plan sits in the scope. */
 export async function changePlanStatus(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {

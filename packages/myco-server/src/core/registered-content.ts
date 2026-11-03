@@ -69,12 +69,14 @@ export async function verifyContentObject(env: Pick<ContentStore, 'blobs'>, phys
 /** Complete text is returned only after its registered size and digest are verified. */
 export async function readVerifiedContentText(env:Pick<ContentStore,'blobs'>,physical:string,size:number,digest:string):Promise<string>{
   const decoder=new TextDecoder('utf-8',{fatal:true}),parts:string[]=[];
+  let invalid: TypeError | undefined;
   const decode=(bytes?:Uint8Array,stream=false)=>{
     try{return decoder.decode(bytes,{stream});}
-    catch(error){if(error instanceof TypeError)throw new Error('content_text_invalid',{cause:error});throw error;}
+    catch(error){if(!(error instanceof TypeError))throw error;invalid=error;return '';}
   };
   await visitVerifiedContent(env,physical,size,digest,bytes=>parts.push(decode(bytes,true)));
   parts.push(decode());
+  if(invalid!==undefined)throw new Error('content_text_invalid',{cause:invalid});
   return parts.join('');
 }
 

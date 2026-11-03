@@ -174,7 +174,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   await documentsPublished(target, session, PROJECT, requestFetch);
   const turnResponse = await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}`, other.headers);
   expect(turnResponse.status).toBe(200);
-  type Locator = { generation: number; owner: string; page: number };
+  type Locator = { generation: number; owner: string; page: number; revision: string };
   const turn = await turnResponse.json() as { prompt: { locator: Locator }; responses: Array<{ locator: Locator }>;
     attachments: Array<{ attachmentId: string; blobKey: string; mediaType: string; byteSize: number }> };
   const tools = await (await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}/tool-calls`, other.headers)).json() as { rows: Array<{ locator: Locator; outputPreview: string | null }> };
@@ -182,7 +182,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const outputPreview = tools.rows[0]!.outputPreview ?? '';
   expect(outputPreview.length > 0 && processed.startsWith(outputPreview)).toBe(true);
   // A prompt, reply or tool body is read from the session's document at the locator its row carried.
-  const at = (locator: Locator) => `?${new URLSearchParams({ session, generation: String(locator.generation), owner: locator.owner, page: String(locator.page) })}`;
+  const at = (locator: Locator) => `?${new URLSearchParams({ session, generation: String(locator.generation), owner: locator.owner, page: String(locator.page), revision: locator.revision })}`;
   const located: Record<string, string> = { prompt: at(turn.prompt.locator), response: at(turn.responses[0]!.locator),
     'tool-input': at(tools.rows[0]!.locator), 'tool-output': at(tools.rows[0]!.locator) };
   expect(turn.attachments).toHaveLength(attachments.length);
