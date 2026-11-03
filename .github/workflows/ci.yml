@@ -82,10 +82,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux-x64, os: ubuntu-latest, rg: linux-x64, ceiling: 80 }
-          - { target: linux-arm64, os: ubuntu-24.04-arm, rg: linux-arm64, ceiling: 80 }
-          - { target: darwin-arm64, os: macos-15, rg: darwin-arm64, ceiling: 150 }
-          - { target: windows-x64, os: ubuntu-latest, rg: win32-x64, cross: true, measure_elsewhere: true }
+          - { target: linux-x64, os: ubuntu-latest, ceiling: 80 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, ceiling: 80 }
+          - { target: darwin-arm64, os: macos-15, ceiling: 150 }
+          - { target: windows-x64, os: ubuntu-latest, cross: true, measure_elsewhere: true }
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
@@ -93,11 +93,9 @@ jobs:
         if: matrix.cross
         env:
           TARGET: ${{ matrix.target }}
-          RG_PLATFORM: ${{ matrix.rg }}
         run: |
           SQLITE_VEC_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/sqlite-vec/package.json', 'utf8')).version")"
-          RG_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/@vscode/ripgrep/package.json', 'utf8')).version")"
-          npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" "@vscode/ripgrep-${RG_PLATFORM}@${RG_VERSION}" --no-save --ignore-scripts --force
+          npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts --force
       - name: Install the mingw toolchain
         if: matrix.target == 'windows-x64'
         uses: ./.github/actions/apt-cache
@@ -181,8 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           SQLITE_VEC_VERSION="$(node -p "require('./node_modules/sqlite-vec/package.json').version")"
-          RG_VERSION="$(node -p "require('./node_modules/@vscode/ripgrep/package.json').version")"
-          npm install "sqlite-vec-darwin-arm64@${SQLITE_VEC_VERSION}" "@vscode/ripgrep-darwin-arm64@${RG_VERSION}" --no-save --ignore-scripts --force
+          npm install "sqlite-vec-darwin-arm64@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts --force
       - uses: actions/download-artifact@v8
         with:
           name: ci-libsqlite3-darwin-arm64

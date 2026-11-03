@@ -10,9 +10,8 @@
  *
  * The layout lives in `scripts/managed-paths.mjs`; this module imports it directly.
  *
- * Standalone mirrors of this contract exist where imports cannot reach:
- * `bin/binary-resolution.cjs` (standalone redirect fixtures) and the Pi plugin template.
- * Each is gated by an agreement test against this module.
+ * The Pi plugin template mirrors this contract in its standalone host.
+ * Its resolver is checked against this module.
  *
  * Set `MYCO_DEBUG_REDIRECT=1` to trace resolution decisions on stderr — the
  * same switch the CJS shims honor.

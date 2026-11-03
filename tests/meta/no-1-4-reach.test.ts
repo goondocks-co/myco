@@ -25,7 +25,6 @@ it('accounts for every surviving source module and opaque import', () => {
   const loose = filesUnder(SRC).map(moduleKey).filter(key => !myco.modules.has(key)).map(key => key.slice(PREFIX.length)).sort();
   expect(loose).toEqual([...TEXT_ONLY].sort());
   expect(Object.fromEntries([...myco.unknowable, ...server.unknowable])).toEqual({
-    'packages/myco/src/symbionts/templates.generated.ts': 8,
   });
 });
 

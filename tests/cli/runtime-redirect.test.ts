@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { writeApprovedProjectPin } from '../support/project-runtime-pin.js';
 
-const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
+const MODULE_PATH = path.resolve('tests/fixtures/install/runtime-redirect.cjs');
 
 type Found = { pin: string; source: string };
 type Helpers = {
@@ -289,7 +289,7 @@ describe('maybeRedirect (integration)', () => {
     const runtimeRedirect = path.join(tmpRoot, 'runtime-redirect.cjs');
     fs.copyFileSync(MODULE_PATH, runtimeRedirect);
     fs.copyFileSync(
-      path.resolve('packages/myco/bin/binary-resolution.cjs'),
+      path.resolve('tests/fixtures/install/binary-resolution.cjs'),
       path.join(tmpRoot, 'binary-resolution.cjs'),
     );
 

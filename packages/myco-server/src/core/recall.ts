@@ -1,5 +1,5 @@
 import {pruneSelectedPromptAnswers,type ExpiredPromptAnswer} from './prompt-answer-retention.js';
-import {preparePromptAnswer,prepareSessionRecord,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
+import {preparePromptAnswer,prepareSessionRecord,commitContextWrite,type ContextCommit} from './context-writes.js';
 /**
  * What a session is served: the plan-intent nudge and the session's ranked
  * items at prompt-submit time, and the Project id and the Deployment's
@@ -36,8 +36,7 @@ import {preparePromptAnswer,prepareSessionRecord,prepareContextDelivery,commitCo
  */
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
 import type { ContextTimings } from './context-timing.js';
-import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type AskNaming, type Delivery, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
-import type { PreparedStatement } from './adapters.js';
+import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type AskNaming, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
@@ -263,27 +262,6 @@ async function recordPromptAnswer(
   }
   emit({ kind: 'recall_answer_unrecorded', ...identity, error: unrecorded });
   return answer;
-}
-
-/** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
-export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return prepareContextDelivery(db,'answer',d,gate).statement;
-}
-
-/**
- * Mark a session's record delivered by its key, once: the record outlives the answer that carried it, so a delivery
- * reported after that answer is pruned still lands.
- */
-export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Delivery, 'id'> & { record: DeliveredSessionRecord }, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return prepareContextDelivery(db,'session-record',{...d,id:d.record},gate).statement;
-}
-
-/**
- * Mark the session's plan nudge delivered through the answer that carried it, once: how a delivery from a member that
- * names only the answer reaches the nudge's record, while that answer is held.
- */
-export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return prepareContextDelivery(db,'session-record',{...d,id:'plan-nudge'},gate,d.id).statement;
 }
 
 export const PROMPT_ANSWER_RETENTION_SQL = `SELECT a.project_id,a.session_id,a.id

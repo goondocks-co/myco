@@ -61,6 +61,6 @@ worktree-sweep: deps
 source-build-windows: deps
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
-	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
+	npm i --no-save --force sqlite-vec-windows-x64
 	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
 	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs

@@ -41,15 +41,8 @@ function syncCaptureStore() {
 function syncProjectPinTrust() {
   const shared = readTextFile(path.join(PKG_ROOT, 'scripts/project-pin-trust.mjs'));
   const esm = shared.replace(/^export /gm, '');
-  const cjs = esm
-    .replace("import pinFs from 'node:fs';", "const pinFs = require('node:fs');")
-    .replace("import pinOs from 'node:os';", "const pinOs = require('node:os');")
-    .replace("import pinPath from 'node:path';", "const pinPath = require('node:path');")
-    .replace("import { createHash as pinHash, randomUUID as pinNonce } from 'node:crypto';", "const { createHash: pinHash, randomUUID: pinNonce } = require('node:crypto');");
   for (const [file, body] of [
     [path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet'), esm],
-    [path.join(TEMPLATES_DIR, 'myco-run.cjs'), cjs],
-    [path.join(PKG_ROOT, 'bin/binary-resolution.cjs'), cjs],
   ]) {
     const source = readTextFile(file);
     const start = '// <myco:project-pin-trust>';

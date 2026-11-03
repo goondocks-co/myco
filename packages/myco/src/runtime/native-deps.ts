@@ -14,7 +14,6 @@ const require_ = createRequire(import.meta.url);
 interface NativeDepsPaths {
   libsqlite: string | null;
   vec0: string;
-  ripgrep: string;
 }
 
 let resolved: NativeDepsPaths | null = null;
@@ -30,17 +29,15 @@ let resolved: NativeDepsPaths | null = null;
 export async function registerEmbeddedNativeDeps(params: {
   libsqliteEmbed: string;
   vec0Embed: string;
-  ripgrepEmbed: string;
   version: string;
 }): Promise<void> {
   const cache = new NativeArtifactCache(params.version);
 
   const libsqlite = cache.materialize(libsqliteFilename(), new Uint8Array(await Bun.file(params.libsqliteEmbed).arrayBuffer()));
   const vec0 = cache.materialize(vec0Filename(), new Uint8Array(await Bun.file(params.vec0Embed).arrayBuffer()));
-  const ripgrep = cache.materialize(ripgrepFilename(), new Uint8Array(await Bun.file(params.ripgrepEmbed).arrayBuffer()));
 
   Database.setCustomSQLite(libsqlite);
-  resolved = { libsqlite, vec0, ripgrep };
+  resolved = { libsqlite, vec0 };
 }
 
 /**
@@ -68,9 +65,8 @@ export function resolveDevNativeDeps(): NativeDepsPaths {
   }
 
   const vec0 = findDevVec0();
-  const ripgrep = findDevRipgrep();
 
-  resolved = { libsqlite, vec0, ripgrep };
+  resolved = { libsqlite, vec0 };
   return resolved;
 }
 
@@ -78,12 +74,6 @@ export function resolveDevNativeDeps(): NativeDepsPaths {
 export function getVec0Path(): string {
   if (!resolved) resolveDevNativeDeps();
   return resolved!.vec0;
-}
-
-/** Get the materialized ripgrep binary path. Throws if not registered. */
-export function getRipgrepPath(): string {
-  if (!resolved) resolveDevNativeDeps();
-  return resolved!.ripgrep;
 }
 
 /** Get the custom libsqlite3 path, if any was set. */
@@ -115,10 +105,6 @@ function vec0Filename(): string {
   return 'vec0.so';
 }
 
-function ripgrepFilename(): string {
-  return process.platform === 'win32' ? 'rg.exe' : 'rg';
-}
-
 function findDevLibsqlite(): string | null {
   const candidates = process.platform === 'darwin'
     ? ['/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib', '/usr/local/opt/sqlite/lib/libsqlite3.dylib']
@@ -140,13 +126,5 @@ function findDevVec0(): string {
     throw new Error(
       `Cannot find ${pkg} in node_modules — install optional dependency for this platform. (${(err as Error).message})`,
     );
-  }
-}
-
-function findDevRipgrep(): string {
-  try {
-    return (require_('@vscode/ripgrep') as { rgPath: string }).rgPath;
-  } catch (err) {
-    throw new Error(`Cannot resolve @vscode/ripgrep — install it. (${(err as Error).message})`);
   }
 }

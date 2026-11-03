@@ -6,8 +6,6 @@
  * the agent supports. The daemon uses these adapters at runtime to read the
  * authoritative conversation record.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 
 /** An image attached to a conversation turn */
 export interface TranscriptImage {
@@ -86,32 +84,6 @@ export interface SymbiontAdapter {
   parseTurns(content: string): TranscriptTurn[];
 
 }
-
-/**
- * Scan subdirectories of baseDir for a JSONL transcript file matching sessionId.
- * Shared by claude-code, cursor, custom adapters, and tests.
- */
-export function findJsonlInSubdirs(baseDir: string, sessionId: string): string | null {
-  try {
-    for (const entry of fs.readdirSync(baseDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const candidate = path.join(baseDir, entry.name, `${sessionId}.jsonl`);
-      try {
-        fs.accessSync(candidate);
-        return candidate;
-      } catch { /* not here */ }
-    }
-  } catch { /* baseDir doesn't exist or unreadable */ }
-  return null;
-}
-
-/** Map MIME type to file extension */
-const MIME_TO_EXT: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/png': 'png',
-};
 
 /** Map file extension to MIME type */
 const EXT_TO_MIME: Record<string, string> = {

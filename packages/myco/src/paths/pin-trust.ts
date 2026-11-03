@@ -8,9 +8,7 @@
  *
  * A leaf: Node built-ins only, so the home resolver (`paths/home.ts`) and the
  * binary resolver (`runtime/binary-resolution.ts`) share ONE implementation of
- * the rule instead of each carrying a copy. `bin/binary-resolution.cjs` mirrors
- * it for standalone redirects, which cannot import TypeScript; that mirror is gated by
- * tests/runtime/binary-resolution-cjs-agreement.test.ts.
+ * the pin trust rule.
  */
 import fs from 'node:fs';
 import { readApprovedProjectPin } from '../../scripts/project-pin-trust.mjs';

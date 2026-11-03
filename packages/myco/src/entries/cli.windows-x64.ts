@@ -6,8 +6,6 @@
 import libsqliteEmbed from '../../vendor-src/libsqlite3/windows-x64/libsqlite3.dll' with { type: 'file' };
 // @ts-expect-error
 import vec0Embed from 'sqlite-vec-windows-x64/vec0.dll' with { type: 'file' };
-// @ts-expect-error
-import ripgrepEmbed from '@vscode/ripgrep-win32-x64/bin/rg.exe' with { type: 'file' };
 
 import { registerEmbeddedNativeDeps } from '../runtime/native-deps.js';
 import { setPluginVersion } from '../version.js';
@@ -19,6 +17,5 @@ setPluginVersion(pkg.version);
 await dispatch(() => registerEmbeddedNativeDeps({
   libsqliteEmbed,
   vec0Embed,
-  ripgrepEmbed,
   version: pkg.version,
 }));

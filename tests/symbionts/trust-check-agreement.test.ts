@@ -29,12 +29,12 @@ const COPIES = [
   },
   {
     label: 'bin/binary-resolution.cjs',
-    file: 'packages/myco/bin/binary-resolution.cjs',
+    file: 'tests/fixtures/install/binary-resolution.cjs',
     maskName: 'PIN_INSECURE_MODE_MASK',
   },
   {
     label: 'src/symbionts/templates/myco-run.cjs',
-    file: 'packages/myco/src/symbionts/templates/myco-run.cjs',
+    file: 'tests/fixtures/install/myco-run.cjs',
     maskName: 'RUNTIME_COMMAND_INSECURE_MODE_MASK',
   },
   {
@@ -104,8 +104,8 @@ describe('G7 trust-check cross-copy agreement', () => {
    */
   const HOME_READERS = [
     { label: 'src/paths/home.ts', file: 'packages/myco/src/paths/home.ts' },
-    { label: 'bin/runtime-redirect.cjs', file: 'packages/myco/bin/runtime-redirect.cjs' },
-    { label: 'src/symbionts/templates/myco-run.cjs', file: 'packages/myco/src/symbionts/templates/myco-run.cjs' },
+    { label: 'bin/runtime-redirect.cjs', file: 'tests/fixtures/install/runtime-redirect.cjs' },
+    { label: 'src/symbionts/templates/myco-run.cjs', file: 'tests/fixtures/install/myco-run.cjs' },
     { label: 'src/symbionts/templates/_shared/plugin-helpers.ts.snippet', file: 'packages/myco/src/symbionts/templates/_shared/plugin-helpers.ts.snippet' },
   ] as const;
 
