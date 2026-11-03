@@ -210,3 +210,30 @@ test('replays a five-shard recording against a six-shard plan', () => {
   expect(nodeDurationSamples(workload)[0]!.files).toEqual(Object.fromEntries(groups.map(group => [group.files[0]!, 100])));
   expect(() => assertNodeShardHeadroom(plans, 900_000, recordedNodeDurations(workload), workload)).not.toThrow();
 });
+
+test('resolves real JUnit tuple and object registrations, scoped duplicate names and imported timeouts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'timeout-junit-'));
+  try {
+    fs.writeFileSync(path.join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { moduleResolution: 'bundler' } }));
+    fs.writeFileSync(path.join(root, 'limits.ts'), 'export const LIMIT = 45000;');
+    fs.writeFileSync(path.join(root, 'cases.test.ts'), `import { describe, it } from 'bun:test';
+import { LIMIT } from './limits';
+describe('outer', () => { describe('inner', () => { const BOUND = LIMIT * 2;
+  it.each([['tuple', 1]])(\n    '%s %d', () => {}, BOUND);
+  it.each([{ name: 'object' }])('$name', () => {}, LIMIT);
+  it('duplicate', () => {}, LIMIT);
+}); });
+describe('other', () => { const BOUND = 70000; it('duplicate', () => {}, BOUND); });
+const unknownTimeout = Number('50000');
+it('unresolved', () => {}, unknownTimeout);
+`);
+    const report = path.join(root, 'cases.xml');
+    const run = spawnSync(process.execPath, ['test', './cases.test.ts', '--reporter=junit', '--reporter-outfile', report], { cwd: root, encoding: 'utf8' });
+    expect({ status: run.status, error: run.stderr }).toEqual({ status: 0, error: expect.any(String) });
+    const cases = testDurationSamples(fs.readFileSync(report, 'utf8')).map(test => ({ ...test, file: 'cases.test.ts' }));
+    expect(cases).toHaveLength(5);
+    expect(cases.slice(0, 4).map(test => declaredTestTimeout(root, test))).toEqual([90000, 45000, 45000, 70000]);
+    expect(() => declaredTestTimeout(root, cases[4]!)).toThrow('cannot resolve');
+    expect(() => declaredTestTimeout(root, { ...cases[0]!, classname: 'missing' })).toThrow('matching its recorded name');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

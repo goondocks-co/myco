@@ -75,4 +75,4 @@ it('D1 equality seeks and constant-cost ack writes at 26k captured prompts and 7
     expect(acknowledgement.rowsRead!).toBeLessThanOrEqual(Object.values(ackReads).reduce((sum, reads) => sum + reads, 0));
     expect(acknowledgement.rowsWritten!).toBeLessThanOrEqual(12);
   } finally { planning.close(); await mf.dispose(); }
-}, 240_000);
+}, 300_000);

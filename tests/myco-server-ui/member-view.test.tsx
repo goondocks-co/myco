@@ -1,3 +1,4 @@
+import { MACHINE_SETTINGS_CONTROLS } from '@goondocks/myco-shared/setup-guidance';
 /**
  * The dashboard as a member who is not an admin sees it (#1491): no page asks a route the route table declares
  * `admin`, and the controls that reach one are not offered, while the read views and their own runtimes stay.
@@ -112,8 +113,8 @@ describe('the dashboard for a member who is not an admin', () => {
 
   it('lists the member\'s own machines on My machines, with no invitation or removal, and the member\'s own Stop', async () => {
     server(ROUTES_ANSWERED);
-    mount('/me/machines');
-    expect(await screen.findByRole('heading', { level: 1, name: 'My machines' })).toBeTruthy();
+    mount(MACHINE_SETTINGS_CONTROLS.path);
+    expect(await screen.findByRole('heading', { level: 1, name: MACHINE_SETTINGS_CONTROLS.page })).toBeTruthy();
     expect((await screen.findAllByText('A machine')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Invitations')).toBeNull();
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();

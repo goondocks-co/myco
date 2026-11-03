@@ -12,9 +12,21 @@ export function sourceProgram(roots: string[]) {
   if (errors.length) throw new Error(errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
   const checker = program.getTypeChecker();
   const declaration = (node: ts.Node): ts.Declaration | undefined => {
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return node;
+    if (ts.isPropertyAccessExpression(node)) {
+      const owner = declaration(node.expression);
+      if (owner && ts.isVariableDeclaration(owner) && owner.initializer && ts.isCallExpression(owner.initializer)) return owner;
+    }
     let symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node) ? node.name : node);
     if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
-    const declared = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+    let declared = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+    if (declared && ts.isBindingElement(declared) && ts.isObjectBindingPattern(declared.parent)) {
+      const owner = declared.parent.parent;
+      if (ts.isVariableDeclaration(owner) && owner.initializer) {
+        const property = checker.getPropertyOfType(checker.getTypeAtLocation(owner.initializer), (declared.propertyName ?? declared.name).getText());
+        if (property) declared = property.valueDeclaration ?? property.declarations?.[0];
+      }
+    }
     return declared && ts.isVariableDeclaration(declared) && declared.initializer
       && (ts.isIdentifier(declared.initializer) || ts.isPropertyAccessExpression(declared.initializer))
       ? declaration(declared.initializer) : declared;
@@ -32,8 +44,8 @@ export function sourceProgram(roots: string[]) {
     seen.add(node);
     return calls(node).some(call => {
       const callee = target(call);
-      return terminal(call, callee) || callee !== undefined && callee.getSourceFile().fileName.startsWith(path.join(root, 'packages'))
-        && reaches(callee, terminal, seen);
+      return terminal(call, callee) || [callee, ...call.arguments.map(declaration)].some(target => target !== undefined
+        && target.getSourceFile().fileName.startsWith(path.join(root, 'packages')) && reaches(target, terminal, seen));
     });
   };
   return { program, checker, declaration, calls, target, reaches };

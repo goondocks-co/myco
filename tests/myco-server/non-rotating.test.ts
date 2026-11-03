@@ -188,7 +188,7 @@ describe('every route that mints an authority able to outlive the credential (#1
       const visit = (node: ts.Node): void => {
         const text = ts.isStringLiteralLike(node) ? node.text : ts.isTemplateExpression(node)
           ? node.head.text + node.templateSpans.map(span => span.literal.text).join('') : '';
-        if (/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO)\s+(?:member_credentials|enrollment_authorities|identity_link_authorities|external_grants)\b/i.test(text)) found = true;
+        if (/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO)\s+(?:member_credentials|enrollment_authorities|identity_link_authorities|external_grants)\b|\bUPDATE\s+(?:deployment_ownership\s+SET\s+member_id|members\s+SET\s+role)\b/i.test(text)) found = true;
         ts.forEachChild(node, visit);
       };
       visit(target);
@@ -202,29 +202,41 @@ describe('every route that mints an authority able to outlive the credential (#1
         || name === 'get' && ts.isInterfaceDeclaration(target.parent) && target.parent.name.text === 'SecretStore'
         || name === 'access' && target.getSourceFile().fileName.endsWith('/core/repositories.ts');
     };
-    const doors: string[] = [];
+    const doors: string[] = [], members: string[] = [];
+    const stringOf = (node: ts.Node | undefined): string | undefined => {
+      if (!node) return undefined;
+      if (ts.isStringLiteralLike(node)) return node.text;
+      const target = graph.declaration(node);
+      return target && ts.isVariableDeclaration(target) ? stringOf(target.initializer) : undefined;
+    };
     const visit = (node: ts.Node): void => {
       if (ts.isObjectLiteralExpression(node)) {
-        const fields = new Map(node.properties.filter(ts.isPropertyAssignment).map(p => [p.name.getText(source), p.initializer]));
-        if (fields.get('auth')?.getText(source) === "'member'"
-          && ROUTES.find(route => route.path === (fields.get('path') as ts.StringLiteral | undefined)?.text)?.authorization.subjects.includes('member')) {
-          const path = fields.get('path');
-          const handlers = ['handler', 'deployment', 'unbound'].flatMap(key => fields.get(key) ? [fields.get(key)!] : []);
-          const reaches = handlers.some(handler => {
-            const target = graph.declaration(handler);
-            return target !== undefined && graph.reaches(target, terminal);
-          });
-          if (reaches) {
-            doors.push(path!.getText(source));
-            expect({ path: path!.getText(source), guarded: fields.get('mintsAuthority')?.kind === ts.SyntaxKind.TrueKeyword })
-              .toEqual({ path: path!.getText(source), guarded: true });
+        const fields = new Map(node.properties.filter(ts.isPropertyAssignment).map(p => [ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name) ? p.name.text : p.name.getText(source), p.initializer]));
+        if (stringOf(fields.get('auth')) === 'member') {
+          const path = stringOf(fields.get('path'));
+          const route = ROUTES.find(route => route.path === path && route.method === stringOf(fields.get('method')));
+          expect(route, fields.get('path')?.getText(source)).toBeDefined();
+          members.push(`${route!.method} ${path}`);
+          if (route!.authorization.subjects.includes('member')) {
+            const handlers = [...fields.values()].filter(value => graph.checker.getTypeAtLocation(value).getCallSignatures().length > 0);
+            expect(handlers.length).toBeGreaterThan(0);
+            const reaches = handlers.some(handler => {
+              const target = graph.declaration(handler);
+              expect(target, handler.getText(source)).toBeDefined();
+              return graph.reaches(target!, terminal);
+            });
+            if (reaches) {
+              doors.push(path!);
+              expect({ path, guarded: fields.get('mintsAuthority')?.kind === ts.SyntaxKind.TrueKeyword }).toEqual({ path, guarded: true });
+            }
           }
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(source);
-    expect(doors.length).toBeGreaterThan(0);
+    expect(members.sort()).toEqual(ROUTES.filter(route => route.auth === 'member').map(route => `${route.method} ${route.path}`).sort());
+    expect(doors.sort()).toEqual(ROUTES.filter(route => route.auth === 'member' && 'mintsAuthority' in route && route.mintsAuthority).map(route => route.path).sort());
   });
 
   it('refuses every authority door before its handler for a non-rotating credential', async () => {

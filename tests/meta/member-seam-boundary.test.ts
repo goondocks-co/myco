@@ -291,7 +291,7 @@ function resolveFile(base: string): string | null {
 const LEGACY_SQLITE_OWNERS = new Set(['member/legacy-backup.ts', 'member/legacy-import.ts', 'member/legacy-sources.ts']);
 
 function resolveSpecifier(fromFile: string, specifier: string): Resolved {
-  if (specifier === 'bun:sqlite' && !LEGACY_SQLITE_OWNERS.has(moduleKey(fromFile))) return { kind: 'external', specifier };
+  if (specifier === 'node:sqlite' || specifier === 'bun:sqlite' && !LEGACY_SQLITE_OWNERS.has(moduleKey(fromFile))) return { kind: 'external', specifier };
   if (specifier.startsWith('node:') || specifier.startsWith('bun:')) {
     return { kind: 'builtin', specifier };
   }
