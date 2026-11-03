@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
-import { schemaObjects, SCHEMA_QUERY, quoteIdentifier as identifier, recoverableVirtualTables } from './recovery-schema.js';
+import { schemaObjects, SCHEMA_QUERY, quoteIdentifier as identifier, recoverableVirtualTables, virtualTableRebuilds } from './recovery-schema.js';
 import path from 'node:path';
 
 const MAX_STATEMENT_BYTES = 90_000;
@@ -112,7 +112,7 @@ export function writeRecoverySql(databasePath: string, destination: string, sour
     for (const type of ['index', 'view', 'trigger']) {
       for (const row of schema) if (row.type === type && !unique.has(row.name)) emit(row.sql);
     }
-    for (const row of virtual) emit(`INSERT INTO ${identifier(row.name)}(${identifier(row.name)}) VALUES('rebuild')`);
+    for (const sql of virtualTableRebuilds(schema)) emit(sql);
     if (sourceFingerprint !== undefined) {
       emit(`INSERT OR REPLACE INTO schema_meta(key,value) VALUES('${RECOVERY_FINGERPRINT_KEY}','${sourceFingerprint}')`);
     }

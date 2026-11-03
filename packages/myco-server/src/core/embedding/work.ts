@@ -1,5 +1,5 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { embeddingRetirementPending, prepareEmbeddingUnwritten } from '../../read/catalog-store.js';
+import { prepareEmbeddingUnwritten } from '../../read/catalog-store.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
@@ -33,7 +33,7 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
     for (const key of writes) {
       if (await prepareEmbeddingUnwritten(db, projectId, key, now).first() !== null) return { pending: true };
     }
-    if (await retiringReceipt(db, projectId, retained, now) !== null || await embeddingRetirementPending(db,projectId,now)) return { pending: true };
+    if (await retiringReceipt(db, projectId, retained, now) !== null) return { pending: true };
     return { pending: false, wakeAt: await embeddingWakeAt(db, projectId, writes, now) };
   }, (cursor) => embeddingSweep(db, projectId, writes, retained, now, cursor));
   if (pending) return true;

@@ -1,3 +1,4 @@
+import { transcriptRoleSql } from './transcript-order.js';
 import { queueRetirementSql as queue } from './embedding-retirement.js';
 import { SCHEDULE_ACTOR_SQL, SCHEDULE_ENTRY_SQL } from './schedule-entry.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
@@ -16,9 +17,8 @@ export const READ_COST_STEPS = [
   ],
   [
     `CREATE TABLE IF NOT EXISTS embedding_retirement_queue(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
-      model_key TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(project_id,model_key,id)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS embedding_retirement_scan(project_id TEXT PRIMARY KEY CHECK (${PROJECT_ID_GRAMMAR}),
-      scope TEXT NOT NULL,model_key TEXT NOT NULL DEFAULT '',id TEXT NOT NULL DEFAULT '',due_at INTEGER NOT NULL DEFAULT 0)`,
+      model_key TEXT NOT NULL,id TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(project_id,model_key,id)) WITHOUT ROWID`,
+    'CREATE INDEX IF NOT EXISTS idx_embedding_retirement_queue ON embedding_retirement_queue(project_id,model_key,updated_at,id)',
     ...['embedding_versions', 'embedding_receipts'].flatMap((table) =>
       ['INSERT', 'UPDATE', 'DELETE'].map(
         (op) =>
@@ -26,7 +26,7 @@ export const READ_COST_STEPS = [
             op === 'UPDATE'
               ? table === 'embedding_versions'
                 ? 'UPDATE OF project_id,type,record_id,revision'
-                : 'UPDATE OF project_id,model_key,id,type,record_id,revision,ready'
+                : 'UPDATE OF project_id,model_key,id,type,record_id,revision,ready,updated_at'
               : op
           } ON ${table} BEGIN
         ${(op === 'INSERT' ? ['NEW'] : op === 'DELETE' ? ['OLD'] : ['OLD', 'NEW']).map((row) => queue(identity(row))).join(' ')}
@@ -43,5 +43,10 @@ export const READ_COST_STEPS = [
       (op) => `CREATE TRIGGER IF NOT EXISTS processed_resources_retirement_${op.toLowerCase()} AFTER ${op} ON processed_resources BEGIN
       ${(op === 'INSERT' ? ['NEW'] : op === 'DELETE' ? ['OLD'] : ['OLD', 'NEW']).map((row) => queue(`project_id=${row}.project_id AND type='plan' AND record_id=${row}.resource_id AND ${row}.kind='plan'`)).join(' ')} END`,
     ),
+  ],
+  [`CREATE INDEX IF NOT EXISTS idx_transcripts_session_page ON transcripts(project_id,session_id,${transcriptRoleSql()},transcript_id)`],
+  [
+    "CREATE VIRTUAL TABLE IF NOT EXISTS plans_search_terms USING fts5vocab(plans_fts,'row')",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS blob_search_terms USING fts5vocab(search_blob_chunks_fts,'row')",
   ],
 ].map((statements, index) => ({ version: 538 + index, statements }));

@@ -30,11 +30,20 @@ export const quoteIdentifier = (name: string): string => '"' + name.replaceAll('
 export function recoverableVirtualTables(schema: readonly RecoverySchemaObject[]): RecoverySchemaObject[] {
   const virtual = schema.filter((row) => row.storage === 'virtual');
   for (const row of virtual) {
+    if (/\bUSING\s+fts5vocab\s*\(/i.test(row.sql)) continue;
     if (!/\bUSING\s+fts5\s*\(/i.test(row.sql) || !/\bcontent\s*=\s*'[^']+'/i.test(row.sql)) {
       throw new Error(`recovery cannot reconstruct virtual table ${row.name}`);
     }
   }
   return virtual;
+}
+
+/** Content indexes rebuild from their ordinary tables; vocabulary tables read those indexes directly. */
+export function virtualTableRebuilds(schema: readonly RecoverySchemaObject[]): string[] {
+  return recoverableVirtualTables(schema).filter((row) => /\bUSING\s+fts5\s*\(/i.test(row.sql)).map((row) => {
+    const name = quoteIdentifier(row.name);
+    return `INSERT INTO ${name}(${name}) VALUES('rebuild')`;
+  });
 }
 
 /** The ordinary tables an export of `schema` must carry, with `sqlite_sequence` where a table declares AUTOINCREMENT. */

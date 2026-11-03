@@ -34,9 +34,11 @@ const LEARNING_QUEUE_WRITES = 1;
 const DOCUMENT_QUEUE_WRITES = 5;
 /** A session's first transcript makes its document due: the row and its due index entry. */
 const DOCUMENT_DUE_WRITES = 2;
+/** A transcript header's session page index stores one entry. */
+const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES,
   'publication-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;

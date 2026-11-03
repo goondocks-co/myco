@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 export {
-  exportedTables, quoteIdentifier, recoverableVirtualTables, SCHEMA_QUERY,
+  exportedTables, quoteIdentifier, recoverableVirtualTables, virtualTableRebuilds, SCHEMA_QUERY,
   type RecoverySchemaObject,
 } from '@myco-server-worker/core/recovery-schema.js';
 

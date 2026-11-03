@@ -1,5 +1,4 @@
-import { queueRetirementSql } from '../db/embedding-retirement.js';
-import { retirementWorkChanged, WORK_SWEEP_MAX_MS as RETIREMENT_SWEEP_MS } from '../core/embedding/work-state.js';
+import { currentEmbeddingSourceSql, queueRetirementStatement } from '../db/embedding-retirement.js';
 import { INPUT_REFUSAL_RETRY_MS as EMBEDDING_INPUT_REFUSAL_RETRY_MS } from '../db/embedding-due.js';
 import { eligibleEmbeddingSource as core_embedding_source_state_eligibleSource } from '../db/embedding-sources.js';
 import { sessionDocumentUnreadSql } from '../db/document-tables.js';
@@ -1282,6 +1281,7 @@ async function sessions_sessionsWithImportedPrompts(db: sessions_import_Relation
 /** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
 interface children_ChildQuery<T> {
   table: string;
+  index?: string;
   promptHint?: string;
   columns: string;
   idColumn: string;
@@ -1336,7 +1336,7 @@ const children_CONTEXT_INJECTION_QUERY: children_ChildQuery<Omit<children_Contex
 
 /** Plans order by `updated_at` — the column `idx_plans_session` indexes — and are keyed by `plan_key`. */
 const children_PLAN_QUERY: children_ChildQuery<Omit<children_PlanRow, 'orderedAt'>> = {
-  table: 'plans', columns: 'plan_key, prompt_id, title, status, content, blob_key, origin_path, updated_by, created_at, updated_at', idColumn: 'plan_key', orderColumn: 'updated_at',
+  table: 'plans', index: 'idx_plans_session', columns: 'plan_key, prompt_id, title, status, content, blob_key, origin_path, updated_by, created_at, updated_at', idColumn: 'plan_key', orderColumn: 'updated_at',
   map: (r) => ({
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
@@ -2431,7 +2431,6 @@ async function prompts_extractionSourceSession(db: prompts_import_RelationalStor
 }
 
 const search_SEARCH_MAX_TERMS = 16;
-const search_TERM_PROBE = 32;
 
 /** Control characters a query may not carry: every C0 control but the tab and line breaks a pasted query splits on, and DEL. */
 const search_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -2539,13 +2538,23 @@ async function search_searchType(
   else if (terms.length > 1) {
     const counts = await Promise.all(
       terms.map(async (term) => {
-        const row = await db
-          .prepare(
-            `SELECT (SELECT COUNT(*) FROM (SELECT rowid FROM ${fts} WHERE ${fts} MATCH ? LIMIT ${search_TERM_PROBE}))
-        +(SELECT COUNT(*) FROM (SELECT rowid FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH ? LIMIT ${search_TERM_PROBE})) AS n`,
-          )
-          .bind(term, term)
-          .first<{ n: number }>();
+        const word = /^(?:[A-Za-z0-9]+|"[A-Za-z0-9]+")$/.test(term) ? term.replaceAll('"', '').toLowerCase() : null;
+        const row =
+          word === null
+            ? await db
+                .prepare(
+                  `SELECT (SELECT COUNT(*) FROM ${fts} WHERE ${fts} MATCH ?)
+          +(SELECT COUNT(*) FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH ?) AS n`,
+                )
+                .bind(term, term)
+                .first<{ n: number }>()
+            : await db
+                .prepare(
+                  `SELECT COALESCE((SELECT doc FROM plans_search_terms WHERE term=?),0)
+          +COALESCE((SELECT doc FROM blob_search_terms WHERE term=?),0) AS n`,
+                )
+                .bind(word, word)
+                .first<{ n: number }>();
         return row!.n;
       }),
     );
@@ -2638,7 +2647,7 @@ async function search_searchType(
   const found = (
     await db
       .prepare(
-        `WITH candidates AS NOT MATERIALIZED (${first}${blob}),
+        `WITH candidates AS MATERIALIZED (${first}${blob}),
     kept AS MATERIALIZED (SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, MIN(candidates.rank) AS rank,
       candidates.branch, candidates.match_rowid, ${s.line ?? 'NULL'} AS line,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
@@ -2888,7 +2897,7 @@ function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_Rea
   }
   for (const filter of filters) { conditions.push(filter.sql); params.push(...filter.params); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
-  const sql = `SELECT ${children_childColumns(query)}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
+  const sql = `SELECT ${children_childColumns(query)}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}${query.index === undefined ? '' : ` INDEXED BY ${query.index}`}
                 WHERE ${conditions.join(' AND ')}
                 ORDER BY ${order} ASC, ${query.idColumn} ASC LIMIT ?`;
   const { results } = await ({ results: await queryRows<Record<string, unknown>>(db,sql,[...params, limit + 1],'all') });
@@ -2945,9 +2954,7 @@ export async function injectedPromptRecord(db: sessions_import_RelationalStore, 
 export { processed_processedField };
 
 /** A receipt names an eligible source's current revision. */
-const core_embedding_source_state_currentSource = (row: string): string => `EXISTS (SELECT 1 FROM embedding_versions v
-  WHERE v.project_id = ${row}.project_id AND v.type = ${row}.type AND v.record_id = ${row}.record_id
-    AND v.revision = ${row}.revision AND ${core_embedding_source_state_eligibleSource('v')})`;
+const core_embedding_source_state_currentSource = currentEmbeddingSourceSql;
 
 /** A calibration member names a current indexed spore receipt that is included in calibration. */
 const core_embedding_source_state_currentHubnessMember = (row: string): string => `EXISTS (SELECT 1 FROM embedding_receipts r
@@ -3054,42 +3061,19 @@ async function core_embedding_selection_retiringReceipt(
   retained: readonly string[],
   now: number,
 ): Promise<core_embedding_selection_RetiringReceipt | null> {
-  await core_embedding_selection_scanRetirement(db, projectId, retained, now);
   const candidates: core_embedding_selection_RetiringReceipt[] = [];
-  const queued = (
-    await db
+  for (const model of new Set(retained)) {
+    const row = await db
       .prepare(
-        `WITH page AS MATERIALIZED (SELECT * FROM embedding_retirement_queue
-    WHERE project_id=? ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
-    SELECT r.*,q.model_key AS queued_model,q.id AS queued_id,q.revision AS queue_revision,
-      ${core_embedding_source_state_currentSource('r')} AS current
-    FROM page q LEFT JOIN embedding_receipts r ON r.project_id=q.project_id AND r.model_key=q.model_key AND r.id=q.id`,
+        `SELECT r.* FROM embedding_retirement_queue q
+      CROSS JOIN embedding_receipts r ON r.project_id=q.project_id AND r.model_key=q.model_key AND r.id=q.id
+      WHERE q.project_id=? AND q.model_key=? AND r.ready>=0 AND NOT ${core_embedding_source_state_currentSource('r')}
+      ORDER BY q.updated_at,q.id LIMIT 1`,
       )
-      .bind(projectId)
-      .all<
-        core_embedding_selection_RetiringReceipt & { queued_model: string; queued_id: string; queue_revision: number; current: number }
-      >()
-  ).results;
-  const clean = queued.filter((row) => {
-    const retiring =
-      row.id != null &&
-      row.ready >= core_embedding_selection_import_RECEIPT.journaled &&
-      (!retained.includes(row.model_key) || row.current === 0);
-    if (retiring) candidates.push(row);
-    return !retiring;
-  });
-  if (clean.length > 0)
-    await db.batch([
-      ...clean.map((row) =>
-        db
-          .prepare(
-            `DELETE FROM embedding_retirement_queue
-    WHERE project_id=? AND model_key=? AND id=? AND revision=?`,
-          )
-          .bind(projectId, row.queued_model, row.queued_id, row.queue_revision),
-      ),
-      retirementWorkChanged(db, projectId),
-    ]);
+      .bind(projectId, model)
+      .first<core_embedding_selection_RetiringReceipt>();
+    if (row !== null) candidates.push(row);
+  }
   for (const { sql, binds } of core_embedding_selection_retirementQueries(projectId, retained, now)) {
     const row = await db
       .prepare(sql)
@@ -3098,74 +3082,6 @@ async function core_embedding_selection_retiringReceipt(
     if (row !== null) candidates.push(row);
   }
   return candidates.sort((a, b) => a.updated_at - b.updated_at || core_embedding_selection_import_binaryOrder(a.id, b.id))[0] ?? null;
-}
-
-/** One checkpointed receipt page repairs missed invalidations; source writes queue their own identities atomically. */
-async function core_embedding_selection_scanRetirement(
-  db: core_embedding_selection_import_RelationalStore,
-  projectId: string,
-  retained: readonly string[],
-  now: number,
-): Promise<void> {
-  const scope = JSON.stringify([...new Set(retained)].sort(core_embedding_selection_import_binaryOrder));
-  await db
-    .prepare(
-      `INSERT INTO embedding_retirement_scan(project_id,scope) VALUES(?,?)
-    ON CONFLICT(project_id) DO UPDATE SET scope=excluded.scope,model_key='',id='',due_at=0 WHERE scope<>excluded.scope`,
-    )
-    .bind(projectId, scope)
-    .run();
-  const cursor = await db
-    .prepare('SELECT model_key,id,due_at FROM embedding_retirement_scan WHERE project_id=?')
-    .bind(projectId)
-    .first<{ model_key: string; id: string; due_at: number }>();
-  if (cursor === null || cursor.due_at > now) return;
-  const rows = (
-    await db
-      .prepare(
-        `WITH page AS MATERIALIZED (SELECT * FROM embedding_receipts WHERE project_id=?
-    AND (model_key,id)>(?,?) ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
-    SELECT r.*,${core_embedding_source_state_currentSource('r')} AS current FROM page r`,
-      )
-      .bind(projectId, cursor.model_key, cursor.id)
-      .all<core_embedding_selection_RetiringReceipt & { current: number }>()
-  ).results;
-  const last = rows.at(-1),
-    more = rows.length === core_embedding_work_sweep_import_WORK_SWEEP_PAGE;
-  await db.batch([
-    ...rows
-      .filter(
-        (row) => row.ready >= core_embedding_selection_import_RECEIPT.journaled && (!retained.includes(row.model_key) || row.current === 0),
-      )
-      .map((row) => db.prepare(queueRetirementSql('project_id=? AND model_key=? AND id=?')).bind(projectId, row.model_key, row.id)),
-    db
-      .prepare(
-        `UPDATE embedding_retirement_scan SET model_key=?,id=?,due_at=?
-      WHERE project_id=? AND scope=? AND model_key=? AND id=?`,
-      )
-      .bind(
-        more ? last!.model_key : '',
-        more ? last!.id : '',
-        more ? now : now + RETIREMENT_SWEEP_MS,
-        projectId,
-        scope,
-        cursor.model_key,
-        cursor.id,
-      ),
-    ...(rows.length > 0 || cursor.model_key !== '' || cursor.id !== '' ? [retirementWorkChanged(db, projectId)] : []),
-  ]);
-}
-
-/** Queued identities and an unfinished safety page keep the reconciliation job admitted. */
-export async function embeddingRetirementPending(
-  db: core_embedding_selection_import_RelationalStore,
-  projectId: string,
-  now: number,
-): Promise<boolean> {
-  return (
-    (await db.prepare(`SELECT 1 FROM embedding_retirement_queue WHERE project_id=? LIMIT 1`).bind(projectId).first()) !== null ||
-    (await db.prepare('SELECT 1 FROM embedding_retirement_scan WHERE project_id=? AND due_at<=?').bind(projectId, now).first()) !== null
-  );
 }
 
 /** Source work starts at the version index; eligibility is a point lookup in its owning source table. */
@@ -3214,33 +3130,65 @@ const core_embedding_work_sweep_advance = (phase: core_embedding_work_sweep_Swee
 
 /** One indexed page of source versions or receipts; no full-corpus probe runs during an idle safety sweep. */
 async function core_embedding_work_sweep_embeddingSweep(
-  db: core_embedding_work_sweep_import_RelationalStore, projectId: string, writes: readonly string[], retained: readonly string[], now: number, saved: string | null,
+  db: core_embedding_work_sweep_import_RelationalStore,
+  projectId: string,
+  writes: readonly string[],
+  retained: readonly string[],
+  now: number,
+  saved: string | null,
 ): Promise<core_embedding_work_sweep_import_WorkSweep> {
   const cursor = core_embedding_work_sweep_resume(saved, 'sources');
   if (cursor.phase === 'sources') {
-    const predicate = writes.length === 0 ? '0' : `(${writes.map(() => `(NOT ${core_embedding_reconcile_SOURCE_HELD} AND NOT ${core_embedding_reconcile_PASSED_OVER})`).join(' OR ')})`;
-    const rows = (await db.prepare(`WITH page AS MATERIALIZED (SELECT * FROM embedding_versions
+    const predicate =
+      writes.length === 0
+        ? '0'
+        : `(${writes.map(() => `(NOT ${core_embedding_reconcile_SOURCE_HELD} AND NOT ${core_embedding_reconcile_PASSED_OVER})`).join(' OR ')})`;
+    const rows = (
+      await db
+        .prepare(
+          `WITH page AS MATERIALIZED (SELECT * FROM embedding_versions
       WHERE project_id = ? AND (type,record_id) > (?,?) ORDER BY type,record_id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
-      SELECT s.type,s.record_id,(${core_embedding_source_state_eligibleSource('s')} AND ${predicate}) AS pending FROM page s`)
-      .bind(projectId, cursor.a, cursor.b, ...writes.flatMap((model) => [model, ...core_embedding_reconcile_passedOverBinds(model, now)]))
-      .all<{ type: string; record_id: string; pending: number }>()).results;
+      SELECT s.type,s.record_id,(${core_embedding_source_state_eligibleSource('s')} AND ${predicate}) AS pending FROM page s`,
+        )
+        .bind(projectId, cursor.a, cursor.b, ...writes.flatMap((model) => [model, ...core_embedding_reconcile_passedOverBinds(model, now)]))
+        .all<{ type: string; record_id: string; pending: number }>()
+    ).results;
     const last = rows.at(-1);
     return {
-      pending: rows.some((row) => row.pending === 1), cursor: rows.length < core_embedding_work_sweep_import_WORK_SWEEP_PAGE ? core_embedding_work_sweep_advance('receipts')
-        : JSON.stringify({ ...cursor, a: last!.type, b: last!.record_id })
+      pending: rows.some((row) => row.pending === 1),
+      cursor:
+        rows.length < core_embedding_work_sweep_import_WORK_SWEEP_PAGE
+          ? core_embedding_work_sweep_advance('receipts')
+          : JSON.stringify({ ...cursor, a: last!.type, b: last!.record_id }),
     };
   }
-  const rows = (await db.prepare(`WITH page AS MATERIALIZED (SELECT * FROM embedding_receipts
+  const rows = (
+    await db
+      .prepare(
+        `WITH page AS MATERIALIZED (SELECT * FROM embedding_receipts
     WHERE project_id = ? AND (model_key,id) > (?,?) ORDER BY model_key,id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
-    SELECT r.*,${core_embedding_source_state_currentSource('r')} AS current FROM page r`).bind(projectId, cursor.a, cursor.b)
-    .all<{ model_key: string; id: string; ready: number; updated_at: number; current: number }>()).results;
-  const stale=rows.filter(row=>row.ready>=core_embedding_work_sweep_import_RECEIPT.journaled
-    &&(!retained.includes(row.model_key)||row.current===0));
-  if(stale.length>0) await db.batch(stale.map(row=>db.prepare(queueRetirementSql('project_id=? AND model_key=? AND id=?')).bind(projectId,row.model_key,row.id)));
-  const pending = rows.some((row) => row.ready >= core_embedding_work_sweep_import_RECEIPT.journaled ? !retained.includes(row.model_key) || row.current === 0
-    : core_embedding_work_sweep_import_deletionRetryDue(row.ready, row.updated_at, now));
+    SELECT r.*,${core_embedding_source_state_currentSource('r')} AS current FROM page r`,
+      )
+      .bind(projectId, cursor.a, cursor.b)
+      .all<{ model_key: string; id: string; ready: number; updated_at: number; current: number }>()
+  ).results;
+  const stale = rows.filter(
+    (row) => row.ready >= core_embedding_work_sweep_import_RECEIPT.journaled && retained.includes(row.model_key) && row.current === 0,
+  );
+  if (stale.length > 0) await db.batch(stale.map((row) => db.prepare(queueRetirementStatement()).bind(projectId, row.model_key, row.id)));
+  const pending = rows.some((row) =>
+    row.ready >= core_embedding_work_sweep_import_RECEIPT.journaled
+      ? !retained.includes(row.model_key) || row.current === 0
+      : core_embedding_work_sweep_import_deletionRetryDue(row.ready, row.updated_at, now),
+  );
   const last = rows.at(-1);
-  return { pending, cursor: rows.length < core_embedding_work_sweep_import_WORK_SWEEP_PAGE ? null : JSON.stringify({ ...cursor, a: last!.model_key, b: last!.id }) };
+  return {
+    pending,
+    cursor:
+      rows.length < core_embedding_work_sweep_import_WORK_SWEEP_PAGE
+        ? null
+        : JSON.stringify({ ...cursor, a: last!.model_key, b: last!.id }),
+  };
 }
 
 /** Bounded receipt and membership pages also recompute the moments-count invariant over a complete sweep cycle. */

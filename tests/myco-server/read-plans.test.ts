@@ -163,8 +163,7 @@ describe('the reads a person waits on', () => {
     }
   });
 
-  it('pages a session\'s spores by cursor over idx_spores_session, with the plan its first page has', async () => {
-    // A cursor page and a first page use the session index and the same ordering plan, filtered or not.
+  it('pages a session\'s spores by cursor with a range on idx_spores_session, filtered or not', async () => {
     const statementOf = async (opts: Parameters<typeof pageSpores>[2]) => {
       const { db: recorder, statements } = recordingStore();
       await pageSpores(recorder, { projectId: 'proj_1' }, opts);
@@ -178,8 +177,10 @@ describe('the reads a person waits on', () => {
         const next = await statementOf({ sessionId: 's1', limit: 25, ...filters, cursor: encodeCursor(1_700_000_000_000, 'sp') });
         expect(/created_at < \?/.test(next.sql)).toBe(true);
         const plan = await planOf(db, next.sql, next.params);
-        expect({ index: /SEARCH spores USING INDEX idx_spores_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN spores/.test(plan), plan })
-          .toEqual({ index: true, scan: false, plan: await planOf(db, first.sql, first.params) });
+        const firstPlan = await planOf(db, first.sql, first.params);
+        expect(firstPlan).toContain('SEARCH spores USING INDEX idx_spores_session (project_id=? AND session_id=?)');
+        expect(plan).toContain('SEARCH spores USING INDEX idx_spores_session (project_id=? AND session_id=? AND created_at<?)');
+        expect(/SCAN spores/.test(firstPlan) || /SCAN spores/.test(plan)).toBe(false);
       }
     } finally {
       db.close();

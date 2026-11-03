@@ -82,14 +82,20 @@ it('refuses a captured schema object whose statement disagrees with it, and neve
     const source = new Database(path.join(w.root, 'source.sqlite'), { create: true });
     source.exec('CREATE TABLE "rows" (id INTEGER PRIMARY KEY, body TEXT)');
     source.exec('CREATE INDEX IF NOT EXISTS idx_rows_body ON "rows" (body)');
+    source.exec("CREATE VIRTUAL TABLE rows_fts USING fts5(body,content='rows',content_rowid='id')");
+    source.exec("CREATE VIRTUAL TABLE rows_terms USING fts5vocab(rows_fts,'row')");
     const schema = schemaObjects.parse(source.query(SCHEMA_QUERY).all());
     source.close();
     const dump = path.join(w.root, 'schema-dump.sql');
-    fs.writeFileSync(dump, 'CREATE TABLE "rows" (id INTEGER PRIMARY KEY, body TEXT);\n');
+    fs.writeFileSync(dump, 'CREATE TABLE "rows" (id INTEGER PRIMARY KEY, body TEXT);\nINSERT INTO "rows" VALUES(1,\'finding\');\n');
 
     const built = path.join(w.root, 'built.sqlite');
     await buildSnapshotDatabase(built, dump, schema);
     expect(fs.existsSync(built)).toBe(true);
+    const snapshot = new Database(built, { readonly: true });
+    try {
+      expect(snapshot.query("SELECT doc FROM rows_terms WHERE term='finding'").get()).toEqual({ doc: 1 });
+    } finally { snapshot.close(); }
 
     const injected = schema.map((row) => (row.type === 'index'
       ? { ...row, sql: `${row.sql}; ATTACH DATABASE '${w.outside}' AS other; UPDATE other.marker SET value = 'changed by schema'` }

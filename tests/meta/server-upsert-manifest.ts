@@ -1,8 +1,6 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
-  'read/catalog-store.ts#core_embedding_selection_scanRetirement': [{tables:['embedding_retirement_scan'],order:'unverified'}],
-  'db/embedding-retirement.ts#queueRetirementSql': [{tables:['embedding_retirement_queue'],order:'unverified'}],
   'db/schema-v466.ts#<module>': [{tables:['embedding_hubness_revision'],order:'unverified'}],
   'db/document-facts.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
   'db/document-facts.ts#differenceDelta': [{tables:['document_difference_totals'],order:'unverified'}],

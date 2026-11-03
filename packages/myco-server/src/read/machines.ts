@@ -3,7 +3,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { machineContactsOf, type ReportedHarness } from '../core/worker-contacts.js';
 import { CAPTURE_WINDOW_MS } from './capture.js';
 import { credentialLive } from '../db/liveness.js';
-import { binaryOrder, clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
+import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
 
 export interface MachineCapture {
@@ -106,7 +106,7 @@ export async function listMachines(
   return { machines, cursor: claims.length > limit ? encodeCursor(Number(last.claimed_at), String(last.machine_id)) : null };
 }
 
-/** A machine's merged event stream; one bounded page no matter how many credentials it used. */
+/** Machine history merges indexed credential pages behind one statement. */
 export async function machineActivity(
   db: RelationalStore,
   machineId: string,
@@ -115,29 +115,42 @@ export async function machineActivity(
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const { results: credentials } = await db
-    .prepare('SELECT id FROM member_credentials WHERE machine_id = ?')
-    .bind(machineId)
-    .all<{ id: string }>();
-  const results: Record<string, unknown>[] = [];
-  for (const credential of credentials) {
-    const held = await db
-      .prepare(
-        `SELECT event_id, project_id, session_id, kind, created_at, received_at FROM events INDEXED BY idx_events_token_only
-      WHERE token_id = ?
-        ${after === null ? '' : 'AND created_at <= ? AND (created_at,project_id,event_id) < (?,?,?)'}
-      ORDER BY created_at DESC, project_id DESC, event_id DESC LIMIT ?`,
-      )
-      .bind(credential.id, ...(after === null ? [] : [after.createdAt, after.createdAt, ...cursorEvent(after.id)]), limit + 1)
-      .all<Record<string, unknown>>();
-    results.push(...held.results);
-  }
-  results.sort(
-    (a, b) =>
-      Number(b.created_at) - Number(a.created_at) ||
-      binaryOrder(String(b.project_id), String(a.project_id)) ||
-      binaryOrder(String(b.event_id), String(a.event_id)),
-  );
+  const window =
+    after === null
+      ? ''
+      : `AND e.created_at<=(SELECT at FROM args)
+    AND (e.created_at,e.project_id,e.event_id)<(SELECT at,pid,eid FROM args)`;
+  const columns = 'event_id,project_id,session_id,kind,created_at,received_at';
+  const head = `SELECT id FROM heads WHERE at IS NOT NULL ORDER BY at DESC,id LIMIT 1`;
+  const { results } = await db
+    .prepare(
+      `WITH args(machine,n,at,pid,eid) AS (VALUES(?,?,?,?,?)),
+    heads AS MATERIALIZED (
+      SELECT c.id,(SELECT e.created_at FROM events e INDEXED BY idx_events_token_only
+        WHERE e.token_id=c.id ${window} ORDER BY e.created_at DESC LIMIT 1) AS at
+      FROM member_credentials c WHERE c.machine_id=(SELECT machine FROM args)),
+    anchor AS MATERIALIZED (
+      SELECT ${columns} FROM events e INDEXED BY idx_events_token_only
+      WHERE e.token_id=(${head}) ${window}
+      ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)),
+    bounds AS MATERIALIZED (SELECT MAX(at) AS at FROM (
+      SELECT MIN(created_at) AS at FROM anchor HAVING COUNT(*)=(SELECT n FROM args)
+      UNION ALL SELECT at FROM (SELECT at FROM heads WHERE at IS NOT NULL ORDER BY at DESC LIMIT 1 OFFSET (SELECT n-1 FROM args)))),
+    candidates AS MATERIALIZED (
+      SELECT ${columns} FROM anchor UNION ALL
+      SELECT json_extract(j.value,'$.event_id'),json_extract(j.value,'$.project_id'),json_extract(j.value,'$.session_id'),
+        json_extract(j.value,'$.kind'),json_extract(j.value,'$.created_at'),json_extract(j.value,'$.received_at')
+      FROM heads h CROSS JOIN bounds b CROSS JOIN json_each((
+        SELECT json_group_array(json_object('event_id',event_id,'project_id',project_id,'session_id',session_id,
+          'kind',kind,'created_at',created_at,'received_at',received_at)) FROM (
+          SELECT ${columns} FROM events e INDEXED BY idx_events_token_only WHERE e.token_id=h.id ${window}
+            AND e.created_at>=COALESCE(b.at,${Number.MIN_SAFE_INTEGER})
+          ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)))) j
+      WHERE h.id<>(${head}) AND h.at IS NOT NULL AND (b.at IS NULL OR h.at>=b.at))
+    SELECT * FROM candidates ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)`,
+    )
+    .bind(machineId, limit + 1, after?.createdAt ?? null, ...(after === null ? [null, null] : cursorEvent(after.id)))
+    .all<Record<string, unknown>>();
   const rows = results.map(
     (r): ActivityRow => ({
       eventId: String(r.event_id),

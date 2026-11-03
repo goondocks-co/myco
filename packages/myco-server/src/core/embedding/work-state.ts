@@ -61,12 +61,3 @@ export async function recordedWork(
     .bind(result.pending ? 1 : 0, wakeAt, now + interval, cursor, rounds, ...identity, scope, row.revision).run();
   return committed.meta.changes !== 1 || result.pending;
 }
-
-/** Retirement consumption invalidates an admitted backlog in the same transaction that removes its work. */
-export const retirementWorkChanged = (db: RelationalStore, projectId: string) =>
-  db
-    .prepare(
-      `UPDATE embedding_work_state
-  SET revision=revision+1 WHERE project_id=? AND kind='embedding'`,
-    )
-    .bind(projectId);
