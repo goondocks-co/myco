@@ -106,6 +106,7 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
     const detected = await detectHarnessesAsync(only, undefined, { credentialBytes: false });
     const { withheld } = offerOf(detected);
     for (const found of detected) {
+      if (found.error !== undefined) { console.log(`${found.id.padEnd(14)} unavailable: ${found.error}`); continue; }
       const offered = withheld.includes(found.id) ? `  not offered: ${WITHHELD_REASON}` : '';
       console.log(`${found.id.padEnd(14)} ${found.installed ? 'installed' : 'absent   '}  ${found.authenticated ? 'logged in' : 'not logged in'}${offered}`);
     }

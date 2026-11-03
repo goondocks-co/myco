@@ -295,31 +295,37 @@ export function beginRunProcess(path: string): { started: (pid: number) => void;
 }
 
 /** Reclaim only valid local allocations whose worker and all recorded harness groups are proven absent. */
-export function recoverAbandonedRunDirectories(root: string): { recovered: number; preserved: number } {
+export function recoverAbandonedRunDirectories(root: string, onRefusal: (path: string, error: unknown) => void = (path, error) => {
+  process.stderr.write(`[myco] runner: recovery held ${path}: ${error instanceof Error ? error.message : String(error)}\n`);
+}): { recovered: number; preserved: number } {
   if (!directoryAt(root)) return { recovered: 0, preserved: 0 };
-  let recovered = retryPendingRunDirectoryDiscards().recovered;
+  let recovered = 0;
+  try { recovered = retryPendingRunDirectoryDiscards().recovered; }
+  catch (error) { onRefusal(root, error); }
   let preserved = 0;
   const now = Date.now();
   for (const entry of fs.readdirSync(root)) {
     const path = join(root, entry);
-    if (!directoryAt(path)) { preserved += 1; continue; }
-    const manifest = manifestAt(path);
-    if (manifest === null) {
-      if (sweepLegacyRunDirectory(path, now)) recovered += 1;
-      else preserved += 1;
-      continue;
-    }
-    if (manifest.machineId === undefined) {
-      if (sweepLegacyRunDirectory(path, now, manifest)) recovered += 1;
-      else preserved += 1;
-      continue;
-    }
-    if (manifest.machineId !== getMachineId() || !provenDead(manifest.pid) || !groupsDead(manifest)) {
-      preserved += 1;
-      continue;
-    }
-    try { removeDirectory(path); recovered += 1; }
-    catch (error) { if (!absent(error)) throw error; }
+    try {
+      if (!directoryAt(path)) { preserved += 1; continue; }
+      const manifest = manifestAt(path);
+      if (manifest === null) {
+        if (sweepLegacyRunDirectory(path, now)) recovered += 1;
+        else preserved += 1;
+        continue;
+      }
+      if (manifest.machineId === undefined) {
+        if (sweepLegacyRunDirectory(path, now, manifest)) recovered += 1;
+        else preserved += 1;
+        continue;
+      }
+      if (manifest.machineId !== getMachineId() || !provenDead(manifest.pid) || !groupsDead(manifest)) {
+        preserved += 1;
+        continue;
+      }
+      try { removeDirectory(path); recovered += 1; }
+      catch (error) { if (!absent(error)) throw error; }
+    } catch (error) { preserved += 1; onRefusal(path, error); }
   }
   return { recovered, preserved };
 }

@@ -4,6 +4,7 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "paths": {
+      "@goondocks/myco-shared/shell-command": ["../myco-shared/src/shell-command.ts"],
       "@goondocks/myco-shared/turn-card": ["../myco-shared/src/turn-card.ts"],
       "@goondocks/myco-shared/mcp-protocol": ["../myco-shared/src/mcp-protocol.ts"],
       "@goondocks/myco-shared/budget-status": ["../myco-shared/src/budget-status.ts"],

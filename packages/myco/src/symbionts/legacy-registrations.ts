@@ -1,6 +1,8 @@
 import fs from 'node:fs';
+import { removeTomlTable, removeTomlSectionKeys } from './toml-helpers.js';
+import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
-import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { parse as parseToml } from 'smol-toml';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { MYCO_MCP_SERVER_NAME } from '@myco/member/registration-ownership.js';
 import { hookVerdict, pluginVerdict, legacyRegistrationAt as at, type LegacyFinding } from '@myco/member/legacy-registration-files.js';
@@ -89,6 +91,25 @@ export function removeLegacyRegistrations(file: string, planned: readonly Legacy
     delete (servers as Record<string, unknown>)[MYCO_MCP_SERVER_NAME];
     removed.push(`removed the 1.4 \`${MYCO_MCP_SERVER_NAME}\` MCP entry${finding.serversPath!.length > 1 ? ` for ${finding.serversPath![1]}` : ''} from ${file}`);
   }
-  rewriteKeepingMode(file, toml ? `${stringifyToml(parsed)}\n` : `${JSON.stringify(parsed, null, 2)}\n`);
+  let content = `${JSON.stringify(parsed, null, 2)}\n`;
+  if (toml) {
+    content = raw;
+    for (const finding of mine.filter(f => f.location.kind === 'mcp' && f.serversPath !== undefined)) {
+      const parent = finding.serversPath!.join('.');
+      content = removeTomlTable(content, `${parent}.${MYCO_MCP_SERVER_NAME}`);
+      content = removeTomlSectionKeys(content, parent, [MYCO_MCP_SERVER_NAME]);
+    }
+    const after = parseToml(content);
+    for (const finding of mine.filter(f => f.location.kind === 'mcp' && f.serversPath !== undefined)) {
+      const keys = finding.serversPath!;
+      const parent = at(parsed, keys);
+      if (isRecord(parent) && Object.keys(parent).length === 0 && at(after, keys) === undefined) {
+        const owner = keys.length === 1 ? parsed : at(parsed, keys.slice(0, -1));
+        if (isRecord(owner)) delete owner[keys.at(-1)!];
+      }
+    }
+    if (!isDeepStrictEqual(after, parsed)) throw new Error(`Could not preserve unrelated TOML in ${file}`);
+  }
+  rewriteKeepingMode(file, content);
   return removed;
 }

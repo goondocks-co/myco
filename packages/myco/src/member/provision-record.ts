@@ -57,8 +57,8 @@ function retainHookRepairGeneration(mycoHome: string, ...records: Array<Pick<Pro
 }
 
 export class UnreadableProvisionRecordError extends Error {
-  constructor(mycoHome: string) {
-    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Restore it from a backup or delete it, then run myco member provision --refresh.`);
+  constructor(mycoHome: string, options?: ErrorOptions) {
+    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Restore it from a backup or delete it, then run myco member provision --refresh.`, options);
   }
 }
 
@@ -78,6 +78,9 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
   try {
     const value = JSON.parse(fs.readFileSync(provisionRecordPath(mycoHome), 'utf8')) as Partial<ProvisionRecord>;
     if (typeof value.version !== 'string' || typeof value.serverUrl !== 'string' || !Array.isArray(value.agents)) return null;
+    if (strict && (!value.agents.every(agent => typeof agent === 'string')
+      || (value.binaries !== undefined && (value.binaries === null || typeof value.binaries !== 'object' || Array.isArray(value.binaries) || !Object.values(value.binaries).every(binary => typeof binary === 'string')))
+      || (value.pendingTrust !== undefined && (value.pendingTrust === null || typeof value.pendingTrust !== 'object' || Array.isArray(value.pendingTrust) || !Object.values(value.pendingTrust).every(trust => trust !== null && typeof trust === 'object' && typeof trust.action === 'string' && Number.isFinite(trust.at)))))) return null;
     if (value.hookRepairGeneration !== undefined && (!Number.isSafeInteger(value.hookRepairGeneration) || value.hookRepairGeneration < 0)) return null;
     const binaries = value.binaries !== null && typeof value.binaries === 'object' && !Array.isArray(value.binaries)
       ? Object.fromEntries(Object.entries(value.binaries).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
@@ -88,7 +91,8 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
     if (strict && value.pendingLogout !== undefined && (entries === null || !entries.every(valid))) return null;
     const pendingLogout = entries === null ? undefined : Object.fromEntries(entries.filter(valid));
     return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(value.hookRepairGeneration === undefined ? {} : { hookRepairGeneration: value.hookRepairGeneration }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
-  } catch {
+  } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new UnreadableProvisionRecordError(mycoHome, { cause: error });
     return null;
   }
 }
@@ -104,7 +108,7 @@ function withProvisionLock<T>(mycoHome: string, fn: () => T): T {
 }
 
 function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
-  const before = readProvisionRecord(mycoHome);
+  const before = readProvisionRecordStrict(mycoHome);
   const generation = retainHookRepairGeneration(mycoHome, before, record);
   const kept = !opts.replace && before !== null ? before.agents : [];
   const binaries = { ...(!opts.replace && before !== null ? before.binaries : {}), ...record.binaries };
@@ -125,7 +129,7 @@ export function updateProvisionRecord(mycoHome: string, update: (record: Provisi
 /** Apply fresh record changes, deletion or no change under the record lease. */
 export function updateProvisionRecord(mycoHome: string, update: (record: ProvisionRecord | null) => ProvisionUpdate | null | undefined, opts: { strict?: boolean } = {}): ProvisionRecord | null {
   return withProvisionLock(mycoHome, () => {
-    const before = opts.strict ? readProvisionRecordStrict(mycoHome) : readProvisionRecord(mycoHome);
+    const before = readProvisionRecordStrict(mycoHome);
     const next = update(before);
     if (next === undefined) return before;
     if (next === null) {
@@ -140,12 +144,14 @@ export function updateProvisionRecord(mycoHome: string, update: (record: Provisi
 /** Clear a joined Deployment's pending logouts under the provision record lease. */
 export function clearJoinedProvisionLogouts(mycoHome: string, serverUrl: string): void {
   if (!fs.existsSync(provisionRecordPath(mycoHome))) return;
-  updateProvisionRecord(mycoHome, record => {
+  try { updateProvisionRecord(mycoHome, record => {
     if (record?.pendingLogout === undefined) return;
     const pendingLogout = Object.fromEntries(Object.entries(record.pendingLogout).flatMap(([agent, urls]) => {
       const kept = urls.filter(url => url !== serverUrl);
       return kept.length === 0 ? [] : [[agent, kept]];
     }));
     if (JSON.stringify(pendingLogout) !== JSON.stringify(record.pendingLogout)) return { ...record, pendingLogout };
-  });
+  }); } catch (error) {
+    process.stderr.write(`myco: joined ${serverUrl}; agent logout reconciliation remains pending: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }

@@ -1051,3 +1051,17 @@ describe('Deployment-scoped logout', () => {
   }, 15000);
 
 });
+
+it('finishes logout reporting when one opt-out marker is unreadable', async () => {
+  const first = join(A, 'proj_first')!, second = join(A, 'proj_second')!;
+  let marker = '';
+  const report = await logoutDeployment(A, { mode: 'local-only' }, { ...deps, checkpoint: phase => {
+    if (phase !== 'done') return;
+    marker = path.join(mycoHome, 'member/auto-join/left', rootKeyFor(first, mycoHome) + '.json');
+    fs.writeFileSync(marker, '{ torn');
+  } });
+  expect(report.leftRoots).toContain(second);
+  expect(report.leftRoots).not.toContain(first);
+  expect(fs.readFileSync(marker, 'utf8')).toBe('{ torn');
+  expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+});

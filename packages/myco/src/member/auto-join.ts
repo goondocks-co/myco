@@ -35,7 +35,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, withRegistryLock } from './registry.js';
+import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, readRegistryEntryResult, withRegistryLock, type RegistryEntry } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -504,12 +504,13 @@ export function markSweepDone(mycoHome: string, now: number): void {
  * otherwise. A repository left and then connected from "Needs you" is no longer left.
  */
 export function joinStanding(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): {
-  standing: 'left' | 'due' | 'waiting'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
+  standing: 'left' | 'due' | 'waiting' | 'busy'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
 } {
   const leaves = autoJoinLeavesFor(rootKey, serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
   const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
-  if (leftForConnection(rootKey, mycoHome, connectTo)) return { standing: 'left', leaves, state };
+  const left = leftForConnection(rootKey, mycoHome, connectTo);
+  if (left !== 'ready') return { standing: left, leaves, state };
   const moved = settingsMoved(state, placeRepository({ root, rootKey }, leaves), connectTo);
   return { standing: moved || autoJoinDue(state, now) ? 'due' : 'waiting', leaves, state };
 }
@@ -582,7 +583,29 @@ export function dropJoinRequest(rootKey: string, mycoHome: string, serverUrl?: s
 }
 
 /** A joined repository's past sessions, still to bring: the helper's join pass brings them a step at a time. */
-export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number }
+export interface PendingImport {
+  root: string; rootKey: string; projectId: string; serverUrl: string; at: number; retryAt?: number; attempts?: number;
+  terminal?: { at: number; reason: string };
+}
+
+/** Connected hooks wake due history work through the same join bucket as unconnected hooks. */
+export function pendingImportsDue(mycoHome: string, now: number): boolean {
+  return pendingImportWork(mycoHome).some(({ pending }) => pending.terminal === undefined && (pending.retryAt === undefined || pending.retryAt <= now));
+}
+
+/** Verified history records with a readable binding decision: work a join pass can attempt or retire. */
+export function pendingImportWork(mycoHome: string): Array<{ pending: PendingImport; entry: RegistryEntry | null }> {
+  return listPendingImports(mycoHome).flatMap(pending => {
+    const binding = readRegistryEntryResult(pending.root, mycoHome, { upgrade: true });
+    return binding.status === 'unavailable' ? [] : [{ pending, entry: binding.status === 'present' ? binding.entry : null }];
+  });
+}
+
+/** The persisted refusal and explicit action that resumes a held history import. */
+export function pendingImportHolds(mycoHome: string): Array<{ root: string; message: string }> {
+  return listPendingImports(mycoHome).flatMap(pending => pending.terminal === undefined ? [] : [{ root: pending.root,
+    message: `history import: ${pending.root} on ${pending.serverUrl} is held (${pending.terminal.reason}); resolve the refusal, then run \`myco member join\` in this repository` }]);
+}
 
 const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'>): string =>
   scopedFile(IMPORTS_DIRNAME, rootKey, mycoHome, route?.serverUrl, route?.projectId);
@@ -594,26 +617,29 @@ export function queueImport(record: PendingImport, mycoHome: string): void {
   writePrivateFileAtomic(file, `${JSON.stringify({ ...record, root: canonicalPath(record.root), serverUrl: deploymentUrl(record.serverUrl) })}\n`);
 }
 
+/** Stored import records, read without resolving repository paths. */
+function* pendingImportRecords(mycoHome: string): Generator<{ file: string; value: PendingImport }> {
+  for (const file of listedFiles(IMPORTS_DIRNAME, mycoHome, true)) {
+    const read = readPrivateJson<PendingImport>(file);
+    if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
+    if (!read.ok) continue;
+    const value = read.value;
+    if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+      && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
+      && (value.retryAt === undefined || Number.isFinite(value.retryAt))
+      && (value.attempts === undefined || (Number.isSafeInteger(value.attempts) && value.attempts >= 0))
+      && (value.terminal === undefined || (value.terminal !== null && Number.isFinite(value.terminal.at) && typeof value.terminal.reason === 'string'))
+      && path.basename(file) === `${value.rootKey}.json`
+      && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
+        || (path.basename(path.dirname(file)) === value.projectId
+          && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) yield { file, value };
+    else reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
+  }
+}
+
 /** Every joined repository whose past sessions are still to bring, the oldest joined first. */
 export function listPendingImports(mycoHome: string): PendingImport[] {
-  const rows = listedFiles(IMPORTS_DIRNAME, mycoHome, true)
-    .map((file) => {
-      const read = readPrivateJson<PendingImport>(file);
-      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
-      return { file, read };
-    })
-    .flatMap(({ file, read }) => {
-      if (!read.ok) return [];
-      const value = read.value;
-      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
-        && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
-        && path.basename(file) === `${value.rootKey}.json`
-        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
-          || (path.basename(path.dirname(file)) === value.projectId
-            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return verifiedRootRecord(value, file, 'pending import', mycoHome);
-      reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
-      return [];
-    });
+  const rows = [...pendingImportRecords(mycoHome)].flatMap(({ file, value }) => verifiedRootRecord(value, file, 'pending import', mycoHome));
   return latestByRoute(rows, true);
 }
 
@@ -749,17 +775,17 @@ export function listLeftRepositories(mycoHome: string): ({ key: string; root?: s
 }
 
 /** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */
-export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): boolean {
+export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): 'left' | 'busy' | 'ready' {
   const standing = (): 'absent' | 'left' | 'reconnect' => leftStanding(rootKey, mycoHome, connectTo);
   const observed = standing();
-  if (observed !== 'reconnect') return observed === 'left';
+  if (observed !== 'reconnect') return observed === 'left' ? 'left' : 'ready';
   const lease = acquireRegistryLock(mycoHome);
-  if (!lease.acquired) return true;
+  if (!lease.acquired) return 'busy';
   try {
     const current = standing();
-    if (current !== 'reconnect') return current === 'left';
+    if (current !== 'reconnect') return current === 'left' ? 'left' : 'ready';
     clearLeft(rootKey, mycoHome);
-    return false;
+    return 'ready';
   } finally {
     lease.lock.release();
   }
@@ -770,7 +796,7 @@ function leftStanding(rootKey: string, mycoHome: string, connectTo: string | nul
   const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
   let observed = false;
   for (const mark of listLeftRepositories(mycoHome)) {
-    if ('error' in mark) { if (keys.has(mark.key)) return 'left'; continue; }
+    if ('error' in mark) { if (keys.has(mark.key)) throw new Error(mark.error); continue; }
     if (keys.has(mark.key)) {
       observed = true;
       if (mark.explicitJoinOnly || connectTo === null) return 'left';
@@ -780,6 +806,12 @@ function leftStanding(rootKey: string, mycoHome: string, connectTo: string | nul
 }
 
 export const isLeft = (rootKey: string, mycoHome: string): boolean => leftStanding(rootKey, mycoHome, null) === 'left';
+
+/** Capture decisions distinguish a durable opt-out from unreadable opt-out evidence. */
+export function readOptOutStatus(rootKey: string, mycoHome: string): { status: 'left' | 'absent' } | { status: 'unavailable'; message: string } {
+  try { return { status: isLeft(rootKey, mycoHome) ? 'left' : 'absent' }; }
+  catch (error) { return { status: 'unavailable', message: error instanceof Error ? error.message : String(error) }; }
+}
 
 export function clearLeft(rootKey: string, mycoHome: string): void {
   for (const key of compatibleRootKeys(rootKey, mycoHome)) fs.rmSync(leftPath(key, mycoHome), { force: true });

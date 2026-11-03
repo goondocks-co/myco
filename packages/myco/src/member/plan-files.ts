@@ -8,6 +8,9 @@
  * what changed since.
  */
 import fs from 'node:fs';
+import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
+import { getAtPath } from '@goondocks/myco-shared/dot-path';
+import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import path from 'node:path';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveHomeDir } from '../paths/home.js';
@@ -53,15 +56,25 @@ export function isInPlanDirectory(filePath: string, dirs: readonly string[], pro
  * (`machine-settings.ts`), each `~/`, absolute or relative to the project root.
  */
 export function planWritePath(agent: string, toolName: string | undefined, toolInput: unknown, projectRoot: string, machineDirs: readonly string[] = []): string | null {
-  if (typeof toolName !== 'string' || !FILE_WRITE_TOOLS.has(toolName)) return null;
+  return planWritePaths(agent, toolName, toolInput, projectRoot, machineDirs)[0] ?? null;
+}
+
+/** Every plan path named by a declared file mutation, including multi-file patches. */
+export function planWritePaths(agent: string, toolName: string | undefined, toolInput: unknown, projectRoot: string, machineDirs: readonly string[] = []): string[] {
+  const declared = BUNDLED_MANIFESTS.find(manifest => manifest.name === agent)?.capabilities?.pathBearingTools.filter(tool => tool.tool === toolName && tool.mutates && (!('extract' in tool) || tool.extract !== 'shell-arg')) ?? [];
+  if (declared.length === 0 && (typeof toolName !== 'string' || !FILE_WRITE_TOOLS.has(toolName))) return [];
   const input = (toolInput !== null && typeof toolInput === 'object' ? toolInput : {}) as Record<string, unknown>;
-  const filePath = input.file_path ?? input.path ?? input.filePath;
-  if (typeof filePath !== 'string' || filePath.length === 0) return null;
+  const paths = declared.flatMap(tool => {
+    const value = getAtPath(input, tool.pathField);
+    return 'extract' in tool && tool.extract === 'patch' ? filesNamedByToolInput(value) ?? [] : typeof value === 'string' ? [value] : [];
+  });
+  if (declared.length === 0) {
+    const value = input.file_path ?? input.path ?? input.filePath;
+    if (typeof value === 'string') paths.push(value);
+  }
   const dirs = [...(HOOK_CONFIG[agent]?.planDirs ?? []), ...machineDirs];
-  if (dirs.length === 0) return null;
-  if (!PLAN_FILE_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) return null;
-  if (!isInPlanDirectory(filePath, dirs, projectRoot)) return null;
-  return path.resolve(projectRoot, filePath);
+  return [...new Set(paths.filter(file => file.length > 0 && PLAN_FILE_EXTENSIONS.includes(path.extname(file).toLowerCase())
+    && isInPlanDirectory(file, dirs, projectRoot)).map(file => path.resolve(projectRoot, file)))];
 }
 
 /** The path a plan is keyed by: project-relative inside the root, `~/`-prefixed under home, else absolute; forward slashes throughout. The Deployment's tool takes the same form. */
@@ -241,20 +254,21 @@ export function planWritesInLines(agent: string, lines: ReadonlyArray<Record<str
   const paths: string[] = [];
   for (const line of lines) {
     for (const call of toolCallsInLine(line)) {
-      const written = planWritePath(agent, call.name, call.input, projectRoot, machineDirs);
-      if (written !== null && !paths.includes(written)) paths.push(written);
+      for (const written of planWritePaths(agent, call.name, call.input, projectRoot, machineDirs)) {
+        if (!paths.includes(written)) paths.push(written);
+      }
     }
   }
   return paths;
 }
 
 /** The plan events for every plan file the lines record a write into, read now from disk; one event per file whose content differs from what last shipped. */
-export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPaths: readonly string[]): PlanFileCapture & { captured: string[] } {
+export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPaths: readonly string[], promptId?: string): PlanFileCapture & { captured: string[] } {
   const events: OutboundEvent[] = [];
   const records: Array<(state: SessionState) => void> = [];
   const captured: string[] = [];
   for (const absPath of absPaths) {
-    const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath);
+    const capture = planFileCapture(ctx, state, projectId, projectRoot, absPath, promptId);
     records.push(capture.record);
     captured.push(normalizePlanPath(projectRoot, absPath));
     events.push(...capture.events);

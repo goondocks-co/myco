@@ -43,27 +43,19 @@ function parseWindsurfJsonl(content: string): TranscriptTurn[] {
     let entry: Record<string, unknown>;
     try { entry = JSON.parse(line); } catch { continue; }
 
-    const type = entry.type as string;
+    if (entry === null || typeof entry !== 'object') continue;
+    const type = entry.type;
 
     if (type === USER_INPUT_TYPE) {
       if (current) turns.push(current);
 
-      // Extract prompt text — Windsurf may store it in different fields
-      const promptText = (
-        (entry.user_response as string) ??
-        (entry.text as string) ??
-        (entry.content as string) ??
-        ''
-      ).trim().slice(0, PROMPT_PREVIEW_CHARS);
+      const prompt = [entry.user_response, entry.text, entry.content].find((value): value is string => typeof value === 'string');
+      if (prompt === undefined && [entry.user_response, entry.text, entry.content].some(value => value !== undefined && value !== null)) { current = null; continue; }
+      const promptText = (prompt ?? '').trim().slice(0, PROMPT_PREVIEW_CHARS);
 
       current = { prompt: promptText, toolCount: 0, timestamp: '' };
     } else if (type === PLANNER_RESPONSE_TYPE && current) {
-      const text = (
-        (entry.response as string) ??
-        (entry.text as string) ??
-        (entry.content as string) ??
-        ''
-      ).trim();
+      const text = [entry.response, entry.text, entry.content].find((value): value is string => typeof value === 'string')?.trim();
       if (text) current.aiResponse = text;
     } else if (type === CODE_ACTION_TYPE && current) {
       current.toolCount++;

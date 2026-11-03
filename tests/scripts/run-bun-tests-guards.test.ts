@@ -741,22 +741,23 @@ describe('run-bun-tests temp containment', () => {
   }), RUN_BOUND_MS + 10_000);
 
   test('real test files that leave temp directories behind leave nothing once the run ends', () => withRunDirs(async ({ reports, tempDir }) => {
-    // Each of these leaves directories it made under os.tmpdir() (myco-run-, myco-stub-,
-    // myco-member-home-, myco-auto-join-tx-, myco-member-machine-, myco-launchd-, myco-bin-, ...)
-    // for the run to remove.
     const leakers = [
-      'tests/member/worker-run-permissions.test.ts',
-      'tests/member/provisioning.test.ts',
-      'tests/member/auto-join.test.ts',
-      'tests/cli/member-machine-verbs.test.ts',
-      'tests/member/legacy-launchd.test.ts',
+      { file: 'tests/member/worker-run-permissions.test.ts', name: "runs a read of the checkout with the machine's Git" },
+      { file: 'tests/member/provisioning.test.ts', name: 'prints the same hook block with the sandbox credential source, and never --bare' },
+      { file: 'tests/member/auto-join.test.ts', name: 'places a repository under a captured folder, one told to connect, and any other outside the folders' },
+      { file: 'tests/cli/member-machine-verbs.test.ts', name: 'uses member handlers outside a joined root when no 1.4 vault remains unmoved' },
+      { file: 'tests/member/legacy-launchd.test.ts', name: 'a scoped uninstall preserves stale sibling services' },
     ];
-    const { status, output } = await runRunner(leakers[0]!, {
+    const { status, output } = await runRunner(leakers[0]!.file, {
       MYCO_RUNNER_REPORT_DIR: reports,
       ...tempDirEnv(tempDir),
-    }, leakers.slice(1));
+    }, [...leakers.slice(1).map(leaker => leaker.file), `--test-name-pattern=${leakers.map(leaker => leaker.name).join('|')}`]);
 
     expect({ status, output }).toEqual({ status: 0, output: expect.stringMatching(/ 0 fail/) });
+    for (const leaker of leakers) {
+      expect(output.replaceAll('\\', '/')).toContain(leaker.file);
+      expect(output).toContain(leaker.name);
+    }
     expect(fs.readdirSync(tempDir)).toEqual([]);
   }), RUN_BOUND_MS + 10_000);
 

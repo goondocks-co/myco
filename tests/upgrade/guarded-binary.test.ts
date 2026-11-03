@@ -914,3 +914,13 @@ it('moves a held Windows executable aside before recovering an interrupted publi
     expect(fs.readFileSync(path.join(home, 'install.json'))).toEqual(marker);
   } finally { fs.closeSync(held); }
 });
+
+it('retires unreferenced version slots after the guarded handoff', async () => {
+  for (const version of ['1.0.0', '1.1.0', from, to]) {
+    fs.mkdirSync(versionDir(home, process.platform, version, deps.localAppData), { recursive: true });
+  }
+  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'adopted', version: to });
+  expect(fs.existsSync(versionDir(home, process.platform, '1.0.0', deps.localAppData))).toBe(false);
+  expect(fs.existsSync(versionDir(home, process.platform, from, deps.localAppData))).toBe(true);
+  expect(fs.existsSync(versionDir(home, process.platform, to, deps.localAppData))).toBe(true);
+});

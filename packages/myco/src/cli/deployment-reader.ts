@@ -23,7 +23,7 @@ import { refreshMemberCredential, refreshMembership, type RefreshStatus } from '
 import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
-import { routeMissing, ServerClient, type FetchLike } from '../member/transport.js';
+import { routeMissing, ServerClient, type FetchLike, type LinkOutcome } from '../member/transport.js';
 import { resolveMycoHome } from '../paths/home.js';
 
 export interface MemberVerbDeps {
@@ -74,6 +74,7 @@ export interface DeploymentHandle {
   projectId: string;
   /** Whether the Deployment answers its public health route. */
   healthy: () => Promise<boolean>;
+  linkGithub: () => Promise<DeploymentOutcome<Extract<LinkOutcome, { class: 'linked' }>>>;
   /** One served tool's full result. */
   call: (tool: string, args: Record<string, unknown>) => Promise<DeploymentOutcome<unknown>>;
   /** The names of the tools the Deployment serves this credential. */
@@ -221,6 +222,14 @@ export async function openDeployment(source: CredentialSource, deps: MemberVerbD
     serverUrl: record.serverUrl.replace(/\/+$/, ''),
     projectId: record.projectId,
     healthy: () => client(credential.current()).health(budget),
+    linkGithub: () => credential.run(async at => {
+      const outcome = await client(at).linkGithub(budget);
+      if (outcome.class === 'linked') return { ok: true, value: outcome };
+      return { ok: false, error: {
+        code: outcome.class === 'refused' ? outcome.code : outcome.class,
+        message: outcome.class === 'refused' ? outcome.reason : outcome.class === 'retry' ? outcome.detail : outcome.class,
+      } };
+    }),
     call: (tool, args) => credential.run((at) => callTool(transport(at), tool, args)),
     listTools: () => credential.run((at) => withMcpClient(transport(at), async (client) => (await client.listTools()).tools.map((t) => t.name))),
     post: (path, body) => credential.run((at) => postRoute(client(at), budget, path, body)),

@@ -82,7 +82,9 @@ describe('run directory ownership and dead-worker recovery', () => {
       return original(path, options);
     });
     try {
-      expect(() => recoverAbandonedRunDirectories(runs)).toThrow('Run directory cleanup failed');
+      const refused: unknown[] = [];
+      expect(recoverAbandonedRunDirectories(runs, (_path, error) => refused.push(error)).preserved).toBe(1);
+      expect(refused).toHaveLength(1);
     } finally { failure.mockRestore(); }
     expect(existsSync(join(abandoned.scratchDir, RUN_DIRECTORY_MANIFEST))).toBe(true);
     expect(recoverAbandonedRunDirectories(runs).recovered).toBe(1);

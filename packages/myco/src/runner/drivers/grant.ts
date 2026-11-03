@@ -16,6 +16,7 @@
  * reach the run's `git`, or no such `git` can be written, no Git rule is
  * granted.
  */
+import { commandArgument } from '@goondocks/myco-shared/shell-command';
 import { canReadSource } from '@goondocks/myco-shared/execution-profile';
 import { sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { realpathSync } from 'node:fs';
@@ -44,7 +45,7 @@ function sourceReadTools(scratchDir: string, git: SourceGit | null): string[] {
   if (git === null) return [];
   const root = join(scratchDir, RUN_REPOSITORY_DIR);
   const paths = [...new Set([RUN_REPOSITORY_DIR, root, realpathSync(root)])];
-  const prefixes = [GIT, ...paths.map((path) => `${GIT} -C ${path}`)];
+  const prefixes = [GIT, ...paths.map((path) => `${GIT} -C ${commandArgument(path)}`)];
   return [...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `${SHELL_TOOL}(${prefix} ${command}:*)`))];
 }
 
@@ -95,7 +96,7 @@ export function grantsWhole(grant: readonly string[], tool: string): boolean {
 function scopeOf(rule: string, tool: string): string[] | null {
   const open = `${tool}(`;
   const close = ':*)';
-  return rule.startsWith(open) && rule.endsWith(close) ? rule.slice(open.length, -close.length).split(' ') : null;
+  return rule.startsWith(open) && rule.endsWith(close) ? shellWords(rule.slice(open.length, -close.length)) : null;
 }
 
 /**

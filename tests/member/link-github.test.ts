@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '@myco/member/constants.js';
 import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { classifyLinkAnswer, type FetchLike } from '@myco/member/transport.js';
@@ -39,7 +40,7 @@ const answering = (body: unknown, status = 200): FetchLike => async () => Respon
 
 describe('myco member link-github', () => {
   it('prints the link once, sends an empty body with the credential, and does not open a browser unless asked', async () => {
-    registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
+    registerTestMember({ expiresAt: Date.now() + 2 * MEMBER_TOKEN_REFRESH_WINDOW_MS, mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
     const { fetch, requests } = recordingFetch(answering({ persisted: true, key: KEY, expiresAt: 5 }));
     const out: string[] = [];
     const opened: string[] = [];
@@ -55,7 +56,7 @@ describe('myco member link-github', () => {
   });
 
   it('hands the link to the browser with --open', async () => {
-    registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
+    registerTestMember({ expiresAt: Date.now() + 2 * MEMBER_TOKEN_REFRESH_WINDOW_MS, mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
     const opened: string[] = [];
     await runLinkGithub(['--open'], { mycoHome, cwd: root, fetch: answering({ persisted: true, key: KEY, expiresAt: 5 }), stdout: () => {}, stderr: () => {}, openBrowser: (u) => opened.push(u) });
     expect(opened).toEqual([linkUrl(SERVER_URL, KEY)]);
@@ -72,7 +73,7 @@ describe('myco member link-github', () => {
   });
 
   it('reports a refused credential and an unknown option without quoting any value', async () => {
-    registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
+    registerTestMember({ expiresAt: Date.now() + 2 * MEMBER_TOKEN_REFRESH_WINDOW_MS, mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
     const errs: string[] = [];
     expect(await runLinkGithub([], { mycoHome, cwd: root, fetch: answering({}, 401), stdout: () => {}, stderr: (l) => errs.push(l) })).toBeNull();
     expect(errs.join('\n')).toContain('refused this credential');
@@ -85,7 +86,7 @@ describe('myco member link-github', () => {
 
 describe('myco member link-github once the server has an admin (#1448)', () => {
   it('says only an admin can link the account now, and where they do it, with no link printed', async () => {
-    registerTestMember({ mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
+    registerTestMember({ expiresAt: Date.now() + 2 * MEMBER_TOKEN_REFRESH_WINDOW_MS, mycoHome, token: 'mt_' + 'a'.repeat(40), projectId: 'proj_1', serverUrl: SERVER_URL, root });
     const out: string[] = [];
     const errs: string[] = [];
     const answer = { persisted: false, code: 'link_requires_admin', reason: LINK_REQUIRES_ADMIN };

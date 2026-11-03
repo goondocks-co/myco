@@ -55,6 +55,7 @@ export interface BacklogOptions extends DrainOptions {
 
 export interface BacklogSession {
   sessionId: string;
+  error?: string;
   events?: DrainResult;
   /** The transcript pass; `no-agent` when no symbiont can be named for the session, `lease` when another process holds it, `deferred` while a transient refusal's wait runs. */
   transcripts?: ShipResult | 'no-agent' | 'lease' | 'deferred';
@@ -237,51 +238,57 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     if (!canStartRequest(budget, now())) { report.endedBy = 'budget'; break; }
     const session: BacklogSession = { sessionId };
     report.sessions.push(session);
-    if (spooled.has(sessionId)) {
-      const events = await spool.drainSession(sessionId, client, budget, {
-        force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
-      });
-      session.events = events;
-      if (events.skipped === undefined) {
-        if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
-      } else if (events.skipped !== 'deferred') {
-        skipped = true;
+    try {
+      if (spooled.has(sessionId)) {
+        const events = await spool.drainSession(sessionId, client, budget, {
+          force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
+        });
+        session.events = events;
+        if (events.skipped === undefined) {
+          if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
+        } else if (events.skipped !== 'deferred') {
+          skipped = true;
+          continue;
+        }
+        // A held event holds its own lane only, through its wait as well: the session's transcripts still ship below,
+        // once its start is delivered.
+      }
+      // The session's turn-end marks, read once: what this pass ships to, and all it may consume.
+      const marks = spool.pendingTurnEnds(sessionId);
+      if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId, marks); continue; }
+      const state = readSessionState(spool.dir, sessionId);
+      // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
+      if (!pointersOf(state).some(pointerBehind)) {
+        spool.clearTranscriptBacklog(sessionId);
+        consumeSatisfiedTurnEnds(spool, sessionId, marks);
         continue;
       }
-      // A held event holds its own lane only, through its wait as well: the session's transcripts still ship below,
-      // once its start is delivered.
-    }
-    // The session's turn-end marks, read once: what this pass ships to, and all it may consume.
-    const marks = spool.pendingTurnEnds(sessionId);
-    if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId, marks); continue; }
-    const state = readSessionState(spool.dir, sessionId);
-    // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
-    if (!pointersOf(state).some(pointerBehind)) {
-      spool.clearTranscriptBacklog(sessionId);
+      if (opts.rescan !== true && retryWaiting(state.transcriptRetry, now())) { session.transcripts = 'deferred'; continue; }
+      const agent = labelSession(spool, sessionId, state, opts.rescan === true);
+      if (agent === null) {
+        // The bytes and the mark stay: the session is reported, and kept, until a symbiont can be named for it.
+        session.transcripts = 'no-agent';
+        continue;
+      }
+      const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
+      // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
+      const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
+      takesTurns ??= featureAdvertised({ serverUrl: client.serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn');
+      const holdTail = holdsTranscriptTail(spool, state, now(), client.serverUrl, takesTurns);
+      const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
       consumeSatisfiedTurnEnds(spool, sessionId, marks);
-      continue;
+      session.transcripts = shipped ?? 'lease';
+      if (shipped === null) skipped = true;
+      if (shipped !== null && !TRANSCRIPTS_CONTINUE.includes(shipped.endedBy)) { report.endedBy = shipped.endedBy; break; }
+    } catch (error) {
+      skipped = true;
+      session.error = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[myco] member: session ${sessionId} delivery held: ${session.error}\n`);
+    } finally {
+      writePrivateFileAtomic(path.join(spool.dir, BACKLOG_CURSOR_FILE), sessionId);
     }
-    if (opts.rescan !== true && retryWaiting(state.transcriptRetry, now())) { session.transcripts = 'deferred'; continue; }
-    const agent = labelSession(spool, sessionId, state, opts.rescan === true);
-    if (agent === null) {
-      // The bytes and the mark stay: the session is reported, and kept, until a symbiont can be named for it.
-      session.transcripts = 'no-agent';
-      continue;
-    }
-    const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
-    // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
-    const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
-    takesTurns ??= featureAdvertised({ serverUrl: client.serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn');
-    const holdTail = holdsTranscriptTail(spool, state, now(), client.serverUrl, takesTurns);
-    const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
-    consumeSatisfiedTurnEnds(spool, sessionId, marks);
-    session.transcripts = shipped ?? 'lease';
-    if (shipped === null) skipped = true;
-    if (shipped !== null && !TRANSCRIPTS_CONTINUE.includes(shipped.endedBy)) { report.endedBy = shipped.endedBy; break; }
   }
   if (report.endedBy === 'done' && skipped) report.endedBy = 'skipped';
-  const last = report.sessions.at(-1);
-  if (last !== undefined) writePrivateFileAtomic(path.join(spool.dir, BACKLOG_CURSOR_FILE), last.sessionId);
   return report;
 }
 

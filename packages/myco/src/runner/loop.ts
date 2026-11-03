@@ -836,7 +836,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
   const identityLock: { instance: { release: () => void } | null } = { instance: null };
   let heldIdentity: string | undefined;
   try {
-    const recovery = recoverAbandonedRunDirectories(options.runRoot);
+    const recovery = recoverAbandonedRunDirectories(options.runRoot, (path, error) => options.log(`recovery held ${path}: ${error instanceof Error ? error.message : String(error)}`));
     if (recovery.recovered > 0) options.log(`reclaimed ${recovery.recovered} abandoned run directories`);
     return await claimUntilStopped(options, watchWake(options.clock, options.wakeSettle), async (body) => {
       const runner = body.runner as { deploymentId?: unknown } | undefined;
@@ -917,7 +917,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   };
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
-  const detection = harnessDetection({ detect: () => detectHarnessesAsync(options.only, options.signal, options.detection), clock });
+  const detection = harnessDetection({ detect: async () => {
+    const detected = await detectHarnessesAsync(options.only, options.signal, options.detection);
+    for (const harness of detected) if (harness.error !== undefined) options.log(`${harness.id} unavailable: ${harness.error}`);
+    return detected;
+  }, clock });
   const startedHarnesses = new Set<string>();
   const catalogs = modelCatalogs({
     harnesses: [],
