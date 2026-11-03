@@ -53,7 +53,7 @@ if (args[0] === 'prepare') {
   else if (command === 'join') ok = await runJoin([serverUrl, '--project', 'proj_fixture', '--token-env', 'FIXTURE_TOKEN', ...args], { ...memberDeps, env: { FIXTURE_TOKEN: answer.token } }) !== null;
   else if (command === 'provision') ok = runProvision(['codex', '--root', process.cwd()], memberDeps);
   else if (command === 'server') {
-    await registerEmbeddedNativeDeps({ libsqliteEmbed: process.env.MYCO_FIXTURE_LIBSQLITE!, vec0Embed: process.env.MYCO_FIXTURE_VEC0!, ripgrepEmbed: process.env.MYCO_FIXTURE_RG!, version: 'runner-command-fixture' });
+    await registerEmbeddedNativeDeps({ libsqliteEmbed: process.env.MYCO_FIXTURE_LIBSQLITE!, vec0Embed: process.env.MYCO_FIXTURE_VEC0!, version: 'runner-command-fixture' });
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       fs.writeFileSync(path.join(mycoHome, 'unexpected-executor-request'), new URL(request.url).pathname);

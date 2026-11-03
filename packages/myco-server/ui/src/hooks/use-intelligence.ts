@@ -32,14 +32,6 @@ export interface SporesResponse {
   maxPage: number;
 }
 
-export interface SporeResponse {
-  spore: SporeRow;
-  /** Every spore recorded as replacing this one, newest first. */
-  supersededBy: string[];
-  /** Every spore this one replaced, newest first. */
-  supersedes: string[];
-}
-
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
@@ -108,12 +100,4 @@ export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'of
     more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
     retry: () => { void query.refetch(); },
   };
-}
-
-/** One spore with its lineage in both directions. */
-export function useSpore(projectId: string, sporeId: string) {
-  return useQuery({
-    queryKey: ['spore', projectId, sporeId],
-    queryFn: ({ signal }) => fetchJson<SporeResponse>(`${project(projectId)}/spores/${seg(sporeId)}`, signal),
-  });
 }

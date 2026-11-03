@@ -7,12 +7,6 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { expandHome } from '@myco/paths/home.js';
 
-export interface DetectedSymbiont {
-  manifest: SymbiontManifest;
-  binaryFound: boolean;
-  configDirFound: boolean;
-}
-
 const MANIFESTS_SUBDIR = 'symbionts/manifests';
 
 /** Cached manifests — static files that never change at runtime. */
@@ -114,16 +108,6 @@ export function isBinaryOnPath(binary: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** Detect which symbionts are available for a project. */
-export function detectSymbionts(projectRoot: string): DetectedSymbiont[] {
-  const manifests = loadManifests();
-  return manifests.map(manifest => ({
-    manifest,
-    binaryFound: isBinaryOnPath(manifest.binary),
-    configDirFound: fs.existsSync(path.join(projectRoot, manifest.configDir)),
-  })).filter(d => d.binaryFound || d.configDirFound);
 }
 
 /**

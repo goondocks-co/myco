@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
-import { getLibsqlitePath, getVec0Path, getRipgrepPath } from '@myco/runtime/native-deps.js';
+import { getLibsqlitePath, getVec0Path } from '@myco/runtime/native-deps.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-compiled-'));
 const binary = path.join(root, 'myco');
@@ -23,7 +23,7 @@ for (const mode of ['member-only', 'runner-only', 'both']) {
     const env = sandboxChildEnv(path.join(cwd, 'home'), {
       MYCO_FIXTURE_PORT: String(port),
       MYCO_FIXTURE_PACKAGE_ROOT: path.resolve('packages/myco'), MYCO_FIXTURE_LIBSQLITE: getLibsqlitePath()!,
-      MYCO_FIXTURE_VEC0: getVec0Path(), MYCO_FIXTURE_RG: getRipgrepPath(),
+      MYCO_FIXTURE_VEC0: getVec0Path(),
     });
     const invoke = (...args: string[]) => spawnSync(binary, args, { cwd, env, encoding: 'utf8', timeout: 30000 });
     expect(spawnSync('git', ['init', '-q'], { cwd, env }).status).toBe(0);

@@ -132,7 +132,7 @@ test('main and PR darwin builds sign and verify raw release binaries', () => {
   expect(ci.on.push.branches).toContain('main');
   expect(ci.on.pull_request.branches).toContain('main');
   const hook = ci.jobs['hook-startup'];
-  expect(hook.strategy.matrix.include).toContainEqual({ target: 'darwin-arm64', os: 'macos-15', rg: 'darwin-arm64', ceiling: 150 });
+  expect(hook.strategy.matrix.include).toContainEqual({ target: 'darwin-arm64', os: 'macos-15', ceiling: 150 });
   const steps = hook.steps;
   const compile = steps.findIndex((step: { run?: string }) => step.run?.includes('npm run build:binary'));
   const gate = steps.findIndex((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));

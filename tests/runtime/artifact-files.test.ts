@@ -63,11 +63,11 @@ assert.ok(cache.directory.startsWith(fs.realpathSync(process.env.HOME)));
 cache.materialize('native',Buffer.from('embedded'));
 const {Database}=await import('bun:sqlite');
 const native=await import(${JSON.stringify(path.join(SRC, 'runtime/native-deps.ts'))});
-const embeds=['sqlite','vec','rg'].map(name=>{const file=path.join(process.env.HOME,name);fs.writeFileSync(file,'embedded '+name);return file;});
+const embeds=['sqlite','vec'].map(name=>{const file=path.join(process.env.HOME,name);fs.writeFileSync(file,'embedded '+name);return file;});
 Database.setCustomSQLite=file=>{assert.ok(file.startsWith(cache.directory.slice(0,cache.directory.lastIndexOf(path.sep))));assert.equal(fs.readFileSync(file,'utf8'),'embedded sqlite');};
-const parameters={version:'wired',libsqliteEmbed:embeds[0],vec0Embed:embeds[1],ripgrepEmbed:embeds[2]};
+const parameters={version:'wired',libsqliteEmbed:embeds[0],vec0Embed:embeds[1]};
 await native.registerEmbeddedNativeDeps(parameters);
-for(const [file,expected] of [[native.getLibsqlitePath(),'embedded sqlite'],[native.getVec0Path(),'embedded vec'],[native.getRipgrepPath(),'embedded rg']]){assert.ok(file.startsWith(fs.realpathSync(process.env.HOME)));assert.equal(fs.readFileSync(file,'utf8'),expected);}
+for(const [file,expected] of [[native.getLibsqlitePath(),'embedded sqlite'],[native.getVec0Path(),'embedded vec']]){assert.ok(file.startsWith(fs.realpathSync(process.env.HOME)));assert.equal(fs.readFileSync(file,'utf8'),expected);}
 
 const outside=path.join(process.env.HOME,'outside'); fs.writeFileSync(outside,'preserve');
 fs.unlinkSync(native.getLibsqlitePath()); fs.symlinkSync(outside,native.getLibsqlitePath());

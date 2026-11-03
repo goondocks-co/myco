@@ -34,7 +34,7 @@ import crypto from 'node:crypto';
 const REPO_ROOT = path.resolve(import.meta.dirname ?? __dirname, '..', '..');
 const SNIPPET = path.join(REPO_ROOT, 'packages/myco/src/symbionts/templates/_shared/plugin-helpers.ts.snippet');
 const HOME_MODULE = path.join(REPO_ROOT, 'packages/myco/src/paths/home.ts');
-const REDIRECT_MODULE = path.join(REPO_ROOT, 'packages/myco/bin/runtime-redirect.cjs');
+const REDIRECT_MODULE = path.join(REPO_ROOT, 'tests/fixtures/install/runtime-redirect.cjs');
 const POSIX = process.platform !== 'win32';
 
 let fixtureRoot: string;

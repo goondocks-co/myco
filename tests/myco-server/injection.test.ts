@@ -8,7 +8,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   AGENT_LINE_MAX_CHARS, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
-  injectedPlanIds, injectedSporeIds, injectionForPrompt, injectionLeaves, injectionsForSession,
+  injectedPlanIds, injectedSporeIds, injectionLeaves,
   itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, renderInjectionContext, selectSporesForPrompt,
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
@@ -199,36 +199,6 @@ describe('the record', () => {
     }]);
   });
 
-  it('reads back per session, newest first, and by prompt with the spores hydrated', async () => {
-    const { db } = store();
-    await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1, observationType: 'decision', content: 'the selector reads relevance' }));
-    await insertSpore(db, SCOPE, spore('b', { createdAt: NOW - 2 }));
-    await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p1', promptHash: 'h1', now: NOW });
-    await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p2', promptHash: 'h2', now: NOW + 10 });
-
-    const listed = await injectionsForSession(db, SCOPE, SESSION);
-    expect(listed.map((r) => [r.promptId, r.sporeIds, r.createdAt])).toEqual([['p2', ['b'], NOW + 10], ['p1', ['a'], NOW]]);
-
-    expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
-    // A receipt is placed on a prompt its session's live document catalogs.
-    await db.batch([
-      db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES (?,?,'live',1,1)
-        ON CONFLICT (project_id,session_id) DO UPDATE SET state='live',generation=1`).bind(SCOPE.projectId, SESSION),
-      db.prepare(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
-        VALUES (?,?,1,'p1','p1',0,'user',1)`).bind(SCOPE.projectId, SESSION),
-    ]);
-    expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
-    await db.prepare('UPDATE spore_injections SET delivered_at=created_at,delivered_prompt_id=prompt_id WHERE project_id=? AND session_id=?')
-      .bind(SCOPE.projectId, SESSION).run();
-    const one = await injectionForPrompt(db, SCOPE, SESSION, 'p1');
-    expect(one).toEqual({
-      sporeIds: ['a'],
-      createdAt: NOW,
-      spores: [{ id: 'a', observationType: 'decision', preview: 'the selector reads relevance' }],
-    });
-    expect(await injectionForPrompt(db, SCOPE, SESSION, 'p9')).toBeNull();
-  });
-
   it('is refused for a project no table holds', () => {
     const { sqlite } = store();
     expect(() => sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
@@ -239,8 +209,6 @@ describe('the record', () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('a'));
     await select(db, { promptId: 'p1', promptHash: 'h1' });
-    expect(await injectionForPrompt(db, OTHER, SESSION, 'p1')).toBeNull();
-    expect(await injectionsForSession(db, OTHER, SESSION)).toEqual([]);
     expect([...(await injectedSporeIds(db, OTHER, SESSION))]).toEqual([]);
     // A record written for one Project does not narrow another Project's pool.
     await insertSpore(db, OTHER, spore('a'));

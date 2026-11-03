@@ -523,7 +523,7 @@ exec '${mv}' "$@"
       fs.mkdirSync(bin, { recursive: true });
       fs.copyFileSync(path.resolve('tests/fixtures/install/npm-dispatch.cjs'), path.join(bin, 'myco.cjs'));
       for (const companion of ['binary-resolution.cjs', 'runtime-redirect.cjs']) {
-        fs.copyFileSync(path.resolve('packages/myco/bin', companion), path.join(bin, companion));
+        fs.copyFileSync(path.resolve('tests/fixtures/install', companion), path.join(bin, companion));
       }
       fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@goondocks/myco', version }));
       const packagedBinary = path.join(home, 'npm', 'node_modules', '@goondocks', `myco-${TARGET}`, 'bin', 'myco');

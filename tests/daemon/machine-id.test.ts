@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache, propagateLegacyMachineId } from '@myco/machine-id.js';
+import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache } from '@myco/machine-id.js';
 
 /** Create an isolated MYCO_HOME so the test doesn't depend on or mutate `~/.myco`. */
 function makeTmpHome(): string {
@@ -113,57 +113,6 @@ describe('machine-id', () => {
       const id = getMachineId();
       expect(id.length).toBeGreaterThan(0);
       expect(id).toMatch(/^[a-zA-Z0-9._-]+_[0-9a-f]{8}$/);
-    });
-  });
-
-  describe('propagateLegacyMachineId()', () => {
-    let tmpHome: string;
-    let tmpVault: string;
-    let priorEnv: string | undefined;
-
-    beforeEach(() => {
-      tmpHome = makeTmpHome();
-      tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-legacy-vault-'));
-      priorEnv = process.env.MYCO_HOME;
-      process.env.MYCO_HOME = tmpHome;
-    });
-
-    afterEach(() => {
-      if (priorEnv === undefined) delete process.env.MYCO_HOME;
-      else process.env.MYCO_HOME = priorEnv;
-      fs.rmSync(tmpHome, { recursive: true, force: true });
-      fs.rmSync(tmpVault, { recursive: true, force: true });
-    });
-
-    it('copies legacy project machine_id into the global cache when global is absent', () => {
-      const legacy = 'oldcontributor_deadbeef';
-      fs.writeFileSync(path.join(tmpVault, 'machine_id'), legacy, 'utf-8');
-      const propagated = propagateLegacyMachineId(tmpVault);
-      expect(propagated).toBe(true);
-      const global = fs.readFileSync(path.join(tmpHome, 'machine_id'), 'utf-8').trim();
-      expect(global).toBe(legacy);
-    });
-
-    it('does not overwrite an existing global machine_id', () => {
-      fs.writeFileSync(path.join(tmpHome, 'machine_id'), 'global_aaaa1111', 'utf-8');
-      fs.writeFileSync(path.join(tmpVault, 'machine_id'), 'legacy_bbbb2222', 'utf-8');
-      const propagated = propagateLegacyMachineId(tmpVault);
-      expect(propagated).toBe(false);
-      const global = fs.readFileSync(path.join(tmpHome, 'machine_id'), 'utf-8').trim();
-      expect(global).toBe('global_aaaa1111');
-    });
-
-    it('returns false when the project has no legacy machine_id file', () => {
-      const propagated = propagateLegacyMachineId(tmpVault);
-      expect(propagated).toBe(false);
-      expect(fs.existsSync(path.join(tmpHome, 'machine_id'))).toBe(false);
-    });
-
-    it('returns false when the legacy file is empty', () => {
-      fs.writeFileSync(path.join(tmpVault, 'machine_id'), '', 'utf-8');
-      const propagated = propagateLegacyMachineId(tmpVault);
-      expect(propagated).toBe(false);
-      expect(fs.existsSync(path.join(tmpHome, 'machine_id'))).toBe(false);
     });
   });
 });

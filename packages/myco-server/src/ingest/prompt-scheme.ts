@@ -211,8 +211,3 @@ export function deliveredFields(d:DeliveredNaming):{column:string;sql:string;par
     {column:'delivered_scope_reason',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN NULL ELSE 'scheme' END`,params:scope===null?[d.scopeReason]:scope},
   ];
 }
-
-export function deliveredAssignment(d:DeliveredNaming):{sql:string;params:unknown[]}{
-  const fields=deliveredFields(d);
-  return {sql:fields.map(field=>field.column+' = '+field.sql).join(', '),params:fields.flatMap(field=>field.params)};
-}
