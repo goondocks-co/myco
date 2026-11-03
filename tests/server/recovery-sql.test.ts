@@ -1,3 +1,4 @@
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -53,4 +54,28 @@ it('refuses cyclic dependencies before publishing an import file', () => {
     expect(() => writeRecoverySql(file, path.join(root, 'recovery.sql'))).toThrow('cyclic table dependencies');
     expect(fs.readdirSync(root)).toEqual(['source.sqlite']);
   } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+
+it('bounds a whole wide recovery row and preserves every typed column', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-wide-'));
+  const file = path.join(root, 'source.sqlite');
+  const source = new Database(file), recovered = new Database(':memory:');
+  let mf: Miniflare | undefined;
+  const values = ["界'\0".repeat(3000), 'b'.repeat(15_000), 'c'.repeat(15_000), 'd'.repeat(15_000)];
+  try {
+    source.exec('CREATE TABLE wide(a TEXT,b TEXT,c TEXT,d TEXT)');
+    source.query('INSERT INTO wide VALUES(?,?,?,?)').run(...values);
+    const output = path.join(root, 'recovery.sql');
+    writeRecoverySql(file, output);
+    const sql = fs.readFileSync(output, 'utf8');
+    expect(Math.max(...sql.split(';\n').map(statement => Buffer.byteLength(statement + ';\n')))).toBeLessThanOrEqual(90_000);
+    recovered.exec(sql);
+    const expected = Object.fromEntries(['a','b','c','d'].map((name,i) => [name,values[i]]));
+    expect(recovered.query('SELECT * FROM wide').get()).toEqual(expected);
+    mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+    const d1 = await mf.getD1Database('DB');
+    await d1.batch(sql.split(';\n').filter(Boolean).map(statement => d1.prepare(statement)));
+    expect(await d1.prepare('SELECT * FROM wide').first()).toEqual(expected);
+  } finally { await mf?.dispose(); recovered.close(); source.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

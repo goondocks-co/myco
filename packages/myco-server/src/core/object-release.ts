@@ -1,3 +1,4 @@
+import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 /**
  * The one owner of stored-object deletion.
  *
@@ -21,7 +22,6 @@ import { BLOB_REFERENCES, referencedBlobValue, blobHeld, type BlobRef } from './
 import { blobObjectKeySql } from './blob-objects.js';
 import { within } from './recovery-inventory.js';
 import { backupRetentionPolicy, currentRetentionVictims } from './backup-retention.js';
-import { MemberWriteRefused } from '../auth/member-write-store.js';
 import { classify, emit } from '../telemetry.js';
 
 /** SQL true while a recovery hold is open. */
@@ -36,17 +36,43 @@ export const DRAIN_DELETE_MS = 15_000;
 
 const deleteStoredObject = (blobs: BlobStore, key: string, clock: () => number = Date.now) => within(() => blobs.delete(key), DRAIN_DELETE_MS, clock);
 
-/** Publishes one private backup key and discards its bytes if its index admission is refused. */
-export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobStore, key: string, upload: () => Promise<{ size: number }>, commit: (size: number) => Promise<T>): Promise<T> {
-  const stored = await upload();
-  try { return await commit(stored.size); }
-  catch (error) {
-    if (error instanceof MemberWriteRefused) {
-      try {
-        if (await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs, key);
-      } catch (cleanupError) {
-        emit({ kind: 'backup_publication_cleanup_failed', key, error_class: classify(cleanupError) });
-      }
+/** An expired or failed backup publication transfers its private key to the release journal. */
+function consumeBackupPublications(db: RelationalStore, where: string, params: readonly unknown[], now: number): PreparedStatement[] {
+  const selected = `SELECT key FROM backup_publications WHERE ${where}`;
+  return [
+    db.prepare(`INSERT INTO object_releases(physical,kind,created_at)
+      SELECT key,'backup',? FROM backup_publications WHERE key IN (${selected})
+        AND NOT EXISTS(SELECT 1 FROM backups WHERE backups.key=backup_publications.key)
+      ON CONFLICT(physical) DO NOTHING`).bind(now,...params),
+    db.prepare(`DELETE FROM backup_publications WHERE key IN (${selected})`).bind(...params),
+  ];
+}
+
+/** A private backup key owns durable pending authority before upload; index publication consumes it atomically. */
+export async function publishBackupObject<T>(db: RelationalStore, key: string, upload: () => Promise<{ size: number }>,
+  commit: (size: number) => { row: T; statement: PreparedStatement }): Promise<T> {
+  const expires = Date.now() + BLOB_RESERVATION_TTL_MS;
+  await db.prepare('INSERT INTO backup_publications(key,expires_at) VALUES(?,?)').bind(key,expires).run();
+  try {
+    const stored = await upload();
+    const publication = commit(stored.size);
+    await db.batch([
+      db.prepare(`INSERT INTO restore_reference_guard(missing) SELECT 'backup publication expired'
+        WHERE NOT EXISTS(SELECT 1 FROM backup_publications WHERE key=? AND expires_at>?)`).bind(key,Date.now()),
+      publication.statement,
+      db.prepare('DELETE FROM backup_publications WHERE key=?').bind(key),
+    ]);
+    return publication.row;
+  } catch (error) {
+    try {
+      await db.batch([
+        db.prepare(`INSERT INTO object_releases(physical,kind,created_at)
+          SELECT ?,'backup',? WHERE NOT EXISTS(SELECT 1 FROM backups WHERE key=?)
+          ON CONFLICT(physical) DO NOTHING`).bind(key,Date.now(),key),
+        db.prepare('DELETE FROM backup_publications WHERE key=?').bind(key),
+      ]);
+    } catch (cleanupError) {
+      emit({ kind: 'backup_publication_cleanup_failed', key, error_class: classify(cleanupError) });
     }
     throw error;
   }
@@ -431,10 +457,12 @@ export async function drainObjectReleases(
 
   const expired = `expires_at <= ? ORDER BY expires_at, reservation_id LIMIT ${DRAIN_PAGE}`;
   const [, consumed] = await db.batch(consumeExpiredAuthorities(db, expired, [now], now));
-  report.expired = consumed!.meta.changes;
+  const [, backups] = await db.batch(consumeBackupPublications(db, `expires_at<=? ORDER BY expires_at,key LIMIT ${DRAIN_PAGE}`, [now], now));
+  report.expired = consumed!.meta.changes + backups!.meta.changes;
 
   const { results: journal } = await db
-    .prepare(`SELECT physical FROM object_releases ORDER BY created_at, physical LIMIT ?`).bind(DRAIN_PAGE)
+    .prepare(`SELECT physical FROM object_releases WHERE NOT EXISTS(SELECT 1 FROM backups WHERE key=physical)
+      ORDER BY created_at, physical LIMIT ?`).bind(DRAIN_PAGE)
     .all<{ physical: string }>();
   for (const { physical } of journal) {
     try {
@@ -479,6 +507,7 @@ export async function resetRecoveryLedger(db: RelationalStore): Promise<void> {
     db.prepare(`DELETE FROM recovery_holds`),
     db.prepare(`DELETE FROM object_releases`),
     db.prepare(`DELETE FROM blob_reservations`),
+    db.prepare(`DELETE FROM backup_publications`),
     db.prepare(`DELETE FROM backup_release_candidates`),
   ]);
 }
