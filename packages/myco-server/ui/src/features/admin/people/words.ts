@@ -2,7 +2,8 @@
  * People & machines in words: every sentence the pages show about members,
  * invitations and machines, from what the server answers. None names an id.
  */
-import { JOIN_PATH } from '@goondocks/myco-shared/member-protocol';
+import { ENROLLMENT_KEY_PATTERN, JOIN_PATH } from '@goondocks/myco-shared/member-protocol';
+import { commandLine } from '@goondocks/myco-shared/shell-command';
 import { formatUntil } from '../../../lib/format';
 import type { Machine } from '../machines';
 
@@ -16,7 +17,8 @@ export const DEFAULT_VALIDITY = '60';
 
 /** The command that redeems an invitation, run on the machine joining. */
 export function loginCommand(key: string, origin: string = window.location.origin): string {
-  return `myco login ${origin}${JOIN_PATH}#${key}`;
+  if (!ENROLLMENT_KEY_PATTERN.test(key)) throw new Error('This link does not carry an invitation key');
+  return commandLine(['myco', 'login', `${new URL(origin).origin}${JOIN_PATH}#${key}`], 'portable');
 }
 
 /** When an open invitation stops working. The list holds only unexpired ones, so a past one has lapsed since it loaded. */

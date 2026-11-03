@@ -228,7 +228,13 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
     return withRegistryLock(() => {
       const connectedRoots = new Set(logoutBindings(mycoHome).map((binding) => canonicalRootIdentity(binding.root)));
       const leftRoots = journal.bindings.map((binding) => binding.displayRoot ?? binding.root)
-        .filter((root) => !connectedRoots.has(canonicalRootIdentity(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome));
+        .filter((root) => {
+          try { return !connectedRoots.has(canonicalRootIdentity(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome); }
+          catch (error) {
+            process.stderr.write(`myco logout: opt-out for ${root} could not be verified: ${error instanceof Error ? error.message : String(error)}; record retained\n`);
+            return false;
+          }
+        });
       const report: LogoutReport = {
         serverUrl, revoked: journal.revoke === 'revoked', machineId: journal.machineId, leftRoots, defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
         survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner, unreconciledAgents,

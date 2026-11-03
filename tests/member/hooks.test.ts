@@ -764,3 +764,16 @@ describe('a hook command that names no harness, or no credential source (#1561)'
     expect(await status()).toEqual([]);
   });
 });
+
+it('captures every plan in a multi-file patch at the live hook without a transcript', async () => {
+  const root = resolveMemberProjectRoot(process.cwd());
+  const files = ['one', 'two'].map(name => path.join(root, '.opencode/plans', `live-${process.pid}-${name}.md`));
+  fs.mkdirSync(path.dirname(files[0]!), { recursive: true });
+  try {
+    for (const [index, file] of files.entries()) fs.writeFileSync(file, `# Live ${index}\n`);
+    const patchText = '*** Begin Patch\n' + files.map(file => `*** Add File: ${file}\n+# plan`).join('\n') + '\n*** End Patch';
+    await run('post-tool-use', { tool_name: 'apply_patch', tool_input: { patchText }, cwd: root }, undefined, 'opencode');
+    const plans = rig.env.sqlite.query('SELECT origin_path FROM plans ORDER BY origin_path').all() as Array<{ origin_path: string }>;
+    expect(plans.map(plan => plan.origin_path)).toEqual(files.map(file => path.relative(root, file).split(path.sep).join('/')).sort());
+  } finally { for (const file of files) fs.rmSync(file, { force: true }); }
+});

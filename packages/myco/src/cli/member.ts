@@ -21,7 +21,7 @@ export { MemberRepairBusyError } from './member-repair.js';
  */
 import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
-import { autoJoinIdentityIssues, listAutoJoinStates } from '../member/auto-join.js';
+import { autoJoinIdentityIssues, listAutoJoinStates, pendingImportHolds } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
@@ -62,7 +62,7 @@ import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } 
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
-import { postRoute } from './deployment-reader.js';
+import { openDeployment, openDeploymentRequests } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberPendingLogoutError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
@@ -276,7 +276,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, explicitJoin: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
@@ -340,12 +340,13 @@ async function connectFolder(
   }
   const membership = memberships[0];
   const serverUrl = membership.serverUrl;
-  const client = new ServerClient({ serverUrl, token: membership.token }, deps.fetch ?? globalThis.fetch);
-  const budget = { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: CONNECT_REQUEST_TIMEOUT_MS };
+  const opened = await openDeploymentRequests('registry', { ...deps, cwd: root, mycoHome, requestTimeoutMs: CONNECT_REQUEST_TIMEOUT_MS }, serverUrl);
+  if (!opened.ok) return fail(opened.error.message);
+  const client = opened.value;
 
   let project: DeploymentProject | undefined;
   const create = async (name: string): Promise<DeploymentProject | null> => {
-    const made = await postRoute(client, budget, MEMBER_PROJECTS_PATH, { name });
+    const made = await client.post(MEMBER_PROJECTS_PATH, { name });
     if (!made.ok) { fail(`${deploymentUrl(serverUrl)} did not create the project (${made.error.code}): ${made.error.message}`); return null; }
     return { projectId: String(made.value.projectId), name: String(made.value.name), sessionCount: 0 };
   };
@@ -355,7 +356,7 @@ async function connectFolder(
     if (made === null) return null;
     project = made;
   } else {
-    const listed = await postRoute(client, budget, MEMBER_PROJECTS_LIST_PATH, {});
+    const listed = await client.post(MEMBER_PROJECTS_LIST_PATH, {});
     if (!listed.ok) return fail(`${deploymentUrl(serverUrl)} did not list its projects (${listed.error.code}): ${listed.error.message}`);
     const projects = (Array.isArray(listed.value.projects) ? listed.value.projects : []) as DeploymentProject[];
     if (parsed.project !== undefined) {
@@ -385,13 +386,15 @@ async function connectFolder(
   }
 
   const existing = readRegistryEntry(root, mycoHome);
+  const currentMembership = readDeploymentMembership(serverUrl, mycoHome);
+  if (currentMembership === null) return fail('the Deployment membership is unavailable after connecting');
   const entry: RegistryEntry = {
-    version: REGISTRY_VERSION, projectId: project.projectId, serverUrl, token: membership.token, root,
+    ...currentMembership, version: REGISTRY_VERSION, projectId: project.projectId, serverUrl, root,
     machineId: membership.machineId ?? getMachineId(), joinedAt: existing?.joinedAt ?? now(), updatedAt: now(),
   };
   writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
-  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, packageRoot: deps.packageRoot, stderr: err });
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true, explicitJoin: true, packageRoot: deps.packageRoot, stderr: err });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   clearMissingMembership(root, mycoHome);
@@ -399,7 +402,7 @@ async function connectFolder(
   out(`Connected ${root} to project ${project.name} (${project.projectId}) on ${deploymentUrl(serverUrl)}. Your agents capture there from now on.`);
   reportPin(pinned, mycoHome, out, err);
   reportMachinePin(machinePinned, mycoHome, out);
-  await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
+  await seedMachineSettings({ serverUrl, token: entry.token }, { mycoHome, fetch: deps.fetch });
   if (!parsed.noAgents) {
     for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents, cwd: deps.cwd }))) out(line);
   } else recordNoAgents(mycoHome, serverUrl);
@@ -923,7 +926,7 @@ function relinquish(remove: () => boolean, removed: string, subject: string, out
 }
 
 /** Forget this project's membership. The spool survives unless `--purge` is given, which also strips the hooks provisioning wrote. */
-export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boolean {
+export async function runLeave(args: readonly string[], deps: MemberCliDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);
@@ -941,7 +944,7 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     return false;
   }
   // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+  await optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
     .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry?.serverUrl ?? 'Myco')} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   for (const manifest of loadManifests()) {
@@ -1163,6 +1166,7 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
   const held = readDefaultDeployment(mycoHome);
   out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
   const mine = (root: string): boolean => selection.all || (selection.root !== null && canonicalRootIdentity(root) === canonicalRootIdentity(selection.root));
+  for (const held of pendingImportHolds(mycoHome).filter(held => mine(held.root))) out(held.message);
   for (const state of listAutoJoinStates(mycoHome).filter((s) => s.outcome !== 'joined' && mine(s.root))) {
     const why = state.outcome === 'outside_folders' ? 'outside the folders this machine captures'
       : state.outcome === 'unreachable' ? `the Deployment could not be reached (${state.detail ?? 'no answer'}); tried again at the next hook`
@@ -1434,24 +1438,22 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
   const mycoHome = homeFor(deps, resolved);
   const entry = readRegistryEntry(resolved, mycoHome);
   if (!entry) return fail(`no registry entry for ${resolved} — an env-sourced credential has none; run \`myco member join\` on this machine first`);
-  const client = new ServerClient({ serverUrl: entry.serverUrl, token: entry.token, projectId: entry.projectId }, deps.fetch ?? globalThis.fetch);
-  const outcome = await client.linkGithub(unboundedBudget());
-  switch (outcome.class) {
-    case 'linked': {
-      const url = linkUrl(entry.serverUrl, outcome.key);
-      out(`Open this link within ${IDENTITY_LINK_TTL_MS / 60_000} minutes to connect your GitHub account to this membership:`);
-      out(url);
-      if (open) (deps.openBrowser ?? openBrowser)(url);
-      return url;
-    }
-    case 'unauthorized': return fail(`the server refused this credential — ${REJOIN_HINT}`);
-    case 'route_missing': return fail('this server does not link GitHub accounts');
-    case 'protocol': return fail('the server refuses this build\'s member protocol — upgrade myco');
-    case 'refused':
-      if (outcome.code === 'link_requires_admin') return fail(LINK_REQUIRES_ADMIN_HINT);
-      return fail(`the server refused: ${outcome.reason || outcome.code}`);
-    case 'retry': return fail(`the server did not answer: ${outcome.detail}`);
+  const client = await openDeployment('registry', { ...deps, cwd: resolved, mycoHome });
+  if (client === null) return fail('this membership is unavailable');
+  const outcome = await client.linkGithub();
+  if (!outcome.ok) {
+    if (outcome.error.code === 'link_requires_admin') return fail(LINK_REQUIRES_ADMIN_HINT);
+    if (outcome.error.code === 'route_missing') return fail('this server does not link GitHub accounts');
+    if (outcome.error.code === 'unauthorized') return fail(`the server refused this credential: ${outcome.error.message}`);
+    if (outcome.error.code === 'protocol') return fail('the server refuses this build\'s member protocol — upgrade myco');
+    return fail(`the server refused: ${outcome.error.message || outcome.error.code}`);
   }
+  const { key } = outcome.value;
+  const url = linkUrl(entry.serverUrl, key);
+  out(`Open this link within ${IDENTITY_LINK_TTL_MS / 60_000} minutes to connect your GitHub account to this membership:`);
+  out(url);
+  if (open) (deps.openBrowser ?? openBrowser)(url);
+  return url;
 }
 
 /**
@@ -1558,7 +1560,7 @@ export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
                      fall back to what is installed for all your projects. Runner and legacy worker
                      services are kept. The spool is kept unless
                      --purge is given, which also removes the hooks this project was provisioned with.`,
-    run: async (rest, deps) => { runLeave(rest, deps); },
+    run: async (rest, deps) => { await runLeave(rest, deps); },
   },
   'routing-key': {
     help: `  routing-key --credential registry|env [--root <dir>]

@@ -27,7 +27,7 @@ it('rechecks an ordinary reconnect under the acquired lock before clearing its o
   });
   try {
     try {
-      expect(leftForConnection(rootKey, mycoHome, 'proj_fixture')).toBe(true);
+      expect(leftForConnection(rootKey, mycoHome, 'proj_fixture')).toBe('left');
       expect(isLeft(rootKey, mycoHome)).toBe(true);
     } finally {
       racingLogout.mockRestore();
@@ -81,7 +81,7 @@ finally { lease.lock.release(); }
         now: Date.now(), env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(scratch, 'other-temp') }, later: (step) => later.push(step) });
       expect(performance.now() - started).toBeLessThan(HOOK_BOUND_MS);
       expect(child.exitCode).toBeNull();
-      if (state === 'unconnected') {
+      if (state === 'unconnected' || state === 'reconnecting') {
         expect(answer).not.toBeNull();
         expect(answer).not.toBe(LEFT_ALONE);
       } else {

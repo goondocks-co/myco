@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./shell-command": {
+      "import": "./dist/shell-command.js",
+      "types": "./dist/shell-command.d.ts"
+    },
     "./turn-card": { "import": "./dist/turn-card.js", "types": "./dist/turn-card.d.ts" },
     "./mcp-protocol": { "import": "./dist/mcp-protocol.js", "types": "./dist/mcp-protocol.d.ts" },
     "./budget-status": { "import": "./dist/budget-status.js", "types": "./dist/budget-status.d.ts" },

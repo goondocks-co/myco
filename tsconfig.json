@@ -14,6 +14,7 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
+      "@goondocks/myco-shared/shell-command": ["./packages/myco-shared/src/shell-command.ts"],
       "@goondocks/myco-shared/turn-card": ["./packages/myco-shared/src/turn-card.ts"],
       "@goondocks/myco-shared/mcp-protocol": ["./packages/myco-shared/src/mcp-protocol.ts"],
       "@myco/*": ["./packages/myco/src/*"],

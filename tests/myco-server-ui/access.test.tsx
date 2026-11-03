@@ -15,7 +15,16 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
-import { invitationExpiry } from '../../packages/myco-server/ui/src/features/admin/people/words';
+import { invitationExpiry, loginCommand } from '../../packages/myco-server/ui/src/features/admin/people/words';
+
+it('copies a validated invitation as a literal argument accepted by cmd and POSIX shells', async () => {
+  const { parseJoinCode } = await import('@myco/member/join-code.js');
+  const key = 'k'.repeat(43);
+  const command = loginCommand(key, 'https://myco.example');
+  expect(command).toBe(`myco login https://myco.example/join#${key}`);
+  expect(parseJoinCode(command.slice('myco login '.length))).toMatchObject({ serverUrl: 'https://myco.example', key });
+  expect(loginCommand(key, 'http://[::1]:8787')).toBe(`myco login "http://[::1]:8787/join#${key}"`);
+});
 import { rawIdsIn } from '../helpers/raw-ids';
 import { machineRows } from './machine-fixtures';
 

@@ -15,7 +15,7 @@ import { syncDirectoryForDurability } from '@myco/utils/sync-directory.js';
 import type { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { readRunnerUpdateStateStrict } from '@myco/runner/update.js';
 import { getPluginVersion } from '@myco/version.js';
-import { stageBinary, createBinaryUpdateDeps, type StageBinaryDeps } from './apply-binary.js';
+import { pruneVersions, stageBinary, createBinaryUpdateDeps, type StageBinaryDeps } from './apply-binary.js';
 import { resolveMycoBinaryUpdateRefs, fetchMycoReleases } from './release-resolver.js';
 import { resolveAssetRefs, resolveTargetTriple, type AssetRefs, type GitHubRelease, type TargetTriple } from './release-assets.js';
 import { recordUpdateCheck, effectiveUpdateChannel } from './check-cache.js';
@@ -289,6 +289,7 @@ async function performBinaryUpdate(
       try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData, deps.failureRecordWriter); }
       catch (error) { report.warnings.push(`Updated to ${refs.targetVersion}, but could not clear its failure records: ${detail(error)}`); }
       retirePrevious([retired], fileOps, report);
+      pruneVersions(home, platform, 2, refs.targetVersion, hadLive ? current : undefined, localAppData);
       return { kind: 'adopted', version: refs.targetVersion, ...(hadLive ? { previousVersion: current } : {}) };
     } finally { removeLeftover(staging, fileOps, report, true); }
   } catch (error) {

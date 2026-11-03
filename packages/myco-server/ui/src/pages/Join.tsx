@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { JOIN_PATH } from '@goondocks/myco-shared/member-protocol';
+import { ENROLLMENT_KEY_PATTERN, JOIN_PATH } from '@goondocks/myco-shared/member-protocol';
+import { loginCommand } from '../features/admin/people/words';
 import { CommandBlock, Link } from '../design';
 
 /** The invitation key a join link carries in its fragment, which a browser never sends to the server. */
@@ -15,7 +16,7 @@ function keyFromFragment(): string {
  */
 export function Join() {
   const [key] = useState(keyFromFragment);
-  const link = `${window.location.origin}${JOIN_PATH}#${key}`;
+  const valid = ENROLLMENT_KEY_PATTERN.test(key);
   return (
     <div className="min-h-screen bg-bg text-ink">
       <main className="mx-auto flex w-full max-w-narrow flex-col gap-s6 p-gutter pt-s12">
@@ -27,16 +28,16 @@ export function Join() {
             machine, where your agents run, not this browser.
           </p>
         </div>
-        {key === '' ? (
+        {!valid ? (
           <div role="alert" className="flex flex-col gap-s2 rounded-card border border-line bg-surface-1 p-s5">
-            <h2 className="t-h3 text-ink">This link carries no invitation</h2>
+            <h2 className="t-h3 text-ink">{key === '' ? 'This link carries no invitation' : 'This link carries no valid invitation'}</h2>
             <p className="t-small text-muted">
               An invitation link ends in <code className="t-mono text-ink-2">{JOIN_PATH}#</code> and a key. Ask whoever sent it for the whole link.
             </p>
           </div>
         ) : (
           <>
-            <CommandBlock caption="On the machine you want to connect, run:" command={`myco login ${link}`} />
+            <CommandBlock caption="On the machine you want to connect, run:" command={loginCommand(key)} />
             <ul className="flex list-disc flex-col gap-s2 pl-s5 t-small text-muted">
               <li>The link works once and then expires. If it is refused, ask whoever sent it for a fresh one.</li>
               <li>If the invitation names a project, run the command from inside that project&rsquo;s folder.</li>

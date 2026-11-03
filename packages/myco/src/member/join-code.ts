@@ -22,6 +22,7 @@ import type { JoinedMemberIdentity } from '@goondocks/myco-shared/member-protoco
  * the membership it wrote and captures on that. Both land.
  */
 import crypto from 'node:crypto';
+import { credentialFetch, CredentialRedirectError } from './transport.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isIP } from 'node:net';
@@ -135,7 +136,7 @@ export async function exchangeJoinCode(
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   let response: Response;
   try {
-    response = await fetchImpl(memberServerDialUrl(`${code.serverUrl}/members/join`), {
+    response = await credentialFetch(fetchImpl, memberServerDialUrl(`${code.serverUrl}/members/join`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // A hook is killed at its harness timeout. An exchange without a deadline of its
@@ -150,7 +151,7 @@ export async function exchangeJoinCode(
       }),
     });
   } catch (error) {
-    return { ok: false, code: 'unreachable', reason: (error as Error).message };
+    return { ok: false, code: error instanceof CredentialRedirectError ? error.code : 'unreachable', reason: (error as Error).message };
   }
 
   let body: unknown;

@@ -1,3 +1,4 @@
+import { credentialFetch, CredentialRedirectError } from '../member/transport.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { START_SLOW_DOWN } from '@goondocks/myco-shared/setup-guidance';
 
@@ -10,7 +11,7 @@ const DEVICE_SECRET = /^[A-Za-z0-9_-]{43}$/;
 const USER_CODE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
 
 class DeviceFlowFailure extends Error {
-  constructor(readonly code: 'unreachable' | 'unreadable', message: string) { super(message); }
+  constructor(readonly code: 'unreachable' | 'unreadable' | 'redirect', message: string) { super(message); }
 }
 
 export type DeviceFlowResult<T> = { ok: true; answer: T } | { ok: false; code: string; reason: string };
@@ -68,9 +69,10 @@ export async function runDeviceFlow<T>(serverUrl: string, spec: DeviceFlowSpec<T
   const post = async (path: string, body: unknown) => {
     let response: Response;
     try {
-      response = await fetchImpl(memberServerDialUrl(`${serverUrl}${path}`), { method: 'POST', redirect: 'error',
+      response = await credentialFetch(fetchImpl, memberServerDialUrl(`${serverUrl}${path}`), { method: 'POST',
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    } catch {
+    } catch (error) {
+      if (error instanceof CredentialRedirectError) throw new DeviceFlowFailure(error.code, error.message);
       throw new DeviceFlowFailure('unreachable', `could not complete ${spec.noun} with the Deployment`);
     }
     if (response.status >= 500) throw new DeviceFlowFailure('unreachable', `could not complete ${spec.noun} with the Deployment`);

@@ -30,7 +30,7 @@ function fixture(overrides: { preview?: RawClaimPreview; status?: number; code?:
       const url = new URL(request.url);
       requests.push({ method: request.method, path: url.pathname, body: request.method === 'POST' ? await request.json() : null, project: request.headers.get('x-myco-project') });
       expect(request.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
-      expect(init?.redirect).toBe('error');
+      expect(init?.redirect).toBe('manual');
       if (overrides.status !== undefined) return Response.json({ code: overrides.code, reason: 'refused' }, { status: overrides.status });
       if (url.pathname === '/members/ownership') return Response.json({ ownerMemberId: request.method === 'POST' ? 'mem_selected' : null, revision: 'ownership-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: 'mem_selected' });
       if (url.pathname === '/members/ownership/transfer') return Response.json({ ownerMemberId: 'mem_selected', revision: 'ownership-r2', candidates: [], proposalMemberId: null });

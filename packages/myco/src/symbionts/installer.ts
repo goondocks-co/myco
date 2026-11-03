@@ -5,6 +5,7 @@ import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/re
 export { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
+import { assertBareCommandArgument, commandLine } from '@goondocks/myco-shared/shell-command';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -16,7 +17,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
-import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
+import { removeTomlTable, findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
 import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit, type SettingsFileAudit } from './settings-merge.js';
 import { retiredHookSettings, RetiredHookSettingsParseError, type RetiredSettingsConflict } from './retired-hook-settings.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
@@ -204,7 +205,7 @@ const MANAGED_BINARY_NAMES: readonly string[] = (['linux', 'win32'] as const)
 
 function resolveLauncherCmd(binaryPath: string): string {
   assertSafeBinaryPathForUnquoted(binaryPath);
-  return binaryPath;
+  return commandLine([binaryPath]);
 }
 
 export function resolveManagedBinaryPath(
@@ -219,8 +220,12 @@ export const WHITESPACE_PATH_REFUSAL =
   'contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. Move Myco out of a path with spaces.';
 
 function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
-  if (!/\s/.test(binaryPath)) return;
-  throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
+  if (/\s/.test(binaryPath)) throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
+  try { assertBareCommandArgument(binaryPath); }
+  catch (cause) {
+    throw new MemberProvisionConflictError(`Refusing binary path "${binaryPath}": it contains shell syntax.`,
+      'Move Myco to a path without shell metacharacters, then provision again.', { cause });
+  }
 }
 
 function hookCommandsIn(raw: string): string[] {
@@ -1977,11 +1982,7 @@ export class SymbiontInstaller {
       const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
       if (!raw.includes(sectionHeader)) return false;
 
-      const startIdx = raw.indexOf(sectionHeader);
-      const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, `mcp_servers.${MYCO_MCP_SERVER_NAME}`);
-      const before = raw.slice(0, startIdx).trimEnd();
-      const after = raw.slice(endIdx).trimStart();
-      const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
+      const updated = removeTomlTable(raw, `mcp_servers.${MYCO_MCP_SERVER_NAME}`).trimEnd();
 
       if (!updated.trim()) {
         fs.unlinkSync(targetPath);

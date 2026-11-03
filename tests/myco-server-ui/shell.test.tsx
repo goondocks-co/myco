@@ -602,6 +602,13 @@ describe('/join', () => {
     expect(screen.queryByText('Sign in with GitHub')).toBeNull();
   });
 
+  it('refuses a malformed invitation before offering a command to copy', async () => {
+    window.location.hash = '#$(touch%20fixture)';
+    mount('/join');
+    expect(await screen.findByRole('heading', { name: 'This link carries no valid invitation' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+  });
+
   it('says a link without its key carries no invitation, and offers no command', async () => {
     server({ '/auth/me': me() });
     mount('/join');

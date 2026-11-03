@@ -154,7 +154,7 @@ export const MEMBER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
  * against the worker's own export.
  */
 export const JOIN_PATH = '/join';
-export const ENROLLMENT_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+export { ENROLLMENT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 
 /** The one variable a sandbox needs: a join link, carrying the Deployment and its invitation together. */
 export const ENV_JOIN_CODE = 'MYCO_JOIN_CODE';

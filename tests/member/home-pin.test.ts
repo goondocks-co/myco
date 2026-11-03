@@ -532,7 +532,7 @@ describe('`myco member join` under a non-default home', () => {
     await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(project, home, out));
     expect(fs.existsSync(path.join(project, '.myco', RUNTIME_HOME_FILENAME))).toBe(true);
 
-    runLeave([], { cwd: project, mycoHome: home, stdout: (l) => out.push(l), stderr: () => {} });
+    await runLeave([], { cwd: project, mycoHome: home, fetch: async () => new Response('{}', { status: 503 }), stdout: (l) => out.push(l), stderr: () => {} });
 
     // The membership is gone; a pin left standing would send every hook here to
     // look for it and count another miss, for ever.
@@ -554,7 +554,7 @@ describe('`myco member join` under a non-default home', () => {
     await runJoin(['https://srv.example', '--project', 'proj_1', '--token-env', 'MYCO_TEST_TOKEN'], joinDeps(pinned, home, out));
     expect(fs.existsSync(path.join(pinned, '.myco', 'runtime.home'))).toBe(true);
 
-    runLeave(['--purge'], { cwd: pinned, mycoHome: home, stdout: (l) => out.push(l), stderr: () => {}, packageRoot: pinned });
+    await runLeave(['--purge'], { cwd: pinned, mycoHome: home, fetch: async () => new Response('{}', { status: 503 }), stdout: (l) => out.push(l), stderr: () => {}, packageRoot: pinned });
     expect(fs.existsSync(path.join(pinned, '.myco', 'runtime.home'))).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
  */
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import {
-  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone, readAutoJoinState, sessionMetUnconnected,
+  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone, readAutoJoinState, sessionMetUnconnected, pendingImportsDue, readOptOutStatus,
 } from './auto-join.js';
 import { kickHelper } from './helper.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
@@ -56,10 +56,15 @@ export function connectedToolsNotice(opts: { root: string; hookName: string; age
 /** A repository left with `myco member leave`: its hooks capture, hold and say nothing. */
 export const LEFT_ALONE = 'left';
 
+/** Wake actionable history through the detached join bucket, after a hook's capture or an explicit resume. */
+export function wakePendingImports(opts: { mycoHome: string; now: number; spawn?: DetachedSpawn }): void {
+  if (pendingImportsDue(opts.mycoHome, opts.now)) kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now });
+}
+
 /**
  * The hold for a hook at `root`; {@link LEFT_ALONE} for a repository left with `myco member leave`; or null where
- * auto-join has no say: no default Deployment, or a repository the machine never captures. The notice reaches the
- * agent in the hook's answer, and nothing is written to stderr.
+ * auto-join has no hold: a connected repository, no default Deployment, or a repository the machine never captures.
+ * Notices reach the agent in the hook's answer; unavailable connection decisions are reported on stderr.
  *
  * Asking for a join, and kicking the helper's join bucket, are handed to `later`, never done here: the hook runs them
  * once its own capture is appended, so a request that cannot be written costs the join a hook, never the capture.
@@ -68,21 +73,32 @@ export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
   later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
-  if (readRegistryEntryResult(opts.root, opts.mycoHome).status !== 'missing') return null;
+  const binding = readRegistryEntryResult(opts.root, opts.mycoHome);
+  if (binding.status !== 'missing') return null;
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);
   const join = (): void => { kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now }); };
   if (silentRepository(opts.root, { mycoHome: opts.mycoHome, env: opts.env })) return null;
   const rootKey = rootKeyFor(opts.root, opts.mycoHome);
+  const hold = (notice: string | null): AutoJoinHold => {
+    const repo = { root: opts.root, rootKey, serverUrl };
+    return {
+      repo, spool: pendingSpool(repo, { mycoHome: opts.mycoHome, now: opts.now }),
+      credential: { serverUrl, token: membership.token, tokenId: membership.tokenId, projectId: '', source: 'registry', root: opts.root },
+      notice,
+    };
+  };
   // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again. The
   // cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its folder now
   // captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
   let current: ReturnType<typeof joinStanding>;
   try { current = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now); }
   catch (error) {
-    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
-    return LEFT_ALONE;
+    const optOut = readOptOutStatus(rootKey, opts.mycoHome);
+    if (optOut.status === 'left') return LEFT_ALONE;
+    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}${optOut.status === 'unavailable' ? '; ' + optOut.message : ''}\n`);
+    return hold(null);
   }
   const { standing, leaves, state } = current;
   if (standing === 'left') return LEFT_ALONE;
@@ -95,14 +111,8 @@ export function autoJoinHold(opts: {
   }
   // Every repository that has not joined holds what its hooks capture, for the TTL or to the cap: connecting it, from
   // "Needs you" or with `myco member join`, delivers it.
-  const repo = { root: opts.root, rootKey, serverUrl };
-  const spool = pendingSpool(repo, { mycoHome: opts.mycoHome, now: opts.now });
+  const capture = hold(null);
   const text = state === null ? null : notCapturedNotice({ ...state, serverUrl }, leaves.autoJoinRoots, readHeldEnd(rootKey, opts.mycoHome, serverUrl));
   const notice = text !== null && hookTakesNotice(opts.hookName, opts.agent) && noticeOnce(opts.sessionId, opts.mycoHome, opts.now, serverUrl) ? text : null;
-  return {
-    repo,
-    spool,
-    credential: { serverUrl, token: membership.token, tokenId: membership.tokenId, projectId: '', source: 'registry', root: opts.root },
-    notice,
-  };
+  return { ...capture, notice };
 }

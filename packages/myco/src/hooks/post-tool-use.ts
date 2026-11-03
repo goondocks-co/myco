@@ -1,6 +1,6 @@
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun } from '../member/capture.js';
 import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
-import { planFileCapture, planRootFor, planWritePath } from '../member/plan-files.js';
+import { planFilesWritten, planRootFor, planWritePaths } from '../member/plan-files.js';
 import { projectLineOnly, renderedBlock } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
@@ -46,10 +46,10 @@ export async function main(opts: HookMainOptions = {}) {
     const served = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? sessionBlock(run, state) : {};
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
     const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);
-    const planPath = planWritePath(agent, input.toolName, input.toolInput, root, run.machinePlanDirs());
+    const planPaths = planWritePaths(agent, input.toolName, input.toolInput, root, run.machinePlanDirs());
     // A repository still joining has no project to key a plan to; the turn's end reads the write again once it has one.
-    if (planPath === null || run.pending === true) return { events, ...served };
-    const plan = planFileCapture(ctx, state, credential.projectId, root, planPath, promptId);
+    if (planPaths.length === 0 || run.pending === true) return { events, ...served };
+    const plan = planFilesWritten(ctx, state, credential.projectId, root, planPaths, promptId);
     return {
       events: [...events, ...plan.events], response: served.response, ask: served.ask,
       record: (next) => { plan.record(next); served.record?.(next); },

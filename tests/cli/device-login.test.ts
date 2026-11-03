@@ -70,7 +70,7 @@ describe('terminal device sign-in', () => {
     for (const request of requests) {
       expect(request.url).not.toContain(SECRET);
       expect(request.method).toBe('POST');
-      expect(request.redirect).toBe('error');
+      expect(request.redirect).toBe('manual');
     }
     expect(await requests[1]!.json()).toEqual({ device_code: SECRET });
   });

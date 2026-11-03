@@ -391,3 +391,6 @@ export interface JoinedMemberIdentity {
   memberLabel?: string | null;
   owner?: boolean;
 }
+
+/** The invitation key issued by a Deployment. */
+export const ENROLLMENT_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
