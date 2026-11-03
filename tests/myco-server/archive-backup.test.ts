@@ -267,3 +267,28 @@ it('verifies a full recovery after its original object source is unavailable',as
     } finally {recovered.close();}
   } finally {source.sqlite.close();fs.rmSync(scratch,{recursive:true,force:true});}
 });
+
+
+it('restores dangling captured event references and reports them without altering the recorded event', async () => {
+  const source = sqliteEnv(), target = sqliteEnv();
+  try {
+    const key = 'a'.repeat(64);
+    source.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','session','m','token',1,1)`);
+    for (const kind of ['plan', 'attachment', 'transcript.segment', 'tool.use']) source.sqlite.run(`INSERT INTO events
+      (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,blob_key,created_at,received_at)
+      VALUES('proj_1',?,'session','token',?,'cli',json_object('blob',?),'hash',?,1,1)`, [kind, kind, key, key]);
+    const stored = seed(source);
+    source.sqlite.run('UPDATE events SET blob_key=? WHERE event_id=?', [key, eventId]);
+    const artifact = await artifactOf(source);
+    registerTarget(target, stored.event, randomUUID());
+    const restored = await restoreArtifact(target.db, { blobs: target.bucket, text: artifact, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+    expect(restored.tables.events?.inserted).toBe(5);
+    expect(restored.danglingEventBlobs?.map(row => row.eventId)).toContain('plan');
+    expect(restored.danglingEventBlobs?.map(row => row.eventId)).toContain(eventId);
+    expect(target.sqlite.query("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all())
+      .toEqual(source.sqlite.query("SELECT event_id,payload FROM events WHERE payload_format='inline' ORDER BY event_id").all());
+    expect(target.sqlite.query('SELECT event_id,blob_key FROM events ORDER BY event_id').all())
+      .toEqual(source.sqlite.query('SELECT event_id,blob_key FROM events ORDER BY event_id').all());
+    expect(await eventContent(target.serverEnv, project, eventId)).toBe(original);
+  } finally { source.sqlite.close(); target.sqlite.close(); }
+});

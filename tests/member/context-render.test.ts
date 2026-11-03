@@ -630,7 +630,8 @@ it('the member helper ships a final retained plugin turn without another plugin 
     if (args[1] === 'stop') wakes.push(JSON.parse((options as { input: string }).input));
     return { status: 0, stdout: '{}', stderr: '' };
   }, key, Date.now, fs, () => 0, 'cline');
-  const snapshot = { conversationId: 'final-inbox' };
+  subject.MycoClinePlugin.setup({}, { session: { sessionId: 'final-inbox' }, workspaceInfo: { rootPath: process.cwd() } });
+  const snapshot = { agentId: 'final-agent', conversationId: 'conv_final-inbox' };
   await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'source-1', role: 'user', content: [{ type: 'text', text: 'final prompt' }] }] } });
   await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'reply-1', content: [{ type: 'text', text: 'final reply' }] } });
   expect(wakes).toHaveLength(2);

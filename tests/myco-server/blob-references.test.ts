@@ -19,7 +19,7 @@ const REFERENCES = [
   'transcript_segments.blob_key',
   'event_refs.blob',
   'event_refs.output_blob',
-  'events.blob_key (prompt, tool.use, tool.failure, response, compaction.pre, compaction.post)',
+  'events.blob_key (prompt, tool.use, tool.failure, response, plan, attachment, transcript.segment, compaction.pre, compaction.post)',
   'archive_bundles.archive_key',
   'archive_bundles.receipt_key',
   'raw_archive_refs.archive_key',
@@ -30,7 +30,7 @@ const REFERENCES = [
 const DDL = SCHEMA_STEPS.flatMap((s) => s.statements);
 
 describe('the blob reference catalogue', () => {
-  it('names every projected blob column and the raw-log kinds that land nowhere else', () => {
+  it('names every projected blob column and every retained blob-bearing event kind', () => {
     expect(BLOB_REFERENCES.map(referenceLabel)).toEqual(REFERENCES);
   });
 

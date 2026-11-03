@@ -357,7 +357,7 @@ const sessionCommit = (
   const headSha = typeof p.headSha === 'string' && COMMIT_SHA.test(p.headSha) ? p.headSha : null;
   if (headSha === null) return [];
   const dirty = p.dirty === true ? 1 : 0;
-  const error = point === 'session_end' && typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null;
+  const error = typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null;
   const earlierOrLater = point === 'session_start' ? '<' : '>';
   const wins = `(excluded.captured_at ${earlierOrLater} knowledge_git_provenance.captured_at OR
     (excluded.captured_at = knowledge_git_provenance.captured_at AND
