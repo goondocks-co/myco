@@ -184,7 +184,7 @@ it('keeps standalone guard dispatch behind approval', async () => {
   fs.mkdirSync(bin);
   fs.copyFileSync(path.join(root, 'machine-myco'), path.join(bin, 'myco'));
   const guard = path.join(project, '.myco/myco-run.cjs');
-  fs.copyFileSync(path.join(repository, 'packages/myco/src/symbionts/templates/myco-run.cjs'), guard);
+  fs.copyFileSync(path.join(repository, 'tests/fixtures/install/myco-run.cjs'), guard);
   const entry = path.join(root, 'guard.cjs');
   fs.writeFileSync(entry, `delete process.env.MYCO_HOME; require(${JSON.stringify(guard)});`);
   const invoke = () => {

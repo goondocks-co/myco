@@ -360,10 +360,6 @@ function setupPackageRoot(): void {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
   });
 
-  fs.copyFileSync(
-    path.resolve('packages/myco/src/symbionts/templates/myco-run.cjs'),
-    path.join(packageRoot, 'src/symbionts/templates/myco-run.cjs'),
-  );
   writeJson(path.join(windsurfTemplateDir, 'settings.json'), {
     'windsurf.cascadeCommandsAllowList': ['myco', 'myco-dev'],
   });

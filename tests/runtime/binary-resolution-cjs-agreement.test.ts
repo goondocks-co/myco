@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import * as ts from '@myco/runtime/binary-resolution.js';
 
 const cjs = createRequire(import.meta.url)(
-  path.resolve('packages/myco/bin/binary-resolution.cjs'),
+  path.resolve('tests/fixtures/install/binary-resolution.cjs'),
 ) as typeof import('@myco/runtime/binary-resolution.js') & {
   managedBinaryPath: (home: string, platform: string, lad?: string) => string;
   managedBinDir: (home: string, platform: string, lad?: string) => string;

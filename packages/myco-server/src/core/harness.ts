@@ -69,7 +69,7 @@ export {
 import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK, taskAvailabilityNote } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
-/** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
+/** The agent identity a dispatched runtime claims under when its task names none. */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
 export { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';

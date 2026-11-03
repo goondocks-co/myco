@@ -18,12 +18,7 @@ export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json')
 /**
  * Filename for the machine-scope runtime command pin (lives in `~/.myco/`).
  *
- * An operator override: when present and trusted it redirects every
- * launcher shim ahead of the managed binary. Absence is the normal state.
- * Still load-bearing post native-installer: convergence, `runtime-redirect.cjs`,
- * the launch preamble, and dev dogfood pins all read/write it. (The retired
- * managed-runtime DIR/TMP constants were deleted with the native installer; the
- * pin file itself remains.)
+ * An operator override: the native resolver follows a trusted pin ahead of the managed binary.
  */
 export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
 

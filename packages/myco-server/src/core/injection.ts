@@ -1,4 +1,4 @@
-import { injectedPromptRecord, injectionServedIds, injectionSessionRecords, injectionPromptHeld } from '../read/catalog-store.js';
+import { injectionServedIds, injectionPromptHeld } from '../read/catalog-store.js';
 import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
@@ -185,15 +185,6 @@ async function duringInjection<T>(operation: InjectionFailure['operation'], coun
   finally { if (stage !== undefined && timings !== undefined) timings.record(stage, performance.now() - startedAt); }
 }
 
-export interface InjectionRecord {
-  /** The prompt whose text selected the record; null where the ask named none. */
-  promptId: string | null;
-  promptHash: string;
-  sporeIds: string[];
-  planIds: string[];
-  createdAt: number;
-}
-
 /** One prompt's record with the spores it named, in the order the record holds them. */
 export interface PromptInjection {
   sporeIds: string[];
@@ -291,36 +282,6 @@ export const injectedSporeIds = (db: RelationalStore, scope: ReadScope, sessionI
 /** Every plan served anywhere in this session. A plan repeated across a session's prompts is the same waste a repeated spore is. */
 export const injectedPlanIds = (db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> =>
   servedIds(db, scope, sessionId, 'plan_ids');
-
-/** This session's records, newest first. */
-export async function injectionsForSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<InjectionRecord[]> {
-  const { results } = await injectionSessionRecords(db)
-    .bind(scope.projectId, sessionId)
-    .all<{ prompt_id: string | null; prompt_hash: string; spore_ids: string; plan_ids: string | null; created_at: number }>();
-  return results.map((r) => ({ promptId: r.prompt_id, promptHash: r.prompt_hash, sporeIds: parseIds(r.spore_ids), planIds: parseIds(r.plan_ids ?? ''), createdAt: r.created_at }));
-}
-
-/**
- * What one prompt is served, with its spores hydrated for a reader; null when
- * the prompt carries no record. A spore named by a record and gone from the
- * store drops out of `spores` and stays in `sporeIds`, so the record still says
- * what went into the prompt.
- */
-export async function injectionForPrompt(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<PromptInjection | null> {
-  const row = await injectedPromptRecord(db, scope, sessionId, promptId);
-  if (row === null) return null;
-  const sporeIds = parseIds(row.spore_ids);
-  const hydrated = await listSporesByIds(db, scope, sporeIds);
-  const byId = new Map(hydrated.map((s) => [s.id, s]));
-  return {
-    sporeIds,
-    createdAt: row.created_at,
-    spores: sporeIds.flatMap((id) => {
-      const spore = byId.get(id);
-      return spore === undefined ? [] : [{ id: spore.id, observationType: spore.observationType, preview: oneLine(spore.agentLine ?? spore.content) }];
-    }),
-  };
-}
 
 function parseIds(raw: string): string[] {
   try {

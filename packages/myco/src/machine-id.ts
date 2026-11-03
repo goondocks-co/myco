@@ -31,13 +31,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveMachineIdPath, resolveMycoHome } from './paths/home.js';
+import { resolveMachineIdPath } from './paths/home.js';
 
 /** Length of the truncated machine hash suffix. */
 const MACHINE_HASH_LENGTH = 8;
-
-/** Filename for the cached machine ID within a legacy project vault. */
-const LEGACY_MACHINE_ID_FILE = 'machine_id';
 
 /** Fallback GitHub username when `gh` CLI is unavailable. */
 const FALLBACK_GITHUB_USER = 'local';
@@ -154,32 +151,4 @@ export function getMachineId(): string {
 
   cachedMachineId = machineId;
   return cachedMachineId;
-}
-
-/**
- * Propagate a legacy per-project machine_id into the global cache when
- * the global cache is absent. Used by the one-shot global-install
- * migration (plan §5, step "machine_id propagation"): the value the
- * project vault was carrying becomes the machine's canonical id rather
- * than re-deriving and risking divergence from historic capture rows
- * already stamped with the legacy value.
- *
- * Returns `true` when a value was propagated; `false` when the global
- * cache already exists (so the legacy value is dropped silently — the
- * global cache wins) or when no legacy file exists.
- */
-export function propagateLegacyMachineId(vaultDir: string): boolean {
-  const globalPath = resolveMachineIdPath();
-  if (fs.existsSync(globalPath)) return false;
-  const legacyPath = path.join(vaultDir, LEGACY_MACHINE_ID_FILE);
-  let legacyValue: string;
-  try {
-    legacyValue = fs.readFileSync(legacyPath, 'utf-8').trim();
-  } catch {
-    return false;
-  }
-  if (legacyValue.length === 0) return false;
-  fs.mkdirSync(resolveMycoHome(), { recursive: true });
-  fs.writeFileSync(globalPath, legacyValue, 'utf-8');
-  return true;
 }

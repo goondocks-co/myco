@@ -67,6 +67,17 @@ test('a published session reads its turns, a turn with its tools and their full 
     const first = turns.rows[0]!.promptId;
     const detail = (await documentTurnDetail(env, scope, 'session', first))!;
     expect(detail.prompt.text, name).toBe('run the tests');
+    await db.prepare(`INSERT INTO spores(project_id,id,agent_id,observation_type,content,importance,created_at)
+      VALUES('project','a','user','decision','the selector reads relevance',5,1)`).run();
+    await db.prepare(`INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,created_at)
+      VALUES('project','session','receipt',?,'hash','["a"]',1)`).bind(first).run();
+    expect((await documentTurnDetail(env, scope, 'session', first))!.injection, name).toBeNull();
+    await db.prepare(`UPDATE spore_injections SET delivered_at=created_at,delivered_prompt_id=prompt_id
+      WHERE project_id='project' AND session_id='session'`).run();
+    expect((await documentTurnDetail(env, scope, 'session', first))!.injection, name).toEqual({
+      sporeIds: ['a'], planIds: [], createdAt: 1, plans: [],
+      spores: [{ id: 'a', observationType: 'decision', preview: 'the selector reads relevance' }],
+    });
     expect(detail.responses.map((row) => row.text), name).toEqual(['running']);
     expect(detail.tools, name).toMatchObject({ total: 1, failed: 0, byTool: [{ toolName: 'shell', count: 1 }] });
 

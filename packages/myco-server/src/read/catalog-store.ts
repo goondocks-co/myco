@@ -2943,14 +2943,6 @@ async function turns_sessionTurnContextsImpl(db: turns_import_RelationalStore, s
   return Object.fromEntries(results.map(row => [row.prompt_id, { subagents: row.n }]));
 }
 
-export async function injectedPromptRecord(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope,
-  sessionId: string, promptId: string): Promise<{ spore_ids: string; created_at: number } | null> {
-  return (await queryRows<{ spore_ids: string; created_at: number }>(db,`SELECT spore_ids, created_at FROM spore_injections
-               WHERE project_id = ? AND session_id = ? AND delivered_prompt_id = ?
-                 AND ${hook_placement_hookPlacementSql({ project: 'spore_injections.project_id', session: 'spore_injections.session_id', prompt: 'spore_injections.delivered_prompt_id' })}
-               ORDER BY created_at DESC LIMIT 1`,[scope.projectId, sessionId, promptId],'first'))[0] ?? null;
-}
-
 export { processed_processedField };
 
 /** A receipt names an eligible source's current revision. */
@@ -3584,11 +3576,6 @@ export function prepareReleasePropagation(db: sessions_import_RelationalStore, p
 
 export function injectionServedIds(db: sessions_import_RelationalStore, column: 'spore_ids' | 'plan_ids') {
   return db.prepare(`SELECT ${column} AS ids FROM spore_injections WHERE project_id = ? AND session_id = ?`);
-}
-
-export function injectionSessionRecords(db: sessions_import_RelationalStore) {
-  return db.prepare(`SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections
-               WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC`);
 }
 
 export function injectionPromptHeld(db: sessions_import_RelationalStore) {

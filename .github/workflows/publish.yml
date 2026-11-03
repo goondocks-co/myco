@@ -167,7 +167,7 @@ jobs:
           if-no-files-found: error
 
   # Per-target myco binary compile via `bun build --compile`. Each matrix job
-  # stages the target's sqlite-vec + ripgrep native binaries and downloads
+  # stages the target's sqlite-vec native extension and downloads
   # the matching libsqlite3 artifact before compiling.
   cross-compile:
     name: Cross-compile myco (${{ matrix.target }})
@@ -190,8 +190,7 @@ jobs:
           bun-version-file: .bun-version
 
       # Cross-compile does not use host postinstall side effects: we stage the
-      # target sqlite-vec package and ripgrep binary explicitly below. Skipping
-      # scripts avoids flaky host-only GitHub downloads from @vscode/ripgrep.
+      # target sqlite-vec package explicitly below.
       - run: npm ci --ignore-scripts
 
       - name: Sync target package versions from tag
@@ -210,26 +209,6 @@ jobs:
         run: |
           SQLITE_VEC_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/sqlite-vec/package.json', 'utf8')).version")"
           npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts --force
-
-      # @vscode/ripgrep 1.18+ ships the binary inside platform-specific
-      # subpackages (declared as optionalDependencies on the umbrella
-      # `@vscode/ripgrep`). npm ci on a single host only resolves the
-      # host-matching subpackage, so force-install the target's subpackage
-      # at the same pinned version. Mirrors the sqlite-vec step above.
-      # Safe: TARGET is bound from matrix.target, not user input; the
-      # case/esac restricts RG_PLATFORM to a known set before use.
-      - name: Install @vscode/ripgrep target subpackage
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          case "$TARGET" in
-            windows-x64)  RG_PLATFORM="win32-x64" ;;
-            darwin-arm64|darwin-x64|linux-x64|linux-arm64) RG_PLATFORM="$TARGET" ;;
-            *) echo "unknown target: $TARGET" >&2; exit 1 ;;
-          esac
-          RG_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/@vscode/ripgrep/package.json', 'utf8')).version")"
-          npm install "@vscode/ripgrep-${RG_PLATFORM}@${RG_VERSION}" --no-save --ignore-scripts --force
-          ls -lh "node_modules/@vscode/ripgrep-${RG_PLATFORM}/bin/"
 
       - name: Download libsqlite3 artifact
         uses: actions/download-artifact@v8

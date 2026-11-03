@@ -148,6 +148,22 @@ if (process.env.FAKE_BUN_DELAY_MS && (process.env.FAKE_BUN_MODE !== 'fail-then-d
 }
 
 describe('run-bun-tests guards', () => {
+  test('refuses a missing configured test target before scheduling phases', () => withReportDir(async (base) => {
+    const preload = path.join(base, 'missing-target.mjs');
+    fs.writeFileSync(preload, `
+      import fs from 'node:fs';
+      const exists = fs.existsSync;
+      fs.existsSync = file => String(file).replaceAll('\\\\', '/').endsWith('/tests/member/subsystem-claim.test.ts') ? false : exists(file);
+    `);
+    const result = await runRunner(STDIN_FIXTURE, {
+      MYCO_RUNNER_DRY_RUN: '1',
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${preload}`.trim(),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('Configured test target does not exist: tests/member/subsystem-claim.test.ts');
+    expect(result.output).not.toContain('[dry-run] OK');
+  }), RUN_BOUND_MS);
+
   test.skipIf(process.platform === 'win32')('retains a phase failure when its missing evidence is repaired by a later phase', () => withReportDir(async (base) => {
     const bin = fakeBun(base);
     const reports = path.join(base, 'reports');

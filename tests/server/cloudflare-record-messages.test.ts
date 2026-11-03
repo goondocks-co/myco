@@ -147,7 +147,7 @@ it.skipIf(process.platform === 'win32').each(['project', 'machine'])('explains t
   delete env.MYCO_HOME;
   delete env.MYCO_REDIRECTED;
   const result = spawnSync('node', ['-e', 'delete process.env.MYCO_HOME; require(process.argv[1]).maybeRedirect(process.argv[1]);',
-    path.join(repository, 'packages/myco/bin/runtime-redirect.cjs'), 'server', 'status', '--target', 'cloudflare'],
+    path.join(repository, 'tests/fixtures/install/runtime-redirect.cjs'), 'server', 'status', '--target', 'cloudflare'],
     { cwd: workingDirectory, env, encoding: 'utf8' });
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);

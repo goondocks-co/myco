@@ -241,20 +241,11 @@ const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_S
 // have been validated to run correctly when imported through one generated
 // bundle file, while unlisted groups keep per-file isolation.
 const SAFE_NODE_BUNDLE_GROUPS = new Set([
-  'tests/agent/tasks',
-  'tests/backup',
   'tests/canopy',
-  'tests/canopy/describe',
-  'tests/canopy/scanner',
   'tests/capture',
-  'tests/config',
-  'tests/deploy',
-  'tests/grove',
   'tests/mcp',
   'tests/myco-server',
   'tests/myco-shared',
-  'tests/plans',
-  'tests/release-provenance',
   'tests/service',
   // 'tests/symbionts' intentionally omitted: installer.test.ts, installer-integration.test.ts,
   // installer-scope.test.ts, installer-invariants.test.ts and others all mutate process.env.HOME
@@ -265,32 +256,22 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   // runs isolated below instead.
   'tests/symbionts/parsers',
   'tests/symbionts/templates',
-  'tests/tools',
   'tests/utils',
-  'tests/vault',
 ]);
 
 // These targets pass as their own shared-process Bun run without `--isolate`.
 // They are the first-class speed path: one process per clean domain, while
 // leak-prone domains keep per-file isolation below.
 const NO_ISOLATE_NODE_TARGETS = [
-  'tests/agent/tasks',
   'tests/canopy',
   'tests/capture',
-  'tests/config',
-  'tests/db',
-  'tests/grove',
   'tests/mcp',
   'tests/myco-server',
   'tests/myco-shared',
-  'tests/plans',
-  'tests/release-provenance',
   'tests/service',
   // 'tests/symbionts' intentionally omitted: see SAFE_NODE_BUNDLE_GROUPS comment above.
   // Root-level symbiont tests run per-file isolated to prevent process.env race conditions.
-  'tests/tools',
   'tests/utils',
-  'tests/vault',
   // tests/hooks intentionally omitted: response-shape tests depend on
   // process-global manifest capability state and have failed under Linux
   // shared Bun after neighboring hook fixtures mutate globals.
@@ -302,14 +283,8 @@ const SOLO_NODE_FILES = [
   // Scale fixtures reserve one process's duration budget.
   'tests/myco-server/extraction-coverage-budget.test.ts',
   'tests/myco-server/extraction-coverage-steady-state-budget.test.ts',
-  'tests/agent/phase-loop.test.ts',
-  'tests/agent/tools-dry-run.test.ts',
-  'tests/agent/tools-skills.test.ts',
   // The RSS fixture runs from a fresh launcher process.
   'tests/server/cloudflare-backup-streaming.test.ts',
-  // This file spies on fs.fsyncSync to force publication races. The spy is
-  // process-global and cannot overlap unrelated durable-write tests.
-  'tests/config/secrets-relocate-legacy-project.test.ts',
 ];
 
 const SOLO_NODE_REASON_LISTED_FILE = 'listed-solo-node-file';
@@ -317,81 +292,24 @@ const SOLO_NODE_REASON_MODULE_MOCK = 'mock.module';
 
 const NO_ISOLATE_NODE_GROUPS = [
   {
-    label: 'tests-agent-stable',
-    targets: [
-      'tests/agent/claude-code-executable.test.ts',
-      'tests/agent/ollama-context.test.ts',
-      'tests/agent/openai-runtime.test.ts',
-      'tests/agent/openrouter-catalog.test.ts',
-      'tests/agent/provider-harness.test.ts',
-      'tests/agent/provider.test.ts',
-      'tests/agent/run-accounting.test.ts',
-      'tests/agent/schemas.test.ts',
-      'tests/agent/skill-candidate-evidence.test.ts',
-      'tests/agent/skill-candidate-quality.test.ts',
-      'tests/agent/skill-drift.test.ts',
-      'tests/agent/skill-staging.test.ts',
-      'tests/agent/tools/canopy-tools.test.ts',
-      // runtime-claude.test.ts, phase-loop.test.ts, and tools-dry-run.test.ts
-      // intentionally omitted: they call mock.module(), which is
-      // process-global and poisons later files in a shared run (phase-loop's
-      // request-context mock erased scope filtering in context-queries on
-      // Linux orderings). assertNoModuleMocksInSharedFiles enforces this.
-    ],
-  },
-  {
     label: 'tests-daemon-root-stable',
     targets: [
-      'tests/daemon/port.test.ts',
-      // machine-id.test.ts tests the real getMachineId() implementation, so
-      // it must never share a process with a file that mocks
-      // @myco/daemon/machine-id.js.
       'tests/daemon/machine-id.test.ts',
       'tests/member/subsystem-claim.test.ts',
     ],
   },
-  {
-    label: 'tests-daemon-api-stable',
-    targets: [
-      'tests/daemon/api/provider-secrets.test.ts',
-      // tests/daemon/api/update.test.ts intentionally omitted — its top-level
-      // `mock.module('@myco/daemon/update-checker.js', ...)` is hoisted by bun
-      // ahead of the `await import(...)` that tries to capture the real module
-      // for afterAll restoration, so the stub leaks for the rest of the bun
-      // process. Running it isolated keeps the leak in its own bun process.
-    ],
-  },
-  // tests-agent-tools-core intentionally omitted: these files pass
-  // standalone, but context/loader/registry/tool-surface tests mutate
-  // process-global agent/tool/resource state that can leak across one
-  // Linux shared Bun process.
-  {
-    label: 'tests-agent-skill-tools',
-    targets: [
-      'tests/agent/tools/vault-search-canopy.test.ts',
-    ],
-  },
-  {
-    label: 'tests-daemon-service-boundary',
-    targets: [
-      'tests/daemon/grove-runtime-cache.test.ts',
-      'tests/daemon/legacy-scope-removed.test.ts',
-    ],
-  },
-  {
-    label: 'tests-daemon-capture-backup',
-    targets: [
-      'tests/daemon/backup-canopy-roundtrip.test.ts',
-    ],
-  },
-  {
-    label: 'tests-daemon-power-sweeps',
-    targets: [
-      'tests/daemon/power-jobs.test.ts',
-      'tests/daemon/tick-paths-pause.test.ts',
-    ],
-  },
 ];
+
+for (const target of new Set([
+  ...SAFE_NODE_BUNDLE_GROUPS,
+  ...NO_ISOLATE_NODE_TARGETS,
+  ...SOLO_NODE_FILES,
+  ...NO_ISOLATE_NODE_GROUPS.flatMap(group => group.targets),
+])) {
+  if (!fs.existsSync(path.join(REPO, target))) {
+    throw new Error(`[run-bun-tests] Configured test target does not exist: ${target}`);
+  }
+}
 
 const VALUE_FLAGS = new Set([
   '-t',
