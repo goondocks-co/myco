@@ -672,7 +672,7 @@ it('Cline keeps one session across run ids and a replacement plugin host', async
   } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
 });
 
-it('Cline subagent task callbacks do not capture a human turn', async () => {
+it('Cline subagent task callbacks use a child session', async () => {
   const r = rig('cline');
   const subject = snippetModule(r.env, [], [], () => ({ status: 0, stdout: '{}', stderr: '' }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
   try {
@@ -681,7 +681,41 @@ it('Cline subagent task callbacks do not capture a human turn', async () => {
     await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
     await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'task', role: 'user', content: [{ type: 'text', text: 'delegated task' }] }] } });
     const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    expect(fs.readdirSync(path.dirname(r.transcript))).toEqual(['resumed.jsonl']);
+    expect(fs.readdirSync(path.dirname(r.transcript))).toContain('resumed-agent-child.jsonl');
     expect(rows.filter(row => row.type === 'prompt')).toEqual([]);
+  } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
+});
+
+
+it('Cline teammates keep tasks and prompt ownership outside the lead session', async () => {
+  const r = rig('cline');
+  let prompts = 0;
+  const stops: string[] = [];
+  const subject = snippetModule(r.env, [], [], (_bin, args, options) => {
+    if (args[1] === 'stop') stops.push(JSON.parse(Reflect.get(options, 'input')).conversationId);
+    return { status: 0, stdout: args[1] === 'user-prompt-submit' ? JSON.stringify({ promptId: `p-${++prompts}` }) : '{}', stderr: '' };
+  }, ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
+  try {
+    subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
+    const lead = { agentId: 'lead', conversationId: 'conv_lead', iteration: 1, messages: [] };
+    const teammate = { agentId: 'teammate', conversationId: 'conv_teammate', iteration: 1, messages: [] };
+    for (const [snapshot, text] of [[lead, 'human prompt'], [teammate, 'delegated team task']] as const) {
+      await subject.MycoClinePlugin.hooks.onEvent({ type: 'run-started', snapshot });
+      await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: text, role: 'user', content: [{ type: 'text', text }] }] } });
+    }
+    for (const snapshot of [teammate, lead]) {
+      await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: snapshot.agentId, content: [{ type: 'text', text: `${snapshot.agentId} reply` }] } });
+      await subject.MycoClinePlugin.hooks.afterTool({ snapshot, toolCall: { toolCallId: `${snapshot.agentId}-tool`, toolName: 'read' }, input: {}, result: { output: 'ok' } });
+      await subject.MycoClinePlugin.hooks.afterRun({ snapshot });
+    }
+    const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => row.type === 'prompt').map(row => row.text)).toEqual(['human prompt']);
+    expect(rows.filter(row => row.type === 'response' || row.type === 'tool').map(row => row.promptId)).toEqual(['p-1', 'p-1']);
+    const child = fs.readdirSync(path.dirname(r.transcript)).find(file => file !== 'resumed.jsonl');
+    expect(child).toBeDefined();
+    const childRows = fs.readFileSync(path.join(path.dirname(r.transcript), child!), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(childRows.filter(row => row.type === 'prompt').map(row => row.text)).toEqual(['delegated team task']);
+    expect(childRows.filter(row => row.type === 'response' || row.type === 'tool').map(row => row.promptId)).toEqual(['p-2', 'p-2']);
+    expect(stops).toEqual(['resumed-agent-teammate', 'resumed']);
   } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
 });

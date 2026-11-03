@@ -204,10 +204,11 @@ export async function unregisteredAmong(db: RelationalStore, pairs: readonly Blo
 }
 
 /** The blobs a row of `table` names through the reference catalogue, as the rows it carries state them. */
-export function referencedBlobsOf(table: string, row: Readonly<Record<string, unknown>>): BlobRef[] {
+export function referencedBlobsOf(table: string, row: Readonly<Record<string, unknown>>, presence: 'all' | 'required' | 'report' = 'all'): BlobRef[] {
   const projectId = row.project_id;
   if (typeof projectId !== 'string') return [];
   return BLOB_REFERENCES.filter((ref) => ref.table === table
+    && (presence === 'all' || (ref.onMissing === 'report') === (presence === 'report'))
     && typeof referencedBlobValue(ref,row) === 'string'
     && (ref.kinds === undefined || ref.kinds.includes(row.kind as string)))
     .map((ref) => ({ projectId, key: referencedBlobValue(ref,row) as string }));

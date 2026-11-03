@@ -403,12 +403,12 @@ describe('the source a session state is classified from', () => {
     newSession(r, 's_live');
     addCommit(r, 's_live', 'session_start', A);
     await check(r, 100 * MIN);
-    expect(state(r, 's_live')).toMatchObject({ state: 'unknown', basisKind: 'missing_git_evidence', source: `session_start:${A}:0` });
+    expect(state(r, 's_live')).toMatchObject({ state: 'unknown', basisKind: 'missing_git_evidence', source: `session_start:${A}:unknown` });
     addCommit(r, 's_live', 'session_end', B);
     expect(await check(r, 110 * MIN)).toBe(1);
     const after = state(r, 's_live');
     expect(after).toMatchObject({ state: 'merged_unreleased', source: `session_end:${B}:0` });
-    expect(JSON.parse(after.previous!)).toMatchObject({ state: 'unknown', source: `session_start:${A}:0`, checked_at: 100 * MIN });
+    expect(JSON.parse(after.previous!)).toMatchObject({ state: 'unknown', source: `session_start:${A}:unknown`, checked_at: 100 * MIN });
   });
 
   it('classifies a later end commit of a released session afresh and keeps the released state it replaced', async () => {

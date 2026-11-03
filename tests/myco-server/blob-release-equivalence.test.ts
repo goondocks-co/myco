@@ -112,11 +112,11 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
     outcomes.push({ result: await db.batch(decision(db, page, 4)), state: await snapshot(db) });
   }
   expect(outcomes[0]!.state).toEqual(outcomes[1]!.state);
-  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + extraKeys.length + 3);
+  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + extraKeys.length + 4);
   expect(outcomes[2]!.state.blobs.filter(row => extraKeys.includes(String(row.key)))).toHaveLength(extraKeys.length);
   expect(outcomes[2]!.state.candidates).toEqual([]);
   expect(outcomes[2]!.state.journal.map(row => row.physical)).toEqual([
-    blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(holderInserts.length + 0), GENERATION), blobObjectKey(P, key(holderInserts.length + 1), GENERATION),
+    blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(holderInserts.length + 0), GENERATION),
     blobObjectKey(P, key(holderInserts.length + 3), GENERATION),
   ]);
   expect((await db.prepare(`SELECT key FROM blobs WHERE project_id=? AND key IN (?,?) ORDER BY key`).bind(P, key(1), key(2)).all()).results)

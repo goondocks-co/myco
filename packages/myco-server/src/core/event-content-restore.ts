@@ -1,11 +1,11 @@
 import { isArchivedEventMetadata } from '../db/document-tables.js';
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 
 type Row = Record<string, unknown>;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Import an archived event only while its exact bundle and publication evidence are held. */
-export async function restoreArchivedEvent(db: RelationalStore, event: Row, bundle: Row): Promise<number> {
+export async function restoreArchivedEvent(db: RelationalStore, event: Row, bundle: Row, admission: readonly PreparedStatement[] = []): Promise<number> {
   if (event.payload_format !== 'archived' || !isArchivedEventMetadata(event.payload)
     || event.project_id !== bundle.project_id || event.session_id !== bundle.session_id
     || event.token_id !== bundle.token_id || event.bundle_id !== bundle.id
@@ -35,7 +35,8 @@ export async function restoreArchivedEvent(db: RelationalStore, event: Row, bund
     bundle.event_id,bundle.envelope_hash,bundle.session_id,bundle.archive_key,bundle.size,
     event.project_id,bundle.receipt_key,`bundle:${String(bundle.archive_key)}`,bundle.event_id,
     bundle.envelope_hash,bundle.session_id,bundle.receipt_key];
-  const [inserted] = await db.batch([
+  const results = await db.batch([
+    ...admission,
     db.prepare(`INSERT OR IGNORE INTO events (${columns.join(', ')})
       SELECT ${columns.map(() => '?').join(', ')} WHERE ${evidence} RETURNING rowid`)
       .bind(...values,...evidenceValues),
@@ -46,5 +47,5 @@ export async function restoreArchivedEvent(db: RelationalStore, event: Row, bund
           AND e.payload_format='archived' AND e.bundle_id=? AND NOT (${match}))`)
       .bind(event.project_id,event.event_id,...evidenceValues,event.project_id,event.event_id,event.bundle_id,...values),
   ]);
-  return inserted!.results.length;
+  return results[admission.length]!.results.length;
 }

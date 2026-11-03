@@ -1186,7 +1186,7 @@ const sessions = new Map<string, { directory: string; promptId?: string; lastSub
 const SUBMISSION_METADATA_KEY = "mycoSubmissionId";
 const submissionKeys = new WeakMap<object, string>();
 let submissionOrdinal = 0;
-let hostSession: { sessionId: string; directory: string } | undefined;
+let hostSession: { sessionId: string; directory: string; leadAgentId?: string } | undefined;
 
 
 function nowIso(): string {
@@ -1210,7 +1210,11 @@ function isMycoMessage(message: any): boolean {
 
 function clineContext(input: any, context: any) {
   const snapshot = input?.snapshot ?? context;
-  const sessionId = snapshot?.parentAgentId ? undefined : snapshot?.session?.sessionId ?? hostSession?.sessionId;
+  const rootSessionId = snapshot?.session?.sessionId ?? hostSession?.sessionId;
+  const agentId = typeof snapshot?.agentId === "string" ? snapshot.agentId : undefined;
+  if (hostSession !== undefined && hostSession.leadAgentId === undefined && !snapshot?.parentAgentId && agentId !== undefined) hostSession.leadAgentId = agentId;
+  const child = snapshot?.parentAgentId || (agentId !== undefined && hostSession?.leadAgentId !== undefined && agentId !== hostSession.leadAgentId);
+  const sessionId = child ? (rootSessionId !== undefined && agentId !== undefined ? `${rootSessionId}-agent-${agentId}` : undefined) : rootSessionId;
   const directory = snapshot?.workspaceRoot ?? snapshot?.workspaceInfo?.rootPath ?? hostSession?.directory ?? sessions.get(sessionId)?.directory ?? process.cwd();
   return { sessionId, directory };
 }

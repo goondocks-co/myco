@@ -64,7 +64,7 @@ describe('a session\'s commit observations', () => {
     expect(r.sqlite.query('SELECT basis_sha AS basisSha FROM knowledge_release_state WHERE record_id = ?').get('s_1')).toEqual({ basisSha: M });
     expect(await r.commits(P, 's_1')).toEqual({ status: 200, body: {
       observations: [
-        { point: 'session_start', headSha: A, branch: 'feat', changes: 'none', capturedAt: 10 },
+        { point: 'session_start', headSha: A, branch: 'feat', changes: 'unreadable', capturedAt: 10 },
         { point: 'session_end', headSha: C, branch: 'feat', changes: 'none', capturedAt: 20 },
       ],
       release: { state: 'released', basisKind: 'github_pr_squash', basisRef: 'refs/tags/a/v1.2.0', releasePrNumber: 7, checkedAt: 100 * MIN,
@@ -150,4 +150,17 @@ describe('a session\'s commit observations', () => {
     expect((await r.commits(P, 's_theirs')).status).toBe(404);
     expect((await r.commits(P, 's_absent')).status).toBe(404);
   });
+});
+
+
+it('reads historical session starts as unknown without rewriting their stored provenance', async () => {
+  const r = rig();
+  try {
+    r.session(P, 'historical');
+    r.observe(P, 'historical', 'session_start', A);
+    const before = r.sqlite.query('SELECT * FROM knowledge_git_provenance').all();
+    const response = await r.commits(P, 'historical');
+    expect(response.body).toMatchObject({ observations: [{ point: 'session_start', changes: 'unreadable' }] });
+    expect(r.sqlite.query('SELECT * FROM knowledge_git_provenance').all()).toEqual(before);
+  } finally { r.sqlite.close(); }
 });

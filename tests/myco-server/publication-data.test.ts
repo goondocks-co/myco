@@ -4,11 +4,12 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { DocumentBatch, releaseHolders, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
+import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS, VERSION_STATEMENTS, releaseHolders, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { measuredContentEnv, CONTENT_WAKE_JOB_RESERVE } from '@myco-server-worker/core/content-budget.js';
 import { STATEMENT_JSON_BYTES } from '@myco-server-worker/db/json-pages.js';
 import { envelope, readFixtureRecords, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { registerBlob } from './helpers/d1.js';
@@ -104,5 +105,25 @@ test('git provenance keeps unobserved cleanliness unknown and records an observe
     expect(f.sqlite.query(`SELECT capture_point,is_dirty,error FROM knowledge_git_provenance ORDER BY capture_point DESC`).all())
       .toEqual([{ capture_point: 'session_start', is_dirty: 0, error: GIT_STATUS_UNREADABLE }, { capture_point: 'session_end', is_dirty: 0, error: null }]);
     expect((await sessionCommits(f.db, { projectId: 'proj_1' }, 'session')).observations.map(row => row.changes)).toEqual(['unreadable', 'none']);
+  } finally { f.sqlite.close(); }
+});
+
+
+test('plan projection pages participate in placement admission before any commit work', async () => {
+  const f = await fixture();
+  try {
+    const records = Array.from({ length: 12 }, (_, i) => ({ k: 'plan' as const, id: uuid(100 + i), prompt_id: null, created_at: NOW, content: `${i}:` + '計画'.repeat(30_000) }));
+    const doc: BatchDocument = { generation: 1, next_chunk: 0, prompts: 0, first_prompt: null, open_turn_key: null, token_id: f.ctx.tokenId };
+    const probe = new DocumentBatch(f.serverEnv, 'proj_1', 'session', doc, [], []);
+    await probe.open();
+    await probe.place(records, null);
+    const closingWithoutPlans = 9;
+    const bounded = measuredContentEnv(f.serverEnv, { statements: CONTENT_WAKE_JOB_RESERVE + PASS_CLOSING_STATEMENTS + probe.writer.versions * VERSION_STATEMENTS + closingWithoutPlans + 1, blobCalls: 60 });
+    const batch = new DocumentBatch(bounded.env, 'proj_1', 'session', doc, [], []);
+    await batch.open();
+    batch.admitted = true;
+    await expect(batch.place(records, null)).rejects.toBeInstanceOf(DocumentPassFull);
+    expect(batch.records).toBe(0);
+    expect(bounded.usage.blobCalls).toBe(0);
   } finally { f.sqlite.close(); }
 });

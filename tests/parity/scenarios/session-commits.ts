@@ -51,7 +51,7 @@ export const sessionCommitsParity: ParityScenario = {
     };
 
     await post('session.start', stamp, { agent: 'claude-code', branch: 'main', headSha: A, startedAt: stamp });
-    expect(await commits()).toEqual({ observations: [{ point: 'session_start', headSha: A, branch: 'main', changes: 'none', capturedAt: stamp }], release: null });
+    expect(await commits()).toEqual({ observations: [{ point: 'session_start', headSha: A, branch: 'main', changes: 'unreadable', capturedAt: stamp }], release: null });
 
     await post('session.end', stamp + 10, { endedAt: stamp + 10, headSha: B, dirty: false });
     await target.sql(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence,
@@ -62,7 +62,7 @@ export const sessionCommitsParity: ParityScenario = {
     const release = { state: 'released', basisKind: 'github_pr_squash', basisRef: 'refs/tags/v1.0.0', releasePrNumber: 12, checkedAt: stamp + 20 };
     expect(await commits()).toEqual({
       observations: [
-        { point: 'session_start', headSha: A, branch: 'main', changes: 'none', capturedAt: stamp },
+        { point: 'session_start', headSha: A, branch: 'main', changes: 'unreadable', capturedAt: stamp },
         { point: 'session_end', headSha: B, branch: 'main', changes: 'none', capturedAt: stamp + 10 },
       ],
       release: { ...release, covers: { point: 'session_end', current: true } },

@@ -19,6 +19,8 @@ export interface BlobReference {
   sinceSchema: number;
   /** For the raw event log: the kinds whose retained event independently holds its blob. Absent on a projected column. */
   kinds?: readonly string[];
+  /** Missing retained capture is reported during recovery; reference writers still require registered content. */
+  onMissing?: 'report';
 }
 
 type ReferenceColumns = Omit<BlobReference, 'sinceSchema'>;
@@ -38,9 +40,9 @@ const retainedKinds = KINDS.filter((kind) => blobFields(kind).length > 0).map((k
 /** Every reference the catalogue declares, projected columns first and the raw event log last. */
 export const BLOB_REFERENCES: readonly BlobReference[] = [
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, projected),
-  ...atSchema(117,[{table:'event_refs',column:'blob'},{table:'event_refs',column:'output_blob'}]),
+  ...atSchema(117,[{table:'event_refs',column:'blob',onMissing:'report'},{table:'event_refs',column:'output_blob',onMissing:'report'}]),
   ...atSchema(COMPLETE_REFERENCE_SCHEMA, [
-    ...(retainedKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: retainedKinds }] : []),
+    ...(retainedKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: retainedKinds, onMissing: 'report' as const }] : []),
     { table: 'archive_bundles', column: 'archive_key' },
     { table: 'archive_bundles', column: 'receipt_key' },
     { table: 'raw_archive_refs', column: 'archive_key' },
