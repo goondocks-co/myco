@@ -1,3 +1,6 @@
+/** The task that writes one card per completed turn on the cheap tier, the material learning reads. */
+export const CARD_TASK = 'turn-cards';
+
 /** The structured fields admitted by the card writer and read by the dashboard. */
 export interface CardFields {
   asked: string; done: string; outcome: string;

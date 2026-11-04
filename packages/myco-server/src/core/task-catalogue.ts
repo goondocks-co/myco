@@ -24,6 +24,7 @@
  * builders and this list to one another.
  */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import { declared } from './declared.js';
 import type { RunAdmissionGate } from './runs.js';
@@ -32,8 +33,7 @@ import type { RunAdmissionGate } from './runs.js';
 export const TITLING_TASK = 'title-summary';
 /** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
-/** The task that writes one card per completed turn on the cheap tier, the material learning reads. */
-export const CARD_TASK = 'turn-cards';
+export { CARD_TASK };
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
 

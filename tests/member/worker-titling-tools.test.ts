@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync } from '../support/fenced-fs.mjs';
+import { mkdtempSync, readFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runToolUse } from '@myco/runner/tool-use.js';
@@ -10,29 +10,41 @@ import { runErrorWords } from '../../packages/myco-server/ui/src/features/work/w
 import { stubProfileHarness, STUB_PROFILE } from '../helpers/stub-profile-harness.js';
 import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 
 const call = (id: string, name: string, input: Record<string, unknown> = {}) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
 const denied = (id: string, name: string) => JSON.stringify({ type: 'system', subtype: 'permission_denied', tool_use_id: id, tool_name: name });
 
-async function drive(lines: readonly string[]) {
+async function drive(lines: readonly string[], task = 'title-summary') {
   const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-titling-tools-')));
   const previous = process.env.PATH;
   const ends: Array<{ status: string; error: string | null }> = [];
   const logs: string[] = [];
-  stubProfileHarness({ lines });
+  const argumentsFile = join(scratch, 'argv.txt');
+  stubProfileHarness({ lines, argumentsFile });
   try {
     const fetchImpl = profileWorkerServer((async (input, init) => {
       const url = String(input);
       if (url.endsWith('/worker/claim')) return Response.json({ persisted: true, claimed: true, heartbeatMs: 60_000, run: {
-        projectId: 'proj_1', id: 'run_haiku', task: 'title-summary', instruction: 'title one session', harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, profile: { ...STUB_PROFILE, tier: 'low', model: 'haiku', effort: 'low' }, timeoutSeconds: 300,
+        projectId: 'proj_1', id: 'run_haiku', task, instruction: 'title one session', harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, profile: { ...STUB_PROFILE, tier: 'low', model: 'haiku', effort: 'low' }, timeoutSeconds: 300,
       } });
       if (url.endsWith('/worker/end')) ends.push(JSON.parse(String(init?.body)));
       return Response.json({ persisted: true, ended: true });
     }) as typeof fetch);
     await runWorker({ serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['claude-code'], runRoot: scratch, once: true, pollIdleMs: 1_000, log: (line) => logs.push(line), fetchImpl, signal: new AbortController().signal });
-    return { ends, logs };
+    return { ends, logs, argv: readFileSync(argumentsFile, 'utf8').split('\n') };
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; }
 }
+
+describe('the tools a run\'s harness offers its model', () => {
+  it('holds a card run to its server, and leaves every other run the harness\'s tools', async () => {
+    const card = await drive([call('material', 'mcp__myco__myco_run_cards', { op: 'material' })], CARD_TASK);
+    expect(card.argv[card.argv.indexOf('--tools') + 1]).toBe('');
+    expect(card.argv.slice(card.argv.indexOf('--allowedTools'), card.argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__myco']);
+    const titling = await drive([call('material', 'mcp__myco__myco_run_sessions', { op: 'material' })]);
+    expect(titling.argv).not.toContain('--tools');
+  });
+});
 
 describe('a low-tier run that bypasses Myco tools', () => {
   it('stops at the first refused shell route and records a specific reader code', async () => {

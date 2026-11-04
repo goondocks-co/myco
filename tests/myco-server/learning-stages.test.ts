@@ -6,7 +6,8 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { writeRunCards, type CardFields } from '@myco-server-worker/core/turn-cards.js';
+import { CARD_MATERIAL_CHANGED, CARD_MATERIAL_UNREAD, cardMaterialPages, cardMaterialRead, writeRunCards, type CardFields, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
+import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import {
   learningHead, buildLearningAssignment, assignedCards, completeLearning, readLearningStatus, learningStatusLine,
@@ -313,6 +314,139 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await db.prepare(`SELECT status, run_context FROM agent_runs WHERE task = 'extract-curate' AND origin = 'manual'`).first())
       .toEqual({ status: 'skipped', run_context: '{"reason":"nothing_due"}' });
   });
+});
+
+/** One Bash failure the trimmer keeps verbatim, whose command weighs `chars` characters. */
+const failedCommand = (at: number, chars: number) => ({ name: 'Bash', input: { command: `echo ${at} ${'é"\n'.repeat(chars / 3)}` }, ok: false, error: `exit ${at}` });
+
+const EMPTY_CARD: CardFields = { asked: 'a turn', done: 'routine work', outcome: 'done', decisions: [], rejected: [], errors: [], corrections: [], files: [], commands: [], open_questions: [] };
+interface MaterialAnswer { revision: string; page: number; next_page?: number; code?: string; error?: string; turns: CardMaterial[] }
+
+/** A claimed card run over these turns, called through the real `/mcp` route. */
+async function cardRun(db: RelationalStore, turns: readonly Turn[]) {
+  const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+  const env = serverEnvFromBindings(bindings as never, recordingDeferred());
+  await capture(db, 'long', turns);
+  await db.prepare(enable).run();
+  await publish(db, NOW, bindings.BUCKET);
+  await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
+  await db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)`).run();
+  await completeBudgetMigration(db, NOW);
+  await ensureMember(db, 'mem_worker', NOW, 'admin');
+  const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
+  const claimed = await claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + DAY });
+  if (!claimed.claimed) throw new Error(`no card run: ${claimed.reason}`);
+  const raw = async (arguments_: Record<string, unknown>) => {
+    const res = await worker.fetch(new Request('https://myco.test/mcp', { method: 'POST', headers: memberHeaders(claimed.run.runToken, { [PROJECT_HEADER]: 'project' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run_cards', arguments: arguments_ } }) }), bindings as never);
+    return (await res.json() as { result: { content: { text: string }[]; structuredContent: unknown } }).result;
+  };
+  const material = async (input: Record<string, unknown> = {}) => JSON.parse((await raw({ op: 'material', ...input })).content[0]!.text) as MaterialAnswer;
+  const write = async (keys: readonly string[]) => JSON.parse((await raw({ op: 'write', cards: keys.map((key) => ({ turns: [key], signal: 'low', card: EMPTY_CARD })) })).content[0]!.text) as Record<string, unknown>;
+  const readAll = async () => {
+    const inputs = new Map<string, string>();
+    let answer = await material();
+    for (;;) {
+      for (const turn of answer.turns) inputs.set(turn.turn_key, (inputs.get(turn.turn_key) ?? '') + turn.input);
+      if (answer.next_page === undefined) return { inputs, revision: answer.revision, pages: answer.page };
+      answer = await material({ page: answer.next_page, revision: answer.revision });
+    }
+  };
+  return { bindings, env, raw, material, write, readAll };
+}
+
+const longTurn = (id: string, text: string, at: number, calls: number): Turn => ({ id, text, at, tools: Array.from({ length: calls }, (_, call) => failedCommand(call, 1_900)) });
+
+it('serves a card run\'s material in answers the harness holds whole, losing nothing', async () => {
+  await withDocumentStores(async (db) => {
+    const run = await cardRun(db, [longTurn(uuid(30), 'a turn longer than one answer', 10, 24), { id: uuid(31), text: 'a short turn', at: 20, replies: ['Done.'] }]);
+    const { inputs, revision, pages } = await run.readAll();
+    expect(pages).toBeGreaterThan(1);
+    for (let page = 1; page <= pages; page += 1) {
+      const held = JSON.stringify((await run.raw({ op: 'material', page, revision })).structuredContent);
+      expect(new TextEncoder().encode(held).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+    }
+    expect([...inputs.keys()]).toEqual([uuid(30), uuid(31)]);
+    const whole = await documentTurnInput(run.env, 'project', 'long', uuid(30));
+    expect(inputs.get(uuid(30))).toBe(trimTurn(whole!).text);
+    expect((await run.material({ page: pages + 1, revision })).error).toContain(`ends at page ${pages}`);
+  });
+});
+
+it('refuses a card write until this attempt has read every page, and names the next one', async () => {
+  await withDocumentStores(async (db) => {
+    const key = uuid(30);
+    const run = await cardRun(db, [longTurn(key, '😀'.repeat(4_000), 10, 24)]);
+    const pendingCard = () => db.prepare(`SELECT state FROM turn_cards WHERE turn_key = ?`).bind(key).first();
+    expect(await run.write([key])).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: 1 });
+
+    const first = await run.material();
+    expect(first.turns[0]).toMatchObject({ turn_key: key, continues: true });
+    expect(first.next_page).toBe(2);
+    expect(await run.write([key])).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: 2, revision: first.revision });
+    expect(await pendingCard()).toEqual({ state: 'pending' });
+    expect(await run.material({ page: 3, revision: first.revision })).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: 2 });
+
+    const second = await run.material({ page: 2, revision: first.revision });
+    expect(second.next_page).toBe(3);
+    expect(await run.material({ page: 3 })).toMatchObject({ code: CARD_MATERIAL_CHANGED });
+    expect(await run.write([key])).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: 3 });
+    expect((await run.material({ page: 1 })).revision).toBe(first.revision);
+    expect(await run.write([key])).toMatchObject({ ok: false, next_page: 3 });
+
+    const last = await run.material({ page: 3, revision: first.revision });
+    expect(last.next_page).toBeUndefined();
+    expect(await run.write([key])).toEqual({ written: 1, changed_since_served: [] });
+    expect(await pendingCard()).toEqual({ state: 'carded' });
+  });
+});
+
+it('refuses a continuation when capture publishes between pages, and a restart reads the new revision whole', async () => {
+  await withDocumentStores(async (db) => {
+    const a = uuid(40);
+    const b = uuid(41);
+    const run = await cardRun(db, [{ id: a, text: 'first turn', at: 10, replies: ['r'.repeat(1_000)] }, longTurn(b, 'second turn', 20, 16)]);
+    const first = await run.material();
+    const second = await run.material({ page: first.next_page!, revision: first.revision });
+    expect(first.turns.map((turn) => turn.turn_key)).toEqual([a]);
+    expect(second.turns[0]).toMatchObject({ turn_key: b, continues: true });
+
+    await capture(db, 'long', [{ id: uuid(42), text: '増'.repeat(8_000), at: 30, parent: a }, { id: uuid(43), text: '増'.repeat(8_000), at: 31, parent: a }]);
+    await publish(db, NOW + DAY + 1, run.bindings.BUCKET);
+
+    expect(await run.material({ page: second.next_page!, revision: second.revision })).toMatchObject({ ok: false, code: CARD_MATERIAL_CHANGED });
+    expect(await run.write([a, b])).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: second.next_page, revision: first.revision });
+
+    const restarted = await run.material();
+    expect(restarted.revision).not.toBe(first.revision);
+    expect(await run.write([a, b])).toMatchObject({ ok: false, code: CARD_MATERIAL_UNREAD, next_page: 2, revision: restarted.revision });
+
+    const { inputs } = await run.readAll();
+    expect(inputs.get(b)).toBe(trimTurn((await documentTurnInput(run.env, 'project', 'long', b))!).text);
+    expect(await run.write([a, b])).toEqual({ written: 1, changed_since_served: [a] });
+  });
+});
+
+it('credits material reads to the attempt that made them', () => {
+  const read = { tokenId: 'attempt', revision: 'r', pages: 2, through: 2 };
+  expect(cardMaterialRead(JSON.stringify({ cardMaterial: read }), 'attempt')).toEqual(read);
+  expect(cardMaterialRead(JSON.stringify({ cardMaterial: read }), 'next-attempt')).toBeNull();
+});
+
+it('pages by weight, and a split never lands inside a character', () => {
+  for (const turnKey of ['e', 'em', 'emo', 'emoj']) {
+    const emoji: CardMaterial = { turn_key: turnKey, input: '😀'.repeat(RUN_ANSWER_BYTES) };
+    const pages = cardMaterialPages('s', [{ turn_key: 'short', input: 'first' }, emoji, { turn_key: 'after', input: 'last' }]);
+    const pieces = pages.flat().filter((turn) => turn.turn_key === turnKey);
+    expect(pieces.at(-1)!.continues).toBeUndefined();
+    expect(pieces.slice(0, -1).every((piece) => piece.continues === true && !/\ud83d$/.test(piece.input))).toBe(true);
+    expect(pieces.map((piece) => piece.input).join('')).toBe(emoji.input);
+    expect(pages[0]!.map((turn) => turn.turn_key)).toEqual(['short']);
+    expect(pages.at(-1)!.map((turn) => turn.turn_key)).toEqual([turnKey, 'after']);
+    for (const [at, turns] of pages.entries()) {
+      expect(new TextEncoder().encode(JSON.stringify({ result: { session_id: 's', revision: '0'.repeat(16), page: at + 1, next_page: at + 2, turns } })).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+    }
+  }
 });
 
 it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {

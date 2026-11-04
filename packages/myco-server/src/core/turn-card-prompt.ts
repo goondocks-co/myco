@@ -6,7 +6,7 @@ export const TURN_CARD_PROMPT = `Write one card per turn of a coding session, fr
 
 ## Steps
 
-1. Call \`myco_run_cards\` op "material". It returns the turns to card, in order, each with its \`turn_key\` and its trimmed input.
+1. Call \`myco_run_cards\` op "material". It returns the turns to card, in order, each with its \`turn_key\` and its trimmed input. Call it again with the answer's \`next_page\` as \`page\` and its \`revision\` until an answer has no \`next_page\`; a \`material_changed\` refusal means restart at page 1. An entry marked \`continues\` goes on under the same \`turn_key\` on the next page.
 2. Call \`myco_run_cards\` op "write" once, with \`cards\`: one entry per card. Every served \`turn_key\` appears in exactly one card's \`turns\`. A run of consecutive mechanical turns (polling, waiting, routine status, "continue") may share one card; every other turn gets its own.
 3. Close with \`myco_run\` op "report", action "carded", a one-line \`summary\`.
 

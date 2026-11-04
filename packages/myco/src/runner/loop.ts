@@ -12,6 +12,7 @@ import { parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -588,6 +589,7 @@ async function drive(
         prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
         profile: run.profile,
         sourceReadOnly: checkout !== undefined,
+        serverToolsOnly: run.task === CARD_TASK,
       }, stopping.signal)[Symbol.asyncIterator]();
     };
     stream = start();
