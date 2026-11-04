@@ -292,6 +292,15 @@ export async function listSporesByIds(db: RelationalStore, scope: ReadScope, ids
   return out;
 }
 
+/** The ids of active spores whose text holds any of these words, best match first. */
+export async function activeSporesMatchingAnyWord(db: RelationalStore, scope: ReadScope, words: readonly string[], excludingId: string, limit: number): Promise<string[]> {
+  if (words.length === 0) return [];
+  const { results } = await db.prepare(`SELECT d.id FROM spores_fts CROSS JOIN spores d ON d.rowid = spores_fts.rowid
+    WHERE spores_fts MATCH ? AND d.project_id = ? AND d.status = 'active' AND d.id <> ? ORDER BY spores_fts.rank LIMIT ?`)
+    .bind(words.map((word) => `"${word}"`).join(' OR '), scope.projectId, excludingId, limit).all<{ id: string }>();
+  return results.map((row) => row.id);
+}
+
 export async function countSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<number> {
   const { where, params } = filters(scope, o);
   const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();

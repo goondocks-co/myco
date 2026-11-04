@@ -3,6 +3,7 @@ import { writeSpore } from '../../core/spore-admission.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
+import { learningMaterialUnread } from './run-learning.js';
 
 function visible(row: SporeRow): Record<string, unknown> {
   return snake<Record<string, unknown>>(row);
@@ -15,7 +16,10 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
   if (scope === null) return failure('Project not found');
   const db = ctx.env.db;
   const op = input.op ?? 'list';
-  if (['save', 'supersede', 'obsolete', 'consolidate'].includes(String(op))) return writeSpore(input, { ...ctx, projectId: scope.projectId });
+  if (['save', 'supersede', 'obsolete', 'consolidate'].includes(String(op))) {
+    const unread = ctx.principal.kind === 'run' ? learningMaterialUnread(ctx.principal) : null;
+    return unread ?? writeSpore(input, { ...ctx, projectId: scope.projectId });
+  }
   if (op === 'get') {
     const id = str(input.id);
     if (id === undefined) return failure('id is required for op: get');

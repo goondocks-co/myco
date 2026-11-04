@@ -75,8 +75,6 @@ export const CARD_RUN_INPUT_CHARS = 60_000;
 export const CARD_MAX_CHARS = 12_000;
 /** The cards one learning slice reads; a longer session is learned in several slices. */
 export const LEARNING_SLICE_CHARS = 240_000;
-/** One raw turn a learning run opens for a high-signal card. */
-export const RAW_TURN_CHARS = 40_000;
 /** Raw turns one learning run may open. */
 export const RAW_TURN_OPENS = 4;
 

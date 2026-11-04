@@ -37,12 +37,17 @@ async function drive(lines: readonly string[], task = 'title-summary') {
 }
 
 describe('the tools a run\'s harness offers its model', () => {
-  it('holds a card run to its server, and leaves every other run the harness\'s tools', async () => {
-    const card = await drive([call('material', 'mcp__myco__myco_run_cards', { op: 'material' })], CARD_TASK);
-    expect(card.argv[card.argv.indexOf('--tools') + 1]).toBe('');
-    expect(card.argv.slice(card.argv.indexOf('--allowedTools'), card.argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__myco']);
-    const titling = await drive([call('material', 'mcp__myco__myco_run_sessions', { op: 'material' })]);
-    expect(titling.argv).not.toContain('--tools');
+  it('holds every run that reads no source to its server', async () => {
+    for (const task of [CARD_TASK, 'extract-curate', 'title-summary']) {
+      const { argv } = await drive([call('material', 'mcp__myco__myco_run', { op: 'state_get' })], task);
+      expect(argv[argv.indexOf('--tools') + 1]).toBe('');
+      expect(argv.slice(argv.indexOf('--allowedTools'), argv.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'mcp__myco']);
+    }
+  });
+
+  it('leaves a run that reads source the harness\'s tools', async () => {
+    const { argv } = await drive([call('material', 'mcp__myco__myco_run_map', { op: 'get' })], 'canopy-map');
+    expect(argv).not.toContain('--tools');
   });
 });
 

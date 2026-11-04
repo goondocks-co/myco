@@ -13,6 +13,7 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LEARNING_RESUMED_AT } from './learning-pause.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
+import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
@@ -176,10 +177,25 @@ export async function assignedCards(db: RelationalStore, projectId: string, sess
   }));
 }
 
+/** One card as a learning run reads it. `continues` marks a card that goes on under the same key on the next page. */
+export interface LearningMaterial { turn_key: string; signal: string; card: string; continues?: true }
+
+const LEARNING_ENTRY: PagedEntry<LearningMaterial> = {
+  textOf: (entry) => entry.card,
+  withText: (entry, card, continues) => ({ turn_key: entry.turn_key, signal: entry.signal, card, ...(continues ? { continues: true as const } : {}) }),
+};
+
+/** A slice's cards as pages, each an answer the harness holds whole; `opening` is what page 1 carries beside its cards. */
+export function learningMaterialPages(sessionId: string, opening: Record<string, unknown>, cards: readonly LearningMaterial[]): LearningMaterial[][] {
+  const around = { session_id: sessionId, cards: [] };
+  return materialPages(cards, LEARNING_ENTRY, { first: answerRoom({ ...around, ...opening }), rest: answerRoom(around) });
+}
+
 /**
  * Complete a slice in one guarded batch: the progress revision must be the one assigned, and every prompt the slice
  * covers must have been served to this run. The cards whose input is unchanged are covered, their prompts are
- * acknowledged, and the handoff is kept.
+ * acknowledged, and the handoff is kept. A completion that covers nothing keeps the prior handoff and failure count: it
+ * learned nothing a next slice could use, and a session that keeps ending this way must still back off.
  */
 export async function completeLearning(
   db: RelationalStore, projectId: string, sessionId: string, runId: string, assignment: LearningAssignment, handoff: string, now: number,
@@ -195,17 +211,19 @@ export async function completeLearning(
   const surviving = `FROM json_each(?) j CROSS JOIN turn_cards c ON c.turn_key = json_extract(j.value, '$.turnKey')
       AND c.input_hash = json_extract(j.value, '$.inputHash')
     WHERE c.project_id = ? AND c.session_id = ? AND c.state = 'carded'`;
+  const coversNothing = `(SELECT COUNT(*) ${surviving}) = 0`;
   const survivingParams = [assigned, projectId, sessionId];
   const landed = `EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ? AND l.revision = ? AND l.last_completed_run = ?)`;
   const landedParams = [projectId, sessionId, assignment.expectedRevision + 1, runId];
   const guard = { sql: landed, params: landedParams };
   const result = await commitAttributedWrite(db, { projectId },
-    db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = ?, last_completed_at = ?, last_completed_run = ?, last_completed_reason = 'completed',
-        failures = 0, eligible_at = NULL,
+    db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = CASE WHEN ${coversNothing} THEN handoff ELSE ? END,
+        last_completed_at = ?, last_completed_run = ?, last_completed_reason = 'completed',
+        failures = CASE WHEN ${coversNothing} THEN failures ELSE 0 END, eligible_at = NULL,
         learned_seq = MAX(learned_seq, COALESCE((SELECT MAX(c.last_seq) ${surviving}), learned_seq))
       WHERE project_id = ? AND session_id = ? AND revision = ?
       RETURNING (SELECT COUNT(*) ${surviving}) AS covered`)
-      .bind(handoff, now, runId, ...survivingParams, projectId, sessionId, assignment.expectedRevision, ...survivingParams),
+      .bind(...survivingParams, handoff, now, runId, ...survivingParams, ...survivingParams, projectId, sessionId, assignment.expectedRevision, ...survivingParams),
     { runId, toolName: LEARNING_TOOL, op: 'complete', recordedAt: now, detail: { session_id: sessionId, cards: cards.length } },
     [
       db.prepare(`UPDATE turn_cards SET covered = 1 WHERE state = 'carded' AND project_id = ? AND session_id = ? AND turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(?))

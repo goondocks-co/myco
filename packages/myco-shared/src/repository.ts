@@ -3,6 +3,9 @@ export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 
+/** Whether a run of this task reads a checkout of its repository. A run that does not works through its server's tools alone. */
+export const taskReadsRepository = (task: string | null): boolean => task !== null && REPOSITORY_TASKS.includes(task);
+
 /** A capability requires source only when all of its tasks read the repository. */
 export const allTasksReadRepository = (tasks: readonly string[]): boolean =>
   tasks.length > 0 && tasks.every(task => REPOSITORY_TASKS.includes(task));

@@ -117,7 +117,9 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['material', 'get', 'complete'], description: 'material: the slice\'s cards and the previous slice\'s handoff. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next.' },
+        op: { type: 'string', enum: ['material', 'get', 'complete'], description: 'material: the slice\'s cards a page at a time, with the previous slice\'s handoff on page 1. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next. Spore writes and complete wait until every page is read.' },
+        page: { type: 'number', description: 'For material: the page to read, from 1. An answer names its next_page until the last.' },
+        revision: { type: 'string', description: 'For material past page 1: the revision the earlier pages answered.' },
         turn_key: { type: 'string', description: 'For get: the card whose raw turn to read.' },
         handoff: { type: 'string', description: 'For complete: at most 4 KB for the next slice of this session.' },
         [PROJECT_PIVOT]: project,

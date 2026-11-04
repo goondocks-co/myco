@@ -612,6 +612,7 @@
     "tests/myco-server/setup-progress.test.ts": 1135,
     "tests/myco-server/setup-read-plans.test.ts": 5208,
     "tests/myco-server/source-call-gates.test.ts": 444,
+    "tests/myco-server/spore-near-matches.test.ts": 1200,
     "tests/myco-server/spores-api.test.ts": 123,
     "tests/myco-server/spores.test.ts": 15557,
     "tests/myco-server/sql-rows.test.ts": 48,
