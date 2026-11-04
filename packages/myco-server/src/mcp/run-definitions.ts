@@ -1,3 +1,4 @@
+import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
 /**
  * The tools only a run may call.
  *
@@ -98,15 +99,15 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   },
   {
     name: 'myco_run_cards',
-    description: 'The turns this card run was assigned: read their trimmed inputs, then write one card per turn.',
+    description: `The turns this card run was assigned: read their trimmed inputs, then write one card per turn. ${CARD_WRITE_BOUND}`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['material', 'write'], description: 'material: the assigned turns, each with its turn_key and trimmed input, a page at a time. write: the cards, once.' },
+        op: { type: 'string', enum: ['material', 'write'], description: 'material: the assigned turns, each with its turn_key and trimmed input, a page at a time. write: a subset of the assigned cards, repeated until all turns are written.' },
         page: { type: 'number', description: 'For material: the page to read, from 1. An answer names its next_page until the last.' },
-        revision: { type: 'string', description: 'For material past page 1: the revision the earlier pages answered.' },
-        cards: { type: 'array', description: 'For write: [{ turns: [turn_key…], signal: "none"|"low"|"high", card: { asked, done, outcome, decisions, rejected, errors, corrections, files, commands, open_questions } }]. Every served turn_key appears in exactly one card.' },
+        revision: { type: 'string', description: 'For material past page 1 and every card write: the revision the earlier pages answered.' },
+        cards: { type: 'array', description: 'For write: [{ turns: [turn_key…], signal: "none"|"low"|"high", card: { asked, done, outcome, decisions, rejected, errors, corrections, files, commands, open_questions } }]. Across write calls, every served turn_key appears in exactly one card.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

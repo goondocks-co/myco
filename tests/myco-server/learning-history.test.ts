@@ -53,7 +53,8 @@ async function sourceSession(db: RelationalStore, session: string, activity: num
 }
 
 async function capture(db: RelationalStore, tokenId: string, sessionId: string, events: readonly Record<string, unknown>[]) {
-  for (const event of events) expect(await ingestEvent(db,
+  const last = events.at(-1)!;
+  for (const event of [...events, { kind: 'session.end', createdAt: last.createdAt, payload: { endedAt: last.createdAt } }]) expect(await ingestEvent(db,
     { projectId: 'project', machineId: 'machine', tokenId, bodyBytes: 1, now: NOW },
     envelope({ eventId: crypto.randomUUID(), sessionId, ...event }))).toMatchObject({ persisted: true });
 }
@@ -299,7 +300,7 @@ it('raises the source activity when a previously historical turn changes', async
   });
 });
 
-it('settles and claims a new turn on the first wake ahead of 500 old turns', async () => {
+it('settles a new turn on the first wake and claims it once quiet ahead of 500 old turns', async () => {
   await withDocumentStores(async db => {
     const { blobs, poll, token } = await workerHarness(db);
     const rows = JSON.stringify(Array.from({ length: 500 }, (_, n) => ({ key: `old-${n}`, at: OLD + n })));
@@ -319,7 +320,7 @@ it('settles and claims a new turn on the first wake ahead of 500 old turns', asy
       .toEqual({ due_at: NOW, source_activity_at: NOW - HOUR + 1 });
     expect(await db.prepare(`SELECT source_activity_at FROM learning_sessions WHERE session_id='new'`).first())
       .toEqual({ source_activity_at: NOW - HOUR + 1 });
-    const claimed = await poll();
+    const claimed = await poll(NOW + 2 * HOUR);
     expect(claimed).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
     if (!claimed.claimed) throw new Error('claim refused');
     expect(await db.prepare('SELECT subject FROM agent_runs WHERE id=?').bind(claimed.run.id).first())

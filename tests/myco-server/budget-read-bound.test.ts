@@ -172,3 +172,52 @@ it('seeks only new settlements after warmup with a rare key at one thousand and 
     }
   }finally{meter.close();await mf.dispose();}
 },240_000);
+
+it('seeks fresh card and learning work without visiting active, backed-off or disabled historical sessions', async () => {
+  const f = await budgetFixture();
+  const meter = sqliteBudgetMeter();
+  const { LEARNING_STAGES } = await import('@myco-server-worker/core/learning-stages.js');
+  const DAY = 86_400_000;
+  const now = Math.floor(f.now / DAY) * DAY + 5 * 60_000;
+  try {
+    await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', f.now);
+    const session = f.sqlite.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
+      VALUES('proj_1',?,'fake','fake',1,?,?)`);
+    const progress = f.sqlite.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,due_cards,eligible_at,card_retry_at)
+      VALUES('proj_1',?,'ready',?,?,?,?,?)`);
+    session.run('previous-day-card', now, now);
+    progress.run('previous-day-card', now - 3_600_000, 1, 0, null, 0);
+    f.sqlite.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('proj_1','previous-day-card','turn',1,?)`).run(now);
+    session.run('future-learning', now, now);
+    progress.run('future-learning', now + 2 * DAY, 0, 1, now, 0);
+    const stages = LEARNING_STAGES.slice(0, 2);
+    const reads = async (expected = 1) => Promise.all(stages.map(async stage => {
+      const due = stage.due("'proj_1'", now);
+      expect(await f.db.prepare(`SELECT ${due.sql} AS due`).bind(...due.params).first()).toEqual({ due: expected });
+      return meter.reads(f.sqlite, { sql: `SELECT ${due.sql}`, params: due.params });
+    }));
+    const before = await reads();
+    const contact = () => f.sqlite.exec("UPDATE sessions SET ended_at=NULL,last_received_at=" + now + " WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')");
+    contact();
+    const idleBefore = await reads(0);
+    f.sqlite.prepare("UPDATE sessions SET ended_at=? WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')").run(now);
+    f.sqlite.transaction(() => {
+      for (let n = 0; n < 1900; n++) {
+        for (const kind of ['active', 'backoff', 'history']) {
+          for (const cards of [true, false]) {
+            const id = `${kind}-${cards}-${n}`;
+            const old = kind === 'history';
+            session.run(id, old ? now - 30 * DAY : now, kind === 'active' ? null : now);
+            progress.run(id, old ? now - 30 * DAY : now, cards ? 1 : 0, cards ? 0 : 1,
+              cards ? null : kind === 'backoff' ? now + DAY : now, kind === 'backoff' ? now + DAY : 0);
+          }
+        }
+      }
+    })();
+    expect(await reads()).toEqual(before);
+    expect((await stages[0]!.head(f.db, 'proj_1', now))?.key).toBe('previous-day-card');
+    expect((await stages[1]!.head(f.db, 'proj_1', now))?.key).toBe('future-learning');
+    contact();
+    expect(await reads(0)).toEqual(idleBefore);
+  } finally { meter.close(); f.sqlite.close(); }
+});

@@ -8,7 +8,7 @@
  * completion covers exactly those cards whose input is unchanged, acknowledges the prompts they cover, and carries a
  * short handoff to the next slice.
  *
- * This module is the only one whose SQL names `learning_sessions`, apart from the material-version allocator.
+ * Session learning progress and receipt-time claim admission share this per-session row.
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LEARNING_RESUMED_AT } from './learning-pause.js';
@@ -18,7 +18,7 @@ import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
-import { learningRecencySql } from './learning-recency.js';
+import { FRESH_LEARNING_MS, learningRecencySql } from './learning-recency.js';
 export { FRESH_LEARNING_MS } from './learning-recency.js';
 export { LEARNING_TOOL };
 
@@ -95,6 +95,15 @@ export function sessionProgressStatements(db: RelationalStore, projectId: string
   ];
 }
 
+/** A card or learning assignment must still name a quiet session when its claim commits. */
+export function quietSessionClaim(projectId: string, context: Readonly<Record<string, unknown>> | undefined, now: number): { sql: string; params: unknown[] } {
+  const assignment = context?.assignment;
+  if (typeof context?.session_id !== 'string' || assignment === null || typeof assignment !== 'object'
+    || !('kind' in assignment) || !['cards', 'learning'].includes(String(assignment.kind))) return { sql: '1', params: [] };
+  return { sql: 'EXISTS (SELECT 1 FROM learning_sessions WHERE project_id = ? AND session_id = ? AND quiet_at <= ?)',
+    params: [projectId, context.session_id, now] };
+}
+
 /** The statement that gives a published session its learning row, ready. */
 export function learningSessionStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
   return db.prepare(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id, init_state, source_activity_at)
@@ -125,10 +134,26 @@ export interface LearningAssignment {
   handoff: string | null;
 }
 
+/** Fresh work seeks its two source-day buckets; later source clocks retain their source-ordered range. */
+export function learningWorkFrom(project: string, now: number, kind: 'cards' | 'learning', fresh: boolean): string {
+  const ready = kind === 'cards' ? 'card_ready_at' : 'learning_ready_at';
+  const pending = kind === 'cards' ? 'pending_cards > 0' : 'eligible_at IS NOT NULL';
+  const dueIndex = kind === 'cards' ? 'idx_learning_cards_ready' : 'idx_learning_ready';
+  if (!fresh) return `learning_sessions l INDEXED BY ${dueIndex}`;
+  const freshIndex = kind === 'cards' ? 'idx_learning_cards_fresh' : 'idx_learning_fresh';
+  const sourceIndex = kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible';
+  const day = Math.floor(now / FRESH_LEARNING_MS);
+  const columns = 'project_id,session_id,source_activity_at,eligible_at,pending_cards,card_ready_at,learning_ready_at';
+  return `(SELECT ${columns} FROM learning_sessions INDEXED BY ${freshIndex}
+      WHERE project_id = ${project} AND source_day IN (${day - 1},${day}) AND ${pending} AND ${ready} <= ${Math.floor(now)}
+    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${sourceIndex}
+      WHERE project_id = ${project} AND source_activity_at >= ${(day + 1) * FRESH_LEARNING_MS} AND ${pending} AND ${ready} <= ${Math.floor(now)}) l`;
+}
+
 /** The project's eligible session with the newest source activity inside the range, or null. */
 export async function learningHead(db: RelationalStore, projectId: string, now: number, fresh: boolean): Promise<string | null> {
-  const row = await db.prepare(`SELECT session_id AS sessionId FROM learning_sessions INDEXED BY idx_learning_source_eligible
-    WHERE project_id = ? AND eligible_at <= ? AND ${learningRecencySql(fresh, now)} ORDER BY source_activity_at DESC, session_id LIMIT 1`)
+  const row = await db.prepare(`SELECT session_id AS sessionId FROM ${learningWorkFrom('?1', now, 'learning', fresh)}
+    WHERE project_id = ?1 AND eligible_at IS NOT NULL AND learning_ready_at <= ?2 AND ${learningRecencySql(fresh, now)} ORDER BY source_activity_at DESC, session_id LIMIT 1`)
     .bind(projectId, now).first<{ sessionId: string }>();
   return row?.sessionId ?? null;
 }
@@ -267,8 +292,9 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
     FROM (SELECT ${column} AS n ${scopedSessions(column === 'pending_cards' ? 'idx_learning_source_pending' : 'idx_learning_source_waiting',
       column === 'pending_cards' ? 'pending_cards > 0' : waiting, true)} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
   const row = await db.prepare(`SELECT ${RESUMED} AS resumed,
-      ${capped(historyEnabled ? `SELECT 1 FROM learning_sessions INDEXED BY idx_learning_eligible_all WHERE eligible_at IS NOT NULL`
-        : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', 'eligible_at IS NOT NULL', true)}`)} AS dueSessions,
+      ${capped(historyEnabled ? `SELECT 1 FROM projects p CROSS JOIN learning_sessions l INDEXED BY idx_learning_ready ON l.project_id = p.project_id
+        WHERE eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`
+        : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`, true)}`)} AS dueSessions,
       ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0`) : freshCount('due_cards')} AS dueCards,
       ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`) : freshCount('pending_cards')} AS turnsAwaitingCards,
       ${historyEnabled ? '0' : capped(`SELECT 1 ${scopedSessions('idx_learning_source_waiting', waiting, false)}`)} AS historyWaiting,

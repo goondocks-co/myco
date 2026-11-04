@@ -383,7 +383,7 @@
     "tests/myco-server/body.test.ts": 1977,
     "tests/myco-server/budget-governor.test.ts": 20500,
     "tests/myco-server/budget-migration.test.ts": 6500,
-    "tests/myco-server/budget-read-bound.test.ts": 35322,
+    "tests/myco-server/budget-read-bound.test.ts": 42000,
     "tests/myco-server/bun-oauth-seam.test.ts": 277,
     "tests/myco-server/bytes.test.ts": 4,
     "tests/myco-server/canopy-map-outcome.test.ts": 505,

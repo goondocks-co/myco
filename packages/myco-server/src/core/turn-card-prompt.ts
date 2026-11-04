@@ -2,12 +2,17 @@
  * The instruction a `turn-cards` run receives. Its text lives here alone, so tuning what a card says is an edit to
  * this file and nothing else.
  */
+import { MAX_BODY_BYTES } from '../ingest/body.js';
+
+/** The request limit and recovery a card run receives before writing. */
+export const CARD_WRITE_BOUND = `Each call's entire JSON request must fit ${MAX_BODY_BYTES} UTF-8 bytes, including JSON escaping and the MCP envelope. Split cards across smaller calls when needed, carrying the material revision on every write.`;
+
 export const TURN_CARD_PROMPT = `Write one card per turn of a coding session, from the trimmed turns this run is served. Budget: a few turns.
 
 ## Steps
 
 1. Call \`myco_run_cards\` op "material". It returns the turns to card, in order, each with its \`turn_key\` and its trimmed input. Call it again with the answer's \`next_page\` as \`page\` and its \`revision\` until an answer has no \`next_page\`; a \`material_changed\` refusal means restart at page 1. An entry marked \`continues\` goes on under the same \`turn_key\` on the next page.
-2. Call \`myco_run_cards\` op "write" once, with \`cards\`: one entry per card. Every served \`turn_key\` appears in exactly one card's \`turns\`. A run of consecutive mechanical turns (polling, waiting, routine status, "continue") may share one card; every other turn gets its own.
+2. Call \`myco_run_cards\` op "write" with \`revision\` from the material and \`cards\`: one entry per card. ${CARD_WRITE_BOUND} Across the calls, every served \`turn_key\` appears in exactly one card's \`turns\`. Finish all assigned turns before reporting. A run of consecutive mechanical turns (polling, waiting, routine status, "continue") may share one card; every other turn gets its own.
 3. Close with \`myco_run\` op "report", action "carded", a one-line \`summary\`.
 
 ## What a card is for

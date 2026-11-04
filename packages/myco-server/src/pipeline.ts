@@ -1,3 +1,5 @@
+import { CARD_TASK } from './core/task-catalogue.js';
+import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
 import { projectExists } from './read/sessions.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
@@ -824,7 +826,7 @@ export function createServer(deps: ServerDeps) {
     if (projectId !== held.projectId) return refuse(auth, shapeOf(route), RUN_PROJECT_MISMATCH, 'project_mismatch', { runId: held.id });
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
-      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      if (!body.ok) return refuse(auth, shapeOf(route), held.task === CARD_TASK ? `${body.reason}. ${CARD_WRITE_BOUND}` : body.reason, 'body_cap');
       const subject = await runSubject(env, held, auth.tokenId);
       if (!await authorizeHttp(env, route.authorization, subject, { projectId, run: held, body: body.text })) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
       return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });

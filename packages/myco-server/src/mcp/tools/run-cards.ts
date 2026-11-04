@@ -16,7 +16,8 @@ import { documentTurnInput } from '../../content/turn-material.js';
 import type { CardAssignment } from '../../core/learning-stages.js';
 import { CARD_TOOL } from '../../core/tool-catalogue.js';
 import { materialUnread, servePage } from './material-page.js';
-import { assignmentOf } from './run-learning.js';
+import { assignmentOf } from '../../db/run-context.js';
+import { materialRead, MATERIAL_CHANGED } from '../../core/material-pages.js';
 
 export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, CARD_TOOL);
@@ -38,11 +39,13 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
   if (input.op === 'write') {
     const unread = materialUnread(run);
     if (unread !== null) return unread;
+    const read = materialRead(run.runContext, run.tokenId)!;
+    if (input.revision !== read.revision) return { ...failure('each card write carries the revision read by this attempt; read the material again if it changed'), code: MATERIAL_CHANGED };
     const writes = parseCardWrites(input.cards, new Set(held.assignment.turns.map((turn) => turn.turnKey)));
     if (typeof writes === 'string') return failure(writes);
     const result = await writeRunCards(ctx.env, ctx.projectId, held.sessionId, held.assignment.turns, writes,
       { runId: run.runId, model: run.model }, ctx.now);
-    await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId),
+    await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId, held.assignment.turns),
       { runId: run.runId, toolName: CARD_TOOL, op: 'write', recordedAt: ctx.now, detail: { written: result.written } });
     return { written: result.written, changed_since_served: result.changed };
   }

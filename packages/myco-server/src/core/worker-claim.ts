@@ -1,3 +1,4 @@
+import { quietSessionClaim } from './learning-sessions.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
 import { ensureMemberStatement } from '../auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
@@ -44,7 +45,9 @@ export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: Cl
   const capability=capabilityOf(candidate.task);
   const admission: WriteAdmission = {limits:await readDispatchLimits(env),now:claim.now,...(capability===null?{}:{capability}),
     budget:{...price,active:(await budgetActivation(db)).active},settingsGuard:claim.settingsGuard};
-  const authority = form.kind === 'queued' ? workerClaimPredicate(candidate, admission) : pulledClaimPredicate(form.pull, admission);
+  const selection = form.kind === 'queued' ? workerClaimPredicate(candidate, admission) : pulledClaimPredicate(form.pull, admission);
+  const quiet = quietSessionClaim(candidate.projectId, claim.input?.context, claim.now);
+  const authority = { sql: `(${selection.sql}) AND (${quiet.sql})`, params: [...selection.params, ...quiet.params] };
   const gate = runnerClaimGate(claim.worker, claim.now);
   const mint=await mintInsert(db,{memberId:HARNESS_MEMBER_ID,machineId:'harness'},claim.now,null,NO_RUNTIME_CLAIMS,{rotates:false,gate:{sql:`${authority.sql} AND ${gate.sql}`,params:[...authority.params,...gate.params]}});
   const dispatchedBy=mint.issued.tokenId;

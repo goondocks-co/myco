@@ -632,6 +632,44 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0616_v616.sql': '505691b310ecfc68f34d982c48bb0ac23d89fdc726049707db92271d58cf484d',
   '0617_v617.sql': '2d75b0745f06abd84fbb22821b248d045562c343cf121f641ddb27ed2de6e934',
   '0618_v618.sql': '6687d26d379fba866215229fd6ce1149589e089ac28d6f5783b44c1d1fd8c691',
+  '0619_v619.sql': 'ee0958ac329e45b5a3e6ccce15ef4e978f40443061224875b02d05f7660c1e76',
+  '0620_v620.sql': 'd0ec51eefadb80c73f4217bf856eca42e470022931e044270c8e5b3eeebba4f3',
+  '0621_v621.sql': 'd6a8832f0bc27771b82a403692681c3695d808cf3f7c5591bb3d222d98a6b941',
+  '0622_v622.sql': '8893d2c52ab99a726157da59b1703267c082c033650ceacab9e4966c99d893bc',
+  '0623_v623.sql': 'cf894312bcec659b93a09eaecbd79d91913a73c3b5bbc277ca8dceb3afa0c99f',
+  '0624_v624.sql': 'a8a3119dc5cf9327377d861882ca0effb4fbe5c32a1069838d453241bdbd2a4e',
+  '0625_v625.sql': 'bb6aa22b97cfef61a335da30bf19302b08a9dcfd179e81f2d4030ea3793a4b17',
+  '0626_v626.sql': '1f1cc6511e8c86c1a1d6c0e1ff64c85ef6b2c2b64194b9af981b8c4576f725ba',
+  '0627_v627.sql': '485af2703c8b0083388bf2422dbda671561c2b67c98c6585fb551d0c5d80f42b',
+  '0628_v628.sql': 'd52bd18b50485fda9eed43fdf08ddc5b47e47cb02c6512cdfe5e2ac09db839f2',
+  '0629_v629.sql': '240808bebc82438cc692d61360e02f1dc847c60a399f74ff07adda4dcca203f3',
+  '0630_v630.sql': 'a2864693a9299bf5216692c191e6de8ddcc634823094a456e596a339c9151279',
+  '0631_v631.sql': 'ebf5d7c56efdd7752e2727e8578525a3161b9aef65aec70b0d9879c44c9edcea',
+  '0632_v632.sql': 'a10ff31a879c37c5905329e6e62635cce2a1514a3525eb0b0ed237871c4c72cd',
+  '0633_v633.sql': '9800f720662e086757b9fda80a1c211e989286769ba5d0ad5345107aaecb24b8',
+  '0634_v634.sql': '71fb42ff5a9f7c8c1ce72e9cb6a523368257a863b0e497a2c973027836599d60',
+  '0635_v635.sql': '145336c55ab7fb579172be4de809f3362460f502dc32cdbd1d3114446b17de06',
+  '0636_v636.sql': 'bff06bd438df54cf8d552bbfe321d5370fc593c2886e7ea49d4a1dd6b1ebd66a',
+  '0637_v637.sql': '6cb94ec1100b83d8864bd2b2a40bed03368dfc96e50a3d93b81462aaec70cc71',
+  '0638_v638.sql': '4c10dd765054c418bd47d49ce945806aed41dac1691edf8642a977c54aa910a9',
+  '0639_v639.sql': 'e881a02a488552ea3efd7be764f4b9d15463ccfb05414da722402ff29d97ad7e',
+  '0640_v640.sql': '1165cd6c4302ae3335ac5eba7e01c71651485e054587144db6d0ab84522d5e4b',
+  '0641_v641.sql': '8054a2337a5d429ce12bd4a9fb0e59817da5d6015d734113e565b76e441fa3c2',
+  '0642_v642.sql': '3374fd02211294953bcda4557d0073b788c92302de247e7567cddb1526a9b4a7',
+  '0643_v643.sql': '9d327b5e87308743f2b3abb978978b8d5f443122882362dfa3ee1eddb09cffa7',
+  '0644_v644.sql': '73b2319ea0257b228d6ef70dcdc12ce6023f2d8f6746eb0127c6dac29572fca4',
+  '0645_v645.sql': '27c79cb3ba73cc1165ea0a272d20c186f7fe3efa2dda5f4da59fd9cd307b69f3',
+  '0646_v646.sql': '62fd9d5d118fc098ccb786d228c5358993fe005d7bbe8a339a84f2b3a1bb327a',
+  '0647_v647.sql': '2e0ecd528094c1c691eccb033eff46c4d4c7d9be0a9e60146900e05782ccc7ea',
+  '0648_v648.sql': '9c5818b71880c25e8d598874a180c80e9a0a159164e4cefd8d8f01a7cee71eab',
+  '0649_v649.sql': 'ed516d70a9a65b3819ae2e9b1d22e31306b0919a2e578503c817784dd685a085',
+  '0650_v650.sql': '4928a958be027f8a1934408b0160b72193bbc1df54d3a1ac27fd8d31d469040f',
+  '0651_v651.sql': '4bada2b95a4b1cdce496ac5cde4ad934cfbc99e0a406234613e306f53dcc7903',
+  '0652_v652.sql': '3be37c91934214aa6995f1a56165842cb64b4084f2fef4a1dc6978dee80dbdb3',
+  '0653_v653.sql': '8c1822ae0f81824e336b269a3aa28af03587d88f55613f2e5f2ff471ac7d637f',
+  '0654_v654.sql': '6f521eb5c3d6d9f2fe167bff1e9c60f87b88116d4c5fe64c7d4d52761ba6c154',
+  '0655_v655.sql': '555f7637ac460e2d5bcfefd2fb10f9f43abc3c98ebe79b75dc2193679165f3c6',
+  '0656_v656.sql': 'aaebd78e0aca41621c441b65731c3a47b4e11c638ef78e62bf06609ff6ccf5fa',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1099,7 +1137,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
+        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
         if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
@@ -1123,7 +1161,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -1270,9 +1308,9 @@ describe('versioned schema steps', () => {
       const insert = (projectId: string) => {
         const specimen = writerRows.get(t);
         if (specimen !== undefined) {
-          const row = { ...specimen, project_id: projectId };
-          const fields = Object.keys(row);
-          sqlite.query(`INSERT INTO ${t} (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`).run(...Object.values(row) as never[]);
+          const row: Record<string, unknown> = { ...specimen, project_id: projectId };
+          const fields = cols.map(column => column.name).filter(name => Object.hasOwn(row,name));
+          sqlite.query(`INSERT INTO ${t} (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`).run(...fields.map(field => row[field]) as never[]);
           return;
         }
         const names = cols.map((c) => c.name);
