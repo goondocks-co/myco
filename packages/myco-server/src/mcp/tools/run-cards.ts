@@ -32,7 +32,7 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
     for (const turn of held.assignment.turns) {
       const material = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, turn.turnKey, document);
       if (material !== null) turns.push({ turn_key: turn.turnKey, input: trimTurn(material).text });
-      else unavailable.push(turn.turnKey);
+      else if (document !== null) unavailable.push(turn.turnKey);
     }
     const page = await servePage(ctx, run, input, turns, () => cardMaterialPages(held.sessionId, turns), undefined, unavailable);
     if ('refusal' in page) return page.refusal;
