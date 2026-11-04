@@ -70,6 +70,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_learning_completed', 'the learning status line reads the most recent completion across the Deployment'],
   ['idx_turn_cards_due_all', 'a card pull asks whether any Project has a turn due before it reads per-Project heads, and status counts them'],
   ['idx_turn_cards_source_settle', 'card settlement selects the newest source activity across all Projects'],
+  ['idx_turn_cards_source_missing', 'the source-activity repair advances through bounded pages of cards across Projects'],
+  ['idx_learning_source_missing', 'the source-activity repair advances through bounded pages of sessions across Projects'],
   ['idx_turn_cards_settle', 'card settlement reads the turns due for it across every Project, oldest first'],
   ['idx_session_documents_rollup', 'summary catch-up resumes the least recently processed due document across the Deployment'],
   ['idx_session_documents_due', 'the publisher takes the sessions whose documents are due across the Deployment, oldest first'],

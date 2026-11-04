@@ -16,10 +16,44 @@ import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
-import { learningEnabledSql } from './settings.js';
+import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
 import { learningRecencySql } from './learning-recency.js';
 export { FRESH_LEARNING_MS } from './learning-recency.js';
 export { LEARNING_TOOL };
+
+/** Rows of each source-activity repair stream read by one wake. */
+export const LEARNING_SOURCE_REPAIR_PAGE = 100;
+const SOURCE_REPAIR_STREAMS = [
+  { table: 'turn_cards', index: 'idx_turn_cards_source_missing', cursor: 'learning_card_source_after' },
+  { table: 'learning_sessions', index: 'idx_learning_source_missing', cursor: 'learning_session_source_after' },
+] as const;
+
+/** Repairs source stamps in bounded pages; rows awaiting source publication retain their place on the next traversal. */
+export async function repairLearningSources(db: RelationalStore): Promise<{ changed: number; more: boolean }> {
+  let changed = 0;
+  let more = false;
+  for (const { table, index, cursor } of SOURCE_REPAIR_STREAMS) {
+    const { results } = await db.prepare(`SELECT rowid AS id FROM ${table} INDEXED BY ${index}
+      WHERE source_activity_at IS NULL AND rowid > COALESCE((SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = ?),0)
+      ORDER BY rowid LIMIT ?`).bind(cursor, LEARNING_SOURCE_REPAIR_PAGE).all<{ id: number }>();
+    if (results.length === 0) {
+      await db.prepare('DELETE FROM schema_meta WHERE key = ?').bind(cursor).run();
+      continue;
+    }
+    const source = `(SELECT d.last_record_at FROM session_documents d
+      WHERE d.project_id = ${table}.project_id AND d.session_id = ${table}.session_id)`;
+    const full = results.length === LEARNING_SOURCE_REPAIR_PAGE;
+    const writes = await db.batch([
+      db.prepare(`UPDATE ${table} SET source_activity_at = ${source}
+        WHERE rowid IN (SELECT value FROM json_each(?)) AND source_activity_at IS NULL AND ${source} IS NOT NULL`)
+        .bind(JSON.stringify(results.map(row => row.id))),
+      db.prepare('INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)').bind(cursor, String(full ? results.at(-1)!.id : 0)),
+    ]);
+    changed += writes[0]!.meta.changes ?? 0;
+    more ||= full;
+  }
+  return { changed, more };
+}
 
 /** Due cards one slice reads at most. */
 export const LEARNING_SLICE_CARDS = 200;
@@ -197,6 +231,7 @@ export interface LearningStatus {
   dueSessions: number;
   dueCards: number;
   turnsAwaitingCards: number;
+  historyWaiting: number;
   awaitingPublication: number;
   lastCompleted: { at: number; reason: string; sessionId: string } | null;
   /** Counts at this value are lower bounds. */
@@ -204,17 +239,25 @@ export interface LearningStatus {
 }
 
 /** What learning has due and waiting, Deployment-wide, from the stages' own indexes. */
-export async function readLearningStatus(db: RelationalStore): Promise<LearningStatus> {
+export async function readLearningStatus(db: RelationalStore, now = Date.now()): Promise<LearningStatus> {
+  const historyEnabled = await learningHistoryEnabled(db);
+  const freshSessions = `FROM projects p CROSS JOIN learning_sessions l INDEXED BY idx_learning_source_activity
+    ON l.project_id = p.project_id WHERE ${learningRecencySql(true, now)}`;
+  const freshCount = (column: 'pending_cards' | 'due_cards') => `(SELECT MIN(${STATUS_CAP + 1},COALESCE(SUM(n),0))
+    FROM (SELECT ${column} AS n ${freshSessions} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
   const row = await db.prepare(`SELECT ${RESUMED} AS resumed,
-      ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_eligible_all WHERE eligible_at IS NOT NULL`)} AS dueSessions,
-      ${capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0`)} AS dueCards,
-      ${capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`)} AS turnsAwaitingCards,
+      ${capped(historyEnabled ? `SELECT 1 FROM learning_sessions INDEXED BY idx_learning_eligible_all WHERE eligible_at IS NOT NULL`
+        : `SELECT 1 ${freshSessions} AND eligible_at IS NOT NULL`)} AS dueSessions,
+      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0`) : freshCount('due_cards')} AS dueCards,
+      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`) : freshCount('pending_cards')} AS turnsAwaitingCards,
+      ${historyEnabled ? '0' : capped(`SELECT 1 FROM learning_sessions WHERE ${learningRecencySql(false, now)} AND (pending_cards > 0 OR due_cards > 0)`)} AS historyWaiting,
       ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'awaiting_publication'`)} AS awaitingPublication`)
-    .first<{ resumed: number; dueSessions: number; dueCards: number; turnsAwaitingCards: number; awaitingPublication: number }>();
+    .first<{ resumed: number; dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
   const last = await db.prepare(`SELECT last_completed_at AS at, last_completed_reason AS reason, session_id AS sessionId FROM learning_sessions
     INDEXED BY idx_learning_completed WHERE last_completed_at IS NOT NULL ORDER BY last_completed_at DESC LIMIT 1`).first<{ at: number; reason: string; sessionId: string }>();
   return {
     resumed: row!.resumed === 1, dueSessions: row!.dueSessions, dueCards: row!.dueCards, turnsAwaitingCards: row!.turnsAwaitingCards,
+    historyWaiting: row!.historyWaiting,
     awaitingPublication: row!.awaitingPublication, lastCompleted: last, cap: STATUS_CAP,
   };
 }
@@ -226,6 +269,7 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
   const parts = [
     `${n(status.dueSessions)} sessions due (${n(status.dueCards)} cards to learn)`,
     `${n(status.turnsAwaitingCards)} turns waiting for their card`,
+    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting)} history sessions waiting behind the history switch`] : []),
     ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication)} sessions waiting for publication`] : []),
     status.lastCompleted === null ? 'nothing learned yet'
       : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'slice learned'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`,

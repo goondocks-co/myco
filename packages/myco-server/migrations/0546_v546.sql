@@ -4,12 +4,12 @@ ALTER TABLE turn_cards ADD COLUMN source_activity_at INTEGER;
 
 ALTER TABLE learning_sessions ADD COLUMN source_activity_at INTEGER;
 
-CREATE TABLE _learning_source_ranges (cards_high INTEGER NOT NULL, sessions_high INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS _learning_source_ranges (cards_high INTEGER NOT NULL, sessions_high INTEGER NOT NULL);
 
 INSERT INTO _learning_source_ranges SELECT COALESCE((SELECT MAX(rowid) FROM turn_cards),0),
     COALESCE((SELECT MAX(rowid) FROM learning_sessions),0);
 
-CREATE TRIGGER session_documents_learning_activity AFTER UPDATE OF last_record_at ON session_documents
+CREATE TRIGGER IF NOT EXISTS session_documents_learning_activity AFTER UPDATE OF last_record_at ON session_documents
     WHEN NEW.last_record_at IS NOT OLD.last_record_at BEGIN
       UPDATE learning_sessions SET source_activity_at=NEW.last_record_at
         WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;

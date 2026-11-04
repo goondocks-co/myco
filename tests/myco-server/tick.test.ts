@@ -357,7 +357,7 @@ describe('a clock\'s chained wakes (#1510)', () => {
     const pacer = paced(5_000, []);
     const report = await runTick(f.env, NOW, { wake: 'clock', pacer, workRequested: true });
     expect(report.drainOnly).toBe(true);
-    expect(report.jobs.map(job => job.name).sort()).toEqual(['search-index', 'session-titling', 'transcript-parse']);
+    expect(report.jobs.map(job => job.name).sort()).toEqual(['learning-source-repair', 'search-index', 'session-titling', 'transcript-parse']);
     expect(report.scheduled).toEqual({ dispatched: 0, skipped: 0 });
     expect(f.runRow('run_stale')!.status).toBe('running');
     const full = await runTick(f.env, NOW + WAKE_INTERVALS.activeMs, { wake: 'clock', pacer });

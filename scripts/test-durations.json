@@ -845,7 +845,7 @@
     "tests/utils/order-stamp.test.ts": 13,
     "tests/utils/repository-name.test.ts": 482,
     "tests/utils/windows-atomic-replace.test.ts": 7,
-    "tests/myco-server/learning-history.test.ts": 15000
+    "tests/myco-server/learning-history.test.ts": 70000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

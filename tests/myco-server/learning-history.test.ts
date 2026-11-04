@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
 import { effectiveSettings } from '@myco-server-worker/core/settings-policies.js';
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
@@ -17,12 +17,20 @@ import { beforeWriteBatch } from './helpers/prepared.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { envelope, memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
+import { writeRunCards, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
+import { type CardAssignment } from '@myco-server-worker/core/learning-stages.js';
+import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
+import { LEARNING_SOURCE_REPAIR_PAGE, readLearningStatus, learningStatusLine, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js';
+import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { switchedOnStages } from '@myco-server-worker/core/pulled-stages.js';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
+const IDLE_CLAIM_ROW_LIMIT = 1000;
 
 async function workerHarness(db: RelationalStore) {
   const blobs = memoryBlobStore();
@@ -42,6 +50,174 @@ async function sourceSession(db: RelationalStore, session: string, activity: num
   await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,last_record_at,updated_at)
     VALUES('project',?,'live',1,?,?)`).bind(session, activity, NOW).run();
 }
+
+async function capture(db: RelationalStore, tokenId: string, sessionId: string, events: readonly Record<string, unknown>[]) {
+  for (const event of events) expect(await ingestEvent(db,
+    { projectId: 'project', machineId: 'machine', tokenId, bodyBytes: 1, now: NOW },
+    envelope({ eventId: crypto.randomUUID(), sessionId, ...event }))).toMatchObject({ persisted: true });
+}
+
+const publish = (db: RelationalStore, blobs: ReturnType<typeof memoryBlobStore>, now: number) =>
+  publishDocuments({ db, blobs }, now, { calls: 500, deadline: Date.now() + 30_000, clock: Date.now });
+
+function countReads(db: RelationalStore) {
+  let rows = 0;
+  const queries: { sql: string; rows: number }[] = [];
+  const originals = new WeakMap<PreparedStatement, PreparedStatement>();
+  const record = (value: unknown) => { rows += (value as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0; };
+  const wrap = (raw: PreparedStatement, sql: string): PreparedStatement => {
+    const all = async <T,>() => { const result = await raw.all<T>(); const count = (result as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0; if (count > 0) queries.push({ sql, rows: count }); record(result); return result; };
+    const statement: PreparedStatement = {
+      bind: (...values) => wrap(raw.bind(...values), sql),
+      all,
+      first: async <T,>() => (await all<T>()).results[0] ?? null,
+      run: async () => { const result = await raw.run(); record(result); return result; },
+    };
+    originals.set(statement, raw);
+    return statement;
+  };
+  return { rows: () => rows, queries, db: {
+    prepare: (sql: string) => wrap(db.prepare(sql), sql),
+    batch: async (statements: PreparedStatement[]) => {
+      const result = await db.batch(statements.map(statement => originals.get(statement)!));
+      result.forEach(record);
+      return result;
+    },
+  } };
+}
+
+it('cards a resumed session in full and admits its learning with history off', async () => {
+  await withDocumentStores(async db => {
+    const { blobs, poll, token } = await workerHarness(db);
+    await capture(db, token.tokenId, 'resumed', [
+      { kind: 'session.start', createdAt: OLD, payload: { agent: 'claude-code', startedAt: OLD } },
+      { kind: 'prompt', createdAt: OLD, payload: { promptId: uuid(31), text: 'Fix the old queue', origin: 'user' } },
+    ]);
+    await publish(db, blobs, OLD + HOUR);
+    expect(await poll()).toMatchObject({ claimed: false });
+    await capture(db, token.tokenId, 'resumed', [
+      { kind: 'prompt', createdAt: NOW - HOUR, payload: { promptId: uuid(32), text: 'Resume the queue fix', origin: 'user' } },
+    ]);
+    await publish(db, blobs, NOW);
+    expect(await learningHistoryEnabled(db)).toBe(false);
+    const cards = await poll();
+    if (!cards.claimed) throw new Error('resumed session was not claimed');
+    expect(cards.run.task).toBe('turn-cards');
+    const saved = await db.prepare('SELECT run_context AS context FROM agent_runs WHERE id=?').bind(cards.run.id).first<{ context: string }>();
+    const { assignment } = JSON.parse(saved!.context) as { assignment: CardAssignment };
+    expect(assignment.turns.map(turn => turn.turnKey)).toEqual([uuid(31), uuid(32)]);
+    expect(await writeRunCards({ db }, 'project', 'resumed', assignment.turns,
+      assignment.turns.map(turn => ({ turns: [turn.turnKey], signal: 'high', card: NONE_CARD('fixture') })),
+      { runId: cards.run.id, model: 'fake' }, NOW + 1)).toEqual({ written: 2, changed: [] });
+    await db.prepare("UPDATE agent_runs SET status='completed',completed_at=? WHERE id=?").bind(NOW + 1, cards.run.id).run();
+    expect(await db.prepare("SELECT pending_cards,due_cards,eligible_at IS NOT NULL AS eligible FROM learning_sessions WHERE session_id='resumed'").first())
+      .toEqual({ pending_cards: 0, due_cards: 2, eligible: 1 });
+    const learning = await poll(NOW + 2);
+    expect(learning).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
+    if (!learning.claimed) throw new Error('resumed session learning was not claimed');
+    const slice = await db.prepare('SELECT run_context AS context FROM agent_runs WHERE id=?').bind(learning.run.id).first<{ context: string }>();
+    const learningAssignment = (JSON.parse(slice!.context) as { assignment: LearningAssignment }).assignment;
+    await recordServedPrompts(db, { projectId: 'project' }, learning.run.id, [
+      { promptId: uuid(31), sessionId: 'resumed', createdAt: OLD, endedAt: null },
+      { promptId: uuid(32), sessionId: 'resumed', createdAt: NOW - HOUR, endedAt: null },
+    ], NOW + 3);
+    expect(await completeLearning(db, 'project', 'resumed', learning.run.id, learningAssignment, '', NOW + 4))
+      .toEqual({ completed: true, covered: 2 });
+    expect(await db.prepare("SELECT pending_cards,due_cards,eligible_at FROM learning_sessions WHERE session_id='resumed'").first())
+      .toEqual({ pending_cards: 0, due_cards: 0, eligible_at: null });
+  });
+});
+
+it('skips a history backlog before probing it and reports why history waits', async () => {
+  await withDocumentStores(async (db, target) => {
+    const { env, poll } = await workerHarness(db);
+    expect((await switchedOnStages(db, LEARNING_STAGES)).map(stage => stage.level)).toEqual([0.5, 1]);
+    const add = async (from: number, to: number) => {
+      const ids = JSON.stringify(Array.from({ length: to - from }, (_, n) => from + n));
+      await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards)
+        SELECT 'project','history-' || value,'ready',?,1 FROM json_each(?)`).bind(OLD, ids).run();
+      await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at,input_chars)
+        SELECT 'project','history-' || value,'old-' || value,?,?,?,10 FROM json_each(?)`).bind(OLD, OLD, NOW, ids).run();
+    };
+    const empty = countReads(db);
+    env.db = empty.db;
+    expect(await poll()).toMatchObject({ claimed: false });
+    await add(0, 2000);
+    const first = countReads(db);
+    env.db = first.db;
+    expect(await poll()).toMatchObject({ claimed: false });
+    expect(first.rows(), JSON.stringify(first.queries)).toBeLessThan(IDLE_CLAIM_ROW_LIMIT);
+    expect(first.rows()).toBe(empty.rows());
+    await add(2000, 4000);
+    const second = countReads(db);
+    env.db = second.db;
+    expect(await poll()).toMatchObject({ claimed: false });
+    expect(second.rows()).toBe(first.rows());
+    if (target === 'D1') expect(first.rows()).toBeGreaterThan(0);
+    env.db = db;
+    const status = await readLearningStatus(db, NOW);
+    expect(status).toMatchObject({ historyWaiting: status.cap + 1, turnsAwaitingCards: 0, dueSessions: 0, dueCards: 0 });
+    expect(learningStatusLine(status, null, NOW)).toContain('at least 1000 history sessions waiting behind the history switch');
+  });
+});
+
+it('repairs late old-Worker insert shapes in bounded wake pages and admits the repaired work', async () => {
+  await withDocumentStores(async db => {
+    const total = LEARNING_SOURCE_REPAIR_PAGE * 2 + 1;
+    const rows = JSON.stringify(Array.from({ length: total }, (_, n) => ({ id: `late-${n}`, at: OLD + n })));
+    await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,last_record_at,updated_at)
+      SELECT 'project',json_extract(value,'$.id'),'live',1,json_extract(value,'$.at'),? FROM json_each(?)`).bind(NOW, rows).run();
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,pending_cards)
+      SELECT 'project',json_extract(value,'$.id'),'ready',1 FROM json_each(?)`).bind(rows).run();
+    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at,card,covered)
+      SELECT 'project',json_extract(value,'$.id'),json_extract(value,'$.id'),json_extract(value,'$.at'),?,'kept card',1 FROM json_each(?)`).bind(NOW, rows).run();
+    for (const step of SCHEMA_STEPS.filter(step => step.version > 610)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    const { env, poll } = await workerHarness(db);
+    await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
+    expect(await poll()).toMatchObject({ claimed: false });
+    const repair = () => JOB_IMPLEMENTATIONS['learning-source-repair']!(env, NOW, 'active');
+    expect(await repair()).toEqual({ changed: 2 * LEARNING_SOURCE_REPAIR_PAGE, more: true });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM turn_cards WHERE source_activity_at IS NULL').first()).toEqual({ n: total - LEARNING_SOURCE_REPAIR_PAGE });
+    expect(await repair()).toEqual({ changed: 2 * LEARNING_SOURCE_REPAIR_PAGE, more: true });
+    expect(await repair()).toEqual({ changed: 2, more: false });
+    expect(await repair()).toEqual({ changed: 0, more: false });
+    expect(await db.prepare("SELECT COUNT(*) AS n FROM turn_cards WHERE card='kept card' AND covered=1 AND due_at=? AND source_activity_at=created_at").bind(NOW).first())
+      .toEqual({ n: total });
+    expect(await poll()).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+  }, 610);
+});
+
+it('refuses the history card claim write after the switch is disabled', async () => {
+  await withDocumentStores(async db => {
+    const { env, poll } = await workerHarness(db);
+    await sourceSession(db, 'history', OLD);
+    await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('project','history','ready',?,1)").bind(OLD).run();
+    await db.prepare("INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at) VALUES('project','history','old',?,?,?)").bind(OLD, OLD, NOW).run();
+    await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
+    env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'),
+      async () => { await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW + 1); }, true);
+    expect(await poll()).toMatchObject({ claimed: false });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_runs').first()).toEqual({ n: 0 });
+  });
+});
+
+it('raises the source activity when a previously historical turn changes', async () => {
+  await withDocumentStores(async db => {
+    const { blobs, poll, token } = await workerHarness(db);
+    await capture(db, token.tokenId, 'changed', [
+      { kind: 'session.start', createdAt: OLD, payload: { agent: 'claude-code', startedAt: OLD } },
+      { kind: 'prompt', createdAt: OLD, payload: { promptId: uuid(41), text: 'Fix the old queue', origin: 'user' } },
+    ]);
+    await publish(db, blobs, OLD + HOUR);
+    expect(await db.prepare("SELECT source_activity_at FROM turn_cards WHERE session_id='changed'").first()).toEqual({ source_activity_at: OLD });
+    await capture(db, token.tokenId, 'changed', [
+      { kind: 'response', createdAt: NOW - HOUR, payload: { responseId: uuid(42), promptId: uuid(41), text: 'The old turn now has a fix.' } },
+    ]);
+    await publish(db, blobs, NOW);
+    expect(await db.prepare("SELECT source_activity_at FROM turn_cards WHERE session_id='changed'").first()).toEqual({ source_activity_at: NOW - HOUR });
+    expect(await poll()).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+  });
+});
 
 it('settles and claims a new turn on the first wake ahead of 500 old turns', async () => {
   await withDocumentStores(async db => {

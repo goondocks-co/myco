@@ -1073,5 +1073,6 @@ export function learningHistoryEnabledSql(): string {
 
 /** The history switch as the learning stages and settings surface both resolve it. */
 export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
-  return (await db.prepare(`SELECT ${learningHistoryEnabledSql()} AS enabled`).first<{ enabled: number }>())?.enabled === 1;
+  const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
+  return text !== undefined && JSON.parse(text) === true;
 }
