@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   consolidateSpores, countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, updateSporeContent,
@@ -20,11 +20,7 @@ const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
 
 function store(): { db: RelationalStore; sqlite: Database } {
-  const sqlite = new Database(':memory:');
-  // Bun enforces foreign keys only when the pragma is issued, so a spore that
-  // names a session no table holds has to be refused here as it is on D1.
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = seededSqlite();
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }

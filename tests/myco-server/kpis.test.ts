@@ -11,7 +11,7 @@
 import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { kpiWindow, median, readKpis, KPI_WINDOWS } from '@myco-server-worker/read/kpis.js';
@@ -37,9 +37,7 @@ interface Rig {
 }
 
 function rig(): Rig {
-  const sqlite = new Database(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = seededSqlite();
   for (const p of [PROJECT, OTHER]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }

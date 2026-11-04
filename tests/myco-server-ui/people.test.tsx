@@ -1,3 +1,4 @@
+import { MACHINE_SETTINGS_CONTROLS } from '@goondocks/myco-shared/setup-guidance';
 /**
  * People & machines and My machines: machines built from credentials and
  * named without ids, Myco's own account kept out of the people and named
@@ -241,7 +242,7 @@ describe('My machines', () => {
     expect(machines.textContent).toContain('Lin’s build box');
     expect(machines.textContent).toMatch(/^Lin’s build boxallowed to write · first signed in/);
     fireEvent.keyDown(within(machines).getByRole('button', { name: 'More for Lin’s build box' }), { key: 'Enter' });
-    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', 'Its settings', 'What it wrote', 'Stop']);
+    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', MACHINE_SETTINGS_CONTROLS.action, 'What it wrote', 'Stop']);
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
     expect(screen.getByText(/an admin creates a one-time link on/).textContent).toContain(INVITE_CONTROLS.page);
     await new Promise((resolve) => setTimeout(resolve, 50));

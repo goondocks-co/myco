@@ -1,3 +1,4 @@
+import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -72,3 +73,29 @@ for (const target of ['sqlite-vec', 'vectorize-contract'] as const) {
     });
   });
 }
+
+test('native vector content-key matrix covers delivery order, replay, clearing and transactional faults', async () => {
+  expect(PLATFORM_RECONCILIATION_MATRICES['platform/bun/vectors.ts#upsert']).toEqual(['content-key']);
+  const old = await vector('same-record', [1, 0], { revision: 'old' });
+  const latest = await vector('same-record', [0, 1], { revision: 'new' });
+  for (const order of [[old, latest], [latest, old]]) {
+    const db = new Database(':memory:');
+    try {
+      const store = sqliteVectorStore(db);
+      expect(await store.get(scope, [old.id, latest.id])).toEqual([]);
+      for (const row of order) await store.upsert(scope, [row]);
+      await store.upsert(scope, order);
+      expect((await store.get(scope, [old.id, latest.id])).map(row => row.id).sort()).toEqual([old.id, latest.id].sort());
+      const ref = (row: StoredVector) => ({ id: row.id, type: row.metadata.type, recordId: row.metadata.record_id, revision: row.metadata.revision });
+      await store.delete(scope, [ref(old), ref(latest)]);
+      await store.delete(scope, [ref(old)]);
+      expect(await store.get(scope, [old.id, latest.id])).toEqual([]);
+      db.exec("CREATE TRIGGER fault BEFORE INSERT ON local_vectors WHEN NEW.metadata_json LIKE '%new%' BEGIN SELECT RAISE(ABORT, 'vector fault'); END");
+      await expect(store.upsert(scope, [old, latest])).rejects.toThrow('vector fault');
+      expect(await store.get(scope, [old.id, latest.id])).toEqual([]);
+      db.exec('DROP TRIGGER fault');
+      await store.upsert(scope, [old, latest]);
+      expect((await store.get(scope, [old.id, latest.id])).length).toBe(2);
+    } finally { db.close(); }
+  }
+});

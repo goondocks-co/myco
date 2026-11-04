@@ -336,7 +336,7 @@ describe('B. reconciliation seams', () => {
 });
 
 import { upsertOccurrences, validateUpserts } from './server-upsert-inventory.js';
-import { RECONCILIATION_MATRICES } from '../myco-server/helpers/reconciliation-cases.js';
+import { PLATFORM_RECONCILIATION_MATRICES, RECONCILIATION_MATRICES } from '../myco-server/helpers/reconciliation-cases.js';
 import { RECONCILED_UPSERTS } from './server-upsert-manifest.js';
 
 describe('server reconciliation upsert contract', () => {
@@ -345,7 +345,7 @@ describe('server reconciliation upsert contract', () => {
     const occurrences = fs.readdirSync(root, { recursive: true })
       .map(String).filter(file => file.endsWith('.ts'))
       .flatMap(file => upsertOccurrences(file, fs.readFileSync(path.join(root, file), 'utf8')));
-    expect(validateUpserts(occurrences, RECONCILED_UPSERTS, Object.assign({}, ...Object.values(RECONCILIATION_MATRICES)))).toEqual([]);
+    expect(validateUpserts(occurrences, RECONCILED_UPSERTS, Object.assign({}, PLATFORM_RECONCILIATION_MATRICES, ...Object.values(RECONCILIATION_MATRICES)))).toEqual([]);
   });
 
   it('detects extra occurrences in an existing owner, a new owner and unresolved SQL', () => {
@@ -357,7 +357,12 @@ describe('server reconciliation upsert contract', () => {
       source.replace('db.prepare', `db.prepare(\`${sql}\`); db.prepare`),
       source + `function other() { db.prepare(\`${sql}\`); }`,
       source.replace('INSERT INTO records', 'INSERT INTO other_records'),
+      source + 'function replace() { db.prepare("INSERT OR REPLACE INTO records(id) VALUES (?)"); }',
+      source + 'function replace() { db.prepare("REPLACE INTO records(id) VALUES (?)"); }',
     ]) expect(validateUpserts(upsertOccurrences('fixture.ts', mutant), manifest).length).toBeGreaterThan(0);
+    const replacement = upsertOccurrences('fixture.ts', 'function write() { db.prepare("REPLACE INTO records(id) VALUES (?)"); }');
+    expect(validateUpserts(replacement, manifest)).toContain('fixture.ts#write[0]: replacement needs a declared reconciliation order');
+    expect(validateUpserts(replacement, { 'fixture.ts#write': [{ tables: ['records'], order: 'arrival-order' }] })).toEqual([]);
     const fragment = upsertOccurrences('fragment.ts', 'const SQL = "ON CONFLICT(id) DO UPDATE SET id=excluded.id";');
     expect(validateUpserts(fragment, {} ).length).toBeGreaterThan(0);
     expect(validateUpserts(fragment, { 'fragment.ts#<module>': [{ tables: ['records'], order: 'unverified' }] })).toEqual([]);

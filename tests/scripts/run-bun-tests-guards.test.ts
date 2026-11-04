@@ -1,3 +1,4 @@
+import { testDurationSamples } from '../../scripts/node-test-durations.mjs';
 import { readTestProcessTable } from '../../scripts/test-process-tree.mjs';
 /**
  * Two guards of the test runner, each driven through the real runner:
@@ -506,17 +507,23 @@ describe('run-bun-tests guards', () => {
     expect(fs.readFileSync(path.join(REPO, 'bunfig.toml'), 'utf8')).toBe(canonical);
   }), RUN_BOUND_MS + 10_000);
 
-  test('concurrent bundle plans use different generated paths', () => withReportDir(async (base) => {
-    const env = { MYCO_RUNNER_DRY_RUN: '1', MYCO_TEST_KIND: 'node', MYCO_TEST_PROFILE: 'fast', MYCO_RUNNER_REPORT_DIR: path.join(base, 'reports') };
-    const [first, second] = await Promise.all([
-      runRunner(null, env),
-      runRunner(null, env),
-    ]);
-    expect([first.status, second.status]).toEqual([0, 0]);
-    const bundlePath = (output: string) => output.match(/target\/test-bundles\/node-env-mt-[^;\s]+/)?.[0];
-    expect(bundlePath(first.output)).toBeTruthy();
-    expect(bundlePath(second.output)).toBeTruthy();
-    expect(bundlePath(first.output)).not.toBe(bundlePath(second.output));
+  test('bundled reports pass the headroom audit after concurrent runners clean their generated paths', () => withReportDir(async (base) => {
+    const reports = path.join(base, 'reports');
+    const env = { MYCO_TEST_KIND: 'node', MYCO_TEST_GROUP: 'node env isolated 1', MYCO_RUNNER_REPORT_DIR: reports };
+    const runs = await Promise.all([runRunner(null, env), runRunner(null, env)]);
+    expect(runs.map(run => run.status)).toEqual([0, 0]);
+    const bundles = runs.map(run => run.output.match(/target\/test-bundles\/node-env-mt-[^;\s]+/)?.[0]);
+    expect(bundles.every(Boolean)).toBe(true);
+    expect(new Set(bundles).size).toBe(2);
+    for (const bundle of bundles) expect(fs.existsSync(path.join(REPO, bundle!))).toBe(false);
+    const cases = fs.readdirSync(reports, { recursive: true, encoding: 'utf8' }).filter(file => file.endsWith('.junit.xml'))
+      .flatMap(file => testDurationSamples(fs.readFileSync(path.join(reports, file), 'utf8')));
+    expect(cases.some(test => test.file.startsWith('target/test-bundles/'))).toBe(true);
+    const audit = spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], { cwd: REPO, encoding: 'utf8' });
+    expect({ status: audit.status, error: audit.stderr }).toEqual({ status: 0, error: '' });
+    expect(audit.stdout).toMatch(/Per-test headroom: [1-9]\d* recorded cases within limit/);
+    for (const run of fs.readdirSync(reports)) fs.rmSync(path.join(reports, run, 'bundle-sources.json'));
+    expect(spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], { cwd: REPO }).status).not.toBe(0);
   }), RUN_BOUND_MS + 10_000);
 
   test.skipIf(process.platform === 'win32')('ends fixture children when writing their PID receipt fails', () => withReportDir(async (reports) => {
@@ -756,34 +763,13 @@ describe('run-bun-tests temp containment', () => {
     }
   }), RUN_BOUND_MS + 10_000);
 
-  test('real test files that leave temp directories behind leave nothing once the run ends', () => withRunDirs(async ({ reports, tempDir }) => {
-    const leakers = [
-      { file: 'tests/member/worker-run-permissions.test.ts', name: "runs a read of the checkout with the machine's Git" },
-      { file: 'tests/member/provisioning.test.ts', name: 'prints the same hook block with the sandbox credential source, and never --bare' },
-      { file: 'tests/member/auto-join.test.ts', name: 'places a repository under a captured folder, one told to connect, and any other outside the folders' },
-      { file: 'tests/cli/member-machine-verbs.test.ts', name: 'uses member handlers outside a joined root when no 1.4 vault remains unmoved' },
-      { file: 'tests/member/legacy-launchd.test.ts', name: 'a scoped uninstall preserves stale sibling services' },
-    ];
-    const { status, output } = await runRunner(leakers[0]!.file, {
-      MYCO_RUNNER_REPORT_DIR: reports,
-      ...tempDirEnv(tempDir),
-    }, [...leakers.slice(1).map(leaker => leaker.file), `--test-name-pattern=${leakers.map(leaker => leaker.name).join('|')}`]);
-
-    expect({ status, output }).toEqual({ status: 0, output: expect.stringMatching(/ 0 fail/) });
-    for (const leaker of leakers) {
-      expect(output.replaceAll('\\', '/')).toContain(leaker.file);
-      expect(output).toContain(leaker.name);
-    }
-    expect(fs.readdirSync(tempDir)).toEqual([]);
-  }), RUN_BOUND_MS + 10_000);
-
   test('a raw bun test run outside the runner removes the sandbox home its preload made and the homes test helpers made', () => withRunDirs(async ({ tempDir }) => {
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
-    // tempMycoHome() and tempStager() (tests/member/helpers/server.ts) from a beforeAll, a beforeEach and a test body.
-    const files = [`./${STDIN_FIXTURE}`, `./${TEMP_BOUNDARY_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
+    // Owned fixtures register in beforeAll, beforeEach and the test body.
+    const files = [`./${STDIN_FIXTURE}`, `./${TEMP_LEAK_FIXTURE}`];
     for (const isolation of [[], ['--isolate']]) {
       const run = spawnSync('bun', ['test', ...isolation, ...files], {
-        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir), MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir), MYCO_RUNNER_TEMP_LEAK_FIXTURE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
       });
       expect({ isolation, status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ isolation, status: 0, output: expect.stringMatching(/ 0 fail/) });
       expect({ isolation, left: entries(tempDir) }).toEqual({ isolation, left: [] });

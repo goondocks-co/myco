@@ -153,6 +153,7 @@ describe('the join paths', () => {
       expect(await login([`https://s/join#${invitation.key}`, '--no-agents', ...(verb === 'login' ? ['--root', root] : [])], deps)).toBe(true);
       if (verb === 'member join') expect(await runJoin(['--new', '--no-agents', '--no-worker'], deps)).not.toBeNull();
       expect(imported).toHaveBeenCalledTimes(1);
+      expect(imported.mock.calls[0]?.[0]).toMatchObject({ serverUrl: 'https://s', ...(verb === 'member join' ? { project: readRegistryEntry(root, home)!.projectId } : {}) });
       expect(readDeploymentMembership('https://s', home)).not.toBeNull();
       expect(readRegistryEntry(root, home)).not.toBeNull();
       expect(lines.join('\n')).toContain('Could not import past sessions (history fixture failed)');
@@ -164,18 +165,7 @@ describe('the join paths', () => {
     }
   });
 
-  it('names the Deployment it just joined rather than letting the import choose', async () => {
-    // A machine may hold several memberships, and the registry answers them in
-    // the order its filenames hash. The join paths know which Deployment they
-    // joined; passing it is what stops the join-time pass importing into
-    // another one — or, when that one holds no bindings, into nothing at all.
-    const login = readFileSync(new URL('../../packages/myco/src/cli/login.ts', import.meta.url), 'utf8');
-    const member = readFileSync(new URL('../../packages/myco/src/cli/member.ts', import.meta.url), 'utf8');
-    for (const [name, source] of [['login', login], ['member join', member]] as const) {
-      const call = /importSignInHistory\(\{([^}]*)\}/.exec(source)?.[1] ?? '';
-      expect({ verb: name, namesDeployment: call.includes('serverUrl') }).toEqual({ verb: name, namesDeployment: true });
-    }
-  });
+
 });
 
 describe('import stopping details', () => {

@@ -8,7 +8,7 @@ import { promptAnswerRetentionStatements } from '@myco-server-worker/core/prompt
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import {
@@ -89,9 +89,7 @@ const ON: RecallLeaves = {
 const PROJECT_LINE = projectLine(SCOPE.projectId);
 
 function store(): { db: RelationalStore; sqlite: Database } {
-  const sqlite = new Database(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = seededSqlite();
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }

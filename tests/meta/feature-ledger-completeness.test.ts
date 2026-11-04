@@ -136,7 +136,7 @@ function dataClasses(): string[] {
  * The 2.0 dashboard's route table, the one `App.tsx` renders. It is the dashboard's own TSX, which the tests typecheck
  * program does not compile, so it is loaded by path and read for its paths alone.
  */
-const ROUTE_TABLE = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src', 'routes', 'table.tsx');
+const ROUTE_TABLE = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src', 'routes', 'declarations.ts');
 
 /** A route tree as the table holds it: a path, perhaps, and children, perhaps. */
 interface RouteNode { path?: string; children?: RouteNode[] }
@@ -198,7 +198,7 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', section: '7.5', scan: scheduledJobs },
   { label: 'data classes', source: 'packages/myco-server/src/db', section: '7.6', scan: dataClasses },
   { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', section: '7.8', scan: configLeaves },
-  { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/table.tsx', section: '7.2', answers: true, scan: () => [...new Set(routePaths!())].sort() },
+  { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/declarations.ts', section: '7.2', answers: true, scan: () => [...new Set(routePaths!())].sort() },
   { label: 'served MCP tools', source: 'packages/myco-server/src/core/tool-catalogue.ts', section: '7.3', scan: () => [...SERVED_TOOLS].sort() },
   { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
