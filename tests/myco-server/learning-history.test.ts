@@ -2,7 +2,6 @@ import { expect, it } from 'bun:test';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
 import { effectiveSettings } from '@myco-server-worker/core/settings-policies.js';
-import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -31,6 +30,8 @@ const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
 const IDLE_CLAIM_ROW_LIMIT = 1000;
+const HISTORY_STATUS_ROW_LIMIT = 100;
+const DUE_CLAIM_ROW_LIMIT = 4000;
 
 async function workerHarness(db: RelationalStore) {
   const blobs = memoryBlobStore();
@@ -187,6 +188,85 @@ it('repairs late old-Worker insert shapes in bounded wake pages and admits the r
   }, 610);
 });
 
+it('keeps idle claims and history status bounded across finished history and fresh idle sessions', async () => {
+  await withDocumentStores(async (db, target) => {
+    const { env, poll } = await workerHarness(db);
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,due_cards,eligible_at)
+      VALUES('other','due-later','ready',?,1,?)`).bind(OLD - DAY, NOW + HOUR).run();
+    await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
+    const idle = async () => {
+      const counted = countReads(db);
+      env.db = counted.db;
+      expect(await poll()).toMatchObject({ claimed: false });
+      env.db = db;
+      expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(IDLE_CLAIM_ROW_LIMIT);
+      return counted.rows();
+    };
+    const status = async () => {
+      await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW);
+      const counted = countReads(db);
+      expect(await readLearningStatus(counted.db, NOW)).toMatchObject({ historyWaiting: 1, turnsAwaitingCards: 0, dueCards: 0, dueSessions: 0 });
+      expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(HISTORY_STATUS_ROW_LIMIT);
+      await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
+      return counted.rows();
+    };
+    const add = async (kind: string, from: number, to: number, activity: number) => {
+      const ids = JSON.stringify(Array.from({ length: to - from }, (_, n) => from + n));
+      for (const project of ['project', 'other']) await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at)
+        SELECT ?,? || value,'ready',? FROM json_each(?)`).bind(project, kind, activity, ids).run();
+    };
+    const emptyIdle = await idle();
+    const emptyStatus = await status();
+    await add('finished-', 0, 2000, OLD);
+    await add('idle-', 0, 100, NOW - HOUR);
+    expect(await idle()).toBe(emptyIdle);
+    expect(await status()).toBe(emptyStatus);
+    await add('finished-', 2000, 4000, OLD);
+    await add('idle-', 100, 1000, NOW - HOUR);
+    expect(await idle()).toBe(emptyIdle);
+    expect(await status()).toBe(emptyStatus);
+    if (target === 'D1') {
+      expect(emptyIdle).toBeGreaterThan(0);
+      expect(emptyStatus).toBeGreaterThan(0);
+    }
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards)
+      VALUES('project','oldest-due','ready',?,1)`).bind(OLD - 2 * DAY).run();
+    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at)
+      VALUES('project','oldest-due','oldest',?,?,?)`).bind(OLD - 2 * DAY, OLD - 2 * DAY, NOW).run();
+    const counted = countReads(db);
+    env.db = counted.db;
+    const claimed = await poll();
+    expect(claimed).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+    expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(DUE_CLAIM_ROW_LIMIT);
+    if (!claimed.claimed) throw new Error('the oldest due history session was not claimed');
+    expect(await db.prepare('SELECT subject FROM agent_runs WHERE id=?').bind(claimed.run.id).first()).toEqual({ subject: 'cards:oldest-due' });
+  });
+});
+
+it('advances repair past unstampable rows without chaining empty pages', async () => {
+  await withDocumentStores(async db => {
+    const { env } = await workerHarness(db);
+    const unstampable = LEARNING_SOURCE_REPAIR_PAGE + 1;
+    const ids = JSON.stringify([...Array.from({ length: unstampable }, (_, n) => `orphan-${n}`), 'stampable']);
+    await sourceSession(db, 'stampable', OLD);
+    await db.prepare("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES('project','orphan-0','live',1,?)").bind(NOW).run();
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,pending_cards)
+      SELECT 'project',value,'ready',1 FROM json_each(?)`).bind(ids).run();
+    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at)
+      SELECT 'project',value,value,?,? FROM json_each(?)`).bind(OLD - DAY, NOW, ids).run();
+    const repair = () => JOB_IMPLEMENTATIONS['learning-source-repair']!(env, NOW, 'active');
+    expect(await repair()).toEqual({ changed: 0, more: false });
+    expect(await repair()).toEqual({ changed: 2, more: false });
+    expect(await db.prepare("SELECT source_activity_at,due_at FROM turn_cards WHERE session_id='stampable'").first())
+      .toEqual({ source_activity_at: OLD, due_at: NOW });
+    expect(await db.prepare("SELECT source_activity_at FROM learning_sessions WHERE session_id='stampable'").first())
+      .toEqual({ source_activity_at: OLD });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM turn_cards WHERE source_activity_at IS NULL').first()).toEqual({ n: unstampable });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM learning_sessions WHERE source_activity_at IS NULL').first()).toEqual({ n: unstampable });
+    expect(await repair()).toEqual({ changed: 0, more: false });
+  });
+});
+
 it('refuses the history card claim write after the switch is disabled', async () => {
   await withDocumentStores(async db => {
     const { env, poll } = await workerHarness(db);
@@ -261,12 +341,12 @@ it('reclassifies pending, carded and retried backlog without altering cards, cov
         VALUES('project',?,?,?,?,?,'exact card','{}','hash',?,'[]','prior-run','prior-model')`)
         .bind(session, key, state, due, OLD, covered).run();
     }
-    for (const session of ['older', 'newer']) await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,eligible_at,failures,handoff)
-      VALUES('project',?,'ready',?,3,'kept handoff')`).bind(session, NOW + HOUR).run();
+    for (const session of ['older', 'newer']) await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,eligible_at,failures,handoff,pending_cards)
+      VALUES('project',?,'ready',?,3,'kept handoff',1)`).bind(session, NOW + HOUR).run();
     const snapshot = async () => (await db.prepare(`SELECT session_id,turn_key,state,due_at,settle_at,created_at,card,fields,input_hash,covered,records,run_id,model
       FROM turn_cards ORDER BY session_id,turn_key`).all()).results;
     const before = await snapshot();
-    for (const step of LEARNING_SOURCE_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    for (const step of SCHEMA_STEPS.filter(step => step.version > 545)) await db.batch(step.statements.map(sql => db.prepare(sql)));
     expect(await snapshot()).toEqual(before);
     expect((await db.prepare(`SELECT DISTINCT session_id,source_activity_at FROM turn_cards ORDER BY session_id`).all()).results)
       .toEqual([{ session_id: 'newer', source_activity_at: OLD + DAY }, { session_id: 'older', source_activity_at: OLD }]);

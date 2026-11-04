@@ -178,7 +178,7 @@ it('a card claim reads the same catalog rows whatever the session holds', async 
   await withDocumentStores(async (db, name) => {
     // Every turn is created and falls due at one instant, and as many again are postponed past now.
     const claim = async (session: string, turns: number) => {
-      await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at) VALUES('project',?,'ready',?)").bind(session, NOW).run();
+      await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('project',?,'ready',?,?)").bind(session, NOW, 2 * turns).run();
       await db.prepare(`INSERT INTO turn_cards (project_id, session_id, turn_key, due_at, input_chars, created_at, source_activity_at)
         SELECT 'project', ?, 'turn-' || value, CASE WHEN value % 2 = 0 THEN 1 ELSE ? END, 10, 1, ? FROM json_each(?)`)
         .bind(session, NOW + 60_000, NOW, JSON.stringify(Array.from({ length: 2 * turns }, (_, i) => i))).run();

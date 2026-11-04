@@ -1,4 +1,5 @@
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
+import { LEARNING_WORK_INDEX_STEPS } from '@myco-server-worker/db/schema-v617.js';
 import { READ_COST_STEPS } from '@myco-server-worker/db/schema-v538.js';
 import { PUBLICATION_QUEUE_STEPS } from '@myco-server-worker/db/schema-v501.js';
 import { V466_STATEMENTS } from '@myco-server-worker/db/schema-v466.js';
@@ -95,7 +96,7 @@ const LISTED: readonly Exception[] = [
   },
 ];
 const EXCEPTIONS: readonly Exception[] = [
-  ...LEARNING_SOURCE_STEPS.flatMap(step => step.statements.flatMap(sql => {
+  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_WORK_INDEX_STEPS].flatMap(step => step.statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: step.version, object: match[1]!, table: match[2]!,
       reason: 'Source activity orders learning work independently of retry deadlines.' }];

@@ -125,18 +125,18 @@ function learningStage(level: number, fresh: boolean): PulledStage {
 }
 
 function cardStage(level: number, fresh: boolean): PulledStage {
-  const pending = (now: number) => `${learningRecencySql(fresh, now)} AND ${learningEnabledSql(!fresh)}
+  const pending = (now: number) => `pending_cards > 0 AND ${learningRecencySql(fresh, now)} AND ${learningEnabledSql(!fresh)}
     AND EXISTS (SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
       WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending' AND c.due_at <= ${Math.floor(now)})`;
   return {
     level, task: CARD_TASK, switchedOn: fresh ? learningSwitchedOn : historyLearningSwitchedOn,
     due: (project, now) => ({
-      sql: `EXISTS (SELECT 1 FROM learning_sessions l INDEXED BY idx_learning_source_activity WHERE l.project_id = ${project}
+      sql: `EXISTS (SELECT 1 FROM learning_sessions l INDEXED BY idx_learning_source_pending WHERE l.project_id = ${project}
         AND l.${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')})`,
       params: [],
     }),
     head: async (db, projectId, now) => {
-      const row = await db.prepare(`SELECT session_id AS sessionId, source_activity_at AS observed FROM learning_sessions l INDEXED BY idx_learning_source_activity
+      const row = await db.prepare(`SELECT session_id AS sessionId, source_activity_at AS observed FROM learning_sessions l INDEXED BY idx_learning_source_pending
         WHERE project_id = ? AND l.${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')}
         ORDER BY source_activity_at DESC, session_id LIMIT 1`).bind(projectId).first<{ sessionId: string; observed: number }>();
       return row === null ? null : { projectId, subject: cardSubject(row.sessionId), key: row.sessionId, observed: row.observed };
