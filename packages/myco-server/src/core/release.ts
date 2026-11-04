@@ -1,4 +1,4 @@
-import { runUpdateStatement, isTerminalRunStatus, type RunCaller, type RunUpdate } from './runs.js';
+import { runUpdateStatement, commitRunChange, isTerminalRunStatus, type RunCaller, type RunUpdate } from './runs.js';
 import type { RunErrorCode } from './reader-codes.js';
 import { emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';
@@ -31,9 +31,10 @@ export async function commitRunUpdate(env: ServerEnv, scope: ReadScope, runId: s
   const statement = runUpdateStatement(env.db, scope, runId, update, undefined, options.errorCode, options.context, options.caller, options.replaced === true && update.status === 'failed');
   if (statement === null) return 0;
   const terminal = isTerminalRunStatus(update.status);
-  const [changed, retired] = await env.db.batch([statement, ...(terminal ? [
+  const { changed, following } = await commitRunChange(env.db, statement, terminal ? [
     revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, options.caller.tokenId, options.now, { sql: 'changes() = 1', params: [] }),
-  ] : [])]);
+  ] : []);
+  const retired = following[0];
   if (retired !== undefined) emit({ kind: 'credential_revoked', tokenId: options.caller.tokenId, revokedBy: HARNESS_MEMBER_ID, revoked: retired.meta.changes === 1 });
-  return changed!.meta.changes;
+  return changed;
 }

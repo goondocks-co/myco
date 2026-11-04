@@ -15,9 +15,9 @@ import { answerRoom, materialPages, type PagedEntry } from './material-pages.js'
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
-import { LEARNING_BACKOFF_MS, sessionProgressStatements } from './learning-sessions.js';
+import { LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
-import { learningRecencySql } from './learning-recency.js';
+import { learningRecencySql, learningRangeSql } from './learning-recency.js';
 import { learningHistoryEnabledSql } from './settings.js';
 
 /** Due turns one claim reads at most. */
@@ -28,7 +28,8 @@ export const CARD_RETRY_MS = 3_600_000;
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
 export function claimCardsStatements(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
   run: { runId: string; dispatchedBy: string }): PreparedStatement[] {
-  return [db.prepare(`UPDATE learning_sessions SET card_failures = card_failures + 1,
+  return [db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
+      card_failures = card_failures + 1,
       card_retry_at = ? + CASE WHEN card_failures = 0 THEN ? WHEN card_failures = 1 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ?
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
@@ -73,7 +74,7 @@ export const NONE_CARD = (reason: string): CardFields => ({
 
 /** A card write as a run sends it, or the refusal that answers it. */
 export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): CardWrite[] | string {
-  if (!Array.isArray(raw) || raw.length === 0) return 'cards must be a nonempty array';
+  if (!Array.isArray(raw)) return 'cards must be an array';
   const seen = new Set<string>();
   const writes: CardWrite[] = [];
   for (const entry of raw as Record<string, unknown>[]) {
@@ -182,9 +183,8 @@ export function forgetTurnStatement(db: RelationalStore, projectId: string, sess
 export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
   const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes, input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
     WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ?
-      AND EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ?1 AND l.session_id = ?2 AND l.card_ready_at <= ${Math.floor(now)})
-      AND (EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ?1 AND l.session_id = ?2 AND ${learningRecencySql(true, now)})
-        OR ${learningHistoryEnabledSql()}) ORDER BY due_at, turn_key LIMIT ?`)
+      AND EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ?1 AND l.session_id = ?2 AND l.card_ready_at <= ${Math.floor(now)}
+        AND (${learningRangeSql('cards', true, now)} OR ${learningHistoryEnabledSql()})) ORDER BY due_at, turn_key LIMIT ?`)
     .bind(projectId, sessionId, now, CARD_CLAIM_TURNS).all<DueTurn & { chars: number | null }>();
   const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;
@@ -212,9 +212,13 @@ export function cardsWrittenStatement(db: RelationalStore, projectId: string, se
 /** Write a card run's cards for its served turns; a turn that changed after serving stays due. */
 export async function writeRunCards(
   env: Pick<ServerEnv, 'db'>, projectId: string, sessionId: string, assigned: readonly DueTurn[], writes: readonly CardWrite[],
-  run: { runId: string; model: string | null }, now: number,
+  run: { runId: string; model: string | null }, now: number, unavailable: readonly DueTurn[] = [],
 ): Promise<{ written: number; changed: string[] }> {
   const { db } = env;
+  if (unavailable.length > 0) await db.batch([
+    ...unavailable.map(turn => forgetTurnStatement(db, projectId, sessionId, turn)),
+    pendingCardsStatement(db, projectId, sessionId), ...sessionProgressStatements(db, projectId, sessionId, now),
+  ]);
   const byKey = new Map(assigned.map((turn) => [turn.turnKey, turn]));
   const changed: string[] = [];
   let written = 0;

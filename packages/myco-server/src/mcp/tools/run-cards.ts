@@ -27,12 +27,14 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
   const scope = { projectId: ctx.projectId };
   if (input.op === 'material') {
     const turns: CardMaterial[] = [];
+    const unavailable: string[] = [];
     const document = await SessionDocument.open(ctx.env, ctx.projectId, held.sessionId);
     for (const turn of held.assignment.turns) {
       const material = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, turn.turnKey, document);
       if (material !== null) turns.push({ turn_key: turn.turnKey, input: trimTurn(material).text });
+      else unavailable.push(turn.turnKey);
     }
-    const page = await servePage(ctx, run, input, turns, () => cardMaterialPages(held.sessionId, turns));
+    const page = await servePage(ctx, run, input, turns, () => cardMaterialPages(held.sessionId, turns), undefined, unavailable);
     if ('refusal' in page) return page.refusal;
     return { session_id: held.sessionId, revision: page.revision, page: page.page, ...page.next, turns: page.served };
   }
@@ -44,7 +46,8 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
     const writes = parseCardWrites(input.cards, new Set(held.assignment.turns.map((turn) => turn.turnKey)));
     if (typeof writes === 'string') return failure(writes);
     const result = await writeRunCards(ctx.env, ctx.projectId, held.sessionId, held.assignment.turns, writes,
-      { runId: run.runId, model: run.model }, ctx.now);
+      { runId: run.runId, model: run.model }, ctx.now,
+      held.assignment.turns.filter(turn => read.unavailable?.includes(turn.turnKey)));
     await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId, held.assignment.turns),
       { runId: run.runId, toolName: CARD_TOOL, op: 'write', recordedAt: ctx.now, detail: { written: result.written } });
     return { written: result.written, changed_since_served: result.changed };

@@ -4,6 +4,8 @@ ALTER TABLE learning_sessions ADD COLUMN source_day INTEGER GENERATED ALWAYS AS 
 
 ALTER TABLE learning_sessions ADD COLUMN quiet_at INTEGER NOT NULL DEFAULT 0;
 
+ALTER TABLE learning_sessions ADD COLUMN fresh_admitted INTEGER NOT NULL DEFAULT 0;
+
 ALTER TABLE learning_sessions ADD COLUMN card_failures INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE learning_sessions ADD COLUMN card_retry_at INTEGER NOT NULL DEFAULT 0;
@@ -14,73 +16,129 @@ ALTER TABLE learning_sessions ADD COLUMN learning_ready_at INTEGER GENERATED ALW
 
 CREATE TRIGGER IF NOT EXISTS learning_session_quiet_insert AFTER INSERT ON learning_sessions BEGIN
     UPDATE learning_sessions SET quiet_at = COALESCE((SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id),0)
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_learning_quiet AFTER UPDATE OF last_received_at,ended_at ON sessions
     WHEN NEW.last_received_at IS NOT OLD.last_received_at OR NEW.ended_at IS NOT OLD.ended_at BEGIN
     UPDATE learning_sessions SET quiet_at = CASE WHEN NEW.ended_at IS NOT NULL THEN 0
-  ELSE NEW.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(NEW.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, NEW.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END;
+
+CREATE TRIGGER IF NOT EXISTS learning_source_quiet AFTER UPDATE OF source_activity_at ON learning_sessions
+    WHEN NEW.source_activity_at IS NOT OLD.source_activity_at BEGIN
+    UPDATE learning_sessions SET quiet_at = COALESCE((SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
+  WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id),0)
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END;
 
 CREATE TRIGGER IF NOT EXISTS learning_quiet_setting_insert
     AFTER INSERT ON deployment_settings
     WHEN NEW.leaf = 'agent.titling_idle_close_minutes' BEGIN
     UPDATE learning_sessions SET quiet_at = (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) WHERE (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) IS NOT NULL; END;
 
 CREATE TRIGGER IF NOT EXISTS learning_quiet_setting_update
     AFTER UPDATE OF value ON deployment_settings
-    WHEN NEW.leaf = 'agent.titling_idle_close_minutes' BEGIN
+    WHEN NEW.leaf = 'agent.titling_idle_close_minutes' AND NEW.value IS NOT OLD.value BEGIN
     UPDATE learning_sessions SET quiet_at = (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) WHERE (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) IS NOT NULL; END;
 
 CREATE TRIGGER IF NOT EXISTS learning_quiet_setting_delete
     AFTER DELETE ON deployment_settings
     WHEN OLD.leaf = 'agent.titling_idle_close_minutes' BEGIN
     UPDATE learning_sessions SET quiet_at = (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) WHERE (SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
-  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  ELSE MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
-  WHERE leaf = 'agent.titling_idle_close_minutes'),120) END FROM sessions s
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120),
+    COALESCE(learning_sessions.source_activity_at + 86340000, s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings
+  WHERE leaf = 'agent.titling_idle_close_minutes'),120))) END FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id) IS NOT NULL; END;
 
 CREATE TRIGGER IF NOT EXISTS card_run_retry AFTER UPDATE OF status ON agent_runs

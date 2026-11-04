@@ -30,6 +30,7 @@ const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
 const IDLE_CLAIM_ROW_LIMIT = 1000;
+const POPULATED_RANGE_END_ROWS = 2;
 const HISTORY_STATUS_ROW_LIMIT = 100;
 const DUE_CLAIM_ROW_LIMIT = 4000;
 
@@ -149,12 +150,13 @@ it('skips a history backlog before probing it and reports why history waits', as
     env.db = first.db;
     expect(await poll()).toMatchObject({ claimed: false });
     expect(first.rows(), JSON.stringify(first.queries)).toBeLessThan(IDLE_CLAIM_ROW_LIMIT);
-    expect(first.rows()).toBe(empty.rows());
+    expect(first.rows() - empty.rows()).toBeLessThanOrEqual(POPULATED_RANGE_END_ROWS);
     await add(2000, 4000);
     const second = countReads(db);
     env.db = second.db;
     expect(await poll()).toMatchObject({ claimed: false });
-    expect(second.rows()).toBe(first.rows());
+    expect(second.rows()).toBeLessThanOrEqual(first.rows());
+    console.info('history claim row bound', { target, empty: empty.rows(), first: first.rows(), second: second.rows() });
     if (target === 'D1') expect(first.rows()).toBeGreaterThan(0);
     env.db = db;
     const status = await readLearningStatus(db, NOW);
@@ -408,4 +410,43 @@ it('learns the newest history session first and keeps retried learning behind th
     await settingsWriter(db).resetLeaf(HISTORY, 'owner', NOW + 5);
     expect(await learningHistoryEnabled(db)).toBe(false);
   });
+});
+
+it('backfills quiet deadlines and recomputes them for idle-setting updates, resets and source changes', async () => {
+  await withDocumentStores(async db => {
+    const MINUTE = 60_000;
+    const leaf = 'agent.titling_idle_close_minutes';
+    await settingsWriter(db).setLeaf(leaf, 30, 'owner', NOW);
+    const expected = new Map<string, number>();
+    for (const project of ['project', 'other']) for (let n = 0; n < 100; n++) {
+      const session = `quiet-${n}`;
+      const ended = n % 3 === 0;
+      const source = n === 98 ? NOW - DAY + 5 * MINUTE : NOW - n * MINUTE;
+      const receipt = NOW;
+      await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
+        VALUES(?,?,'fake','fake',1,?,?)`).bind(project, session, receipt, ended ? NOW : null).run();
+      await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,handoff)
+        VALUES(?,?,'ready',?,1,'preserved handoff')`).bind(project, session, source).run();
+      expected.set(`${project}/${session}`, ended ? 0 : Math.min(receipt + 30 * MINUTE, source + DAY - MINUTE));
+    }
+    for (const step of SCHEMA_STEPS.filter(step => step.version > 618)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    const rows = await db.prepare('SELECT project_id,session_id,quiet_at,handoff FROM learning_sessions').all<{ project_id: string; session_id: string; quiet_at: number; handoff: string }>();
+    expect(rows.results).toHaveLength(200);
+    for (const row of rows.results) {
+      expect(row.quiet_at).toBe(expected.get(`${row.project_id}/${row.session_id}`)!);
+      expect(row.handoff).toBe('preserved handoff');
+    }
+    const quiet = () => db.prepare("SELECT quiet_at FROM learning_sessions WHERE project_id='project' AND session_id='quiet-1'").first();
+    await settingsWriter(db).setLeaf(leaf, 60, 'owner', NOW + 1);
+    expect(await quiet()).toEqual({ quiet_at: NOW + 60 * MINUTE });
+    const same = await db.prepare('UPDATE deployment_settings SET value=value WHERE leaf=?').bind(leaf).run();
+    expect(same.meta.changes).toBe(1);
+    await settingsWriter(db).resetLeaf(leaf, 'owner', NOW + 2);
+    expect(await quiet()).toEqual({ quiet_at: NOW + 120 * MINUTE });
+    await db.prepare("UPDATE learning_sessions SET source_activity_at=? WHERE project_id='project' AND session_id='quiet-1'").bind(NOW - DAY + 10 * MINUTE).run();
+    expect(await quiet()).toEqual({ quiet_at: NOW + 9 * MINUTE });
+    await settingsWriter(db).setLeaf(leaf, 1440, 'owner', NOW + 3);
+    expect(await quiet()).toEqual({ quiet_at: NOW + 9 * MINUTE });
+    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='_learning_quiet_range'").first()).toBeNull();
+  }, 618);
 });

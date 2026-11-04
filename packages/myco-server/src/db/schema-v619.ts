@@ -4,14 +4,18 @@ const idleMinutes = `COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
     AND json_extract(value,'$') BETWEEN 5 AND 10080
   THEN json_extract(value,'$') END END FROM deployment_settings
   WHERE leaf = 'agent.titling_idle_close_minutes'),120)`;
+/** Quiet admission leaves a minute for a worker poll before the source freshness window closes. */
+const freshQuietWindow = 86400000 - 60000;
 const quietAt = (session: string) => `CASE WHEN ${session}.ended_at IS NOT NULL THEN 0
-  ELSE ${session}.last_received_at + 60000 * ${idleMinutes} END`;
+  ELSE MIN(${session}.last_received_at + 60000 * ${idleMinutes},
+    COALESCE(learning_sessions.source_activity_at + ${freshQuietWindow}, ${session}.last_received_at + 60000 * ${idleMinutes})) END`;
 const sessionQuietAt = `(SELECT ${quietAt('s')} FROM sessions s
   WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id)`;
 
 const setup = [
   'ALTER TABLE learning_sessions ADD COLUMN source_day INTEGER GENERATED ALWAYS AS (CAST(source_activity_at / 86400000 AS INTEGER)) VIRTUAL',
   'ALTER TABLE learning_sessions ADD COLUMN quiet_at INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE learning_sessions ADD COLUMN fresh_admitted INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE learning_sessions ADD COLUMN card_failures INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE learning_sessions ADD COLUMN card_retry_at INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE learning_sessions ADD COLUMN card_ready_at INTEGER GENERATED ALWAYS AS (MAX(quiet_at,card_retry_at)) VIRTUAL',
@@ -23,9 +27,13 @@ const setup = [
     WHEN NEW.last_received_at IS NOT OLD.last_received_at OR NEW.ended_at IS NOT OLD.ended_at BEGIN
     UPDATE learning_sessions SET quiet_at = ${quietAt('NEW')}
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END`,
+  `CREATE TRIGGER IF NOT EXISTS learning_source_quiet AFTER UPDATE OF source_activity_at ON learning_sessions
+    WHEN NEW.source_activity_at IS NOT OLD.source_activity_at BEGIN
+    UPDATE learning_sessions SET quiet_at = COALESCE(${sessionQuietAt},0)
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END`,
   ...(['INSERT','UPDATE','DELETE'] as const).map(operation => `CREATE TRIGGER IF NOT EXISTS learning_quiet_setting_${operation.toLowerCase()}
     AFTER ${operation === 'UPDATE' ? 'UPDATE OF value' : operation} ON deployment_settings
-    WHEN ${operation === 'DELETE' ? 'OLD' : 'NEW'}.leaf = 'agent.titling_idle_close_minutes' BEGIN
+    WHEN ${operation === 'DELETE' ? 'OLD' : 'NEW'}.leaf = 'agent.titling_idle_close_minutes'${operation === 'UPDATE' ? ' AND NEW.value IS NOT OLD.value' : ''} BEGIN
     UPDATE learning_sessions SET quiet_at = ${sessionQuietAt} WHERE ${sessionQuietAt} IS NOT NULL; END`),
   `CREATE TRIGGER IF NOT EXISTS card_run_retry AFTER UPDATE OF status ON agent_runs
     WHEN NEW.task = 'turn-cards' AND OLD.status IS NOT NEW.status AND NEW.status IN ('completed','failed') BEGIN
@@ -58,6 +66,13 @@ const freshIndexes = [
     WHERE eligible_at IS NOT NULL`,
 ].map(sql => [sql]);
 
+const retryIndexes = [
+  `CREATE INDEX IF NOT EXISTS idx_learning_cards_retry ON learning_sessions (project_id,card_ready_at,source_activity_at DESC,session_id)
+    WHERE pending_cards > 0 AND fresh_admitted = 1 AND card_failures < 4`,
+  `CREATE INDEX IF NOT EXISTS idx_learning_retry ON learning_sessions (project_id,learning_ready_at,source_activity_at DESC,session_id)
+    WHERE eligible_at IS NOT NULL AND fresh_admitted = 1 AND failures < 4`,
+].map(sql => [sql]);
+
 /** Disjoint rowid transactions populate receipt deadlines without rewriting session bodies or cards. */
-export const LEARNING_QUIET_STEPS = [setup, ...backfill, ...indexes, ['DROP TABLE _learning_quiet_range'], ...freshIndexes]
+export const LEARNING_QUIET_STEPS = [setup, ...backfill, ...indexes, ['DROP TABLE _learning_quiet_range'], ...freshIndexes, ...retryIndexes]
   .map((statements, index) => ({ version: 619 + index, statements }));

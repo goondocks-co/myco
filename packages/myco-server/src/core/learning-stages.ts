@@ -18,8 +18,8 @@ import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 import { CARD_TASK, claimCardsStatements, dueCardTurns } from './turn-cards.js';
 import { TURN_CARD_PROMPT } from './turn-card-prompt.js';
-import { buildLearningAssignment, claimLearningStatement, learningHead, learningWorkFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
-import { learningRecencySql } from './learning-recency.js';
+import { buildLearningAssignment, claimLearningStatement, learningHead, learningHeadFrom, learningWorkFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
+import { learningRangeSql } from './learning-recency.js';
 /** A card run's assignment: the turns it cards, each with the change count its write is guarded by. */
 export interface CardAssignment { kind: 'cards'; turns: { turnKey: string; changes: number }[] }
 
@@ -104,17 +104,17 @@ async function historyLearningSwitchedOn(db: RelationalStore): Promise<boolean> 
  * adds no parameters to the pulled write's level and fairness probes.
  */
 function learningStage(level: number, fresh: boolean): PulledStage {
-  const eligible = (now: number) => `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)} AND ${learningRecencySql(fresh, now)} AND ${learningEnabledSql(!fresh)}`;
+  const eligible = (now: number) => `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)} AND ${learningRangeSql('learning', fresh, now)} AND ${learningEnabledSql(!fresh)}`;
   return {
     level, task: EXTRACTION_TASK, switchedOn: fresh ? learningSwitchedOn : historyLearningSwitchedOn,
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'learning', fresh)} WHERE l.project_id = ${project}
-        AND l.${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')})`,
+        AND ${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')})`,
       params: [],
     }),
     head: async (db, projectId, now) => {
-      const row = await db.prepare(`SELECT session_id AS sessionId, eligible_at AS observed FROM ${learningWorkFrom('?1', now, 'learning', fresh)}
-        WHERE project_id = ?1 AND l.${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')}
+      const row = await db.prepare(`SELECT session_id AS sessionId, eligible_at AS observed FROM ${learningHeadFrom('learning')}
+        WHERE project_id = ? AND ${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')}
         ORDER BY source_activity_at DESC, session_id LIMIT 1`).bind(projectId).first<{ sessionId: string; observed: number }>();
       return row === null ? null : { projectId, subject: learningSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
@@ -128,19 +128,19 @@ function learningStage(level: number, fresh: boolean): PulledStage {
 }
 
 function cardStage(level: number, fresh: boolean): PulledStage {
-  const pending = (now: number) => `pending_cards > 0 AND card_ready_at <= ${Math.floor(now)} AND ${learningRecencySql(fresh, now)} AND ${learningEnabledSql(!fresh)}
+  const pending = (now: number) => `pending_cards > 0 AND card_ready_at <= ${Math.floor(now)} AND ${learningRangeSql('cards', fresh, now)} AND ${learningEnabledSql(!fresh)}
     AND EXISTS (SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
       WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending' AND c.due_at <= ${Math.floor(now)})`;
   return {
     level, task: CARD_TASK, switchedOn: fresh ? learningSwitchedOn : historyLearningSwitchedOn,
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'cards', fresh)} WHERE l.project_id = ${project}
-        AND l.${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')})`,
+        AND ${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')})`,
       params: [],
     }),
     head: async (db, projectId, now) => {
-      const row = await db.prepare(`SELECT session_id AS sessionId, source_activity_at AS observed FROM ${learningWorkFrom('?1', now, 'cards', fresh)}
-        WHERE project_id = ?1 AND l.${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')}
+      const row = await db.prepare(`SELECT session_id AS sessionId, source_activity_at AS observed FROM ${learningHeadFrom('cards')}
+        WHERE project_id = ? AND ${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')}
         ORDER BY source_activity_at DESC, session_id LIMIT 1`).bind(projectId).first<{ sessionId: string; observed: number }>();
       return row === null ? null : { projectId, subject: cardSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },

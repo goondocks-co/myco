@@ -18,7 +18,7 @@ import { commitAttributedWrite } from './runs.js';
 import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
-import { FRESH_LEARNING_MS, learningRecencySql } from './learning-recency.js';
+import { FRESH_LEARNING_MS, freshRetrySql, learningRangeSql, learningRecencySql } from './learning-recency.js';
 export { FRESH_LEARNING_MS } from './learning-recency.js';
 export { LEARNING_TOOL };
 
@@ -46,11 +46,11 @@ export async function repairLearningSources(db: RelationalStore): Promise<{ chan
     const full = results.length === LEARNING_SOURCE_REPAIR_PAGE;
     const writes = await db.batch([
       db.prepare(`UPDATE ${table} SET source_activity_at = ${source}
-        WHERE rowid IN (SELECT value FROM json_each(?)) AND source_activity_at IS NULL AND ${source} IS NOT NULL`)
+        WHERE rowid IN (SELECT value FROM json_each(?)) AND source_activity_at IS NULL AND ${source} IS NOT NULL RETURNING rowid`)
         .bind(JSON.stringify(results.map(row => row.id))),
       db.prepare('INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)').bind(cursor, String(full ? results.at(-1)!.id : 0)),
     ]);
-    const pageChanged = writes[0]!.meta.changes ?? 0;
+    const pageChanged = writes[0]!.results.length;
     changed += pageChanged;
     more ||= full && pageChanged > 0;
   }
@@ -83,6 +83,7 @@ export function sessionProgressStatements(db: RelationalStore, projectId: string
     db.prepare(`UPDATE learning_sessions SET due_cards = ${UNCOVERED('learning_sessions.project_id', 'learning_sessions.session_id')}
       WHERE project_id = ? AND session_id = ? AND ${guard.sql}`).bind(...key, ...guard.params),
     db.prepare(`UPDATE learning_sessions SET
+        fresh_admitted = CASE WHEN pending_cards = 0 AND due_cards = 0 THEN 0 ELSE fresh_admitted END,
         eligible_at = CASE WHEN init_state = 'ready' AND skipped_by_owner = 0 AND pending_cards = 0 AND due_cards > 0
           THEN COALESCE(eligible_at, ?) ELSE NULL END
       WHERE project_id = ? AND session_id = ? AND ${guard.sql}`).bind(now, ...key, ...guard.params),
@@ -143,17 +144,23 @@ export function learningWorkFrom(project: string, now: number, kind: 'cards' | '
   const freshIndex = kind === 'cards' ? 'idx_learning_cards_fresh' : 'idx_learning_fresh';
   const sourceIndex = kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible';
   const day = Math.floor(now / FRESH_LEARNING_MS);
-  const columns = 'project_id,session_id,source_activity_at,eligible_at,pending_cards,card_ready_at,learning_ready_at';
+  const columns = 'project_id,session_id,source_activity_at,eligible_at,pending_cards,card_ready_at,learning_ready_at,fresh_admitted,card_failures,failures';
   return `(SELECT ${columns} FROM learning_sessions INDEXED BY ${freshIndex}
       WHERE project_id = ${project} AND source_day IN (${day - 1},${day}) AND ${pending} AND ${ready} <= ${Math.floor(now)}
     UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${sourceIndex}
-      WHERE project_id = ${project} AND source_activity_at >= ${(day + 1) * FRESH_LEARNING_MS} AND ${pending} AND ${ready} <= ${Math.floor(now)}) l`;
+      WHERE project_id = ${project} AND source_activity_at >= ${(day + 1) * FRESH_LEARNING_MS} AND ${pending} AND ${ready} <= ${Math.floor(now)}
+    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${kind === 'cards' ? 'idx_learning_cards_retry' : 'idx_learning_retry'}
+      WHERE project_id = ${project} AND ${pending} AND ${freshRetrySql(kind)} AND ${learningRecencySql(false, now)} AND ${ready} <= ${Math.floor(now)}) l`;
 }
+
+/** A head reads source order and stops at its first ready session. */
+export const learningHeadFrom = (kind: 'cards' | 'learning'): string =>
+  `learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible'}`;
 
 /** The project's eligible session with the newest source activity inside the range, or null. */
 export async function learningHead(db: RelationalStore, projectId: string, now: number, fresh: boolean): Promise<string | null> {
-  const row = await db.prepare(`SELECT session_id AS sessionId FROM ${learningWorkFrom('?1', now, 'learning', fresh)}
-    WHERE project_id = ?1 AND eligible_at IS NOT NULL AND learning_ready_at <= ?2 AND ${learningRecencySql(fresh, now)} ORDER BY source_activity_at DESC, session_id LIMIT 1`)
+  const row = await db.prepare(`SELECT session_id AS sessionId FROM ${learningHeadFrom('learning')}
+    WHERE project_id = ? AND eligible_at IS NOT NULL AND learning_ready_at <= ? AND ${learningRangeSql('learning', fresh, now)} ORDER BY source_activity_at DESC, session_id LIMIT 1`)
     .bind(projectId, now).first<{ sessionId: string }>();
   return row?.sessionId ?? null;
 }
@@ -180,7 +187,8 @@ export async function buildLearningAssignment(db: RelationalStore, projectId: st
 /** The statement a claim of a slice adds to its batch: the session leaves the eligible set until the claim is presumed lost. */
 export function claimLearningStatement(db: RelationalStore, projectId: string, sessionId: string, now: number,
   run: { runId: string; dispatchedBy: string }): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET failures = failures + 1,
+  return db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
+      failures = failures + 1,
       eligible_at = ? + CASE WHEN failures = 0 THEN 0 WHEN failures = 1 THEN ? WHEN failures = 2 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
@@ -288,16 +296,21 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
   const scopedSessions = (index: string, predicate: string, fresh: boolean) => `FROM projects p CROSS JOIN learning_sessions l INDEXED BY ${index}
     ON l.project_id = p.project_id WHERE ${learningRecencySql(fresh, now)} AND (${predicate})`;
   const waiting = 'pending_cards > 0 OR due_cards > 0';
+  const continuing = (kind: 'cards' | 'learning') => `FROM projects p CROSS JOIN learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_cards_retry' : 'idx_learning_retry'}
+    ON l.project_id = p.project_id WHERE ${kind === 'cards' ? 'pending_cards > 0' : 'eligible_at IS NOT NULL'}
+      AND ${freshRetrySql(kind)} AND ${learningRecencySql(false, now)}`;
   const freshCount = (column: 'pending_cards' | 'due_cards') => `(SELECT MIN(${STATUS_CAP + 1},COALESCE(SUM(n),0))
     FROM (SELECT ${column} AS n ${scopedSessions(column === 'pending_cards' ? 'idx_learning_source_pending' : 'idx_learning_source_waiting',
-      column === 'pending_cards' ? 'pending_cards > 0' : waiting, true)} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
+      column === 'pending_cards' ? 'pending_cards > 0' : waiting, true)} AND ${column} > 0
+      UNION ALL SELECT ${column} AS n ${continuing(column === 'pending_cards' ? 'cards' : 'learning')} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
   const row = await db.prepare(`SELECT ${RESUMED} AS resumed,
       ${capped(historyEnabled ? `SELECT 1 FROM projects p CROSS JOIN learning_sessions l INDEXED BY idx_learning_ready ON l.project_id = p.project_id
         WHERE eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`
-        : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`, true)}`)} AS dueSessions,
+        : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`, true)}
+          UNION ALL SELECT 1 ${continuing('learning')} AND learning_ready_at <= ${Math.floor(now)}`)} AS dueSessions,
       ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0`) : freshCount('due_cards')} AS dueCards,
       ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`) : freshCount('pending_cards')} AS turnsAwaitingCards,
-      ${historyEnabled ? '0' : capped(`SELECT 1 ${scopedSessions('idx_learning_source_waiting', waiting, false)}`)} AS historyWaiting,
+      ${historyEnabled ? '0' : capped(`SELECT 1 ${scopedSessions('idx_learning_source_waiting', `(${waiting}) AND NOT ((pending_cards > 0 AND ${freshRetrySql('cards')}) OR (eligible_at IS NOT NULL AND ${freshRetrySql('learning')}))`, false)}`)} AS historyWaiting,
       ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'awaiting_publication'`)} AS awaitingPublication`)
     .first<{ resumed: number; dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
   const last = await db.prepare(`SELECT last_completed_at AS at, last_completed_reason AS reason, session_id AS sessionId FROM learning_sessions
