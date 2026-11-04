@@ -38,6 +38,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         details: { type: 'string', description: 'For report: structured detail as a JSON object, serialized.' },
         audit: { type: ['object', 'string'], description: 'For report, required: your account of this pass, as an object of steps (what you did, in order), examined (files and areas read), commands (commands run), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is). Empty lists where nothing applies.' },
         key: { type: 'string', description: 'For state_get and state_set: the state key.' },
+        offset: { type: 'number', description: 'For state_get: where to read from, for a value longer than one answer. An answer names its next_offset until the last.' },
         value: { type: 'string', description: 'For state_set: the value to store.' },
         version: { type: 'string', description: 'For state_set: the version state_get answered. Omit only when the key was unset. A stale version answers applied false and the caller reads again.' },
         [PROJECT_PIVOT]: project,
@@ -54,6 +55,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       properties: {
         op: { type: 'string', enum: ['list', 'get'], description: 'list: one preview line per spore, with the total behind the page. get: one spore in full.' },
         id: { type: 'string', description: 'For get: the spore to read.' },
+        max_chars: { type: 'number', description: 'For get: the most characters of each long field to answer, to ask for less. An answer cut to fit says truncated.' },
         status: { type: 'string', description: 'For list: filter by status, or "all". Defaults to active.' },
         observation_type: { type: 'string', description: 'For list: filter by observation type.' },
         search: { type: 'string', description: 'For list: keep only spores whose content or type contains this text.' },

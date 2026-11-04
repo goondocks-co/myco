@@ -17,6 +17,8 @@
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
 import { cleanSummary, cleanTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
 import { documentTitlingMaterial } from '../../content/titling-material.js';
+import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
+import { answerBytes } from '../../core/material-pages.js';
 import { preview } from '../../core/run-material.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
@@ -60,7 +62,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
     await assertSessionMaterialReady(db, ctx.projectId, sessionId);
     const material = await documentTitlingMaterial(ctx.env, ctx.projectId, sessionId, params.mode);
     noteRunReads(ctx, [sessionId]);
-    return {
+    const answer = {
       session_id: sessionId,
       status: session.endedAt === null ? 'active' : 'completed',
       agent: session.agent,
@@ -71,6 +73,8 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       ...(params.mode !== 'claim' ? { note: 'The batches are the session\'s earliest and latest prompts in order; the middle is omitted.' } : {}),
       batches: material.map((line, i) => ({ prompt_number: i + 1, user_prompt: line.prompt, response_excerpt: line.response })),
     };
+    while (answer.batches.length > 1 && answerBytes({ result: answer }) > RUN_ANSWER_BYTES) answer.batches.pop();
+    return answer;
   }
 
   const title = typeof input.title === 'string' ? cleanTitle(input.title) : null;

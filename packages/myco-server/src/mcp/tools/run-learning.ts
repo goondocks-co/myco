@@ -65,11 +65,12 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
       handoff: held.assignment.handoff, more_slices: held.assignment.more,
       ...(cards.length < held.assignment.turns.length ? { changed_since_assignment: held.assignment.turns.length - cards.length } : {}),
     };
-    const page = await servePage(ctx, run, input, entries, () => learningMaterialPages(held.sessionId, opening, entries));
+    const page = await servePage(ctx, run, input, entries, () => learningMaterialPages(held.sessionId, opening, entries), async (served) => {
+      const onPage = new Set(served.map((entry) => entry.turn_key));
+      await recordServedPrompts(db, scope, run.runId,
+        cards.filter((card) => onPage.has(card.turnKey)).flatMap((card) => card.promptIds.map((promptId) => ({ promptId, sessionId: held.sessionId, createdAt: 0, endedAt: null }))), ctx.now);
+    });
     if ('refusal' in page) return page.refusal;
-    const onPage = new Set(page.served.map((entry) => entry.turn_key));
-    await recordServedPrompts(db, scope, run.runId,
-      cards.filter((card) => onPage.has(card.turnKey)).flatMap((card) => card.promptIds.map((promptId) => ({ promptId, sessionId: held.sessionId, createdAt: 0, endedAt: null }))), ctx.now);
     return { session_id: held.sessionId, ...(page.page === 1 ? opening : {}), revision: page.revision, page: page.page, ...page.next, cards: page.served };
   }
   if (input.op === 'get') {

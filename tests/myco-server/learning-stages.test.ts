@@ -483,7 +483,7 @@ async function learningRun(db: RelationalStore, turns: readonly Turn[], signal: 
     return pages;
   };
   const save = (agentLine: string, content = agentLine) => call('myco_spores', { op: 'save', type: 'gotcha', session_id: 'long', agent_line: agentLine, content });
-  return { raw, call, material, readAll, save, complete: (text: string) => call('myco_run_learning', { op: 'complete', handoff: text }) };
+  return { bindings, raw, call, material, readAll, save, complete: (text: string) => call('myco_run_learning', { op: 'complete', handoff: text }) };
 }
 
 const plainTurns = (count: number, base = 500): Turn[] => Array.from({ length: count }, (_, at) => ({ id: uuid(base + at), text: `Work on the part ${at}`, at: 10 + at, replies: ['Done.'] }));
@@ -561,6 +561,70 @@ it('refuses a learning run\'s spore writes and completion until this attempt has
     expect(restarted[0]!.changed_since_assignment).toBe(1);
     expect(await run.save('When a turn runs long, read every page.')).toMatchObject({ id: expect.any(String) });
     expect(await run.complete('nothing open')).toEqual({ completed: true, covered: 7 });
+  });
+});
+
+it('leaves a page unread when its served record fails, so completion cannot retire text the run never received', async () => {
+  await withDocumentStores(async (db) => {
+    const run = await learningRun(db, plainTurns(1), 'high', () => heavyCard('増', 11_700), 'h\n'.repeat(2_048));
+    const first = await run.material();
+    expect(first.cards[0]!.continues).toBe(true);
+    expect(first.next_page).toBe(2);
+    let failed = 0;
+    run.bindings.MYCO_DB = beforeWriteBatch(db, (sql) => sql.includes('INSERT INTO run_served_material'), async () => { failed += 1; throw new Error('storage down'); }, true);
+    expect(await run.raw('myco_run_learning', { op: 'material', page: 2, revision: first.revision })).toBeUndefined();
+    run.bindings.MYCO_DB = db;
+    expect(failed).toBe(1);
+    expect(await run.complete('only page 1 arrived')).toMatchObject({ ok: false, code: MATERIAL_UNREAD, next_page: 2 });
+    expect(await run.save('A line.')).toMatchObject({ ok: false, code: MATERIAL_UNREAD, next_page: 2 });
+    expect((await run.material({ page: 2, revision: first.revision })).page).toBe(2);
+    expect(await run.complete('all of it arrived')).toEqual({ completed: true, covered: 1 });
+  });
+});
+
+it('keeps state usable within one answer: a value that cannot fit is refused, and a longer one already held is read in parts with its version', async () => {
+  await withDocumentStores(async (db) => {
+    const run = await learningRun(db, plainTurns(1), 'low');
+    await run.readAll();
+    const key = 'long-key';
+    expect(await run.call('myco_run', { op: 'state_set', key, value: 'x'.repeat(RUN_ANSWER_BYTES) })).toMatchObject({ ok: false, error: expect.stringContaining('must fit one') });
+    expect(await run.call('myco_run', { op: 'state_set', key, value: '\u0001'.repeat(7_000) })).toMatchObject({ ok: false });
+    expect(await run.call('myco_run', { op: 'state_set', key, value: 'short' })).toEqual({ key, applied: true });
+    const long = '増"\n'.repeat(30_000);
+    await db.prepare(`UPDATE agent_state SET value = ? WHERE key = ?`).bind(long, key).run();
+
+    let read = '';
+    let version: unknown;
+    for (let offset: number | undefined = 0, parts = 0; offset !== undefined; parts += 1) {
+      expect(parts).toBeLessThan(10);
+      const held = await run.raw('myco_run', { op: 'state_get', key, offset });
+      expect(new TextEncoder().encode(JSON.stringify(held.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+      const answer = (held.structuredContent as { result: { value: string; version: string; next_offset?: number } }).result;
+      read += answer.value;
+      version = answer.version;
+      offset = answer.next_offset;
+    }
+    expect(read).toBe(long);
+    expect(await run.call('myco_run', { op: 'state_set', key, value: 'smaller', version })).toEqual({ key, applied: true });
+    expect(await run.call('myco_run', { op: 'state_get', key, offset: -1 })).toMatchObject({ ok: false });
+  });
+});
+
+it('answers a spore get whatever its fields hold, cut to fit, and to less when asked', async () => {
+  await withDocumentStores(async (db) => {
+    const run = await learningRun(db, plainTurns(1), 'low');
+    await run.readAll();
+    const saved = await run.save('A spore with a long context.', 'the body') as { id: string };
+    await db.prepare(`UPDATE spores SET context = ?, properties = ? WHERE id = ?`).bind('c'.repeat(41_000), '\u0001'.repeat(20_000), saved.id).run();
+    const held = await run.raw('myco_run_spores', { op: 'get', id: saved.id });
+    expect(new TextEncoder().encode(JSON.stringify(held.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+    expect((held.structuredContent as { result: { truncated: boolean; spore: { id: string; revision: number; content: string } } }).result)
+      .toMatchObject({ truncated: true, spore: { id: saved.id, revision: expect.any(Number), content: 'the body' } });
+    const less = await run.call('myco_run_spores', { op: 'get', id: saved.id, max_chars: 10 }) as { truncated: boolean; spore: { context: string } };
+    expect(less).toMatchObject({ truncated: true, spore: { context: 'c'.repeat(10) } });
+    expect(await run.call('myco_run_spores', { op: 'get', id: saved.id, max_chars: 0 })).toMatchObject({ ok: false, error: expect.stringContaining('max_chars') });
+    const whole = await run.save('Another spore, no long fields.', 'a short body') as { id: string };
+    expect(await run.call('myco_run_spores', { op: 'get', id: whole.id })).toMatchObject({ truncated: false, spore: { content: 'a short body' } });
   });
 });
 

@@ -1,11 +1,25 @@
 import { afterEach, expect, it } from 'bun:test';
 import { nearSpores } from '@myco-server-worker/core/spore-near-matches.js';
+import { activeSporesMatchingAnyWord, MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
 import { writeSpore } from '@myco-server-worker/core/spore-admission.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
+
+const WORDS = ['scheduler', 'retries'];
+
+/** A Project and a neighbour Deployment-mate, with a spore inserted the way the word match reads them. */
+function wordMatchStore(onSql?: (sql: string) => void) {
+  const f = sqliteEnv({ onSql });
+  opened.push(f);
+  f.sqlite.run(`INSERT INTO projects(project_id,name,created_at) VALUES('p','project',1),('other','other',1)`);
+  f.sqlite.run(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('a','agent','built-in',1,1)`);
+  const spore = (project: string, id: string, content: string, at: number, status = 'active') => f.sqlite.run(
+    `INSERT INTO spores(project_id,id,agent_id,content,observation_type,status,created_at) VALUES(?,?,'a',?,'decision',?,?)`, [project, id, content, status, at]);
+  return { f, spore };
+}
 
 const opened: ReturnType<typeof sqliteEnv>[] = [];
 afterEach(() => { for (const f of opened.splice(0)) f.sqlite.close(); });
@@ -31,7 +45,6 @@ async function project(embed: EmbeddingProvider['embed']) {
   const context = { db: f.db, blobs: f.bucket, vectors: cloudflareVectorStore(index), provider };
   for (let step = 0; step < 100; step += 1) {
     const { processed } = await reconcileEmbedding(context, 'p', NOW);
-    index.apply();
     if (processed === 0) break;
   }
   spore('saved', LINE);
@@ -58,4 +71,38 @@ it('adds near matches to a learning run\'s save and nothing to a member\'s', asy
     { env, projectId: 'p', now: NOW, principal: { kind: 'member', memberId: 'm', machineId: 'mc' } }) as Record<string, unknown>;
   expect(saved.id).toEqual(expect.any(String));
   expect(saved).not.toHaveProperty('near_matches');
+});
+
+it('leaves a neighbour out when it is retired between finding it and reading it', async () => {
+  let retire = false;
+  const f = sqliteEnv({ onSql: (sql, sqlite) => {
+    if (retire && sql.includes('id IN (')) { retire = false; sqlite.run(`UPDATE spores SET status = 'obsolete', revision = revision + 1 WHERE id = 'candidate'`); }
+  } });
+  opened.push(f);
+  f.sqlite.run(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('a','agent','built-in',1,1)`);
+  f.sqlite.run(`INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','candidate','a','Scheduler retries','gotcha',1)`);
+  expect((await nearSpores(f.serverEnv, { projectId: 'proj_1' }, 'saved', LINE)).map((match) => match.id)).toEqual(['candidate']);
+  retire = true;
+  expect(await nearSpores(f.serverEnv, { projectId: 'proj_1' }, 'saved', LINE)).toEqual([]);
+  expect(retire).toBe(false);
+});
+
+it('ranks the word match inside one Project\'s active spores, read from their index and bounded before any is scored', async () => {
+  const seen: string[] = [];
+  const { f, spore } = wordMatchStore((sql) => seen.push(sql));
+  spore('p', 'one', 'scheduler only', 1);
+  spore('p', 'both', 'SCHEDULER and retries', 2);
+  spore('p', 'retired', 'scheduler retries', 3, 'superseded');
+  spore('p', 'saved', 'scheduler retries', 4);
+  spore('other', 'elsewhere', 'scheduler retries', 5);
+  seen.length = 0;
+  expect(await activeSporesMatchingAnyWord(f.db, SCOPE, WORDS, 'saved', 5)).toEqual(['both', 'one']);
+  const statement = seen.find((sql) => sql.includes('instr(text'))!;
+  const plan = f.sqlite.query(`EXPLAIN QUERY PLAN ${statement}`).all(...WORDS, 2_000, 'p', 'saved', MAX_SPORE_LIMIT, 5) as { detail: string }[];
+  const details = plan.map((step) => step.detail);
+  expect(details.some((detail) => detail.includes('idx_spores_status (project_id=? AND status=?)'))).toBe(true);
+  expect(details.filter((detail) => /SCAN (spores|d)\b/.test(detail) || detail.includes('spores_fts'))).toEqual([]);
+
+  for (let at = 0; at < MAX_SPORE_LIMIT; at += 1) spore('p', `newer-${at}`, 'nothing in common', 1_000 + at);
+  expect(await activeSporesMatchingAnyWord(f.db, SCOPE, WORDS, 'saved', 5)).toEqual([]);
 });

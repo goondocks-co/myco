@@ -2,8 +2,8 @@
  * The active spores closest to one just saved, as a learning run needs them to curate: each with what supersede and
  * consolidate ask for, so the run acts in the same pass without a counted full read.
  *
- * Semantic neighbours come first where the Deployment has a provider. A full-text match on the line's longest words
- * fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
+ * Semantic neighbours come first where the Deployment has a provider. A word match over the Project's newest active
+ * spores fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
  */
 import type { ServerEnv } from './adapters.js';
 import { semanticSearch } from '../read/embedding.js';
@@ -13,7 +13,7 @@ import { activeSporesMatchingAnyWord, listSporesByIds, SPORE_PREVIEW_CHARS } fro
 
 /** The neighbours one save answers with. */
 export const NEAR_MATCH_LIMIT = 5;
-/** The longest words of a spore's line a full-text match reads. */
+/** The longest words of a spore's line a word match reads. */
 const MATCH_WORDS = 8;
 /** Words shorter than this name nothing a neighbour would share. */
 const MATCH_WORD_MIN_CHARS = 4;
@@ -43,7 +43,7 @@ export async function nearSpores(env: ServerEnv, scope: ReadScope, savedId: stri
     const rows = new Map((await listSporesByIds(env.db, scope, ids)).map((row) => [row.id, row]));
     return ids.flatMap((id) => {
       const row = rows.get(id);
-      if (row === undefined) return [];
+      if (row === undefined || row.status !== 'active') return [];
       return [{ id, revision: row.revision, observation_type: row.observationType,
         agent_line: row.agentLine ?? row.content.replace(/\s+/g, ' ').trim().slice(0, SPORE_PREVIEW_CHARS) }];
     });

@@ -33,7 +33,7 @@ export const EXTRACTION_RULES = [
   '- Genuinely distinct, sharing only words: keep both.',
   '- A spore the prompts show to be false, with nothing replacing it: `myco_spores` op "obsolete" with `id`, `expect_revision` and a `reason` saying what invalidated it.',
   '',
-  'Keep every concrete detail in the replacement: a command, path, flag, error text or number the old spore holds must survive in what replaces it. When a line does not show what a spore holds, `myco_run_spores` op "get" reads its body; full reads are counted against this run, so read only what you mean to act on. When an old spore holds a detail the new one lacks, consolidate the two rather than supersede.',
+  'Keep every concrete detail in the replacement: a command, path, flag, error text or number the old spore holds must survive in what replaces it. When a line does not show what a spore holds, `myco_run_spores` op "get" reads its body. Full reads are counted against this run, so read only what you mean to act on. When an old spore holds a detail the new one lacks, consolidate the two rather than supersede.',
   '',
   'Only active sources may move. A `stale` refusal carries the current status and revision: reassess the source before deciding again.',
   '',
