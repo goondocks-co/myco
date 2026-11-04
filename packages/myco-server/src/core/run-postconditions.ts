@@ -1,3 +1,6 @@
+import { runCardsFinished } from './turn-cards.js';
+import { assignmentOf } from '../db/run-context.js';
+import type { CardAssignment } from './learning-stages.js';
 import { emit } from '../telemetry.js';
 /**
  * What a run must have recorded before it may close as completed.
@@ -118,9 +121,11 @@ export async function learningCompletedBy(db: RelationalStore, scope: ReadScope,
   return runRecordedWrite(db, scope, run.id, LEARNING_TOOL);
 }
 
-/** Whether THIS run wrote at least one turn card. */
+/** Whether THIS run completed its card assignment. */
 export async function cardsWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
-  return runRecordedWrite(db, scope, run.id, CARD_TOOL);
+  const held = assignmentOf<CardAssignment>(run.runContext, 'cards');
+  return held !== null && await runRecordedWrite(db, scope, run.id, CARD_TOOL)
+    && await runCardsFinished(db, scope.projectId, held.sessionId, run.id, held.assignment.turns);
 }
 
 /** Whether THIS run wrote a spore: the spore row's `author` column names the run. */
@@ -149,7 +154,7 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
   [TITLING_TASK]: { description: ['A report with its audit and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands, audited: true },
   [EXTRACTION_TASK]: { description: ['A report with its audit and the learning slice completed by this run.'], reports: [EXTRACTION_REPORT_ACTION], artifact: learningCompletedBy, audited: true },
-  [CARD_TASK]: { description: ['A report and the turn cards written by this run.'], reports: [CARD_REPORT_ACTION], artifact: cardsWrittenBy },
+  [CARD_TASK]: { description: ['A report and turn cards for every assigned turn whose material is unchanged.'], reports: [CARD_REPORT_ACTION], artifact: cardsWrittenBy },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
   [SEEDING_TASK]: { description: ['A report with its audit and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope), audited: true },
 };

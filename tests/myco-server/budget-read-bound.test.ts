@@ -172,3 +172,106 @@ it('seeks only new settlements after warmup with a rare key at one thousand and 
     }
   }finally{meter.close();await mf.dispose();}
 },240_000);
+
+it('seeks fresh card and learning work without visiting active, backed-off or disabled historical sessions', async () => {
+  const f = await budgetFixture();
+  const meter = sqliteBudgetMeter();
+  const { LEARNING_STAGES } = await import('@myco-server-worker/core/learning-stages.js');
+  const DAY = 86_400_000;
+  const now = Math.floor(f.now / DAY) * DAY + 5 * 60_000;
+  try {
+    await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', f.now);
+    const session = f.sqlite.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
+      VALUES('proj_1',?,'fake','fake',1,?,?)`);
+    const progress = f.sqlite.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,due_cards,eligible_at,card_retry_at)
+      VALUES('proj_1',?,'ready',?,?,?,?,?)`);
+    session.run('previous-day-card', now, now);
+    progress.run('previous-day-card', now - 3_600_000, 1, 0, null, 0);
+    f.sqlite.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('proj_1','previous-day-card','turn',1,?)`).run(now);
+    session.run('future-learning', now, now);
+    progress.run('future-learning', now + 2 * DAY, 0, 1, now, 0);
+    const stages = LEARNING_STAGES.slice(0, 2);
+    const reads = async (expected = 1) => Promise.all(stages.map(async stage => {
+      const due = stage.due("'proj_1'", now);
+      expect(await f.db.prepare(`SELECT ${due.sql} AS due`).bind(...due.params).first()).toEqual({ due: expected });
+      return meter.reads(f.sqlite, { sql: `SELECT ${due.sql}`, params: due.params });
+    }));
+    const before = await reads();
+    const contact = () => f.sqlite.exec("UPDATE sessions SET ended_at=NULL,last_received_at=" + now + " WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')");
+    contact();
+    const idleBefore = await reads(0);
+    f.sqlite.prepare("UPDATE sessions SET ended_at=? WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')").run(now);
+    f.sqlite.transaction(() => {
+      for (let n = 0; n < 1900; n++) {
+        for (const kind of ['active', 'backoff', 'history']) {
+          for (const cards of [true, false]) {
+            const id = `${kind}-${cards}-${n}`;
+            const old = kind === 'history';
+            session.run(id, old ? now - 30 * DAY : now, kind === 'active' ? null : now);
+            progress.run(id, old ? now - 30 * DAY : now, cards ? 1 : 0, cards ? 0 : 1,
+              cards ? null : kind === 'backoff' ? now + DAY : now, kind === 'backoff' ? now + DAY : 0);
+          }
+        }
+      }
+    })();
+    expect(await reads()).toEqual(before);
+    expect((await stages[0]!.head(f.db, 'proj_1', now))?.key).toBe('previous-day-card');
+    expect((await stages[1]!.head(f.db, 'proj_1', now))?.key).toBe('future-learning');
+    contact();
+    expect(await reads(0)).toEqual(idleBefore);
+  } finally { meter.close(); f.sqlite.close(); }
+});
+
+it('stops card and learning heads at the first source-ordered ready row as the ready backlog grows', async () => {
+  const f = await budgetFixture();
+  const meter = sqliteBudgetMeter();
+  const { LEARNING_STAGES } = await import('@myco-server-worker/core/learning-stages.js');
+  try {
+    await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', f.now);
+    await settingsWriter(f.db).setLeaf('agent.learning_history_enabled', true, 'mem_worker', f.now);
+    const session = f.sqlite.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
+      VALUES('proj_1',?,'fake','fake',1,?,?)`);
+    const progress = f.sqlite.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,due_cards,eligible_at)
+      VALUES('proj_1',?,'ready',?,1,1,?)`);
+    const card = f.sqlite.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('proj_1',?,'turn',1,?)`);
+    let measured = 0;
+    const plans: string[] = [];
+    const measuredDb: RelationalStore = { ...f.db, prepare(sql) {
+      const statement = f.db.prepare(sql);
+      return { ...statement, bind(...params) {
+        const bound = statement.bind(...params);
+        return { ...bound, async first<T>() {
+          measured = meter.reads(f.sqlite, { sql, params });
+          plans.push(...f.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params as string[]).map(row => String((row as { detail: string }).detail)));
+          return bound.first<T>();
+        } };
+      } };
+    } };
+    const samples: unknown[] = [];
+    for (const fresh of [true, false]) {
+      f.sqlite.exec('DELETE FROM learning_sessions; DELETE FROM turn_cards; DELETE FROM sessions');
+      let previous = 0;
+      let baseline: number[] | undefined;
+      for (const size of [1, 100, 1900]) {
+        f.sqlite.transaction(() => {
+          for (let n = previous; n < size; n++) {
+            const id = `ready-${String(n).padStart(4, '0')}`;
+            const source = f.now - (fresh ? 0 : 30 * 86_400_000) - n;
+            session.run(id, source, source); progress.run(id, source, f.now); card.run(id, f.now);
+          }
+        })();
+        const reads: number[] = [];
+        for (const stage of LEARNING_STAGES.slice(fresh ? 0 : 2, fresh ? 2 : 4)) {
+          expect((await stage.head(measuredDb, 'proj_1', f.now))?.key).toBe('ready-0000');
+          reads.push(measured);
+        }
+        baseline ??= reads;
+        expect(reads).toEqual(baseline);
+        expect(Math.max(...reads)).toBeLessThan(20);
+        samples.push({ fresh, size, reads }); previous = size;
+      }
+    }
+    expect(plans.some(detail => detail.includes('TEMP B-TREE'))).toBe(false);
+    console.info('ready head read bounds', { samples, plans: [...new Set(plans)] });
+  } finally { meter.close(); f.sqlite.close(); }
+});

@@ -42,7 +42,8 @@ import type { RunErrorCode } from './reader-codes.js';
 import { storedAudit, type RunAudit } from './run-audit.js';
 import { runnerContactStatement, workerContactStatement } from './worker-contacts.js';
 import { recordAttemptStatement } from './run-steps.js';
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
+import type { MaterialRead } from './material-pages.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -59,7 +60,7 @@ import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
 export const RUN_MATERIAL_READ_KEY = 'materialRead';
 
 /** Record how far the attempt has read, in the one place the run keeps it; a later read replaces it, so it stays one small value. */
-export async function recordMaterialRead(db: RelationalStore, projectId: string, runId: string, read: { tokenId: string; revision: string; pages: number; through: number }): Promise<void> {
+export async function recordMaterialRead(db: RelationalStore, projectId: string, runId: string, read: MaterialRead): Promise<void> {
   await db.prepare(`UPDATE agent_runs SET run_context = json_set(${RUN_CONTEXT_OBJECT_SQL}, '$.${RUN_MATERIAL_READ_KEY}', json(?))
     WHERE project_id = ? AND id = ? AND dispatched_by = ?`).bind(JSON.stringify(read), projectId, runId, read.tokenId).run();
 }
@@ -763,6 +764,13 @@ export function runUpdateStatement(
       ...(authority?.params ?? []), ...callerGuard.params);
 }
 
+/** A run mutation and its direct row count commit with the mutations that follow it. */
+export async function commitRunChange(db: RelationalStore, statement: PreparedStatement, after: PreparedStatement[] = []):
+  Promise<{ changed: number; following: RunResult[] }> {
+  const [, count, ...following] = await db.batch([statement, db.prepare('SELECT changes() AS changed'), ...after]);
+  return { changed: (count!.results[0] as { changed: number }).changed, following };
+}
+
 /** Apply the shared update statement and return how many rows changed. */
 export async function applyRunUpdate(
   db: RelationalStore, scope: ReadScope, runId: string, update: RunUpdate,
@@ -770,7 +778,7 @@ export async function applyRunUpdate(
   context?: Readonly<Record<string, string>>, caller?: RunCaller,
 ): Promise<number> {
   const statement = runUpdateStatement(db, scope, runId, update, lease, errorCode, context, caller);
-  return statement === null ? 0 : (await statement.run()).meta.changes;
+  return statement === null ? 0 : (await commitRunChange(db, statement)).changed;
 }
 
 export interface ReportRow {
@@ -1026,8 +1034,8 @@ const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = 
   WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
 
 export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<boolean> {
-  const result = await db.prepare(FAIL_STALE_SQL).bind(now, error, errorCode, scope.projectId, runId).run();
-  return result.meta.changes === 1;
+  const result = await commitRunChange(db, db.prepare(FAIL_STALE_SQL).bind(now, error, errorCode, scope.projectId, runId));
+  return result.changed === 1;
 }
 
 export const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_runs
@@ -1526,7 +1534,7 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
   const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
   const paused = pausedLearningSql('task');
   const ends = `(${paused} OR subject IS NOT NULL)`;
-  const result = await db.prepare(
+  const result = await commitRunChange(db, db.prepare(
     `UPDATE agent_runs SET status = CASE WHEN ${ends} THEN 'failed' ELSE 'queued' END,
         completed_at = CASE WHEN ${ends} THEN ? ELSE completed_at END,
         error_code = CASE WHEN ${paused} THEN '${LEARNING_PAUSED}' WHEN ${ends} THEN '${LEASE_LAPSED}' ELSE error_code END,
@@ -1538,8 +1546,8 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
         leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
       WHERE project_id = ? AND id = ? AND status = 'running' AND ${named}
         AND dispatched_by IS ? AND lease_expires_at <= ?`,
-  ).bind(now, scope.projectId, runId, ...params, attemptId, now).run();
-  return result.meta.changes === 1;
+  ).bind(now, scope.projectId, runId, ...params, attemptId, now));
+  return result.changed === 1;
 }
 
 /**
