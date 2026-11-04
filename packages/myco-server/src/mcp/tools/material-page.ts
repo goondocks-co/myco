@@ -23,7 +23,7 @@ export function materialUnread(run: RunPrincipal): ReturnType<typeof unreadRefus
  * `before` makes for it: a call that fails leaves the page unread, so a write cannot pass on text the run never received.
  */
 export async function servePage<E>(ctx: ToolContext, run: RunPrincipal, input: ToolInput, entries: readonly unknown[], paginate: () => E[][],
-  before: (served: readonly E[]) => Promise<void> = async () => {}):
+  before: (served: readonly E[]) => Promise<void> = async () => {}, unavailable: readonly string[] = []):
   Promise<{ refusal: unknown } | { revision: string; page: number; served: E[]; next: { next_page?: number } }> {
   const page = input.page === undefined ? 1 : input.page as number;
   if (!Number.isInteger(page) || page < 1) return { refusal: failure('page is a whole number from 1') };
@@ -38,6 +38,6 @@ export async function servePage<E>(ctx: ToolContext, run: RunPrincipal, input: T
   const through = read?.revision === revision ? read.through : 0;
   if (page > through + 1) return { refusal: unreadRefusal(through + 1, revision) };
   await before(served);
-  if (page > through) await recordMaterialRead(ctx.env.db, ctx.projectId, run.runId, { tokenId: run.tokenId, revision, pages: pages.length, through: page });
+  if (page > through) await recordMaterialRead(ctx.env.db, ctx.projectId, run.runId, { tokenId: run.tokenId, revision, pages: pages.length, through: page, ...(unavailable.length === 0 ? {} : { unavailable }) });
   return { revision, page, served, next: page < pages.length ? { next_page: page + 1 } : {} };
 }

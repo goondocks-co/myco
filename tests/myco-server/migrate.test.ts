@@ -632,6 +632,46 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0616_v616.sql': '505691b310ecfc68f34d982c48bb0ac23d89fdc726049707db92271d58cf484d',
   '0617_v617.sql': '2d75b0745f06abd84fbb22821b248d045562c343cf121f641ddb27ed2de6e934',
   '0618_v618.sql': '6687d26d379fba866215229fd6ce1149589e089ac28d6f5783b44c1d1fd8c691',
+  '0619_v619.sql': '0c741e482df3ebe59574b414b1c47139adf76e3390e975d95adf05255a166a92',
+  '0620_v620.sql': '7157d0904e1851929b759de9cde8514b1e146a891ea552dc121522a36cce1a1c',
+  '0621_v621.sql': 'c979996e35025d066c299aed627165fd5660f77ff11077f92b136c87c31b1169',
+  '0622_v622.sql': '83cd1ea8615b3ffce605a598213064e5fc6005a28865e06c0331f7fa36e40667',
+  '0623_v623.sql': '70374ae8de0871c5bd2e3019c667292a110fe75b2fc623b06a61b625a8700d38',
+  '0624_v624.sql': '085d43e5ea34c7cd1263900e5c3b51d28cf8f4cd113b4cdb32e97c5f0118bac8',
+  '0625_v625.sql': '9ae455408bbd03e992b7184ba39ecb1ec8aa648ddcca81fdd0ebbe515dbbf6aa',
+  '0626_v626.sql': 'fae0df99c65894d00790f8f6ea5747154119309edb43996fc9fe333eb20747f9',
+  '0627_v627.sql': 'f95e0630fb14a05e7e6297901362986c6b597632764bd0203c08ec888cadf5a7',
+  '0628_v628.sql': '4f3f445f63c9f49906cdb4d2a2399331ebcf16bb89cf385414084a2bf49fe599',
+  '0629_v629.sql': '24d100b99ff6b58a9e8ae9e5a36247f161e39ca34eedc8e30185882d8aa59608',
+  '0630_v630.sql': '1d8d2d0f93a889b777e83c9a353fcb93d0110d83c9c87d0a885b6c6688997be2',
+  '0631_v631.sql': '64b14ef1cc5ae1cf9767922c38e40a4fe159ca5d561d82a556673da03fba8247',
+  '0632_v632.sql': '52936e012efe32c8e88cec4c19edd7a2ac7805988010495765be912b5c59c5cc',
+  '0633_v633.sql': 'e7c448a6a1decc6045947112081db0736f7abbf822d9ac7caeeb57bb4817faef',
+  '0634_v634.sql': '462dfb6d1326b74e95c09e6e715d3022862a926e79c16ff2741e003f4df4f5f8',
+  '0635_v635.sql': 'a3673177449c48fdb27dd39822265b2b5c75774e9eda58b91c9c9f5af7607764',
+  '0636_v636.sql': '85a1ef118357c53faf23e063f9565cfe2809a3b6d03c70feebe3c17aed789faa',
+  '0637_v637.sql': '9dbc57e8692d8555379f756a4674162e6541625b7f6a5aca77980f1cc72606c4',
+  '0638_v638.sql': '18bc92054068eb2dc4ebc3f18dd93c73f7b8958c07fe95e067bed37dffbfcc88',
+  '0639_v639.sql': '9b2f4d55c02b82a39e1ff1e43bdeec190398acda5f6747e2ba837a9d7199de84',
+  '0640_v640.sql': 'e8e3b4d73bf79e5993aec7cc49fe4c905c20fc5976f841b230b73526cd4876c3',
+  '0641_v641.sql': '80cc55ae1350de5f51ac30b75b6cb2363d502dc782ec2f9e2abc2f1928b3544f',
+  '0642_v642.sql': '5f212bb0d9273a4d35f90092a83b4667f3f49364a99267ac4f391e9479fd4b2a',
+  '0643_v643.sql': '31083dd6b18d62a82e81e0e1db1f1d7d6c6ff48386c230bafe3a8a166a32f08d',
+  '0644_v644.sql': 'fadf4ebf2cabb645c90e858b4e92d440e82a22e4c52370deab785059f725b7e3',
+  '0645_v645.sql': 'a286bf859e24a5f95252331792213b4c96bfe3bc4fd3f20ca1422dc0abf3ff2c',
+  '0646_v646.sql': 'd171b61069f7c0ca06dc917c0e42a1bdd26397cd19c7763c3f48ad272396a5ce',
+  '0647_v647.sql': 'a4732fa43a6e043fddff7df06f0b0bb39daf20fd6bbcea0dd1ea3435360c4545',
+  '0648_v648.sql': 'b87e0aa4e459ee104380a0a372cce9a81b682ba24a1287b7d3878e773a11ce3e',
+  '0649_v649.sql': 'd906364c2fa0df5fa14261d32e08ca58ae504052b57d2906601ef2dfbc20b0c9',
+  '0650_v650.sql': '63dfe377b4f5432074b2ffa6810ca7afea36ffb98c4e406d835df936ddf3c752',
+  '0651_v651.sql': '4ed8d8361f1ecf1d3384eaab4f3469841dc77ffc43957d4e719d47206d347641',
+  '0652_v652.sql': '3be37c91934214aa6995f1a56165842cb64b4084f2fef4a1dc6978dee80dbdb3',
+  '0653_v653.sql': '8c1822ae0f81824e336b269a3aa28af03587d88f55613f2e5f2ff471ac7d637f',
+  '0654_v654.sql': '6f521eb5c3d6d9f2fe167bff1e9c60f87b88116d4c5fe64c7d4d52761ba6c154',
+  '0655_v655.sql': '555f7637ac460e2d5bcfefd2fb10f9f43abc3c98ebe79b75dc2193679165f3c6',
+  '0656_v656.sql': 'aaebd78e0aca41621c441b65731c3a47b4e11c638ef78e62bf06609ff6ccf5fa',
+  '0657_v657.sql': '2431892b5244c62fdabca438906acda85c6de8eacca945f0cec3b83bd77b8830',
+  '0658_v658.sql': 'bdc38b7db5aa32cf58175e2219d7b7be38049f93627bf96a180aac9fcadfae65',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1099,7 +1139,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
+        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
         if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
@@ -1123,7 +1163,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -1270,9 +1310,9 @@ describe('versioned schema steps', () => {
       const insert = (projectId: string) => {
         const specimen = writerRows.get(t);
         if (specimen !== undefined) {
-          const row = { ...specimen, project_id: projectId };
-          const fields = Object.keys(row);
-          sqlite.query(`INSERT INTO ${t} (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`).run(...Object.values(row) as never[]);
+          const row: Record<string, unknown> = { ...specimen, project_id: projectId };
+          const fields = cols.map(column => column.name).filter(name => Object.hasOwn(row,name));
+          sqlite.query(`INSERT INTO ${t} (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`).run(...fields.map(field => row[field]) as never[]);
           return;
         }
         const names = cols.map((c) => c.name);

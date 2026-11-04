@@ -33,3 +33,11 @@ export const HARNESS_STOP_KEY = 'harnessStop';
 export const ENDED_NOTE_KEY = 'endedNote';
 export const BUDGET_QUOTE_USD_KEY = 'budgetEstimateUsd';
 export const BUDGET_QUOTE_AT_KEY = 'budgetQuotedAt';
+
+/** The session and typed assignment recorded by a run dispatch, or null when absent. */
+export function assignmentOf<T extends { kind: string }>(runContext: string | null, kind: T['kind']): { sessionId: string; assignment: T } | null {
+  try {
+    const context = JSON.parse(runContext ?? 'null') as { session_id?: unknown; assignment?: T } | null;
+    return typeof context?.session_id === 'string' && context.assignment?.kind === kind ? { sessionId: context.session_id, assignment: context.assignment } : null;
+  } catch { return null; }
+}

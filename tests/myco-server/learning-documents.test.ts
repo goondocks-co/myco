@@ -44,7 +44,8 @@ it('the publisher settles cards, keeps transcript plans canonical and reopens a 
       WHERE p.session_id = 'session' AND p.turn_key = p.prompt_id ORDER BY p.ord`).all<{ prompt_id: string; state: string; signal_reason: string | null; due: number }>();
     // A turn holding a plan waits for a model; a mechanical one is carded by rule.
     expect(turns.results.map((row) => [row.state, row.signal_reason, row.due]), name).toEqual([['pending', null, 1], ['carded', 'no_human_text', 0]]);
-    expect((await buildCardInput({ db }, 'project', 'session', t0 + 11 * MIN))?.counts, name).toEqual({ turns: 1 });
+    expect(await buildCardInput({ db }, 'project', 'session', t0 + 11 * MIN), name).toBeNull();
+    expect((await buildCardInput({ db }, 'project', 'session', t0 + 120 * MIN))?.counts, name).toEqual({ turns: 1 });
     expect(await db.prepare(`SELECT title, content, status FROM plans WHERE session_id = 'session'`).all(), name)
       .toMatchObject({ results: [{ title: 'Ship the release', content: expect.stringContaining('Tag, then publish.'), status: 'active' }] });
     expect(await db.prepare(`SELECT ended_at FROM sessions WHERE session_id = 'session'`).first(), name).toEqual({ ended_at: null });

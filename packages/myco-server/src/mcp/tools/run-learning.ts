@@ -1,3 +1,4 @@
+import { assignmentOf } from '../../db/run-context.js';
 /**
  * `myco_run_learning`: session learning's own material and completion.
  *
@@ -16,13 +17,6 @@ import { documentTurnInput } from '../../content/turn-material.js';
 import { assignedCards, completeLearning, HANDOFF_MAX_BYTES, learningMaterialPages, type LearningAssignment, type LearningMaterial } from '../../core/learning-sessions.js';
 import { LEARNING_TOOL } from '../../core/tool-catalogue.js';
 import { materialUnread, servePage } from './material-page.js';
-
-export function assignmentOf<T extends { kind: string }>(runContext: string | null, kind: T['kind']): { sessionId: string; assignment: T } | null {
-  try {
-    const context = JSON.parse(runContext ?? 'null') as { session_id?: unknown; assignment?: T } | null;
-    return typeof context?.session_id === 'string' && context.assignment?.kind === kind ? { sessionId: context.session_id, assignment: context.assignment } : null;
-  } catch { return null; }
-}
 
 /** The refusal of a learning run's write ahead of the pages of its slice; null for a run with no slice, or one that has read it all. */
 export function learningMaterialUnread(run: RunPrincipal): ReturnType<typeof materialUnread> {
