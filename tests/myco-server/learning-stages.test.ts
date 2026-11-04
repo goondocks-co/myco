@@ -6,7 +6,8 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { writeRunCards, type CardFields } from '@myco-server-worker/core/turn-cards.js';
+import { cardMaterialPages, writeRunCards, type CardFields, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
+import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import {
   learningHead, buildLearningAssignment, assignedCards, completeLearning, readLearningStatus, learningStatusLine,
@@ -313,6 +314,66 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await db.prepare(`SELECT status, run_context FROM agent_runs WHERE task = 'extract-curate' AND origin = 'manual'`).first())
       .toEqual({ status: 'skipped', run_context: '{"reason":"nothing_due"}' });
   });
+});
+
+/** One Bash failure the trimmer keeps verbatim, whose command weighs `chars` characters. */
+const failedCommand = (at: number, chars: number) => ({ name: 'Bash', input: { command: `echo ${at} ${'é"\n'.repeat(chars / 3)}` }, ok: false, error: `exit ${at}` });
+
+it('serves a card run\'s material in answers the harness holds whole, losing nothing', async () => {
+  await withDocumentStores(async (db) => {
+    const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+    const env = serverEnvFromBindings(bindings as never, recordingDeferred());
+    await capture(db, 'long', [
+      { id: uuid(30), text: 'a turn longer than one answer', at: 10, tools: Array.from({ length: 24 }, (_, at) => failedCommand(at, 1_900)) },
+      { id: uuid(31), text: 'a short turn', at: 20, replies: ['Done.'] },
+    ]);
+    await db.prepare(enable).run();
+    await publish(db, NOW, bindings.BUCKET);
+    await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
+    await db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)`).run();
+    await completeBudgetMigration(db, NOW);
+    await ensureMember(db, 'mem_worker', NOW, 'admin');
+    const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
+    const claimed = await claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + DAY });
+    if (!claimed.claimed) throw new Error(`no card run: ${claimed.reason}`);
+    const material = async (input: Record<string, unknown>) => {
+      const res = await worker.fetch(new Request('https://myco.test/mcp', { method: 'POST', headers: memberHeaders(claimed.run.runToken, { [PROJECT_HEADER]: 'project' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run_cards', arguments: { op: 'material', ...input } } }) }), bindings as never);
+      const body = await res.json() as { result: { content: { text: string }[]; structuredContent: unknown; isError?: boolean } };
+      return { text: body.result.content[0]!.text, held: JSON.stringify(body.result.structuredContent), answer: JSON.parse(body.result.content[0]!.text) as { next_page: number | null; turns: CardMaterial[] } };
+    };
+    const inputs = new Map<string, string>();
+    let page: number | null = 1;
+    let served = 0;
+    while (page !== null) {
+      const { held, answer } = await material({ page });
+      expect(new TextEncoder().encode(held).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+      for (const turn of answer.turns) inputs.set(turn.turn_key, (inputs.get(turn.turn_key) ?? '') + turn.input);
+      page = answer.next_page;
+      served += 1;
+    }
+    expect(served).toBeGreaterThan(1);
+    expect([...inputs.keys()]).toEqual([uuid(30), uuid(31)]);
+    const whole = await documentTurnInput(env, 'project', 'long', uuid(30));
+    expect(inputs.get(uuid(30))).toBe(trimTurn(whole!).text);
+    expect((await material({ page: served + 1 })).text).toContain(`ends at page ${served}`);
+  });
+});
+
+it('pages by weight, and a split never lands inside a character', () => {
+  for (const turnKey of ['e', 'em', 'emo', 'emoj']) {
+    const emoji: CardMaterial = { turn_key: turnKey, input: '😀'.repeat(RUN_ANSWER_BYTES) };
+    const pages = cardMaterialPages('s', [{ turn_key: 'short', input: 'first' }, emoji, { turn_key: 'after', input: 'last' }]);
+    const pieces = pages.flat().filter((turn) => turn.turn_key === turnKey);
+    expect(pieces.at(-1)!.continues).toBeUndefined();
+    expect(pieces.slice(0, -1).every((piece) => piece.continues === true && !/\ud83d$/.test(piece.input))).toBe(true);
+    expect(pieces.map((piece) => piece.input).join('')).toBe(emoji.input);
+    expect(pages[0]!.map((turn) => turn.turn_key)).toEqual(['short']);
+    expect(pages.at(-1)!.map((turn) => turn.turn_key)).toEqual([turnKey, 'after']);
+    for (const [at, turns] of pages.entries()) {
+      expect(new TextEncoder().encode(JSON.stringify({ result: { session_id: 's', page: at + 1, next_page: at + 2, turns } })).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+    }
+  }
 });
 
 it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {

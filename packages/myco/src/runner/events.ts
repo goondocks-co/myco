@@ -58,6 +58,8 @@ export interface RunSpec {
   profile?: ExecutionProfile;
   /** The run has prepared source for file and Git inspection, without repository writes. */
   sourceReadOnly?: boolean;
+  /** The run's work is its server's tools alone, so its harness offers its model no tool of its own. */
+  serverToolsOnly?: boolean;
 }
 
 /**

@@ -11,7 +11,7 @@ import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
  * one card per turn. Every statement here reads catalog rows; none reads a document.
  */
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
+import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS, RUN_ANSWER_BYTES } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { sessionProgressStatements } from './learning-sessions.js';
@@ -90,6 +90,52 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   }
   if (seen.size !== assigned.size) return 'every served turn appears in one card';
   return writes;
+}
+
+/** One turn's trimmed input as a card run reads it. `continues` marks an input that goes on under the same key on the next page. */
+export interface CardMaterial { turn_key: string; input: string; continues?: true }
+
+const encoder = new TextEncoder();
+const answerBytes = (value: unknown): number => encoder.encode(JSON.stringify(value)).length;
+
+/**
+ * The longest head of `input` whose entry weighs at most `room` bytes. It never ends inside a surrogate pair: JSON escapes
+ * half a pair to six bytes, more than the four of the whole pair, so whichever head holds half a pair, the next one fits too.
+ */
+function headThatFits(turnKey: string, input: string, room: number): string {
+  let low = 1;
+  let high = Math.min(input.length, room);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (answerBytes({ turn_key: turnKey, input: input.slice(0, middle), continues: true }) <= room) low = middle;
+    else high = middle - 1;
+  }
+  return input.slice(0, low);
+}
+
+/**
+ * A card run's material as pages, each an answer the harness holds whole. Turns stay in order and every character is
+ * served: a turn starts a new page rather than split, unless it is longer than a page.
+ */
+export function cardMaterialPages(sessionId: string, turns: readonly CardMaterial[]): CardMaterial[][] {
+  const capacity = RUN_ANSWER_BYTES - answerBytes({ result: { session_id: sessionId, page: 9_999, next_page: 9_999, turns: [] } });
+  const pages: CardMaterial[][] = [[]];
+  let room = capacity;
+  const turnPage = () => { pages.push([]); room = capacity; };
+  for (const turn of turns) {
+    let input = turn.input;
+    for (;;) {
+      const entry = { turn_key: turn.turn_key, input };
+      const weight = answerBytes(entry) + 1;
+      if (weight > room && pages.at(-1)!.length > 0) turnPage();
+      if (weight <= room) { pages.at(-1)!.push(entry); room -= weight; break; }
+      const head = headThatFits(turn.turn_key, input, room - 1);
+      pages.at(-1)!.push({ turn_key: turn.turn_key, input: head, continues: true });
+      input = input.slice(head.length);
+      turnPage();
+    }
+  }
+  return pages;
 }
 
 /** A pending turn as a claim or settlement found it: its key and the change count its write is guarded by. */
