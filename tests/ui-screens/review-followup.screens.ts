@@ -1,14 +1,9 @@
 import { expect, test } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
 import { baseUrl, signIn, setAppearance } from './checks';
 import { fixtureNow, screensEnv } from './env';
 
-const before = process.env.MYCO_HONESTY_BEFORE;
-const report = process.env.MYCO_HONESTY_REPORT ?? path.resolve('target/ui-screens/shots/honesty');
-
 for (const finding of [1, '1-plans', 3, 4]) {
-  test(`review correction ${finding} dashboard screenshot`, async ({ browser }) => {
+  test(`review correction ${finding} dashboard state`, async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/Detroit' });
     await signIn(context, screensEnv('ownerCookie'));
     await setAppearance(context, 'light');
@@ -20,12 +15,6 @@ for (const finding of [1, '1-plans', 3, 4]) {
     const source = await context.request.get(new URL(`/api/projects/${projectId}/sessions?limit=20`, baseUrl()).href, { headers: { cookie: screensEnv('ownerCookie') } });
     const session = (await source.json()).rows[0];
     const sessionPath = `/api/projects/${projectId}/sessions/${session.sessionId}`;
-    if (before) await page.route('**/*', async (route) => {
-      const url = new URL(route.request().url());
-      if (route.request().resourceType() === 'document') return route.fulfill({ path: path.join(before, 'index.html'), contentType: 'text/html' });
-      if (url.pathname.startsWith('/assets/')) return route.fulfill({ path: path.join(before, url.pathname) });
-      return route.fallback();
-    });
     let inserted = false;
     let unavailable = finding === 4;
     const turn = { promptId: 'review-turn', origin: 'user', promptKind: null, threadLabel: null, preview: 'A reply arrived while this view was closed', blobKey: null, textChars: 45, createdAt: now - 100000, orderedAt: now - 100000, responseCount: 61, toolCallCount: 0, childCount: 0, attachmentCount: 0, planCount: finding === '1-plans' ? 51 : 0 };
@@ -38,7 +27,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
         const url = new URL(route.request().url());
         if (unavailable) return route.fulfill({ status: 503, json: { error: 'unavailable' } });
         if (url.searchParams.has('collection')) {
-          if (finding === '1-plans') return route.fulfill({ json: { rows: before ? [plan(51), { ...plan(1), status: 'completed', updatedAt: now }] : [plan(51)], cursor: null } });
+          if (finding === '1-plans') return route.fulfill({ json: { rows: [plan(51)], cursor: null } });
           const first = Array.from({ length: 50 }, (_, i) => reply(i + 1));
           const rows = url.searchParams.has('cursor')
             ? Array.from({ length: inserted ? 12 : 11 }, (_, i) => reply((inserted ? 50 : 51) + i))
@@ -75,27 +64,24 @@ for (const finding of [1, '1-plans', 3, 4]) {
       inserted = true;
       await page.getByRole('tab', { name: /^Conversation/ }).click();
       await page.getByRole('button', { name: /earlier replies$/ }).click();
-      await expect(page.getByText('Reply 50', { exact: true })).toHaveCount(before ? 2 : 1);
-      await expect(page.getByText(extra.text, { exact: true })).toHaveCount(before ? 0 : 1);
+      await expect(page.getByText('Reply 50', { exact: true })).toHaveCount(1);
+      await expect(page.getByText(extra.text, { exact: true })).toHaveCount(1);
       await page.getByText('Reply 25', { exact: true }).scrollIntoViewIfNeeded();
     } else if (finding === '1-plans') {
       await page.getByRole('button', { name: 'Show more plans' }).click();
-      await expect(page.getByText('Plan 1', { exact: true })).toHaveCount(before ? 2 : 1);
+      await expect(page.getByText('Plan 1', { exact: true })).toHaveCount(1);
       await page.getByText('Plan 51', { exact: true }).scrollIntoViewIfNeeded();
     } else if (finding === 3) {
       await expect(page.locator('[data-outcome]')).toHaveCount(4);
-      await expect(page.locator('[data-kept]')).toHaveCount(before ? 0 : 4);
+      await expect(page.locator('[data-kept]')).toHaveCount(4);
     } else {
-      await expect(page.getByText(before ? 'This turn could not be read.' : 'Couldn’t read this turn.', { exact: true })).toBeVisible();
-      if (!before) await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+      await expect(page.getByText('Couldn’t read this turn.', { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
     }
-    fs.mkdirSync(report, { recursive: true });
-    await page.screenshot({ path: path.join(report, `review-${finding}-${before ? 'before' : 'after'}.png`), fullPage: finding !== 1 && finding !== '1-plans' });
-    if (finding === 4 && !before) {
+    if (finding === 4) {
       unavailable = false;
       await page.getByRole('button', { name: 'Retry', exact: true }).click();
       await expect(page.getByText('Reply 50', { exact: true })).toBeVisible();
-      await page.screenshot({ path: path.join(report, 'review-4-retry-success.png') });
     }
     await context.close();
   });

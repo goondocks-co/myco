@@ -1,3 +1,5 @@
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE } from '@goondocks/myco-shared/member-protocol';
+export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE };
 import { personMemberSql } from './member-kind.js';
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
@@ -11,8 +13,7 @@ import { authorize, credentialResource, machineResource, memberSubject, memberWr
 
 export const MEMBER_TOKEN_BYTES = 32;
 export { MEMBER_TOKEN_TTL_MS };
-/** The tail of a token's life in which a refresh is admitted: the last quarter of the TTL. */
-export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
+
 /** How long after its issue (the lineage's last refresh, or the join) a lapsed token may still refresh. Longer than the TTL, so it never bounds a live token. */
 export const MEMBER_LINEAGE_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 /** Shape of every minted token: `MEMBER_TOKEN_BYTES` random bytes as unpadded base64url. */
@@ -61,8 +62,7 @@ export type RefreshResult =
 export const REFRESH_TOO_EARLY = 'refresh window not yet open';
 /** The `revoked_by` of every row of a lineage the pipeline ended when a superseded credential of it asked to rotate: a credential used from two places, ended by no member. */
 export const LINEAGE_REPLAY_REVOKER = 'lineage-replay';
-/** The `code` of the 401 answering a credential a replay revocation ended, so its member can say why; the member pins the same string. */
-export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
+
 export const LINEAGE_INACTIVE = 'token lineage inactive';
 
 /** The instant a token's refresh window opens: `MEMBER_TOKEN_REFRESH_WINDOW_MS` before it expires. Every `refreshAfter` on the wire is this instant for some token. */

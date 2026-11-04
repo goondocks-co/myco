@@ -1,3 +1,4 @@
+import { sessionRoutesPaths, routeGroup } from './declarations';
 import { Navigate, useLocation, useParams, useSearchParams, type RouteObject } from 'react-router-dom';
 import { SessionPage } from '../features/sessions/SessionPage';
 import { SessionsPage } from '../features/sessions/SessionsPage';
@@ -13,11 +14,11 @@ import { useRouteProject } from './route-project';
  * sent to the raw data at the foot of the page, open at that part (`?raw=`),
  * and one naming a plan (`?tab=plans&plan=`) to that plan's page.
  */
-export const sessionRoutes: RouteObject[] = [
-  { path: '/sessions', element: <SessionsRoute /> },
-  { path: '/p/:projectId/sessions', element: <SessionsRoute /> },
-  { path: '/p/:projectId/sessions/:sessionId', element: <SessionRoute /> },
-];
+export const sessionRoutes: RouteObject[] = routeGroup(sessionRoutesPaths, {
+  sessions: <SessionsRoute />,
+  projectSessions: <SessionsRoute />,
+  session: <SessionRoute />,
+});
 
 function SessionsRoute() {
   const { projectId, standIn, projectName } = useRouteProject();

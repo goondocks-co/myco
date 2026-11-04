@@ -46,12 +46,13 @@ function auditTestHeadroom(reports) {
   assert.ok(workload.testRuns?.length, 'Per-test headroom needs recorded CI test samples');
   let samples = workload.testRuns;
   if (reports) {
-    const files = new Set(samples.flatMap(run => run.tests.map(test => test.file)));
-    samples = fs.readdirSync(reports, { recursive: true }).filter(file => file.endsWith('.junit.xml')).map(file => ({
-      source: path.join(reports, file),
-      tests: testDurationSamples(fs.readFileSync(path.join(reports, file), 'utf8')).filter(test => files.has(test.file)),
-    }));
-    assert.ok(samples.length, 'Per-test headroom needs JUnit reports');
+    samples = fs.readdirSync(reports, { recursive: true }).filter(file => file.endsWith('.junit.xml')).map(file => {
+      const source = path.join(reports, file);
+      const tests = testDurationSamples(fs.readFileSync(source, 'utf8'));
+      const bundles = tests.some(test => test.file.startsWith('target/test-bundles/'))
+        ? JSON.parse(fs.readFileSync(path.join(path.dirname(source), 'bundle-sources.json'), 'utf8')) : {};
+      return { source, tests: tests.map(test => ({ ...test, sourceFiles: bundles[test.file] })) };
+    });
   }
   assertTestCaseHeadroom(samples, test => declaredTestTimeout(root, test));
   console.log(`Per-test headroom: ${samples.reduce((sum, run) => sum + run.tests.length, 0)} recorded cases within limit`);
@@ -90,6 +91,13 @@ function measure(args) {
   assertJobHeadroom(job, workflow.jobs[job]['timeout-minutes'], milliseconds);
 }
 
+export function assertCoverage(actual, expected, label) {
+    assert.equal(new Set(actual).size, actual.length, `${label}: duplicate coverage`);
+    assert.deepEqual([...actual].sort(), [...expected].sort(), `${label}: missing or unexpected coverage`);
+    console.log(`${label}: ${actual.length} entries covered exactly once`);
+}
+
+
 function audit() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
   const manifestPath = path.join(scratch, 'manifest.json');
@@ -125,18 +133,13 @@ function audit() {
     }, PARITY_PLAN_PREFIX);
   }
 
-  function exactlyOnce(actual, expected, label) {
-    assert.equal(new Set(actual).size, actual.length, `${label}: duplicate coverage`);
-    assert.deepEqual([...actual].sort(), [...expected].sort(), `${label}: missing or unexpected coverage`);
-    console.log(`${label}: ${actual.length} entries covered exactly once`);
-  }
 
   try {
     const matrix = testPlan();
     const full = matrix.full;
     const discovered = fs.readdirSync(path.join(root, 'tests'), { recursive: true })
       .filter((file) => /\.test\.tsx?$/.test(file)).map((file) => `tests/${file.split(path.sep).join('/')}`);
-    exactlyOnce(full.flatMap((phase) => phase.files), discovered, 'Full suite');
+    assertCoverage(full.flatMap((phase) => phase.files), discovered, 'Full suite');
     const nodePlans = [];
     assert.deepEqual(matrix.ordinary.map(({ kind, shard }) => ({ kind, shard })), workflow.jobs.tests.strategy.matrix.include, 'Runner matrix differs from CI');
     const ordinary = matrix.ordinary.flatMap(({ kind, shard, phases: plan }) => {
@@ -145,7 +148,7 @@ function audit() {
       return plan;
     });
     const sharded = ordinary;
-    exactlyOnce(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
+    assertCoverage(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
     const durations = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8'));
     auditJobHeadroom(workflow, durations.jobs);
     const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-durations.json'), 'utf8'));
@@ -163,10 +166,10 @@ function audit() {
       assert.ok(Number.isFinite(parityWeights[name]) && parityWeights[name] > 0, `Parity scenario needs an explicit duration weight: ${name}`);
     }
     assert.deepEqual(parity.shards.map(({ shard }) => shard), selectors, 'Parity matrix differs from CI');
-    exactlyOnce(parity.shards.flatMap(({ scenarios }) => scenarios), parityScenarios, 'CI parity shards');
+    assertCoverage(parity.shards.flatMap(({ scenarios }) => scenarios), parityScenarios, 'CI parity shards');
     assert.equal(generations, 2, 'Shard auditing must generate each runner plan once');
     console.log(`Plan generations: ${generations}`);
-    exactlyOnce(workflow.jobs.check.needs, Object.keys(workflow.jobs).filter((job) => job !== 'check'), 'Required jobs');
+    assertCoverage(workflow.jobs.check.needs, Object.keys(workflow.jobs).filter((job) => job !== 'check'), 'Required jobs');
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

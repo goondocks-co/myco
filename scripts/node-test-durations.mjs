@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { format } from 'node:util';
 import { SaxesParser } from 'saxes';
+import { DEFAULT_TEST_TIMEOUT_MS } from './test-shards.mjs';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
 const MAX_NODE_MEASURED_MS = 11 * 60_000;
@@ -97,57 +97,126 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
 const MAX_TEST_TIMEOUT_SHARE = 0.8;
 
 export function assertTestCaseHeadroom(samples, timeoutFor) {
+  assert.ok(samples.some(run => run.tests.length > 0), 'Per-test headroom needs measured cases');
   for (const { source, tests } of samples) for (const test of tests) {
     const timeoutMs = timeoutFor(test);
     assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${test.file}: missing declared test timeout: ${test.name}`);
-    assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds > 0, `${source}: missing measured test duration: ${test.name}`);
+    assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds >= 0, `${source}: missing measured test duration: ${test.name}`);
     assert.ok(test.milliseconds <= timeoutMs * MAX_TEST_TIMEOUT_SHARE,
       `${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
   }
 }
 
+const timeoutSources = new Map();
+let timeoutParser;
+
 export function declaredTestTimeout(root, test) {
-  const ts = createRequire(import.meta.url)('typescript-v6');
-  const file = ts.createSourceFile(test.file, fs.readFileSync(path.join(root, test.file), 'utf8'), ts.ScriptTarget.Latest, true);
-  const matches = [];
-  const testRoot = expression => {
-    if (ts.isIdentifier(expression)) return ['it', 'test'].includes(expression.text);
-    if (ts.isPropertyAccessExpression(expression)) return testRoot(expression.expression);
-    if (ts.isCallExpression(expression)) return testRoot(expression.expression);
-    return false;
+  const ts = timeoutParser ??= createRequire(import.meta.url)('typescript-v6');
+  const config = ts.readConfigFile(path.join(root, 'tsconfig.json'), ts.sys.readFile);
+  assert.ok(!config.error, `${root}: cannot read timeout resolution configuration`);
+  const converted = ts.convertCompilerOptionsFromJson(config.config.compilerOptions, root);
+  assert.equal(converted.errors.length, 0, `${root}: invalid timeout resolution configuration`);
+  const options = converted.options;
+  const inventoryFor = filename => {
+    if (timeoutSources.has(filename)) return timeoutSources.get(filename);
+    const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true);
+    assert.equal(source.parseDiagnostics.length, 0, `${filename}: invalid test source`);
+    const constants = new Map(), imports = new Map(), calls = [];
+    const inventory = { source, constants, imports, calls };
+    timeoutSources.set(filename, inventory);
+    const rootOf = expression => ts.isIdentifier(expression) ? expression.text
+      : ts.isPropertyAccessExpression(expression) || ts.isCallExpression(expression) ? rootOf(expression.expression) : '';
+    const visit = (node, scopes = []) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) constants.set(node.name.text, [...(constants.get(node.name.text) ?? []), node.initializer]);
+      if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
+        for (const binding of node.importClause.namedBindings.elements) imports.set(binding.name.text, {
+          module: node.moduleSpecifier.text, name: (binding.propertyName ?? binding.name).text,
+        });
+      }
+      if (ts.isCallExpression(node) && ['it', 'test', 'describe'].includes(rootOf(node.expression)) && node.arguments.length >= 2) {
+        if (rootOf(node.expression) === 'describe') scopes = [...scopes, node.arguments[0]];
+        else calls.push({ name: node.arguments[0], scopes, timeout: node.arguments[2],
+          line: source.getLineAndCharacterOfPosition(node.arguments[0].getStart(source)).line + 1 });
+      }
+      ts.forEachChild(node, child => visit(child, scopes));
+    };
+    visit(source);
+    return inventory;
   };
-  const visit = node => {
-    if (ts.isCallExpression(node) && testRoot(node.expression) && node.arguments.length >= 2 &&
-      ts.isStringLiteralLike(node.arguments[0])) {
-      const pattern = node.arguments[0].text;
-      let names = [pattern];
-      if (ts.isCallExpression(node.expression)) {
-        const each = node.expression;
-        let values = each.arguments[0];
-        if (values && ts.isAsExpression(values)) values = values.expression;
-        if (ts.isPropertyAccessExpression(each.expression) && each.expression.name.text === 'each' && values && ts.isArrayLiteralExpression(values)) {
-          names = values.elements.filter(ts.isStringLiteralLike).map(value => format(pattern, value.text));
+  const scopeOf = node => ts.findAncestor(node.parent, owner => ts.isBlock(owner) || ts.isSourceFile(owner) || ts.isForOfStatement(owner) || ts.isForStatement(owner));
+  const valueOf = (node, inventory, seen = new Set()) => {
+    assert.ok(node && !seen.has(node), `${test.file}:${test.line}: cannot resolve declared test timeout or name`);
+    seen = new Set([...seen, node]);
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)) return valueOf(node.expression, inventory, seen);
+    if (ts.isIdentifier(node)) {
+      for (let scope = node.parent; scope; scope = scope.parent) {
+        const locals = (inventory.constants.get(node.text) ?? []).filter(initializer => scopeOf(initializer) === scope);
+        if (locals.length) {
+          assert.equal(locals.length, 1, `${test.file}: ambiguous timeout constant ${node.text}`);
+          return valueOf(locals[0], inventory, seen);
         }
       }
-      if (!names.includes(test.name)) { ts.forEachChild(node, visit); return; }
-      const timeout = node.arguments[2];
-      assert.ok(timeout && ts.isNumericLiteral(timeout), `${test.file}:${test.line}: record an explicit numeric test timeout`);
-      matches.push(Number(timeout.text));
+      const imported = inventory.imports.get(node.text);
+      if (imported) {
+        const resolved = ts.resolveModuleName(imported.module, inventory.source.fileName, options, ts.sys).resolvedModule;
+        assert.ok(resolved, `${test.file}: cannot resolve timeout import ${imported.module}`);
+        const dependency = inventoryFor(resolved.resolvedFileName);
+        const exported = (dependency.constants.get(imported.name) ?? []).filter(node => scopeOf(node) === dependency.source);
+        assert.equal(exported.length, 1, `${test.file}: cannot resolve imported timeout ${imported.name}`);
+        return valueOf(exported[0], dependency, seen);
+      }
     }
-    ts.forEachChild(node, visit);
+    if (ts.isBinaryExpression(node)) {
+      const left = valueOf(node.left, inventory, seen), right = valueOf(node.right, inventory, seen);
+      switch (node.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken: return left + right;
+        case ts.SyntaxKind.MinusToken: return left - right;
+        case ts.SyntaxKind.AsteriskToken: return left * right;
+        case ts.SyntaxKind.SlashToken: return left / right;
+      }
+    }
+    throw new Error(`${test.file}:${test.line}: cannot resolve declared test timeout or name: ${node.getText()}`);
   };
-  visit(file);
-  assert.equal(matches.length, 1, `${test.file}:${test.line}: expected one declared test matching its recorded name`);
-  return matches[0];
+  const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patternOf = (node, inventory) => {
+    if (ts.isTemplateExpression(node)) return escape(node.head.text) + node.templateSpans.map(span => '[\\s\\S]*' + escape(span.literal.text)).join('');
+    if (ts.isConditionalExpression(node)) return '(?:' + (patternOf(node.whenTrue, inventory) ?? '[\\s\\S]*') + '|' + (patternOf(node.whenFalse, inventory) ?? '[\\s\\S]*') + ')';
+    if (!ts.isStringLiteralLike(node)) return undefined;
+    return escape(node.text).replace(/%[sdifjoOp#%$]|\\?\$[a-zA-Z_]\w*(?:\\.\w+)*/g, '[\\s\\S]*');
+  };
+  const files = test.file.startsWith('target/test-bundles/') ? test.sourceFiles : [test.file];
+  assert.ok(Array.isArray(files) && files.length > 0, `${test.file}: missing persisted bundle source list`);
+  const inventories = files.map(file => inventoryFor(path.resolve(root, file)));
+  let matches = inventories.flatMap(inventory => inventory.calls.flatMap(call => {
+    const pattern = patternOf(call.name, inventory);
+    const scopes = [...call.scopes].reverse().map(node => patternOf(node, inventory));
+    const scope = scopes.map(pattern => pattern ?? '[\\s\\S]*').join(' > ');
+    const located = call.line === test.line;
+    const named = pattern === undefined ? located : new RegExp('^' + pattern + '$').test(test.name);
+    const scoped = test.classname === undefined || new RegExp('^' + scope + '$').test(test.classname);
+    return named && scoped && (scopes.every(pattern => pattern !== undefined) || located) ? [{ ...call, inventory }] : [];
+  }));
+  if (matches.length > 1) matches = matches.filter(call => call.line === test.line);
+  assert.equal(matches.length, 1, `${test.file}:${test.line}: expected one declared test matching its recorded name and classname: ${test.classname ?? ''} > ${test.name}`);
+  return matches[0].timeout === undefined ? DEFAULT_TEST_TIMEOUT_MS : valueOf(matches[0].timeout, matches[0].inventory);
 }
 
 export function testDurationSamples(xml) {
   const tests = [];
+  let current;
   const parser = new SaxesParser();
   parser.on('error', error => { throw error; });
   parser.on('opentag', ({ name, attributes }) => {
-    if (name === 'testcase') tests.push({ file: attributes.file, name: attributes.name,
-      line: Number(attributes.line), milliseconds: Number(attributes.time) * 1000 });
+    if (name === 'testcase') current = { file: attributes.file, name: attributes.name, classname: attributes.classname,
+      line: Number(attributes.line), milliseconds: attributes.time === undefined || attributes.time.trim() === '' ? NaN : Number(attributes.time) * 1000 };
+    if (name === 'skipped' && current) current.skipped = true;
+  });
+  parser.on('closetag', ({ name }) => {
+    if (name !== 'testcase') return;
+    if (!current.skipped) tests.push(current);
+    current = undefined;
   });
   parser.write(xml).close();
   return tests;
@@ -159,6 +228,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const durations = JSON.parse(fs.readFileSync(target, 'utf8'));
   durations.files = mergeNodeDurationWeights(durations.files, workload);
   durations.files = Object.fromEntries(Object.entries(durations.files).sort(([left], [right]) => left.localeCompare(right)));
-  durations.sources = [...new Set([...durations.sources, ...workload.runs.map(run => run.source)])];
+  const provenance = new URL('./test-duration-sources.json', import.meta.url);
+  const sources = JSON.parse(fs.readFileSync(provenance, 'utf8'));
+  fs.writeFileSync(provenance, JSON.stringify([...new Set([...sources, ...workload.runs.map(run => run.source)])], null, 2) + '\n');
   fs.writeFileSync(target, JSON.stringify(durations, null, 2) + '\n');
 }

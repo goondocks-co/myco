@@ -5,7 +5,7 @@
  * payload ceilings) are pinned against the worker by cross-package tests.
  */
 
-export { MEMBER_PROTOCOL, PROTOCOL_HEADER, PROJECT_HEADER, memberHeaders, deploymentScopedHeaders } from '@goondocks/myco-shared/member-protocol';
+export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE, MEMBER_PROTOCOL, PROTOCOL_HEADER, PROJECT_HEADER, memberHeaders, deploymentScopedHeaders } from '@goondocks/myco-shared/member-protocol';
 
 /**
  * Codes a server built before this member may still answer and this build's
@@ -45,8 +45,6 @@ export const MEMBER_CODES = [
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
 
-/** The `code` on a 401 whose credential the Deployment revoked, with its whole lineage, because a superseded token of it asked to rotate: it was used from two places. Not a refusal code — it rides the 401 — and pinned against the worker. */
-export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
 
 /** Why a credential's rotation became terminal: `replayed` for a lineage the Deployment revoked on replay, `refused` for any other final answer. */
 export type RefreshTerminalReason = 'replayed' | 'refused';
@@ -158,8 +156,7 @@ export { ENROLLMENT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 
 /** The one variable a sandbox needs: a join link, carrying the Deployment and its invitation together. */
 export const ENV_JOIN_CODE = 'MYCO_JOIN_CODE';
-/** The tail of a token's life in which the server admits a refresh (the last quarter of the 7-day TTL); the member reads it only until the server announces a `refreshAfter`. */
-export const MEMBER_TOKEN_REFRESH_WINDOW_MS = (7 * 24 * 60 * 60 * 1000) / 4;
+
 /** How often the `route_missing` refresh diagnostic repeats on stderr. */
 export const ROUTE_MISSING_NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 

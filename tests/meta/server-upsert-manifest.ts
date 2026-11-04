@@ -1,6 +1,12 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'read/catalog-store.ts#prepareHubnessPopulation': [{ tables: ['embedding_hubness_population'], order: 'arrival-order' }],
+  'db/schema.ts#withStamp': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'db/embedding-due.ts#embeddingDueInsert': [{ tables: ['embedding_due'], order: 'arrival-order' }],
+  'db/budget-activation.ts#budgetMigration': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],
   'db/schema-v466.ts#<module>': [{tables:['embedding_hubness_revision'],order:'unverified'}],
   'db/document-facts.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
   'db/document-facts.ts#differenceDelta': [{tables:['document_difference_totals'],order:'unverified'}],
@@ -24,6 +30,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['schema_meta'], order: 'unverified' },
   ],
   'core/budget-estimates.ts#estimateInvalidationStatements': [
+    { tables: ['schema_meta'], order: 'arrival-order' },
     { tables: ['schema_meta'], order: 'unverified' },
   ],
   'core/runs.ts#guardedStateStatement': [
@@ -129,6 +136,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'db/schema.ts#<module>': [
     { tables: ['embedding_versions'], order: 'unverified' },
+    { tables: ['_v48_credential_rows'], order: 'arrival-order' }, { tables: ['_v89_receipt_rows'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['_v89_answer_rows'], order: 'arrival-order' },
   ],
   'ingest/document-batch.ts#statements': ['session_chunks', 'session_pages', 'session_paths', 'myco_tool_calls']
     .map((table) => ({ tables: [table], order: 'unverified' as const })),
@@ -151,9 +159,10 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['uncaptured_roots'], order: 'unverified' },
   ],
   'platform/bun/vectors.ts#upsert': [
-    { tables: ['local_vectors'], order: 'unverified' },
+    { tables: ['local_vectors'], order: 'content-key' },
   ],
   'platform/cloudflare/recovery-producer-object.ts#checkpoint': [
-    { tables: ['objects'], order: 'unverified' },
+    { tables: ['parts'], order: 'checkpoint-transaction' },
+    { tables: ['objects'], order: 'checkpoint-transaction' },
   ],
 };

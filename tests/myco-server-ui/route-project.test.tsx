@@ -1,3 +1,5 @@
+import { ROUTES } from '../../packages/myco-server/ui/src/routes/table';
+import { routePaths } from '../../packages/myco-server/ui/src/routes/declarations';
 /**
  * A page under one project waits for the projects' read; a page across every
  * project starts at once.
@@ -125,4 +127,8 @@ describe('the start', () => {
     await waitFor(() => expect(asked.some((line) => line.startsWith('/api/sessions?'))).toBe(true));
     expect(screen.getByRole('status', { name: 'Loading today' })).toBeTruthy();
   });
+});
+
+it('renders exactly the paths in the pure dashboard declaration', () => {
+  expect(routePaths(ROUTES).sort()).toEqual(routePaths().sort());
 });

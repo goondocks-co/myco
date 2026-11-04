@@ -57,7 +57,7 @@ for (const mode of ['light', 'dark'] as const) {
         if (['projects-empty', 'device-unclaimed', 'owner-link-expired', 'owner-link-missing', 'owner-unclaimed', 'sign-in-unconfigured', 'link-unconfigured'].includes(scenario.name)) await expect(page.locator('body')).toContainText('myco setup');
         else await expect(page.locator('body')).not.toContainText('myco setup');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-        const out = path.resolve('tests/ui-screens/evidence/auth-setup');
+        const out = path.resolve('target/ui-screens/shots/auth-setup');
         fs.mkdirSync(out, { recursive: true });
         await page.screenshot({ path: path.join(out, `${mode}-${scenario.name}.png`), fullPage: true });
       } finally { await context.close(); }

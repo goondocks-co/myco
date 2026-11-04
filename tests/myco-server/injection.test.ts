@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   AGENT_LINE_MAX_CHARS, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
@@ -35,11 +35,7 @@ const PROMPT = 'what did we decide about the selector';
 const ON: InjectionLeaves = { enabled: true, maxPerPrompt: 3 };
 
 function store(): { db: RelationalStore; sqlite: Database } {
-  const sqlite = new Database(':memory:');
-  // Bun enforces foreign keys only when the pragma is issued, so a record that
-  // names a project no table holds is refused here as it is on a Deployment.
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = seededSqlite();
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }

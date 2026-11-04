@@ -1,3 +1,4 @@
+import ts from 'typescript-v6';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
 import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
@@ -239,13 +240,13 @@ describe('the surface decision stays in one place', () => {
   it('reads the principal once, in surfaceFor, and nowhere else in the chokepoint', () => {
     const source = readFileSync(join(SRC, 'mcp', 'server.ts'), 'utf8');
     expect(source.match(/\bctx\.principal\b/g) ?? []).toHaveLength(1);
-    const before = source.slice(0, source.indexOf('export function surfaceFor'));
-    const after = source.slice(source.indexOf('/** The op a run\'s call resolves to'));
-    for (const [where, text] of [['before surfaceFor', before], ['after surfaceFor', after]] as const) {
-      // `.kind ===` rather than `principal.kind ===`: `surfaceFor` binds the
-      // principal to a local first, so pinning the longer spelling would let
-      // the same idiom through anywhere else in the file.
-      expect({ where, reads: /\.kind\s*===/.test(text) }).toEqual({ where, reads: false });
+    const parsed = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+    const decisions = parsed.statements.filter(node => ts.isFunctionDeclaration(node) && node.name?.text === 'surfaceFor');
+    expect(decisions).toHaveLength(1);
+    const decision = decisions[0]!;
+    expect(decision.end).toBeGreaterThan(decision.getStart(parsed));
+    for (const text of [source.slice(0, decision.getStart(parsed)), source.slice(decision.end)]) {
+      expect(/\.kind\s*===/.test(text)).toBe(false);
     }
   });
 

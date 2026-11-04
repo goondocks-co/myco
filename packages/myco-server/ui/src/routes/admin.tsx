@@ -1,3 +1,4 @@
+import { adminRoutesPaths, routeGroup } from './declarations';
 import type { RouteObject } from 'react-router-dom';
 import { AdminOnly } from '../features/admin/AdminFrame';
 import { HealthPage } from '../features/admin/health/HealthPage';
@@ -8,7 +9,7 @@ import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPa
 import { SettingsPage } from '../features/admin/settings/SettingsPage';
 import { NotFound } from '../pages/NotFound';
 import {
-  HEALTH_PATH, RUNNERS_PATH, MY_MACHINES_PATH, PEOPLE_PATH, PROJECT_SETTINGS_SUFFIX, SETTINGS_SECTIONS,
+  SETTINGS_SECTIONS,
   type SettingsSectionId,
 } from './nav';
 import { useRouteProject } from './route-project';
@@ -18,14 +19,13 @@ import { useRouteProject } from './route-project';
  * sections, a project's settings and Health require an admin; My machines is
  * available to every member.
  */
-export const adminRoutes: RouteObject[] = [
-  { path: RUNNERS_PATH, element: <RunnersPage /> },
-  { path: PEOPLE_PATH, element: <PeoplePage /> },
-  { path: MY_MACHINES_PATH, element: <MyMachinesPage /> },
-  ...SETTINGS_SECTIONS.map((section): RouteObject => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),
-  { path: `/p/:projectId${PROJECT_SETTINGS_SUFFIX}`, element: <ProjectSettingsRoute /> },
-  { path: HEALTH_PATH, element: <AdminOnly title="Health"><HealthPage /></AdminOnly> },
-];
+export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
+  runners: <RunnersPage />,
+  people: <PeoplePage />,
+  machines: <MyMachinesPage />,
+  projectSettings: <ProjectSettingsRoute />,
+  health: <AdminOnly title="Health"><HealthPage /></AdminOnly>,
+}).concat(SETTINGS_SECTIONS.map((section) => ({ path: section.to, element: <SettingsRoute section={section.id} /> })));
 
 function SettingsRoute({ section }: { section: SettingsSectionId }) {
   return <AdminOnly title="Settings"><SettingsPage section={section} /></AdminOnly>;

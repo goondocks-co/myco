@@ -1,3 +1,5 @@
+import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
+export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
   Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
@@ -14,25 +16,6 @@ export interface ProjectPage {
   /** The other paths under a project that belong to this page: its sections and the records it lists. */
   also?: readonly string[];
 }
-
-/** Knowledge under a project: its spores. */
-export const KNOWLEDGE_SUFFIX = '/knowledge';
-/** Knowledge's plans board under a project. */
-export const PLANS_SUFFIX = '/knowledge/plans';
-/** Knowledge's code map under a project. */
-export const CODE_MAP_SUFFIX = '/knowledge/map';
-/** A spore's article under a project, as `/p/:project/spores/:sporeId`. */
-export const SPORE_SUFFIX = '/spores';
-/** A plan's page under a project, as `/p/:project/plans/:planKey`. */
-export const PLAN_SUFFIX = '/plans';
-/** Myco's work under a project: what its own runs came to. */
-export const WORK_SUFFIX = '/work';
-/** The descriptions of Myco’s tasks under its work. */
-export const TASKS_SUFFIX = '/work/tasks';
-/** One run of Myco's work under a project, as `/p/:project/work/runs/:runId`. */
-export const RUN_SUFFIX = '/work/runs';
-/** A project's settings: what Myco does there, its repository, its access keys and release tracking. */
-export const PROJECT_SETTINGS_SUFFIX = '/settings';
 
 /** Where each part of a project's settings sits on its page. */
 export const PROJECT_SETTINGS_ANCHORS = {
@@ -93,17 +76,7 @@ export interface ServerPage {
   to: string;
 }
 
-/** Who is a member, and the machines that write here. */
-export const PEOPLE_PATH = '/people';
-export const RUNNERS_PATH = '/runners';
 export const RUNNERS_PAGE: ServerPage = { label: 'Runners', icon: Bot, to: RUNNERS_PATH };
-/** The server's settings, in five sections. */
-export const SETTINGS_PATH = '/settings';
-/**
- * The one page on the server's health. `/health` is the server's own liveness
- * route on both targets, so the page lives under `/status`.
- */
-export const HEALTH_PATH = '/status/health';
 
 /** Where each part of Health sits on its page. */
 export const HEALTH_ANCHORS = {
@@ -114,15 +87,6 @@ export const HEALTH_ANCHORS = {
   upkeep: 'upkeep',
   measures: 'measures',
 } as const;
-
-/** The five sections of Settings, each at its own address; the first is Settings itself. */
-export const SETTINGS_SECTIONS = [
-  { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
-  { id: 'models', label: 'Models and keys', to: `${SETTINGS_PATH}/models` },
-  { id: 'capture', label: 'Capture and retention', to: `${SETTINGS_PATH}/capture` },
-  { id: 'backups', label: 'Backups', to: `${SETTINGS_PATH}/backups` },
-  { id: 'access', label: 'Sign-in and access', to: `${SETTINGS_PATH}/access` },
-] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
@@ -142,9 +106,6 @@ export const ADMIN_PAGES: readonly ServerPage[] = [
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];
-
-/** The page every member's own machines are listed on. */
-export const MY_MACHINES_PATH = '/me/machines';
 
 /**
  * The pages that have an all-projects form, by the suffix of their per-project

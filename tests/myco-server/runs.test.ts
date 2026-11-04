@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { seedCredential, seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch, recordQueued, launchQueued, workerClaimPredicate, NO_LIMITS,
@@ -36,8 +36,7 @@ const CAPABILITY = 'cortex' as const;
 const guardFor = (taskName: string, _maxAgeSeconds = 3600) => ({ taskName, admission: { kind: 'capability', capability: CAPABILITY } as const });
 
 function store(): { db: RelationalStore; sqlite: Database } {
-  const sqlite = new Database(':memory:');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = seededSqlite();
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }
@@ -234,6 +233,7 @@ describe('capability admission', () => {
     for (const dispatched of [false, true]) for (const change of ['archive', 'off']) {
       const { db, sqlite } = store();
       try {
+        seedCredential(sqlite, { id: 'cred_1' });
         const row = { ...run('r_race', 'digest'), dispatchedBy: dispatched ? 'cred_1' : null };
         if (dispatched) await recordDispatch(db, SCOPE, {
           id: row.id, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: 'cred_1', startedAt: NOW,

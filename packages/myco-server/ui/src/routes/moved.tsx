@@ -1,3 +1,4 @@
+import { movedPaths } from './declarations';
 import { Navigate, useLocation, useParams, type RouteObject } from 'react-router-dom';
 import { useIsAdmin } from '../hooks/use-me';
 import {
@@ -29,22 +30,22 @@ const project = (at: MovedFrom): string => at.params.projectId ?? '';
  */
 export const MOVED: readonly MovedAddress[] = [
   // The notifications placeholder: Today is the start.
-  { from: '/notifications', to: () => '/' },
+  { from: movedPaths.notifications, to: () => '/' },
   // Spores and Plans became Knowledge's tabs.
-  { from: '/spores', to: ({ search }) => `${KNOWLEDGE_SUFFIX}${keptFilters(search)}` },
-  { from: '/plans', to: ({ search }) => `${PLANS_SUFFIX}${keptFilters(search)}` },
-  { from: '/p/:projectId/spores', to: (at) => `${projectPath(project(at), KNOWLEDGE_SUFFIX)}${keptFilters(at.search)}` },
-  { from: '/p/:projectId/plans', to: (at) => `${projectPath(project(at), PLANS_SUFFIX)}${keptFilters(at.search)}` },
+  { from: movedPaths.spores, to: ({ search }) => `${KNOWLEDGE_SUFFIX}${keptFilters(search)}` },
+  { from: movedPaths.plans, to: ({ search }) => `${PLANS_SUFFIX}${keptFilters(search)}` },
+  { from: movedPaths.projectSpores, to: (at) => `${projectPath(project(at), KNOWLEDGE_SUFFIX)}${keptFilters(at.search)}` },
+  { from: movedPaths.projectPlans, to: (at) => `${projectPath(project(at), PLANS_SUFFIX)}${keptFilters(at.search)}` },
   // Agent runs became Myco's work, and a run its panel there.
-  { from: '/p/:projectId/runs', to: (at) => `${projectPath(project(at), WORK_SUFFIX)}${at.search}` },
-  { from: '/p/:projectId/runs/:runId', to: (at) => `${projectPath(project(at), `${RUN_SUFFIX}/${encodeURIComponent(at.params.runId ?? '')}`)}${at.search}` },
+  { from: movedPaths.runs, to: (at) => `${projectPath(project(at), WORK_SUFFIX)}${at.search}` },
+  { from: movedPaths.run, to: (at) => `${projectPath(project(at), `${RUN_SUFFIX}/${encodeURIComponent(at.params.runId ?? '')}`)}${at.search}` },
   // Access became People & machines for an admin and My machines for a member; a project's access keys are in its settings.
-  { from: '/access', to: ({ admin }) => (admin ? PEOPLE_PATH : MY_MACHINES_PATH) },
-  { from: '/p/:projectId/access', to: (at) => `${projectPath(project(at), PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
+  { from: movedPaths.access, to: ({ admin }) => (admin ? PEOPLE_PATH : MY_MACHINES_PATH) },
+  { from: movedPaths.projectAccess, to: (at) => `${projectPath(project(at), PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
   // Status, Measures and Operations became parts of Health; a measures window is kept.
-  { from: '/status', to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.status}` },
-  { from: '/measures', to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.measures}` },
-  { from: '/operations', to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.upkeep}` },
+  { from: movedPaths.status, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.status}` },
+  { from: movedPaths.measures, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.measures}` },
+  { from: movedPaths.operations, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.upkeep}` },
 ];
 
 function Moved({ address }: { address: MovedAddress }) {

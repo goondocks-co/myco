@@ -14,9 +14,17 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it } from 'bun:test';
+import { beforeAll, beforeEach, expect, it } from 'bun:test';
+import { allocateOwnedFixture } from '../../support/owned-fixtures.js';
+import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
+
+const enabled = process.env.MYCO_RUNNER_TEMP_LEAK_FIXTURE === '1';
+const owned = () => removeWhenTestsEnd(allocateOwnedFixture('myco-child-owned-'));
+beforeAll(() => { if (enabled) owned(); });
+beforeEach(() => { if (enabled) owned(); });
 
 it.skipIf(process.env.MYCO_RUNNER_TEMP_LEAK_FIXTURE !== '1')('leaves a directory and files in the temp directory', async () => {
+  owned();
   fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-leak-'));
   fs.writeFileSync(path.join(os.tmpdir(), `myco-test-leak-file-${process.pid}`), 'left behind\n');
   const child = spawnSync(process.execPath, ['-e', "require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'myco-test-leak-child-'))"]);

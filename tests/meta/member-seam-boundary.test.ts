@@ -288,7 +288,10 @@ function resolveFile(base: string): string | null {
   return null;
 }
 
+const LEGACY_SQLITE_OWNERS = new Set(['member/legacy-backup.ts', 'member/legacy-import.ts', 'member/legacy-sources.ts']);
+
 function resolveSpecifier(fromFile: string, specifier: string): Resolved {
+  if (specifier === 'node:sqlite' || specifier === 'bun:sqlite' && !LEGACY_SQLITE_OWNERS.has(moduleKey(fromFile))) return { kind: 'external', specifier };
   if (specifier.startsWith('node:') || specifier.startsWith('bun:')) {
     return { kind: 'builtin', specifier };
   }
@@ -468,11 +471,12 @@ function expandLeaf(pattern: string): string[] {
 // ---------------------------------------------------------------------------
 
 describe('member seam boundary (transitive)', () => {
-  const hookEntries = listTs(path.join(SRC_ROOT, 'hooks')).filter((f) => path.dirname(f) === path.join(SRC_ROOT, 'hooks'));
+  const hookEntries = listTs(path.join(SRC_ROOT, 'hooks'));
   const memberEntries = listTs(path.join(SRC_ROOT, 'member')).filter(isCaptureEntry);
 
   it('walks every hook and capture member entry and keeps the whole closure inside the allowlist (enforced)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
+    for (const owner of LEGACY_SQLITE_OWNERS) expect([...closureOf(hookEntries).modules.keys()]).not.toContain(owner);
     const closure = closureOf([...hookEntries, ...memberEntries]);
     const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
     const outside = new Set(violations.filter((v) => v.reason === 'outside allowlist').map((v) => v.module));
