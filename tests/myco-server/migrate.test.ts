@@ -672,6 +672,40 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0656_v656.sql': 'aaebd78e0aca41621c441b65731c3a47b4e11c638ef78e62bf06609ff6ccf5fa',
   '0657_v657.sql': '2431892b5244c62fdabca438906acda85c6de8eacca945f0cec3b83bd77b8830',
   '0658_v658.sql': 'bdc38b7db5aa32cf58175e2219d7b7be38049f93627bf96a180aac9fcadfae65',
+  '0659_v659.sql': '633d68357c0ff9b5ff3e13a07ce2094c4a6bcbd4179007f429754ca1d4b81d06',
+  '0660_v660.sql': '17c454d698fe0f7fe8e99a19c1dc93de0d55265b3cb71e929ce18b8459440ecb',
+  '0661_v661.sql': '84ec1a0811649eb56feecf381452dc9eb3bd39862624b98f3cb473bc9b237ee7',
+  '0662_v662.sql': '36734cd743d2a06c3b46122fea02477f2d8568208227a38c0d306b974396c29a',
+  '0663_v663.sql': '9711cd63a6fd13b50f35766e527678a4d73d7d43af6d4ba07fe609ae4276b2a2',
+  '0664_v664.sql': 'c01e97a9255f820a5f43c7c7c5c38336b148650850c69230d017f03a38156520',
+  '0665_v665.sql': '2662eea605274bec2344eec57351d09207836e313086eadf6d97549138446bb8',
+  '0666_v666.sql': '5942a455f5cb2034a927799f7ceeb66733d00c6b1324dcf4e292065aa3d43e6c',
+  '0667_v667.sql': 'daf240319da70fa7314ccbf45cd004e09f71a87140d5911d847d50962c3059b7',
+  '0668_v668.sql': '19ca117ece5450a347ebb45538ea41edc3e238fd18cf05e65e8b6c5049920ae3',
+  '0669_v669.sql': 'c5ad139b6aac0cca98d0d19899a73b0001f952ac22c28340435624302dfdb90c',
+  '0670_v670.sql': '87bff7c30fb465a54755c580c7ab159c713ec8fe32fa53985e638f3385b0948c',
+  '0671_v671.sql': 'a99e22f003934dbbd96ded3fde4e56c6f93c8208cce528fbb49d120cccaa01b7',
+  '0672_v672.sql': 'f74d6d412d8f81dd35cda24922266c48981d2d9725500f310cb759d5f2e3e2d6',
+  '0673_v673.sql': 'e0a7754f61aa7bf796acb70de4789b0b15af8bf26b64ea1af577f12bcbdc93af',
+  '0674_v674.sql': '674da5db7caddf5ea939a3fdec03130b93a1f4660cb86eabbde8892c416f82e1',
+  '0675_v675.sql': '42efae532f1e4a18816a30642e9b74a35fda7d12a2a8cba914f81faf701cb2f3',
+  '0676_v676.sql': '466c8615ed4d25a656561df51aaca532d103663599b2f6824d9f7e6826fe74a1',
+  '0677_v677.sql': '8f3684b2f359ae3539b81100a074d81a7f768261b96a5250c278352a7aebb807',
+  '0678_v678.sql': '91029cc59f65791955d71e5d36633952fde817ccf319fba2680ba00484fb9e57',
+  '0679_v679.sql': 'fdce0b8abf7436d30ee34ab5304ad80efbf777ddc25e436e81d1b46d83ef0da3',
+  '0680_v680.sql': '683a34ace74e11fd28f15517464f199d700f409253f2f279d6dfd104f2388f8d',
+  '0681_v681.sql': 'ced1991b6c9144217887884a3091906d5ac1fe362631619898951c808af80c05',
+  '0682_v682.sql': '2d0a946bc9384fbb5faf3bfdf09c3f9f7137ff386b2610acac7e823263b2610e',
+  '0683_v683.sql': '416b5e4cd9fb709f776106a4886d569241491b0daac3952459b9f0ad292fbb1c',
+  '0684_v684.sql': 'f9bdfc9be52b7579d2d8d91af3e78bc86c6ef57729835b3bb340733144410e1c',
+  '0685_v685.sql': '735d29339ca6dd50483013102782625dcedccbfb689843d14341537910c3249e',
+  '0686_v686.sql': '040f35c2a91f447ff69455561f1ad6ad263d196f2305cc7a20a70bde18d6b53f',
+  '0687_v687.sql': 'f33a994fd4a06d8f958dc9de1ef684da2c689ad37c158e18d7ba7261054e3beb',
+  '0688_v688.sql': '1f6c02592d9f6c4a59b00862158c8a99bda9f552b55336f8e55a109a95ec6c35',
+  '0689_v689.sql': '74f2e6a490ba6cd72da30ce285a7afc8acf3ec764d762d48b19f934b3b005737',
+  '0690_v690.sql': '20058fe0d9510b158a6940603875ce52870e2610776526a7e1020f241ee61473',
+  '0691_v691.sql': '5b1708a49574b0ad52ec7808af449ede673435c131598bf82e6ad0f51342bc85',
+  '0692_v692.sql': '8c50c6d76afdb567301ca8e73866da40920dbca31334e2d8189748e5b055307b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1139,7 +1173,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
+        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range','_learning_quiet_margin_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
         if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
@@ -1163,7 +1197,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;

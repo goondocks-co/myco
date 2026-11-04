@@ -468,7 +468,7 @@
     "tests/myco-server/learning-hold.test.ts": 3921,
     "tests/myco-server/learning-pause-migration.test.ts": 12933,
     "tests/myco-server/learning-pause.test.ts": 125,
-    "tests/myco-server/learning-stages.test.ts": 85000,
+    "tests/myco-server/learning-stages.test.ts": 106000,
     "tests/myco-server/legacy-history-budget.test.ts": 4374,
     "tests/myco-server/legacy-history.test.ts": 107,
     "tests/myco-server/lineage-replay.test.ts": 205,

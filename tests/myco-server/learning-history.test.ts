@@ -421,15 +421,15 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
     for (const project of ['project', 'other']) for (let n = 0; n < 100; n++) {
       const session = `quiet-${n}`;
       const ended = n % 3 === 0;
-      const source = n === 98 ? NOW - DAY + 5 * MINUTE : NOW - n * MINUTE;
+      const source = n === 98 ? NOW - DAY + 5 * MINUTE : n === 97 ? NOW - 30 * HOUR : NOW - n * MINUTE;
       const receipt = NOW;
       await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
         VALUES(?,?,'fake','fake',1,?,?)`).bind(project, session, receipt, ended ? NOW : null).run();
       await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,handoff)
         VALUES(?,?,'ready',?,1,'preserved handoff')`).bind(project, session, source).run();
-      expected.set(`${project}/${session}`, ended ? 0 : Math.min(receipt + 30 * MINUTE, source + DAY - MINUTE));
+      expected.set(`${project}/${session}`, ended ? 0 : source + DAY > receipt ? Math.min(receipt + 30 * MINUTE, source + DAY - HOUR) : receipt + 30 * MINUTE);
     }
-    for (const step of SCHEMA_STEPS.filter(step => step.version > 618)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    for (const step of SCHEMA_STEPS.filter(step => step.version > 658)) await db.batch(step.statements.map(sql => db.prepare(sql)));
     const rows = await db.prepare('SELECT project_id,session_id,quiet_at,handoff FROM learning_sessions').all<{ project_id: string; session_id: string; quiet_at: number; handoff: string }>();
     expect(rows.results).toHaveLength(200);
     for (const row of rows.results) {
@@ -444,9 +444,9 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
     await settingsWriter(db).resetLeaf(leaf, 'owner', NOW + 2);
     expect(await quiet()).toEqual({ quiet_at: NOW + 120 * MINUTE });
     await db.prepare("UPDATE learning_sessions SET source_activity_at=? WHERE project_id='project' AND session_id='quiet-1'").bind(NOW - DAY + 10 * MINUTE).run();
-    expect(await quiet()).toEqual({ quiet_at: NOW + 9 * MINUTE });
+    expect(await quiet()).toEqual({ quiet_at: NOW - 50 * MINUTE });
     await settingsWriter(db).setLeaf(leaf, 1440, 'owner', NOW + 3);
-    expect(await quiet()).toEqual({ quiet_at: NOW + 9 * MINUTE });
-    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='_learning_quiet_range'").first()).toBeNull();
-  }, 618);
+    expect(await quiet()).toEqual({ quiet_at: NOW - 50 * MINUTE });
+    expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='_learning_quiet_margin_range'").first()).toBeNull();
+  }, 658);
 });
