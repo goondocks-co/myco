@@ -18,6 +18,8 @@ import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
+import { learningRecencySql } from './learning-recency.js';
+import { learningHistoryEnabledSql } from './settings.js';
 
 /** Due turns one claim reads at most. */
 export const CARD_CLAIM_TURNS = 64;
@@ -238,7 +240,9 @@ export function forgetTurnStatement(db: RelationalStore, projectId: string, sess
  */
 export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
   const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes, input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
-    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, turn_key LIMIT ?`)
+    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ?
+      AND (EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ?1 AND l.session_id = ?2 AND ${learningRecencySql(true, now)})
+        OR ${learningHistoryEnabledSql()}) ORDER BY due_at, turn_key LIMIT ?`)
     .bind(projectId, sessionId, now, CARD_CLAIM_TURNS).all<DueTurn & { chars: number | null }>();
   const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;

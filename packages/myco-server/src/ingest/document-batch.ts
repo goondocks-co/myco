@@ -733,15 +733,19 @@ export class DocumentBatch {
     const db = this.db;
     const p = this.projectId, s = this.sessionId;
     const turns = JSON.stringify(settled.filter((turn) => turn.input_hash !== undefined).map((turn) => ({
-      id: turn.id, hash: turn.input_hash, at: turn.at, settle: turn.id === this.openTurn ? Number(turn.last) + TURN_QUIET_MS : now,
+      id: turn.id, hash: turn.input_hash, at: turn.at, activity: turn.last, settle: turn.id === this.openTurn ? Number(turn.last) + TURN_QUIET_MS : now,
     })));
     return [
-      db.prepare(`INSERT INTO turn_cards (project_id,session_id,turn_key,settle_at,created_at)
-        SELECT ?1,?2,json_extract(j.value,'$.id'),json_extract(j.value,'$.settle'),json_extract(j.value,'$.at') FROM json_each(?4) j
+      db.prepare(`INSERT INTO turn_cards (project_id,session_id,turn_key,settle_at,created_at,source_activity_at)
+        SELECT ?1,?2,json_extract(j.value,'$.id'),json_extract(j.value,'$.settle'),json_extract(j.value,'$.at'),json_extract(j.value,'$.activity') FROM json_each(?4) j
         WHERE json_extract(j.value,'$.hash') IS NOT (SELECT sp.input_hash FROM session_prompts sp WHERE sp.project_id=?1 AND sp.session_id=?2
           AND sp.generation=?3 AND sp.prompt_id=json_extract(j.value,'$.id'))
         ON CONFLICT (project_id,session_id,turn_key) DO ${building ? 'NOTHING' : `UPDATE SET state='pending',changes=changes+1,due_at=NULL,settle_at=excluded.settle_at`}`)
         .bind(p, s, this.doc.generation, turns),
+      db.prepare(`UPDATE turn_cards SET source_activity_at=MAX(COALESCE(source_activity_at,0),json_extract(j.value,'$.activity'))
+        FROM json_each(?3) j WHERE project_id=?1 AND session_id=?2 AND turn_key=json_extract(j.value,'$.id')
+          AND turn_key IN (SELECT json_extract(value,'$.id') FROM json_each(?3))
+          AND (source_activity_at IS NULL OR source_activity_at<json_extract(j.value,'$.activity'))`).bind(p, s, turns),
       ...(this.openTurn === this.doc.open_turn_key ? [] : [db.prepare(`UPDATE turn_cards SET settle_at=MIN(settle_at,?) WHERE project_id=? AND session_id=?
         AND state='pending' AND settle_at IS NOT NULL AND turn_key IS NOT ?`).bind(now, p, s, this.openTurn)]),
       learningSessionStatement(db, p, s),

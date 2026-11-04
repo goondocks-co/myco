@@ -36,8 +36,8 @@ const DOCUMENT_QUEUE_WRITES = 5;
 const DOCUMENT_DUE_WRITES = 2;
 /** A transcript header's session page index stores one entry. */
 const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
-/** One-card learning completion writes coverage, attribution and session progress. */
-const LEARNING_SLICE_COMPLETION_WRITES = 19;
+/** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
+const LEARNING_SLICE_COMPLETION_WRITES = 20;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES,

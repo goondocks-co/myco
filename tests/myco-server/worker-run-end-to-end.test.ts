@@ -113,7 +113,7 @@ async function rig() {
       VALUES ('proj_1', ?, ?, 'carded', ?, 'h', 'asked: why the claim retries', 'high', ?, ?)
       ON CONFLICT (project_id, session_id, turn_key) DO UPDATE SET state = 'carded', records = excluded.records, input_hash = excluded.input_hash,
         card = excluded.card, signal = excluded.signal, carded_at = excluded.carded_at, settle_at = NULL, due_at = NULL`, [sessionId, promptId, JSON.stringify([['prompt', promptId]]), NOW, NOW]);
-    e.sqlite.run(`UPDATE learning_sessions SET init_state = 'ready', pending_cards = 0, due_cards = 1, eligible_at = ? WHERE project_id = 'proj_1' AND session_id = ?`, [NOW - 1, sessionId]);
+    e.sqlite.run(`UPDATE learning_sessions SET init_state = 'ready', pending_cards = 0, due_cards = 1, eligible_at = ?, source_activity_at = ? WHERE project_id = 'proj_1' AND session_id = ?`, [NOW - 1, NOW, sessionId]);
   };
   return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome, learningDue };
 }

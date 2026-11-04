@@ -106,6 +106,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.run_retention_days': { type: 'integer', min: 1, max: 365 },
   'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
   'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
+  'agent.learning_history_enabled': BOOLEAN_SPEC,
   'agent.tasks': { type: 'task-overrides' },
   'agent.titling_idle_close_minutes': { type: 'integer', min: 5, max: 10_080 },
   'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
@@ -1047,10 +1048,10 @@ export function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
 }
 
 /** The Deployment's automatic learning switch and per-task preference apply together. */
-export function learningEnabledSql(): string {
+export function learningEnabledSql(history = false): string {
   return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'
       AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)
-    AND ${taskEnabledSql(EXTRACTION_TASK)}`;
+    AND ${taskEnabledSql(EXTRACTION_TASK)}${history ? ` AND ${learningHistoryEnabledSql()}` : ''}`;
 }
 
 /** The admitted effective value, evaluated by the automatic claim write. */
@@ -1062,4 +1063,16 @@ export const effectiveBudgetSql = (): string => `COALESCE((SELECT CASE WHEN json
 export async function dailyBudget(db: RelationalStore): Promise<number> {
   const text=(await settingTexts(db,[BUDGET_LEAF])).get(BUDGET_LEAF);
   return text===undefined?BUDGET_DEFAULT_USD:JSON.parse(text) as number;
+}
+
+/** History learning requires an explicit Deployment opt-in; absence keeps it off. */
+export function learningHistoryEnabledSql(): string {
+  return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.learning_history_enabled'
+    AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)`;
+}
+
+/** The history switch as the learning stages and settings surface both resolve it. */
+export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
+  const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
+  return text !== undefined && JSON.parse(text) === true;
 }

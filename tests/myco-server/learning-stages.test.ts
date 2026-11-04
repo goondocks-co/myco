@@ -37,7 +37,7 @@ import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
-const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')";
+const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')";
 
 interface Turn {
   id: string; text: string; at: number; origin?: string; parent?: string;
@@ -179,7 +179,7 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
     expect(await learningHolds(db, 'project', 'quiet')).toBe(false);
     await cardAll(db, blobs, 'older', NOW + HOUR);
     await cardAll(db, blobs, 'newer', NOW + 2 * HOUR);
-    expect(await learningHead(db, 'project', NOW + 3 * HOUR, true)).toBe('newer');
+    expect(await learningHead(db, 'project', NOW + 3 * HOUR, false)).toBe('newer');
     const status = await readLearningStatus(db);
     expect(status).toMatchObject({ resumed: true, dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
     expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
