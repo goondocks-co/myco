@@ -7,6 +7,7 @@ import { promptInSession } from '../read/turns.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
+import { nearSpores } from './spore-near-matches.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { importPolicy } from './import-policy.js';
 import { ensureAgent } from './runs.js';
@@ -167,7 +168,10 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
     if (spore === null) return ctx.saveId === undefined ? failure('Spore was not recorded') : { id: ctx.saveId, duplicate: true };
-    return { id: spore.id, observation_type: spore.observationType, status: spore.status, created_at: spore.createdAt };
+    return {
+      id: spore.id, observation_type: spore.observationType, status: spore.status, created_at: spore.createdAt,
+      ...(ctx.principal.kind === 'run' && ctx.principal.task === EXTRACTION_TASK ? { revision: spore.revision, near_matches: await nearSpores(ctx.env, scope, spore.id, lined.agentLine!) } : {}),
+    };
   }
 
   const expectations = ['supersede', 'obsolete', 'consolidate'].includes(String(op))

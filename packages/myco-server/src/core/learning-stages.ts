@@ -42,9 +42,9 @@ export function learningPrompt(sessionId: string, slice: { cards: string; more: 
     '',
     '## Steps',
     '',
-    `1. Call \`${LEARNING_TOOL}\` op "material": the slice's cards in order, each with its \`turn_key\` and \`signal\`. Card fields copy errors, commands, paths and flags exactly; quote them exactly in what you write.`,
+    `1. Call \`${LEARNING_TOOL}\` op "material": the slice's cards in order, each with its \`turn_key\` and \`signal\`. Call it again with the answer's \`next_page\` as \`page\` and its \`revision\` until an answer has no \`next_page\`; a \`material_changed\` refusal means restart at page 1. An entry marked \`continues\` goes on under the same \`turn_key\` on the next page. Spore writes and completion wait until every page is read. Card fields copy errors, commands, paths and flags exactly; quote them exactly in what you write.`,
     `2. When a high-signal card leaves out a detail a spore needs exactly, call \`${LEARNING_TOOL}\` op "get" with its \`turn_key\` to read that one raw turn. Open a raw turn only for that.`,
-    '3. Search before each write and record what is durable, under the standing rules in your instructions file.',
+    '3. Search before each write and record what is durable, under the standing rules in your instructions file. Each save answers its `near_matches`: curate them in this run, as those rules say.',
     `4. Call \`${LEARNING_TOOL}\` op "complete" with a \`handoff\` of at most 4 KB for the next slice: open threads, names and decisions later turns may refer to. Completion marks this slice learned.`,
     `5. Close with \`myco_run\` op "report", action "${EXTRACTION_REPORT_ACTION}". ${RUN_AUDIT_INSTRUCTION}`,
   ].join('\n');

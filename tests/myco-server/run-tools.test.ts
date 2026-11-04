@@ -1,3 +1,5 @@
+import { MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
+import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import ts from 'typescript-v6';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
@@ -111,9 +113,9 @@ async function setup() {
   const spore = (id: string, content: string) =>
     e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, tags, created_at, updated_at)
                   VALUES ('proj_1', ?, 'myco-agent', 'gotcha', 'active', ?, 5, '[]', ?, ?)`, [id, content, NOW, NOW]);
-  const prompt = (id: string, over: { origin?: string; session?: string; createdAt?: number } = {}) =>
+  const prompt = (id: string, over: { origin?: string; session?: string; createdAt?: number; text?: string } = {}) =>
     e.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,? AS session_id,? AS prompt_id,? AS event_id,? AS text,? AS origin,? AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`,
-      [over.session ?? 'sess_1', id, `e_${id}`, `body of ${id}`, over.origin ?? 'user', `h_${id}`, over.createdAt ?? NOW, over.createdAt ?? NOW, NOW]);
+      [over.session ?? 'sess_1', id, `e_${id}`, over.text ?? `body of ${id}`, over.origin ?? 'user', `h_${id}`, over.createdAt ?? NOW, over.createdAt ?? NOW, NOW]);
 
   return { ...e, harness, member, dispatch, call, list, initialize, spore, prompt };
 }
@@ -615,6 +617,17 @@ describe('a titling run reads and writes its own session', () => {
       { tool: 'myco_run_sessions', op: 'title', failure: { code: 'tool_failure', message: expect.stringContaining('a title is 1 to') } },
       { tool: 'myco_run_sessions', op: 'material', failure: undefined },
     ]);
+  });
+
+  it('fits a titling run\'s material in one answer however its text escapes, dropping whole batches from the end', async () => {
+    const { harness, dispatch, call, prompt, sqlite, serverEnv } = await setup();
+    for (let at = 0; at < 12; at += 1) prompt(`control-${at}`, { text: '\u0001'.repeat(MATERIAL_EXCERPT_CHARS), createdAt: NOW + at });
+    await publishFixture({ sqlite, serverEnv });
+    await dispatch('run_t', TITLING, { mode: 'claim' });
+    const { result } = await call(harness.token, 'myco_run_sessions', { op: 'material' });
+    expect(result.batches.length).toBeGreaterThan(1);
+    expect(result.batches.length).toBeLessThan(12);
+    expect(new TextEncoder().encode(JSON.stringify({ result })).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
   });
 
   it('refuses a run whose dispatch named no session, rather than failing its write', async () => {

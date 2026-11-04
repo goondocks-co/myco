@@ -68,6 +68,7 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       if (op === 'learning') {
         const assignment = await prepareLearningSlice(f.db, { projectId: 'proj_1' }, 'target', 'sess', [{promptId:'prompt',sessionId:'sess',createdAt:0,endedAt:1}], f.now);
         f.sqlite.run("UPDATE agent_runs SET run_context=? WHERE id='target'", [JSON.stringify({ timeoutSeconds: 300, session_id: 'sess', assignment })]);
+        await f.call('myco_run_learning', { op: 'material' });
       }
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {

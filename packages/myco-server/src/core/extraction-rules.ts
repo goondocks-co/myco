@@ -1,3 +1,8 @@
+import { AGENT_LINE_MAX_CHARS } from './injection.js';
+
+/** The example agent line the rules give, which obeys the bound it illustrates. */
+export const AGENT_LINE_EXAMPLE = 'Adding a run tool op that writes: declare it in WRITE_OPS; dry runs read that list (packages/myco-server/src/core/tool-catalogue.ts).';
+
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [
   '# Myco extraction run',
@@ -8,7 +13,7 @@ export const EXTRACTION_RULES = [
   '',
   'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds (packages/myco/src/runner/loop.ts)" is.',
   '',
-  'Give every spore an `agent_line`: one line an agent can act on — the situation that triggers it, then the guidance, with the file or symbol it anchors to. It is what a session is served in place of the body, so it has to stand alone. Example: "Before adding a run tool op, declare it in WRITE_OPS if it writes: the dry-run surface and the MCP chokepoint read that list, never the handler (packages/myco-server/src/core/tool-catalogue.ts)." Open the `content` with the same line, then the detail.',
+  `Give every spore an \`agent_line\`: one line, at most ${AGENT_LINE_MAX_CHARS} characters, that an agent can act on — the situation that triggers it, then the guidance, with the file or symbol it anchors to. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. Example: "${AGENT_LINE_EXAMPLE}" Open the \`content\` with the same line, then the detail.`,
   '',
   'Types: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture. Tags: two to four, naming the subsystem and the theme.',
   '',
@@ -16,15 +21,21 @@ export const EXTRACTION_RULES = [
   '',
   'Keep durable guidance separate from dated observations. Use the source session\'s capture date when describing behavior observed then; do not present an old observation as current policy. Example: "When extraction appears stalled, inspect Deployment power and ended-session eligibility separately. In the September 11 source session, an oldest-first backlog delayed fresh prompts; treat that as a historical observation, not the current scheduling policy."',
   '',
-  '## Sharp, not bloated',
+  '## Curate, not only add',
   '',
-  '- Search before every write. `myco_search` with `type` "spore" finds what already covers the topic; `myco_run_spores` op "get" reads one body in full. Full reads are counted against this run, so read in full only what you mean to act on.',
-  '- Before resolving a spore, read its revision with `myco_run_spores` get/list. Supersede and obsolete pass it as `expect_revision`; consolidation passes `source_spore_ids` as [{id, revision}]. Only active sources may move. A `stale` refusal carries the current status and revision: reassess the source before deciding again.',
-  '- A topic already covered and nothing new to add: write nothing.',
-  '- A topic already covered and the prompts add real detail: save the new spore, then `myco_spores` op "supersede" with `old_spore_id`, `new_spore_id` and a `reason` naming what the new one adds.',
-  '- Three or more active spores on one topic: `myco_spores` op "consolidate" with `source_spore_ids`, `consolidated_content` that keeps every concrete detail, `observation_type` "wisdom" and a `reason`.',
-  '- A spore the prompts show to be false, with nothing replacing it: `myco_spores` op "obsolete" with `id` and a `reason` saying what invalidated it.',
-  '- When in doubt, keep both. A wrong supersession loses knowledge; a duplicate only costs a search.',
+  'A project\'s memory stays useful when knowledge on one topic lives in one place. Curating what is there is as much this run\'s job as adding to it.',
+  '',
+  'Search before every write: `myco_search` with `type` "spore" finds what already covers the topic. Each `myco_spores` save then answers its own `revision` and `near_matches`: the closest active spores, each with its `id`, `revision`, `observation_type` and `agent_line`. That is what supersede and consolidate ask for, so decide on them in this same run:',
+  '',
+  '- Same topic, nothing new to add: write nothing.',
+  '- Same topic, new detail: save the new spore, then `myco_spores` op "supersede" with `old_spore_id`, `new_spore_id`, `expect_revision` and a `reason` naming what the new one adds.',
+  '- Three or more active spores on one topic, counting the one you just saved: `myco_spores` op "consolidate" with `source_spore_ids` as [{id, revision}], `consolidated_content`, `agent_line`, `session_id`, `observation_type` "wisdom" and a `reason`.',
+  '- Genuinely distinct, sharing only words: keep both.',
+  '- A spore the prompts show to be false, with nothing replacing it: `myco_spores` op "obsolete" with `id`, `expect_revision` and a `reason` saying what invalidated it.',
+  '',
+  'Keep every concrete detail in the replacement: a command, path, flag, error text or number the old spore holds must survive in what replaces it. When a line does not show what a spore holds, `myco_run_spores` op "get" reads its body. Full reads are counted against this run, so read only what you mean to act on. When an old spore holds a detail the new one lacks, consolidate the two rather than supersede.',
+  '',
+  'Only active sources may move. A `stale` refusal carries the current status and revision: reassess the source before deciding again.',
   '',
   '## What to skip',
   '',

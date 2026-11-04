@@ -292,6 +292,25 @@ export async function listSporesByIds(db: RelationalStore, scope: ReadScope, ids
   return out;
 }
 
+/** The newest active spores of one Project a word match reads. */
+const WORD_MATCH_WINDOW = MAX_SPORE_LIMIT;
+/** How much of a spore's body a word match reads, beside its agent line. */
+const WORD_MATCH_BODY_CHARS = 2_000;
+
+/**
+ * The ids of active spores holding the most of these words, among the Project's newest. The index walks one Project's
+ * active spores and stops at the window before any is scored, so what the rest of the Deployment holds costs nothing.
+ */
+export async function activeSporesMatchingAnyWord(db: RelationalStore, scope: ReadScope, words: readonly string[], excludingId: string, limit: number): Promise<string[]> {
+  if (words.length === 0) return [];
+  const { results } = await db.prepare(`SELECT id, ${words.map(() => '(instr(text, ?) > 0)').join(' + ')} AS score FROM (
+      SELECT id, created_at, lower(COALESCE(agent_line, '') || ' ' || substr(content, 1, ?)) AS text FROM spores INDEXED BY idx_spores_status
+      WHERE project_id = ? AND status = 'active' AND id <> ? ORDER BY created_at DESC LIMIT ?)
+    WHERE score > 0 ORDER BY score DESC, created_at DESC, id LIMIT ?`)
+    .bind(...words, WORD_MATCH_BODY_CHARS, scope.projectId, excludingId, WORD_MATCH_WINDOW, limit).all<{ id: string }>();
+  return results.map((row) => row.id);
+}
+
 export async function countSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<number> {
   const { where, params } = filters(scope, o);
   const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();

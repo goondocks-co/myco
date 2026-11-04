@@ -81,6 +81,14 @@ it('completes surviving cards when a card goes pending before the batch', async 
   }
 });
 
+it('keeps the prior handoff and failures when every card changes before the batch', async () => {
+  sqlite.query(`UPDATE learning_sessions SET handoff='prior'`).run();
+  const raced = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'),
+    async () => { sqlite.query(`UPDATE turn_cards SET state='pending'`).run(); }, true);
+  expect(await completeLearning(raced, 'proj_1', 'session', 'run', assignment, 'new', NOW)).toEqual({ completed: true, covered: 0 });
+  expect(progress()).toMatchObject({ revision: 1, handoff: 'prior', failures: 3, last_completed_run: 'run' });
+});
+
 it('completes unchanged cards, acknowledges their served prompts and keeps the handoff', async () => {
   expect(await completeLearning(db, 'proj_1', 'session', 'run', assignment, 'handoff', NOW))
     .toEqual({ completed: true, covered: 2 });

@@ -23,19 +23,23 @@ import { isServerStateKey } from '../../core/scheduler-state.js';
 import { getState, mutateState } from '../../core/runs.js';
 import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport } from '../../core/run-postconditions.js';
 import { RUN_AUDIT_SHAPE } from '../../core/run-audit.js';
+import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
+import { answerBytes, headThatFits } from '../../core/material-pages.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ACTION_CHARS = 192;
 const MAX_KEY_CHARS = 192;
-/**
- * The largest state value this surface accepts, bounding one row against a
- * caller that would grow it without limit. Characters, matching how the tool
- * validates its arguments; the ingest path's own bound is in bytes.
- */
-export const MAX_STATE_VALUE_CHARS = 256 * 1024;
 /** How much of the digest the token carries. */
 const VERSION_CHARS = 16;
+/** The refusal of a continuation whose value has moved past the version its earlier parts came from: read again from offset 0. */
+export const STATE_CHANGED = 'state_changed';
+/** The room a value cut to fit one answer keeps for the rest of that answer's fields. */
+const STATE_ANSWER_FIELDS_BYTES = 512;
+/** What `state_get` answers for a value: bounded by what one answer may carry, and never so long that its version is withheld. */
+const stateAnswer = (key: string, value: string | null, updatedAt: number | null, version: string | undefined) =>
+  ({ key, value, updated_at: updatedAt, ...(version === undefined ? {} : { version }) });
+const stateWeight = (key: string, value: string) => answerBytes({ result: stateAnswer(key, value, Number.MAX_SAFE_INTEGER, '0'.repeat(VERSION_CHARS)) });
 
 const str = (v: unknown, max: number): string | undefined =>
   (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
@@ -72,12 +76,22 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     const row = await getState(db, scope, run.agentId, key);
     const value = row?.value ?? null;
     const version = await versionOf(value);
-    return { key, value, updated_at: row?.updatedAt ?? null, ...(version === undefined ? {} : { version }) };
+    const updatedAt = row?.updatedAt ?? null;
+    const offset = input.offset === undefined ? 0 : input.offset as number;
+    if (!Number.isSafeInteger(offset) || offset < 0) return failure('offset is a whole number from 0');
+    if (offset > 0 && input.version !== version) {
+      return { ...failure('the value changed since offset 0, or this call carries no version from it: restart at offset 0'), code: STATE_CHANGED };
+    }
+    if (value === null) return stateAnswer(key, null, updatedAt, version);
+    const rest = value.slice(offset);
+    if (stateWeight(key, rest) <= RUN_ANSWER_BYTES) return stateAnswer(key, rest, updatedAt, version);
+    const head = headThatFits(rest, RUN_ANSWER_BYTES - STATE_ANSWER_FIELDS_BYTES, (candidate) => stateWeight(key, candidate));
+    return { ...stateAnswer(key, head, updatedAt, version), next_offset: offset + head.length };
   }
 
   if (isServerStateKey(key)) return failure('server control state is read-only');
-  const value = str(input.value, MAX_STATE_VALUE_CHARS);
-  if (value === undefined) return failure(`value is required for op: state_set, and is at most ${MAX_STATE_VALUE_CHARS} characters`);
+  const value = str(input.value, RUN_ANSWER_BYTES);
+  if (value === undefined || stateWeight(key, value) > RUN_ANSWER_BYTES) return failure(`value is required for op: state_set, and must fit one ${RUN_ANSWER_BYTES}-byte answer as JSON`);
   const named = input.version === undefined ? undefined : str(input.version, VERSION_CHARS);
   if (input.version !== undefined && named === undefined) return failure('version is the token state_get answered');
 

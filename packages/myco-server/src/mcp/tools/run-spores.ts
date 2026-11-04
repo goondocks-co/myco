@@ -18,7 +18,8 @@ import {
   DEFAULT_SPORE_LIMIT, SPORE_STATUSES, type SporeRow,
 } from '../../core/spores.js';
 import { mutateState } from '../../core/runs.js';
-import type { ReadWindow } from '../../core/read-window.js';
+import { RUN_ANSWER_BYTES, type ReadWindow } from '../../core/read-window.js';
+import { answerBytes } from '../../core/material-pages.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
@@ -40,6 +41,17 @@ function preview(row: SporeRow, window: ReadWindow): Record<string, unknown> {
     created_at: row.createdAt,
     preview: row.content.replace(/\s+/g, ' ').trim().slice(0, window.sporePreviewChars),
   };
+}
+
+/** One spore cut to `chars` of each long field, and further where that still weighs past one answer, so a get always answers. */
+function fullRead(spore: SporeRow, chars: number, around: { superseded_by: string[]; supersedes: string[] }): Record<string, unknown> {
+  const cut = (text: string | null, room: number) => (text === null ? null : text.slice(0, room));
+  for (let room = chars; ; room = Math.floor(room / 2)) {
+    const shown = { ...spore, content: cut(spore.content, room)!, context: cut(spore.context, room), properties: cut(spore.properties, room) };
+    const truncated = shown.content !== spore.content || shown.context !== spore.context || shown.properties !== spore.properties;
+    const answer = { spore: snake(shown), truncated, ...around };
+    if (room === 0 || answerBytes({ result: answer }) <= RUN_ANSWER_BYTES) return answer;
+  }
 }
 
 /** Count one full read against this run's budget and answer the running total. */
@@ -71,13 +83,9 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
       listSupersedingSporeIds(db, scope, id),
       listSupersededSporeIds(db, scope, id),
     ]);
-    const truncated = spore.content.length > window.sporeBodyChars;
-    return {
-      spore: snake(truncated ? { ...spore, content: spore.content.slice(0, window.sporeBodyChars) } : spore),
-      truncated,
-      superseded_by: supersededBy,
-      supersedes,
-    };
+    const asked = int(input.max_chars);
+    if (input.max_chars !== undefined && (asked === undefined || asked < 1)) return failure('max_chars is a whole number from 1');
+    return fullRead(spore, Math.min(asked ?? window.sporeBodyChars, window.sporeBodyChars), { superseded_by: supersededBy, supersedes });
   }
 
   const asked = input.status === undefined ? 'active' : input.status;
