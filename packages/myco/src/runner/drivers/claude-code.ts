@@ -52,6 +52,12 @@ const ERROR_TERMINAL_REASONS = new Set([
 export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual', '--permission-prompts', 'none'];
 
 /**
+ * Removes the harness's own tools from what its model is offered, leaving the run's server. The asking mode does not ask
+ * before a read: without this a model can read the run's directory, its credential included, with no rule granting it.
+ */
+const NO_HARNESS_TOOLS: readonly string[] = ['--tools', ''];
+
+/**
  * The variable naming a script this harness sources before every shell
  * command, after the snapshot of the user's shell configuration, which sets
  * PATH as that configuration does.
@@ -144,6 +150,7 @@ export const claudeCodeDriver: Driver = {
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
+      ...(spec.serverToolsOnly === true ? NO_HARNESS_TOOLS : []),
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
     ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : await startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);

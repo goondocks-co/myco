@@ -61,6 +61,14 @@ export const TURN_INPUT_BUDGETS = {
   routineChars: 16_000,
 } as const;
 
+/**
+ * The most one answer to a run carries, as the UTF-8 bytes of its JSON.
+ *
+ * A harness keeps an answer in its conversation only under limits of its own: Claude Code 2.1.318 writes one past 50,000
+ * characters or 25,000 tokens to a file and hands the model a 2 KB preview. Bytes bound both: multi-byte text, the
+ * densest in tokens, weighs the most.
+ */
+export const RUN_ANSWER_BYTES = 40_000;
 /** The trimmed input one card run reads across the turns it cards. */
 export const CARD_RUN_INPUT_CHARS = 60_000;
 /** The ceiling of one card: a routine turn writes a few lines, a turn with a gotcha writes what it needs up to here. */
