@@ -86,7 +86,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   const publicationStopped = await readFact('document_publication_stopped', () => documentPublicationStoppedFinding(env.db));
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
   const learning=await readFact('learning',async()=>{
-    const status=await readLearningStatus(env.db);
+    const status=await readLearningStatus(env.db,ctx.now);
     return {...status,line:learningStatusLine(status,budget??null,ctx.now)};
   });
   const documents=await readFact('documents',()=>readDocumentStatus(env.db));

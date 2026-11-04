@@ -6,6 +6,7 @@ import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
 import { runPublishWake } from '../ingest/publish.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
+import { repairLearningSources } from './learning-sessions.js';
 /**
  * What each scheduled job does when the tick runs it.
  *
@@ -237,6 +238,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
+  'learning-source-repair': (env) => repairLearningSources(env.db),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
     return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });

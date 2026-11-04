@@ -3,6 +3,7 @@ import type { UpsertDeclaration } from './server-upsert-inventory.js';
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'core/learning-sessions.ts#repairLearningSources': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'read/catalog-store.ts#prepareHubnessPopulation': [{ tables: ['embedding_hubness_population'], order: 'arrival-order' }],
   'db/schema.ts#withStamp': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/embedding-due.ts#embeddingDueInsert': [{ tables: ['embedding_due'], order: 'arrival-order' }],

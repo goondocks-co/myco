@@ -559,6 +559,79 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0543_v543.sql': '2a6c0e0999a47b6e3f843dcb9d4e2218079e5168ced119fd56ccb6474e1e24b5',
   '0544_v544.sql': '541f114de1c6becf93e187c61e352a1342ffa2c96584c9cade5986e8d7b94953',
   '0545_v545.sql': '1ccad695f40cefb9f7335bea7c06d10837c52e0300d2f315c7c0b0450613f84d',
+  '0546_v546.sql': 'd3e1cb886955c6021a500e0986301a755da1dadc8a88d375704a213f7f690997',
+  '0547_v547.sql': '0762937c49b8fb17694b583d70d058000a89c95da3be2428b5ebaa0e0492f174',
+  '0548_v548.sql': 'd8e056ce54ab16871923c7e9d68813f5732dda8761fbf8f0e89f65d9862da545',
+  '0549_v549.sql': '7ff1b1875ae6b2bddf0c37ae730a52b266fa1b223ed0aa37b08f5a19fd7cc93c',
+  '0550_v550.sql': '9db6f2a11044a17b18d54f631184ecb0889a4b243d859cfcd14e0cacd004b074',
+  '0551_v551.sql': 'bc17f5561c270d0e607c8ac35cca12d1aa2d704ccccf12a61256c6caf4be337c',
+  '0552_v552.sql': '0adff1c9244de922059f1cb2285d95ce99771d12332e5451f35a894441dac117',
+  '0553_v553.sql': '0381e44500434ce418031f4d782410a928fb022471ff60d22180cd30b09fa3f6',
+  '0554_v554.sql': 'b5e91dcb2d913eb33a92443f7564fd16b5b23657955bc90ef0494b3044463061',
+  '0555_v555.sql': 'f07f497cda0f679680f075d9b6647ff8033c10db2edeea6d1aab347c833ec1f6',
+  '0556_v556.sql': '3dae9e0dc53557924ecfcc88e92cb1bbafcc9a9b39f77e4e9c4af63d10636235',
+  '0557_v557.sql': 'd14c55b14fc7fa074156c236d4d7473ce8b57dc07b273594c6a4e386e1406b96',
+  '0558_v558.sql': '900613bcb4eb7fb2d1b015662663740115826ed82862497a73cbdada085abdc5',
+  '0559_v559.sql': 'ced6aa996bbee5bb454a23297a494f730da1153456090095829e487597cf8489',
+  '0560_v560.sql': '0e0ef6e2ea5fe030b488c9361cff7ea39751d26a5c8ef75f0f934085d1093e71',
+  '0561_v561.sql': '1bc3a4ca8617789e9fd25e26d9ab85b30bc596f8d0f7de3040fa6346f9be7fea',
+  '0562_v562.sql': 'f8f741b9c5ab1f0323ca6dbcba7406b2b494cca86f531cd37c947ff51f144f95',
+  '0563_v563.sql': '2bb80fd796e23382a13e36ff504f8b63a88bdca341f49ea0331ec9a5f693c74d',
+  '0564_v564.sql': 'e8d150dc786af7f3754fd585684dfae09d3c3dc32b0fbf7db9f07d5b7cfdabf4',
+  '0565_v565.sql': 'd1dcebab3dd34e2b6fa502b0811c469f3868f59cee84f9de9e01aef8a717b470',
+  '0566_v566.sql': '1be5f8b1232ebec2c449837dabc8f1cecb8821bf79d991ba3cad68b0ae5b8da8',
+  '0567_v567.sql': 'cd54d206e0d74a25e9ef33a9c36aed155203007d9af2ce4b380f3742aa728870',
+  '0568_v568.sql': 'ef467933b7b777930d6e010003af3bdf2bb9bfd61a5b15550662b6bdeff8b755',
+  '0569_v569.sql': '4541371db56a9061e9948f0164e43df17e9eb5c5302d66af33a44ade32a483ef',
+  '0570_v570.sql': '3f54f94cd9b98874d256320fea3e1c49b612bfc0d554bc48467482650aeac491',
+  '0571_v571.sql': '998fce612e7da436ff5920a52633118f5a91bf3e35fe3be2b861cdf7b4008cbf',
+  '0572_v572.sql': 'a9968efd28976d0e8b71926a09d9bcdd3f10b8edcf4ac6df70fdf847af81ac71',
+  '0573_v573.sql': '8c5ef5be1d4fd3b2c410d50659f20d224d29b81cb0e90ad6ebde9512ed34465d',
+  '0574_v574.sql': '38707cdc36a8113622007f2f67162809b2ced40865417cf6a353eddf1f1ca3de',
+  '0575_v575.sql': '412da9fd9e3c9c42ec56553436eb132b301f45c13cb4c7c55ab3d801a76f1959',
+  '0576_v576.sql': '5e359c05450701c33d0fcc4f682256c0cb99c7f06d1cc5eb0e2cf7355db0985c',
+  '0577_v577.sql': '6aab291dc75042e62ea5e4d53d3d538774e1d4cd20605bacc9c064fbccd1640e',
+  '0578_v578.sql': '7d44d23dcdb4db14a97824e9181cf26f6c2297f87d8b86d3d39e30f086a9580d',
+  '0579_v579.sql': '278ef95884295a92e48ad8e8a751d6f43785e1aed15a3bbe2940721db27d4c43',
+  '0580_v580.sql': '6369f5d3f33444f85d09811ba41d5b3d0a5717d8811e6ba7c5c81a2f067cb45e',
+  '0581_v581.sql': '5edaeabe74467e86367be736a5ca7c84ee707454caa8879de2b1abd19f6e6a19',
+  '0582_v582.sql': '6ea29838b26c8044f17a51ce033ff6d35f8cb66a3bc272b8c82151c21af5f77f',
+  '0583_v583.sql': '4b7052d6cfb537df8b1118d714f35df5a3811f856e772c5dc591f84fd34eb12d',
+  '0584_v584.sql': 'd0480e61be4cf6b597ea13116d0a18b5aecc6d8bbc933b83dd0bcbada7c1d5d2',
+  '0585_v585.sql': '670091f3325545cac337b1d4b518a14038ed7bff57879fc84d2c010ca29dd422',
+  '0586_v586.sql': '3d27a02dff0ef76139f722f4ac5842f183dfc4c0863b89f1716b1e0e8b0e0c1e',
+  '0587_v587.sql': '86dbbc87c65ce4dd0020c0e5cddf6f7bcd1e844470c1f9f79b9c00fd2e27b46f',
+  '0588_v588.sql': 'ece3f0a791c8cae1f5f54e0a61e6898bb89a9eecb76799bff47bebb99b5813d5',
+  '0589_v589.sql': '8ba70be4844981276f1d06dee60c31bcb5875bc7180419a0ab93e75d01cdf259',
+  '0590_v590.sql': 'd43032fd18c4f8f2422cab04368c0ca325a5e159ce344a60a0f15d55e7fea4ec',
+  '0591_v591.sql': 'af1339f83754f58a152acf76690133e5908c05e0b69c5eb6b4a7bdd80c695af9',
+  '0592_v592.sql': 'c1d648ffa6cf163b569d686b82c7fd6654120d665889767c7813fa9463059e85',
+  '0593_v593.sql': '4e642cd88f9c785675ebda4eb8649377e624bd97ebb1139f7b73f8a2b38da26f',
+  '0594_v594.sql': 'e031846a834da3e9969475b1e9b56eac3714a8a974bf15df37b6afaf53e324d0',
+  '0595_v595.sql': '9f229038d83cf00e75a57fe35fe520c5849379002ef15cf4e8b0a578e48f25db',
+  '0596_v596.sql': 'b6c67f61981de2ed3d2a9d2e42e7d3d672c43dbc20112f354fe3c12f4d61f9cf',
+  '0597_v597.sql': '2da013c36db477b967d557efcda6001ab3e4b8d1427fae4b33f765abb0c8c746',
+  '0598_v598.sql': '0fa886da426d063ef873c2abb7fd863627f7724a1f32586807b514f14eda362f',
+  '0599_v599.sql': 'f4c423adbdab4defc7e7d5e172db587100559c4fd924fc24f846a0b7f82855dd',
+  '0600_v600.sql': '84f692d9e322376ef2d593d64ca935dd05fd7b9240221300e741463497ddcfa1',
+  '0601_v601.sql': 'b819a25f48590e6dfa6eb1ea061609924d727ba0a20beeb34e8f6d8761ab1b8d',
+  '0602_v602.sql': 'd7de5f6b73e3e36bc7d8538e10993084d13384c028e637f8fa6dde7a03f9416c',
+  '0603_v603.sql': '33a8455b7690038ef7d1ea102ea8bb0e086c89ae2bce9c15bca884cb5711ccf5',
+  '0604_v604.sql': 'acb68d052ec82149f7a98755b8861c88506954c4dbd94cd32bb66d14d7f3767f',
+  '0605_v605.sql': '660abd60fc6b4e75df9f9e0befa585e57cfc137317d5e34f76676291771e86aa',
+  '0606_v606.sql': '861bcd92255f30b65871f51e0ebe63fb8dd7518a564d6115c920a0a1683490a5',
+  '0607_v607.sql': '44bc22cb04c51cbaccbba5b9a29e9bfe8b866b3f77394fcc65717d4e84fb1d5e',
+  '0608_v608.sql': 'e853e9d9d6225bc979d4c8bf8b2d89b9f05c5bb2d1ea1fde2783e37261433edd',
+  '0609_v609.sql': '58ecdd9e315ca441544022322ad8ed02d6faa11ae97bf59710fb45407e4b7ab6',
+  '0610_v610.sql': '1c27f60deee9fc488cc68763ede8fc33a7fc545d9037817f4c09900056d6d08e',
+  '0611_v611.sql': '31a7a8a58bae839414a260c0bf225e982cce7edfe456c916117accda47f44230',
+  '0612_v612.sql': '8a6545d163f5a5895e408dfecaac574a67ed4387a6a278b62170a06b3211db42',
+  '0613_v613.sql': 'c0747305cd90b4b8e0b6f8cedec3b80616a000fc37b894f59681e459d48af333',
+  '0614_v614.sql': 'cc8790b3f47308092daf05ed34ec4c76bc6d27fc1ade5a93311fcdcdddcddda1',
+  '0615_v615.sql': '5cb67d7609a044ad81a0f6d9ad2edd009f519fcb19d81d2a04c0698a1b04da6a',
+  '0616_v616.sql': '505691b310ecfc68f34d982c48bb0ac23d89fdc726049707db92271d58cf484d',
+  '0617_v617.sql': '2d75b0745f06abd84fbb22821b248d045562c343cf121f641ddb27ed2de6e934',
+  '0618_v618.sql': '6687d26d379fba866215229fd6ce1149589e089ac28d6f5783b44c1d1fd8c691',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1026,7 +1099,7 @@ describe('versioned schema steps', () => {
       const before = declaredColumns(SCHEMA_STEPS.slice(0, n));
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
-        if (['_v117_reference_ranges','_document_fact_range','_document_due_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
+        if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
         if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
@@ -1050,7 +1123,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;

@@ -1,3 +1,5 @@
+import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
+import { LEARNING_WORK_INDEX_STEPS } from '@myco-server-worker/db/schema-v617.js';
 import { READ_COST_STEPS } from '@myco-server-worker/db/schema-v538.js';
 import { PUBLICATION_QUEUE_STEPS } from '@myco-server-worker/db/schema-v501.js';
 import { V466_STATEMENTS } from '@myco-server-worker/db/schema-v466.js';
@@ -94,6 +96,11 @@ const LISTED: readonly Exception[] = [
   },
 ];
 const EXCEPTIONS: readonly Exception[] = [
+  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_WORK_INDEX_STEPS].flatMap(step => step.statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: step.version, object: match[1]!, table: match[2]!,
+      reason: 'Source activity orders learning work independently of retry deadlines.' }];
+  })),
   { step: 536, object: 'publish_queue_facts_insert', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
   { step: 536, object: 'publish_queue_facts_delete', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
   { step: 536, object: 'publish_queue_facts_update', table: 'publish_queue', reason: 'Queue status totals count active events across insertion, removal and terminal-state transitions.' },
@@ -154,6 +161,8 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...LEARNING_SOURCE_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
+    reason: 'Source activity backfills in disjoint rowid transactions while preserving cards and coverage.' }))),
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_insert', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_delete', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
   { step: 536, sql: 'ALTER TABLE publish_queue ADD COLUMN retry_cause TEXT CHECK (retry_cause IS NULL OR json_valid(retry_cause))', reason: 'Publication waits retain read and parent dependency causes independently of their retry deadline.' },

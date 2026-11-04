@@ -21,7 +21,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings-policies.js';
-import { DEPLOYMENT_LEAF_SPECS, settingTexts } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAF_SPECS, settingTexts, learningHistoryEnabledSql } from '@myco-server-worker/core/settings.js';
 import { budgetHeld } from '@myco-server-worker/core/run-budget.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
@@ -248,6 +248,8 @@ function profileCases(): Record<string, BehaviorCase> {
 
 /** Every live Deployment leaf's consumer and behavior case. Each invalid sample changes the result a read that ignored the leaf's rule would act on. */
 const CASES: Readonly<Record<string, BehaviorCase>> = {
+  'agent.learning_history_enabled': { consumer: at('core/settings.ts', learningHistoryEnabledSql), value: () => true, invalid: () => 1,
+    observe: async (r) => (await r.env.db.prepare(`SELECT ${learningHistoryEnabledSql()} AS enabled`).first<{ enabled: number }>())?.enabled === 1 },
   'agent.scheduled_tasks_enabled': { consumer: at('core/scheduled-tasks.ts', runScheduledTasks), value: () => true, invalid: () => 1, observe: async (r) => (await scheduleLeaves(r.env)).enabled },
   'agent.scheduled_tasks_active_window_days': {
     consumer: at('core/scheduled-tasks.ts', decideTask), setup: () => [['agent.scheduled_tasks_enabled', true]],
