@@ -38,6 +38,9 @@ import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
 import { taskWorkEnabled } from '../core/settings.js';
 import { ALWAYS_ALLOWED, isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
+import { taskReadsRepository } from '@goondocks/myco-shared/repository';
+import { RUN_ANSWER_BYTES } from '../core/read-window.js';
+import { answerBytes } from '../core/material-pages.js';
 import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
@@ -122,6 +125,13 @@ export function serializeResult(_tool: AnyTool, result: unknown): string {
   return JSON.stringify(result);
 }
 
+/** An answer past what a harness holds whole, refused saying how to ask for less rather than lost to a file its run cannot read. */
+function answerHeldWhole(result: unknown): unknown {
+  const bytes = answerBytes({ result });
+  if (bytes <= RUN_ANSWER_BYTES) return result;
+  return { ok: false, code: 'answer_too_long', error: `this answer is ${bytes} bytes, past the ${RUN_ANSWER_BYTES} one answer may carry: ask for less, with a smaller limit or a narrower search` };
+}
+
 /** The code a run's call is recorded with when its tool answered with a failure rather than raising one. */
 const RETURNED_FAILURE = 'tool_failure';
 
@@ -173,6 +183,8 @@ export interface Surface {
   allows(name: string, op: string): boolean;
   admits?(ctx: ProtocolContext): Promise<(name: string, op: string) => boolean>;
   entryFor(name: string, op: string): RegistryEntry | undefined;
+  /** What the caller receives for a tool's result. */
+  answer(result: unknown): unknown;
 }
 
 const servedOnly = (name: string): ToolDefinition | undefined => definitionOf(name);
@@ -189,6 +201,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
       opOf,
       allows: (name, op) => isServedTool(name) && isExternalCall(name, op),
       entryFor,
+      answer: (result) => result,
     };
   }
   if (p.kind === 'run') {
@@ -204,6 +217,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
         return (name, op) => enabled || (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op);
       },
       entryFor: runEntryFor,
+      answer: taskReadsRepository(p.task) ? (result) => result : answerHeldWhole,
     };
   }
   return {
@@ -214,6 +228,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
     opOf,
     allows: () => true,
     entryFor,
+    answer: (result) => result,
   };
 }
 
@@ -351,7 +366,8 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
     const began = Date.now();
     let admission: { tool: AnyTool; op: string } | null = null;
     try {
-      const { tool, op, result } = await callTool(ctx, name, args, (call) => { admission = call; });
+      const { tool, op, result: answered } = await callTool(ctx, name, args, (call) => { admission = call; });
+      const result = surfaceFor(ctx).answer(answered);
       emit({ kind: 'mcp_tool', tool, op, status: 'ok', ...principalFields(ctx) });
       if (ctx.projectId !== null) {
         const failure = isToolFailure(result) ? { code: RETURNED_FAILURE, message: result.error } : undefined;

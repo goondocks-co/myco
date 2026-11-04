@@ -38,8 +38,9 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         details: { type: 'string', description: 'For report: structured detail as a JSON object, serialized.' },
         audit: { type: ['object', 'string'], description: 'For report, required: your account of this pass, as an object of steps (what you did, in order), examined (files and areas read), commands (commands run), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is). Empty lists where nothing applies.' },
         key: { type: 'string', description: 'For state_get and state_set: the state key.' },
+        offset: { type: 'number', description: 'For state_get: where to read from, for a value longer than one answer. An answer names its next_offset until the last; a call past offset 0 also carries the version offset 0 answered, and a state_changed refusal means restart at offset 0.' },
         value: { type: 'string', description: 'For state_set: the value to store.' },
-        version: { type: 'string', description: 'For state_set: the version state_get answered. Omit only when the key was unset. A stale version answers applied false and the caller reads again.' },
+        version: { type: 'string', description: 'For state_set: the version state_get answered. Omit only when the key was unset. A stale version answers applied false and the caller reads again. For state_get past offset 0: the version offset 0 answered.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],
@@ -54,6 +55,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       properties: {
         op: { type: 'string', enum: ['list', 'get'], description: 'list: one preview line per spore, with the total behind the page. get: one spore in full.' },
         id: { type: 'string', description: 'For get: the spore to read.' },
+        max_chars: { type: 'number', description: 'For get: the most characters of each long field to answer, to ask for less. An answer cut to fit says truncated.' },
         status: { type: 'string', description: 'For list: filter by status, or "all". Defaults to active.' },
         observation_type: { type: 'string', description: 'For list: filter by observation type.' },
         search: { type: 'string', description: 'For list: keep only spores whose content or type contains this text.' },
@@ -117,7 +119,9 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['material', 'get', 'complete'], description: 'material: the slice\'s cards and the previous slice\'s handoff. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next.' },
+        op: { type: 'string', enum: ['material', 'get', 'complete'], description: 'material: the slice\'s cards a page at a time, with the previous slice\'s handoff on page 1. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next. Spore writes and complete wait until every page is read.' },
+        page: { type: 'number', description: 'For material: the page to read, from 1. An answer names its next_page until the last.' },
+        revision: { type: 'string', description: 'For material past page 1: the revision the earlier pages answered.' },
         turn_key: { type: 'string', description: 'For get: the card whose raw turn to read.' },
         handoff: { type: 'string', description: 'For complete: at most 4 KB for the next slice of this session.' },
         [PROJECT_PIVOT]: project,

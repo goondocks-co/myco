@@ -55,6 +55,15 @@ import { runParentLive } from '../auth/runners.js';
 import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
 
 /** An object context with any non-object source retained verbatim. */
+/** Where a run's context keeps how far its attempt has read its paged material. */
+export const RUN_MATERIAL_READ_KEY = 'materialRead';
+
+/** Record how far the attempt has read, in the one place the run keeps it; a later read replaces it, so it stays one small value. */
+export async function recordMaterialRead(db: RelationalStore, projectId: string, runId: string, read: { tokenId: string; revision: string; pages: number; through: number }): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET run_context = json_set(${RUN_CONTEXT_OBJECT_SQL}, '$.${RUN_MATERIAL_READ_KEY}', json(?))
+    WHERE project_id = ? AND id = ? AND dispatched_by = ?`).bind(JSON.stringify(read), projectId, runId, read.tokenId).run();
+}
+
 export const RUN_CONTEXT_OBJECT_SQL = `CASE
   WHEN run_context IS NULL THEN '{}'
   WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
