@@ -1,3 +1,4 @@
+import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
 import { LEARNING_WORK_INDEX_STEPS } from '@myco-server-worker/db/schema-v617.js';
@@ -97,7 +98,7 @@ const LISTED: readonly Exception[] = [
   },
 ];
 const EXCEPTIONS: readonly Exception[] = [
-  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_WORK_INDEX_STEPS, ...LEARNING_QUIET_STEPS].flatMap(step => step.statements.flatMap(sql => {
+  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_WORK_INDEX_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(step => step.statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: step.version, object: match[1]!, table: match[2]!,
       reason: 'Learning source activity, quiet eligibility and retry deadlines stay in indexed work queues.' }];
@@ -162,7 +163,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
-  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
+  ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
     reason: 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.' }))),
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_insert', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_delete', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },

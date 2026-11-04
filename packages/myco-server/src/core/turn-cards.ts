@@ -171,7 +171,8 @@ export function modelDueStatement(db: RelationalStore, projectId: string, sessio
 
 /** A pending turn whose prompt the live document no longer holds. */
 export function forgetTurnStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn): PreparedStatement {
-  return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
+  return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?
+      AND EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id = turn_cards.project_id AND d.session_id = turn_cards.session_id AND d.state = 'live')`)
     .bind(projectId, sessionId, turn.turnKey, turn.changes);
 }
 
