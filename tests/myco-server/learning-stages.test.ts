@@ -26,6 +26,7 @@ import { claimNextRun, dispatchTask, endLeasedRun } from '@myco-server-worker/co
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { AGENT_LINE_EXAMPLE, EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
+import { STATE_CHANGED } from '@myco-server-worker/mcp/tools/run.js';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -597,7 +598,7 @@ it('keeps state usable within one answer: a value that cannot fit is refused, an
     let version: unknown;
     for (let offset: number | undefined = 0, parts = 0; offset !== undefined; parts += 1) {
       expect(parts).toBeLessThan(10);
-      const held = await run.raw('myco_run', { op: 'state_get', key, offset });
+      const held = await run.raw('myco_run', { op: 'state_get', key, ...(offset === 0 ? {} : { offset, version }) });
       expect(new TextEncoder().encode(JSON.stringify(held.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
       const answer = (held.structuredContent as { result: { value: string; version: string; next_offset?: number } }).result;
       read += answer.value;
@@ -607,6 +608,29 @@ it('keeps state usable within one answer: a value that cannot fit is refused, an
     expect(read).toBe(long);
     expect(await run.call('myco_run', { op: 'state_set', key, value: 'smaller', version })).toEqual({ key, applied: true });
     expect(await run.call('myco_run', { op: 'state_get', key, offset: -1 })).toMatchObject({ ok: false });
+  });
+});
+
+it('refuses a state continuation once the value has changed, so parts of two versions never join and overwrite the newer one', async () => {
+  await withDocumentStores(async (db) => {
+    const run = await learningRun(db, plainTurns(1), 'low');
+    await run.readAll();
+    const key = 'shared-key';
+    await run.call('myco_run', { op: 'state_set', key, value: 'short' });
+    await db.prepare(`UPDATE agent_state SET value = ? WHERE key = ?`).bind('x'.repeat(41_000), key).run();
+    const first = await run.call('myco_run', { op: 'state_get', key }) as { value: string; version: string; next_offset: number };
+    expect(first.next_offset).toBe(first.value.length);
+    const continuation = { op: 'state_get', key, offset: first.next_offset };
+    expect(await run.call('myco_run', continuation)).toMatchObject({ ok: false, code: STATE_CHANGED });
+    expect((await run.call('myco_run', { ...continuation, version: first.version })).version).toBe(first.version);
+
+    expect(await run.call('myco_run', { op: 'state_set', key, value: 'newer', version: first.version })).toEqual({ key, applied: true });
+    const refused = await run.call('myco_run', { ...continuation, version: first.version });
+    expect(refused).toMatchObject({ ok: false, code: STATE_CHANGED, error: expect.stringContaining('restart at offset 0') });
+    expect(refused).not.toHaveProperty('value');
+    expect(refused).not.toHaveProperty('version');
+    expect(await run.call('myco_run', { op: 'state_set', key, value: first.value, version: first.version })).toEqual({ key, applied: false });
+    expect(await run.call('myco_run', { op: 'state_get', key })).toMatchObject({ value: 'newer' });
   });
 });
 

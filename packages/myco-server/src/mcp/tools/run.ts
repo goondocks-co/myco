@@ -32,6 +32,8 @@ const MAX_ACTION_CHARS = 192;
 const MAX_KEY_CHARS = 192;
 /** How much of the digest the token carries. */
 const VERSION_CHARS = 16;
+/** The refusal of a continuation whose value has moved past the version its earlier parts came from: read again from offset 0. */
+export const STATE_CHANGED = 'state_changed';
 /** The room a value cut to fit one answer keeps for the rest of that answer's fields. */
 const STATE_ANSWER_FIELDS_BYTES = 512;
 /** What `state_get` answers for a value: bounded by what one answer may carry, and never so long that its version is withheld. */
@@ -77,6 +79,9 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     const updatedAt = row?.updatedAt ?? null;
     const offset = input.offset === undefined ? 0 : input.offset as number;
     if (!Number.isSafeInteger(offset) || offset < 0) return failure('offset is a whole number from 0');
+    if (offset > 0 && input.version !== version) {
+      return { ...failure('the value changed since offset 0, or this call carries no version from it: restart at offset 0'), code: STATE_CHANGED };
+    }
     if (value === null) return stateAnswer(key, null, updatedAt, version);
     const rest = value.slice(offset);
     if (stateWeight(key, rest) <= RUN_ANSWER_BYTES) return stateAnswer(key, rest, updatedAt, version);
