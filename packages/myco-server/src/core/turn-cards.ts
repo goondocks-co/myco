@@ -11,6 +11,8 @@ import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
  * one card per turn. Every statement here reads catalog rows; none reads a document.
  */
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
+import { sha256HexOf, utf8 } from '../hash.js';
+import { RUN_CONTEXT_OBJECT_SQL } from './runs.js';
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS, RUN_ANSWER_BYTES } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
@@ -92,6 +94,36 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   return writes;
 }
 
+/** The characters of a material revision. */
+const CARD_REVISION_CHARS = 16;
+/** The refusal of a continuation whose material has moved past the revision its pages came from: read again from page 1. */
+export const CARD_MATERIAL_CHANGED = 'material_changed';
+/** The refusal of a read or a write ahead of the pages served: read the page it names. */
+export const CARD_MATERIAL_UNREAD = 'material_unread';
+const CARD_MATERIAL_READ_KEY = 'cardMaterial';
+
+/** How far this attempt has read one revision of its material: every page up to and including `through`. */
+export interface CardMaterialRead { tokenId: string; revision: string; pages: number; through: number }
+
+/** What the material says now, as the token that binds its pages to one another. */
+export async function cardMaterialRevision(turns: readonly CardMaterial[]): Promise<string> {
+  return (await sha256HexOf(utf8(JSON.stringify(turns)))).slice(0, CARD_REVISION_CHARS);
+}
+
+/** How far the attempt holding this credential has read its material, or null where it has read none: another attempt's reads are not its own. */
+export function cardMaterialRead(runContext: string | null, tokenId: string): CardMaterialRead | null {
+  try {
+    const read = (JSON.parse(runContext ?? 'null') as Record<string, CardMaterialRead> | null)?.[CARD_MATERIAL_READ_KEY];
+    return read?.tokenId === tokenId ? read : null;
+  } catch { return null; }
+}
+
+/** Record how far the attempt has read, in the one place the run keeps it; a later read replaces it, so it stays one small value. */
+export async function recordCardMaterialRead(db: RelationalStore, projectId: string, runId: string, read: CardMaterialRead): Promise<void> {
+  await db.prepare(`UPDATE agent_runs SET run_context = json_set(${RUN_CONTEXT_OBJECT_SQL}, '$.${CARD_MATERIAL_READ_KEY}', json(?))
+    WHERE project_id = ? AND id = ? AND dispatched_by = ?`).bind(JSON.stringify(read), projectId, runId, read.tokenId).run();
+}
+
 /** One turn's trimmed input as a card run reads it. `continues` marks an input that goes on under the same key on the next page. */
 export interface CardMaterial { turn_key: string; input: string; continues?: true }
 
@@ -118,7 +150,7 @@ function headThatFits(turnKey: string, input: string, room: number): string {
  * served: a turn starts a new page rather than split, unless it is longer than a page.
  */
 export function cardMaterialPages(sessionId: string, turns: readonly CardMaterial[]): CardMaterial[][] {
-  const capacity = RUN_ANSWER_BYTES - answerBytes({ result: { session_id: sessionId, page: 9_999, next_page: 9_999, turns: [] } });
+  const capacity = RUN_ANSWER_BYTES - answerBytes({ result: { session_id: sessionId, revision: '0'.repeat(CARD_REVISION_CHARS), page: 9_999, next_page: 9_999, turns: [] } });
   const pages: CardMaterial[][] = [[]];
   let room = capacity;
   const turnPage = () => { pages.push([]); room = capacity; };

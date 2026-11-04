@@ -103,6 +103,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       properties: {
         op: { type: 'string', enum: ['material', 'write'], description: 'material: the assigned turns, each with its turn_key and trimmed input, a page at a time. write: the cards, once.' },
         page: { type: 'number', description: 'For material: the page to read, from 1. An answer names its next_page until the last.' },
+        revision: { type: 'string', description: 'For material past page 1: the revision the earlier pages answered.' },
         cards: { type: 'array', description: 'For write: [{ turns: [turn_key…], signal: "none"|"low"|"high", card: { asked, done, outcome, decisions, rejected, errors, corrections, files, commands, open_questions } }]. Every served turn_key appears in exactly one card.' },
         [PROJECT_PIVOT]: project,
       },
