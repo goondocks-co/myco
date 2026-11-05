@@ -1002,7 +1002,7 @@ export async function claimNextRun(
   }
   if (candidate === null || chosen === null) {
     // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
-    const pulled = activation.active ? await pullAtClaim(env, worker, excluded, select, { policy, settings, limits: claimLimits }) : null;
+    const pulled = activation.active ? await pullAtClaim(env, worker, excluded, select, { policy, settings, limits: claimLimits, activation }) : null;
     if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
     if (pulled !== null) return pulled;
   }
@@ -1104,7 +1104,7 @@ async function pullAtClaim(
   worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; now: number },
   excluded: readonly string[],
   select: Awaited<ReturnType<typeof workerSelector>>,
-  read: { policy: Awaited<ReturnType<typeof observedSettingsGuard>>; settings: ReadonlyMap<string, string>; limits: DispatchLimits },
+  read: { policy: Awaited<ReturnType<typeof observedSettingsGuard>>; settings: ReadonlyMap<string, string>; limits: DispatchLimits; activation: Awaited<ReturnType<typeof budgetActivation>> },
 ): Promise<ClaimOutcome | 'queued' | null> {
   const stages = (await switchedOnStages(env.db, pulledStages())).filter((stage) => !excluded.includes(stage.task));
   if (stages.length === 0) return null;
@@ -1134,11 +1134,11 @@ async function pullAtClaim(
     if (selection === null) return null;
     const { stage, item } = selection;
     const chosen = executions.get(stage.task)!;
+    const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, chosen.profile);
+    if (!(await automaticFits(env.db, price.estimate, worker.now, reserveForStage(stage.task), read.activation))) return null;
     const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
-    const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, profile);
-    if (!(await automaticFits(env.db, price.estimate, worker.now, reserveForStage(stage.task)))) return null;
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
     const runId = `run_${crypto.randomUUID()}`;

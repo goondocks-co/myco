@@ -150,10 +150,14 @@ export async function selectPulled(db: RelationalStore, eligible: readonly Pulle
       for (const { projectId } of results) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
     }
     if (byProject.size === 0) continue;
-    const spent = new Map<string, number>();
-    for (const row of await readSpendRows(db, now)) if (row.origin === 'automatic') spent.set(row.projectId, (spent.get(row.projectId) ?? 0) + row.value);
-    const rounded = (projectId: string) => Math.round((spent.get(projectId) ?? 0) * 1e6) / 1e6;
-    const [projectId] = [...byProject.keys()].sort((a, b) => rounded(a) - rounded(b) || (a < b ? -1 : a > b ? 1 : 0));
+    const projects = [...byProject.keys()];
+    if (projects.length > 1) {
+      const spent = new Map<string, number>();
+      for (const row of await readSpendRows(db, now)) if (row.origin === 'automatic') spent.set(row.projectId, (spent.get(row.projectId) ?? 0) + row.value);
+      const rounded = (projectId: string) => Math.round((spent.get(projectId) ?? 0) * 1e6) / 1e6;
+      projects.sort((a, b) => rounded(a) - rounded(b) || (a < b ? -1 : a > b ? 1 : 0));
+    }
+    const [projectId] = projects;
     for (const stage of byProject.get(projectId!)!) {
       const item = await stage.head(db, projectId!, now);
       if (item !== null) return { stage, item, reassertion: pulledReassertion(stage, item, compatible, limits, now) };

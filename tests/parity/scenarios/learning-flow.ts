@@ -79,7 +79,9 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   expect(await claim()).toMatchObject({ claimed: false });
   expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_run_attempts`)).toEqual([{ n: 2 }]);
   const status = await request(new Request(`${target.url}/api/status`, { headers: target.ownerHeaders() }));
-  expect(await status.json()).toMatchObject({ budget: { dailyUsd: 1, automaticUsd: 1 }, learning: { turnsAwaitingCards: 1 } });
+  const health = await status.json() as { learning: { line: string } };
+  expect(health).toMatchObject({ budget: { dailyUsd: 1, automaticUsd: 1 }, learning: { turnsAwaitingCards: 1 } });
+  expect(health.learning.line).toContain('learning resumes when the rolling 24 hour budget has room');
 }
 
 export const learningFlow: ParityScenario = {

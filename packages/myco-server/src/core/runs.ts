@@ -233,8 +233,8 @@ function projectAdmissionParams(scope: ReadScope, capability?: string | null): (
  * hour-start, per-hour; single, project, task, run.
  */
 const ADMISSION_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_fleet_queue WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_fleet_queue WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
@@ -1357,8 +1357,8 @@ export function limitPassesSql(task: string, limits: DispatchLimits, now: number
   const bound = (value: number | null) => value === null ? null : Math.floor(value);
   const t = taskLiteral(task);
   const terms = [
-    bound(limits.fleet) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.fleet)}`,
-    bound(limits.concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.concurrent_runs)}`,
+    bound(limits.fleet) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_fleet_queue WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.fleet)}`,
+    bound(limits.concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_fleet_queue WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.concurrent_runs)}`,
     bound(limits.task_concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ${t}) < ${bound(limits.task_concurrent_runs)}`,
     bound(limits.task_runs_per_hour) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ${t} AND started_at IS NOT NULL AND started_at >= ${Math.floor(now - 3_600_000)}) < ${bound(limits.task_runs_per_hour)}`,
   ].filter((term): term is string => term !== null);
@@ -1452,7 +1452,7 @@ export async function recordTaskHolder(db: RelationalStore, tasks: readonly stri
   }
   const statements = [...new Set(tasks)].flatMap(task => matches.map(match =>
     db.prepare(`UPDATE agent_runs SET held_by = ? WHERE rowid IN (
-      SELECT rowid FROM agent_runs INDEXED BY idx_agent_runs_queue_holder
+      SELECT rowid FROM agent_runs INDEXED BY idx_fleet_queue
       WHERE status='queued' AND dispatched_by IS NULL AND task=? AND ${match.sql})
       AND held_by IS NOT ? AND ${holderAdmissionSql(holder)}`)
       .bind(holder, task, ...match.params, holder)));
@@ -1591,7 +1591,7 @@ export async function dispatchLoad(db: RelationalStore, task: string, now: numbe
   const other = exclude ?? null;
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_fleet_queue WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
        (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) AS liveTaskRuns,
        (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
   ).bind(other, other, task, other, other, task, other, other, now - 3_600_000)

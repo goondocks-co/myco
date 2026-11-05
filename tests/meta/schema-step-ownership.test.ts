@@ -26,9 +26,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
-  { step: 696, object: 'idx_agent_runs_status_id', table: 'agent_runs', reason: 'Claim admission seeks live runs across the Deployment.' },
-  { step: 697, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },
-  { step: 698, object: 'idx_agent_runs_queue_holder', table: 'agent_runs', reason: 'Queue holder updates seek only matching unclaimed rows.' },
+  { step: 696, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },
   { step: 695, object: 'idx_turn_cards_session_pending', table: 'turn_cards', reason: 'Pending recounts seek only the pending rows of one session.' },
   { step: 693, object: 'curation_capability_insert', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
   { step: 693, object: 'curation_capability_update', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },

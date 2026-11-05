@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../adapters.js';
 
-export const WORK_SWEEP_PAGE = 32;
+export const WORK_SWEEP_PAGE = 256;
+export const SOURCE_SWEEP_PAGE = 32;
 export const WORK_PREDICATE_VERSION = 3;
 export const WORK_SWEEP_CONTINUE_MS = 30_000;
 export const WORK_SWEEP_MIN_MS = 5 * 60_000;

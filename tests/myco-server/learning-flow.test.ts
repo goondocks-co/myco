@@ -12,8 +12,11 @@ import { ownerCookie, OWNER_ENV } from './helpers/owner.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { sqliteBudgetMeter } from './helpers/budget-meter.js';
+import { offeredHarness } from './helpers/offered-harness.js';
+import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 
 const CLAIM_AND_SETTLE_LIMIT = 1000;
+const REFUSED_CLAIM_LIMIT = 160;
 
 it('learns an exact failure through run MCP tools on both stores with a bounded claim and settlement', async () => {
   const meter = sqliteBudgetMeter();
@@ -49,12 +52,14 @@ it('learns an exact failure through run MCP tools on both stores with a bounded 
           cycle = true;
         }
         const response = await server.handleRequest(request, env);
-        if (cycle && path === '/worker/end') {
+        const refused = path === '/worker/claim' && !(await response.clone().json() as { claimed: boolean }).claimed;
+        if (cycle && (path === '/worker/end' || refused)) {
           const entries = recorder.statements.map(entry => ({ sql: entry.sql, params: [...entry.binds] }));
           const rows = snapshot === null ? recorder.statements.reduce((sum, entry) => sum + (entry.rowsRead ?? 0), 0) : meter.reads(snapshot, entries);
-          console.info('LEARNING_CYCLE_READS', JSON.stringify({ target, rows, limit: CLAIM_AND_SETTLE_LIMIT }));
+          const limit = refused ? REFUSED_CLAIM_LIMIT : CLAIM_AND_SETTLE_LIMIT;
+          console.info('LEARNING_CYCLE_READS', JSON.stringify({ target, refused, rows, statements: entries.length, limit }));
           expect(rows).toBeGreaterThan(0);
-          expect(rows).toBeLessThanOrEqual(CLAIM_AND_SETTLE_LIMIT);
+          expect(rows).toBeLessThanOrEqual(limit);
           snapshot?.close(); snapshot = null; cycle = false;
         }
         return response;
@@ -64,6 +69,21 @@ it('learns an exact failure through run MCP tools on both stores with a bounded 
           ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),
           sql: async sql => (await db.prepare(sql).all<Record<string, unknown>>()).results,
         }, request);
+        await db.prepare('UPDATE worker_contacts SET last_seen_at=0').run();
+        await db.prepare("INSERT INTO runners(id,name,created_at) VALUES('rn_learning','Learning runner',?)").bind(now).run();
+        await db.prepare(`INSERT INTO runner_credentials(id,runner_id,token_hash,epoch,issued_at,expires_at,lineage_root)
+          VALUES('rc_learning','rn_learning','fixture',1,?,?,'rc_learning')`).bind(now, now + 3_600_000).run();
+        const offer = offeredHarness('claude-code');
+        await db.prepare(`INSERT INTO runner_contacts(runner_id,offers,capabilities,last_reason,last_seen_at,updated_at)
+          VALUES('rn_learning',?,?,'no_harness',?,?)`).bind(JSON.stringify([{ ...offer, authenticated: false }]), JSON.stringify(WORKER_CAPABILITIES), now, now).run();
+        const healthLine = async () => {
+          const response = await server.handleRequest(new Request('https://s/api/status', { headers: { cookie } }), env);
+          expect(response.status).toBe(200);
+          return (await response.json() as { learning: { line: string } }).learning.line;
+        };
+        expect(await healthLine()).toContain('waiting for a runner that can sign in');
+        await db.prepare("UPDATE runner_contacts SET offers=?,last_reason='no_work' WHERE runner_id='rn_learning'").bind(JSON.stringify([offer])).run();
+        expect(await healthLine()).not.toContain('waiting for a runner that can sign in');
       } finally { closeSnapshot(); }
     });
   } finally { meter.close(); }

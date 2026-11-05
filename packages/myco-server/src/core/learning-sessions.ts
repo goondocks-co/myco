@@ -327,16 +327,21 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
 }
 
 /** The status line: what is due, what waits and why, the last completion, and spend against the day's budget. */
-export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number): string {
-  const n = (count: number) => (count > status.cap ? `at least ${status.cap}` : String(count));
+export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number, waitingForSignIn = false): string {
+  const n = (count: number, singular: string, plural = `${singular}s`) => `${count > status.cap ? `at least ${status.cap}` : count} ${count === 1 ? singular : plural}`;
+  const spent = budget?.automaticUsd == null ? null : budget.automaticUsd + (budget.manualUsd ?? 0);
+  const ready = status.dueSessions > 0 || status.turnsAwaitingCards > 0;
   const parts = [
-    `${n(status.dueSessions)} sessions ready to learn (${n(status.dueCards)} summaries to learn from)`,
-    `${n(status.turnsAwaitingCards)} turns waiting to be summarized`,
-    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting)} older sessions waiting for history learning to be enabled`] : []),
-    ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication)} sessions waiting to become readable`] : []),
+    `${n(status.dueSessions, 'session')} ready to learn (${n(status.dueCards, 'summary', 'summaries')} to learn from)`,
+    `${n(status.turnsAwaitingCards, 'turn')} waiting to be summarized`,
+    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting, 'older session')} waiting for history learning to be enabled`] : []),
+    ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication, 'session')} waiting to become readable`] : []),
+    ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),
+    ...(ready && spent !== null && budget !== null && spent >= budget.dailyUsd
+      ? ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window'] : []),
     status.lastCompleted === null ? 'nothing learned yet'
       : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`,
-    ...(budget === null || budget.automaticUsd === null ? [] : [`spent $${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} of $${budget.dailyUsd.toFixed(2)} today`]),
+    ...(budget === null || spent === null ? [] : [`spent $${spent.toFixed(2)} of $${budget.dailyUsd.toFixed(2)} in the last 24 hours`]),
   ];
-  return `Learning: ${parts.join('; ')}.`;
+  return `${parts.join('; ')}.`;
 }
