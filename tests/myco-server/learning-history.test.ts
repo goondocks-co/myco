@@ -450,3 +450,28 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
     expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='_learning_quiet_margin_range'").first()).toBeNull();
   }, 658);
 });
+
+it('replaces quiet insert and receipt triggers without relying on a later source update', async () => {
+  await withDocumentStores(async db => {
+    await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', 1440, 'owner', NOW);
+    const source = NOW;
+    const receipt = NOW + 22 * HOUR;
+    const session = 'insert-receipt-quiet';
+    await db.prepare("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('project',?,'fake','fake',1,?)")
+      .bind(session, receipt).run();
+    for (const step of SCHEMA_STEPS.filter(step => step.version > 658)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('project',?,'ready',?,1)")
+      .bind(session, source).run();
+    const quiet = () => db.prepare("SELECT quiet_at,source_activity_at FROM learning_sessions WHERE session_id=?").bind(session).first();
+    expect(await quiet()).toEqual({ quiet_at: NOW + 23 * HOUR, source_activity_at: source });
+    await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id=?").bind(receipt, session).run();
+    expect(await quiet()).toEqual({ quiet_at: 0, source_activity_at: source });
+    await db.prepare("UPDATE sessions SET ended_at=NULL,last_received_at=? WHERE session_id=?").bind(receipt + HOUR / 2, session).run();
+    expect(await quiet()).toEqual({ quiet_at: NOW + 23 * HOUR, source_activity_at: source });
+    for (const age of [24, 30]) {
+      const later = NOW + age * HOUR;
+      await db.prepare("UPDATE sessions SET last_received_at=? WHERE session_id=?").bind(later, session).run();
+      expect(await quiet()).toEqual({ quiet_at: later + DAY, source_activity_at: source });
+    }
+  }, 658);
+});
