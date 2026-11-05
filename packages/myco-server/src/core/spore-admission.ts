@@ -130,7 +130,7 @@ export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext)
   if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) {
     const admitted = await curationWriteAdmission(ctx.env.db, ctx.projectId, ctx.principal.runId, input);
     if (typeof admitted === 'string') return failure(admitted);
-    ctx = { ...ctx, env: { ...ctx.env, db: curationWriteStore(ctx.env.db, ctx.projectId, ctx.principal.runId, admitted, typeof input.new_spore_id === 'string' ? input.new_spore_id : undefined) } };
+    ctx = { ...ctx, env: { ...ctx.env, db: curationWriteStore(ctx.env.db, ctx.projectId, ctx.principal.runId, admitted) } };
   }
   const invalid = sporeMetadataError(input);
   if (invalid !== null) return failure(invalid);

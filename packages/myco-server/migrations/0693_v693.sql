@@ -8,22 +8,90 @@ CREATE INDEX IF NOT EXISTS idx_curation_runs_day ON agent_runs (project_id,task,
 
 CREATE INDEX IF NOT EXISTS idx_curation_resolution_author ON resolution_events (project_id,author,spore_id);
 
-CREATE TABLE IF NOT EXISTS spore_curation_cursor (project_id TEXT PRIMARY KEY REFERENCES projects(project_id), after_at INTEGER NOT NULL DEFAULT 0, after_id TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS spore_curation_work (
+    project_id TEXT NOT NULL REFERENCES projects(project_id), cluster_key TEXT NOT NULL, members TEXT NOT NULL CHECK(json_valid(members)), final_members TEXT CHECK(final_members IS NULL OR json_valid(final_members)),
+    due_at INTEGER, failures INTEGER NOT NULL DEFAULT 0, searches INTEGER NOT NULL DEFAULT 0, read_bytes INTEGER NOT NULL DEFAULT 0, run_id TEXT, close_token TEXT,
+    decision TEXT CHECK(decision IN ('keep','resolved','changed','failed','oversized')), reason TEXT, decided_at INTEGER,
+    PRIMARY KEY(project_id,cluster_key),
+    CHECK(decision IS NULL OR (reason IS NOT NULL AND length(trim(reason))>0 AND decided_at IS NOT NULL)));
+
+CREATE INDEX IF NOT EXISTS idx_curation_due ON spore_curation_work(project_id,due_at,cluster_key) WHERE due_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_curation_evidence ON spore_curation_work(project_id,run_id,decision);
+
+CREATE TABLE IF NOT EXISTS spore_curation_owners (project_id TEXT NOT NULL, spore_id TEXT NOT NULL, cluster_key TEXT NOT NULL,
+    PRIMARY KEY(project_id,spore_id), FOREIGN KEY(project_id,cluster_key) REFERENCES spore_curation_work(project_id,cluster_key));
+
+CREATE INDEX IF NOT EXISTS idx_curation_owners_cluster ON spore_curation_owners(project_id,cluster_key);
+
+CREATE TABLE IF NOT EXISTS spore_curation_receipts (project_id TEXT NOT NULL, spore_id TEXT NOT NULL, revision INTEGER NOT NULL, cluster_key TEXT NOT NULL,
+    PRIMARY KEY(project_id,spore_id), FOREIGN KEY(project_id,cluster_key) REFERENCES spore_curation_work(project_id,cluster_key));
+
+CREATE INDEX IF NOT EXISTS idx_curation_receipts_cluster ON spore_curation_receipts(project_id,cluster_key);
+
+CREATE TABLE IF NOT EXISTS spore_curation_candidates (project_id TEXT NOT NULL REFERENCES projects(project_id), run_id TEXT NOT NULL,
+    spore_id TEXT NOT NULL, revision INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id,run_id,spore_id),
+    FOREIGN KEY(project_id,run_id) REFERENCES agent_runs(project_id,id) ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS spore_curation_cursor (project_id TEXT PRIMARY KEY REFERENCES projects(project_id), after_at INTEGER NOT NULL DEFAULT 0,
+    after_id TEXT NOT NULL DEFAULT '', pass_revision INTEGER NOT NULL DEFAULT -1, active INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS spore_curation_clock (id INTEGER PRIMARY KEY CHECK(id=1), after_project TEXT NOT NULL DEFAULT '');
 
 INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1);
 
-CREATE TABLE IF NOT EXISTS spore_curation_work (
-    project_id TEXT NOT NULL REFERENCES projects(project_id), pair_key TEXT NOT NULL,
-    left_id TEXT NOT NULL, left_revision INTEGER NOT NULL, right_id TEXT NOT NULL, right_revision INTEGER NOT NULL,
-    due_at INTEGER, failures INTEGER NOT NULL DEFAULT 0, run_id TEXT,
-    decision TEXT CHECK(decision IN ('keep','resolved','changed')), reason TEXT, decided_at INTEGER,
-    PRIMARY KEY(project_id,pair_key), CHECK(left_id < right_id),
-    CHECK(decision NOT IN ('keep','resolved') OR (reason IS NOT NULL AND length(trim(reason))>0 AND decided_at IS NOT NULL AND run_id IS NOT NULL)));
+CREATE TABLE IF NOT EXISTS spore_curation_changes (project_id TEXT PRIMARY KEY REFERENCES projects(project_id), revision INTEGER NOT NULL, dirty INTEGER NOT NULL, pending_at INTEGER);
 
-CREATE INDEX IF NOT EXISTS idx_curation_evidence ON spore_curation_work (project_id,run_id,decision);
+CREATE INDEX IF NOT EXISTS idx_curation_changes_due ON spore_curation_changes(dirty,project_id);
 
-CREATE INDEX IF NOT EXISTS idx_curation_due ON spore_curation_work (project_id,due_at,pair_key) WHERE due_at IS NOT NULL;
+INSERT INTO spore_curation_changes SELECT project_id,1,1,0 FROM project_capabilities WHERE capability='spore_curation' AND enabled=1;
+
+CREATE TRIGGER IF NOT EXISTS curation_capability_insert AFTER INSERT ON project_capabilities
+    WHEN NEW.capability IN ('spore_curation','spore_curation_backfill') BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,0 WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_capability_update AFTER UPDATE ON project_capabilities
+    WHEN NEW.capability IN ('spore_curation','spore_curation_backfill') BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,0 WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_capability_delete AFTER DELETE ON project_capabilities
+    WHEN OLD.capability IN ('spore_curation','spore_curation_backfill') BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT OLD.project_id,1,1,0 WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_spore_insert AFTER INSERT ON spores
+    BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,COALESCE(NEW.updated_at,NEW.created_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_spore_update AFTER UPDATE OF revision,created_at,updated_at ON spores
+    BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,COALESCE(NEW.updated_at,NEW.created_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_spore_delete AFTER DELETE ON spores
+    BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT OLD.project_id,1,1,COALESCE(OLD.updated_at,OLD.created_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_vector_insert AFTER INSERT ON embedding_receipts
+    WHEN NEW.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=NEW.project_id AND id=NEW.record_id),NEW.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_vector_update AFTER UPDATE OF project_id,model_key,id,record_id,revision,ready,updated_at ON embedding_receipts
+    WHEN NEW.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT NEW.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=NEW.project_id AND id=NEW.record_id),NEW.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TRIGGER IF NOT EXISTS curation_vector_delete AFTER DELETE ON embedding_receipts
+    WHEN OLD.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+  SELECT OLD.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=OLD.project_id AND id=OLD.record_id),OLD.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
+  pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
+
+CREATE TABLE IF NOT EXISTS project_settings (project_id TEXT NOT NULL REFERENCES projects(project_id), leaf TEXT NOT NULL, value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY(project_id,leaf));
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '693');

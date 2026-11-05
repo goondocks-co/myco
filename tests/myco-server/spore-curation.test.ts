@@ -24,7 +24,7 @@ async function fixture() {
   const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
   vectors.get = (...args) => { calls.get++; return get(...args); };
   vectors.query = (...args) => { calls.query++; return query(...args); };
-  const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (): Promise<number[]> => { calls.embed++; return [1,0]; } }) };
+  const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
   const add = async (id: string, values = [1, 0], created = f.now) => {
     f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at)
@@ -77,7 +77,7 @@ test('a real claim receives whole spores on Sonnet low; kept-apart revisions sta
     const ctx = await f.ctx(claimed.run.id, claimed.run.attemptId);
     expect(curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)?.members).toHaveLength(5);
     expect(await handleRunCuration({ op: 'complete', decision: 'resolved', reason: 'I claim I did it' }, ctx)).toMatchObject({ ok: false });
-    expect(await f.call(claimed.run.runToken, 'myco_run_curation', { op: 'complete', decision: 'keep', reason: 'The two seams apply to distinct actors.' })).toEqual({ completed: true });
+    expect(await f.call(claimed.run.runToken, 'myco_run_curation', { op: 'complete', decision: 'keep', members: ['a','b','c','d','e'].map(id=>({id,revision:0})), reason: 'The two seams apply to distinct actors.' })).toEqual({ completed: true });
     await recordReport(ctx.env.db, { projectId: 'proj_1' }, { runId: claimed.run.id, agentId: 'myco-agent', action: 'curated', summary: 'Kept distinct applicability', details: null, audit: null, createdAt: f.now });
     expect(await runCloseRefusal(f.db, { projectId: 'proj_1' }, (await getRun(f.db, { projectId: 'proj_1' }, claimed.run.id))!)).toBeNull();
     await endLeasedRun(f.env, { principal: f.principal, now: f.now+1 }, { projectId: 'proj_1', runId: claimed.run.id, attemptId: claimed.run.attemptId, status: 'completed' });
@@ -98,7 +98,7 @@ test('stale decisions and lifecycle writes refuse concurrent edits; own resoluti
     const ctx = await f.ctx(claimed.run.id, claimed.run.attemptId);
     const assignment = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!;
     f.sqlite.run("UPDATE spores SET content='Concurrent edit',revision=revision+1,updated_at=? WHERE id='a'", [f.now+1]);
-    expect(await handleRunCuration({ op: 'complete', decision: 'keep', reason: 'Keep' }, ctx)).toMatchObject({ code: 'material_changed' });
+    expect(await handleRunCuration({ op: 'complete', decision: 'keep', members: assignment.members, reason: 'Keep' }, ctx)).toMatchObject({ code: 'material_changed' });
     expect(await handleSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', expect_revision: assignment.members[0]!.revision, expect_status:'active', reason: 'b covers a' }, ctx)).toMatchObject({ ok: false });
     expect(f.sqlite.query("SELECT content,status FROM spores WHERE id='a'").get()).toEqual({ content: 'Concurrent edit', status: 'active' });
     expect(await handleSpores({ op: 'supersede', old_spore_id: 'b', new_spore_id: 'a', expect_revision: 999, expect_status:'active', reason: 'a covers b' }, ctx)).toMatchObject({ ok: false });
@@ -188,8 +188,8 @@ test('six shared semantic searches admit whole members; one grown group consolid
     expect(f.calls.embed).toBe(6);
     expect(await f.call(token,'myco_run_curation',{op:'material',id:'outside'})).toMatchObject({ok:false});
     expect(await handleSpores({op:'supersede',old_spore_id:'outside',new_spore_id:'a',expect_revision:0,expect_status:'active',reason:'outside'},ctx)).toMatchObject({ok:false});
-    expect(await f.call(token,'myco_run_curation',{op:'material',id:'c'})).toMatchObject({spore:{id:'c',content:'Whole content for c'},members:expect.arrayContaining([{id:'c',revision:0}])});
-    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_owners').get()).toEqual({n:3});
+    expect(await f.call(token,'myco_run_curation',{op:'material',id:'c'})).toMatchObject({spore:{id:'c',content:'Whole content for c'},read:expect.arrayContaining([{id:'c',revision:0}])});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_owners').get()).toEqual({n:2});
     const sources=['a','b','c'].map(id=>({id,revision:0}));
     expect(await f.call(token,'myco_spores',{op:'consolidate',source_spore_ids:sources,observation_type:'wisdom',consolidated_content:'a, b and c: preserve the named seam and every detail.',agent_line:'Use the named seam.',reason:'One topic, complementary details.'})).toMatchObject({status:'consolidated',sources_consolidated:3});
     expect(await f.call(token,'myco_run_curation',{op:'material',id:'outside'})).toMatchObject({ok:false});
@@ -209,7 +209,7 @@ test('keep receipts cover search-only additions and one changed addition reopens
     const call=(name:string,args:Record<string,unknown>)=>f.call(claim.run.runToken,name,args);
     await call('myco_search',{query:'seams'});
     for(const id of ['c','d']) expect(await call('myco_run_curation',{op:'material',id})).toMatchObject({spore:{id}});
-    expect(await call('myco_run_curation',{op:'complete',decision:'keep',reason:'Four distinct contexts share a topic.'})).toEqual({completed:true});
+    expect(await call('myco_run_curation',{op:'complete',decision:'keep',members:['a','b','c','d'].map(id=>({id,revision:0})),reason:'Four distinct contexts share a topic.'})).toEqual({completed:true});
     expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_receipts').get()).toEqual({n:4});
     await recordReport(f.db,{projectId:'proj_1'},{runId:claim.run.id,agentId:'myco-agent',action:'curated',summary:'Kept four distinct contexts',details:null,audit:null,createdAt:f.now});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
@@ -280,17 +280,20 @@ test('a completed no-overlap pass rests with zero vector calls and writes; late 
 test('a capped cluster keeps exclusive open ownership and later unreviewed neighbours remain discoverable', async () => {
   const f = await fixture();
   try {
-    await f.enable(); for(let i=0;i<10;i++) await f.add(`s${i}`);
+    await f.enable(); for(let i=0;i<16;i++) await f.add(`s${String(i).padStart(2,'0')}`);
     await f.discover();
     expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_owners').get()).toEqual({n:8});
     expect(()=>f.sqlite.run("INSERT INTO spore_curation_owners SELECT project_id,spore_id,'other' FROM spore_curation_owners LIMIT 1")).toThrow();
     const claimed=await f.poll(); expect(claimed.claimed).toBe(true); if(!claimed.claimed)return;
     const ctx=await f.ctx(claimed.run.id,claimed.run.attemptId);
-    expect(await handleRunCuration({op:'complete',decision:'keep',reason:'Distinct applicability'},ctx)).toEqual({completed:true});
+    await f.add('search-only',[0,1],f.now+1);
+    await f.call(claimed.run.runToken,'myco_search',{query:'other-topic'});
+    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-only'})).toMatchObject({ok:false,error:expect.stringContaining('cap')});
+    expect(await handleRunCuration({op:'complete',decision:'keep',members:curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members,reason:'Distinct applicability'},ctx)).toEqual({completed:true});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claimed.run.id,attemptId:claimed.run.attemptId,status:'failed',error:'fixture failure after decision'});
     await f.discover();
     const next=f.sqlite.query<{members:string},[]>("SELECT members FROM spore_curation_work WHERE decision IS NULL").get()!;
-    expect(JSON.parse(next.members).some((m:{id:string})=>m.id==='s8'||m.id==='s9')).toBe(true);
+    expect(JSON.parse(next.members).map((m:{id:string})=>m.id).sort()).toEqual(Array.from({length:8},(_,i)=>`s${String(i+8).padStart(2,'0')}`));
   } finally {f.sqlite.close();}
 });
 
@@ -321,4 +324,124 @@ test('the Project integer setting defaults to five and its admitted writer prese
     expect(f.sqlite.query('SELECT updated_by FROM project_settings').get()).toEqual({updated_by:'test'});
     expect(rearmed).toEqual(['agent.spore_curation.daily_runs']);
   } finally {f.sqlite.close();}
+});
+
+test('whole reads leave off-topic hits out and a three-seed group can resolve only its two duplicates', async () => {
+  for (const seeded of [false,true]) {
+    const f=await fixture();
+    try {
+      await f.enable(); for (const id of ['a','b']) await f.add(id); await f.add('c',seeded?[1,0]:[0.7,0.7]); await f.discover();
+      const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+      const call=(name:string,args:Record<string,unknown>)=>f.call(claim.run.runToken,name,args);
+      if(!seeded) { await call('myco_search',{query:'seam'}); expect(await call('myco_run_curation',{op:'material',id:'c'})).toMatchObject({spore:{id:'c'}}); }
+      expect(await call('myco_spores',{op:'supersede',old_spore_id:'a',new_spore_id:'b',expect_revision:0,expect_status:'active',reason:'b fully covers a'})).toMatchObject({status:'superseded'});
+      expect(await call('myco_run_curation',{op:'complete',decision:'resolved',reason:'b covers a; c is off-topic and undecided.'})).toEqual({completed:true});
+      expect(f.sqlite.query('SELECT spore_id FROM spore_curation_receipts ORDER BY spore_id').all()).toEqual([{spore_id:'a'},{spore_id:'b'}]);
+      const row=f.sqlite.query<{members:string;final_members:string},[]>('SELECT members,final_members FROM spore_curation_work').get()!;
+      expect(JSON.parse(row.final_members).map((m:{id:string})=>m.id)).toEqual(['a','b']); expect(JSON.parse(row.members)).toHaveLength(seeded?3:2);
+      expect(f.sqlite.query("SELECT status FROM spores WHERE id='c'").get()).toEqual({status:'active'});
+      await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'failed',error:'fixture ended'});
+      await f.discover(); if(!seeded) expect(await f.poll()).toMatchObject({claimed:false});
+      await f.add('later',seeded?[1,0]:[0.7,0.7],f.now+1); await f.discover();
+      expect(f.sqlite.query<{members:string},[]>("SELECT members FROM spore_curation_work WHERE decision IS NULL ORDER BY due_at DESC LIMIT 1").get()!.members).toContain('"c"');
+    } finally {f.sqlite.close();}
+  }
+});
+
+test('a closed seed outcome deduplicates its original set without acknowledging excluded seeds', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); for(const id of ['a','b','c']) await f.add(id); await f.discover();
+    const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+    expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'keep',members:['a','b'].map(id=>({id,revision:0})),reason:'a and b stand apart; c remains undecided.'})).toEqual({completed:true});
+    await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'failed',error:'fixture ended'});
+    await f.discover(); expect(await f.poll()).toMatchObject({claimed:false});
+    expect(f.sqlite.query("SELECT 1 FROM spore_curation_receipts WHERE spore_id='c'").get()).toBeNull();
+    await f.add('later',[1,0],f.now+1); await f.discover(); expect((await f.poll()).claimed).toBe(true);
+  } finally {f.sqlite.close();}
+});
+
+test('one new spore restarts at its changed stamp with one vector query', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); for(let i=0;i<64;i++) await f.add(`s${i}`,[1,i+10]);
+    const query=f.env.vectors.query.bind(f.env.vectors);
+    f.env.vectors.query=(...args)=>args[1].values[1]===0?query(...args):(f.calls.query++,Promise.resolve([]));
+    for(let i=0;i<12;i++) await discoverSporeClusters(f.env,f.now);
+    const prior={...f.calls}; await f.add('new',[1,0],f.now+1); await f.discover();
+    expect(f.calls.query-prior.query).toBe(1); expect(f.calls.get-prior.get).toBe(1);
+    expect(f.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
+  } finally {f.sqlite.close();}
+});
+
+test('a changed close releases every seed with no review receipt and discovers the unchanged overlap', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); for(const id of ['a','b','c']) await f.add(id); await f.discover();
+    f.sqlite.run("UPDATE spores SET revision=revision+1,updated_at=? WHERE id='a'",[f.now+1]); await f.add('a',[0,1]);
+    expect(await f.poll()).toMatchObject({claimed:false});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_receipts').get()).toEqual({n:0});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_owners').get()).toEqual({n:0});
+    await f.discover(); const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+    expect(claim.run.instruction).toContain('Whole content for b'); expect(claim.run.instruction).toContain('Whole content for c');
+  } finally {f.sqlite.close();}
+});
+
+test('material owned by another open group is terminal for that candidate and does not consume a read', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('a'); await f.add('b'); await f.add('c',[0.7,0.7]); await f.discover();
+    const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+    await f.call(claim.run.runToken,'myco_search',{query:'seam'});
+    f.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','other','[]',?)",[f.now]);
+    f.sqlite.run("INSERT INTO spore_curation_owners VALUES('proj_1','c','other')");
+    expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'c'})).toMatchObject({available:false,code:'curation_owned'});
+    expect(f.sqlite.query("SELECT read FROM spore_curation_candidates WHERE spore_id='c'").get()).toEqual({read:0});
+    expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'keep',members:['a','b'].map(id=>({id,revision:0})),reason:'Distinct seeds; c belongs elsewhere.'})).toEqual({completed:true});
+  } finally {f.sqlite.close();}
+});
+
+test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without building or retrying', async () => {
+  const {Miniflare,convertV4MiniflareOptions}=await import('miniflare');
+  const {SCHEMA_STEPS}=await import('@myco-server-worker/db/schema.js');
+  const {measuredStore}=await import('./helpers/read-budget.js');
+  const {ensureMember}=await import('@myco-server-worker/auth/enrollment.js');
+  const {issueMemberToken}=await import('@myco-server-worker/auth/tokens.js');
+  const {legacyWorker}=await import('./helpers/worker-principal.js');
+  const {completeBudgetMigration}=await import('@myco-server-worker/db/budget-activation.js');
+  const {estimateKey}=await import('@myco-server-worker/core/budget-estimates.js');
+  const {mutateState}=await import('@myco-server-worker/core/runs.js');
+  const f=await fixture(), attempts=300;
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default { fetch() { return new Response(null); } }',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
+  try {
+    const d1=await mf.getD1Database('DB');
+    for(const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
+    await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)").run();
+    await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)").run();
+    const meter=measuredStore(d1), env={...f.env,db:meter.db};
+    await ensureMember(meter.db,'mem_harness',f.now,'member'); await ensureMember(meter.db,'mem_worker',f.now,'admin');
+    const worker=await issueMemberToken(meter.db,{memberId:'mem_worker',machineId:'budget-machine'},f.now);
+    const principal=legacyWorker(worker.tokenId,'budget-machine');
+    await completeBudgetMigration(meter.db,f.now);
+    await settingsWriter(meter.db).setCapability('proj_1','spore_curation',true,'test',f.now-10);
+    for(let start=0;start<attempts;start+=100) await d1.batch(Array.from({length:100},(_,offset)=>{
+      const id=`history-${start+offset}`;
+      return [
+        d1.prepare("INSERT INTO member_credentials(id,member_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at) VALUES(?,'mem_harness',?,?,?,?,?)").bind(id,`fixture-${id}`,f.now,f.now+3600000,id,f.now),
+        d1.prepare("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,dispatched_by,cost_usd,origin) VALUES('proj_1',?,'myco-agent','turn-cards','completed',?,?,?,0.01,'automatic')").bind(id,f.now-1,f.now,id),
+        d1.prepare("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,estimate_usd,cost_usd) VALUES('proj_1',?,?,?,?,0.01,0.01)").bind(id,id,worker.tokenId,f.now-1),
+      ];
+    }).flat());
+    await settingsWriter(meter.db).setLeaf('agent.budget.daily_usd',attempts*0.01+0.8,'mem_worker',f.now);
+    const key=estimateKey('curate-spores','claude-code',{tier:'low',model:'sonnet'});
+    await mutateState(meter.db,{projectId:'proj_1'},'myco-agent',key,()=>JSON.stringify({estimate:0.35}),f.now);
+    const poll=()=>claimNextRun(env,{principal,harnesses:[offeredHarness('claude-code')],now:f.now});
+    meter.reset(); expect(await poll()).toMatchObject({claimed:false}); const idle=meter.reads();
+    await d1.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','a','myco-agent','A','decision',1),('proj_1','b','myco-agent','B','decision',1)").run();
+    await d1.prepare("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','band',?,?)").bind(JSON.stringify(['a','b'].map(id=>({id,revision:0}))),f.now).run();
+    for(let i=0;i<2;i++) {
+      meter.reset(); expect(await poll()).toMatchObject({claimed:false});
+      expect(meter.reads()).toBeLessThanOrEqual(idle+Math.ceil(2.1*attempts)); expect(meter.writes()).toBe(0);
+    }
+  } finally {await mf.dispose();f.sqlite.close();}
 });

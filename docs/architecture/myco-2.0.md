@@ -674,12 +674,11 @@ Disposition here is about the **data class**, and separately about **migration**
 | `session_turn_totals` | NEW | REBUILD | Core | Blk | Distinct path counters maintained by the turn entry projection; session deletion removes them. | #1899 |
 | `session_path_build` | NEW | REBUILD | Core | Blk | At most 500 paths retained while document summary catch-up advances; completion adopts them into the visible file catalog. | #1899 |
 | `myco_tool_calls` | NEW | REBUILD | Core | Blk | One row per Myco tool call a document holds: tool, operation, outcome, time and harness. The session tombstone removes it. | #1924 |
-| `spore_curation_work` | NEW | MIGRATE | Core | Blk | Revision-bound cluster assignments, bounded claim failures, run attribution and durable decisions with reasons; sources retain resolution lineage. | #1941 |
-| `spore_curation_pair_history` | NEW | MIGRATE | Core | Blk | Immutable prior pair decision history; no live task reads or writes it. | #1941 |
+| `spore_curation_work` | NEW | MIGRATE | Core | Blk | Original seed assignments and outcomes, separately chosen final membership, bounded claim failures and run decisions with reasons; only final members get review receipts and sources retain resolution lineage. | #1941 |
 | `spore_curation_receipts` | NEW | MIGRATE | Core | Blk | Each member’s last adjudicated revision and cluster decision. | #1941 |
 | `spore_curation_owners` | NEW | MIGRATE | Core | Blk | Exclusive member ownership for open cluster work, released by the curation capability. | #1941 |
-| `spore_curation_candidates` | NEW | REBUILD | Core | Blk | Bounded run-scoped search receipts admitting whole-spore reads and final group growth. | #1941 |
-| `spore_curation_changes` | NEW | REBUILD | Core | Blk | Source and vector change frontier; completed walks rest until it advances. | #1941 |
+| `spore_curation_candidates` | NEW | REBUILD | Core | Blk | Run-scoped search and whole-read receipts; bounded reads remain independent of final group selection. | #1941 |
+| `spore_curation_changes` | NEW | REBUILD | Core | Blk | Oldest pending source stamp and vector-readiness frontier; completed walks resume at the oldest change. | #1941 |
 | `project_settings` | NEW | REBUILD | Core | Blk | Admitted numeric Project settings, with actor and update time; owned by settings.ts. | #1941 |
 | `spore_curation_cursor` | NEW | MIGRATE | Core | Blk | Per-Project bounded spore discovery checkpoint. | #1941 |
 | `spore_curation_clock` | NEW | MIGRATE | Core | Blk | Round-robin Project checkpoint for bounded curation wakes. | #1941 |
