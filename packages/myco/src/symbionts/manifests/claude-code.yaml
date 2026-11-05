@@ -406,12 +406,22 @@ runner:
     - { code: timed_out, pattern: '\btimed[ -]?out\b|\bETIMEDOUT\b|idle timeout|request timeout' }
   # How a worker runs it.
   worker:
-    retryFirstLoginMissing: true
     binary: claude
     launch: { kind: native }
     # The login lives in the OS keyring on macOS and in the file elsewhere, so the file answers where it exists and the
     # binary answers where it does not.
-    login: { kind: file-or-command, path: ~/.claude/.credentials.json, requires: [claudeAiOauth, accessToken], args: [auth, status] }
+    login: { kind: command, args: [auth, status] }
+    omitInherited:
+      - ANTHROPIC_MODEL
+      - ANTHROPIC_DEFAULT_HAIKU_MODEL
+      - ANTHROPIC_DEFAULT_SONNET_MODEL
+      - ANTHROPIC_DEFAULT_OPUS_MODEL
+      - CLAUDE_CODE_USE_BEDROCK
+      - CLAUDE_CODE_USE_VERTEX
+      - CLAUDE_CODE_USE_FOUNDRY
+      - ANTHROPIC_BASE_URL
+      - CLAUDE_CODE_CLIENT_DATA_URL
+      - ANTHROPIC_SMALL_FAST_MODEL
     isolation: { kind: flag, args: [--strict-mcp-config] }
     sourceGit: shim
     modelSetting: flag

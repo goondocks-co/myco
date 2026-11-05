@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker } from '@myco/runner/loop.js';
-import { HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, type DetectedHarness } from '@myco/runner/detect.js';
+import { detectHarnesses, detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, HARNESS_LOGIN_RECHECK_MS, harnessDetection, offerOf, type DetectedHarness } from '@myco/runner/detect.js';
 import { SUSPEND_SLACK_MS } from '@myco/runner/wake.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
@@ -198,4 +198,55 @@ it('reports absent and signed-out agents while stored sign-in admits only instal
     .toEqual([{ id: 'claude-code', installed: true, authenticated: false }, { id: 'codex', installed: false, authenticated: false }]);
   expect(runnerAgentLoginReady(offered[0]!, { 'claude-code': 'stored' })).toBe(true);
   expect(runnerAgentLoginReady(offered[1]!, { codex: 'stored' })).toBe(false);
+});
+
+it('a failing command probe is not rescued by a credential file in either detection mode', async () => {
+  await withProbeFixture(async ({ root }) => {
+    const claude = join(process.env.CLAUDE_CONFIG_DIR!, '.credentials.json');
+    mkdirSync(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
+    writeFileSync(claude, JSON.stringify({ claudeAiOauth: { accessToken: 'fixture-only' } }));
+    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    expect(detectHarnesses(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: false }]);
+    for (const credentialBytes of [true, false]) expect(await detectHarnessesAsync(['claude-code'], undefined, { credentialBytes }))
+      .toEqual([{ id: 'claude-code', installed: true, authenticated: false }]);
+  });
+});
+
+it('holds only the failed harness through invalidation and failed rechecks', async () => {
+  let now = 0;
+  let authenticated = true;
+  const exclusions: string[][] = [];
+  const detection = harnessDetection({ clock: () => now, detect: async excluded => {
+    exclusions.push([...excluded]);
+    return ['claude-code', 'codex'].filter(id => !excluded.includes(id)).map(id => ({ id, installed: true, authenticated }));
+  } });
+  await detection.read();
+  detection.loginMissing('claude-code');
+  detection.invalidate();
+  expect(await detection.read()).toContainEqual({ id: 'claude-code', installed: true, authenticated: false, unavailableReason: 'login_missing' });
+  expect(exclusions.at(-1)).toEqual(['claude-code']);
+  now = HARNESS_LOGIN_RECHECK_MS;
+  authenticated = false;
+  expect((await detection.read()).find(h => h.id === 'claude-code')?.unavailableReason).toBe('login_missing');
+  authenticated = true;
+  now += 30_000;
+  detection.invalidate();
+  expect((await detection.read()).find(h => h.id === 'claude-code')?.authenticated).toBe(false);
+  now += HARNESS_LOGIN_RECHECK_MS;
+  expect((await detection.read()).find(h => h.id === 'claude-code')).toEqual({ id: 'claude-code', installed: true, authenticated: true });
+});
+
+it('probes sign-in with the launch environment exclusions declared by the harness', async () => {
+  await withProbeFixture(async ({ root }) => {
+    const before = process.env.CLAUDE_CODE_USE_VERTEX;
+    process.env.CLAUDE_CODE_USE_VERTEX = 'fixture-provider-override';
+    writeFileSync(join(root, 'bin', 'claude'), '#!/bin/sh\ntest -z "$CLAUDE_CODE_USE_VERTEX"\n', { mode: 0o755 });
+    try {
+      expect(detectHarnesses(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: true }]);
+      expect(await detectHarnessesAsync(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: true }]);
+    } finally {
+      if (before === undefined) delete process.env.CLAUDE_CODE_USE_VERTEX;
+      else process.env.CLAUDE_CODE_USE_VERTEX = before;
+    }
+  });
 });

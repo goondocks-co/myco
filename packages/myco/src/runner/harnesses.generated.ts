@@ -5,8 +5,19 @@ import type { HarnessFacts } from './harnesses.js';
 export const HARNESS_FACTS: readonly HarnessFacts[] = [
   {
     "id": "claude-code",
-    "retryFirstLoginMissing": true,
     "binary": "claude",
+    "omitInherited": [
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_CLIENT_DATA_URL",
+      "ANTHROPIC_SMALL_FAST_MODEL"
+    ],
     "launch": {
       "kind": "native"
     },
@@ -214,12 +225,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
       "tokenScope": "attempt"
     },
     "credential": {
-      "kind": "file-or-command",
-      "path": "~/.claude/.credentials.json",
-      "requires": [
-        "claudeAiOauth",
-        "accessToken"
-      ],
+      "kind": "command",
       "args": [
         "auth",
         "status"

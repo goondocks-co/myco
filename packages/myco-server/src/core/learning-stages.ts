@@ -18,7 +18,7 @@ import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 import { CARD_TASK, claimCardsStatements, dueCardTurns } from './turn-cards.js';
 import { TURN_CARD_PROMPT } from './turn-card-prompt.js';
-import { buildLearningAssignment, claimLearningStatement, learningHead, learningHeadFrom, learningWorkFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
+import { buildLearningAssignment, claimLearningStatements, learningHead, learningHeadFrom, learningWorkFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
 import { learningRangeSql } from './learning-recency.js';
 /** A card run's assignment: the turns it cards, each with the change count its write is guarded by. */
 export interface CardAssignment { kind: 'cards'; turns: { turnKey: string; changes: number }[] }
@@ -113,7 +113,7 @@ function learningStage(level: number, fresh: boolean): PulledStage {
       params: [item.projectId, item.key, item.observed],
     }),
     build: (env, item, now) => buildLearningInput(env.db, item.projectId, item.key, now),
-    claimed: (db, item, _input, run, now) => [claimLearningStatement(db, item.projectId, item.key, now, run)],
+    claimed: (db, item, _input, run, now) => claimLearningStatements(db, item.projectId, item.key, now, run),
   };
 }
 

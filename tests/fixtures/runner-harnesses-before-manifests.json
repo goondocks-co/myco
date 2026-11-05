@@ -302,12 +302,7 @@
         "kind": "native"
       },
       "credential": {
-        "kind": "file-or-command",
-        "path": "~/.claude/.credentials.json",
-        "requires": [
-          "claudeAiOauth",
-          "accessToken"
-        ],
+        "kind": "command",
         "args": [
           "auth",
           "status"
@@ -360,7 +355,18 @@
           "efforts": "supportedEffortLevels"
         }
       },
-      "retryFirstLoginMissing": true
+      "omitInherited": [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_CLIENT_DATA_URL",
+        "ANTHROPIC_SMALL_FAST_MODEL"
+      ]
     },
     {
       "id": "codex",

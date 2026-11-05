@@ -23,8 +23,8 @@ export function storedRunnerCredentialChoices(text: string): StoredRunnerCredent
 }
 
 /** Stored sign-in admits a reported agent independently of its machine's authentication status. */
-export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
-  return offer.installed !== false && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
+export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean; unavailableReason?: 'login_missing' }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
+  return offer.unavailableReason !== 'login_missing' && offer.installed !== false && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
 }
 
 export type RunnerDisplay = 'Busy' | 'Online' | 'Offline' | 'Never contacted' | 'Paused' | 'Removed' | 'Not ready';
@@ -39,7 +39,7 @@ export interface RunnerFleetRecord {
   lastSeenAt: number | null; updateAvailable?: boolean; awaitingReplacement?: boolean; updateMetadataUnavailable?: boolean; connected: boolean; display: RunnerDisplay;
   busy: (FleetRun & { leaseExpiresAt: number }) | null;
   lastAttempted: FleetRun | null; lastCompleted: FleetRun | null; lastFailed: FleetRun | null;
-  offers: Array<{ id: string; installed?: boolean; authenticated: boolean; profile?: { model: string; efforts: readonly string[] } }> | null;
+  offers: Array<{ id: string; installed?: boolean; authenticated: boolean; unavailableReason?: 'login_missing'; profile?: { model: string; efforts: readonly string[] } }> | null;
   offersObservedAt: number | null;
   credentialChoices?: StoredRunnerCredentialChoices;
   capabilities: string[] | null; labels: string[] | null; preference: string | null;

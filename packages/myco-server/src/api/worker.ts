@@ -55,9 +55,9 @@ function offered(value: unknown): OfferedHarness[] {
   const out: OfferedHarness[] = [];
   for (const entry of value) {
     if (entry === null || typeof entry !== 'object') continue;
-    const { id, installed, authenticated, profile } = entry as Record<string, unknown>;
+    const { id, installed, authenticated, profile, unavailableReason } = entry as Record<string, unknown>;
     const capability = offeredProfile(profile);
-    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, ...(installed === undefined ? {} : { installed: installed === true }), authenticated: authenticated === true, ...(capability === undefined ? {} : { profile: capability }) });
+    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, ...(installed === undefined ? {} : { installed: installed === true }), authenticated: authenticated === true, ...(unavailableReason === 'login_missing' ? { unavailableReason } : {}), ...(capability === undefined ? {} : { profile: capability }) });
   }
   return out;
 }

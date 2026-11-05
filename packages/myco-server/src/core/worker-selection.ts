@@ -43,6 +43,7 @@ export interface OfferedHarness {
   id: string;
   installed?: boolean;
   authenticated: boolean;
+  unavailableReason?: 'login_missing';
   profile?: ProfileCapability;
 }
 
