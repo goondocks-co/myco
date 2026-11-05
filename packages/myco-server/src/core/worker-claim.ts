@@ -1,3 +1,4 @@
+import { CLAIM_SIGN_IN_KEY } from '../db/run-context.js';
 import { reserveForStage } from './budget-policy.js';
 import { quietSessionClaim } from './learning-sessions.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
@@ -11,7 +12,7 @@ import type { WorkerPrincipal } from './worker-lease.js';
 import { leaseOwnerColumns } from './worker-lease.js';
 import { workerContactStatement, runnerContactStatement } from './worker-contacts.js';
 import { isExecutionProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { workerClaimPredicate, pulledClaimPredicate, runnerClaimGate, claimedInputStatement, type ClaimCandidate, type ClaimedRunRow, type ClaimedInput, type PulledCandidate, type WriteAdmission } from './runs.js';
+import { RUN_CONTEXT_OBJECT_SQL, workerClaimPredicate, pulledClaimPredicate, runnerClaimGate, claimedInputStatement, type ClaimCandidate, type ClaimedRunRow, type ClaimedInput, type PulledCandidate, type WriteAdmission } from './runs.js';
 import { recordPricedAttempt as recordAttemptStatement } from './attempt-accounting.js';
 import { estimateForClaim } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
@@ -20,7 +21,7 @@ import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 
 /** What a claim takes: a queued row it moves to `running`, or a pulled item it creates the running row for. */
 export type ClaimForm = { kind: 'queued'; candidate: ClaimCandidate } | { kind: 'pulled'; pull: PulledCandidate };
-type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput; settingsGuard?: {sql:string;params:unknown[]} };
+type WorkerClaim = { worker: WorkerPrincipal; signInReady: boolean; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput; settingsGuard?: {sql:string;params:unknown[]} };
 type ClaimResult = {row:ClaimedRunRow;issued:Awaited<ReturnType<typeof mintInsert>>['issued']} | null;
 
 /** Move one queued row to `running` through the claim capability. */
@@ -87,6 +88,9 @@ export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: Cl
   );
   const results = await db.batch([...setup, claimStatement, recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, dispatchedBy, claim.worker, claim.now, admission.budget),
     ...(claim.input === undefined ? [] : [claimedInputStatement(db, { projectId: candidate.projectId }, candidate.id, dispatchedBy, claim.input)]),
+    db.prepare(`UPDATE agent_runs SET run_context = json_set(${RUN_CONTEXT_OBJECT_SQL}, '$.${CLAIM_SIGN_IN_KEY}',
+      json_object('attemptId', ?, 'ready', ?)) WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status = 'running'`)
+      .bind(dispatchedBy, claim.signInReady ? 1 : 0, candidate.projectId, candidate.id, dispatchedBy),
     ...(form.kind === 'pulled' ? form.pull.claimed?.(dispatchedBy) ?? [] : []),
     ...(contact === null ? [] : [contact]),
     ...(claim.worker.kind === 'runner' ? [db.prepare(`UPDATE runners SET last_assigned_at = ? WHERE id = ?

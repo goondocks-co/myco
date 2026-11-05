@@ -33,7 +33,7 @@ async function fixture(options: Parameters<typeof sqliteEnv>[0] = {}) {
   // An extraction claimed before the pause carried its stored thin input, so it is claimed through the capability itself.
   const claimThin = async () => {
     const claimed = await claimQueuedRun(f.serverEnv, (await nextClaimable(f.db, []))!, {
-      worker: principal, harness: 'claude-code', now: NOW + 1, leaseExpiresAt: NOW + 1 + WORKER_LEASE_MS, profile: PROFILE,
+      worker: principal, harness: 'claude-code', now: NOW + 1, signInReady: true, leaseExpiresAt: NOW + 1 + WORKER_LEASE_MS, profile: PROFILE,
     });
     return claimed === null ? { claimed: false as const } : { claimed: true as const, run: { attemptId: claimed.issued.tokenId } };
   };
@@ -73,7 +73,7 @@ it('fences a prepared claim before queued cleanup and permits the low-level clai
     f.sqlite.run("INSERT INTO schema_meta(key,value) VALUES('learning_paused_at','1')");
     const claim = () => claimQueuedRun(f.serverEnv, candidate, {
       worker: f.principal, harness: 'claude-code', now: NOW + 1,
-      leaseExpiresAt: NOW + WORKER_LEASE_MS, profile: PROFILE,
+      signInReady: true, leaseExpiresAt: NOW + WORKER_LEASE_MS, profile: PROFILE,
     });
     expect(await claim()).toBeNull();
     expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='race'").get()).toEqual({ status: 'queued' });

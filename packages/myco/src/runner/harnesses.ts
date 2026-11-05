@@ -126,6 +126,10 @@ export interface MycoCallNames {
 
 export interface Harness {
   id: string;
+  name: string;
+  signInHint: { default: string; darwin?: string };
+  /** Retry a first login failure before any tool call after a passing readiness check. */
+  retryFirstLoginMissing?: boolean;
   binary: string;
   /** Machine variables excluded from both login probes and launches. */
   omitInherited?: readonly string[];

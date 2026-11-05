@@ -1,3 +1,4 @@
+import { runnerAgentLoginReady } from '@goondocks/myco-shared/runner-fleet';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHeld } from './run-budget.js';
@@ -891,6 +892,12 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
 
 type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
 
+function selectedSignInReady(offers: readonly OfferedHarness[], selected: SelectedExecution): boolean {
+  const offer = offers.find(offer => offer.id === selected.harness);
+  const source = Object.keys(selected.credentialEnv).length > 0 ? { [selected.harness]: 'stored' as const } : undefined;
+  return offer !== undefined && runnerAgentLoginReady(offer, source);
+}
+
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
   return (await workerSelector(env, offers, worker))(task, settings);
@@ -1065,7 +1072,7 @@ export async function claimNextRun(
   const limits = await readDispatchLimits(env);
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
-    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+    worker: worker.principal, signInReady: selectedSignInReady(worker.harnesses, chosen), leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
     settingsGuard:{sql:policy.sql,params:policy.params},
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   });
@@ -1159,7 +1166,7 @@ async function pullAtClaim(
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
       reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params },
       ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
-      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
+      worker: worker.principal, signInReady: selectedSignInReady(worker.harnesses, chosen), leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
       settingsGuard: { sql: policy.sql, params: policy.params },
     });
     if (claimed === null) {

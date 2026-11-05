@@ -149,6 +149,8 @@ runner:
   # How a worker runs it.
   worker:
     binary: opencode
+    signInHint:
+      default: "Run opencode auth login on this runner."
     launch: { kind: subcommand, args: [acp] }
     login: { kind: file, path: ~/.local/share/opencode/auth.json, requires: [] }
     isolation: { kind: additive }

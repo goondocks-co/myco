@@ -1,3 +1,4 @@
+import { STORED_SIGN_IN_HINT, type RunnerCredentialChoice, type HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 /**
  * Which harnesses this machine has, and which of them are logged in.
  *
@@ -22,9 +23,11 @@ export interface DetectedHarness {
   authenticated: boolean;
   error?: string;
   unavailableReason?: 'login_missing';
+  signInSource?: RunnerCredentialChoice;
 }
 
 export interface OfferedHarness extends DetectedHarness {
+  signInFailure?: HarnessSignInFailure;
   profile: ProfileCapability;
 }
 
@@ -189,9 +192,9 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
 export function harnessDetection(options: { detect: (excluded: readonly string[]) => Promise<DetectedHarness[]>; clock: () => number }): {
   read: () => Promise<DetectedHarness[]>;
   invalidate: () => void;
-  loginMissing: (id: string) => void;
+  loginMissing: (id: string, source?: RunnerCredentialChoice) => void;
 } {
-  const signedOut = new Map<string, { until: number; detected: DetectedHarness }>();
+  const signedOut = new Map<string, { until: number; source: RunnerCredentialChoice; detected: DetectedHarness }>();
   let generation = 0;
   let snapshot: { at: number; detected: DetectedHarness[] } | null = null;
   let pending: { generation: number; work: Promise<DetectedHarness[]> } | null = null;
@@ -206,11 +209,12 @@ export function harnessDetection(options: { detect: (excluded: readonly string[]
             const detected = [...fresh, ...excluded.map(id => signedOut.get(id)!.detected)];
             if (revision === generation) {
               for (const harness of fresh) {
-                if (!signedOut.has(harness.id)) continue;
-                if (harness.authenticated) signedOut.delete(harness.id);
+                const held = signedOut.get(harness.id);
+                if (held === undefined) continue;
+                if (held.source === 'stored' || harness.authenticated) signedOut.delete(harness.id);
                 else {
                   harness.unavailableReason = 'login_missing';
-                  signedOut.set(harness.id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS, detected: harness });
+                  signedOut.set(harness.id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS, source: held.source, detected: harness });
                 }
               }
               snapshot = { at: options.clock(), detected };
@@ -225,10 +229,10 @@ export function harnessDetection(options: { detect: (excluded: readonly string[]
       }
     },
     invalidate() { generation += 1; snapshot = null; },
-    loginMissing(id) {
+    loginMissing(id, source = 'own') {
       const known = snapshot?.detected.find(harness => harness.id === id);
-      signedOut.set(id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS,
-        detected: { ...known, id, installed: known?.installed ?? true, authenticated: false, unavailableReason: 'login_missing' } });
+      signedOut.set(id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS, source,
+        detected: { ...known, id, installed: known?.installed ?? true, authenticated: false, unavailableReason: 'login_missing', ...(source === 'stored' ? { signInSource: source } : {}) } });
       generation += 1; snapshot = null;
     },
   };
@@ -245,7 +249,10 @@ export function offerOf(detected: readonly DetectedHarness[]): { offered: Offere
   return {
     offered: detected.flatMap((found) => {
       const harness = harnessById(found.id);
-      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, ...(found.unavailableReason === undefined ? {} : { unavailableReason: found.unavailableReason }), profile: harness.profile }] : [];
+      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, ...(found.unavailableReason === undefined ? {} : { unavailableReason: found.unavailableReason, signInFailure: {
+        name: harness.name, source: found.signInSource ?? 'own', hint: found.signInSource === 'stored'
+          ? STORED_SIGN_IN_HINT : (process.platform === 'darwin' ? harness.signInHint.darwin : undefined) ?? harness.signInHint.default,
+      } }), profile: harness.profile }] : [];
     }),
     withheld: detected.filter((found) => found.authenticated && !holdable(found)).map((found) => found.id),
   };

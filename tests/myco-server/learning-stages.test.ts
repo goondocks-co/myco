@@ -1291,3 +1291,30 @@ it('retains earlier card failure backoff after a runner sign-in failure', async 
     expect(await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='prior-backoff'").first()).toEqual(before);
   });
 });
+
+for (const task of ['turn-cards', 'extract-curate'] as const) it(`does not refund ${task} without ready sign-in evidence for the claimed attempt`, async () => {
+  await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    await capture(db, 'unready-sign-in', [GOTCHAS[0]!]);
+    await publish(db, NOW, harness.bindings.BUCKET);
+    if (task === 'extract-curate') await cardAll(db, harness.bindings.BUCKET, 'unready-sign-in', NOW);
+    const claimed = await harness.poll(NOW);
+    if (!claimed.claimed) throw new Error('no work claimed');
+    const proof = await db.prepare("SELECT json_extract(run_context,'$.claimSignIn.attemptId') AS attempt,json_extract(run_context,'$.claimSignIn.ready') AS ready FROM agent_runs WHERE id=?")
+      .bind(claimed.run.id).first();
+    expect(proof).toEqual({ attempt: claimed.run.attemptId, ready: 1 });
+    await db.prepare("UPDATE agent_runs SET run_context=json_set(run_context,'$.claimSignIn.ready',0) WHERE id=?").bind(claimed.run.id).run();
+    expect(await endLeasedRun(harness.env, { principal: harness.principal, now: NOW + 1 }, {
+      projectId: 'project', runId: claimed.run.id, attemptId: claimed.run.attemptId, status: 'failed',
+      error: 'the harness stopped: error (login_missing)',
+    })).toMatchObject({ ended: true, status: 'failed' });
+    const progress = await db.prepare("SELECT card_failures,card_retry_at,failures,eligible_at FROM learning_sessions WHERE session_id='unready-sign-in'").first<{ card_failures: number; card_retry_at: number; failures: number; eligible_at: number }>();
+    if (task === 'turn-cards') {
+      expect(progress!.card_failures).toBe(1);
+      expect(progress!.card_retry_at).toBe(NOW + 1 + HOUR);
+    } else {
+      expect(progress!.failures).toBe(1);
+      expect(progress!.eligible_at).toBeGreaterThan(NOW);
+    }
+  });
+});

@@ -27,6 +27,30 @@ export function runnerAgentLoginReady(offer: { id: string; authenticated: boolea
   return offer.unavailableReason !== 'login_missing' && offer.installed !== false && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
 }
 
+export interface HarnessSignInFailure {
+  name: string;
+  hint: string;
+  source: RunnerCredentialChoice;
+}
+
+export const STORED_SIGN_IN_HINT = 'Update this agent’s stored credential in Deployment Settings.';
+
+/** Contact diagnostics retain bounded agent labels and remedies, never harness output. */
+export function parseHarnessSignInFailure(value: unknown): HarnessSignInFailure | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const { name, hint, source } = value as Record<string, unknown>;
+  if (typeof name !== 'string' || name.length === 0 || name.length > 128
+    || typeof hint !== 'string' || hint.length === 0 || hint.length > 512
+    || (source !== 'own' && source !== 'stored')) return undefined;
+  return { name, hint, source };
+}
+
+/** The failed agent and the remedy reported by its runner. */
+export function harnessSignInFailureWords(offer: { unavailableReason?: 'login_missing'; signInFailure?: HarnessSignInFailure }): string | null {
+  return offer.unavailableReason !== 'login_missing' ? null
+    : `${offer.signInFailure?.name ?? 'An agent'} could not sign in at launch. ${offer.signInFailure?.hint ?? 'Check its sign-in settings.'}`;
+}
+
 export type RunnerDisplay = 'Busy' | 'Online' | 'Offline' | 'Never contacted' | 'Paused' | 'Removed' | 'Not ready';
 export type RunnerAvailability = 'ready' | 'settling' | 'user_active' | 'incompatible' | 'unknown';
 export interface FleetRun {
@@ -39,7 +63,7 @@ export interface RunnerFleetRecord {
   lastSeenAt: number | null; updateAvailable?: boolean; awaitingReplacement?: boolean; updateMetadataUnavailable?: boolean; connected: boolean; display: RunnerDisplay;
   busy: (FleetRun & { leaseExpiresAt: number }) | null;
   lastAttempted: FleetRun | null; lastCompleted: FleetRun | null; lastFailed: FleetRun | null;
-  offers: Array<{ id: string; installed?: boolean; authenticated: boolean; unavailableReason?: 'login_missing'; profile?: { model: string; efforts: readonly string[] } }> | null;
+  offers: Array<{ id: string; installed?: boolean; authenticated: boolean; unavailableReason?: 'login_missing'; signInFailure?: HarnessSignInFailure; profile?: { model: string; efforts: readonly string[] } }> | null;
   offersObservedAt: number | null;
   credentialChoices?: StoredRunnerCredentialChoices;
   capabilities: string[] | null; labels: string[] | null; preference: string | null;

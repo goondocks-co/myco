@@ -207,6 +207,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "signInHint": {
+          "default": "Open Antigravity on this runner and complete its sign-in."
+        },
         "binary": "agy",
         "launch": {
           "kind": "sidecar",
@@ -768,6 +771,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "signInHint": {
+          "default": "Run claude, then /login on this runner.",
+          "darwin": "Open a GUI Terminal on this Mac, run claude, then /login."
+        },
+        "retryFirstLoginMissing": true,
         "binary": "claude",
         "omitInherited": [
           "ANTHROPIC_MODEL",
@@ -1670,6 +1678,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "signInHint": {
+          "default": "Run codex login on this runner."
+        },
         "binary": "codex",
         "launch": {
           "kind": "native"
@@ -2416,6 +2427,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "signInHint": {
+          "default": "Run cursor-agent login on this runner."
+        },
         "binary": "cursor-agent",
         "launch": {
           "kind": "subcommand",
@@ -2800,6 +2814,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "signInHint": {
+          "default": "Run opencode auth login on this runner."
+        },
         "binary": "opencode",
         "launch": {
           "kind": "subcommand",

@@ -407,9 +407,12 @@ runner:
   # How a worker runs it.
   worker:
     binary: claude
+    signInHint:
+      default: "Run claude, then /login on this runner."
+      darwin: "Open a GUI Terminal on this Mac, run claude, then /login."
+    retryFirstLoginMissing: true
     launch: { kind: native }
-    # The login lives in the OS keyring on macOS and in the file elsewhere, so the file answers where it exists and the
-    # binary answers where it does not.
+    # The command reads the same credential store as a launch; it confirms presence, not token expiry.
     login: { kind: command, args: [auth, status] }
     omitInherited:
       - ANTHROPIC_MODEL

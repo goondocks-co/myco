@@ -250,3 +250,46 @@ it('probes sign-in with the launch environment exclusions declared by the harnes
     }
   });
 });
+
+it('releases stored-sign-in holds on schedule even without a local login', async () => {
+  let now = 0;
+  let probes = 0;
+  const detection = harnessDetection({ clock: () => now, detect: async excluded => {
+    if (excluded.includes('claude-code')) return [];
+    probes++;
+    return [{ id: 'claude-code', installed: true, authenticated: false }];
+  } });
+  const stored = { 'claude-code': 'stored' as const };
+  const offer = async () => offerOf(await detection.read()).offered[0]!;
+  expect(runnerAgentLoginReady(await offer(), stored)).toBe(true);
+  for (let recheck = 0; recheck < 20; recheck++) {
+    detection.loginMissing('claude-code', 'stored');
+    const held = await offer();
+    expect(runnerAgentLoginReady(held, stored)).toBe(false);
+    expect(held.signInFailure).toMatchObject({ name: 'Claude Code', source: 'stored' });
+    expect(held.signInFailure?.hint).toContain('Deployment Settings');
+    expect(held.signInFailure?.hint).not.toContain('GUI Terminal');
+    for (let poll = 0; poll < 10; poll++) {
+      detection.invalidate();
+      expect(runnerAgentLoginReady(await offer(), stored)).toBe(false);
+      expect(probes).toBe(recheck + 1);
+    }
+    now += HARNESS_LOGIN_RECHECK_MS + 1;
+    detection.invalidate();
+    const recovered = await offer();
+    expect(recovered.authenticated).toBe(false);
+    expect(recovered.unavailableReason).toBeUndefined();
+    expect(runnerAgentLoginReady(recovered, stored)).toBe(true);
+  }
+  expect(probes).toBe(21);
+});
+
+it('reports the failed agent’s display name and its own manifest sign-in hint', () => {
+  const { offered } = offerOf([
+    { id: 'claude-code', installed: true, authenticated: false, unavailableReason: 'login_missing' },
+    { id: 'codex', installed: true, authenticated: false, unavailableReason: 'login_missing' },
+  ]);
+  expect(offered[0]?.signInFailure?.name).toBe('Claude Code');
+  expect(offered[1]?.signInFailure).toEqual({ name: 'Codex', source: 'own', hint: 'Run codex login on this runner.' });
+  expect(offered[1]?.signInFailure?.hint).not.toContain('claude');
+});

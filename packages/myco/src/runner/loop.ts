@@ -9,7 +9,7 @@ import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
-import { ExecutionAccounting } from './accounting.js';
+import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 /**
@@ -484,7 +484,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  * success.
  */
 async function drive(
-  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean,
+  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
 ): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | { status: 'lost'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
@@ -517,11 +517,12 @@ async function drive(
   if (lapsed !== null) return lapsed;
 
   mkdirSync(options.runRoot, { recursive: true, mode: 0o700 });
-  const { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
+  let { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
     serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
   }, run.instructions, run.attemptId);
 
   const scratchDirs = [scratchDir];
+  let previousUsage: WorkerUsage | null = null;
 
   const stopping = new AbortController();
   const readDeadline = new AbortController();
@@ -591,10 +592,35 @@ async function drive(
       }, stopping.signal)[Symbol.asyncIterator]();
     };
     stream = start();
+    let retriedLogin = false;
     for (;;) {
       const step = await abortable(readDeadline.signal, () => Promise.race([stream!.next(), overrunReached]));
       if (step === 'overran') break;
       if (step.done === true) {
+        const last = events.at(-1);
+        if (!retriedLogin && recheckLogin !== undefined && named.retryFirstLoginMissing === true
+          && last?.kind === 'ended' && last.stop === 'error'
+          && classifyDiagnostic(run.harness, last).code === 'login_missing'
+          && !events.some((event) => event.kind === 'tool_call') && !stopping.signal.aborted) {
+          retriedLogin = true;
+          if (last.detail !== null) keepRunDiagnostic(options, run, harnessStoppedError('error', classifyDiagnostic(run.harness, last)), last.detail);
+          await runnerRequest(async () => { await stream!.return?.(); }, stopping.signal);
+          if (await recheckLogin() && !stopping.signal.aborted && clock() < lease.deadline) {
+            options.log(`run ${run.id}: login readiness rechecked; retrying the first ${run.harness} run once`);
+            await runnerRequest(() => checkout?.dispose() ?? Promise.resolve(), stopping.signal);
+            checkout = undefined;
+            ({ scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
+              serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
+            }, run.instructions, run.attemptId));
+            scratchDirs.push(scratchDir);
+            await prepare();
+            previousUsage = sumAttemptUsage(previousUsage, accounting.totals);
+            accounting.totals = null;
+            events.length = 0;
+            stream = start();
+            continue;
+          }
+        }
         break;
       }
       stepLog?.observe(step.value);
@@ -689,7 +715,7 @@ async function drive(
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
   const identity = accounting.identity;
-  const totals = accounting.totals;
+  const totals = sumAttemptUsage(previousUsage, accounting.totals);
   const usage: WorkerUsage | null = identity.status === 'unknown' ? totals : {
     ...(totals ?? { inputTokens: null, outputTokens: null, costUsd: null }),
     model: identity.primary.model, ...(identity.primary.provider === undefined ? {} : { provider: identity.primary.provider }),
@@ -920,6 +946,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
     for (const harness of detected) if (harness.error !== undefined) options.log(`${harness.id} unavailable: ${harness.error}`);
     return detected;
   }, clock });
+  const startedHarnesses = new Set<string>();
   const catalogs = modelCatalogs({
     harnesses: [],
     issueOrder: (floor) => issueReportOrder(options.reportHome ?? resolveMycoHome(), deploymentKeyFor(options.serverUrl), floor),
@@ -1061,14 +1088,20 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         let outcome: Awaited<ReturnType<typeof drive>>;
         try {
           options.onClaim?.();
-          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps);
+          const firstRun = !startedHarnesses.has(run.harness);
+          startedHarnesses.add(run.harness);
+          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps, firstRun ? async () => {
+            detection.invalidate();
+            const fresh = await detection.read();
+            return fresh.some((harness) => harness.id === run.harness && harness.installed && harness.authenticated);
+          } : undefined);
         } catch (error) {
           const coded = workerFailedError('worker_error');
           keepRunDiagnostic(options, run, coded, error instanceof Error ? error.message : String(error));
           outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
         if (outcome.status === 'failed') {
-          if (runErrorDiagnostic(outcome.error ?? '') === 'login_missing') detection.loginMissing(run.harness);
+          if (runErrorDiagnostic(outcome.error ?? '') === 'login_missing') detection.loginMissing(run.harness, Object.keys(run.credentialEnv).length > 0 ? 'stored' : 'own');
           else detection.invalidate();
         }
         // Only the current lease owner reports the attempt's outcome.

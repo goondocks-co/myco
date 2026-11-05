@@ -382,6 +382,8 @@ runner:
   # How a worker runs it.
   worker:
     binary: codex
+    signInHint:
+      default: "Run codex login on this runner."
     launch: { kind: native }
     # A file holding none of the three is a logged-out file, not a login.
     login: { kind: file, path: ~/.codex/auth.json, requires: [OPENAI_API_KEY, tokens, personal_access_token] }

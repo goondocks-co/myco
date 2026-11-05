@@ -4,7 +4,8 @@ DROP TRIGGER card_run_retry;
 
 CREATE TRIGGER card_run_retry AFTER UPDATE OF status ON agent_runs
     WHEN NEW.task = 'turn-cards' AND OLD.status IS NOT NEW.status AND NEW.status IN ('completed','failed')
-      AND NEW.error_code IS NOT 'agent_not_signed_in' BEGIN
+      AND (NEW.error_code IS NOT 'agent_not_signed_in' OR NOT CASE WHEN json_valid(NEW.run_context) THEN COALESCE(json_extract(NEW.run_context, '$.claimSignIn.ready') = 1
+  AND json_extract(NEW.run_context, '$.claimSignIn.attemptId') = NEW.dispatched_by, 0) ELSE 0 END) BEGIN
     UPDATE learning_sessions SET
       card_retry_at = CASE WHEN NEW.status = 'completed' THEN 0 ELSE COALESCE(NEW.completed_at,NEW.started_at) +
         CASE WHEN card_failures <= 1 THEN 3600000 WHEN card_failures = 2 THEN 21600000 ELSE 86400000 END END,
@@ -13,7 +14,8 @@ CREATE TRIGGER card_run_retry AFTER UPDATE OF status ON agent_runs
 
 CREATE TRIGGER agent_run_login_retry AFTER UPDATE OF status ON agent_runs
     WHEN OLD.status IS NOT NEW.status AND NEW.status = 'failed' AND NEW.error_code = 'agent_not_signed_in'
-      AND json_valid(NEW.run_context) BEGIN
+      AND json_valid(NEW.run_context) AND CASE WHEN json_valid(NEW.run_context) THEN COALESCE(json_extract(NEW.run_context, '$.claimSignIn.ready') = 1
+  AND json_extract(NEW.run_context, '$.claimSignIn.attemptId') = NEW.dispatched_by, 0) ELSE 0 END BEGIN
     UPDATE learning_sessions SET card_failures = json_extract(NEW.run_context, '$.learningRetry.cardFailures'), card_retry_at = json_extract(NEW.run_context, '$.learningRetry.cardRetryAt')
       WHERE NEW.task = 'turn-cards' AND json_extract(NEW.run_context, '$.learningRetry.attemptId') = NEW.dispatched_by AND project_id = NEW.project_id AND session_id = json_extract(NEW.run_context, '$.session_id')
         AND card_failures = json_extract(NEW.run_context, '$.learningRetry.cardFailures') + 1;

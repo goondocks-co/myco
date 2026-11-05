@@ -1,4 +1,4 @@
-import { runnerAgentLoginReady, storedRunnerCredentialChoices, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { parseHarnessSignInFailure, harnessSignInFailureWords, runnerAgentLoginReady, storedRunnerCredentialChoices, type HarnessSignInFailure, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
  * What each worker last reported about itself, and what the Deployment makes of it.
  *
@@ -33,6 +33,7 @@ export interface ReportedHarness {
   installed?: boolean;
   authenticated: boolean;
   unavailableReason?: 'login_missing';
+  signInFailure?: HarnessSignInFailure;
   profile?: ProfileCapability;
 }
 
@@ -100,7 +101,7 @@ export interface WorkerFleetRow extends WorkerContact {
 function boundedOffers(offers: readonly ReportedHarness[]): ReportedHarness[] {
   return offers.slice(0, MAX_OFFERS).map((offer) => ({
     id: offer.id.slice(0, MAX_ID), ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true,
-    ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason } : {}),
+    ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason, signInFailure: parseHarnessSignInFailure(offer.signInFailure) } : {}),
     ...(offer.profile === undefined ? {} : { profile: offer.profile }),
   }));
 }
@@ -124,7 +125,7 @@ export function parseOffers(raw: unknown): ReportedHarness[] | null {
         && (profile.model === 'flag' || profile.model === 'config' || profile.model === 'none')
         && Array.isArray(profile.efforts) && profile.efforts.every((effort) => typeof effort === 'string');
       offers.push({ id: offer.id, ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true,
-        ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason } : {}), ...(validProfile ? { profile } : {}) });
+        ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason, signInFailure: parseHarnessSignInFailure(offer.signInFailure) } : {}), ...(validProfile ? { profile } : {}) });
     }
     return offers;
   } catch {
@@ -153,7 +154,7 @@ function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarnes
 
 function sameOffers(left: readonly ReportedHarness[], right: readonly ReportedHarness[]): boolean {
   return left.length === right.length && left.every((offer, i) => offer.id === right[i]?.id
-    && offer.unavailableReason === right[i]?.unavailableReason && offer.installed === right[i]?.installed && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
+    && JSON.stringify(offer.signInFailure) === JSON.stringify(right[i]?.signInFailure) && offer.unavailableReason === right[i]?.unavailableReason && offer.installed === right[i]?.installed && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
 }
 
 /** One worker's stored observation, or null when it has never been recorded. */
@@ -381,9 +382,7 @@ function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[]
   if (offers === null) return { state: 'unknown', code: 'unknown', reason: 'Agent sign-in and execution profiles are unavailable.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
   const choices = includeSignIn ? storedRunnerCredentialChoices(String(row.credential_choices ?? '{}')) : undefined;
-  const failedAgents = offers.filter(offer => offer.unavailableReason === 'login_missing').map(offer => offer.id);
-  const signInFailure = failedAgents.length === 0 ? '' : `${failedAgents.join(', ')} could not sign in at launch. Open the agent on this runner to complete its sign-in.`
-    + (row.os === 'darwin' ? ' On macOS, open a GUI Terminal; for Claude Code run claude, then /login.' : '');
+  const signInFailure = offers.map(harnessSignInFailureWords).filter(Boolean).join(' ');
   if (!offers.some(offer => runnerAgentLoginReady(offer, choices))) return { state: 'unknown', code: 'not_signed_in',
     reason: signInFailure || 'Reported no signed-in eligible agent.', observedAt: row.updated_at == null ? null : Number(row.updated_at) };
   const readyReason = includeSignIn ? 'Reports an agent with a chosen sign-in; provider access is untested.' : 'Reports a signed-in eligible agent; provider access is untested.';
