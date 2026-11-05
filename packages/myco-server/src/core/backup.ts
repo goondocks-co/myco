@@ -4,7 +4,6 @@ import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
-import { assertThinLearningDrained, THIN_LEARNING_REMOVAL_VERSION } from '../db/thin-learning-admission.js';
 import { estimateInvalidationStatements } from './budget-estimates.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
@@ -625,13 +624,6 @@ export async function restoreArtifact(
   if (foreign) revokeForeignAuthority(byTable, restoredAt);
 
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
-  if (stamped >= THIN_LEARNING_REMOVAL_VERSION) {
-    await assertThinLearningDrained(db);
-    const restoredRuns = byTable.get('agent_runs') ?? [];
-    for (let at = 0; at < restoredRuns.length; at += RESTORE_CHUNK_ROWS) {
-      await assertThinLearningDrained(db, restoredRuns.slice(at, at + RESTORE_CHUNK_ROWS));
-    }
-  }
   if ((byTable.get('blobs') ?? []).some(row => typeof row.project_id !== 'string' || typeof row.key !== 'string')) {
     throw new BackupApplyError('blobs', 'a row carries no project and key');
   }

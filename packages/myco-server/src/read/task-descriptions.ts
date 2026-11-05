@@ -15,7 +15,7 @@ import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { CURATION_TASK, TASK_EXECUTION_PROFILES, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { CURATION_TASK, TASK_EXECUTION_PROFILES, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS } from '../core/task-catalogue.js';
 import { curationPrompt, CURATION_SEED_CLOSENESS } from '../core/spore-curation.js';
 import { TURN_CARD_PROMPT } from '../core/turn-card-prompt.js';
 import { EXTRACTION_RULES } from '../core/extraction-rules.js';
@@ -110,8 +110,6 @@ async function availabilityNotes(env: ServerEnv, set: ProjectSet): Promise<Map<s
   const projectsByCapability = new Map(required.map((capability) => [capability, new Set(enabled.filter((row) => row.capability === capability).map((row) => row.projectId))]));
   const embeddingAvailable = env.vectors !== undefined && await env.embeddingProvider?.() != null;
   const notes = await Promise.all(RETAINED_TASKS.map(async (task) => {
-    const paused = taskAvailabilityNote(task);
-    if (paused !== null) return [task, paused] as const;
     const capability = capabilityOf(task);
     if (capability === null) {
       if (task === 'embedding-reconcile') return [task, embeddingAvailable ? null : 'Search for similar knowledge is unavailable on this server.'] as const;

@@ -1,7 +1,7 @@
 import { expect, it, spyOn } from 'bun:test';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { V104_STATEMENTS } from '@myco-server-worker/db/schema-v104.js';
-import { assertThinLearningDrained, THIN_LEARNING_ADMISSION_SQL, admitThinLearningRemoval } from '@myco-server-worker/db/thin-learning-admission.js';
+import { THIN_LEARNING_ADMISSION_SQL, admitThinLearningRemoval } from '@myco-server-worker/db/thin-learning-admission.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { Database } from 'bun:sqlite';
@@ -96,32 +96,30 @@ it('admits only drained pre-pause extraction on native and D1, including equal a
       await db.prepare("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('other','held','agent','extract-curate',?,?,?)")
         .bind(status, queued, started).run();
       const before = (await db.prepare('SELECT * FROM agent_runs').all()).results;
-      await expect(assertThinLearningDrained(db)).rejects.toThrow('thin_learning_not_drained');
       await expect(db.batch(V104_STATEMENTS.map(sql => db.prepare(sql)))).rejects.toThrow('thin_learning_not_drained');
       expect((await db.prepare('SELECT * FROM agent_runs').all()).results).toEqual(before);
       expect(await db.prepare("SELECT value FROM schema_meta WHERE key='version'").first()).toEqual({ value: '103' });
       await db.prepare("UPDATE agent_runs SET status='completed' WHERE id='held'").run();
-      await assertThinLearningDrained(db);
+      await checkDrained(db);
       await db.prepare("DELETE FROM agent_runs WHERE id='held'").run();
     }
     for (const task of ['title-summary', 'canopy-map', 'extract-curate']) {
       await db.prepare("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('project',?,'agent',?,'running',?)")
         .bind(task, task, task === 'extract-curate' ? 101 : 1).run();
     }
-    await assertThinLearningDrained(db);
+    await checkDrained(db);
     await db.batch(V104_STATEMENTS.map(sql => db.prepare(sql)));
     await db.batch(V104_STATEMENTS.map(sql => db.prepare(sql)));
     for (const value of ['', 'abc', '100ms', '-1', '0', '1.5', '00100', '9007199254740992']) {
       await db.prepare("UPDATE schema_meta SET value=? WHERE key='learning_paused_at'").bind(value).run();
-      await expect(assertThinLearningDrained(db)).rejects.toThrow('thin_learning_pause_required');
       await expect(db.batch(V104_STATEMENTS.map(sql => db.prepare(sql)))).rejects.toThrow('thin_learning_pause_required');
     }
     await db.prepare("DELETE FROM schema_meta WHERE key='learning_paused_at'").run();
-    await expect(assertThinLearningDrained(db)).rejects.toThrow('thin_learning_pause_required');
+    await expect(db.batch(V104_STATEMENTS.map(sql => db.prepare(sql)))).rejects.toThrow('thin_learning_pause_required');
   }, 103);
 }, 30_000);
 
-it('rejects an entire additive artifact before any write and preserves terminal history and post-pause work', async () => {
+it('restores current extraction work without a retired pause boundary', async () => {
   const source = sqliteEnv(), target = sqliteEnv();
   try {
     source.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('restore-agent','Agent','built-in',1,1)");
@@ -130,27 +128,15 @@ it('rejects an entire additive artifact before any write and preserves terminal 
       const saved = await createBackup(source.db, source.bucket, { producer: 'admission-test', now: Date.now() });
       return (await backupArtifact(source.db, source.bucket, saved.id))!.text;
     };
-    const text = await artifact();
-    const writes: string[] = [];
-    const guarded = { prepare(sql: string) {
-      if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP)\b/i.test(sql)) writes.push(sql);
-      return target.db.prepare(sql);
-    }, batch: target.db.batch };
-    await expect(restoreArtifact(guarded, { text, allowForeignLineage: true, authorization: { kind: 'recovery' } }))
-      .rejects.toThrow('thin_learning_not_drained');
-    expect(writes).toEqual([]);
-    expect(target.sqlite.query("SELECT * FROM agents WHERE id='restore-agent'").get()).toBeNull();
-    source.sqlite.run("UPDATE agent_runs SET status='completed' WHERE id='old'");
     await restoreArtifact(target.db, { text: await artifact(), allowForeignLineage: true, authorization: { kind: 'recovery' } });
-    expect(target.sqlite.query("SELECT status FROM agent_runs WHERE id='old'").get()).toEqual({ status: 'completed' });
-    await assertThinLearningDrained(target.db, [{ task: 'extract-curate', status: 'running', queued_at: Number.MAX_SAFE_INTEGER }]);
-    await expect(assertThinLearningDrained(target.db, [{ task: 'extract-curate', status: 'queued' }])).rejects.toThrow('thin_learning_not_drained');
+    expect(target.sqlite.query("SELECT status FROM agent_runs WHERE id='old'").get()).toEqual({ status: 'running' });
+    source.sqlite.run("UPDATE agent_runs SET id='terminal',status='completed' WHERE id='old'");
+    await restoreArtifact(target.db, { text: await artifact(), allowForeignLineage: true, authorization: { kind: 'recovery' } });
+    expect(target.sqlite.query("SELECT status FROM agent_runs WHERE id='terminal'").get()).toEqual({ status: 'completed' });
   } finally { source.sqlite.close(); target.sqlite.close(); }
 });
 
-it('propagates admission store errors and refuses missing or malformed results', async () => {
-  const unavailable = new Error('admission store unavailable');
-  await expect(assertThinLearningDrained({ prepare: () => { throw unavailable; }, batch: async () => [] })).rejects.toBe(unavailable);
+it('refuses missing or malformed migration admission results', () => {
   for (const rows of [[], [{}], [{ refusal: false }], [{ refusal: 'unknown' }]]) expect(() => admitThinLearningRemoval(rows)).toThrow();
   expect(THIN_LEARNING_ADMISSION_SQL).toContain("status IN ('pending', 'running', 'queued')");
 });
@@ -246,3 +232,8 @@ it('refuses recovery authority forged for a live path, borrowed from a private c
     expect(await fingerprintFile(source)).toEqual(fingerprint);
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
+
+async function checkDrained(db: import('@myco-server-worker/core/adapters.js').RelationalStore) {
+  const { results } = await db.prepare(THIN_LEARNING_ADMISSION_SQL).all<Record<string, unknown>>();
+  admitThinLearningRemoval(results);
+}

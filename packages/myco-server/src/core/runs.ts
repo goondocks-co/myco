@@ -3,7 +3,6 @@ import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } fro
 export { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
 import { runOriginSql } from '../db/run-context.js';
 import { budgetClaimPredicate, type ClaimBudget } from './run-budget.js';
-import { pausedLearningSql, LEARNING_PAUSED } from './learning-pause.js';
 import { titleRunInFlightSql } from '../db/session-read-model.js';
 export { titleRunInFlightSql } from '../db/session-read-model.js';
 import { memberWriteBatch, type MemberWriteActor } from '../auth/member-write-store.js';
@@ -1390,7 +1389,7 @@ export function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmi
       WHERE NOT EXISTS (SELECT 1 FROM agent_runs existing WHERE existing.project_id = ? AND existing.id = ?)
         AND NOT EXISTS (SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
           WHERE flight.task = ? AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject = ?)
-        AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}) AND (${pull.reassertion.sql}))`,
+       ${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}) AND (${pull.reassertion.sql}))`,
     params: [pull.projectId, pull.id, pull.task, pull.projectId, pull.id, pull.task, pull.subject,
       ...admissionParams({ projectId: pull.projectId }, pull.task, pull.id, admission), ...money.params, ...(admission.settingsGuard?.params ?? []), ...pull.reassertion.params],
   };
@@ -1400,7 +1399,7 @@ export function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmi
 export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
   const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
   return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}))`,
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}))`,
     params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission), ...money.params, ...(admission.settingsGuard?.params ?? [])],
   };
 }
@@ -1527,19 +1526,17 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
 /** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
 export const LEASE_LAPSED = 'lease_lapsed';
 
-/** Settle an expired attempt under its exact owner, attempt identity and persisted learning policy; paused learning and subject runs end instead of requeuing. */
+/** Settle an expired attempt under its exact owner and attempt identity; subject runs end instead of requeuing. */
 export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, attemptId: string | null, now: number): Promise<boolean> {
   const named = owner === null ? 'leased_by IS NULL AND leased_runner_id IS NULL'
     : owner.kind === 'member' ? 'leased_by = ? AND leased_runner_id IS NULL' : 'leased_by IS NULL AND leased_runner_id = ? AND leased_runner_credential_id = ?';
   const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
-  const paused = pausedLearningSql('task');
-  const ends = `(${paused} OR subject IS NOT NULL)`;
+  const ends = 'subject IS NOT NULL';
   const result = await commitRunChange(db, db.prepare(
     `UPDATE agent_runs SET status = CASE WHEN ${ends} THEN 'failed' ELSE 'queued' END,
         completed_at = CASE WHEN ${ends} THEN ? ELSE completed_at END,
-        error_code = CASE WHEN ${paused} THEN '${LEARNING_PAUSED}' WHEN ${ends} THEN '${LEASE_LAPSED}' ELSE error_code END,
-        error = CASE WHEN ${paused} THEN 'Learning is paused until whole-session reading ships'
-          WHEN ${ends} THEN 'The lease lapsed; the work stays due and is pulled again' ELSE error END,
+        error_code = CASE WHEN ${ends} THEN '${LEASE_LAPSED}' ELSE error_code END,
+        error = CASE WHEN ${ends} THEN 'The lease lapsed; the work stays due and is pulled again' ELSE error END,
         dispatched_by = CASE WHEN ${ends} THEN dispatched_by ELSE NULL END,
         started_at = CASE WHEN ${ends} THEN started_at ELSE NULL END,
         held_by = CASE WHEN ${ends} THEN NULL ELSE 'worker' END,

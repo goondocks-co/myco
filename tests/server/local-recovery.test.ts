@@ -157,6 +157,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
       source.sqlite.query('VACUUM INTO ?').run(file);
       if (legacy) asSchema41(file);
       if(learningSource==='pre-pause') asHistoricalSchema(file,101);
+      if(learningSource==='paused') asHistoricalSchema(file,103);
       if(budgetSource==='pre-budget') asHistoricalSchema(file,102);
       return { configuration, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
@@ -196,7 +197,7 @@ it('recovers paused learning preferences and migrates a snapshot lacking the pau
       const restored=new Database(f.paths.databasePath,{readonly:true});
       try {
         expect(restored.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get())
-          .toEqual({value:expect.any(String)});
+          .toBeNull();
         const live=restored.query("SELECT value FROM deployment_settings WHERE leaf='agent.tasks'").get() as {value:string};
         expect(JSON.parse(live.value)).toEqual({'extract-curate':{enabled:false,memberRunsPerDay:7}});
         const retired=restored.query("SELECT value,updated_at,updated_by FROM retired_deployment_settings WHERE leaf='agent.tasks.extract-curate.schedule'").get();
@@ -415,14 +416,14 @@ it('replacement requires source retirement; fork permits an independent live sou
   expect(() => assertRecoveryTenantChoice('fork')).not.toThrow();
 });
 
-it('refuses current-schema staged thin work before publishing either recovery tenant mode', async () => {
+it('recovers current learning work without a pause marker', async () => {
   const f = await fixture('local', {thinRun:true});
   try {
-    const before = fs.readFileSync(path.join(f.artifact,'myco.sqlite'));
-    for (const mode of ['replacement','fork'] as const) {
-      await expect(f.restore(undefined,mode)).rejects.toThrow('thin_learning_not_drained');
-      expect(fs.existsSync(f.paths.root)).toBe(false);
-      expect(fs.readFileSync(path.join(f.artifact,'myco.sqlite'))).toEqual(before);
-    }
+    await f.restore();
+    const restored = new Database(f.paths.databasePath, {readonly:true});
+    try {
+      expect(restored.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toBeNull();
+      expect(restored.query("SELECT id FROM agent_runs WHERE id='thin-held'").get()).toEqual({id:'thin-held'});
+    } finally { restored.close(); }
   } finally { f.cleanup(); }
 });

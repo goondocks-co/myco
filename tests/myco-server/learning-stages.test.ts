@@ -143,7 +143,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     expect(text(uuid(4))).toContain("archive them with myco server archive --keep");
     expect(await buildCardInput({ db }, 'project', 'session', due)).toBeNull();
 
-    expect(await learningHolds(db, 'project', 'session')).toBe(true);
+    expect(await learningHolds(db, 'project', 'session')).toBe(false);
     const assignment = (await buildLearningAssignment(db, 'project', 'session'))!;
     expect(assignment.turns.map(t => t.turnKey)).toEqual([uuid(1), uuid(2), uuid(3), uuid(4)]);
     const manifest = await assignedCards(db, 'project', 'session', assignment);
@@ -167,7 +167,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     // A record published later into a carded turn makes only that turn due again, and reaches its card input.
     await capture(db, 'session', [{ id: uuid(1), text: 'Run the server tests', at: 10, tools: [{ name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_LATE_GOTCHA: capture lease refused' }] }]);
     await publish(db, due + HOUR, blobs);
-    expect(await learningHolds(db, 'project', 'session')).toBe(true);
+    expect(await learningHolds(db, 'project', 'session')).toBe(false);
     const again = (await buildCardInput({ db }, 'project', 'session', due + HOUR))!;
     expect((again.context as { assignment: { turns: { turnKey: string }[] } }).assignment.turns.map(t => t.turnKey)).toEqual([uuid(1)]);
     expect(trimTurn((await documentTurnInput({ db, blobs }, 'project', 'session', uuid(1)))!).text).toContain('EXACT_LATE_GOTCHA: capture lease refused');
@@ -192,7 +192,7 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
     await cardAll(db, blobs, 'newer', NOW + 2 * HOUR);
     expect(await learningHead(db, 'project', NOW + 3 * HOUR, false)).toBe('newer');
     const status = await readLearningStatus(db, NOW + 3 * HOUR);
-    expect(status).toMatchObject({ resumed: true, dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
+    expect(status).toMatchObject({ dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
     expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
       .toBe('Learning: 2 sessions due (2 cards to learn); 0 turns waiting for their card; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 today.');
   });
@@ -1205,7 +1205,7 @@ it('refuses card writes retryably if the document leaves live after reading, inc
 });
 
 it('retains learning claim deadlines when hash mismatches cover zero, rather than reclaiming every poll', async () => {
-  for (const timing of ['before-material', 'before-complete', 'at-batch']) await withDocumentStores(async db => {
+  for (const timing of ['before-material', 'before-complete', 'at-batch', 'no-due']) await withDocumentStores(async db => {
     const harness = await cardWorker(db);
     const turn = uuid(1110);
     await capture(db, 'empty-learning', [{ id: turn, text: 'Keep the backoff when this card no longer matches', at: NOW }], 'project', NOW);
@@ -1222,7 +1222,8 @@ it('retains learning claim deadlines when hash mismatches cover zero, rather tha
       const mismatch = async () => { await db.prepare("UPDATE turn_cards SET input_hash=NULL WHERE session_id='empty-learning'").run(); };
       if (timing === 'before-material') await mismatch();
       await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
-      if (timing === 'before-complete') await mismatch();
+      if (timing === 'before-complete' || timing === 'no-due') await mismatch();
+      if (timing === 'no-due') await db.prepare("UPDATE learning_sessions SET due_cards=0 WHERE session_id='empty-learning'").run();
       if (timing === 'at-batch') harness.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), mismatch, true);
       expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'discard empty handoff' }))
         .toEqual({ completed: true, covered: 0 });
@@ -1236,6 +1237,7 @@ it('retains learning claim deadlines when hash mismatches cover zero, rather tha
       for (const now of [at + 2, at + 2000, held!.eligible_at - 1]) expect(await harness.poll(now)).toMatchObject({ claimed: false });
       const hash = await db.prepare("SELECT input_hash AS hash FROM session_prompts WHERE session_id='empty-learning' AND prompt_id=?").bind(turn).first<{ hash: string }>();
       await db.prepare("UPDATE turn_cards SET input_hash=? WHERE session_id='empty-learning'").bind(hash!.hash).run();
+      await db.prepare("UPDATE learning_sessions SET due_cards=1 WHERE session_id='empty-learning'").run();
       at = held!.eligible_at;
     }
   });

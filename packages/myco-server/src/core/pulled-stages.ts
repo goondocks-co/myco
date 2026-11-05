@@ -12,7 +12,6 @@ import { limitPassesSql, type ClaimedInput } from './runs.js';
 import { readSpendRows, spendRowsSql } from './run-budget.js';
 import { BUDGET_WINDOW_MS, seedForStage } from './budget-policy.js';
 import { ESTIMATE_AGENT } from './budget-estimates.js';
-import { pausedLearningSql } from './learning-pause.js';
 import { queueHeadSeek } from './queue-heads.js';
 import { capabilityOnSql, effectiveBudgetSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -124,7 +123,7 @@ export function queuedAdmissibleSql(queues: readonly ServedQueue[], limits: Disp
     const fits = origin === 'manual' ? '' : ` AND ${spent} + COALESCE((SELECT json_extract(s.value, '$.estimate') FROM agent_state s
           WHERE s.project_id = q.project_id AND s.agent_id = ${literal(ESTIMATE_AGENT)} AND s.key = ${literal(estimateKey)}), ${seedForStage(task)}) <= ${effectiveBudgetSql()}`;
     return `EXISTS (SELECT 1 FROM (${queueHeadSeek('project_id, task', literal(task), literal(origin))}) q
-      WHERE ${limitPassesSql(task, limits, now)} AND ${acceptsSql('q.project_id', task)} AND NOT ${pausedLearningSql('q.task')}${fits})`;
+      WHERE ${limitPassesSql(task, limits, now)} AND ${acceptsSql('q.project_id', task)}${fits})`;
   }));
   return heads.length === 0 ? '0' : `(${heads.join(' OR ')})`;
 }
