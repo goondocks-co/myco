@@ -8,7 +8,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { cleanTaskDocument, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { curationDailyLimit, CURATION_DAILY_LIMIT_LEAF, cleanTaskDocument, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
@@ -229,7 +229,10 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
   const body = await readJsonObject(ctx.request);
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
-  const result = await writerFor(env).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
+  const writer = writerFor(env);
+  const result = typeof body.project_id === 'string'
+    ? await writer.setProjectLeaf(body.project_id, ctx.params.leaf, body.value, ctx.member.id, ctx.now)
+    : await writer.setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
@@ -324,7 +327,7 @@ export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContex
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const writer = settingsWriter(env.db);
-  return ok({ capabilities: await writer.capabilities(ctx.params.projectId), retiredCapabilities: await writer.retiredCapabilities(ctx.params.projectId) });
+  return ok({ capabilities: await writer.capabilities(ctx.params.projectId), retiredCapabilities: await writer.retiredCapabilities(ctx.params.projectId), settings: { [CURATION_DAILY_LIMIT_LEAF]: await curationDailyLimit(env.db, ctx.params.projectId) } });
 }
 
 /** Admit or withdraw one capability for one Project. */

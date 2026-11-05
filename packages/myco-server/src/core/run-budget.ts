@@ -30,19 +30,19 @@ export async function readSpendRows(db: RelationalStore, now: number): Promise<S
   return (await db.prepare(`SELECT * FROM (${spendRowsSql('?')})`).bind(now-BUDGET_WINDOW_MS).all<SpendRow>()).results;
 }
 
-export interface ClaimBudget { active: boolean; estimate: number; profileJson: string; stateKey?: string; observedEstimate?: string | null }
+export interface ClaimBudget { active: boolean; estimate: number; profileJson: string; reserveUsd?: number; stateKey?: string; observedEstimate?: string | null }
 export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: string; params: unknown[] } {
   if (!budget.active) return { sql: `(origin='manual')`, params: [] };
   return {
     sql: `(origin='manual' OR (EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${budget.stateKey===undefined?'1':`(SELECT value FROM agent_state WHERE project_id=agent_runs.project_id AND agent_id='myco-agent' AND key=?) IS ?`} AND (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql('?')})) + ? <= ${effectiveBudgetSql()}))`,
-    params: [...(budget.stateKey===undefined?[]:[budget.stateKey,budget.observedEstimate ?? null]),now-BUDGET_WINDOW_MS,budget.estimate],
+    params: [...(budget.stateKey===undefined?[]:[budget.stateKey,budget.observedEstimate ?? null]),now-BUDGET_WINDOW_MS,budget.estimate + (budget.reserveUsd ?? 0)],
   };
 }
 
 /** Automatic work requires an active governor and sufficient headroom. */
-export async function automaticFits(db: RelationalStore, estimate: number, now: number): Promise<boolean> {
+export async function automaticFits(db: RelationalStore, estimate: number, now: number, reserveUsd = 0): Promise<boolean> {
   if (!(await budgetActivation(db)).active) return false;
-  const predicate = budgetClaimPredicate({ active: true, estimate, profileJson: '' }, now);
+  const predicate = budgetClaimPredicate({ active: true, estimate, reserveUsd, profileJson: '' }, now);
   return (await db.prepare(`SELECT 1 AS fits FROM (SELECT 'automatic' AS origin) WHERE ${predicate.sql}`).bind(...predicate.params).first()) !== null;
 }
 

@@ -12,6 +12,7 @@ export async function budgetQueueOpenedAt(db: RelationalStore): Promise<string |
 }
 
 export const BUDGET_REFUSAL = 'budget_activation_refusal';
+const BUDGET_INDEX_ROWS = 'budget_index_rows';
 const BUDGET_STARTED = 'budget_activation_started_at';
 export const BUDGET_INDEX_ROW_LIMIT = 100_000;
 export const BUDGET_INDEXES = [
@@ -28,6 +29,14 @@ const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 const normalize = (sql: string): string => sql.toLowerCase().replace(/\bif not exists\b|[\s"`\[\]]/g, '');
 const indexSql = (index: typeof BUDGET_INDEXES[number]): string => `CREATE INDEX IF NOT EXISTS ${index.name} ON ${index.table}(${index.columns})${index.suffix}`;
 class BudgetInvariantError extends Error {}
+
+/** The exact catalogue row ids verified by activation, scoped to this database. */
+function indexWitness(rows: Record<string, unknown>[]): string {
+  const ids = BUDGET_INDEXES.map(index => rows.find(row => row.name === index.name)?.id);
+  if (!ids.every(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)) throw new Error('Budget index catalogue identities are unavailable');
+  return `INSERT INTO schema_meta(key,value) VALUES('${BUDGET_INDEX_ROWS}',${literal(JSON.stringify(ids))})
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE schema_meta.value IS NOT excluded.value`;
+}
 const activationStartedSql=(now:number):string=>`INSERT OR IGNORE INTO schema_meta(key,value)
   SELECT '${BUDGET_STARTED}',COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_ENABLED}'),${literal(String(now))})`;
 
@@ -37,11 +46,11 @@ export function* budgetMigration(now: number): Generator<BudgetMigrationStatemen
   try {
   const stamps = yield { sql: `SELECT key,value FROM schema_meta WHERE key IN ('${BUDGET_ENABLED}','${BUDGET_REFUSAL}')`, read: true };
   enabled = stamps.some(row => row.key === BUDGET_ENABLED);
-  const indexes = yield { sql: `SELECT name,sql FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`, read: true };
+  const indexes = yield { sql: `SELECT name,sql,rowid AS id FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`, read: true };
   const missing = BUDGET_INDEXES.filter(index => !indexes.some(row => row.name === index.name));
   const wrong = BUDGET_INDEXES.find(index => indexes.some(row => row.name === index.name && normalize(String(row.sql)) !== normalize(indexSql(index))));
   if (enabled && (missing.length > 0 || wrong !== undefined)) throw new BudgetInvariantError('Active budget indexes do not match the admitted schema');
-  if (enabled) return { active: true, reason: null };
+  if (enabled) { yield {sql:indexWitness(indexes),read:false}; return { active: true, reason: null }; }
   yield {sql:activationStartedSql(now),read:false};
   let refusal = wrong === undefined ? null : `Budget index ${wrong.name} has an unexpected definition`;
   if (refusal === null && missing.length > 0) {
@@ -58,8 +67,9 @@ export function* budgetMigration(now: number): Generator<BudgetMigrationStatemen
     return { active: false, reason: refusal };
   }
   for (const index of missing) yield { sql: indexSql(index), read: false };
-  const verified = yield { sql: `SELECT name,sql FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`, read: true };
+  const verified = yield { sql: `SELECT name,sql,rowid AS id FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`, read: true };
   if (!BUDGET_INDEXES.every(index => verified.some(row => row.name === index.name && normalize(String(row.sql)) === normalize(indexSql(index))))) throw new Error('Budget index verification failed');
+  yield {sql:indexWitness(verified),read:false};
   const origins = yield { sql: `SELECT 1 AS missing FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${IN_FLIGHT_RUN_STATUSES} AND origin IS NULL LIMIT 1`, read: true };
   if (origins.length > 0) throw new Error('Budget activation requires classified live run origins');
   yield { sql: `DELETE FROM schema_meta WHERE key='${BUDGET_REFUSAL}'`, read: false };
@@ -94,12 +104,17 @@ export async function completeBudgetMigration(db: RelationalStore, now: number):
 
 /** The inactive reason is operator-visible; active state requires every prepared index. */
 export async function budgetActivation(db: RelationalStore): Promise<BudgetActivation> {
-  const row = await db.prepare(`SELECT
-    EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AS enabled,
+  const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AS enabled,
     (SELECT value FROM schema_meta WHERE key='${BUDGET_REFUSAL}') AS reason,
-    (SELECT json_group_array(json_object('name',name,'sql',sql)) FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})) AS indexes`).first<{ enabled: number; reason: string | null; indexes: string }>();
+    (SELECT json_group_array(json_object('name',name,'sql',sql)) FROM sqlite_master WHERE rowid IN
+      (SELECT value FROM json_each(COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_INDEX_ROWS}'),'[]')))) AS indexes`)
+    .first<{ enabled: number; reason: string | null; indexes: string }>();
   if (row === null) throw new Error('Budget activation state is unavailable');
-  const indexes=JSON.parse(row.indexes) as {name:string;sql:string}[];
-  if (row.enabled && !BUDGET_INDEXES.every(index=>indexes.some(found=>found.name===index.name && normalize(found.sql)===normalize(indexSql(index))))) throw new Error('Active budget indexes are missing or inconsistent');
-  return { active: row.enabled === 1, reason: row.enabled ? null : row.reason ?? 'Budget index preparation has not completed' };
+  if (!row.enabled) return { active: false, reason: row.reason ?? 'Budget index preparation has not completed' };
+  let indexes = JSON.parse(row.indexes) as {name:string;sql:string}[];
+  const valid = () => BUDGET_INDEXES.every(index => indexes.some(found => found.name===index.name && normalize(found.sql)===normalize(indexSql(index))));
+  if (!valid()) indexes = (await db.prepare(`SELECT name,sql FROM sqlite_master WHERE type='index'
+    AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`).all<{name:string;sql:string}>()).results;
+  if (!valid()) throw new Error('Active budget indexes are missing or inconsistent');
+  return { active: true, reason: null };
 }

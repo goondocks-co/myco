@@ -223,6 +223,8 @@ export function startedByChip(startedBy: string | null, name: (id: string) => st
 /** A capability as the reader knows it. */
 export const CAPABILITY_NAMES: Readonly<Record<string, string>> = {
   vault_evolution: 'Learning',
+  spore_curation: 'Spore curation',
+  spore_curation_backfill: 'Older spore curation',
   canopy: 'The code map',
   cortex: 'Context for sessions',
 };

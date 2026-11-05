@@ -15,7 +15,7 @@
  */
 
 /**
- * Hubness-aware relevance selection for prompt injection.
+ * Hubness-aware relative distance and relevance selection.
  *
  * Raw cosine similarity is a poor injection gate: an absolute threshold is
  * model-dependent, and long "hub" spores sit near the corpus centroid and look
@@ -144,8 +144,19 @@ export function distributionStats(values: number[]): DistributionStats {
  * mean (unusually close), low when above it.
  */
 function proximityFactor(distance: number, stats: DistributionStats): number {
-  const std = Math.max(stats.std, STD_EPSILON);
-  return 1 - standardNormalCdf((distance - stats.mean) / std);
+  return 1 - standardNormalCdf(-proximityCloseness(distance, stats));
+}
+
+/** Standard deviations closer than the distribution's usual distance. */
+function proximityCloseness(distance: number, stats: DistributionStats): number {
+  return (stats.mean-distance) / Math.max(stats.std,STD_EPSILON);
+}
+
+/** Both sides must be calibrated; the less unusual side limits mutual closeness. */
+export function mutualCloseness(distance: number, a: DistributionStats | null, b: DistributionStats | null): number | null {
+  if (!Number.isFinite(distance) || a === null || b === null
+    || ![a,b].every(stats=>Number.isFinite(stats.mean) && Number.isFinite(stats.std) && stats.std>=0)) return null;
+  return Math.min(proximityCloseness(distance,a),proximityCloseness(distance,b));
 }
 
 /**
@@ -193,7 +204,7 @@ export function selectRelevantSpores(
       const mp = mutualProximity(1 - c.similarity, queryStats, corpusStats);
       const corpusProbable = proximityFactor(1 - c.similarity, corpusStats) >= corpusFloor;
       // Query-relative excess retains distance information when probability factors saturate.
-      const excess = Math.max(0, (queryStats.mean - (1 - c.similarity)) / Math.max(queryStats.std, STD_EPSILON));
+      const excess = Math.max(0, proximityCloseness(1-c.similarity,queryStats));
       return { id: c.id, mp, corpusProbable, similarity: c.similarity, separation: mp * excess };
     })
     .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);

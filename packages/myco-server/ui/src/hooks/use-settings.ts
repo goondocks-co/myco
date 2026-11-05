@@ -149,6 +149,11 @@ export function useSettingsActions() {
       mutationFn: (v: { name: string }) => deleteJson<{ deleted: boolean }>(`/api/secrets/${encodeURIComponent(v.name)}`),
       onSuccess: () => refresh('secrets'),
     }),
+    setProjectSetting: useMutation({
+      mutationFn: (v: { projectId: string; leaf: string; value: number }) =>
+        putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { project_id: v.projectId, value: v.value }),
+      onSuccess: () => refresh('capabilities', 'tasks'),
+    }),
     setCapability: useMutation({
       mutationFn: (v: { projectId: string; capability: string; enabled: boolean }) =>
         putJson<{ applied: true }>(`/api/projects/${encodeURIComponent(v.projectId)}/capabilities/${encodeURIComponent(v.capability)}`, { enabled: v.enabled }),

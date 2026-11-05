@@ -1,8 +1,9 @@
+import { CURATION_DAILY_LIMIT_SETTING as CURATION_LIMIT } from '@goondocks/myco-shared/settings-contract';
 import { useState } from 'react';
 import { allTasksReadRepository, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { useProjects } from '../../../hooks/use-projects';
 import { useTaskDescriptions } from '../../../hooks/use-tasks';
-import { ActionLink, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
+import { ActionLink, Button, Input, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
 import { settingsRefusalText, useCapabilities, useRepository, useSettingsActions } from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS, projectRepositoryPath } from '../../../routes/nav';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
@@ -13,6 +14,8 @@ import type { TaskDescription } from '../../tasks/wire';
 const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
   cortex: { label: 'Context for sessions', note: 'Sessions here are handed the instructions at start, and spores and plans on their prompts.' },
   canopy: { label: 'Code map', note: 'Myco keeps a map of where things live in this project’s code, from its repository.' },
+  spore_curation: { label: 'Curate overlapping spores', note: 'Review close spore clusters within this Project’s daily limit, starting with new or changed spores. Off until you enable it.' },
+  spore_curation_backfill: { label: 'Include older spores in curation', note: 'Enable after reviewing a small live batch. Older memory uses the same Project daily limit.' },
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 
@@ -81,6 +84,17 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   );
 }
 
+function CurationLimit({ projectId, value }: { projectId: string; value: number }) {
+  const actions = useSettingsActions();
+  const [draft, setDraft] = useState(String(value));
+  const [error, setError] = useState<string | null>(null);
+  return <SettingRow setting={CURATION_LIMIT.leaf} label="Curation clusters per day" htmlFor="curation-daily-limit"
+    note={`Starts at ${CURATION_LIMIT.rule.default}. Raise this Project’s limit after judging a live batch.`} status={error ?? undefined} refused={error !== null}
+    control={<div className="flex items-center gap-2"><Input id="curation-daily-limit" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={draft} onChange={event => setDraft(event.target.value)} />
+      <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(draft)) || Number(draft)<CURATION_LIMIT.rule.min || Number(draft)>CURATION_LIMIT.rule.max || Number(draft)===value}
+        onClick={() => { setError(null); actions.setProjectSetting.mutate({ projectId, leaf: CURATION_LIMIT.leaf, value: Number(draft) }, { onError: err => setError(settingsRefusalText(err)) }); }}>Save limit</Button></div>} />;
+}
+
 /** What Myco does in a project: a switch per capability. */
 export function Capabilities({ projectId }: { projectId: string }) {
   const caps = useCapabilities(projectId);
@@ -105,6 +119,7 @@ export function Capabilities({ projectId }: { projectId: string }) {
                   taskState={tasks.isSuccess ? 'ready' : tasks.isError ? 'error' : 'loading'}
                 />
               ))}
+              <CurationLimit key={`${projectId}:${caps.data.settings[CURATION_LIMIT.leaf]}`} projectId={projectId} value={caps.data.settings[CURATION_LIMIT.leaf]!} />
             </RowCard>
 
             {Object.keys(caps.data.retiredCapabilities ?? {}).length > 0 && (

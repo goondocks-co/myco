@@ -187,16 +187,16 @@ describe('task document repair', () => {
 });
 
 describe('project capability admission', () => {
-  it('reads every capability ON for a Project with no rows', async () => {
+  it('reads capability defaults for a Project with no rows', async () => {
     const r = rig();
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
-    for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(true);
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
+    for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(!c.startsWith('spore_curation'));
   });
 
   it('switches off one capability without changing the others', async () => {
     const r = rig();
     expect(await r.w.setCapability('proj_1', 'cortex', false, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: true, vault_evolution: true });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
   });
 
   it('withdraws an admitted capability', async () => {
@@ -234,7 +234,7 @@ describe('a Project created by ingest', () => {
     expect(e.sqlite.query(`SELECT 1 FROM projects WHERE project_id='proj_brand_new'`).get()).not.toBeNull();
 
     const w = settingsWriter(e.db);
-    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
+    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
     // And nothing wrote a row on its behalf.
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM project_capabilities`).get() as any).c).toBe(0);
   });
@@ -320,7 +320,7 @@ describe('obsolete capability contracts', () => {
     const r = rig();
     r.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'skills', 1, 1, 'historic')`);
     expect(await r.w.setCapability('proj_1', 'skills', false, 'mem_1', 2)).toEqual({ applied: false, refusal: { reason: 'unknown_capability', capability: 'skills' } });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
     expect(await r.w.retiredCapabilities('proj_1')).toEqual({ skills: true });
     expect(r.sqlite.query(`SELECT enabled, updated_by FROM project_capabilities WHERE capability='skills'`).get()).toEqual({ enabled: 1, updated_by: 'historic' });
   });

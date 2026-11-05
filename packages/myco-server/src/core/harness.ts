@@ -1,7 +1,7 @@
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHeld } from './run-budget.js';
-import { BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
 import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
 import { queueHeads, unclaimedQueued } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
@@ -66,7 +66,7 @@ export {
   capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS, workerPreference,
   type FleetReport, type OfferedHarness,
 };
-import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK, taskAvailabilityNote } from './task-catalogue.js';
+import { PULLED_ONLY_TASKS, admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK, taskAvailabilityNote } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The agent identity a dispatched runtime claims under when its task names none. */
@@ -1130,10 +1130,13 @@ async function pullAtClaim(
       const { selected } = await select(task, settings);
       if (selected !== null) executions.set(task, selected);
     }
-    const compatible = stages.filter((stage) => executions.has(stage.task));
+    const compatible = stages.filter((stage) => executions.has(stage.task)).map(stage => {
+      const chosen = executions.get(stage.task)!;
+      return stage.withEstimate?.(estimateKey(stage.task, chosen.harness, chosen.profile)) ?? stage;
+    });
     if (compatible.length === 0) return null;
     const queues: ServedQueue[] = [];
-    for (const task of BUDGET_WORKER_TASKS.filter((task) => !excluded.includes(task))) {
+    for (const task of BUDGET_WORKER_TASKS.filter((task) => !excluded.includes(task) && !PULLED_ONLY_TASKS.includes(task))) {
       const { selected } = executions.has(task) ? { selected: executions.get(task)! } : await select(task, settings);
       if (selected !== null) queues.push({ task, estimateKey: estimateKey(task, selected.harness, selected.profile) });
     }
@@ -1149,7 +1152,7 @@ async function pullAtClaim(
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
     const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, profile);
-    if (!(await automaticFits(env.db, price.estimate, worker.now))) return null;
+    if (!(await automaticFits(env.db, price.estimate, worker.now, reserveForStage(stage.task)))) return null;
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
     const runId = `run_${crypto.randomUUID()}`;

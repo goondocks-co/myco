@@ -11,6 +11,7 @@
 /** `GET /api/projects/{p}/capabilities`: every capability, on or off. */
 export interface CapabilitiesAnswer {
   capabilities: Record<string, boolean>;
+  settings: Record<string, number>;
   retiredCapabilities?: Record<string, boolean>;
 }
 
