@@ -29,8 +29,8 @@ export interface PulledStage {
   readonly level: number;
   readonly task: string;
   withEstimate?(key: string): PulledStage;
-  /** Whether the stage's work is switched on; a claim reads each distinct switch once, before any probe. */
-  switchedOn(db: RelationalStore): Promise<boolean>;
+  /** A SQL boolean for the stage's switch; a claim reads all distinct switches together before any probe. */
+  readonly switchedOn: string;
   /** Whether an item of this stage is due in the Project the SQL expression `project` names. */
   due(project: string, now: number): SqlTerm;
   /** The Project's head at this stage. */
@@ -43,7 +43,7 @@ export interface PulledStage {
   claimed?(db: RelationalStore, item: PulledItem, input: ClaimedInput, run: { runId: string; dispatchedBy: string }, now: number): PreparedStatement[];
 }
 
-/** The production registry: the two learning stages, turn cards and session learning, each fresh and history. */
+/** The production stages in strict claim priority. */
 export const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
 
 let installed: readonly PulledStage[] = PULLED_STAGES;
@@ -58,11 +58,13 @@ export function installPulledStages(stages: readonly PulledStage[]): () => void 
   return () => { installed = previous; };
 }
 
-/** The stages whose switches are on, each distinct switch read once. */
+/** The stages whose switches are on, in one read regardless of the number of registered stages. */
 export async function switchedOnStages(db: RelationalStore, stages: readonly PulledStage[]): Promise<PulledStage[]> {
-  const on = new Map<PulledStage['switchedOn'], boolean>();
-  for (const stage of stages) if (!on.has(stage.switchedOn)) on.set(stage.switchedOn, await stage.switchedOn(db));
-  return stages.filter((stage) => on.get(stage.switchedOn) === true);
+  if (stages.length === 0) return [];
+  const switches = [...new Set(stages.map(stage => stage.switchedOn))];
+  const on = await db.prepare(`SELECT ${switches.map((sql, i) => `(${sql}) AS enabled${i}`).join(',')}`).first<Record<string, number>>();
+  if (on === null) throw new Error('Pulled stage switches are unavailable');
+  return stages.filter(stage => on[`enabled${switches.indexOf(stage.switchedOn)}`] === 1);
 }
 
 /** Reselections a claim makes after a pulled write refuses, before it answers no work. */

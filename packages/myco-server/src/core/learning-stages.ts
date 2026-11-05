@@ -89,16 +89,6 @@ export async function buildCardInput(env: Pick<ServerEnv, 'db'>, projectId: stri
   };
 }
 
-/** Whether learning is switched on, the switch both learning stages share. */
-async function learningSwitchedOn(db: RelationalStore): Promise<boolean> {
-  return (await db.prepare(`SELECT ${learningEnabledSql()} AS enabled`).first<{ enabled: number }>())?.enabled === 1;
-}
-
-/** History stages are skipped before their due probes unless the Deployment opted in. */
-async function historyLearningSwitchedOn(db: RelationalStore): Promise<boolean> {
-  return (await db.prepare(`SELECT ${learningEnabledSql(true)} AS enabled`).first<{ enabled: number }>())?.enabled === 1;
-}
-
 /**
  * A learning stage. Its due test, head and reassertion are literals apart from the item's identity, so registering it
  * adds no parameters to the pulled write's level and fairness probes.
@@ -106,7 +96,7 @@ async function historyLearningSwitchedOn(db: RelationalStore): Promise<boolean> 
 function learningStage(level: number, fresh: boolean): PulledStage {
   const eligible = (now: number) => `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)} AND ${learningRangeSql('learning', fresh, now)} AND ${learningEnabledSql(!fresh)}`;
   return {
-    level, task: EXTRACTION_TASK, switchedOn: fresh ? learningSwitchedOn : historyLearningSwitchedOn,
+    level, task: EXTRACTION_TASK, switchedOn: learningEnabledSql(!fresh),
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'learning', fresh)} WHERE l.project_id = ${project}
         AND ${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')})`,
@@ -132,7 +122,7 @@ function cardStage(level: number, fresh: boolean): PulledStage {
     AND EXISTS (SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
       WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending' AND c.due_at <= ${Math.floor(now)})`;
   return {
-    level, task: CARD_TASK, switchedOn: fresh ? learningSwitchedOn : historyLearningSwitchedOn,
+    level, task: CARD_TASK, switchedOn: learningEnabledSql(!fresh),
     due: (project, now) => ({
       sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'cards', fresh)} WHERE l.project_id = ${project}
         AND ${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')})`,

@@ -34,7 +34,8 @@ class BudgetInvariantError extends Error {}
 function indexWitness(rows: Record<string, unknown>[]): string {
   const ids = BUDGET_INDEXES.map(index => rows.find(row => row.name === index.name)?.id);
   if (!ids.every(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)) throw new Error('Budget index catalogue identities are unavailable');
-  return `INSERT OR REPLACE INTO schema_meta(key,value) VALUES('${BUDGET_INDEX_ROWS}',${literal(JSON.stringify(ids))})`;
+  return `INSERT INTO schema_meta(key,value) VALUES('${BUDGET_INDEX_ROWS}',${literal(JSON.stringify(ids))})
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE schema_meta.value IS NOT excluded.value`;
 }
 const activationStartedSql=(now:number):string=>`INSERT OR IGNORE INTO schema_meta(key,value)
   SELECT '${BUDGET_STARTED}',COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_ENABLED}'),${literal(String(now))})`;
@@ -105,15 +106,15 @@ export async function completeBudgetMigration(db: RelationalStore, now: number):
 export async function budgetActivation(db: RelationalStore): Promise<BudgetActivation> {
   const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AS enabled,
     (SELECT value FROM schema_meta WHERE key='${BUDGET_REFUSAL}') AS reason,
-    (SELECT value FROM schema_meta WHERE key='${BUDGET_INDEX_ROWS}') AS witness`).first<{ enabled: number; reason: string | null; witness: string | null }>();
+    (SELECT json_group_array(json_object('name',name,'sql',sql)) FROM sqlite_master WHERE rowid IN
+      (SELECT value FROM json_each(COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_INDEX_ROWS}'),'[]')))) AS indexes`)
+    .first<{ enabled: number; reason: string | null; indexes: string }>();
   if (row === null) throw new Error('Budget activation state is unavailable');
   if (!row.enabled) return { active: false, reason: row.reason ?? 'Budget index preparation has not completed' };
-  const ids: unknown = row.witness === null ? null : JSON.parse(row.witness);
-  const witnessed = Array.isArray(ids) && ids.length === BUDGET_INDEXES.length && ids.every(id => Number.isSafeInteger(id) && id > 0);
-  const read = async (where: string, params: unknown[] = []) => (await db.prepare(`SELECT name,sql FROM sqlite_master WHERE ${where}`).bind(...params).all<{name:string;sql:string}>()).results;
-  let indexes = witnessed ? await read(`rowid IN (${ids.map(() => '?').join(',')})`, ids) : [];
+  let indexes = JSON.parse(row.indexes) as {name:string;sql:string}[];
   const valid = () => BUDGET_INDEXES.every(index => indexes.some(found => found.name===index.name && normalize(found.sql)===normalize(indexSql(index))));
-  if (!valid()) indexes = await read(`type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`);
+  if (!valid()) indexes = (await db.prepare(`SELECT name,sql FROM sqlite_master WHERE type='index'
+    AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`).all<{name:string;sql:string}>()).results;
   if (!valid()) throw new Error('Active budget indexes are missing or inconsistent');
   return { active: true, reason: null };
 }

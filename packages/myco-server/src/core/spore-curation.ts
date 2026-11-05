@@ -3,7 +3,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.j
 import type { PulledStage } from './pulled-stages.js';
 import type { TaskInput } from './task-inputs.js';
 import { CURATION_TASK } from './task-catalogue.js';
-import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabled, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from './settings.js';
+import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabledSql, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from './settings.js';
 import { resolveSemanticSearch, searchDeployment } from './search.js';
 import { semanticHits, type SemanticHit } from '../read/embedding.js';
 import { sha256Hex } from '../hash.js';
@@ -35,6 +35,7 @@ const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
 interface SeedMember extends Member { closeness: number }
 type Neighbour = SeedMember & { reviewed: number };
+type GateHit = Pick<SemanticHit, 'record_id' | 'revision' | 'score' | 'neighbor_mean' | 'neighbor_std'>;
 const neighbourOrder = (a: Neighbour, b: Neighbour) => a.reviewed-b.reviewed || b.closeness-a.closeness || a.id.localeCompare(b.id);
 export interface CurationAssignment { kind: 'curation'; key: string; members: Member[] }
 interface Cluster { cluster_key: string; members: string; final_members: string | null; read_bytes: number; due_at: number | null; failures: number; run_id: string | null; decision: string | null }
@@ -85,7 +86,7 @@ async function offerCluster(db: RelationalStore, projectId: string, members: See
   return created!.meta.changes === 1;
 }
 
-async function currentNeighbour(db: RelationalStore, projectId: string, hit: SemanticHit & {closeness:number}): Promise<Neighbour | null> {
+async function currentNeighbour(db: RelationalStore, projectId: string, hit: GateHit & {closeness:number}): Promise<Neighbour | null> {
   const member = await db.prepare(`SELECT s.id,s.revision,CASE WHEN ack.revision=s.revision THEN 1 ELSE 0 END AS reviewed
     FROM spores s LEFT JOIN spore_curation_receipts ack ON ack.project_id=s.project_id AND ack.spore_id=s.id
     WHERE s.project_id=? AND s.id=? AND s.status='active'
@@ -161,16 +162,21 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
       if (now-receipt.updated_at < VECTOR_LOST_MS) { deferredAt = seed.stamp; break; }
       continue;
     }
-    const graded=(hits:SemanticHit[],minimum:number)=>hits.flatMap(hit=>{
+    const graded=(hits:GateHit[],minimum:number)=>hits.flatMap(hit=>{
       if(hit.record_id===seed.id)return [];
       const stats=hit.neighbor_mean===null || hit.neighbor_std===null?null:{mean:hit.neighbor_mean,std:hit.neighbor_std};
       const closeness=mutualCloseness(1-hit.score,baseline,stats);
       return closeness===null || closeness<minimum?[]:[{...hit,closeness}];
     });
-    const strong=graded(await semanticHits(db,{projectId:id},semantic,vector.values,
-      {topK:CURATION_GATE_NEIGHBORS,filters:{type:'spore',status:'active'}}),CURATION_SEED_CLOSENESS);
+    const matches=await semantic.vectors.query(partition,{values:vector.values,topK:CURATION_GATE_NEIGHBORS,filters:{type:'spore',status:'active'}});
+    const scores=new Map(matches.map(hit=>[hit.id,hit.score]));
+    const receipts=matches.length===0?[]:(await db.prepare(`SELECT id,record_id,revision,neighbor_mean,neighbor_std
+      FROM embedding_receipts INDEXED BY idx_embedding_receipts_spore
+      WHERE project_id=? AND model_key=? AND ready=1 AND type='spore' AND id IN (${matches.map(()=>'?').join(',')})`)
+      .bind(id,partition.modelKey,...matches.map(hit=>hit.id)).all<Omit<GateHit,'score'> & {id:string}>()).results;
+    const strong=graded(receipts.map(hit=>({...hit,score:scores.get(hit.id)!})),CURATION_SEED_CLOSENESS);
     const observed = new Map<string,Promise<Neighbour | null>>();
-    const neighbour = (hit: SemanticHit & {closeness:number}) => {
+    const neighbour = (hit: GateHit & {closeness:number}) => {
       let held=observed.get(hit.record_id);
       if(held===undefined) {held=currentNeighbour(db,id,hit);observed.set(hit.record_id,held);}
       return held;
@@ -254,7 +260,7 @@ export function curationPrompt(material: string): string {
 
 function curationStage(estimateKey?: string): PulledStage {
   return {
-    level: 5, task: CURATION_TASK, switchedOn: curationAnyEnabled, withEstimate: curationStage,
+    level: 5, task: CURATION_TASK, switchedOn: curationAnyEnabledSql(), withEstimate: curationStage,
     due: (project, now) => ({ sql: curationAdmissionSql(project, now, estimateKey), params: [] }),
     head: async (db, projectId, now) => {
       const row = await db.prepare(`SELECT cluster_key,due_at FROM spore_curation_work INDEXED BY idx_curation_due

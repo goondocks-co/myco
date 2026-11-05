@@ -472,6 +472,7 @@ test('ready vectors still applying retry at their source stamp and stop at the l
     const before={...g.calls}; await discoverSporeClusters(g.env,g.now+VECTOR_LOST_MS+60_000);
     expect(g.calls).toEqual(before);
   }finally{g.sqlite.close();}
+
 });
 
 test('a failed run that resolved only searched hits closes changed before another model attempt',async()=>{
@@ -513,6 +514,44 @@ test('the strong gate offers a lone pair, excludes distribution-typical noise, a
     await g.discover(); expect(g.calls.query).toBe(2); expect(g.calls.get).toBe(2);
     expect(g.sqlite.query('SELECT COUNT(*) n FROM agent_runs').get()).toEqual({n:0});
   }finally{g.sqlite.close();}
+  const { Miniflare, convertV4MiniflareOptions } = await import('miniflare');
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const { measuredStore } = await import('./helpers/read-budget.js');
+  const { statementRecorder } = await import('../helpers/statement-recorder.js');
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  try {
+    const d1 = await mf.getD1Database('DB');
+    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
+    await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)").run();
+    await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1)").run();
+    await d1.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<3800)
+      INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at)
+      SELECT 'proj_1',printf('s-%06d',x),'agent','body','decision',x FROM n`).run();
+    await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
+      SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE type='spore'`).run();
+    await settingsWriter(d1).setCapability('proj_1','spore_curation',true,'test',1);
+    const meter = measuredStore(d1), recorded = statementRecorder(meter.db,{accounting:'d1'});
+    const vectors = { ...g.env.vectors,
+      get: async (_scope: unknown, ids: string[]) => ids.map(id=>({id,values:[1,0],metadata:{type:'spore' as const,record_id:id,revision:'fixture',status:'active',session_id:'',created_at:1,observation_type:'decision',release_state:'',release_confidence:''}})),
+      query: async () => Array.from({length:16},(_,i)=>({id:`s-${String(i+1).padStart(6,'0')}`,score:0.5})),
+    };
+    const env = { ...g.env, db: recorded.db, vectors };
+    meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
+    const walkRows = meter.reads(); expect(walkRows).toBeLessThanOrEqual(430);
+    const lookup = recorded.statements.find(s=>s.sql.includes('SELECT id,record_id,revision,neighbor_mean,neighbor_std'))!;
+    const plan = (await d1.prepare(`EXPLAIN QUERY PLAN ${lookup.sql}`).bind(...lookup.binds).all<{detail:string}>()).results.map(row=>row.detail).join('\n');
+    expect(plan).toContain('SEARCH embedding_receipts USING INDEX idx_embedding_receipts_spore (project_id=? AND model_key=? AND id=?)');
+    expect(plan).not.toMatch(/SCAN/);
+    await d1.prepare("UPDATE spore_curation_cursor SET active=0").run();
+    await d1.prepare("UPDATE spore_curation_changes SET dirty=0,pending_at=NULL").run();
+    await d1.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','new','agent','body','decision',4000)").run();
+    await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
+      SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE record_id='new'`).run();
+    meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
+    const newRows = meter.reads(); expect(newRows).toBeLessThanOrEqual(80);
+    expect(await d1.prepare('SELECT COUNT(*) n FROM spore_curation_work').first()).toEqual({n:0});
+    console.info('CURATION_WEAK_GATE_ROWS',{corpus:3800,walkRows,newRows});
+  } finally { await mf.dispose(); }
 });
 
 test('a varied thirty-spore topic fills eight, rejoins wisdom with leftovers, and terminates for consolidate and keep-all',async()=>{

@@ -1108,9 +1108,9 @@ export function nextCurationProject(db: RelationalStore, after: string): Promise
 }
 
 /** Whether any Project explicitly admits curation claims. */
-export async function curationAnyEnabled(db: RelationalStore): Promise<boolean> {
-  return (await db.prepare(`SELECT 1 FROM project_capabilities INDEXED BY idx_curation_projects
-    WHERE capability='spore_curation' AND enabled=1 LIMIT 1`).first()) !== null;
+export function curationAnyEnabledSql(): string {
+  return `EXISTS (SELECT 1 FROM project_capabilities INDEXED BY idx_curation_projects
+    WHERE capability='spore_curation' AND enabled=1 LIMIT 1)`;
 }
 
 export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;
