@@ -99,7 +99,7 @@ it('refuses an unrelated or incomplete destination before any mutation', async (
   } finally { f.cleanup(); }
 });
 
-it('refuses a current-schema import with surviving thin work before returning a publishable destination', async () => {
+it('recovers current learning work without requiring a retired pause marker', async () => {
   const f = fixture(true);
   try {
     const source = new Database(f.options.databasePath);
@@ -108,7 +108,8 @@ it('refuses a current-schema import with surviving thin work before returning a 
       source.exec("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('thin','held','thin','extract-curate','running',1)");
     } finally { source.close(); }
     const before = fs.readFileSync(f.options.databasePath);
-    await expect(restoreCloudflareDatabase(f.options)).rejects.toThrow('thin_learning_not_drained');
+    await expect(restoreCloudflareDatabase(f.options)).resolves.toEqual({ schemaVersion: SERVER_SCHEMA_VERSION, imported: true });
+    expect(f.destination.query("SELECT key FROM schema_meta WHERE key='learning_paused_at'").get()).toBeNull();
     expect(f.destination.query("SELECT status FROM agent_runs WHERE id='held'").get()).toEqual({ status: 'running' });
     expect(fs.readFileSync(f.options.databasePath)).toEqual(before);
   } finally { f.cleanup(); }

@@ -12,7 +12,6 @@ import { LEARNING_RETRY_KEY } from '../db/run-context.js';
  * Session learning progress and receipt-time claim admission share this per-session row.
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { PENDING_CARDS_LIMIT, pendingCardsSql } from '../db/learning-progress.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { commitAttributedWrite } from './runs.js';
@@ -111,9 +110,10 @@ export function learningSessionStatement(db: RelationalStore, projectId: string,
     VALUES (?1, ?2, 'ready', (SELECT last_record_at FROM session_documents WHERE project_id = ?1 AND session_id = ?2))`).bind(projectId, sessionId);
 }
 
-/** Recounts a bounded range of the session's pending cards. */
+/** Recounts pending cards for one session. */
 export function pendingCardsStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET pending_cards = ${pendingCardsSql('learning_sessions.project_id', 'learning_sessions.session_id')} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId);
+  return db.prepare(`UPDATE learning_sessions SET pending_cards = (SELECT COUNT(*) FROM turn_cards c INDEXED BY idx_turn_cards_session_pending
+      WHERE c.project_id = learning_sessions.project_id AND c.session_id = learning_sessions.session_id AND c.state = 'pending') WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId);
 }
 
 /** One learning slice: the session, the cards it reads, and the progress revision its completion is guarded by. */
@@ -280,7 +280,7 @@ export async function completeLearning(
 }
 
 /** Counts the status line caps; a count at the cap reads "at least". */
-const STATUS_CAP = PENDING_CARDS_LIMIT - 1;
+const STATUS_CAP = 1000;
 const capped = (inner: string) => `(SELECT COUNT(*) FROM (${inner} LIMIT ${STATUS_CAP + 1}))`;
 
 export interface LearningStatus {

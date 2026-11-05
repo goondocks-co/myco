@@ -26,8 +26,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
-  { step: 695, object: 'idx_turn_cards_session_pending', table: 'turn_cards', reason: 'Pending recounts seek one session in a bounded pending-only range.' },
-  { step: 695, object: 'turn_cards_pending_count', table: 'turn_cards', reason: 'Card state transitions refresh the same bounded pending count as publication.' },
+  { step: 695, object: 'idx_turn_cards_session_pending', table: 'turn_cards', reason: 'Pending recounts seek only the pending rows of one session.' },
   { step: 693, object: 'curation_capability_insert', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
   { step: 693, object: 'curation_capability_update', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
   { step: 693, object: 'curation_capability_delete', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
@@ -182,7 +181,7 @@ interface StatementException {
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,
-    reason: 'Retired pause markers are removed and the pending-count trigger is replaced atomically.' })),
+    reason: 'Retired pause markers are removed.' })),
   { step: 693, sql: "INSERT INTO spore_curation_changes SELECT project_id,1,1,0 FROM project_capabilities WHERE capability='spore_curation' AND enabled=1", reason: "Enabled Projects begin a cluster discovery pass." },
   { step: 693, sql: 'INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1)', reason: 'The curation clock starts its Project traversal at the first opted-in Project.' },
   ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,

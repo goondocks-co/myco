@@ -207,8 +207,11 @@ it('GATE: no-schema updates deploy without requesting a bookmark or applying mig
 });
 
 it('retains recovery history when migrations fail and when an update is retried', async () => {
-  await fixture({ migrationExit: 1 }, async ({ home, update, calls }) => {
-    await expect(update()).rejects.toThrow();
+  await fixture({ migrationExit: 1 }, async ({ home, state, update, calls }) => {
+    const db = new Database(JSON.parse(fs.readFileSync(state, 'utf8')).schemaDatabase);
+    try { db.exec("DELETE FROM schema_meta WHERE key IN ('learning_paused_at','learning_resumed_at')"); }
+    finally { db.close(); }
+    await expect(update()).rejects.toThrow('exited 1');
     expect(readDeploymentRecord(home)!.versionId).toBe(OLD_WORKER);
     expect(readDeploymentRecord(home)!.schemaUpdates).toHaveLength(1);
     await expect(update()).rejects.toThrow();
