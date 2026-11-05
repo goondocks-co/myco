@@ -25,6 +25,10 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: 693, object: 'idx_spores_curation_seek', table: 'spores', reason: 'Curation discovery seeks a bounded active-spore page after its saved activity and id cursor.' },
+  { step: 693, object: 'idx_curation_projects', table: 'project_capabilities', reason: 'Curation discovery seeks one opted-in Project after its saved Project cursor.' },
+  { step: 693, object: 'idx_curation_runs_day', table: 'agent_runs', reason: 'Curation admission reads at most its daily ceiling of run entries.' },
+  { step: 693, object: 'idx_curation_resolution_author', table: 'resolution_events', reason: 'A curation decision verifies this run’s lineage events by author and source.' },
   {step:116,object:'idx_transcript_publication_failed',table:'transcript_publication',reason:'Status counts the publications stopped for good without reading the others.'},
   {step:113,object:'idx_session_prompts_unlocated',table:'session_prompts',reason:'The locator backfill finds the prompts it has yet to locate without reading the located ones.'},
   {step:114,object:'idx_session_prompts_prompt',table:'session_prompts',reason:'A prompt cited by id alone is found in its Project without knowing its session.'},
@@ -163,6 +167,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  { step: 693, sql: 'INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1)', reason: 'The curation clock starts its Project traversal at the first opted-in Project.' },
   ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
     reason: 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.' }))),
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_insert', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },

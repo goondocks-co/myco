@@ -36,5 +36,10 @@
   "turn-cards": [
     "vault_turn_cards",
     "vault_report"
+  ],
+  "curate-spores": [
+    "vault_spore_curation",
+    "vault_resolve_spore",
+    "vault_report"
   ]
 }

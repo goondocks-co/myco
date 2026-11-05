@@ -13,6 +13,8 @@ import type { TaskDescription } from '../../tasks/wire';
 const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
   cortex: { label: 'Context for sessions', note: 'Sessions here are handed the instructions at start, and spores and plans on their prompts.' },
   canopy: { label: 'Code map', note: 'Myco keeps a map of where things live in this project’s code, from its repository.' },
+  spore_curation: { label: 'Curate overlapping spores', note: 'Review up to two close spore pairs a day, starting with new or changed spores. Off until you enable it.' },
+  spore_curation_backfill: { label: 'Include older spores in curation', note: 'Enable after reviewing a small live batch. Older memory is reviewed at the same two-pair daily limit.' },
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 

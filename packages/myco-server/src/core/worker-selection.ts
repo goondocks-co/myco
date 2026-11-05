@@ -17,7 +17,7 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { runnerAgentLoginReady, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
-import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
+import { fixedTaskHarness, PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
 import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 
@@ -82,7 +82,7 @@ export function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: str
   return {
     preferred: str(parseLeaf(byLeaf.get('worker.harness'))),
     fallback: Array.isArray(fallbackLeaf) ? fallbackLeaf.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : [],
-    override: str(taskOverride(byLeaf, task).harness),
+    override: fixedTaskHarness(task) ?? str(taskOverride(byLeaf, task).harness),
   };
 }
 

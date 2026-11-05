@@ -5,7 +5,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
+import { TASK_EXECUTION_PROFILES, admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -33,7 +33,7 @@ import { SWITCH_STANDS_SQL, readSwitch } from './embedding/switch-store.js';
  */
 
 /** A capability the Deployment may admit a Project to. */
-export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution'] as const;
+export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution', 'spore_curation', 'spore_curation_backfill'] as const;
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**
@@ -184,7 +184,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
 const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
-  if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  if (!(OUTCOME_TASKS as readonly string[]).includes(task) || TASK_EXECUTION_PROFILES[task] !== undefined) return [];
   if (task === EXTRACTION_TASK) return ['harness', 'model', 'reasoningLevel', 'enabled', 'memberRunsPerDay'];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
 };
@@ -778,10 +778,12 @@ export async function taskWorkEnabled(db: RelationalStore, projectId: string, ta
     : projectWorkEnabled(db, projectId);
 }
 
-/** A live Project's missing capability row enables it; only an explicit zero opts it out. */
+/** Live Projects default on for context, maps and learning; curation capabilities require explicit opt-in. */
 export function capabilityOnSql(project: string, capability: string): string {
-  return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
-        WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+  return projectWorkSql(project, `AND EXISTS (SELECT 1 FROM (SELECT ${capability} AS capability) admitted
+    WHERE COALESCE((SELECT pc.enabled FROM project_capabilities pc
+      WHERE pc.project_id = capability_project.project_id AND pc.capability = admitted.capability),
+      CASE WHEN admitted.capability IN ('spore_curation', 'spore_curation_backfill') THEN 0 ELSE 1 END) = 1)`);
 }
 
 /** An owner has explicitly enabled this Project capability. */
@@ -951,6 +953,7 @@ export function settingsWriter(
       const leaf = 'agent.tasks';
       return withLeafWrite({ leaf, value: { task, tier }, actor }, async () => {
         if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'unknown task' } };
+        if (TASK_EXECUTION_PROFILES[task] !== undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this task has a fixed execution profile' } };
         if (tier !== null && !isReasoningTier(tier)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'expected low, default, high, or null' } };
         const held = (await leafValues(db, [leaf])).get(leaf);
         if (held !== undefined) {
@@ -1075,4 +1078,21 @@ export function learningHistoryEnabledSql(): string {
 export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
   const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
   return text !== undefined && JSON.parse(text) === true;
+}
+
+/** The instant this Project opted into curation; missing and disabled switches admit no work. */
+export function curationEnabledAtSql(project: string): string {
+  return `(SELECT updated_at FROM project_capabilities WHERE project_id = ${project} AND capability = 'spore_curation' AND enabled = 1)`;
+}
+
+/** One enabled Project after a saved discovery cursor. */
+export function nextCurationProject(db: RelationalStore, after: string): Promise<{ project_id: string } | null> {
+  return db.prepare(`SELECT project_id FROM project_capabilities INDEXED BY idx_curation_projects
+    WHERE capability='spore_curation' AND enabled=1 AND project_id > ? ORDER BY project_id LIMIT 1`)
+    .bind(after).first<{ project_id: string }>();
+}
+
+/** Whether the Project opt-in admits any curation discovery or claims. */
+export async function curationAnyEnabled(db: RelationalStore): Promise<boolean> {
+  return (await nextCurationProject(db, '')) !== null;
 }

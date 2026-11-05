@@ -16,6 +16,7 @@ import { pausedLearningSql } from './learning-pause.js';
 import { queueHeadSeek } from './queue-heads.js';
 import { capabilityOnSql, effectiveBudgetSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
+import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
 
 export interface SqlTerm { sql: string; params: unknown[] }
@@ -42,7 +43,7 @@ export interface PulledStage {
 }
 
 /** The production registry: the two learning stages, turn cards and session learning, each fresh and history. */
-export const PULLED_STAGES: readonly PulledStage[] = LEARNING_STAGES;
+export const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
 
 let installed: readonly PulledStage[] = PULLED_STAGES;
 

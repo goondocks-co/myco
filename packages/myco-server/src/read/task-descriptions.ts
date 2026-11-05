@@ -7,7 +7,7 @@ import { listProjects } from './sessions.js';
 import type { ProjectSet } from './scope.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { readMapSettings } from '../core/canopy.js';
-import { resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
+import { fixedTaskHarness, resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
 import { capabilityOf, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
 import { EMBEDDING_RETRY_MS } from '../core/embedding/task.js';
 import { jobDispatchesAt, SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedule } from '../core/jobs.js';
@@ -15,7 +15,8 @@ import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { CURATION_TASK, TASK_EXECUTION_PROFILES, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
+import { curationPrompt } from '../core/spore-curation.js';
 import { TURN_CARD_PROMPT } from '../core/turn-card-prompt.js';
 import { EXTRACTION_RULES } from '../core/extraction-rules.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
@@ -50,6 +51,7 @@ export function taskTemplate(task: string, patterns: readonly string[]): TaskTem
   const builder = inputBuilderFor(task);
   if (builder !== null) return builder.template(patterns);
   if (UNLANDED_TASKS.includes(task)) return { promptTemplate: null, standingRules: task === EXTRACTION_TASK ? EXTRACTION_RULES : null, templateVariants: [] };
+  if (task === CURATION_TASK) return { promptTemplate: curationPrompt('{{cluster.whole_spores}}'), standingRules: null, templateVariants: [] };
   if (task === CARD_TASK) return { promptTemplate: TURN_CARD_PROMPT, standingRules: null, templateVariants: [] };
   if (!RUNTIME_SERVED_TASKS.includes(task)) throw new Error(`No task template for ${task}`);
   return { promptTemplate: null, standingRules: null, templateVariants: [] };
@@ -82,10 +84,11 @@ export function descriptionProfile(task: string, settings: ReadonlyMap<string, s
   if (RUNTIME_SERVED_TASKS.includes(task)) return { tier: null, profiles: [], profileNote: 'This task does not use a reasoning tier or a server-built prompt.' };
   const refusal = taskTierRefusal(task, settings);
   if (refusal !== null) return { tier: null, profiles: [], profileNote: holdSentence(refusal) };
-  const override = taskOverride(settings, task).reasoningLevel;
+  const fixed = TASK_EXECUTION_PROFILES[task];
+  const override = fixed === undefined ? taskOverride(settings, task).reasoningLevel : undefined;
   const tier = override === undefined ? TASK_TIERS[task] : override;
   const preference = harnessPreference(settings, task);
-  const harness = preference.override ?? preference.preferred;
+  const harness = fixedTaskHarness(task) ?? preference.override ?? preference.preferred;
   const profiles = (harness === null ? OFFERABLE_PROFILE_HARNESSES : [harness]).map((harness) => {
     const defaults = PROFILE_HARNESSES[harness];
     const choice = defaults !== undefined && defaults.allowedEfforts.length > 0;
@@ -93,7 +96,7 @@ export function descriptionProfile(task: string, settings: ReadonlyMap<string, s
     if ('reason' in resolved) return { harness, model: null, effort: null, note: holdSentence(resolved.reason) };
     return { harness, model: resolved.profile.model, effort: resolved.profile.effort, note: null };
   });
-  return { tier: isReasoningTier(tier) ? tier : null, profiles, profileNote: harness === null
+  return { tier: isReasoningTier(tier) ? tier : null, profiles, profileNote: fixed !== undefined ? 'This task uses its declared model and effort.' : harness === null
     ? 'Which agent runs it depends on what is signed in on your machines.'
     : 'A machine without this agent signed in may run it with the next agent in your fallback order.' };
 }
@@ -144,6 +147,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
         ...(schedule.runWhenCold === true ? [] : [`Waits if the project has been quiet for more than ${leaves.coldThresholdDays} days.`])]),
     ];
     if (task === TITLING_TASK) triggers.push('After a session ends and its material is ready.', 'When a person asks for a fresh session title.', ...scheduleWords(scheduleFor(task, TITLING_BACKFILL_SCHEDULE, leaves.overrides), leaves.enabled).map((line) => `Untitled past sessions: ${line}`));
+    else if (task === CURATION_TASK) triggers.push('After an opted-in Project has an undecided spore pair at cosine similarity 0.90 or higher; at most two pairs per rolling day, after session learning.');
     else if (task === CARD_TASK) triggers.push('After a turn of a session finishes, while learning is on.');
     else if (startableByHand(task)) triggers.push(...(task === EXTRACTION_TASK ? ['After a session’s turns are carded, while learning is on.'] : []), 'When a person chooses Run a task.');
     else if (task === 'embedding-reconcile') {

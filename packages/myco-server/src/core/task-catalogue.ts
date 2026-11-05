@@ -17,7 +17,7 @@
  *   harness, tier profile and login; no provider setting gates the request.
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  *
- * Four of the retained tasks are run outcomes: one prompt each, built by the
+ * The worker tasks are run outcomes: one prompt each, built by the
  * Deployment, with declared expected evidence
  * (`core/run-postconditions.ts`). `OUTCOME_TASKS` names them, and
  * `tests/myco-server/task-catalogue.test.ts` holds the close rules, the input
@@ -33,6 +33,7 @@ import type { RunAdmissionGate } from './runs.js';
 export const TITLING_TASK = 'title-summary';
 /** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
+export const CURATION_TASK = 'curate-spores';
 export { CARD_TASK };
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
@@ -40,16 +41,22 @@ export const SEEDING_TASK = 'vault-seed';
 /** The task that keeps a Project's repository map from a checkout of its code. */
 export { MAP_TASK };
 
-/** The four run outcomes: every worker-served task with a prompt of its own. */
-export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK];
+/** The worker run outcomes: every worker-served task with a prompt of its own. */
+export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK];
 
 /** The reasoning tier each worker outcome declares. */
 export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/execution-profile').ReasoningTier>> = {
   [TITLING_TASK]: 'low',
   [EXTRACTION_TASK]: 'default',
   [CARD_TASK]: 'low',
+  [CURATION_TASK]: 'low',
   [MAP_TASK]: 'default',
   [SEEDING_TASK]: 'default',
+};
+
+/** Tasks whose execution is fixed rather than selected through tier overrides. */
+export const TASK_EXECUTION_PROFILES: Readonly<Record<string, { model: string; effort: string }>> = {
+  [CURATION_TASK]: { model: 'sonnet', effort: 'low' },
 };
 
 /** Tasks whose required worker capability is not available for dispatch. */
@@ -67,6 +74,7 @@ export const TASK_ADMISSION = {
   'embedding-reconcile': { kind: 'embedding' },
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [CARD_TASK]: { kind: 'capability', capability: 'vault_evolution' },
+  [CURATION_TASK]: { kind: 'capability', capability: 'spore_curation' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'capture' },
 } satisfies Readonly<Record<string, RunAdmissionGate>>;
@@ -90,6 +98,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
   [CARD_TASK]: ['vault_turn_cards', 'vault_report'],
+  [CURATION_TASK]: ['vault_spore_curation', 'vault_resolve_spore', 'vault_report'],
   [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
   [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_update_session'],
 };
@@ -114,6 +123,7 @@ export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [MAP_TASK]: 900,
   [EXTRACTION_TASK]: 900,
   [CARD_TASK]: 600,
+  [CURATION_TASK]: 300,
   [SEEDING_TASK]: MAX_WORKER_RUN_SECONDS,
 };
 
@@ -132,7 +142,7 @@ export function runTimeoutForTask(task: string): number | null {
  */
 export const MANUAL_ONLY_TASKS: readonly string[] = [SEEDING_TASK];
 /** Tasks only a claim pulls: they have no hand start, so the Deployment builds them no queued input. */
-export const PULLED_ONLY_TASKS: readonly string[] = [CARD_TASK];
+export const PULLED_ONLY_TASKS: readonly string[] = [CARD_TASK, CURATION_TASK];
 
 /** The gate a task runs behind, or null for a name this Deployment does not serve. */
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
@@ -141,6 +151,7 @@ export function admissionForTask(taskName: string): RunAdmissionGate | null {
 
 /** Reader descriptions owned by the task declarations. */
 export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
+  [CURATION_TASK]: { name: 'Curate overlapping spores', description: 'Review one pair of closely related spores and record whether to resolve them or keep them apart.' },
   [CARD_TASK]: { name: 'Card session turns', description: 'Write a short card for each finished turn of a session, keeping errors, fixes and decisions word for word.' },
   [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Save durable knowledge from sessions as spores, and retire knowledge they replace.' },
   [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
