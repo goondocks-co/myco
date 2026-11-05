@@ -383,14 +383,14 @@ describe('project capability admission through the surface', () => {
   it('reports capability defaults for a Project with no rows', async () => {
     const e = env();
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {} });
+      .toEqual({ capabilities: { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 } });
   });
 
   it('switches one capability off, and leaves other Projects untouched', async () => {
     const e = env();
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {} });
+      .toEqual({ capabilities: { cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 } });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/capabilities'), e.all)))
       .toMatchObject({ capabilities: { cortex: true } });
   });
@@ -548,4 +548,12 @@ it('refuses a fractional schedule cap on every retained task without storing it'
     });
     expect(e.sqlite.query("SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'").get()).toBeNull();
   }
+});
+
+it('writes and reads the Project daily curation limit through admitted Settings', async () => {
+  const e=env();
+  const response=await worker.fetch(await put(e.db,'/api/settings/agent.spore_curation.daily_runs',{project_id:'proj_1',value:20}),e.all);
+  expect(response.status).toBe(200);
+  expect(await json(await worker.fetch(await asOwner(e.db,'/api/projects/proj_1/capabilities'),e.all))).toMatchObject({settings:{'agent.spore_curation.daily_runs':20}});
+  expect(await json(await worker.fetch(await asOwner(e.db,'/api/projects/proj_2/capabilities'),e.all))).toMatchObject({settings:{'agent.spore_curation.daily_runs':5}});
 });

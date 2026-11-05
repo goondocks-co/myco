@@ -13,7 +13,7 @@ import { parseLedger, REPO_ROOT } from '../helpers/ledger.ts';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
+import { PROJECT_LEAVES, DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 
@@ -107,6 +107,7 @@ function dataClasses(): string[] {
   const created = new Set<string>();
   const dropped = new Set<string>();
   const collect = (src: string): void => {
+    for (const m of src.matchAll(/ALTER TABLE [a-z_]+ RENAME TO ([a-z_]+)/g)) created.add(m[1]);
     for (const m of src.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
     for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) {
       if (!new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${m[1]}\\b`).test(src.slice(m.index))) dropped.add(m[1]);
@@ -203,7 +204,7 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
   { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
-  { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', section: '7.8', scan: () => [...DEPLOYMENT_LEAVES].sort() },
+  { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', section: '7.8', scan: () => [...DEPLOYMENT_LEAVES, ...PROJECT_LEAVES].sort() },
   { label: 'viewer appearance', source: 'packages/myco-server/ui/src/lib/appearance-values.ts', section: '7.8',
     scan: () => Object.keys(viewerAppearance).map(leaf => `appearance.${leaf}`).sort() },
   { label: 'machine settings leaves', source: 'packages/myco-server/src/core/machine-settings.ts', section: '7.8', scan: () => [...MACHINE_LEAVES].sort() },

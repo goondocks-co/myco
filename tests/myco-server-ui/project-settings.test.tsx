@@ -70,7 +70,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/members': () => Response.json(MEMBERS),
   '/api/status': () => Response.json({ target: 'bun' }),
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
-  [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: true } }),
+  [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: true } }),
   [`${api}/repository`]: () => Response.json({ repository: REPOSITORY }),
   [`${api}/grants`]: () => Response.json({ grants: [grant(), grant({ id: 'eg_old', label: 'old bot', revokedAt: NOW - HOUR, revokedBy: ADA, rotatedTo: 'eg_live1' })] }),
   [`${api}/release-provenance`]: () => Response.json({ releaseProvenance: RELEASES }),
@@ -96,6 +96,20 @@ async function openMenu(name: string) {
 }
 
 describe('a project\'s settings', () => {
+  it('saves this Project’s numeric curation limit through the settings route', async () => {
+    let value=5;
+    const {sent}=server(base({
+      [`${api}/capabilities`]:()=>Response.json({capabilities:{cortex:true},settings:{'agent.spore_curation.daily_runs':value}}),
+      'PUT /api/settings/agent.spore_curation.daily_runs':async init=>{value=JSON.parse(String(init?.body)).value;return Response.json({applied:true});},
+    }));
+    mount(`/p/${P}/settings`);
+    const input=await screen.findByRole('spinbutton',{name:'Curation clusters per day'});
+    expect((input as HTMLInputElement).value).toBe('5');
+    fireEvent.change(input,{target:{value:'20'}}); fireEvent.click(screen.getByRole('button',{name:'Save limit'}));
+    await waitFor(()=>expect(sent).toEqual([{method:'PUT',path:'/api/settings/agent.spore_curation.daily_runs',body:{project_id:P,value:20}}]));
+    await waitFor(()=>expect((screen.getByRole('button',{name:'Save limit'}) as HTMLButtonElement).disabled).toBe(true));
+  });
+
   it('holds what Myco does there, the repository, the access keys and release tracking, in that order, naming the project and never an id', async () => {
     server(base());
     mount(`/p/${P}/settings`);
@@ -117,7 +131,7 @@ describe('a project\'s settings', () => {
   it('disables an archived capability section with a restoration note and no misleading switches', async () => {
     const { sent } = server(base({
       '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], archivedAt: NOW, archivedBy: ADA }] }),
-      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: false, canopy: false, vault_evolution: false } }),
+      [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: false, canopy: false, vault_evolution: false } }),
     }));
     mount(`/p/${P}/settings`);
     expect(await screen.findByText("Archived: Myco does no work here until it's restored")).toBeTruthy();
@@ -133,7 +147,7 @@ describe('a project\'s settings', () => {
     const capabilities = await writer.capabilities(P);
     try {
       const { sent } = server(base({
-        [`${api}/capabilities`]: () => Response.json({ capabilities }),
+        [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities }),
         [`PUT ${api}/capabilities/cortex`]: async (init) => {
           const body = JSON.parse(String(init?.body)) as { enabled: boolean };
           await writer.setCapability(P, 'cortex', body.enabled, ADA, NOW);
@@ -191,7 +205,7 @@ describe('a project\'s settings', () => {
     expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
     expect(within(sectionOf('capabilities')).queryByRole('button', { name: 'Older' })).toBeNull();
     cleanup();
-    const { sent } = server(base({ [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, vault_evolution: true }, retiredCapabilities: { skills: true } }) }));
+    const { sent } = server(base({ [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy: false, vault_evolution: true }, retiredCapabilities: { skills: true } }) }));
     mount(`/p/${P}/settings`);
     await screen.findByRole('switch', { name: 'Learning' });
     expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
@@ -216,7 +230,7 @@ describe('a project\'s settings', () => {
   it('explains repository requirements on each code capability, allows enabling, and opens the connection form', async () => {
     let canopy = false;
     const { sent } = server(base({
-      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy, vault_evolution: true } }),
+      [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy, vault_evolution: true } }),
       [`${api}/repository`]: () => Response.json({ repository: null }),
       [`PUT ${api}/capabilities/canopy`]: () => { canopy = true; return Response.json({ applied: true }); },
     }));
@@ -249,7 +263,7 @@ describe('a project\'s settings', () => {
 
   it('keeps session learning conditional when Learning is off without a repository', async () => {
     server(base({
-      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, vault_evolution: false } }),
+      [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy: false, vault_evolution: false } }),
       [`${api}/repository`]: () => Response.json({ repository: null }),
     }));
     mount(`/p/${P}/settings`);
@@ -492,7 +506,7 @@ for (const [endpoint, loadingNote, loadingStatus, failedNote, failedStatus] of [
   const pending = new Promise<Response>(resolve => { answer = resolve; });
   server(base({
     [endpoint!]: () => pending,
-    [`${api}/capabilities`]: () => Response.json({ capabilities: { canopy: true } }),
+    [`${api}/capabilities`]: () => Response.json({ settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { canopy: true } }),
   }));
   mount(`/p/${P}/settings`);
   const row = await waitFor(() => {

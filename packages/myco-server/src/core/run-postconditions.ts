@@ -148,7 +148,7 @@ export async function titleStands(db: RelationalStore, scope: ReadScope, run: Ru
 
 /** What each task's run must have left behind, by task. Every retained task appears. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
-  'curate-spores': { description: ['A revision-bound decision with its reason for the assigned pair, and a curation report.'], reports: ['curated'], artifact: curationCompletedBy },
+  'curate-spores': { description: ['A revision-bound decision with its reason for the assigned cluster, and a curation report.'], reports: ['curated'], artifact: curationCompletedBy },
   [MAP_TASK]: { description: ['A report with its audit and a code map written by this run, or a report with its audit that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy, audited: true },
   'embedding-reconcile': { description: ['A report of the search index update.'], reports: ['embedding'] },
   // The whole product of a titling run is the title on the session its dispatch

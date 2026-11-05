@@ -68,7 +68,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'event_refs', 'processed_resources', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
-  'spore_curation_work',
+  'spore_curation_work', 'spore_curation_pair_history', 'spore_curation_receipts', 'spore_curation_owners',
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
@@ -111,7 +111,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  'spore_curation_cursor', 'spore_curation_clock',
+  'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',

@@ -1,3 +1,4 @@
+import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
 import { prepareSwitchedSettings } from '../read/catalog-store.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
@@ -461,6 +462,7 @@ export type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
 export interface EmbeddingChoice { provider: unknown; model?: unknown; endpoint?: unknown }
 
 export interface SettingsWriter {
+  setProjectLeaf(projectId: string, leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Set one Deployment leaf. */
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Set the whole embedding selection at once, so a provider never meets a model or endpoint it does not offer. */
@@ -835,6 +837,19 @@ export function settingsWriter(
   };
 
   return {
+    async setProjectLeaf(projectId, leaf, value, actor, nowMs) {
+      const spec = PROJECT_LEAF_SPECS[leaf];
+      if (spec === undefined) return { applied: false, refusal: { reason: 'not_deployment_tier', leaf } };
+      if (!(await authorize({ leaf, value, actor }))) return { applied: false, refusal: { reason: 'unauthorized', leaf } };
+      const detail = leafRuleViolation(spec, value);
+      if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+      if (!(await projectWorkEnabled(db, projectId))) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'Project is not active' } };
+      await db.prepare(`INSERT INTO project_settings(project_id,leaf,value,updated_at,updated_by) VALUES(?,?,?,?,?)
+        ON CONFLICT(project_id,leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`)
+        .bind(projectId, leaf, JSON.stringify(value), nowMs, actor).run();
+      await rearm({ leaf });
+      return { applied: true };
+    },
     async setLeaf(leaf, value, actor, nowMs) {
       return withLeafWrite({ leaf, value, actor }, async () => {
         const previousRaw = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
@@ -1085,14 +1100,30 @@ export function curationEnabledAtSql(project: string): string {
   return `(SELECT updated_at FROM project_capabilities WHERE project_id = ${project} AND capability = 'spore_curation' AND enabled = 1)`;
 }
 
-/** One enabled Project after a saved discovery cursor. */
+/** One dirty Project after a saved discovery cursor; admission is checked on that bounded candidate. */
 export function nextCurationProject(db: RelationalStore, after: string): Promise<{ project_id: string } | null> {
-  return db.prepare(`SELECT project_id FROM project_capabilities INDEXED BY idx_curation_projects
-    WHERE capability='spore_curation' AND enabled=1 AND project_id > ? ORDER BY project_id LIMIT 1`)
+  return db.prepare(`SELECT c.project_id FROM spore_curation_changes c INDEXED BY idx_curation_changes_due
+    WHERE c.dirty=1 AND c.project_id > ? ORDER BY c.project_id LIMIT 1`)
     .bind(after).first<{ project_id: string }>();
 }
 
-/** Whether the Project opt-in admits any curation discovery or claims. */
+/** Whether any Project explicitly admits curation claims. */
 export async function curationAnyEnabled(db: RelationalStore): Promise<boolean> {
-  return (await nextCurationProject(db, '')) !== null;
+  return (await db.prepare(`SELECT 1 FROM project_capabilities INDEXED BY idx_curation_projects
+    WHERE capability='spore_curation' AND enabled=1 LIMIT 1`).first()) !== null;
+}
+
+export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;
+export const CURATION_DAILY_LIMIT_DEFAULT = CURATION_DAILY_LIMIT_SETTING.rule.default;
+export const CURATION_DAILY_LIMIT_MAX = CURATION_DAILY_LIMIT_SETTING.rule.max;
+export const PROJECT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+  [CURATION_DAILY_LIMIT_LEAF]: CURATION_DAILY_LIMIT_SETTING.rule,
+};
+export const PROJECT_LEAVES = Object.keys(PROJECT_LEAF_SPECS);
+
+/** One Project's admitted daily ceiling, with its declared default. */
+export const curationDailyLimitSql = (project: string): string => `COALESCE((SELECT CAST(value AS INTEGER) FROM project_settings
+  WHERE project_id=${project} AND leaf='${CURATION_DAILY_LIMIT_LEAF}'),${CURATION_DAILY_LIMIT_DEFAULT})`;
+export async function curationDailyLimit(db: RelationalStore, projectId: string): Promise<number> {
+  return (await db.prepare(`SELECT ${curationDailyLimitSql('?')} AS value`).bind(projectId).first<{ value: number }>())!.value;
 }

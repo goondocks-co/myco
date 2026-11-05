@@ -28,14 +28,15 @@ const project = { type: 'string', description: RUN_PROJECT_DESCRIPTION } as cons
 export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   {
     name: 'myco_run_curation',
-    description: 'Record the decision for this run’s assigned pair. A keep decision requires both original revisions; resolved requires this run’s lifecycle events.',
+    description: 'Read whole seeded or searched spores and grow this run’s one group to eight; record its final decision. A keep decision requires all original revisions; resolved requires this run’s lifecycle events.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {
-      op: { type: 'string', enum: ['complete'] },
+      op: { type: 'string', enum: ['material', 'complete'] },
+      id: { type: 'string', description: 'For material: a seeded id or an id this run’s semantic searches returned.' },
       decision: { type: 'string', enum: ['keep', 'resolved'] },
-      reason: { type: 'string', description: 'Why both spores should stand, or what was resolved and why. At most 2048 characters.' },
+      reason: { type: 'string', description: 'Why the cluster’s members should stand, or what was resolved and why. At most 2048 characters.' },
       [PROJECT_PIVOT]: project,
-    }, required: ['op', 'decision', 'reason'] },
+    }, required: ['op'] },
   },
   {
     name: 'myco_run',

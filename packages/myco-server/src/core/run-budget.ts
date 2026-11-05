@@ -40,13 +40,13 @@ export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: s
 }
 
 /** Automatic work requires an active governor and sufficient headroom. */
-export async function automaticFits(db: RelationalStore, estimate: number, now: number): Promise<boolean> {
+export async function automaticFits(db: RelationalStore, estimate: number, now: number, reserveUsd = 0): Promise<boolean> {
   if (!(await budgetActivation(db)).active) return false;
-  const predicate = budgetClaimPredicate({ active: true, estimate, profileJson: '' }, now);
+  const predicate = budgetClaimPredicate({ active: true, estimate, reserveUsd, profileJson: '' }, now);
   return (await db.prepare(`SELECT 1 AS fits FROM (SELECT 'automatic' AS origin) WHERE ${predicate.sql}`).bind(...predicate.params).first()) !== null;
 }
 
-export async function budgetHeld(db: RelationalStore, projectId: string, runId: string, estimate: number, now: number): Promise<boolean> {
+export async function budgetHeld(db: RelationalStore, projectId: string, runId: string, estimate: number, now: number, reserveUsd = 0): Promise<boolean> {
   const active = await budgetActivation(db);
   const predicate = budgetClaimPredicate({ active: active.active, estimate, profileJson: '' },now);
   return (await db.prepare(`SELECT 1 AS held FROM agent_runs WHERE project_id=? AND id=? AND status='queued' AND NOT (${predicate.sql})`)

@@ -28,6 +28,7 @@ export interface PulledStage {
   /** Strict priority: a lower level is pulled before any higher one within E(worker). */
   readonly level: number;
   readonly task: string;
+  withEstimate?(key: string): PulledStage;
   /** Whether the stage's work is switched on; a claim reads each distinct switch once, before any probe. */
   switchedOn(db: RelationalStore): Promise<boolean>;
   /** Whether an item of this stage is due in the Project the SQL expression `project` names. */

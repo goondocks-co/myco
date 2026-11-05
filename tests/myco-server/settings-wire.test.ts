@@ -42,7 +42,7 @@ const READS: [
   Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices }, Settings.SettingsAnswer>,
   Reads<{ secrets: ServerSecret[] }, Settings.SecretsAnswer>,
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
-  Reads<{ capabilities: Record<ProjectCapability, boolean> }, Project.CapabilitiesAnswer>,
+  Reads<{ capabilities: Record<ProjectCapability, boolean>; settings: Record<string, number> }, Project.CapabilitiesAnswer>,
   Reads<RepositoryConnection, Project.RepositoryRow>,
   Reads<{ repository: RepositoryConnection | null }, Project.RepositoryAnswer>,
   Reads<ReleaseProvenanceView, Project.ReleaseProvenanceRow>,

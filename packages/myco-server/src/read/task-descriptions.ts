@@ -147,7 +147,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
         ...(schedule.runWhenCold === true ? [] : [`Waits if the project has been quiet for more than ${leaves.coldThresholdDays} days.`])]),
     ];
     if (task === TITLING_TASK) triggers.push('After a session ends and its material is ready.', 'When a person asks for a fresh session title.', ...scheduleWords(scheduleFor(task, TITLING_BACKFILL_SCHEDULE, leaves.overrides), leaves.enabled).map((line) => `Untitled past sessions: ${line}`));
-    else if (task === CURATION_TASK) triggers.push('After an opted-in Project has an undecided spore pair at cosine similarity 0.90 or higher; at most two pairs per rolling day, after session learning.');
+    else if (task === CURATION_TASK) triggers.push('After an opted-in Project has an undecided spore cluster at cosine similarity 0.90 or higher, within its configured daily limit, after session learning.');
     else if (task === CARD_TASK) triggers.push('After a turn of a session finishes, while learning is on.');
     else if (startableByHand(task)) triggers.push(...(task === EXTRACTION_TASK ? ['After a session’s turns are carded, while learning is on.'] : []), 'When a person chooses Run a task.');
     else if (task === 'embedding-reconcile') {

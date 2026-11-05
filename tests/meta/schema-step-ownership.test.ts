@@ -25,6 +25,17 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: 694, object: 'idx_curation_due', table: 'spore_curation_work', reason: 'The retained work-table name carries the new bounded cluster shape.' },
+  { step: 694, object: 'idx_curation_evidence', table: 'spore_curation_work', reason: 'The retained work-table name carries cluster decision evidence.' },
+  { step: 694, object: 'curation_capability_insert', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_capability_update', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_capability_delete', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_spore_insert', table: 'spores', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_spore_update', table: 'spores', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_spore_delete', table: 'spores', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_vector_insert', table: 'embedding_receipts', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_vector_update', table: 'embedding_receipts', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
+  { step: 694, object: 'curation_vector_delete', table: 'embedding_receipts', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
   { step: 693, object: 'idx_spores_curation_seek', table: 'spores', reason: 'Curation discovery seeks a bounded active-spore page after its saved activity and id cursor.' },
   { step: 693, object: 'idx_curation_projects', table: 'project_capabilities', reason: 'Curation discovery seeks one opted-in Project after its saved Project cursor.' },
   { step: 693, object: 'idx_curation_runs_day', table: 'agent_runs', reason: 'Curation admission reads at most its daily ceiling of run entries.' },
@@ -167,6 +178,12 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  { step: 694, sql: "ALTER TABLE spore_curation_work RENAME TO spore_curation_pair_history", reason: "Prior pair decisions remain retained history." },
+  { step: 694, sql: "DROP INDEX idx_curation_due", reason: "The due index belongs to cluster work." },
+  { step: 694, sql: "DROP INDEX idx_curation_evidence", reason: "The evidence index belongs to cluster work." },
+  { step: 694, sql: "ALTER TABLE spore_curation_cursor ADD COLUMN pass_revision INTEGER NOT NULL DEFAULT -1", reason: "Each walk records its source frontier." },
+  { step: 694, sql: "ALTER TABLE spore_curation_cursor ADD COLUMN active INTEGER NOT NULL DEFAULT 0", reason: "Each walk records whether it is advancing." },
+  { step: 694, sql: "INSERT INTO spore_curation_changes SELECT project_id,1,1 FROM project_capabilities WHERE capability='spore_curation' AND enabled=1", reason: "Enabled Projects begin a cluster discovery pass." },
   { step: 693, sql: 'INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1)', reason: 'The curation clock starts its Project traversal at the first opted-in Project.' },
   ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
     reason: 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.' }))),

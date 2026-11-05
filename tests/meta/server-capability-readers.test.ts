@@ -14,6 +14,7 @@ it('keeps project capability SQL in settings, apart from schema and backup owner
     'packages/myco-server/src/core/settings.ts',
     'packages/myco-server/src/db/schema.ts',
     'packages/myco-server/src/db/schema-v693.ts',
+    'packages/myco-server/src/db/schema-v694.ts',
     'packages/myco-server/src/core/backup.ts',
   ]);
   expect(sources('packages/myco-server/src')

@@ -120,7 +120,7 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_run_map: ['write'],
   myco_run_cards: ['write'],
   myco_run_learning: ['complete'],
-  myco_run_curation: ['complete'],
+  myco_run_curation: ['material', 'complete'],
 };
 
 /** Whether this op of this tool writes. */

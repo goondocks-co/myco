@@ -333,3 +333,9 @@ export function embeddingPrice(provider: EmbeddingProviderId, model: string): nu
 /** The providers a target offers, in catalogue order. */
 export const embeddingProvidersFor = (target: DeploymentTarget): EmbeddingProviderId[] =>
   EMBEDDING_PROVIDERS.filter((id) => EMBEDDING_CATALOGUE[id].targets.includes(target));
+
+/** The Project curation ceiling's shared editor and admission rule. */
+export const CURATION_DAILY_LIMIT_SETTING = {
+  leaf: 'agent.spore_curation.daily_runs',
+  rule: { type: 'integer', min: 1, max: 1000, default: 5 },
+} as const;

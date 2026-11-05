@@ -110,3 +110,9 @@ export async function refreshEstimates(db: RelationalStore, now: number): Promis
   if(advanced!.meta.changes!==1)return {changed:0,more:await estimateRefreshDue(db,now)};
   return {changed:results.length+writes.length,more:!done};
 }
+
+/** The observed Project/profile price and the same seed used by estimateForClaim. */
+export function estimatedClaimPriceSql(project: string, task: string, key?: string): string {
+  return key === undefined ? String(seedForStage(task)) : `COALESCE((SELECT json_extract(value,'$.estimate') FROM agent_state
+    WHERE project_id=${project} AND agent_id='${ESTIMATE_AGENT}' AND key='${key.replaceAll("'", "''")}'),${seedForStage(task)})`;
+}
