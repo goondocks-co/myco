@@ -330,12 +330,12 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
 export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number): string {
   const n = (count: number) => (count > status.cap ? `at least ${status.cap}` : String(count));
   const parts = [
-    `${n(status.dueSessions)} sessions due (${n(status.dueCards)} cards to learn)`,
-    `${n(status.turnsAwaitingCards)} turns waiting for their card`,
-    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting)} history sessions waiting behind the history switch`] : []),
-    ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication)} sessions waiting for publication`] : []),
+    `${n(status.dueSessions)} sessions ready to learn (${n(status.dueCards)} summaries to learn from)`,
+    `${n(status.turnsAwaitingCards)} turns waiting to be summarized`,
+    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting)} older sessions waiting for history learning to be enabled`] : []),
+    ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication)} sessions waiting to become readable`] : []),
     status.lastCompleted === null ? 'nothing learned yet'
-      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'slice learned'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`,
+      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`,
     ...(budget === null || budget.automaticUsd === null ? [] : [`spent $${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} of $${budget.dailyUsd.toFixed(2)} today`]),
   ];
   return `Learning: ${parts.join('; ')}.`;

@@ -168,7 +168,7 @@ export function volumeSql(databasePath: string) {
 }
 
 /** Wakes the target until the session's document holds every event captured for it, so a read sees what was sent. */
-export async function documentsPublished(target: ParityTarget, sessionId: string, projectId = target.projectId,
+export async function documentsPublished(target: Pick<ParityTarget, 'url' | 'projectId' | 'sql' | 'ownerHeaders'>, sessionId: string, projectId = target.projectId,
   requestFetch: (request: Request) => Promise<Response> = (request) => fetch(request)): Promise<void> {
   const pending = async () => Number((await target.sql(`SELECT
       (SELECT COUNT(*) FROM publish_queue WHERE project_id=${lit(projectId)} AND session_id=${lit(sessionId)} AND failure IS NULL)

@@ -194,7 +194,7 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
     const status = await readLearningStatus(db, NOW + 3 * HOUR);
     expect(status).toMatchObject({ dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
     expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
-      .toBe('Learning: 2 sessions due (2 cards to learn); 0 turns waiting for their card; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 today.');
+      .toBe('Learning: 2 sessions ready to learn (2 summaries to learn from); 0 turns waiting to be summarized; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 today.');
   });
 });
 

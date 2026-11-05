@@ -29,6 +29,7 @@ const STUDIO_CREDENTIAL = 'mt_4Kp9Qs2Vx7Lm0Zb1';
 const BUSY_CREDENTIAL = 'mt_Ws8Yt3Nq6Rc2Hd5E';
 const STRAY_CREDENTIAL = 'mt_Pz1Ga7Ue4Oi9Kj3F';
 const STATUS = {
+  learning: { line: 'Learning: 2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 sessions waiting to become readable; last learning completed 2 min ago; spent $2.00 of $20.00 today.' },
   schema: { expected: 57, found: 57, matches: true }, target: 'bun',
   capabilities: [{ capability: 'blobs', label: 'Stored attachments and transcripts', present: true, operatorNames: ['MYCO_BLOBS'] }],
   workers: {
@@ -112,6 +113,16 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
 
 describe('Health', () => {
+  it('shows learning progress, its last outcome and daily spend, and surfaces a failed read', async () => {
+    server(routes());
+    mount('/status/health#status');
+    const section = await screen.findByRole('region', { name: 'Status' });
+    expect(await within(section).findByText(STATUS.learning.line)).toBeTruthy();
+    cleanup();
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: null, unavailable: ['learning'] }) }));
+    mount('/status/health#status');
+    expect(await screen.findByText(/learning progress.*couldn.t|couldn.t.*learning progress/i)).toBeTruthy();
+  });
   it('gives a next step for an older stop without promising an automatic retry', async () => {
     server(routes({
       '/api/attention': () => Response.json({ items: [{

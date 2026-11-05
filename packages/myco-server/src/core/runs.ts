@@ -233,10 +233,10 @@ function projectAdmissionParams(scope: ReadScope, capability?: string | null): (
  * hour-start, per-hour; single, project, task, run.
  */
 const ADMISSION_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
 ${PROJECT_ADMISSION_WHERE}`;
 
@@ -1357,10 +1357,10 @@ export function limitPassesSql(task: string, limits: DispatchLimits, now: number
   const bound = (value: number | null) => value === null ? null : Math.floor(value);
   const t = taskLiteral(task);
   const terms = [
-    bound(limits.fleet) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.fleet)}`,
-    bound(limits.concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.concurrent_runs)}`,
-    bound(limits.task_concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ${t}) < ${bound(limits.task_concurrent_runs)}`,
-    bound(limits.task_runs_per_hour) === null ? null : `(SELECT COUNT(*) FROM agent_runs WHERE task = ${t} AND started_at IS NOT NULL AND started_at >= ${Math.floor(now - 3_600_000)}) < ${bound(limits.task_runs_per_hour)}`,
+    bound(limits.fleet) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.fleet)}`,
+    bound(limits.concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES}) < ${bound(limits.concurrent_runs)}`,
+    bound(limits.task_concurrent_runs) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ${t}) < ${bound(limits.task_concurrent_runs)}`,
+    bound(limits.task_runs_per_hour) === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ${t} AND started_at IS NOT NULL AND started_at >= ${Math.floor(now - 3_600_000)}) < ${bound(limits.task_runs_per_hour)}`,
   ].filter((term): term is string => term !== null);
   return terms.length === 0 ? '1' : `(${terms.join(' AND ')})`;
 }
@@ -1442,10 +1442,21 @@ const holderAdmissionSql=(holder:string):string=>holder==='budget'?`${runOriginS
 /** Name `holder` on unclaimed queued tasks whose holder belongs to `from`, including selected profile holds. */
 export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly (string|null)[], holder: string, includeProfileHolds = false): Promise<void> {
   if (tasks.length === 0 || from.length === 0) return;
-  const list = (values: readonly (string|null)[]) => values.map(() => '?').join(', ');
-  const profiles = includeProfileHolds ? PROFILE_HOLD_PREFIXES.map((prefix) => ` OR held_by LIKE '${prefix}%'`).join('') : '';
-  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${from.includes(null)?' OR held_by IS NULL':''}${profiles}) AND held_by IS NOT ? AND ${holderAdmissionSql(holder)}`)
-    .bind(holder, ...tasks, ...from, holder).run();
+  const matches = [...new Set(from)].filter(value => value !== holder).map(value => ({ sql: 'held_by IS ?', params: [value] }));
+  if (includeProfileHolds) for (const prefix of PROFILE_HOLD_PREFIXES) {
+    const upper = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+    if (holder.startsWith(prefix)) {
+      matches.push({ sql: 'held_by >= ? AND held_by < ?', params: [prefix, holder] },
+        { sql: 'held_by > ? AND held_by < ?', params: [holder, upper] });
+    } else matches.push({ sql: 'held_by >= ? AND held_by < ?', params: [prefix, upper] });
+  }
+  const statements = [...new Set(tasks)].flatMap(task => matches.map(match =>
+    db.prepare(`UPDATE agent_runs SET held_by = ? WHERE rowid IN (
+      SELECT rowid FROM agent_runs INDEXED BY idx_agent_runs_queue_holder
+      WHERE status='queued' AND dispatched_by IS NULL AND task=? AND ${match.sql})
+      AND held_by IS NOT ? AND ${holderAdmissionSql(holder)}`)
+      .bind(holder, task, ...match.params, holder)));
+  if (statements.length > 0) await db.batch(statements);
 }
 
 /** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
@@ -1580,9 +1591,9 @@ export async function dispatchLoad(db: RelationalStore, task: string, now: numbe
   const other = exclude ?? null;
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) AS liveTaskRuns,
-       (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
+       (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_status_id WHERE ${LIVE_RUN_STATUSES} AND ${NOT_THE_RUN_ADMITTED}) AS liveRuns,
+       (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_live WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) AS liveTaskRuns,
+       (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) AS taskRunsLastHour`,
   ).bind(other, other, task, other, other, task, other, other, now - 3_600_000)
     .first<{ liveRuns: number; liveTaskRuns: number; taskRunsLastHour: number }>();
   return row ?? { liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 };
