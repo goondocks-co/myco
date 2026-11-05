@@ -9,7 +9,7 @@ CREATE INDEX IF NOT EXISTS idx_curation_runs_day ON agent_runs (project_id,task,
 CREATE INDEX IF NOT EXISTS idx_curation_resolution_author ON resolution_events (project_id,author,spore_id);
 
 CREATE TABLE IF NOT EXISTS spore_curation_work (
-    project_id TEXT NOT NULL REFERENCES projects(project_id), cluster_key TEXT NOT NULL, members TEXT NOT NULL CHECK(json_valid(members)), final_members TEXT CHECK(final_members IS NULL OR json_valid(final_members)),
+    project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id), cluster_key TEXT NOT NULL, members TEXT NOT NULL CHECK(json_valid(members)), final_members TEXT CHECK(final_members IS NULL OR json_valid(final_members)),
     due_at INTEGER, failures INTEGER NOT NULL DEFAULT 0, searches INTEGER NOT NULL DEFAULT 0, read_bytes INTEGER NOT NULL DEFAULT 0, run_id TEXT, close_token TEXT,
     decision TEXT CHECK(decision IN ('keep','resolved','changed','failed','oversized')), reason TEXT, decided_at INTEGER,
     PRIMARY KEY(project_id,cluster_key),
@@ -19,28 +19,28 @@ CREATE INDEX IF NOT EXISTS idx_curation_due ON spore_curation_work(project_id,du
 
 CREATE INDEX IF NOT EXISTS idx_curation_evidence ON spore_curation_work(project_id,run_id,decision);
 
-CREATE TABLE IF NOT EXISTS spore_curation_owners (project_id TEXT NOT NULL, spore_id TEXT NOT NULL, cluster_key TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS spore_curation_owners (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), spore_id TEXT NOT NULL, cluster_key TEXT NOT NULL,
     PRIMARY KEY(project_id,spore_id), FOREIGN KEY(project_id,cluster_key) REFERENCES spore_curation_work(project_id,cluster_key));
 
 CREATE INDEX IF NOT EXISTS idx_curation_owners_cluster ON spore_curation_owners(project_id,cluster_key);
 
-CREATE TABLE IF NOT EXISTS spore_curation_receipts (project_id TEXT NOT NULL, spore_id TEXT NOT NULL, revision INTEGER NOT NULL, cluster_key TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS spore_curation_receipts (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')), spore_id TEXT NOT NULL, revision INTEGER NOT NULL, cluster_key TEXT NOT NULL,
     PRIMARY KEY(project_id,spore_id), FOREIGN KEY(project_id,cluster_key) REFERENCES spore_curation_work(project_id,cluster_key));
 
 CREATE INDEX IF NOT EXISTS idx_curation_receipts_cluster ON spore_curation_receipts(project_id,cluster_key);
 
-CREATE TABLE IF NOT EXISTS spore_curation_candidates (project_id TEXT NOT NULL REFERENCES projects(project_id), run_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS spore_curation_candidates (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id), run_id TEXT NOT NULL,
     spore_id TEXT NOT NULL, revision INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id,run_id,spore_id),
     FOREIGN KEY(project_id,run_id) REFERENCES agent_runs(project_id,id) ON DELETE CASCADE);
 
-CREATE TABLE IF NOT EXISTS spore_curation_cursor (project_id TEXT PRIMARY KEY REFERENCES projects(project_id), after_at INTEGER NOT NULL DEFAULT 0,
+CREATE TABLE IF NOT EXISTS spore_curation_cursor (project_id TEXT PRIMARY KEY CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id), after_at INTEGER NOT NULL DEFAULT 0,
     after_id TEXT NOT NULL DEFAULT '', pass_revision INTEGER NOT NULL DEFAULT -1, active INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS spore_curation_clock (id INTEGER PRIMARY KEY CHECK(id=1), after_project TEXT NOT NULL DEFAULT '');
 
 INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1);
 
-CREATE TABLE IF NOT EXISTS spore_curation_changes (project_id TEXT PRIMARY KEY REFERENCES projects(project_id), revision INTEGER NOT NULL, dirty INTEGER NOT NULL, pending_at INTEGER);
+CREATE TABLE IF NOT EXISTS spore_curation_changes (project_id TEXT PRIMARY KEY CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id), revision INTEGER NOT NULL, dirty INTEGER NOT NULL, pending_at INTEGER);
 
 CREATE INDEX IF NOT EXISTS idx_curation_changes_due ON spore_curation_changes(dirty,project_id);
 
@@ -91,7 +91,7 @@ CREATE TRIGGER IF NOT EXISTS curation_vector_delete AFTER DELETE ON embedding_re
   SELECT OLD.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=OLD.project_id AND id=OLD.record_id),OLD.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
-CREATE TABLE IF NOT EXISTS project_settings (project_id TEXT NOT NULL REFERENCES projects(project_id), leaf TEXT NOT NULL, value TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS project_settings (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id), leaf TEXT NOT NULL, value TEXT NOT NULL,
     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY(project_id,leaf));
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '693');

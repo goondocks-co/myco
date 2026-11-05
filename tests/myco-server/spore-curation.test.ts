@@ -17,22 +17,24 @@ import { CURATION_STAGE, curationAssignment, discoverSporeClusters, CURATION_SEE
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { seedForStage } from '@myco-server-worker/core/budget-policy.js';
 
-async function fixture() {
+async function fixture(deferred = false) {
   const f = await budgetFixture();
-  const vectors = cloudflareVectorStore(indexFixture());
+  const index = indexFixture({deferred:true});
+  const vectors = cloudflareVectorStore(index);
   const calls = { get: 0, query: 0, embed: 0 };
   const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
   vectors.get = (...args) => { calls.get++; return get(...args); };
   vectors.query = (...args) => { calls.query++; return query(...args); };
   const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
-  const add = async (id: string, values = [1, 0], created = f.now) => {
+  const add = async (id: string, values = [1, 0], created = f.now, content = `Whole content for ${id}`) => {
     f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at)
-      VALUES('proj_1',?,'myco-agent',?,'decision','Use the named seam.',?)`, [id, `Whole content for ${id}`, created]);
+      VALUES('proj_1',?,'myco-agent',?,'decision','Use the named seam.',?)`, [id, content, created]);
     const source = f.sqlite.query<{ revision: string }, [string]>("SELECT revision FROM embedding_versions WHERE project_id='proj_1' AND type='spore' AND record_id=?").get(id)!;
     const partition = { projectId: 'proj_1', modelKey: 'curation-fixture' };
     const key = await vectorId(partition, 'spore', id, source.revision);
     await vectors.upsert(partition, [{ id: key, values, metadata: { type: 'spore', record_id: id, revision: source.revision, status: 'active', session_id: '', created_at: created, observation_type: 'decision', release_state: '', release_confidence: '' } }]);
+    if(!deferred) index.apply();
     f.sqlite.run(`INSERT OR REPLACE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
       VALUES('proj_1','curation-fixture',?,'spore',?,?,1,?)`, [key, id, source.revision, f.now]);
   };
@@ -47,7 +49,7 @@ async function fixture() {
     if (body.error !== undefined) throw new Error(JSON.stringify(body.error));
     return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as unknown;
   };
-  return { ...f, env, enable, add, discover, poll, ctx, call, calls };
+  return { ...f, env, enable, add, discover, poll, ctx, call, calls, applyVectors:()=>index.apply() };
 }
 
 test('off by default; no overlap creates no work or run; historical seeds require separate opt-in', async () => {
@@ -286,14 +288,17 @@ test('a capped cluster keeps exclusive open ownership and later unreviewed neigh
     expect(()=>f.sqlite.run("INSERT INTO spore_curation_owners SELECT project_id,spore_id,'other' FROM spore_curation_owners LIMIT 1")).toThrow();
     const claimed=await f.poll(); expect(claimed.claimed).toBe(true); if(!claimed.claimed)return;
     const ctx=await f.ctx(claimed.run.id,claimed.run.attemptId);
-    await f.add('search-only',[0,1],f.now+1);
+    for(let i=0;i<5;i++) await f.add(`search-${i}`,[0,1],f.now+1);
     await f.call(claimed.run.runToken,'myco_search',{query:'other-topic'});
-    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-only'})).toMatchObject({ok:false,error:expect.stringContaining('cap')});
+    for(let i=0;i<4;i++) expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:`search-${i}`})).toHaveProperty('spore');
+    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-4'})).toMatchObject({ok:false,error:expect.stringContaining('cap')});
     expect(await handleRunCuration({op:'complete',decision:'keep',members:curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members,reason:'Distinct applicability'},ctx)).toEqual({completed:true});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claimed.run.id,attemptId:claimed.run.attemptId,status:'failed',error:'fixture failure after decision'});
     await f.discover();
     const next=f.sqlite.query<{members:string},[]>("SELECT members FROM spore_curation_work WHERE decision IS NULL").get()!;
-    expect(JSON.parse(next.members).map((m:{id:string})=>m.id).sort()).toEqual(Array.from({length:8},(_,i)=>`s${String(i+8).padStart(2,'0')}`));
+    const original=curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members.map(member=>member.id);
+    expect(JSON.parse(next.members)).toHaveLength(8);
+    expect(JSON.parse(next.members).filter((member:{id:string})=>!original.includes(member.id)).length).toBe(8);
   } finally {f.sqlite.close();}
 });
 
@@ -444,4 +449,117 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
       expect(meter.reads()).toBeLessThanOrEqual(idle+Math.ceil(2.1*attempts)); expect(meter.writes()).toBe(0);
     }
   } finally {await mf.dispose();f.sqlite.close();}
+});
+
+test('ready vectors still applying retry at their source stamp and stop at the lost-vector limit',async()=>{
+  const {VECTOR_LOST_MS}=await import('@myco-server-worker/core/embedding/provider.js');
+  const f=await fixture(true);
+  try {
+    await f.enable(); await f.add('old'); f.applyVectors(); await f.discover();
+    await f.add('new',[1,0],f.now+1);
+    await discoverSporeClusters(f.env,f.now+1);
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:1,pending_at:f.now+1});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:0});
+    f.applyVectors(); await discoverSporeClusters(f.env,f.now+60_000);
+    expect(f.sqlite.query<{members:string},[]>('SELECT members FROM spore_curation_work').get()!.members).toContain('"new"');
+  }finally{f.sqlite.close();}
+  const g=await fixture(true);
+  try {
+    await g.enable(); await g.add('lost'); await discoverSporeClusters(g.env,g.now);
+    expect(g.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:1});
+    await discoverSporeClusters(g.env,g.now+VECTOR_LOST_MS);
+    expect(g.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
+    const before={...g.calls}; await discoverSporeClusters(g.env,g.now+VECTOR_LOST_MS+60_000);
+    expect(g.calls).toEqual(before);
+  }finally{g.sqlite.close();}
+});
+
+test('a failed run that resolved only searched hits closes changed before another model attempt',async()=>{
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('a'); await f.add('b'); for(const id of ['h1','h2']) await f.add(id,[0.7,0.7]); await f.discover();
+    const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+    await f.call(claim.run.runToken,'myco_search',{query:'seam'});
+    for(const id of ['h1','h2']) await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id});
+    expect(await f.call(claim.run.runToken,'myco_spores',{op:'supersede',old_spore_id:'h1',new_spore_id:'h2',expect_revision:0,expect_status:'active',reason:'h2 covers h1'})).toMatchObject({status:'superseded'});
+    await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'failed',error:'fixture ended before complete'});
+    f.sqlite.run('UPDATE spore_curation_work SET due_at=?',[f.now]);
+    expect(await f.poll()).toMatchObject({claimed:false});
+    expect(f.sqlite.query('SELECT decision,failures FROM spore_curation_work').get()).toEqual({decision:'changed',failures:1});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM agent_runs').get()).toEqual({n:1});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_receipts').get()).toEqual({n:0});
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_owners').get()).toEqual({n:0});
+    await f.add('later',[1,0],f.now+1); await f.discover(); expect((await f.poll()).claimed).toBe(true);
+  }finally{f.sqlite.close();}
+});
+
+const topicVector=(i:number):number[]=>{
+  if(i===0)return [1,0,0];
+  const score=i===1?0.84:0.73+0.01*(i%6), angle=i===1?0:0.04*(i%4), side=Math.sqrt(1-score**2);
+  return [score,side*Math.cos(angle),side*Math.sin(angle)];
+};
+
+test('the strong gate offers a lone pair, excludes noise below the topic score, and keeps weak seeds cheap',async()=>{
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('a',topicVector(0)); await f.add('b',topicVector(1)); await f.add('noise',[0.7,-Math.sqrt(1-0.7**2),0]);
+    await f.discover();
+    const row=f.sqlite.query<{members:string},[]>('SELECT members FROM spore_curation_work').get()!;
+    expect(JSON.parse(row.members).map((m:{id:string})=>m.id)).toEqual(['a','b']);
+  }finally{f.sqlite.close();}
+  const g=await fixture();
+  try {
+    await g.enable(); await g.add('a',[1,0]); await g.add('b',[0.78,Math.sqrt(1-0.78**2)]);
+    await g.discover(); expect(g.calls.query).toBe(2); expect(g.calls.get).toBe(2);
+    expect(g.sqlite.query('SELECT COUNT(*) n FROM agent_runs').get()).toEqual({n:0});
+  }finally{g.sqlite.close();}
+});
+
+test('a varied thirty-spore topic fills eight, rejoins wisdom with leftovers, and terminates for consolidate and keep-all',async()=>{
+  const size=30;
+  for(const resolve of [true,false]) {
+    const f=await fixture(); let runs=0, metWisdom=false;
+    try {
+      await f.enable(); await f.setting(500);
+      await settingsWriter(f.db).setProjectLeaf('proj_1','agent.spore_curation.daily_runs',size,'test',f.now);
+      for(let i=0;i<size;i++) await f.add(`t${String(i).padStart(2,'0')}`,topicVector(i));
+      for(;runs<size;runs++) {
+        await f.discover(); const claim=await f.poll(); if(!claim.claimed)break;
+        const ctx=await f.ctx(claim.run.id,claim.run.attemptId);
+        const members=curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members;
+        if(runs===0)expect(members).toHaveLength(8);
+        metWisdom ||= members.some(m=>m.id.startsWith('wisdom-')) && members.some(m=>m.id.startsWith('t'));
+        if(resolve) {
+          const result=await f.call(claim.run.runToken,'myco_spores',members.length===2
+            ? {op:'supersede',old_spore_id:members[0]!.id,new_spore_id:members[1]!.id,expect_revision:members[0]!.revision,expect_status:'active',reason:'The target contains the entire topic.'}
+            : {op:'consolidate',source_spore_ids:members,observation_type:'wisdom',consolidated_content:'All topic details preserved.',agent_line:'Retain all topic details.',reason:'One topic.'}) as {new_spore_id?:string;status?:string};
+          expect(result.status).toBe(members.length===2?'superseded':'consolidated');
+          if(result.new_spore_id)await f.add(result.new_spore_id,[0.76,Math.sqrt(1-0.76**2),0]);
+        }
+        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:resolve?'resolved':'keep',...(resolve?{}:{members}),reason:'One topic; all chosen members were read.'})).toEqual({completed:true});
+        await recordReport(f.db,{projectId:'proj_1'},{runId:claim.run.id,agentId:'myco-agent',action:'curated',summary:'Curated topic',details:null,audit:null,createdAt:f.now});
+        expect(await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'})).toMatchObject({status:'completed'});
+      }
+      expect(runs).toBeLessThan(size);
+      expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE status='active'").get()).toEqual({n:resolve?1:size});
+      if(resolve) {expect(metWisdom).toBe(true);expect(runs).toBeLessThanOrEqual(Math.ceil((size-1)/7));}
+      await f.discover(); const before={...f.calls}; await f.discover(); expect(await f.poll()).toMatchObject({claimed:false}); expect(f.calls).toEqual(before);
+    }finally{f.sqlite.close();}
+  }
+});
+
+test('oversized seed material drops its weakest non-anchor candidates before closing the pair',async()=>{
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('a',topicVector(0),f.now,'a'.repeat(4000)); await f.add('b',topicVector(1),f.now,'b'.repeat(4000));
+    await f.add('high',topicVector(5),f.now,'h'.repeat(8000)); await f.add('low',topicVector(6),f.now,'l'.repeat(20000)); await f.discover();
+    const claim=await f.poll(); expect(claim.claimed).toBe(true); if(!claim.claimed)return;
+    const ctx=await f.ctx(claim.run.id,claim.run.attemptId);
+    expect(curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members.map(m=>m.id)).toEqual(['a','b','high']);
+  }finally{f.sqlite.close();}
+  const g=await fixture();
+  try {
+    await g.enable(); await g.add('a',[1,0],g.now,'a'.repeat(18000)); await g.add('b',[1,0],g.now,'b'.repeat(18000)); await g.discover();
+    expect(await g.poll()).toMatchObject({claimed:false}); expect(g.sqlite.query('SELECT decision FROM spore_curation_work').get()).toEqual({decision:'oversized'});
+  }finally{g.sqlite.close();}
 });

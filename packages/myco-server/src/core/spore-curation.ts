@@ -4,7 +4,7 @@ import type { TaskInput } from './task-inputs.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabled, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from './settings.js';
 import { resolveSemanticSearch, searchDeployment } from './search.js';
-import { semanticHits } from '../read/embedding.js';
+import { semanticHits, type SemanticHit } from '../read/embedding.js';
 import { sha256Hex } from '../hash.js';
 import { getSpore } from './spores.js';
 import { reserveForStage, BUDGET_WINDOW_MS } from './budget-policy.js';
@@ -13,24 +13,31 @@ import { spendRowsSql, effectiveBudgetSql } from './run-budget.js';
 import { LEARNING_BACKOFF_MS } from './learning-sessions.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 import { writeGuardStore, writeGuardBatch } from './write-guard-store.js';
-import { cosineSimilarity, type StoredVector } from './embedding/vectors.js';
 import { curationChangeSql } from '../db/curation-changes.js';
+import { VECTOR_LOST_MS } from './embedding/provider.js';
 
-/** A seed needs a neighbour at this cosine score; about one spore in eight qualifies in the sampled store. */
+/** A seed needs a neighbour at this score to start a run. */
 export const CURATION_SIMILARITY = 0.80;
-export const CURATION_CLUSTER_CAP = 8;
+/** Neighbours at this score fill a qualifying seed's topic candidates. */
+export const CURATION_GROUP_SIMILARITY = 0.72;
+export const CURATION_SEED_CAP = 8;
+export const CURATION_CLUSTER_CAP = 12;
 export const CURATION_SEEDS_PER_TICK = 8;
-export const CURATION_NEIGHBORS = CURATION_CLUSTER_CAP * 2;
+export const CURATION_GATE_NEIGHBORS = 16;
+export const CURATION_NEIGHBORS = 48;
 export const CURATION_MAX_FAILURES = 3;
-export const CURATION_MATERIAL_BYTES = 24_000;
+export const CURATION_MATERIAL_BYTES = 32_000;
 export const CURATION_REASON_CHARS = 2048;
 export const CURATION_SEARCH_LIMIT = 6;
 export const CURATION_SEARCH_RESULTS = 8;
 const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
+interface SeedMember extends Member { score: number }
+type Neighbour = SeedMember & { reviewed: number };
+const neighbourOrder = (a: Neighbour, b: Neighbour) => a.reviewed-b.reviewed || b.score-a.score || a.id.localeCompare(b.id);
 export interface CurationAssignment { kind: 'curation'; key: string; members: Member[] }
 interface Cluster { cluster_key: string; members: string; final_members: string | null; read_bytes: number; due_at: number | null; failures: number; run_id: string | null; decision: string | null }
-const membersOf = (row: Cluster): Member[] => JSON.parse(row.members) as Member[];
+const membersOf = (row: Cluster): SeedMember[] => JSON.parse(row.members) as SeedMember[];
 const work = (db: RelationalStore, project: string, key: string) => db.prepare('SELECT * FROM spore_curation_work WHERE project_id=? AND cluster_key=?').bind(project, key).first<Cluster>();
 const curationSubject = (projectId: string, key: string): string => `curation:${projectId}:${key}`;
 const on = (project: string) => capabilityOnSql(project, "'spore_curation'");
@@ -39,12 +46,12 @@ const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 /** Original ids and revisions identify a seed assignment independently of vector order. */
 export async function curationClusterKey(members: readonly Member[]): Promise<string> {
-  return sha256Hex(JSON.stringify([...members].sort((a, b) => a.id < b.id ? -1 : 1)));
+  return sha256Hex(JSON.stringify([...members].sort((a, b) => a.id < b.id ? -1 : 1).map(({id,revision})=>({id,revision}))));
 }
 
 /** The seed outcome stays keyed to its original revisions; only final members receive adjudication receipts. */
 function closeStatements(db: RelationalStore, projectId: string, row: Cluster, decision: string, reason: string, now: number,
-  members = decision === 'changed' ? [] : membersOf(row)): PreparedStatement[] {
+  members: readonly Member[] = decision === 'changed' ? [] : membersOf(row)): PreparedStatement[] {
   const token = crypto.randomUUID();
   const held = `EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND close_token=?)`;
   const bind = [projectId, row.cluster_key, token];
@@ -62,7 +69,7 @@ function closeStatements(db: RelationalStore, projectId: string, row: Cluster, d
 }
 
 /** Open membership is acquired in the same transaction as the revision-bound work row. */
-async function offerCluster(db: RelationalStore, projectId: string, members: Member[], now: number): Promise<boolean> {
+async function offerCluster(db: RelationalStore, projectId: string, members: SeedMember[], now: number): Promise<boolean> {
   const key = await curationClusterKey(members);
   const current = members.map(() => `EXISTS (SELECT 1 FROM spores WHERE project_id=? AND id=? AND status='active' AND revision=?)`).join(' AND ');
   const free = members.map(() => '?').join(',');
@@ -75,6 +82,16 @@ async function offerCluster(db: RelationalStore, projectId: string, members: Mem
       .bind(projectId, m.id, key, projectId, key)),
   ]);
   return created!.meta.changes === 1;
+}
+
+async function currentNeighbour(db: RelationalStore, projectId: string, hit: SemanticHit): Promise<Neighbour | null> {
+  const member = await db.prepare(`SELECT s.id,s.revision,CASE WHEN ack.revision=s.revision THEN 1 ELSE 0 END AS reviewed
+    FROM spores s LEFT JOIN spore_curation_receipts ack ON ack.project_id=s.project_id AND ack.spore_id=s.id
+    WHERE s.project_id=? AND s.id=? AND s.status='active'
+    AND EXISTS (SELECT 1 FROM embedding_versions WHERE project_id=s.project_id AND type='spore' AND record_id=s.id AND revision=?)
+    AND NOT EXISTS (SELECT 1 FROM spore_curation_owners WHERE project_id=s.project_id AND spore_id=s.id)`)
+    .bind(projectId,hit.record_id,hit.revision).first<Member & {reviewed:number}>();
+  return member === null ? null : {...member,score:hit.score};
 }
 
 /** One Project and at most eight indexed seeds per wake; a settled pass rests until its source/vector frontier changes. */
@@ -126,48 +143,49 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
       AND (COALESCE(updated_at,created_at)>? OR id>?) ORDER BY COALESCE(updated_at,created_at),id LIMIT ?`)
     .bind(id, afterAt+1, afterAt+1, '', CURATION_SEEDS_PER_TICK-tied.results.length).all<Member & { stamp: number }>()).results;
   const seeds = { results: [...tied.results, ...later] };
-  let last = { stamp: afterAt, id: afterId }, found = false;
+  let last = { stamp: afterAt, id: afterId }, found = false, deferredAt: number | null = null;
   for (const seed of seeds.results) {
     last = seed;
     const ack = await db.prepare('SELECT revision FROM spore_curation_receipts WHERE project_id=? AND spore_id=?').bind(id, seed.id).first<{ revision: number }>();
     if (ack?.revision === seed.revision) continue;
-    const receipt = await db.prepare(`SELECT r.id FROM embedding_versions v CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source
+    const receipt = await db.prepare(`SELECT r.id,r.updated_at FROM embedding_versions v CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source
       WHERE v.project_id=? AND v.type='spore' AND v.record_id=? AND r.project_id=v.project_id AND r.model_key=?
         AND r.type=v.type AND r.record_id=v.record_id AND r.revision=v.revision AND r.ready=1 LIMIT 1`)
-      .bind(id, seed.id, semantic.provider.modelKey).first<{ id: string }>();
+      .bind(id, seed.id, semantic.provider.modelKey).first<{ id: string; updated_at: number }>();
     if (receipt === null) continue;
     const partition = { projectId: id, modelKey: semantic.provider.modelKey };
     const [vector] = await semantic.vectors.get(partition, [receipt.id]);
-    if (vector === undefined) continue;
-    const hits = (await semanticHits(db, { projectId: id }, semantic, vector.values,
-      { topK: CURATION_NEIGHBORS, minScore: CURATION_SIMILARITY, filters: { type: 'spore', status: 'active' } })).filter(hit => hit.record_id !== seed.id && hit.score >= CURATION_SIMILARITY);
-    const vectors = hits.length === 0 ? new Map<string, StoredVector>() : new Map((await semantic.vectors.get(partition, hits.map(h => h.vector_id))).map(v => [v.id, v]));
-    const candidates = [];
-    for (const hit of hits) {
-      const member = await db.prepare(`SELECT s.id,s.revision,CASE WHEN ack.revision=s.revision THEN 1 ELSE 0 END AS reviewed
-        FROM spores s LEFT JOIN spore_curation_receipts ack ON ack.project_id=s.project_id AND ack.spore_id=s.id
-        WHERE s.project_id=? AND s.id=? AND s.status='active'
-        AND EXISTS (SELECT 1 FROM embedding_versions WHERE project_id=s.project_id AND type='spore' AND record_id=s.id AND revision=?)
-        AND NOT EXISTS (SELECT 1 FROM spore_curation_owners WHERE project_id=s.project_id AND spore_id=s.id)`)
-        .bind(id, hit.record_id, hit.revision).first<Member & { reviewed: number }>();
-      const candidate = vectors.get(hit.vector_id);
-      if (member !== null && candidate !== undefined) candidates.push({ member, vector: candidate, score: hit.score });
+    if (vector === undefined) {
+      if (now-receipt.updated_at < VECTOR_LOST_MS) { deferredAt = seed.stamp; break; }
+      continue;
     }
-    const clique: { member: Member; vector: StoredVector }[] = [{ member: seed, vector }];
-    // Mutually close seed neighbours fill unreviewed revisions first, then by descending score.
-    for (const candidate of candidates.sort((a,b) => a.member.reviewed-b.member.reviewed || b.score-a.score || a.member.id.localeCompare(b.member.id))) {
-      if (!clique.every(member => cosineSimilarity(member.vector.values,candidate.vector.values) >= CURATION_SIMILARITY)) continue;
-      clique.push(candidate);
-      if (clique.length === CURATION_CLUSTER_CAP) break;
-    }
-    if (clique.length >= 2 && await offerCluster(db, id, clique.map(m => ({ id: m.member.id, revision: m.member.revision })), now)) { found = true; break; }
+    const strong = (await semanticHits(db,{projectId:id},semantic,vector.values,
+      {topK:CURATION_GATE_NEIGHBORS,minScore:CURATION_SIMILARITY,filters:{type:'spore',status:'active'}}))
+      .filter(hit=>hit.record_id!==seed.id && hit.score>=CURATION_SIMILARITY);
+    const observed = new Map<string,Promise<Neighbour | null>>();
+    const neighbour = (hit: SemanticHit) => {
+      let held=observed.get(hit.record_id);
+      if(held===undefined) {held=currentNeighbour(db,id,hit);observed.set(hit.record_id,held);}
+      return held;
+    };
+    const anchors=(await Promise.all(strong.map(neighbour))).flatMap(member=>member===null?[]:[member]).sort(neighbourOrder);
+    const closest=anchors[0];
+    if(closest===undefined) continue;
+    const hits=(await semanticHits(db,{projectId:id},semantic,vector.values,
+      {topK:CURATION_NEIGHBORS,minScore:CURATION_GROUP_SIMILARITY,filters:{type:'spore',status:'active'}}))
+      .filter(hit=>hit.record_id!==seed.id && hit.record_id!==closest!.id && hit.score>=CURATION_GROUP_SIMILARITY);
+    const candidates=(await Promise.all(hits.map(neighbour))).flatMap(member=>member===null?[]:[member]);
+    candidates.sort(neighbourOrder);
+    const members: SeedMember[]=[{id:seed.id,revision:seed.revision,score:1},closest,...candidates.slice(0,CURATION_SEED_CAP-2)].map(({id,revision,score})=>({id,revision,score}));
+    if(await offerCluster(db,id,members,now)) {found=true;break;}
   }
-  const finished = !found && seeds.results.length < CURATION_SEEDS_PER_TICK;
+  const finished = deferredAt !== null || (!found && seeds.results.length < CURATION_SEEDS_PER_TICK);
+  const checkpoint = 'EXISTS (SELECT 1 FROM spore_curation_cursor WHERE project_id=? AND active=0 AND pass_revision=? AND after_at=? AND after_id=?)';
   await db.batch([
     db.prepare(`UPDATE spore_curation_cursor SET after_at=?,after_id=?,active=? WHERE project_id=? AND pass_revision=?
       AND active=1 AND after_at=? AND after_id=?`).bind(last.stamp,last.id,finished ? 0 : 1,id,pass,afterAt,afterId),
-    ...(finished ? [db.prepare(`UPDATE spore_curation_changes SET dirty=CASE WHEN revision=? THEN 0 ELSE 1 END
-      WHERE project_id=? AND EXISTS (SELECT 1 FROM spore_curation_cursor WHERE project_id=? AND active=0 AND pass_revision=? AND after_at=? AND after_id=?)`)
+    ...(deferredAt !== null ? [db.prepare(curationChangeSql('?', '?', checkpoint)).bind(id,deferredAt,id,pass,last.stamp,last.id)] : finished ? [db.prepare(`UPDATE spore_curation_changes SET dirty=CASE WHEN revision=? THEN 0 ELSE 1 END
+      WHERE project_id=? AND ${checkpoint}`)
       .bind(pass,id,id,pass,last.stamp,last.id)] : []),
   ]);
   return found ? 1 : 0;
@@ -188,22 +206,34 @@ export function curationAdmissionSql(project: string, now: number, estimateKey?:
 export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: string, key: string): Promise<TaskInput | null> {
   const row = await work(env.db, projectId, key);
   if (row === null || row.decision !== null) return null;
-  const members = membersOf(row);
-  const spores = await Promise.all(members.map(m => getSpore(env.db, { projectId }, m.id)));
-  const changed = spores.some((s, i) => s === null || s.status !== 'active' || s.revision !== members[i]!.revision);
-  const material = JSON.stringify(spores), materialBytes = new TextEncoder().encode(material).length;
-  if (changed || materialBytes > CURATION_MATERIAL_BYTES) {
-    await env.db.batch(closeStatements(env.db, projectId, row, changed ? 'changed' : 'oversized', changed ? 'Assigned member changed' : 'Whole material exceeds the curation input bound', Date.now()));
+  const seeds = membersOf(row);
+  const spores = await Promise.all(seeds.map(member=>getSpore(env.db,{projectId},member.id)));
+  if(row.final_members!==null || spores.some((spore,i)=>spore===null || spore.status!=='active' || spore.revision!==seeds[i]!.revision)) {
+    await env.db.batch(closeStatements(env.db,projectId,row,'changed','Assigned member changed or a prior attempt chose its final group',Date.now()));
     return null;
   }
-  const assignment: CurationAssignment = { kind: 'curation', key, members };
-  return { instruction: curationPrompt(material), inputHash: key, counts: { spores: members.length, material_bytes: materialBytes }, context: { curation: assignment }, subject: curationSubject(projectId, key) };
+  const kept=seeds.map((member,i)=>({member,spore:spores[i]!}));
+  let material=JSON.stringify(kept.map(item=>item.spore)), materialBytes=new TextEncoder().encode(material).length;
+  while(materialBytes>CURATION_MATERIAL_BYTES && kept.length>2) {
+    const lowest=kept.slice(2).reduce((best,item,i)=>item.member.score<kept[best]!.member.score?i+2:best,2);
+    kept.splice(lowest,1);
+    material=JSON.stringify(kept.map(item=>item.spore)); materialBytes=new TextEncoder().encode(material).length;
+  }
+  if(materialBytes>CURATION_MATERIAL_BYTES) {
+    await env.db.batch(closeStatements(env.db,projectId,row,'oversized','Seed and closest neighbour exceed the whole-material bound',Date.now(),seeds.slice(0,2)));
+    return null;
+  }
+  const members=kept.map(({member:{id,revision}})=>({id,revision}));
+  const assignment:CurationAssignment={kind:'curation',key,members};
+  return {instruction:curationPrompt(material),inputHash:key,counts:{spores:members.length,material_bytes:materialBytes},context:{curation:assignment},subject:curationSubject(projectId,key)};
+
 }
 
 /** The ask for one bounded cluster and every whole member. */
 export function curationPrompt(material: string): string {
   return [
-    'Review one group, starting with these near-duplicate seeds. Vector proximity is a shortlist; judge topical membership yourself.',
+    'The seed may be a lone duplicate pair, one topic, several topics, or part of a topic larger than the cap. Choose the topic with the strongest overlap. Low scores are candidates, not evidence; leave out spores that merely share vocabulary.',
+    'For a large topic, consolidate the related material that fits. Left-out sources and the new wisdom can meet in a later group. Whole reads are separate from final membership.',
     `Use myco_search for up to ${CURATION_SEARCH_LIMIT} semantic searches of active Project spores. Results carry id, revision, type and agent_line. Call ${TOOL} op material to read candidates whole before judging them. Reads do not admit members; at most ${CURATION_CLUSTER_CAP} distinct whole spores, including these seeds, may be read.`,
     'Read every whole spore below and every addition before acting. Preserve every specific detail, including file paths, error messages, values, applicability, historical facts, citations and useful agent lines.',
     'Choose a final subset of the seeds and whole-read search hits. Leave off-topic candidates out. Choose one action for that final group: consolidate at least three related spores into one new wisdom spore; supersede one of two spores only when the other fully covers it; or keep the group apart with a reason. Perform at most one lifecycle operation.',
@@ -326,17 +356,16 @@ export async function curationWriteAdmission(db: RelationalStore, projectId: str
 
 /** Each retained member is unchanged, or carries exactly this run's one lifecycle transition and its lineage event. */
 function decisionGuard(db: RelationalStore, projectId: string, runId: string, members: readonly Member[], decision: string, requireResolution: boolean, openKey: string, selected: string | null = null): PreparedStatement {
-  const terms = members.map(() => `EXISTS (SELECT 1 FROM spores s WHERE s.project_id=? AND s.id=? AND
+  const terms = members.map(() => `EXISTS (SELECT 1 FROM spores s WHERE s.project_id=${literal(projectId)} AND s.id=? AND
     ((s.status='active' AND s.revision=?)${decision === 'keep' ? '' : ` OR (s.revision=? AND EXISTS (
-      SELECT 1 FROM resolution_events e INDEXED BY idx_curation_resolution_author WHERE e.project_id=s.project_id AND e.author=? AND e.spore_id=s.id
+      SELECT 1 FROM resolution_events e INDEXED BY idx_curation_resolution_author WHERE e.project_id=s.project_id AND e.author=${literal(runId)} AND e.spore_id=s.id
         AND ((e.action='supersede' AND s.status='superseded') OR (e.action='consolidate' AND s.status='consolidated') )))`}))`);
-  const params: unknown[] = members.flatMap(m => [projectId, m.id, m.revision, ...(decision === 'keep' ? [] : [m.revision+1, runId])]);
+  const params: unknown[] = members.flatMap(m => [m.id, m.revision, ...(decision === 'keep' ? [] : [m.revision+1])]);
   if (decision !== 'keep' && requireResolution) {
-    terms.push('EXISTS (SELECT 1 FROM resolution_events INDEXED BY idx_curation_resolution_author WHERE project_id=? AND author=? LIMIT 1)');
-    params.push(projectId, runId);
+    terms.push(`EXISTS (SELECT 1 FROM resolution_events INDEXED BY idx_curation_resolution_author WHERE project_id=${literal(projectId)} AND author=${literal(runId)} LIMIT 1)`);
   }
-  terms.push('EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=? AND decision IS NULL AND final_members IS ?)');
-  params.push(projectId, openKey, runId, selected);
+  terms.push(`EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=${literal(projectId)} AND cluster_key=${literal(openKey)} AND run_id=${literal(runId)} AND decision IS NULL AND final_members IS ?)`);
+  params.push(selected);
   for (const member of members) {
     terms.push(`EXISTS (SELECT 1 FROM spore_curation_candidates WHERE project_id=${literal(projectId)} AND run_id=${literal(runId)} AND spore_id=? AND revision=? AND read=1)
       AND NOT EXISTS (SELECT 1 FROM spore_curation_owners WHERE project_id=${literal(projectId)} AND spore_id=? AND cluster_key<>${literal(openKey)})`);
