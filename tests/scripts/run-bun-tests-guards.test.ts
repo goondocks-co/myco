@@ -511,7 +511,7 @@ describe('run-bun-tests guards', () => {
     const reports = path.join(base, 'reports');
     const env = { MYCO_TEST_KIND: 'node', MYCO_TEST_GROUP: 'node env isolated 1', MYCO_RUNNER_REPORT_DIR: reports };
     const runs = await Promise.all([runRunner(null, env), runRunner(null, env)]);
-    expect(runs.map(run => run.status)).toEqual([0, 0]);
+    expect(runs.map(run => ({ status: run.status, output: run.status === 0 ? '' : run.output }))).toEqual([{ status: 0, output: '' }, { status: 0, output: '' }]);
     const bundles = runs.map(run => run.output.match(/target\/test-bundles\/node-env-mt-[^;\s]+/)?.[0]);
     expect(bundles.every(Boolean)).toBe(true);
     expect(new Set(bundles).size).toBe(2);

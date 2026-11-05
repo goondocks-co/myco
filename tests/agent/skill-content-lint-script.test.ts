@@ -29,7 +29,6 @@ const tsxBin = path.join(
   process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
 );
 const tmpRoots: string[] = [];
-const repoSkillDirs: string[] = [];
 
 function skill(body: string): string {
   return `---\nname: myco:test\ndescription: Test skill\n---\n\n${body}\n`;
@@ -44,9 +43,9 @@ function makeSkillDir(body: string): string {
   return root;
 }
 
-function runLint(args: string[]) {
-  return spawnSync(tsxBin, [scriptPath, ...args], {
-    cwd: repoRoot,
+function runLint(args: string[], cwd = repoRoot) {
+  return spawnSync(tsxBin, ['--tsconfig', path.join(repoRoot, 'tsconfig.json'), scriptPath, ...args], {
+    cwd,
     encoding: 'utf8',
   });
 }
@@ -54,9 +53,6 @@ function runLint(args: string[]) {
 afterEach(() => {
   for (const root of tmpRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
-  }
-  for (const skillDir of repoSkillDirs.splice(0)) {
-    fs.rmSync(skillDir, { recursive: true, force: true });
   }
 });
 
@@ -85,8 +81,10 @@ describe('lint-skill-content script', () => {
   });
 
   it('scans untracked default skill files in the worktree', () => {
-    const skillDir = path.join(repoRoot, '.agents', 'skills', `lint-untracked-${process.pid}`);
-    repoSkillDirs.push(skillDir);
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-skill-lint-'));
+    tmpRoots.push(worktree);
+    expect(spawnSync('git', ['init', '-q', worktree]).status).toBe(0);
+    const skillDir = path.join(worktree, '.agents', 'skills', 'lint-untracked');
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillDir, 'SKILL.md'),
@@ -94,10 +92,10 @@ describe('lint-skill-content script', () => {
       'utf8',
     );
 
-    const result = runLint(['--strict']);
+    const result = runLint(['--strict'], worktree);
 
     expect(result.status).toBe(1);
-    expect(result.stdout).toContain(`.agents/skills/lint-untracked-${process.pid}/SKILL.md`);
+    expect(result.stdout).toContain('.agents/skills/lint-untracked/SKILL.md');
     expect(result.stdout).toContain('HARD myco-version-parenthetical');
   });
 

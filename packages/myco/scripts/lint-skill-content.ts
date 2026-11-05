@@ -82,7 +82,7 @@ Default mode fails on hard contamination only. --strict also fails on warnings.
 
 function repoRoot(): string {
   try {
-    return execFileSync('git', ['-C', FALLBACK_REPO_ROOT, 'rev-parse', '--show-toplevel'], {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
