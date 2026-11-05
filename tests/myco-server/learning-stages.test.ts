@@ -9,12 +9,12 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { cardMaterialPages, writeRunCards, type CardFields, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
+import { forgetTurnStatement, cardStatements, cardMaterialPages, writeRunCards, type CardFields, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
 import { MATERIAL_CHANGED, MATERIAL_UNREAD, materialRead } from '@myco-server-worker/core/material-pages.js';
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import {
-  learningHead, buildLearningAssignment, learningMaterialPages, assignedCards, completeLearning, readLearningStatus, learningStatusLine,
+  pendingCardsStatement, learningHead, buildLearningAssignment, learningMaterialPages, assignedCards, completeLearning, readLearningStatus, learningStatusLine,
 } from '@myco-server-worker/core/learning-sessions.js';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import type { BlobStore } from '@myco-server-worker/core/adapters.js';
@@ -1096,6 +1096,7 @@ it('keeps pending turns when the document is not live at material read or at the
       await db.prepare("UPDATE agent_runs SET run_context=json_set(run_context,'$.assignment.turns',json(?)) WHERE id=?")
         .bind(JSON.stringify([{ turnKey: missing, changes: 0 }]), run.claimed.run.id).run();
       keys.push(missing);
+      await pendingCardsStatement(db, 'project', 'long').run();
     }
     const before = (await db.prepare("SELECT turn_key,state,changes FROM turn_cards ORDER BY turn_key").all()).results;
     if (!changesAfterRead) await db.prepare("UPDATE session_documents SET state='convert' WHERE session_id='long'").run();
@@ -1103,8 +1104,10 @@ it('keeps pending turns when the document is not live at material read or at the
     expect(material.turns).toEqual([]);
     if (changesAfterRead) await db.prepare("UPDATE session_documents SET state='convert' WHERE session_id='long'").run();
     if (mode === 'recovered-before-write') await db.prepare("UPDATE session_documents SET state='live' WHERE session_id='long'").run();
-    expect(JSON.parse((await run.raw({ op: 'write', revision: material.revision, cards: [] })).content[0]!.text))
-      .toEqual({ written: 0, changed_since_served: [] });
+    const answer = await run.harness.request(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] });
+    if (mode === 'recovered-before-write') {
+      expect(await answer.json()).toMatchObject({ result: { structuredContent: { result: { written: 0, changed_since_served: [] } } } });
+    } else expect(await answer.json()).toMatchObject({ error: { code: -32000, data: { code: 'tool_call_failed' } } });
     expect((await db.prepare("SELECT turn_key,state,changes FROM turn_cards ORDER BY turn_key").all()).results).toEqual(before);
     await run.harness.call(run.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'document not live', audit: RUN_AUDIT });
     expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 }, {
@@ -1163,5 +1166,77 @@ it('admits a first fresh learning claim and retains its bounded retries after so
     expect(await harness.poll(at)).toMatchObject({ claimed: false });
     expect((await readLearningStatus(db, at)).historyWaiting).toBe(1);
     expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task='turn-cards'").first()).toEqual({ n: 0 });
+  });
+});
+
+it('refuses card writes retryably if the document leaves live after reading, including at the mutation boundary', async () => {
+  for (const atBatch of [false, true]) await withDocumentStores(async db => {
+    const turns = plainTurns(2, 1100);
+    const run = await cardRun(db, turns);
+    const material = await run.readAll();
+    const pending = (await db.prepare("SELECT turn_key,state,input_hash,card FROM turn_cards ORDER BY turn_key").all()).results;
+    const convert = async () => { await db.prepare("UPDATE session_documents SET state='convert' WHERE session_id='long'").run(); };
+    if (atBatch) run.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.includes("UPDATE turn_cards SET state = 'carded'"), convert, true);
+    else await convert();
+    const response = await run.harness.request(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
+      cards: turns.map(turn => ({ turns: [turn.id], signal: 'high', card: EMPTY_CARD })) });
+    expect(await response.json()).toMatchObject({ error: { code: -32000, data: { code: 'tool_call_failed' } } });
+    const held = await db.prepare("SELECT changes FROM turn_cards WHERE session_id='long' AND turn_key=?").bind(turns[0]!.id).first<{ changes: number }>();
+    await db.batch(cardStatements(db, 'project', 'long', { turnKey: turns[0]!.id, changes: held!.changes }, {
+      value: EMPTY_CARD, signal: 'high', reason: 'model', sharedWith: null, covered: null, runId: run.claimed.run.id, model: 'fake',
+    }, NOW + DAY));
+    expect((await db.prepare("SELECT turn_key,state,input_hash,card FROM turn_cards ORDER BY turn_key").all()).results).toEqual(pending);
+    expect(await db.prepare("SELECT pending_cards,due_cards FROM learning_sessions WHERE session_id='long'").first())
+      .toEqual({ pending_cards: 2, due_cards: 0 });
+    run.bindings.MYCO_DB = db;
+    await db.prepare("UPDATE session_documents SET state='live' WHERE session_id='long'").run();
+    await forgetTurnStatement(db, 'project', 'long', { turnKey: turns[0]!.id, changes: held!.changes }).run();
+    expect((await db.prepare("SELECT turn_key,state,input_hash,card FROM turn_cards ORDER BY turn_key").all()).results).toEqual(pending);
+    const reread = await run.readAll();
+    expect(await run.harness.call(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: reread.revision,
+      cards: turns.map(turn => ({ turns: [turn.id], signal: 'high', card: EMPTY_CARD })) })).toEqual({ written: 2, changed_since_served: [] });
+    expect((await db.prepare("SELECT state,input_hash IS NOT NULL AS hashed FROM turn_cards ORDER BY turn_key").all()).results)
+      .toEqual([{ state: 'carded', hashed: 1 }, { state: 'carded', hashed: 1 }]);
+    await run.harness.call(run.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded after recovery', audit: RUN_AUDIT });
+    expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 }, {
+      projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'completed',
+    })).toEqual({ ended: true, status: 'completed' });
+  });
+});
+
+it('retains learning claim deadlines when hash mismatches cover zero, rather than reclaiming every poll', async () => {
+  for (const timing of ['before-material', 'before-complete', 'at-batch']) await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    const turn = uuid(1110);
+    await capture(db, 'empty-learning', [{ id: turn, text: 'Keep the backoff when this card no longer matches', at: NOW }], 'project', NOW);
+    await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id='empty-learning'").bind(NOW).run();
+    await publish(db, NOW + HOUR / 4, harness.bindings.BUCKET);
+    await cardAll(db, harness.bindings.BUCKET, 'empty-learning', NOW + HOUR / 4);
+    await db.prepare("UPDATE learning_sessions SET handoff='retained handoff' WHERE session_id='empty-learning'").run();
+    let at = NOW + HOUR;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const claim = await harness.poll(at);
+      if (!claim.claimed) throw new Error('learning retry was not claimed at its deadline');
+      expect(claim.run.task).toBe('extract-curate');
+      const held = await db.prepare("SELECT eligible_at,failures FROM learning_sessions WHERE session_id='empty-learning'").first<{ eligible_at: number; failures: number }>();
+      const mismatch = async () => { await db.prepare("UPDATE turn_cards SET input_hash=NULL WHERE session_id='empty-learning'").run(); };
+      if (timing === 'before-material') await mismatch();
+      await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
+      if (timing === 'before-complete') await mismatch();
+      if (timing === 'at-batch') harness.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), mismatch, true);
+      expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'discard empty handoff' }))
+        .toEqual({ completed: true, covered: 0 });
+      harness.bindings.MYCO_DB = db;
+      expect(await db.prepare("SELECT eligible_at,failures,handoff FROM learning_sessions WHERE session_id='empty-learning'").first())
+        .toEqual({ ...held!, handoff: 'retained handoff' });
+      await harness.call(claim.run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'no matching cards', audit: RUN_AUDIT });
+      expect(await endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
+        projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: attempt === 1 ? 'failed' : 'completed',
+      })).toEqual({ ended: true, status: attempt === 1 ? 'failed' : 'completed' });
+      for (const now of [at + 2, at + 2000, held!.eligible_at - 1]) expect(await harness.poll(now)).toMatchObject({ claimed: false });
+      const hash = await db.prepare("SELECT input_hash AS hash FROM session_prompts WHERE session_id='empty-learning' AND prompt_id=?").bind(turn).first<{ hash: string }>();
+      await db.prepare("UPDATE turn_cards SET input_hash=? WHERE session_id='empty-learning'").bind(hash!.hash).run();
+      at = held!.eligible_at;
+    }
   });
 });

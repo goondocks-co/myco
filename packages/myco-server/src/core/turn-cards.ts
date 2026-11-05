@@ -19,6 +19,8 @@ import { LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements }
 export { CARD_TASK } from './task-catalogue.js';
 import { learningRecencySql, learningRangeSql } from './learning-recency.js';
 import { learningHistoryEnabledSql } from './settings.js';
+import { writeGuardBatch } from './write-guard-store.js';
+import { SessionMaterialPendingError } from '../read/material-readiness.js';
 
 /** Due turns one claim reads at most. */
 export const CARD_CLAIM_TURNS = 64;
@@ -44,6 +46,19 @@ export function claimCardsStatements(db: RelationalStore, projectId: string, ses
 const LIVE_HASH = `(SELECT sp.input_hash FROM session_prompts sp JOIN session_documents d ON d.project_id = sp.project_id
   AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
   WHERE sp.project_id = turn_cards.project_id AND sp.session_id = turn_cards.session_id AND sp.prompt_id = turn_cards.turn_key)`;
+
+const liveDocumentSql = (project: string, session: string) => `EXISTS (SELECT 1 FROM session_documents d
+  WHERE d.project_id = ${project} AND d.session_id = ${session} AND d.state = 'live' AND d.generation IS NOT NULL)`;
+const DOCUMENT_PENDING_PATH = '$[myco_card_document_pending]';
+
+/** Card mutations require a live document in the same transaction. */
+function cardMutationBatch(db: RelationalStore, projectId: string, sessionId: string, statements: PreparedStatement[]) {
+  return writeGuardBatch(db, () => db.prepare(`SELECT CASE WHEN ${liveDocumentSql('?', '?')} THEN 1
+      ELSE json_extract('[]', ?) END AS ready`).bind(projectId, sessionId, DOCUMENT_PENDING_PATH), error => {
+    if (error instanceof Error && error.message.includes(DOCUMENT_PENDING_PATH.slice(1))) throw new SessionMaterialPendingError();
+    throw error;
+  }, statements);
+}
 
 export interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
 
@@ -141,7 +156,7 @@ export function cardStatements(
         headline = ?, marks = ?, card = ?, fields = ?, signal = ?, signal_reason = ?, shared_with = ?,
         covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
         input_hash = ${LIVE_HASH}, run_id = ?, model = ?, carded_at = ?
-      WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?`)
+      WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND ${LIVE_HASH} IS NOT NULL`)
       .bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
         outline.headline, JSON.stringify(outline.marks), text, fields === null ? null : encodeCard(fields), card.signal, card.reason, card.sharedWith,
         card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0,
@@ -172,7 +187,11 @@ export function modelDueStatement(db: RelationalStore, projectId: string, sessio
 /** A pending turn whose prompt the live document no longer holds. */
 export function forgetTurnStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn): PreparedStatement {
   return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?
-      AND EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id = turn_cards.project_id AND d.session_id = turn_cards.session_id AND d.state = 'live')`)
+      AND ${liveDocumentSql('turn_cards.project_id', 'turn_cards.session_id')}
+      AND NOT EXISTS (SELECT 1 FROM session_prompts sp JOIN session_documents d ON d.project_id=sp.project_id
+        AND d.session_id=sp.session_id AND d.generation=sp.generation AND d.state='live'
+        WHERE sp.project_id=turn_cards.project_id AND sp.session_id=turn_cards.session_id
+          AND sp.prompt_id=turn_cards.turn_key AND sp.turn_key=sp.prompt_id)`)
     .bind(projectId, sessionId, turn.turnKey, turn.changes);
 }
 
@@ -216,17 +235,17 @@ export async function writeRunCards(
   run: { runId: string; model: string | null }, now: number, unavailable: readonly DueTurn[] = [],
 ): Promise<{ written: number; changed: string[] }> {
   const { db } = env;
-  if (unavailable.length > 0) await db.batch([
+  await cardMutationBatch(db, projectId, sessionId, unavailable.length > 0 ? [
     ...unavailable.map(turn => forgetTurnStatement(db, projectId, sessionId, turn)),
     pendingCardsStatement(db, projectId, sessionId), ...sessionProgressStatements(db, projectId, sessionId, now),
-  ]);
+  ] : []);
   const byKey = new Map(assigned.map((turn) => [turn.turnKey, turn]));
   const changed: string[] = [];
   let written = 0;
   for (const write of writes) {
     const [first, ...rest] = write.turns;
     for (const turnKey of write.turns) {
-      const results = await db.batch([
+      const results = await cardMutationBatch(db, projectId, sessionId, [
         ...cardStatements(db, projectId, sessionId, byKey.get(turnKey)!, {
           value: write.card, signal: write.signal, reason: 'model', sharedWith: turnKey === first || rest.length === 0 ? null : first!,
           covered: null, runId: run.runId, model: run.model,
