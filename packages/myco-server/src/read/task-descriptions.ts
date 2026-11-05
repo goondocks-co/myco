@@ -16,7 +16,7 @@ import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
 import { CURATION_TASK, TASK_EXECUTION_PROFILES, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
-import { curationPrompt, CURATION_SIMILARITY } from '../core/spore-curation.js';
+import { curationPrompt, CURATION_SEED_CLOSENESS } from '../core/spore-curation.js';
 import { TURN_CARD_PROMPT } from '../core/turn-card-prompt.js';
 import { EXTRACTION_RULES } from '../core/extraction-rules.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
@@ -147,7 +147,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
         ...(schedule.runWhenCold === true ? [] : [`Waits if the project has been quiet for more than ${leaves.coldThresholdDays} days.`])]),
     ];
     if (task === TITLING_TASK) triggers.push('After a session ends and its material is ready.', 'When a person asks for a fresh session title.', ...scheduleWords(scheduleFor(task, TITLING_BACKFILL_SCHEDULE, leaves.overrides), leaves.enabled).map((line) => `Untitled past sessions: ${line}`));
-    else if (task === CURATION_TASK) triggers.push(`After an opted-in Project has an undecided spore cluster at cosine similarity ${CURATION_SIMILARITY.toFixed(2)} or higher, within its configured daily limit, after session learning.`);
+    else if (task === CURATION_TASK) triggers.push(`After an opted-in Project has an undecided spore cluster at mutual closeness of ${CURATION_SEED_CLOSENESS.toFixed(1)} standard deviations or higher, within its configured daily limit, after session learning.`);
     else if (task === CARD_TASK) triggers.push('After a turn of a session finishes, while learning is on.');
     else if (startableByHand(task)) triggers.push(...(task === EXTRACTION_TASK ? ['After a session’s turns are carded, while learning is on.'] : []), 'When a person chooses Run a task.');
     else if (task === 'embedding-reconcile') {

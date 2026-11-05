@@ -77,17 +77,18 @@ CREATE TRIGGER IF NOT EXISTS curation_spore_delete AFTER DELETE ON spores
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
 CREATE TRIGGER IF NOT EXISTS curation_vector_insert AFTER INSERT ON embedding_receipts
-    WHEN NEW.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+    WHEN NEW.type='spore'  BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT NEW.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=NEW.project_id AND id=NEW.record_id),NEW.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
-CREATE TRIGGER IF NOT EXISTS curation_vector_update AFTER UPDATE OF project_id,model_key,id,record_id,revision,ready,updated_at ON embedding_receipts
-    WHEN NEW.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+CREATE TRIGGER IF NOT EXISTS curation_vector_update AFTER UPDATE OF project_id,model_key,id,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std ON embedding_receipts
+    WHEN NEW.type='spore' AND (NEW.project_id IS NOT OLD.project_id OR NEW.model_key IS NOT OLD.model_key OR NEW.id IS NOT OLD.id OR NEW.record_id IS NOT OLD.record_id OR NEW.revision IS NOT OLD.revision OR NEW.ready IS NOT OLD.ready OR NEW.updated_at IS NOT OLD.updated_at OR
+      ((OLD.neighbor_mean IS NULL OR OLD.neighbor_std IS NULL) AND NEW.neighbor_mean IS NOT NULL AND NEW.neighbor_std IS NOT NULL)) BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT NEW.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=NEW.project_id AND id=NEW.record_id),NEW.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
 CREATE TRIGGER IF NOT EXISTS curation_vector_delete AFTER DELETE ON embedding_receipts
-    WHEN OLD.type='spore' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+    WHEN OLD.type='spore'  BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT OLD.project_id,1,1,COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=OLD.project_id AND id=OLD.record_id),OLD.updated_at) WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 

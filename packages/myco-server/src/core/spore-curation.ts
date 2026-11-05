@@ -1,3 +1,4 @@
+import { mutualCloseness } from '@goondocks/myco-shared/relevance';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import type { PulledStage } from './pulled-stages.js';
 import type { TaskInput } from './task-inputs.js';
@@ -16,10 +17,10 @@ import { writeGuardStore, writeGuardBatch } from './write-guard-store.js';
 import { curationChangeSql } from '../db/curation-changes.js';
 import { VECTOR_LOST_MS } from './embedding/provider.js';
 
-/** A seed needs a neighbour at this score to start a run. */
-export const CURATION_SIMILARITY = 0.80;
-/** Neighbours at this score fill a qualifying seed's topic candidates. */
-export const CURATION_GROUP_SIMILARITY = 0.72;
+/** A seed needs a neighbour at least five standard deviations closer than usual on both sides. */
+export const CURATION_SEED_CLOSENESS = 5.0;
+/** Topic candidates must be at least three standard deviations closer than usual on both sides. */
+export const CURATION_GROUP_CLOSENESS = 3.0;
 export const CURATION_SEED_CAP = 8;
 export const CURATION_CLUSTER_CAP = 12;
 export const CURATION_SEEDS_PER_TICK = 8;
@@ -32,9 +33,9 @@ export const CURATION_SEARCH_LIMIT = 6;
 export const CURATION_SEARCH_RESULTS = 8;
 const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
-interface SeedMember extends Member { score: number }
+interface SeedMember extends Member { closeness: number }
 type Neighbour = SeedMember & { reviewed: number };
-const neighbourOrder = (a: Neighbour, b: Neighbour) => a.reviewed-b.reviewed || b.score-a.score || a.id.localeCompare(b.id);
+const neighbourOrder = (a: Neighbour, b: Neighbour) => a.reviewed-b.reviewed || b.closeness-a.closeness || a.id.localeCompare(b.id);
 export interface CurationAssignment { kind: 'curation'; key: string; members: Member[] }
 interface Cluster { cluster_key: string; members: string; final_members: string | null; read_bytes: number; due_at: number | null; failures: number; run_id: string | null; decision: string | null }
 const membersOf = (row: Cluster): SeedMember[] => JSON.parse(row.members) as SeedMember[];
@@ -84,14 +85,14 @@ async function offerCluster(db: RelationalStore, projectId: string, members: See
   return created!.meta.changes === 1;
 }
 
-async function currentNeighbour(db: RelationalStore, projectId: string, hit: SemanticHit): Promise<Neighbour | null> {
+async function currentNeighbour(db: RelationalStore, projectId: string, hit: SemanticHit & {closeness:number}): Promise<Neighbour | null> {
   const member = await db.prepare(`SELECT s.id,s.revision,CASE WHEN ack.revision=s.revision THEN 1 ELSE 0 END AS reviewed
     FROM spores s LEFT JOIN spore_curation_receipts ack ON ack.project_id=s.project_id AND ack.spore_id=s.id
     WHERE s.project_id=? AND s.id=? AND s.status='active'
     AND EXISTS (SELECT 1 FROM embedding_versions WHERE project_id=s.project_id AND type='spore' AND record_id=s.id AND revision=?)
     AND NOT EXISTS (SELECT 1 FROM spore_curation_owners WHERE project_id=s.project_id AND spore_id=s.id)`)
     .bind(projectId,hit.record_id,hit.revision).first<Member & {reviewed:number}>();
-  return member === null ? null : {...member,score:hit.score};
+  return member === null ? null : {...member,closeness:hit.closeness};
 }
 
 /** One Project and at most eight indexed seeds per wake; a settled pass rests until its source/vector frontier changes. */
@@ -148,22 +149,28 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
     last = seed;
     const ack = await db.prepare('SELECT revision FROM spore_curation_receipts WHERE project_id=? AND spore_id=?').bind(id, seed.id).first<{ revision: number }>();
     if (ack?.revision === seed.revision) continue;
-    const receipt = await db.prepare(`SELECT r.id,r.updated_at FROM embedding_versions v CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source
+    const receipt = await db.prepare(`SELECT r.id,r.updated_at,r.neighbor_mean,r.neighbor_std FROM embedding_versions v CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source
       WHERE v.project_id=? AND v.type='spore' AND v.record_id=? AND r.project_id=v.project_id AND r.model_key=?
         AND r.type=v.type AND r.record_id=v.record_id AND r.revision=v.revision AND r.ready=1 LIMIT 1`)
-      .bind(id, seed.id, semantic.provider.modelKey).first<{ id: string; updated_at: number }>();
-    if (receipt === null) continue;
+      .bind(id, seed.id, semantic.provider.modelKey).first<{ id: string; updated_at: number; neighbor_mean:number|null; neighbor_std:number|null }>();
+    if (receipt === null || receipt.neighbor_mean===null || receipt.neighbor_std===null) continue;
+    const baseline={mean:receipt.neighbor_mean,std:receipt.neighbor_std};
     const partition = { projectId: id, modelKey: semantic.provider.modelKey };
     const [vector] = await semantic.vectors.get(partition, [receipt.id]);
     if (vector === undefined) {
       if (now-receipt.updated_at < VECTOR_LOST_MS) { deferredAt = seed.stamp; break; }
       continue;
     }
-    const strong = (await semanticHits(db,{projectId:id},semantic,vector.values,
-      {topK:CURATION_GATE_NEIGHBORS,minScore:CURATION_SIMILARITY,filters:{type:'spore',status:'active'}}))
-      .filter(hit=>hit.record_id!==seed.id && hit.score>=CURATION_SIMILARITY);
+    const graded=(hits:SemanticHit[],minimum:number)=>hits.flatMap(hit=>{
+      if(hit.record_id===seed.id)return [];
+      const stats=hit.neighbor_mean===null || hit.neighbor_std===null?null:{mean:hit.neighbor_mean,std:hit.neighbor_std};
+      const closeness=mutualCloseness(1-hit.score,baseline,stats);
+      return closeness===null || closeness<minimum?[]:[{...hit,closeness}];
+    });
+    const strong=graded(await semanticHits(db,{projectId:id},semantic,vector.values,
+      {topK:CURATION_GATE_NEIGHBORS,filters:{type:'spore',status:'active'}}),CURATION_SEED_CLOSENESS);
     const observed = new Map<string,Promise<Neighbour | null>>();
-    const neighbour = (hit: SemanticHit) => {
+    const neighbour = (hit: SemanticHit & {closeness:number}) => {
       let held=observed.get(hit.record_id);
       if(held===undefined) {held=currentNeighbour(db,id,hit);observed.set(hit.record_id,held);}
       return held;
@@ -171,12 +178,12 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
     const anchors=(await Promise.all(strong.map(neighbour))).flatMap(member=>member===null?[]:[member]).sort(neighbourOrder);
     const closest=anchors[0];
     if(closest===undefined) continue;
-    const hits=(await semanticHits(db,{projectId:id},semantic,vector.values,
-      {topK:CURATION_NEIGHBORS,minScore:CURATION_GROUP_SIMILARITY,filters:{type:'spore',status:'active'}}))
-      .filter(hit=>hit.record_id!==seed.id && hit.record_id!==closest!.id && hit.score>=CURATION_GROUP_SIMILARITY);
+    const hits=graded(await semanticHits(db,{projectId:id},semantic,vector.values,
+      {topK:CURATION_NEIGHBORS,filters:{type:'spore',status:'active'}}),CURATION_GROUP_CLOSENESS)
+      .filter(hit=>hit.record_id!==closest.id);
     const candidates=(await Promise.all(hits.map(neighbour))).flatMap(member=>member===null?[]:[member]);
     candidates.sort(neighbourOrder);
-    const members: SeedMember[]=[{id:seed.id,revision:seed.revision,score:1},closest,...candidates.slice(0,CURATION_SEED_CAP-2)].map(({id,revision,score})=>({id,revision,score}));
+    const members: SeedMember[]=[{id:seed.id,revision:seed.revision,closeness:closest.closeness},closest,...candidates.slice(0,CURATION_SEED_CAP-2)].map(({id,revision,closeness})=>({id,revision,closeness}));
     if(await offerCluster(db,id,members,now)) {found=true;break;}
   }
   const finished = deferredAt !== null || (!found && seeds.results.length < CURATION_SEEDS_PER_TICK);
@@ -215,7 +222,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
   const kept=seeds.map((member,i)=>({member,spore:spores[i]!}));
   let material=JSON.stringify(kept.map(item=>item.spore)), materialBytes=new TextEncoder().encode(material).length;
   while(materialBytes>CURATION_MATERIAL_BYTES && kept.length>2) {
-    const lowest=kept.slice(2).reduce((best,item,i)=>item.member.score<kept[best]!.member.score?i+2:best,2);
+    const lowest=kept.slice(2).reduce((best,item,i)=>item.member.closeness<kept[best]!.member.closeness?i+2:best,2);
     kept.splice(lowest,1);
     material=JSON.stringify(kept.map(item=>item.spore)); materialBytes=new TextEncoder().encode(material).length;
   }
@@ -232,7 +239,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
 /** The ask for one bounded cluster and every whole member. */
 export function curationPrompt(material: string): string {
   return [
-    'The seed may be a lone duplicate pair, one topic, several topics, or part of a topic larger than the cap. Choose the topic with the strongest overlap. Low scores are candidates, not evidence; leave out spores that merely share vocabulary.',
+    'The seed may be a lone duplicate pair, one topic, several topics, or part of a topic larger than the cap. Choose the topic with the strongest overlap. Closeness is measured against both spores’ own distance distributions. Relative scores are candidates, not evidence; leave out spores that merely share vocabulary.',
     'For a large topic, consolidate the related material that fits. Left-out sources and the new wisdom can meet in a later group. Whole reads are separate from final membership.',
     `Use myco_search for up to ${CURATION_SEARCH_LIMIT} semantic searches of active Project spores. Results carry id, revision, type and agent_line. Call ${TOOL} op material to read candidates whole before judging them. Reads do not admit members; at most ${CURATION_CLUSTER_CAP} distinct whole spores, including these seeds, may be read.`,
     'Read every whole spore below and every addition before acting. Preserve every specific detail, including file paths, error messages, values, applicability, historical facts, citations and useful agent lines.',

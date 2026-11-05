@@ -27,7 +27,7 @@ async function fixture(deferred = false) {
   vectors.query = (...args) => { calls.query++; return query(...args); };
   const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
-  const add = async (id: string, values = [1, 0], created = f.now, content = `Whole content for ${id}`) => {
+  const add = async (id: string, values = [1, 0], created = f.now, content = `Whole content for ${id}`, stats: {mean:number;std:number}|null = {mean:0.4,std:0.04}) => {
     f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at)
       VALUES('proj_1',?,'myco-agent',?,'decision','Use the named seam.',?)`, [id, content, created]);
     const source = f.sqlite.query<{ revision: string }, [string]>("SELECT revision FROM embedding_versions WHERE project_id='proj_1' AND type='spore' AND record_id=?").get(id)!;
@@ -35,8 +35,8 @@ async function fixture(deferred = false) {
     const key = await vectorId(partition, 'spore', id, source.revision);
     await vectors.upsert(partition, [{ id: key, values, metadata: { type: 'spore', record_id: id, revision: source.revision, status: 'active', session_id: '', created_at: created, observation_type: 'decision', release_state: '', release_confidence: '' } }]);
     if(!deferred) index.apply();
-    f.sqlite.run(`INSERT OR REPLACE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
-      VALUES('proj_1','curation-fixture',?,'spore',?,?,1,?)`, [key, id, source.revision, f.now]);
+    f.sqlite.run(`INSERT OR REPLACE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
+      VALUES('proj_1','curation-fixture',?,'spore',?,?,1,?,?,?)`, [key, id, source.revision, f.now,stats?.mean??null,stats?.std??null]);
   };
   const discover = async () => { for (let i=0; i<4; i++) await discoverSporeClusters(env, f.now); };
   const poll = (now = f.now) => claimNextRun(env, { principal: f.principal, harnesses: [offeredHarness('claude-code')], now });
@@ -56,7 +56,7 @@ test('off by default; no overlap creates no work or run; historical seeds requir
   const f = await fixture();
   try {
     expect(await settingsWriter(f.db).capabilityEnabled('proj_1', 'spore_curation')).toBe(false);
-    await f.add('a', [1,0], 1); await f.add('b', [0.79,Math.sqrt(1-0.79**2)], 1);
+    await f.add('a', [1,0], 1); await f.add('b', [0,1], 1);
     await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
     await f.enable(); await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
     expect(f.sqlite.query('SELECT COUNT(*) AS n FROM spore_curation_work').get()).toEqual({ n: 0 });
@@ -70,7 +70,7 @@ test('off by default; no overlap creates no work or run; historical seeds requir
 test('a real claim receives whole spores on Sonnet low; kept-apart revisions stay settled until a member changes', async () => {
   const f = await fixture();
   try {
-    await f.enable(); await f.add('a'); await f.add('b',[0.81,Math.sqrt(1-0.81**2)]); await f.add('c'); await f.add('d'); await f.add('e'); await f.discover();
+    await f.enable(); await f.add('a'); await f.add('b'); await f.add('c'); await f.add('d'); await f.add('e'); await f.discover();
     const claimed = await f.poll(); expect(claimed.claimed).toBe(true); if (!claimed.claimed) return;
     expect(claimed.run.profile).toMatchObject({ model: 'sonnet', effort: 'low' });
     expect(claimed.run.instruction).toContain('Whole content for a');
@@ -499,7 +499,7 @@ const topicVector=(i:number):number[]=>{
   return [score,side*Math.cos(angle),side*Math.sin(angle)];
 };
 
-test('the strong gate offers a lone pair, excludes noise below the topic score, and keeps weak seeds cheap',async()=>{
+test('the strong gate offers a lone pair, excludes distribution-typical noise, and keeps weak seeds cheap',async()=>{
   const f=await fixture();
   try {
     await f.enable(); await f.add('a',topicVector(0)); await f.add('b',topicVector(1)); await f.add('noise',[0.7,-Math.sqrt(1-0.7**2),0]);
@@ -509,7 +509,7 @@ test('the strong gate offers a lone pair, excludes noise below the topic score, 
   }finally{f.sqlite.close();}
   const g=await fixture();
   try {
-    await g.enable(); await g.add('a',[1,0]); await g.add('b',[0.78,Math.sqrt(1-0.78**2)]);
+    await g.enable(); await g.add('a',[1,0]); await g.add('b',[0.65,Math.sqrt(1-0.65**2)]);
     await g.discover(); expect(g.calls.query).toBe(2); expect(g.calls.get).toBe(2);
     expect(g.sqlite.query('SELECT COUNT(*) n FROM agent_runs').get()).toEqual({n:0});
   }finally{g.sqlite.close();}
@@ -561,5 +561,39 @@ test('oversized seed material drops its weakest non-anchor candidates before clo
   try {
     await g.enable(); await g.add('a',[1,0],g.now,'a'.repeat(18000)); await g.add('b',[1,0],g.now,'b'.repeat(18000)); await g.discover();
     expect(await g.poll()).toMatchObject({claimed:false}); expect(g.sqlite.query('SELECT decision FROM spore_curation_work').get()).toEqual({decision:'oversized'});
+  }finally{g.sqlite.close();}
+});
+
+test('mutual standardized closeness rejects a cosine hub and admits a tight moderate pair under compressed models',async()=>{
+  for(const scale of [1,0.3])for(const hub of [false,true]) {
+    const f=await fixture();
+    try {
+      const similarity=hub?0.95:0.65, side=Math.sqrt(1-scale), amplitude=Math.sqrt(scale);
+      const a=[amplitude,0,side,0,0], b=[amplitude*similarity,amplitude*Math.sqrt(1-similarity**2),0,side,0];
+      const candidate=[amplitude*0.55,amplitude*Math.sqrt(1-0.55**2),0,0,side];
+      const tight={mean:1-scale+scale*0.6,std:scale*0.04};
+      const other=hub?{mean:1-scale+scale*0.13,std:scale*0.1}:tight;
+      await f.enable(); await f.add('a',a,f.now,'A',tight); await f.add('b',b,f.now,'B',other); await f.add('c',candidate,f.now,'C',tight); await f.discover();
+      expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:hub?0:1});
+      if(!hub)expect(JSON.parse(f.sqlite.query<{members:string},[]>('SELECT members FROM spore_curation_work').get()!.members).map((m:{id:string})=>m.id)).toEqual(['a','b','c']);
+    }finally{f.sqlite.close();}
+  }
+});
+
+test('missing statistics exclude both seed and candidate until model-scoped calibration arrives',async()=>{
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('a'); await f.add('b',[1,0],f.now,'B',null); await f.discover();
+    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:0});
+    const before={...f.calls}; await f.discover(); expect(f.calls).toEqual(before);
+    f.sqlite.run("UPDATE embedding_receipts SET neighbor_mean=0.4,neighbor_std=0.04 WHERE record_id='b'");
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:1,pending_at:f.now});
+    await f.discover(); expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:1});
+  }finally{f.sqlite.close();}
+  const g=await fixture();
+  try {
+    await g.enable(); await g.add('old'); await g.discover(); const before={...g.calls};
+    g.sqlite.run('UPDATE embedding_receipts SET neighbor_mean=0.41,neighbor_std=0.041');
+    await g.discover(); expect(g.calls).toEqual(before);
   }finally{g.sqlite.close();}
 });
