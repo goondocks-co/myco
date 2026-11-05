@@ -905,6 +905,7 @@ describe('gates', () => {
       deployment_settings: join('core', 'settings.ts'),
       deployment_setting_resets: join('core', 'settings.ts'),
       project_capabilities: join('core', 'settings.ts'),
+      project_settings: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
       machine_settings: join('core', 'machine-settings.ts'),
       embedding_switches: join('core', 'embedding', 'switch-store.ts'),

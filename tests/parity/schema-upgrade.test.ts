@@ -19,6 +19,24 @@ function previousSchema(): Database {
   return db;
 }
 
+it('distinguishes new table column names from existing row sources',()=>{
+  const db=new Database(':memory:');
+  try {
+    db.exec('CREATE TABLE members(id TEXT PRIMARY KEY)');
+    expect(referencedExistingTables(db,['CREATE TABLE work(members TEXT NOT NULL CHECK(json_valid(members)))'])).toEqual([]);
+    expect(referencedExistingTables(db,['CREATE TABLE copied AS SELECT * FROM members'])).toEqual(['members']);
+  }finally{db.close();}
+});
+
+it('seeds a runner update audit with its admitted action and JSON detail',()=>{
+  const db=new Database(':memory:');
+  try {
+    db.exec("CREATE TABLE runner_update_audit(id TEXT PRIMARY KEY,action TEXT NOT NULL CHECK(action IN ('requested','reported')),detail TEXT NOT NULL CHECK(json_valid(detail)))");
+    seedReferencedTables(db,['CREATE INDEX audit_action ON runner_update_audit(action)']);
+    expect(db.query('SELECT action,detail FROM runner_update_audit').get()).toEqual({action:'requested',detail:'{}'});
+  }finally{db.close();}
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {

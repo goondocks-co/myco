@@ -68,7 +68,7 @@ export const recall: ParityScenario = {
 
     await target.sql(`DELETE FROM project_capabilities WHERE project_id = ${lit(target.projectId)}`);
     const defaults = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
-    expect(defaults.body.capabilities).toEqual({ cortex: true, canopy: true, vault_evolution: true });
+    expect(defaults.body.capabilities).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
     const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session, project: target.projectId });
     expect(spore.id).toBeDefined();
 
@@ -211,7 +211,7 @@ export const recall: ParityScenario = {
     await target.sql(`UPDATE projects SET archived_at = ${stamp} WHERE project_id = ${lit(target.projectId)}`);
     try {
       const archived = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
-      expect(archived.body.capabilities).toEqual({ cortex: false, canopy: false, vault_evolution: false });
+      expect(archived.body.capabilities).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false, spore_curation_backfill: false });
       const archivedAnswer = await served(`archived-${stamp}`, crypto.randomUUID(), planning);
       expect({ ...archivedAnswer, answerId: typeof archivedAnswer.answerId })
         .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], answerId: 'string' });

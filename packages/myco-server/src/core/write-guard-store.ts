@@ -7,10 +7,14 @@ export function writeGuardStore(
   db: RelationalStore,
   assertion: () => PreparedStatement,
   refusal: (error: unknown) => never,
-  options: { assertAfter?: boolean } = {},
+  options: { assertAfter?: boolean; before?: () => PreparedStatement[] } = {},
 ): RelationalStore {
   const underlying = new WeakMap<PreparedStatement, { statement: PreparedStatement; writes: boolean }>();
-  const execute = (statements: PreparedStatement[]) => writeGuardBatch(db, assertion, refusal, statements, options);
+  const execute = async (statements: PreparedStatement[]) => {
+    const before = options.before?.() ?? [];
+    const results = await writeGuardBatch(db, assertion, refusal, [...before, ...statements], options);
+    return results.slice(before.length);
+  };
   const wrap = (statement: PreparedStatement, writes: boolean): PreparedStatement => {
     const wrapped: PreparedStatement = {
       bind: (...values) => wrap(statement.bind(...values), writes),

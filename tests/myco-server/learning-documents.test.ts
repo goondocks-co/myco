@@ -220,7 +220,7 @@ it('an idle claim with learning off issues a small fixed number of statements', 
     const measured = measuredContentEnv({ ...env, db });
     const claim = await claimNextRun({ ...env, db: measured.env.db }, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claim, name).toMatchObject({ claimed: false });
-    // Its settings, whether anything waits queued, the budget's activation, and the pulled stages' switches.
-    expect(measured.usage.statements, name).toBe(5);
+    // Settings, the queued-work probe, budget activation and all pulled-stage switches each use one read.
+    expect(measured.usage.statements, name).toBe(4);
   });
 });

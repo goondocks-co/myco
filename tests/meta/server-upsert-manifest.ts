@@ -1,6 +1,11 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'core/spore-curation.ts#closeStatements': [{ tables: ['spore_curation_receipts'], order: 'unverified' }],
+  'db/curation-changes.ts#curationChangeSql': [{ tables: ['spore_curation_changes'], order: 'unverified' }],
+  'db/budget-activation.ts#indexWitness': [{ tables: ['schema_meta'], order: 'catalogue-snapshot' }],
+  'core/settings.ts#setProjectLeaf': [{ tables: ['project_settings'], order: 'unverified' }],
+  'core/spore-curation.ts#discoverSporeClusters': [{ tables: ['spore_curation_cursor'], order: 'unverified' }],
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/learning-sessions.ts#repairLearningSources': [{ tables: ['schema_meta'], order: 'arrival-order' }],

@@ -1,3 +1,4 @@
+import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
 import { prepareSwitchedSettings } from '../read/catalog-store.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
@@ -5,7 +6,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
+import { TASK_EXECUTION_PROFILES, admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -33,7 +34,7 @@ import { SWITCH_STANDS_SQL, readSwitch } from './embedding/switch-store.js';
  */
 
 /** A capability the Deployment may admit a Project to. */
-export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution'] as const;
+export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution', 'spore_curation', 'spore_curation_backfill'] as const;
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**
@@ -184,7 +185,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
 const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
-  if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  if (!(OUTCOME_TASKS as readonly string[]).includes(task) || TASK_EXECUTION_PROFILES[task] !== undefined) return [];
   if (task === EXTRACTION_TASK) return ['harness', 'model', 'reasoningLevel', 'enabled', 'memberRunsPerDay'];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
 };
@@ -461,6 +462,7 @@ export type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
 export interface EmbeddingChoice { provider: unknown; model?: unknown; endpoint?: unknown }
 
 export interface SettingsWriter {
+  setProjectLeaf(projectId: string, leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Set one Deployment leaf. */
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Set the whole embedding selection at once, so a provider never meets a model or endpoint it does not offer. */
@@ -778,10 +780,12 @@ export async function taskWorkEnabled(db: RelationalStore, projectId: string, ta
     : projectWorkEnabled(db, projectId);
 }
 
-/** A live Project's missing capability row enables it; only an explicit zero opts it out. */
+/** Live Projects default on for context, maps and learning; curation capabilities require explicit opt-in. */
 export function capabilityOnSql(project: string, capability: string): string {
-  return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
-        WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+  return projectWorkSql(project, `AND EXISTS (SELECT 1 FROM (SELECT ${capability} AS capability) admitted
+    WHERE COALESCE((SELECT pc.enabled FROM project_capabilities pc
+      WHERE pc.project_id = capability_project.project_id AND pc.capability = admitted.capability),
+      CASE WHEN admitted.capability IN ('spore_curation', 'spore_curation_backfill') THEN 0 ELSE 1 END) = 1)`);
 }
 
 /** An owner has explicitly enabled this Project capability. */
@@ -833,6 +837,19 @@ export function settingsWriter(
   };
 
   return {
+    async setProjectLeaf(projectId, leaf, value, actor, nowMs) {
+      const spec = PROJECT_LEAF_SPECS[leaf];
+      if (spec === undefined) return { applied: false, refusal: { reason: 'not_deployment_tier', leaf } };
+      if (!(await authorize({ leaf, value, actor }))) return { applied: false, refusal: { reason: 'unauthorized', leaf } };
+      const detail = leafRuleViolation(spec, value);
+      if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+      if (!(await projectWorkEnabled(db, projectId))) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'Project is not active' } };
+      await db.prepare(`INSERT INTO project_settings(project_id,leaf,value,updated_at,updated_by) VALUES(?,?,?,?,?)
+        ON CONFLICT(project_id,leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`)
+        .bind(projectId, leaf, JSON.stringify(value), nowMs, actor).run();
+      await rearm({ leaf });
+      return { applied: true };
+    },
     async setLeaf(leaf, value, actor, nowMs) {
       return withLeafWrite({ leaf, value, actor }, async () => {
         const previousRaw = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
@@ -951,6 +968,7 @@ export function settingsWriter(
       const leaf = 'agent.tasks';
       return withLeafWrite({ leaf, value: { task, tier }, actor }, async () => {
         if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'unknown task' } };
+        if (TASK_EXECUTION_PROFILES[task] !== undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this task has a fixed execution profile' } };
         if (tier !== null && !isReasoningTier(tier)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'expected low, default, high, or null' } };
         const held = (await leafValues(db, [leaf])).get(leaf);
         if (held !== undefined) {
@@ -1075,4 +1093,37 @@ export function learningHistoryEnabledSql(): string {
 export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
   const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
   return text !== undefined && JSON.parse(text) === true;
+}
+
+/** The instant this Project opted into curation; missing and disabled switches admit no work. */
+export function curationEnabledAtSql(project: string): string {
+  return `(SELECT updated_at FROM project_capabilities WHERE project_id = ${project} AND capability = 'spore_curation' AND enabled = 1)`;
+}
+
+/** One dirty Project after a saved discovery cursor; admission is checked on that bounded candidate. */
+export function nextCurationProject(db: RelationalStore, after: string): Promise<{ project_id: string } | null> {
+  return db.prepare(`SELECT c.project_id FROM spore_curation_changes c INDEXED BY idx_curation_changes_due
+    WHERE c.dirty=1 AND c.project_id > ? ORDER BY c.project_id LIMIT 1`)
+    .bind(after).first<{ project_id: string }>();
+}
+
+/** Whether any Project explicitly admits curation claims. */
+export function curationAnyEnabledSql(): string {
+  return `EXISTS (SELECT 1 FROM project_capabilities INDEXED BY idx_curation_projects
+    WHERE capability='spore_curation' AND enabled=1 LIMIT 1)`;
+}
+
+export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;
+export const CURATION_DAILY_LIMIT_DEFAULT = CURATION_DAILY_LIMIT_SETTING.rule.default;
+export const CURATION_DAILY_LIMIT_MAX = CURATION_DAILY_LIMIT_SETTING.rule.max;
+export const PROJECT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+  [CURATION_DAILY_LIMIT_LEAF]: CURATION_DAILY_LIMIT_SETTING.rule,
+};
+export const PROJECT_LEAVES = Object.keys(PROJECT_LEAF_SPECS);
+
+/** One Project's admitted daily ceiling, with its declared default. */
+export const curationDailyLimitSql = (project: string): string => `COALESCE((SELECT CAST(value AS INTEGER) FROM project_settings
+  WHERE project_id=${project} AND leaf='${CURATION_DAILY_LIMIT_LEAF}'),${CURATION_DAILY_LIMIT_DEFAULT})`;
+export async function curationDailyLimit(db: RelationalStore, projectId: string): Promise<number> {
+  return (await db.prepare(`SELECT ${curationDailyLimitSql('?')} AS value`).bind(projectId).first<{ value: number }>())!.value;
 }

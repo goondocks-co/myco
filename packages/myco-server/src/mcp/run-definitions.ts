@@ -27,6 +27,21 @@ const project = { type: 'string', description: RUN_PROJECT_DESCRIPTION } as cons
 
 export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   {
+    name: 'myco_run_curation',
+    description: 'Read seeded or searched spores whole within the cap of twelve, independently of final membership. Choose the final subset with complete for keep, or with one lifecycle call for resolved.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: { type: 'object', properties: {
+      op: { type: 'string', enum: ['material', 'complete'] },
+      id: { type: 'string', description: 'For material: a seeded id or an id this run’s semantic searches returned.' },
+      decision: { type: 'string', enum: ['keep', 'resolved'] },
+      members: { type: 'array', description: 'For keep: the final chosen subset of up to twelve, each as {id,revision}; empty if no group was chosen. For resolved: omit to use the lifecycle call’s final membership.', items: {
+        type: 'object', properties: { id: { type: 'string' }, revision: { type: 'integer' } }, required: ['id', 'revision'],
+      } },
+      reason: { type: 'string', description: 'Why the cluster’s members should stand, or what was resolved and why. At most 2048 characters.' },
+      [PROJECT_PIVOT]: project,
+    }, required: ['op'] },
+  },
+  {
     name: 'myco_run',
     description: 'This run\'s own record: file its report with op "report", action, summary and audit, or read or move its state. Every call requires an explicit op. After an accepted report, end your response; no further closing call is needed.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

@@ -56,7 +56,11 @@ async function plans(act: (db: RelationalStore) => Promise<unknown>): Promise<Ar
 
 const NOW = 1_790_000_000_000;
 
-const scans = (plan: string): string[] => plan.split('\n').filter((step) => /\bSCAN\b/.test(step) && !/SCAN (?:CONSTANT ROW|\(subquery)/.test(step)).map((step) => step.trim());
+const scans = (plan: string): string[] => {
+  const constants = new Set([...plan.matchAll(/CO-ROUTINE (\w+)\nSCAN CONSTANT ROW/g)].map(match => `SCAN ${match[1]}`));
+  return plan.split('\n').map(step => step.trim()).filter(step => /\bSCAN\b/.test(step)
+    && !/SCAN (?:CONSTANT ROW|\(subquery)/.test(step) && !constants.has(step));
+};
 const SESSION_KEY = 'SEARCH sessions USING INDEX sqlite_autoindex_sessions_1 (project_id=? AND session_id=?)';
 
 describe('a session working now, under the statistics a Deployment plans from', () => {

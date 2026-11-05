@@ -1,5 +1,7 @@
 import { InvalidSearch, SEARCH_TOOL_LIMIT, type SearchOptions } from '../../read/search.js';
 import { searchDeployment } from '../../core/search.js';
+import { searchCuration } from '../../core/spore-curation.js';
+import { CURATION_TASK } from '../../core/task-catalogue.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { ToolError, type ToolInput } from '../validate.js';
 
@@ -12,7 +14,11 @@ export async function handleSearch(input: ToolInput, ctx: ToolContext): Promise<
   }
   if (typeof input.cursor === 'string') options.cursor = input.cursor;
   for (const key of ['since', 'until'] as const) if (typeof input[key] === 'number') options[key] = input[key];
-  try { return await searchDeployment(ctx.env, scope, options); }
+  try {
+    return ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK
+      ? await searchCuration(ctx.env, scope.projectId, ctx.principal.runId, options.query)
+      : await searchDeployment(ctx.env, scope, options);
+  }
   catch (error) {
     if (error instanceof InvalidSearch) throw new ToolError('invalid_input', error.message);
     throw error;

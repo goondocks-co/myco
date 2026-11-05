@@ -1,7 +1,7 @@
 import { PROFILE_HARNESSES, isReasoningTier, modelRefusal, effortRefusal, profileSupported, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { invalidTaskTier } from '@goondocks/myco-shared/run-holds';
 import { noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
-import { TASK_TIERS } from './task-catalogue.js';
+import { TASK_EXECUTION_PROFILES, TASK_TIERS } from './task-catalogue.js';
 
 export const PROFILE_SETTING_LEAVES = Object.keys(PROFILE_HARNESSES).flatMap((harness) => [
   ...Object.keys(PROFILE_HARNESSES[harness]!.models).flatMap((tier) => [`agent.reasoning_map.${harness}.${tier}`, `agent.effort_map.${harness}.${tier}`]),
@@ -21,10 +21,18 @@ export const taskOverride = (settings: ReadonlyMap<string, string>, task: string
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 };
 
+/** The manifest that explicitly declares a task's fixed model family. */
+export function fixedTaskHarness(task: string): string | null {
+  const fixed = TASK_EXECUTION_PROFILES[task];
+  return fixed === undefined ? null : Object.keys(PROFILE_HARNESSES)
+    .find(harness => PROFILE_HARNESSES[harness]!.modelFamilies?.includes(fixed.model)) ?? null;
+}
+
 export type ProfileResolution = { profile: ExecutionProfile } | { reason: string };
 
 /** A malformed stored task tier holds this task by name until Settings repairs it. */
 export function taskTierRefusal(task: string, settings: ReadonlyMap<string, string>): string | null {
+  if (TASK_EXECUTION_PROFILES[task] !== undefined) return null;
   const tasks = profileSetting(settings.get('agent.tasks'));
   if (tasks === undefined) return null;
   if (tasks === null || typeof tasks !== 'object' || Array.isArray(tasks)) return invalidTaskTier(task);
@@ -38,6 +46,12 @@ export function taskTierRefusal(task: string, settings: ReadonlyMap<string, stri
 /** Resolve settings only for the harness whose capability can apply them. */
 export function resolveExecutionProfile(task: string, harness: string, capability: ProfileCapability | undefined, settings: ReadonlyMap<string, string>): ProfileResolution {
   const unsupported = { reason: profileUnsupported(harness) };
+  const fixed = TASK_EXECUTION_PROFILES[task];
+  if (fixed !== undefined) {
+    if (harness !== fixedTaskHarness(task) || !isReasoningTier(TASK_TIERS[task])) return unsupported;
+    const profile: ExecutionProfile = { tier: TASK_TIERS[task]!, model: fixed.model, effort: fixed.effort, sources: { tier: 'task', model: 'default' } };
+    return profileSupported(profile, capability) ? { profile } : unsupported;
+  }
   const tierRefusal = taskTierRefusal(task, settings);
   if (tierRefusal !== null) return { reason: tierRefusal };
   if (capability === undefined || capability.model === 'none') return unsupported;

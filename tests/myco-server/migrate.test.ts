@@ -706,6 +706,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0690_v690.sql': '20058fe0d9510b158a6940603875ce52870e2610776526a7e1020f241ee61473',
   '0691_v691.sql': '5b1708a49574b0ad52ec7808af449ede673435c131598bf82e6ad0f51342bc85',
   '0692_v692.sql': '8c50c6d76afdb567301ca8e73866da40920dbca31334e2d8189748e5b055307b',
+  '0693_v693.sql': '5e60550eff3fc18550b3f7e3fc0318579c2dacb202a17126ad12d9fc813a3e54',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1316,6 +1317,7 @@ describe('versioned schema steps', () => {
     const source = sqliteEnv();
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
+    writerRows.set('spore_curation_work', { cluster_key: 'grammar-fixture', members: '[]' });
     try {
       expect(await ingestEvent(source.db, { projectId: 'proj_1', machineId: 'machine', tokenId: 'capture', now: 1, bodyBytes: 0, writeOrigin: 'server' }, {
         eventId: crypto.randomUUID(), sessionId: 'grammar-session', kind: 'prompt', createdAt: 1, channel: 'cli',
@@ -1392,7 +1394,7 @@ describe('versioned schema steps', () => {
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
-      'learning_sessions', 'turn_cards',
+      'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
     ].sort());
   });
 });

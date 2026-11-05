@@ -5,6 +5,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { resolveEmbedding } from '@myco-server-worker/core/embedding/policy.js';
 import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { runnerUpdateReportStatements } from '@myco-server-worker/core/runner-updates.js';
+import { BUDGET_INDEXES, completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import type { CaptureEnvelope } from '@myco-server-worker/ingest/envelope.js';
 import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
@@ -54,6 +55,48 @@ async function project(db: RelationalStore, kind: 'plan' | 'session.start' | 'se
 }
 
 const reconciliationRuns: Record<ReconciliationCase, (db: RelationalStore) => Promise<void>> = {
+  budget: async (db) => {
+    await db.batch([
+      'CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT)',
+      'CREATE TABLE agent_run_attempts(claimed_at INTEGER,settled_seq INTEGER,profile_json TEXT,cost_usd REAL)',
+      'CREATE TABLE agent_runs(task TEXT,origin TEXT,queued_at INTEGER,id TEXT,status TEXT,dispatched_by TEXT)',
+      "INSERT INTO schema_meta VALUES('budget_enabled_at','1')",
+      ...BUDGET_INDEXES.map(index=>`CREATE INDEX ${index.name} ON ${index.table}(${index.columns})${index.suffix}`),
+    ].map(sql=>db.prepare(sql)));
+    const writes: number[] = [];
+    const observed: RelationalStore = { ...db, prepare: sql => {
+      const statement = db.prepare(sql);
+      return sql.startsWith("INSERT INTO schema_meta(key,value) VALUES('budget_index_rows'") ? { ...statement, run: async () => {
+        const result = await statement.run(); writes.push(result.meta.changes); return result;
+      } } : statement;
+    } };
+    const snapshot = async () => {
+      const catalogue = await rows(db,"SELECT name,rowid AS id FROM sqlite_master WHERE type='index'");
+      return JSON.stringify(BUDGET_INDEXES.map(index=>catalogue.find(row=>row.name===index.name)!.id));
+    };
+    const stored = () => rows(db,"SELECT rowid,value FROM schema_meta WHERE key='budget_index_rows'");
+    equal(await completeBudgetMigration(observed,1),{active:true,reason:null},'verified catalogue admits its first snapshot');
+    const first = await stored();
+    equal(first[0]!.value,await snapshot(),'witness names the current catalogue rows');
+    await completeBudgetMigration(observed,2);
+    equal(await stored(),first,'repeated snapshot preserves the row and value');
+    await db.prepare('DROP INDEX idx_attempts_claimed').run();
+    const index = BUDGET_INDEXES[0];
+    await db.prepare(`CREATE INDEX ${index.name} ON ${index.table}(${index.columns})${index.suffix}`).run();
+    check(await snapshot()!==first[0]!.value,'catalogue replacement changes its row identity');
+    await completeBudgetMigration(observed,0);
+    const replaced = await stored();
+    equal(replaced[0]!.rowid,first[0]!.rowid,'new catalogue snapshot retains witness identity');
+    equal(replaced[0]!.value,await snapshot(),'current catalogue replaces an old snapshot despite clock rollback');
+    await completeBudgetMigration(observed,0);
+    equal(writes,[1,0,1,0],'only a changed snapshot writes');
+    await db.prepare('DROP INDEX idx_attempts_claimed').run();
+    await db.prepare('CREATE INDEX idx_attempts_claimed ON agent_run_attempts(settled_seq)').run();
+    let refusal: unknown;
+    try { await completeBudgetMigration(observed,3); } catch (error) { refusal = error; }
+    check(refusal instanceof Error && refusal.message==='Active budget indexes do not match the admitted schema','an invalid catalogue cannot publish a witness');
+    equal(await stored(),replaced,'refused catalogue preserves its prior witness');
+  },
   plan: async (db) => {
     for (const order of permutations([{ id: 'a', at: 100, content: 'A', tag: 'old' }, { id: 'b', at: 150, content: 'B', tag: 'middle' }, { id: 'c', at: 200, content: 'A', tag: 'latest' }])) {
       await db.prepare('DELETE FROM plans').run(); await db.prepare('DELETE FROM tags').run();

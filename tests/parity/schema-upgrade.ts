@@ -27,6 +27,7 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   extraction_acks: { kind: 'record', record_id: 'upgrade_prompt' },
   prompt_context_answers: { outcome: 'served', prompt_id: 'upgrade_prompt' },
   legacy_worker_audit: { action: 'forgotten' },
+  runner_update_audit: { action: 'requested', detail: '{}' },
   agent_run_attempts: { owner_kind: 'runner' },
   agent_run_steps: { kind: 'read', outcome: 'ok' },
   session_views: { legacy: 'live' },
@@ -152,6 +153,9 @@ export function referencedExistingTables(db: Database, statements: readonly stri
   const owners = new Map(objects.map((item) => [item.name.toLowerCase(), item.tbl_name]));
   const tables = new Set<string>();
   for (const statement of statements) {
+    // Ordinary table definitions consume no existing rows; AS SELECT reads its source.
+    const words = sqlIdentifiers(statement).map(word => word.toUpperCase());
+    if (words[0] === 'CREATE' && words[1] === 'TABLE' && !words.some((word,index) => word === 'AS' && ['SELECT','WITH'].includes(words[index+1] ?? ''))) continue;
     // A foreign key's target is a parent the statement names, not a table it changes; the seed reaches parents through their children.
     const resolved = sqlIdentifiers(statement.replace(/\bREFERENCES\s+("[^"]*"|\w+)/gi, '')).map((name) => owners.get(name.toLowerCase()))
       .filter((owner): owner is string => owner !== undefined && definitions.has(owner.toLowerCase())

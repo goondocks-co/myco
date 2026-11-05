@@ -1,3 +1,5 @@
+import { curationWriteAdmission, curationWriteStore } from './spore-curation.js';
+import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, resolveSpore, SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus, type SporeExpectation } from './spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
@@ -125,10 +127,16 @@ function sporeMetadataError(input: SporeWriteInput): string | null {
 }
 
 export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
+  if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) {
+    const admitted = await curationWriteAdmission(ctx.env.db, ctx.projectId, ctx.principal.runId, input);
+    if (typeof admitted === 'string') return failure(admitted);
+    ctx = { ...ctx, env: { ...ctx.env, db: curationWriteStore(ctx.env.db, ctx.projectId, ctx.principal.runId, admitted) } };
+  }
   const invalid = sporeMetadataError(input);
   if (invalid !== null) return failure(invalid);
   try { return await admitSporeWrite(input, ctx); }
   catch (error) {
+    if (error instanceof Error && error.message.includes('[myco_curation_changed]')) return failure('assigned spores changed or the curation decision is closed');
     if (error instanceof MemberWriteRefused) return failure('import authority required');
     if (error instanceof ServedSessionRefused) return failure(SESSION_NOT_SERVED);
     throw error;

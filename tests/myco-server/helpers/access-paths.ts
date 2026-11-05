@@ -8,6 +8,8 @@
  * declared once and judged the same way by both.
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
+  ['idx_curation_changes_due', 'curation discovery seeks changed Projects across the Deployment'],
+  ['idx_curation_projects', 'curation discovery seeks one opted-in Project after its saved cursor across the Deployment'],
   ['idx_view_active_leases', 'view slot admission seeks unexpired build leases across Projects'],
   ['idx_view_stale', 'view staleness admission seeks older executing generations across Projects'],
   ['idx_view_ready', 'view service takes the least recently served ready session across Projects'],

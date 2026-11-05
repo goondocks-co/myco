@@ -1,6 +1,6 @@
 import ts from 'typescript-v6';
 
-export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'content-key' | 'checkpoint-transaction' | 'arrival-order' | 'unverified';
+export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'content-key' | 'checkpoint-transaction' | 'catalogue-snapshot' | 'arrival-order' | 'unverified';
 export interface UpsertDeclaration { tables: string[]; order: UpsertRule }
 export interface UpsertOccurrence { owner: string; table: string | null; replacement: boolean }
 

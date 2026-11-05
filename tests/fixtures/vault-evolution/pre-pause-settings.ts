@@ -463,7 +463,7 @@ export interface SettingsWriter {
   /** Every stored Deployment leaf. Absent leaves are not defaulted here; a reader layers these over its own defaults. */
   leaves(): Promise<Record<string, LeafRecord>>;
   /** Whether a live Project has this capability on; an absent row is on and an explicit zero is off. */
-  capabilityEnabled(projectId: string, capability: ProjectCapability): Promise<boolean>;
+  capabilityEnabled(projectId: string, capability: string): Promise<boolean>;
   /** Every capability this Project is admitted to. */
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
   /** Stored admissions for capabilities outside the live set, for read-only inspection. */

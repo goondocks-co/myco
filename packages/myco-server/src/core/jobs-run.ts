@@ -1,3 +1,4 @@
+import { discoverSporeClusters } from './spore-curation.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
 import { budgetActivation, budgetQueueOpenedAt, BUDGET_ENABLED, BUDGET_QUEUE_OPENED_SQL } from '../db/budget-activation.js';
@@ -239,6 +240,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'learning-source-repair': (env) => repairLearningSources(env.db),
+  'spore-curation': (env, now) => discoverSporeClusters(env, now),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
     return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });
