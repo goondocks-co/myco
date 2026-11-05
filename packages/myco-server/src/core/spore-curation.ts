@@ -15,8 +15,8 @@ import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 import { writeGuardStore, writeGuardBatch } from './write-guard-store.js';
 import { cosineSimilarity, type StoredVector } from './embedding/vectors.js';
 
-/** Cosine scores use normalized vectors. 0.90 admits strong overlap, above search's 0.30 recall floor. */
-export const CURATION_SIMILARITY = 0.90;
+/** A seed needs a neighbour at this cosine score; about one spore in eight qualifies in the sampled store. */
+export const CURATION_SIMILARITY = 0.80;
 export const CURATION_CLUSTER_CAP = 8;
 export const CURATION_SEEDS_PER_TICK = 8;
 export const CURATION_NEIGHBORS = CURATION_CLUSTER_CAP * 2;

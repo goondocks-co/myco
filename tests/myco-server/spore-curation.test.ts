@@ -54,7 +54,7 @@ test('off by default; no overlap creates no work or run; historical seeds requir
   const f = await fixture();
   try {
     expect(await settingsWriter(f.db).capabilityEnabled('proj_1', 'spore_curation')).toBe(false);
-    await f.add('a', [1,0], 1); await f.add('b', [0,1], 1);
+    await f.add('a', [1,0], 1); await f.add('b', [0.79,Math.sqrt(1-0.79**2)], 1);
     await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
     await f.enable(); await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
     expect(f.sqlite.query('SELECT COUNT(*) AS n FROM spore_curation_work').get()).toEqual({ n: 0 });
@@ -68,7 +68,7 @@ test('off by default; no overlap creates no work or run; historical seeds requir
 test('a real claim receives whole spores on Sonnet low; kept-apart revisions stay settled until a member changes', async () => {
   const f = await fixture();
   try {
-    await f.enable(); await f.add('a'); await f.add('b'); await f.add('c'); await f.add('d'); await f.add('e'); await f.discover();
+    await f.enable(); await f.add('a'); await f.add('b',[0.81,Math.sqrt(1-0.81**2)]); await f.add('c'); await f.add('d'); await f.add('e'); await f.discover();
     const claimed = await f.poll(); expect(claimed.claimed).toBe(true); if (!claimed.claimed) return;
     expect(claimed.run.profile).toMatchObject({ model: 'sonnet', effort: 'low' });
     expect(claimed.run.instruction).toContain('Whole content for a');
