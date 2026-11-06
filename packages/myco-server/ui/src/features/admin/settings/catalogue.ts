@@ -127,9 +127,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     id: 'code-map',
     section: 'work',
     label: 'Code map',
-    note: 'How Myco keeps its map of each project’s code.',
+    note: 'Projects with Code map on keep their map current after new capture. Needs work on a schedule, a connected repository and a ready runner. Task limits apply.',
     leaves: [
-      { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Update the map on its own', kind: 'toggle', note: 'Needs work on a schedule and the project’s Code map switch in its project settings. Task limits also apply.' },
       { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes' },
       { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
     ],

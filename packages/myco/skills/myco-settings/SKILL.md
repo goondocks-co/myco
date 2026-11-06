@@ -76,7 +76,7 @@ Four, and none is retryable — each names a fault in the caller's own request:
 
 The three project capabilities are **Context for sessions**, **Code map** and **Learning**. All are **on by default**: a missing capability row means enabled. An explicit opt-out stays off, and archived projects are excluded from automatic work.
 
-Enabling a capability does not register a runner or turn on scheduled work. Myco's agent work runs only on registered runners. **Work on a schedule** starts off; automatic map updates also require **Update the map on its own**. Repository tasks need a connected repository.
+Enabling a capability does not register a runner or turn on scheduled work. Myco's agent work runs only on registered runners. **Work on a schedule** starts off. Projects with **Code map** on keep their map current after new capture, including during active work, within the refresh period and task limits. Repository tasks need a connected repository.
 
 **Runs of one task at once** defaults to 2 across projects. Additional runs queue. First extraction of a large history ramps at two automatic runs a day until that initial history drains or the active window expires; recent live sessions have reserved daily slots. Use the settings module's effective capability read rather than testing for a stored row.
 

@@ -250,7 +250,7 @@ export interface TaskSchedule {
  * The retained container probe has no schedule on a 2.0 Deployment.
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
-  [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
+  [MAP_TASK]: { intervalSeconds: 21_600, runIn: ['active', 'idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
   'embedding-reconcile': null,
   [EXTRACTION_TASK]: null,
   [CARD_TASK]: null,

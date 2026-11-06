@@ -80,7 +80,6 @@ describe('a stored value the rule refuses', () => {
   it('keeps the code map refreshing at the nearest period the rule allows', async () => {
     for (const [text, seconds] of [['20000', 10_080 * 60], ['90.5', 90 * 60], ['"hourly"', 21_600]] as const) {
       const e = sqliteEnv();
-      store(e, 'cortex.canopy.refresh.background_enabled', 'true');
       store(e, 'cortex.canopy.refresh.background_period_minutes', text);
       expect({ text, seconds: (await scheduleLeaves(e.serverEnv)).mapRefresh.intervalSeconds }).toEqual({ text, seconds });
     }
