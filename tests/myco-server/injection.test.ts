@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  AGENT_LINE_MAX_CHARS, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
+  AGENT_LINE_MAX_CHARS, CURATE_LINE, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
   injectedPlanIds, injectedSporeIds, injectionLeaves,
   itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, renderInjectionContext, selectSporesForPrompt,
   type InjectionItem, type InjectionLeaves,
@@ -403,6 +403,7 @@ describe('the rendered context', () => {
       'Relevant project memory — retrieve any item in full by id:',
       '- [a] (decision) relevance guides the selector',
       '- [b] (gotcha) the hook answers first',
+      CURATE_LINE,
     ].join('\n'));
   });
 
@@ -442,7 +443,7 @@ describe('the injection budget', () => {
   it('fits the item floor at the full line cap', () => {
     const header = 'Relevant project memory — retrieve any item in full by id:';
     const search = 'More may match — search with myco_search.';
-    const fixed = estimateTokens(header) + estimateTokens(`\n${search}`);
+    const fixed = estimateTokens(header) + estimateTokens(`\n${search}`) + estimateTokens(`\n${CURATE_LINE}`);
     expect(INJECTION_MIN_ITEMS * MAX_LINE_TOKENS + fixed).toBeLessThanOrEqual(INJECTION_BUDGET_TOKENS);
   });
 
@@ -474,9 +475,18 @@ describe('the injection budget', () => {
       { kind: 'spore', id: 'spr_a', label: 'gotcha', text: 'the selector drops the tail' },
       { kind: 'plan', id: 'plan_b', label: 'plan: in_progress', text: 'serving rewrite' },
     ];
-    const lines = renderInjectionContext(items, false).split('\n').slice(1);
+    const lines = renderInjectionContext(items, false).split('\n').slice(1).filter((line) => line.startsWith('- '));
     expect(lines).toHaveLength(2);
     for (const line of lines) expect(line).toMatch(/^- \[[A-Za-z0-9_-]+\] \(/);
+  });
+
+  it('tells the agent what to do with a wrong spore, and only where a spore is served', () => {
+    const spore: InjectionItem = { kind: 'spore', id: 'spr_a', label: 'gotcha', text: 'one' };
+    const plan: InjectionItem = { kind: 'plan', id: 'plan_b', label: 'plan: active', text: 'two' };
+    expect(CURATE_LINE).toMatch(/obsolete/);
+    expect(CURATE_LINE).toMatch(/supersede/);
+    expect(renderInjectionContext([spore], false)).toContain(CURATE_LINE);
+    expect(renderInjectionContext([plan], false)).not.toContain(CURATE_LINE);
   });
 
   it('names the search tool only where the pool held more than it served', () => {

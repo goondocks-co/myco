@@ -61,6 +61,19 @@ myco_spores { "op": "supersede", "old_spore_id": "<old id>",
 
 Plans are the same shape — `myco_plans` with `op: "save"` — and are for work that spans sessions. Status changes through an explicit status-only save.
 
+## Retiring a spore that is wrong
+
+Context served to you can include a spore that is wrong, or that describes code that no longer exists. You are the reader best placed to notice, so retire it on the spot. A spore that is merely off-topic for your task is left alone: it may be right, just not relevant now.
+
+- **Check before you retire.** Open the file the spore names and search the code for what it describes. Do not retire on a hunch.
+- **Give a reason** that says what you checked, for example "`src/outbox.ts` no longer has a lease; searched for `lease`, no matches".
+- **Prefer superseding** when you can write the correct version: save it, then `supersede` the old spore with the new id, as above. Use `obsolete` when nothing replaces it.
+
+```
+myco_spores { "op": "obsolete", "id": "<spore id>", "project": "<project id>",
+              "session_id": "<session id>", "reason": "<what you checked>" }
+```
+
 ## Recording what you created
 
 When you create a pull request, issue, tag, release or deploy in this session, record it once with its own id and URL. The session page then lists it beside the commits Myco observed.
