@@ -118,7 +118,7 @@ export function mapGrounding(artifact: MapArtifact): SourceGrounding[] {
 }
 
 /** Source files and the directories that contain them. */
-export function admittedSourcePaths(files: readonly SourceGrounding[]): ReadonlySet<string> {
+export function admittedSourcePaths(files: readonly Pick<SourceGrounding, 'path'>[]): ReadonlySet<string> {
   const paths = new Set(['']);
   for (const file of files) {
     const segments = file.path.split('/');

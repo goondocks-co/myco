@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import * as checkoutModule from '@myco/runner/repository-checkout.js';
+import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -104,7 +105,8 @@ describe('committed repository checkout', () => {
   });
 
   it('writes the digest listing beside a worker checkout only when the run asks for one', async () => {
-    const answer = async (input: Record<string, unknown>) => input.commit === undefined
+    const answer = async (input: Record<string, unknown>) => input.files !== undefined
+      ? (expect(input.files).toEqual(['AGENTS.md']), {filesStored:true}) : input.commit === undefined
       ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
       : { pin: { url, branch: 'main', commit: input.commit } };
     const spec = { url, branch: 'main', historyDepth: 1 };
@@ -239,4 +241,18 @@ cp.execFileSync(${JSON.stringify(gitPath)}, process.argv.slice(2), { stdio: 'inh
   expect(failure?.failure.summary).toContain('fatal: cannot read https://example.test');
   expect(JSON.stringify(failure?.failure)).not.toContain('shortpw');
   expect(JSON.stringify(failure?.failure)).not.toContain('reader:');
+});
+
+
+it('continues mapping without posting an oversized committed inventory',async()=>{
+  const files=Array.from({length:6000},(_,i)=>`src/${i}-${'a'.repeat(100)}.ts`);
+  const prepare=spyOn(checkoutModule,'prepareRepositoryCheckout').mockResolvedValue({root:'unused',commit:'a'.repeat(40),files,dispose:async()=>{}});
+  const calls:Record<string,unknown>[]=[];
+  try {
+    const checkout=await prepareWorkerCheckout({url,branch:'main',historyDepth:1},home,AbortSignal.timeout(1000),async input=>{
+      calls.push(input);return {repository:{url,branch:'main'}};
+    },{digests:true});
+    expect(calls).toEqual([{}]);
+    await checkout.dispose();
+  }finally{prepare.mockRestore();}
 });

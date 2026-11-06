@@ -3,6 +3,7 @@ import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from './adapters.js';
 import { pinMapRepositoryAtCommit } from './canopy.js';
 import { prepareRunRepository } from './run-repository.js';
+import { storeRepositoryInventory } from './repository-inventory.js';
 import { repositoryCheckoutOfRun, repositoryPinOfRun, type RunRow } from './runs.js';
 import { withLeasedRunCommit, withLeasedRunSecret, type WorkerLeaseOwner, type WorkerRunIdentity } from './worker-run.js';
 
@@ -17,6 +18,10 @@ const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRu
     return { persisted: true, held: false, reason: 'the run holds no repository checkout' };
   }
   const lease = { worker: worker.worker, now: worker.clock() };
+  if (input.body.files !== undefined) {
+    const filesStored = await storeRepositoryInventory(env.db, input.projectId, row, input.body, lease);
+    return { persisted: true, held: true, filesStored };
+  }
   const hadRepositoryPin = row.task === MAP_TASK && repositoryPinOfRun(row) !== null;
   const answer = await prepareRunRepository(env, input.projectId, row, input.body, expected, lease,
     row.task === MAP_TASK
@@ -31,4 +36,4 @@ const prepareRead = withLeasedRunSecret(prepare);
 const preparePin = withLeasedRunCommit(prepare);
 
 export const prepareWorkerRepository = (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRunIdentity & { body: Record<string, unknown> }) =>
-  input.body.commit === undefined ? prepareRead(env, worker, input) : preparePin(env, worker, input);
+  input.body.commit === undefined && input.body.files === undefined ? prepareRead(env, worker, input) : preparePin(env, worker, input);

@@ -130,6 +130,7 @@ export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext)
   if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) {
     const admitted = await curationWriteAdmission(ctx.env.db, ctx.projectId, ctx.principal.runId, input);
     if (typeof admitted === 'string') return failure(admitted);
+    if ('ok' in admitted) return admitted;
     ctx = { ...ctx, env: { ...ctx.env, db: curationWriteStore(ctx.env.db, ctx.projectId, ctx.principal.runId, admitted) } };
   }
   const invalid = sporeMetadataError(input);

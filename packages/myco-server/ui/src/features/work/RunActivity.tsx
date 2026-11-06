@@ -345,7 +345,7 @@ export function AgentAccount({ projectId, answer, calls, failed }: { projectId: 
       {reports.map((report, index) => (
         <div key={index} className="flex flex-col gap-s2 t-small text-ink-2">
           {failed && <span className="font-medium">The agent said:</span>}
-          <p data-run-report="">{report.summary}</p>
+          <p className="whitespace-pre-line" data-run-report="">{report.summary}</p>
           <time className="t-meta text-muted" dateTime={new Date(report.createdAt).toISOString()}>{timeWords(report.createdAt)}</time>
           {report.audit !== null ? <>
             <Account audit={report.audit} />

@@ -52,6 +52,7 @@ export interface CheckoutFileDigest { path: string; sha256: string }
 export interface RepositoryCheckout {
   root: string;
   commit: string;
+  files: string[];
   changedPaths?: string[];
   /** Every committed regular file whose path fits one listing line, sorted by path; present when the request asked for digests. */
   digests?: CheckoutFileDigest[];
@@ -216,7 +217,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await rm(askpass);
     delete env.MYCO_GIT_USERNAME;
     delete env.MYCO_GIT_TOKEN;
-    return { root, commit: pinned, changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
+    return { root, commit: pinned, files: files.map(file => file.path), changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
   } catch (error) {
     await dispose();
     throw error;

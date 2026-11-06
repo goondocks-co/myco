@@ -569,3 +569,13 @@ for (const [code, ending] of [['crashed', 'quit unexpectedly'], ['timed_out', 'r
   expect(panel.querySelector('header')!.textContent).not.toContain('before it');
   expect(panel.querySelector('[data-run-failure]')).toBeNull();
 });
+
+
+it('shows retirement counts on their own report line and retains readable prose details',async()=>{
+  const {panel}=await open({...codeMapRun(),reports:[{action:'curated',summary:'Reviewed overlapping guidance.\n3 retired · 1 replaced · 4 merged',details:'Retired dropped features.\nKept distinct current guidance.',audit:null,createdAt:T0}]});
+  const report=panel.querySelector('[data-run-report]')!;
+  expect(report.textContent).toBe('Reviewed overlapping guidance.\n3 retired · 1 replaced · 4 merged');
+  expect(report.classList.contains('whitespace-pre-line')).toBe(true);
+  fireEvent.click(within(panel).getByText('Report details'));
+  expect(within(panel).getByText('Retired dropped features. Kept distinct current guidance.').textContent).toBe('Retired dropped features.\nKept distinct current guidance.');
+});

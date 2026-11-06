@@ -724,7 +724,7 @@ export function createServer(deps: ServerDeps) {
    */
   async function asDeployment(request: Request, env: ServerEnv, auth: MemberAuth, machineId: string, route: DeploymentRoute, now: number): Promise<Response> {
     try {
-      const body = await readBoundedBody(request, MAX_BODY_BYTES);
+      const body = await readBoundedBody(request, route.maxBodyBytes ?? MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       const subject = await memberSubject(env.db, auth.memberId, 'http');
       if (!await authorizeHttp(env, route.authorization, subject, { machineId, tokenId: auth.tokenId, body: body.text })) {
@@ -792,7 +792,7 @@ export function createServer(deps: ServerDeps) {
       emit({ kind: 'ingest_refused', runnerId: auth.runnerId, tokenId: auth.credentialId, reason: classifier });
       return refusalResponse('persisted', classifier, reason, 'terminal');
     };
-    const body = await readBoundedBody(request, MAX_BODY_BYTES);
+    const body = await readBoundedBody(request, 'maxBodyBytes' in route ? route.maxBodyBytes ?? MAX_BODY_BYTES : MAX_BODY_BYTES);
     if (!body.ok) return refuseRunner(body.reason, 'body_cap');
     const expiry = route.auth === 'runner' && route.admitsLapsed === true ? 'lapsed' : 'live';
     const subject = await runnerSubject(env.db, auth, now, expiry);
