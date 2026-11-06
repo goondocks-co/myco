@@ -5,13 +5,15 @@ import { documentTurnInput } from '@myco-server-worker/content/turn-material.js'
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { withDocumentStores, captureDocumentSession } from './helpers/document-stores.js';
-import { memoryBlobStore, uuid } from './helpers/fixtures.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 
 it('holds unpublished sessions and archives live unlearned source without losing card material on both stores', async () => {
   await withDocumentStores(async db => {
-    const env = { db, blobs: memoryBlobStore() };
+    const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(),
+      SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
     await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')").run();
     await captureDocumentSession(db);
     await captureDocumentSession(db, 'other');

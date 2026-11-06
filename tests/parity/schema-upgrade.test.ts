@@ -28,6 +28,16 @@ it('distinguishes new table column names from existing row sources',()=>{
   }finally{db.close();}
 });
 
+it('resolves existing metadata writes without seeding metadata as content', () => {
+  const db = new Database(':memory:');
+  const statement = "DELETE FROM schema_meta WHERE key IN ('learning_paused_at','learning_resumed_at')";
+  try {
+    expect(() => referencedExistingTables(db, [statement])).toThrow('unsupported D1 upgrade fixture');
+    db.exec('CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
+    expect(referencedExistingTables(db, [statement])).toEqual([]);
+  } finally { db.close(); }
+});
+
 it('seeds a runner update audit with its admitted action and JSON detail',()=>{
   const db=new Database(':memory:');
   try {
