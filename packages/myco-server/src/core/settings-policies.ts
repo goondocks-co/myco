@@ -77,7 +77,7 @@ const scheduling: SettingPolicy = {
   id: 'scheduling',
   owners: ['core/schedule-rules.ts'],
   leaves: ['agent.scheduled_tasks_enabled', 'agent.scheduled_tasks_active_window_days', 'agent.cold_project_threshold_days',
-    'cortex.canopy.refresh.background_enabled', 'cortex.canopy.refresh.background_period_minutes'],
+    'cortex.canopy.refresh.background_period_minutes'],
   async resolve(env) {
     const leaves = await scheduleLeaves(env);
     const off = leaves.enabled ? {} : { state: 'inactive' as const, reason: SCHEDULE_OFF };
@@ -87,13 +87,10 @@ const scheduling: SettingPolicy = {
       'agent.scheduled_tasks_enabled': { effective: leaves.enabled },
       'agent.scheduled_tasks_active_window_days': { effective: leaves.activeWindowDays, ...off },
       'agent.cold_project_threshold_days': { effective: leaves.coldThresholdDays, ...off },
-      'cortex.canopy.refresh.background_enabled': map.overridden.enabled
-        ? { effective: false, source: 'task-override', state: 'inactive', reason: 'The code map task’s own schedule is off under Per-task overrides.' }
-        : { effective: map.enabled, ...off },
       'cortex.canopy.refresh.background_period_minutes': map.overridden.interval
         ? { effective: minutes, source: 'task-override', state: 'inactive', reason: `Per-task overrides set the code map to every ${minutes} minutes.` }
-        : !map.enabled ? { effective: minutes, state: 'inactive', reason: leaves.enabled ? 'The map is not updated on its own.' : SCHEDULE_OFF }
-          : { effective: minutes, meanwhile: `The map updates every ${minutes} minutes` },
+        : !map.enabled ? { effective: minutes, state: 'inactive', reason: 'The code map task’s own schedule is off under Per-task overrides.' }
+          : { effective: minutes, meanwhile: `The map updates every ${minutes} minutes`, ...off },
     };
   },
 };

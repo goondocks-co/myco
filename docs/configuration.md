@@ -12,7 +12,7 @@ An administrator changes server settings in the dashboard. Each member sets thei
 - **How much at once** controls **Tasks at once**, **Runs of one task at once** and **Runs of one task per hour**. The default for runs of one task at once is **2 across all projects**. Further runs queue. Clear an override to restore the default, or choose **No limit**.
 - **Which agent does the work** sets **Preferred agent** and **Then try, in order**, among agents the registered runners offer.
 - **What sessions receive** controls **Session-start instructions**, injection at session or subagent start, spores and plans with prompts, and the planning reminder. The instructions are one shared template for all projects, up to 4 KB. **Items per prompt** shares its count between spores and plans; a 300-token budget can serve fewer.
-- **Code map** controls **Update the map on its own**, **Update every** and **Paths left out**. Automatic updates start off; when enabled, their default interval is six hours. They also need scheduled work, the project's Code map switch and a connected repository.
+- **Code map** controls **Update every** and **Paths left out**. Projects with Code map on keep their map current after new capture, including during active work; the default interval is six hours. Automatic updates need scheduled work, a connected repository and a ready runner, and task limits apply.
 
 First extraction of a large history ramps at two automatic runs a day until the initial history drains or the active window expires. The normal automatic ceiling is 12 learning runs per project per day, with three slots reserved for recent live sessions. [How Myco learns](how-myco-learns.md) explains the four kinds of work.
 

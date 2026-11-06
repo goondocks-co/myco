@@ -79,7 +79,7 @@ In order, cheapest first:
 1. **Never admitted** — the capability was explicitly turned off, the project is archived, or a required provider is not configured. A missing capability row does not disable it.
 2. **Waiting for a runner** — no runner is registered or online that can take the task. Agent work runs only on registered runners; a queued run waits until one is available.
 3. **Waiting for concurrency** — **Runs of one task at once** defaults to 2 across projects. Further runs queue until one finishes.
-4. **Schedule switched off** — **Work on a schedule** starts off. Automatic work also needs its task's schedule enabled; automatic maps need **Update the map on its own**.
+4. **Schedule switched off** — **Work on a schedule** starts off. Automatic work also needs its task's schedule enabled; automatic maps follow the project’s **Code map** switch after new capture.
 5. **First-extraction ramp** — a large initial history is limited to two automatic extraction runs a day until that history drains or the active window expires. Later inflow does not extend the initial ramp.
 6. **Skipped as unchanged** — only possible if the task declares an input hash.
 7. **Capped** — the per-day ceiling was reached; skipped with a reason.

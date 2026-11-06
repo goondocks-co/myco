@@ -29,11 +29,11 @@ Work waits when no runner can take it. If a repository task is waiting, its runn
 | Titles | After a session ends, or once an unfinished session has been quiet long enough. A runner must be available. |
 | Learning | Checked hourly for unread prompts in completed sessions, while **Work on a schedule** is on. |
 | Learning from the code | When someone starts it. |
-| Code map | When someone starts it, or on its schedule when **Update the map on its own** is on; the default interval is six hours. |
+| Code map | When someone starts it, or on its schedule when the project’s **Code map** switch and **Work on a schedule** are on; the default interval is six hours. |
 
 The three project switches **Context for sessions**, **Code map** and **Learning** are on by default. Learning from sessions and code needs **Learning**; maps need **Code map**. Map work and learning from code also need a connected **Repository** in **Project settings**.
 
-Automatic learning needs **Settings › Myco’s work › Work on a schedule**, which starts off. Automatic map updates need that switch and **Update the map on its own**, which also starts off. Capturing sessions does not depend on either schedule switch. Imported session titling has its own **Title imported sessions** control.
+Automatic learning needs **Settings › Myco’s work › Work on a schedule**, which starts off. Projects with **Code map** on keep their map current under that schedule after new capture, including during active work. They need a connected repository and a ready runner, and task limits apply. Capturing sessions does not depend on scheduled work. Imported session titling has its own **Title imported sessions** control.
 
 Learning from a large initial history starts gradually: at most two automatic extraction runs a day until that initial history drains or the active window expires (14 days by default). Once that ramp ends, the default ceiling is 12 automatic learning runs a day per project, with three of those slots reserved for recent live sessions. The schedule also skips projects without eligible new material. These limits can be changed through task overrides.
 

@@ -2,8 +2,9 @@ import { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
-import { sqliteD1 } from './helpers/d1.js';
+import { sqliteD1, seededSqlite } from './helpers/d1.js';
 import { applySchemaSteps } from './helpers/migrate.js';
+import { settingsWriter, type SettingsResult } from '@myco-server-worker/core/settings.js';
 
 const step68 = SCHEMA_STEPS.find((step) => step.version === 68)!;
 const retained = [
@@ -92,4 +93,45 @@ describe('Deployment setting retirement', () => {
       expect(sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get()).toEqual({ value: '67' });
     } finally { sqlite.close(); }
   });
+});
+
+describe('the map refresh switch retirement', () => {
+  const leaf = 'cortex.canopy.refresh.background_enabled';
+  const step = SCHEMA_STEPS.find((step) => step.version === 698)!;
+
+  for (const value of ['true', 'false', '{"stored":"invalid"}', null]) {
+    it(`archives ${value ?? 'an absent switch'} and preserves the refresh period`, async () => {
+      const sqlite = seededSqlite();
+      const db = sqliteD1(sqlite);
+      try {
+        if (value !== null) sqlite.run('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,?,17,\'mem_owner\')', [leaf, value]);
+        sqlite.run('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,\'90\',19,\'mem_owner\')', ['cortex.canopy.refresh.background_period_minutes']);
+        for (const statement of step.statements) sqlite.exec(statement);
+        const archive = sqlite.query('SELECT leaf,value,updated_at,updated_by FROM retired_deployment_settings WHERE leaf=?').all(leaf);
+        expect(archive).toEqual(value === null ? [] : [{ leaf, value, updated_at: 17, updated_by: 'mem_owner' }]);
+        expect(sqlite.query('SELECT value FROM deployment_settings WHERE leaf=?').get(leaf)).toBeNull();
+        expect(sqlite.query('SELECT value FROM deployment_settings WHERE leaf=?').get('cortex.canopy.refresh.background_period_minutes')).toEqual({ value: '90' });
+        for (const statement of step.statements) sqlite.exec(statement);
+        expect(sqlite.query('SELECT leaf,value,updated_at,updated_by FROM retired_deployment_settings WHERE leaf=?').all(leaf)).toEqual(archive);
+        const refusal = { applied: false, refusal: { reason: 'not_deployment_tier', leaf } } satisfies SettingsResult;
+        expect(await settingsWriter(db).setLeaf(leaf, true, 'mem_owner', 20)).toEqual(refusal);
+        expect(await settingsWriter(db).resetLeaf(leaf, 'mem_owner', 21)).toEqual(refusal);
+      } finally { sqlite.close(); }
+    });
+  }
+
+  for (const missingCopy of [false, true]) {
+    it(`refuses removal when ${missingCopy ? 'the archive copy is omitted' : 'the archive conflicts'}`, async () => {
+      const sqlite = seededSqlite();
+      try {
+        sqlite.run('UPDATE schema_meta SET value=\'697\' WHERE key=\'version\'');
+        sqlite.run('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,\'false\',17,\'mem_owner\')', [leaf]);
+        if (!missingCopy) sqlite.run('INSERT INTO retired_deployment_settings(leaf,value,updated_at,updated_by,retired_at) VALUES(?,\'true\',17,\'mem_owner\',18)', [leaf]);
+        const statements = missingCopy ? step.statements.filter(sql => !sql.startsWith('INSERT OR IGNORE INTO retired_deployment_settings')) : step.statements;
+        await expect(applySchemaSteps(sqliteD1(sqlite), [{ ...step, statements }])).rejects.toThrow();
+        expect(sqlite.query('SELECT value FROM deployment_settings WHERE leaf=?').get(leaf)).toEqual({ value: 'false' });
+        expect(sqlite.query('SELECT value FROM schema_meta WHERE key=\'version\'').get()).toEqual({ value: '697' });
+      } finally { sqlite.close(); }
+    });
+  }
 });

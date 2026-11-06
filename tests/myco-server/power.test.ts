@@ -5,7 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   naturalState, nextWakeDelayMs, resolvePowerState, type PowerAssertion,
 } from '@myco-server-worker/core/power.js';
-import { jobDispatchesAt, jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, STAGING_RETENTION_JOB, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
+import { jobDispatchesAt, jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, STAGING_RETENTION_JOB, DEFERRED_JOBS, TITLING_BACKFILL_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 
 const THRESHOLDS = { idleMs: 60_000, sleepMs: 300_000, deepSleepMs: 3_600_000 };
@@ -92,6 +92,15 @@ describe('the next wake', () => {
 });
 
 describe('what runs at each depth', () => {
+  it('admits every background job and its dispatch while active, including jobs whose deepest state is idle', () => {
+    expect(jobsDueAt('active', 'clock').map(job => job.name)).toEqual(SERVER_JOBS.map(job => job.name));
+    for (const job of SERVER_JOBS) {
+      expect({ job: job.name, runs: jobRunsAt(job.name, 'active'), dispatches: jobDispatchesAt(job.name, 'active') })
+        .toEqual({ job: job.name, runs: true, dispatches: true });
+    }
+    expect(TITLING_BACKFILL_SCHEDULE.runIn).toContain('active');
+  });
+
   it('runs nothing at all in deep sleep', () => {
     expect(jobsDueAt('deep_sleep', 'clock')).toEqual([]);
     expect(jobsDueAt('deep_sleep', 'request')).toEqual([]);

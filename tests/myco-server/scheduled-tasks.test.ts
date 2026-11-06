@@ -15,7 +15,11 @@ import { runTick } from '@myco-server-worker/core/tick.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { sqliteEnv, withHarness, memberHeaders, noOutboundFetch } from './helpers/fixtures.js';
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { lastActivityAt } from '@myco-server-worker/core/activity.js';
+import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -58,7 +62,6 @@ function fixture(opts: { bound?: boolean } = {}) {
 
 function scheduledFixture() {
   const f = fixture();
-  f.setting('cortex.canopy.refresh.background_enabled', true);
   f.capability('proj_1', 'canopy', true);
   f.capability('proj_2', 'canopy', true);
   f.setting('agent.tasks', { 'canopy-map': { schedule: { ...SMOKE, enabled: true, preCondition: 'has-capture-since-map', reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
@@ -69,9 +72,46 @@ function scheduledFixture() {
   return f;
 }
 
+describe('automatic maps while the Deployment stays busy', () => {
+  for (const activity of ['idle', 'capture', 'dashboard'] as const) {
+    it(`schedules a due map with a runner polling every two seconds and ${activity} activity`, async () => {
+      const f = fixture({ bound: false });
+      try {
+        f.capability('proj_1', 'canopy', true);
+        f.receipt('proj_1', NOW);
+        const minted = await issueMemberToken(f.env.db, { memberId: 'mem_machine_1', machineId: 'polling-runner' }, NOW);
+        let now = NOW;
+        const server = createServer({ now: () => now, sourceOf: () => '192.0.2.1', fetchImpl: noOutboundFetch });
+        for (now = NOW; now <= NOW + 6 * 60_000; now += 2_000) {
+          if (activity === 'capture' && (now - NOW) % 60_000 === 0) {
+            f.sqlite.run('UPDATE sessions SET last_received_at = ? WHERE project_id = ?', [now, 'proj_1']);
+          }
+          if (activity === 'dashboard' && (now - NOW) % 60_000 === 0) {
+            const cookie = await ownerCookie(f.env.db, now);
+            const response = await server.handleRequest(new Request(`${ORIGIN}/api/projects`, { headers: { cookie } }), { ...f.env, secrets: OWNER_ENV });
+            expect(response.status).toBe(200);
+          }
+          const response = await server.handleRequest(new Request(`${ORIGIN}/worker/claim`, {
+            method: 'POST', headers: memberHeaders(minted.token),
+            body: JSON.stringify({ harnesses: [offeredHarness('claude-code')], capabilities: capabilitiesRequiredBy('canopy-map') }),
+          }), f.env);
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ persisted: true, claimed: false, reason: 'no_work' });
+        }
+        const at = now - 2_000;
+        expect(await lastActivityAt(f.env.db)).toBe(activity === 'idle' ? NOW : at);
+        const tick = await runTick(f.env, at, { serverUrl: ORIGIN, wake: 'clock' });
+        expect(tick.state).toBe(activity === 'idle' ? 'idle' : 'active');
+        expect(tick.scheduled).toEqual({ dispatched: 1, skipped: 0 });
+        expect(f.runs('proj_1')).toMatchObject([{ task: 'canopy-map', status: 'queued' }]);
+      } finally { f.sqlite.close(); }
+    });
+  }
+});
+
 describe('the schedule envelope', () => {
   it('catalogues every schedule and its precondition, excluding deterministic embedding work', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual([]);
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map']);
     expect(TASK_SCHEDULE['embedding-reconcile']).toBeNull();
     expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
@@ -140,20 +180,17 @@ describe('the leaves the clock reads', () => {
   it('is off until the owner turns scheduling on, with the 1.4 defaults for the recency gates', async () => {
     const f = fixture();
     f.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'`);
-    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: { enabled: false } } },
-      mapRefresh: { enabled: false, intervalSeconds: 21_600, overridden: { enabled: false, interval: false } } });
+    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: {} } },
+      mapRefresh: { enabled: true, intervalSeconds: 21_600, overridden: { interval: false } } });
     f.setting('agent.scheduled_tasks_enabled', true);
     f.setting('agent.cold_project_threshold_days', 3);
     f.setting('agent.tasks', { 'canopy-map': { schedule: { intervalSeconds: 60 } } });
     expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { 'canopy-map': { schedule: { intervalSeconds: 60 } } } });
-    // The map refresh stays off until its own leaf turns it on, whatever the task override says.
     f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true } } });
-    expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toEqual({ schedule: { enabled: false } });
-    f.setting('cortex.canopy.refresh.background_enabled', true);
     expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toEqual({ schedule: { enabled: true } });
     f.setting('cortex.canopy.refresh.background_period_minutes', 90);
     expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toEqual({ schedule: { intervalSeconds: 5400, enabled: true } });
-    f.setting('cortex.canopy.refresh.background_enabled', false);
+    f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: false } } });
     expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toMatchObject({ schedule: { enabled: false } });
   });
 });
@@ -407,13 +444,11 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
   }
 
   it('reads the same number of times whether it holds one Project or twelve', async () => {
-    // No scheduled task runs at `active`: every one is decided on what the wake read up front, and none reaches a
-    // condition of its own.
-    expect(scheduledTasks().filter(({ schedule }) => schedule.runIn.includes('active'))).toEqual([]);
+    // Projects with Code map off are decided from the wake's shared facts.
     const one = await tripsWith(1, 'active');
     const twelve = await tripsWith(12, 'active');
     expect({ one, twelve }).toEqual({ one, twelve: one });
-    expect(one).toBeLessThanOrEqual(4);
+    expect(one).toBeLessThanOrEqual(5);
   });
 
   it('decides each Project and task on the same facts a read of that Project alone answers', async () => {
@@ -439,7 +474,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
     const tasks = ['embedding-reconcile', 'canopy-map'];
-    expect(scheduledTasks().map(({ task }) => task)).toEqual([]);
+    expect(scheduledTasks().map(({ task }) => task)).toEqual(['canopy-map']);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
     // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
     expect([

@@ -118,7 +118,6 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'backup.retention.keep_daily': { type: 'integer', min: 1, max: 365 },
   'backup.retention.keep_weekly': { type: 'integer', min: 0, max: 52 },
   'cortex.canopy.exclude.patterns': { type: 'pattern-list', maxItems: 100, maxChars: 256 },
-  'cortex.canopy.refresh.background_enabled': BOOLEAN_SPEC,
   'cortex.canopy.refresh.background_period_minutes': { type: 'integer', min: 1, max: 10_080 },
   'cortex.instructions.inject_on_session_start': BOOLEAN_SPEC,
   'cortex.instructions.inject_on_subagent_start': BOOLEAN_SPEC,

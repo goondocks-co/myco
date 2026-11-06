@@ -68,19 +68,19 @@ describe('the task catalogue', () => {
 
 describe('what the clock runs', () => {
   it('keeps paused extraction, seeding and titling off the clock', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual([]);
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map']);
     expect(TASK_SCHEDULE[EXTRACTION_TASK]).toBeNull();
     for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
-  it('makes a declared, switched-off schedule live when an owner switches it on', () => {
+  it('honors an owner’s explicit enabled schedule override', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
     expect(live.map((t) => t.task).sort()).toEqual(['canopy-map']);
     expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip', preCondition: 'has-capture-since-map' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
-    expect(scheduledTasks({ 'embedding-reconcile': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([]);
+    expect(scheduledTasks({ 'canopy-map': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([]);
   });
 });
 
