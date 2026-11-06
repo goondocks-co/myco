@@ -710,7 +710,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0694_v694.sql': '9b74f9d52d3f1acb53d49012f13b13e9b1a330aa75c38997a508b80839b6b0f5',
   '0695_v695.sql': 'a5fd8f8cad97724d8b8698ead1e2f3d1fac426d1696fc75e93b28f32f48fb8e8',
   '0696_v696.sql': '03a613592a9f5d5730047c3ea1c41cc3c7e958ecbb3406abcfe0620ecf710e65',
-  '0697_v697.sql': '4ac18aa4bab5810bf50a0c60cc64786f89b856028b8c027482d21ad4d175f384',
+  '0697_v697.sql': 'b1082ed0fd47614cf3d895d27767a464135dbc6548fb63a527b0b3753554202e',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -781,21 +781,24 @@ function triggerShape(sql: string): { timing: string; event: string; table: stri
 
 /**
  * Whether a view or trigger a step drops at `index` is created again later in
- * the same step: for a trigger, on the same table and event, matching its
- * admitted writer table set.
+ * the same step. A guarded drop of a new trigger requires a declared writer;
+ * an existing trigger retains its table, event and admitted writer table set.
  */
 function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false): boolean {
   const create = new RegExp(`^\\s*CREATE ${kind} (?:IF NOT EXISTS )?${name}\\b`, 'i');
   const later = statements.slice(index + 1).filter((x) => create.test(x));
   if (later.length === 0) return false;
   if (kind === 'VIEW') return true;
-  const before = prior === null ? null : triggerShape(prior);
+  const shapes = later.map(triggerShape);
+  if (shapes.some(shape=>shape===null || shape.writes.length===0)) return false;
+  if (prior === null) return new RegExp(`^\\s*DROP TRIGGER IF EXISTS ${name}\\s*$`, 'i').test(statements[index]!);
+  const before = triggerShape(prior);
   if (before === null || before.writes.length === 0) return false;
   if(queueReplacement) {
     if(!before.writes.includes('document_due_totals')) return false;
     before.writes=before.writes.map(table=>table==='document_due_totals' ? 'document_due' : table).sort();
   }
-  return later.every((x) => JSON.stringify(triggerShape(x)) === JSON.stringify(before));
+  return shapes.every(shape => JSON.stringify(shape) === JSON.stringify(before));
 }
 
 /** Applies one step the way `wrangler d1 migrations apply` does: statement by statement, stopping at the first failure. `Database.exec` on a whole file runs past a failing statement, so a file-at-once apply cannot stand in for the production applier. */
@@ -1270,6 +1273,13 @@ describe('versioned schema steps', () => {
         expect({ name, label, accepted: judge(edited) }).toEqual({ name, label, accepted: false });
       }
     }
+    const freshTrigger='CREATE TRIGGER IF NOT EXISTS fresh AFTER UPDATE ON spores BEGIN UPDATE spores SET revision=revision+1; END';
+    const judgeNew=(statements:string[],index=0)=>recreatedAfterDrop(statements,index,'TRIGGER','fresh',null);
+    expect(judgeNew(['DROP TRIGGER IF EXISTS fresh',freshTrigger])).toBe(true);
+    expect(judgeNew(['DROP TRIGGER fresh',freshTrigger])).toBe(false);
+    expect(judgeNew(['DROP TRIGGER IF EXISTS fresh'])).toBe(false);
+    expect(judgeNew([freshTrigger,'DROP TRIGGER IF EXISTS fresh'],1)).toBe(false);
+    expect(judgeNew(['DROP TRIGGER IF EXISTS fresh',freshTrigger.replace('UPDATE spores SET revision=revision+1','SELECT 1')])).toBe(false);
     expect(recreatedAfterDrop(['DROP VIEW IF EXISTS v', 'CREATE VIEW IF NOT EXISTS v AS SELECT 1'], 0, 'VIEW', 'v', null)).toBe(true);
     expect(recreatedAfterDrop(['CREATE VIEW IF NOT EXISTS v AS SELECT 1', 'DROP VIEW IF EXISTS v'], 1, 'VIEW', 'v', null)).toBe(false);
   });
