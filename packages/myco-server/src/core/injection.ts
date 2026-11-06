@@ -53,8 +53,6 @@ import { type DeliveredNaming } from '../ingest/prompt-scheme.js';
 export const MIN_PROMPT_CHARS = 10;
 /** Unitless item count bounds the plans' share of the prompt budget. */
 const MAX_PLANS_PER_PROMPT = 2;
-/** The rendered block's ceiling in estimated tokens. */
-export const INJECTION_BUDGET_TOKENS = 300;
 /** The fewest items a prompt carrying any must serve, and what the per-line cap is derived from. */
 export const INJECTION_MIN_ITEMS = 5;
 /** The most items one prompt carries. Reached only where the lines run shorter than their cap. */
@@ -72,6 +70,12 @@ export const estimateTokens = (text: string): number => Math.ceil(text.length / 
 const HEADER = 'Relevant project memory — retrieve any item in full by id:';
 /** Emitted only where the pool held more than the budget served. */
 const SEARCH_LINE = 'More may match — search with myco_search.';
+/** Emitted with any spore, telling the agent what to do with one that is wrong. Its cost is reserved in every block's budget. */
+export const CURATE_LINE = 'Wrong or code gone? obsolete it, or supersede it with the fix; say what you checked. Off-topic: leave it.';
+/** The room the header, the items and the search line share, which the curation line's own cost is added to. */
+const ITEM_BUDGET_TOKENS = 300;
+/** The rendered block's ceiling in estimated tokens: the shared room plus the curation line's cost, so the per-line cap stays what the published tool contract states. */
+export const INJECTION_BUDGET_TOKENS = ITEM_BUDGET_TOKENS + estimateTokens(`\n${CURATE_LINE}`);
 
 /**
  * The budget arithmetic, derived rather than chosen.
@@ -88,7 +92,7 @@ const SEARCH_LINE = 'More may match — search with myco_search.';
  * trigger and its guidance, and the fill rule still serves seven where the
  * lines happen to run short.
  */
-const FIXED_TOKENS = estimateTokens(HEADER) + estimateTokens(`\n${SEARCH_LINE}`);
+const FIXED_TOKENS = estimateTokens(HEADER) + estimateTokens(`\n${SEARCH_LINE}`) + estimateTokens(`\n${CURATE_LINE}`);
 /** The most one rendered line may cost. */
 export const MAX_LINE_TOKENS = Math.floor((INJECTION_BUDGET_TOKENS - FIXED_TOKENS) / INJECTION_MIN_ITEMS);
 /** `estimateTokens` is `ceil(len / 4)`, so a line of this many characters costs exactly `MAX_LINE_TOKENS`. */
@@ -242,7 +246,7 @@ const isLivePlan = (plan: { status: string }): boolean => plan.status === 'activ
  */
 export function itemsWithinBudget(items: readonly InjectionItem[]): InjectionItem[] {
   const kept: InjectionItem[] = [];
-  let tokens = estimateTokens(HEADER) + estimateTokens(`\n${SEARCH_LINE}`);
+  let tokens = FIXED_TOKENS;
   for (const item of items) {
     if (kept.length === INJECTION_TARGET_ITEMS) break;
     const cost = estimateTokens(itemLine(item));
@@ -255,14 +259,16 @@ export function itemsWithinBudget(items: readonly InjectionItem[]): InjectionIte
 
 /**
  * The block a prompt is served: a header, one line per item carrying its id,
- * and the search line where the pool held more than the budget served.
+ * the line on retiring a wrong spore where any item is a spore, and the search
+ * line where the pool held more than the budget served.
  *
  * The id is what makes the block actionable — an agent that wants the whole
  * item asks for it by id rather than by guessing a search that finds it again.
  */
 export function renderInjectionContext(items: readonly InjectionItem[], more: boolean): string {
   if (items.length === 0) return '';
-  return [HEADER, ...items.map(itemLine), more ? `\n${SEARCH_LINE}` : ''].join('');
+  const curate = items.some((item) => item.kind === 'spore') ? `\n${CURATE_LINE}` : '';
+  return [HEADER, ...items.map(itemLine), curate, more ? `\n${SEARCH_LINE}` : ''].join('');
 }
 
 /** Every id of one column served anywhere in this session. */
