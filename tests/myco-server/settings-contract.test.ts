@@ -260,16 +260,12 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     value: () => 30, invalid: () => 30.5, observe: quietDecision,
   },
   'agent.titling_idle_close_minutes': { consumer: at('core/titling.ts', backfillTitles), value: () => 30, invalid: () => 4, observe: titlesQuietSession },
-  'cortex.canopy.refresh.background_enabled': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
-    value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
-  },
   'cortex.canopy.refresh.background_period_minutes': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true], ['cortex.canopy.refresh.background_enabled', true]],
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
     value: () => 30, invalid: () => 20_000, invalidMeans: { value: 10_080 }, observe: async (r) => (await mapSchedule(r))?.intervalSeconds ?? null,
   },
   'agent.tasks': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['cortex.canopy.refresh.background_enabled', true]], value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'canopy-map')?.schedule.intervalSeconds,
   },
   'agent.budget.daily_usd': {

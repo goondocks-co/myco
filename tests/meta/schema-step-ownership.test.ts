@@ -183,6 +183,28 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  {
+    step: 698,
+    sql: `INSERT OR IGNORE INTO retired_deployment_settings (leaf,value,updated_at,updated_by,retired_at)
+    SELECT leaf,value,updated_at,updated_by,unixepoch()*1000
+    FROM deployment_settings WHERE leaf='cortex.canopy.refresh.background_enabled'`,
+    reason: 'Retired map refresh preferences retain their exact stored value and attribution.',
+  },
+  {
+    step: 698,
+    sql: `INSERT INTO _v698_guard_retired_settings(ok) SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM deployment_settings live WHERE leaf='cortex.canopy.refresh.background_enabled'
+    AND NOT EXISTS (SELECT 1 FROM retired_deployment_settings saved WHERE saved.leaf=live.leaf
+      AND saved.value=live.value AND saved.updated_at=live.updated_at AND saved.updated_by=live.updated_by)
+    ) THEN 1 ELSE 0 END`,
+    reason: 'The archive must match the complete active preference before deletion.',
+  },
+  { step: 698, sql: 'DROP TABLE _v698_guard_retired_settings', reason: 'The temporary archive guard is released after admission.' },
+  {
+    step: 698,
+    sql: "DELETE FROM deployment_settings WHERE leaf='cortex.canopy.refresh.background_enabled'",
+    reason: 'The archived map refresh switch has no active consumer.',
+  },
   { step: 697, sql: 'ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))', reason: 'Map preparation retains its complete committed file inventory.' },
   { step: 697, sql: 'ALTER TABLE spore_curation_candidates ADD COLUMN currency TEXT CHECK(currency IS NULL OR json_valid(currency))', reason: 'Whole-read candidates retain the server currency fact for their revision.' },
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,

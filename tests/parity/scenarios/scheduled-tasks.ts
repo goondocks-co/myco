@@ -23,7 +23,6 @@ export const scheduledTasks: ParityScenario = {
     // A cold Project beside the live one: a receipt three weeks old.
     await target.sql(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_cold', 'cold', ${now - 30 * 86_400_000})`);
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_cold', 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
-    await leaf('cortex.canopy.refresh.background_enabled', true);
     const [credential] = await target.sql(`SELECT c.id FROM member_credentials c JOIN members m ON m.id=c.member_id WHERE m.role='admin' AND c.revoked_at IS NULL AND c.expires_at>${now} ORDER BY c.issued_at LIMIT 1`) as Array<{ id: string }>;
     await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
       VALUES ('proj_cold', 'cold-session', 'machine_parity', ${lit(credential!.id)}, ${now - 21 * 86_400_000}, ${now - 21 * 86_400_000}, 'claude-code')`);

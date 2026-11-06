@@ -94,7 +94,7 @@ Captured sessions and agent work are separate. Check these in order:
 1. **Runners:** an administrator has explicitly registered and approved a runner, it is running, and it offers a signed-in agent. Member login and server startup do not start a runner.
 2. **Settings › Myco’s work › Work on a schedule:** turn it on for automatic learning. It starts off. You can also use **Myco’s work › Run a task** manually.
 3. **Project settings › What Myco does here:** **Learning** must be on for learning and **Code map** for maps. All three project switches start on, but an administrator may have opted out.
-4. **Project settings › Repository:** connect the repository for code maps or learning from code. Automatic maps also need **Update the map on its own**.
+4. **Project settings › Repository:** connect the repository for code maps or learning from code. Automatic maps follow the project’s **Code map** switch while **Work on a schedule** is on.
 
 Open the run under **Myco’s work** for its result or reason for waiting. Large initial histories ramp at two automatic learning runs a day; runs of one task default to two at once across projects. A task can read material and find nothing new worth keeping. See [How Myco learns](how-myco-learns.md).
 

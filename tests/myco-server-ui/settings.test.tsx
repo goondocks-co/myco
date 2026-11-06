@@ -792,11 +792,12 @@ describe('Settings, in five sections', () => {
     mount('/settings');
     for (const [label, on] of [
       ['Instructions at session start', true], ['Instructions when a subagent starts', true], ['Plan nudge on every prompt', true],
-      ['Spores on every prompt', true], ['Work on a schedule', false], ['Update the map on its own', false],
+      ['Spores on every prompt', true], ['Work on a schedule', false],
     ] as const) {
       const toggle = await screen.findByRole('switch', { name: label });
       expect({ label, on: toggle.getAttribute('aria-checked') === 'true' }).toEqual({ label, on });
     }
+    expect(screen.queryByRole('switch', { name: 'Update the map on its own' })).toBeNull();
     expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('This setting is on (server default).');
     expect(statusOf('agent.scheduled_tasks_enabled')).toBe('This setting is off (server default).');
   });

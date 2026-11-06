@@ -152,7 +152,6 @@ describe('default-on task enforcement', () => {
       await recordWorkerContact(db, { credentialId: credential.tokenId, machineId: 'm1', offers: OFFERED, capabilities: [...WORKER_CAPABILITIES], now: NOW });
       const writer = settingsWriter(db);
       await writer.setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
-      await writer.setLeaf('cortex.canopy.refresh.background_enabled', true, 'test', NOW);
       sqlite.run("INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 's_archive', 'm1', ?, ?, ?)", [credential.tokenId, NOW, NOW]);
       expect(await dispatchTask(serverEnv, MAP_TASK, 'proj_1', { serverUrl: 'https://s', actor: 'test' }, NOW)).toMatchObject({ dispatched: true });
       sqlite.run('UPDATE projects SET archived_at = ?', [NOW]);
@@ -189,7 +188,6 @@ describe('default-on task enforcement', () => {
     try {
       const writer = settingsWriter(f.db);
       await writer.setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
-      await writer.setLeaf('cortex.canopy.refresh.background_enabled', true, 'test', NOW);
       f.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)", [NOW]);
       f.sqlite.run("INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('proj_1','myco-agent','server.schedule.skip.canopy-map',?,?)", [value, NOW]);
       for (const project of ['proj_1', 'proj_2']) f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES(?,'recent','m','t',?,?)", [project, NOW, NOW]);
@@ -208,7 +206,6 @@ describe('default-on task enforcement', () => {
     try {
       const writer = settingsWriter(f.db);
       await writer.setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
-      await writer.setLeaf('cortex.canopy.refresh.background_enabled', true, 'test', NOW);
       for (const project of ['proj_1', 'proj_2']) {
         f.sqlite.run("INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES (?,'recent','m','t',?,?)", [project, NOW, NOW]);
       }

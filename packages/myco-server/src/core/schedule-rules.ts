@@ -23,7 +23,7 @@ export interface ScheduleLeaves {
   activeWindowDays: number;
   overrides: Record<string, unknown>;
   /** The code map's refresh as the clock runs it, and which parts of it a per-task override sets over the leaves. */
-  mapRefresh: { enabled: boolean; intervalSeconds: number; overridden: { enabled: boolean; interval: boolean } };
+  mapRefresh: { enabled: boolean; intervalSeconds: number; overridden: { interval: boolean } };
 }
 
 const parse = (value: string | undefined): unknown => {
@@ -47,26 +47,23 @@ async function mapPeriodMinutes(env: ServerEnv): Promise<number | undefined> {
 
 /** The Deployment's scheduling leaves: off until the owner turns scheduling on. */
 export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
-  const mapEnabled = 'cortex.canopy.refresh.background_enabled';
-  const byLeaf = await settingTexts(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled]);
+  const byLeaf = await settingTexts(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks']);
   const days = (leaf: string, fallback: number): number => {
     const v = parse(byLeaf.get(leaf));
     return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
   };
   const overrides = parse(byLeaf.get('agent.tasks'));
   const tasks = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides as Record<string, unknown> : {};
-  // Unset, the map refresh is off and keeps the interval `TASK_SCHEDULE` declares.
-  const enabled = parse(byLeaf.get(mapEnabled)) === true;
   const period = await mapPeriodMinutes(env);
   const mapOverride = tasks[MAP_TASK];
   const mapTask = mapOverride !== null && typeof mapOverride === 'object' && !Array.isArray(mapOverride) ? mapOverride as Record<string, unknown> : {};
   const configured = scheduleOverride(MAP_TASK, tasks);
   const mapSchedule = configured !== null && typeof configured === 'object' && !Array.isArray(configured) ? configured as Record<string, unknown> : {};
-  tasks[MAP_TASK] = { ...mapTask, schedule: { ...(typeof period === 'number' ? { intervalSeconds: period * 60 } : {}), ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
+  tasks[MAP_TASK] = { ...mapTask, schedule: { ...(typeof period === 'number' ? { intervalSeconds: period * 60 } : {}), ...mapSchedule } };
   const map = scheduleFor(MAP_TASK, TASK_SCHEDULE[MAP_TASK]!, tasks);
   return {
     mapRefresh: { enabled: map.enabled !== false, intervalSeconds: map.intervalSeconds,
-      overridden: { enabled: mapSchedule.enabled === false, interval: mapSchedule.intervalSeconds !== undefined } },
+      overridden: { interval: mapSchedule.intervalSeconds !== undefined } },
     enabled: parse(byLeaf.get('agent.scheduled_tasks_enabled')) === true,
     coldThresholdDays: days('agent.cold_project_threshold_days', COLD_PROJECT_THRESHOLD_DAYS_DEFAULT),
     activeWindowDays: days('agent.scheduled_tasks_active_window_days', ACTIVE_WINDOW_DAYS_DEFAULT),
