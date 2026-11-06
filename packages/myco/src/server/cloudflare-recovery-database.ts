@@ -1,4 +1,3 @@
-import { THIN_LEARNING_ADMISSION_SQL, admitThinLearningRemoval } from '@myco-server-worker/db/thin-learning-admission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -72,7 +71,6 @@ export async function restoreCloudflareDatabase(options: CloudflareOptions & {
     } });
     const schemaVersion = await readIdentity();
     if (schemaVersion !== SERVER_SCHEMA_VERSION) throw new Error('replacement database did not reach the bundled schema version');
-    admitThinLearningRemoval(await query(THIN_LEARNING_ADMISSION_SQL) as Record<string, unknown>[]);
     return { schemaVersion, imported: names.length === 0 };
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }

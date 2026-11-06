@@ -5,10 +5,6 @@ import { memberRunsPerDay } from '@myco-server-worker/core/schedule-rules.js';
 import { taskOverridesResolution, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { sqliteEnv } from './helpers/fixtures.js';
-import { legacyWorker } from './helpers/worker-principal.js';
-import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
-import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 
 it('preserves extraction choices and unrelated preferences through the pause migration on both stores', async () => {
   await withDocumentStores(async db => {
@@ -88,28 +84,3 @@ it('reports stored ramp preferences as retired and refuses a new ramp write', as
     expect(await settingsWriter(db).setLeaf('agent.tasks',stored,'owner',1)).toMatchObject({applied:false,refusal:{reason:'invalid_value'}});
   });
 },30_000);
-
-it('keeps the destination pause and preferences when portable artifacts restore older extraction rows', async () => {
-  const source=sqliteEnv();
-  const target=sqliteEnv();
-  try {
-    source.sqlite.run("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('learning_resumed_at','2')");
-    // The destination is in the pause window, before whole-session learning resumes.
-    target.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
-    source.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks','{\"extract-curate\":{\"memberRunsPerDay\":7}}',1,'source-owner')");
-    target.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks','{\"extract-curate\":{\"memberRunsPerDay\":9}}',1,'target-owner')");
-    source.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)");
-    for(const [id,status] of [['queued','queued'],['held','running']]) {
-      source.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at,lease_expires_at,instruction) VALUES('proj_1',?,'myco-agent','extract-curate',?,1,1,2,'old instruction')",[id!,status!]);
-    }
-    const backup=await createBackup(source.db,source.bucket,{producer:'test',now:10});
-    const artifact=(await backupArtifact(source.db,source.bucket,backup.id))!;
-    expect(artifact.text).not.toContain('learning_resumed_at');
-    const pause=target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get();
-    await expect(restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true})).rejects.toThrow('thin_learning_not_drained');
-    expect(target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toEqual(pause);
-    expect(target.sqlite.query("SELECT value FROM schema_meta WHERE key='learning_resumed_at'").get()).toBeNull();
-    expect(await memberRunsPerDay(target.serverEnv,'extract-curate')).toBe(9);
-    expect(target.sqlite.query("SELECT * FROM agent_runs WHERE task='extract-curate'").all()).toEqual([]);
-  } finally {source.sqlite.close();target.sqlite.close();}
-});

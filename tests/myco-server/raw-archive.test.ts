@@ -1,13 +1,11 @@
 import type { Database } from 'bun:sqlite';
-import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { envelope, uuid } from './helpers/fixtures.js';
 import { createHash } from 'node:crypto';
 import { expect, it } from 'bun:test';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { listSegments } from '@myco-server-worker/read/transcript.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
-import { registerBlob, seedCredential } from './helpers/d1.js';
+import { registerBlob } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW=Date.now();
@@ -444,30 +442,23 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
   } finally {f.sqlite.close();}
 });
 
-it('reasserts the learning hold when a prompt fact arrives after segment selection', async () => {
+it('reasserts the learning hold when the document leaves live after segment selection', async () => {
   const f=await heldSegment(Buffer.byteLength('retained source bytes'));
   try {
-    // The pause window, before whole-session learning resumes, when the hold reads unread facts.
-    f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
-    seedCredential(f.sqlite,{id:'token',machineId:'m',expiresAt:NOW+86_400_000});
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     publishTranscript(f.sqlite,'tx-held',Buffer.byteLength('retained source bytes'));
-    let inserted=false;
-    let admission: unknown;
+    f.sqlite.run("UPDATE session_documents SET last_record_at=1 WHERE session_id='s-held'");
+    let changed=false;
     const db=f.serverEnv.db;
     const env={...f.serverEnv,db:{...db,batch:async(statements:Parameters<typeof db.batch>[0])=>{
-      if(!inserted&&statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE raw_archive_refs SET archive_key='))) {
-        inserted=true;
-        const result=await ingestEvent(f.db,{projectId:'proj_1',machineId:'m',tokenId:'token',bodyBytes:1,now:NOW},
-          envelope({eventId:uuid(990),sessionId:'s-held',kind:'prompt',payload:{promptId:uuid(991),text:'new unread fact',origin:'user'}}),
-          {db:f.db,blobs:f.bucket});
-        admission=result;
+      if(!changed&&statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE raw_archive_refs SET archive_key='))) {
+        changed=true;
+        f.sqlite.run("UPDATE session_documents SET state='convert' WHERE session_id='s-held'");
       }
       return db.batch(statements);
     }}};
     await expect(archiveRawSources(env,NOW,90)).rejects.toThrow();
-    expect(inserted).toBe(true);
-    expect(admission).toMatchObject({persisted:true});
+    expect(changed).toBe(true);
     expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'hot'});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments WHERE transcript_id='tx-held'").get()).toEqual({n:1});
   } finally {f.sqlite.close();}
@@ -476,8 +467,6 @@ it('reasserts the learning hold when a prompt fact arrives after segment selecti
 it('advances and wraps past learning-held transcript pages before revisiting released source', async () => {
   const f=await heldSegment(Buffer.byteLength('retained source bytes'));
   try {
-    // The pause window, before whole-session learning resumes, when the hold reads unread facts.
-    f.sqlite.run("DELETE FROM schema_meta WHERE key='learning_resumed_at'");
     f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     for(let index=0;index<21;index++) {
       const session=`s-copy-${index}`,transcript=`tx-copy-${index}`,event=`e-copy-${index}`;
@@ -486,6 +475,7 @@ it('advances and wraps past learning-held transcript pages before revisiting rel
         SELECT project_id,?,?,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme
         FROM transcripts WHERE transcript_id='tx-held'`,[transcript,session]);
       publishTranscript(f.sqlite,transcript,Buffer.byteLength('retained source bytes'));
+      f.sqlite.run("UPDATE session_documents SET state='convert' WHERE session_id=?",[session]);
       f.sqlite.run(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
         VALUES('proj_1',?,1,?,?,0,'user',1)`,[session,`prompt-${index}`,`prompt-${index}`]);
       f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision)
@@ -494,10 +484,11 @@ it('advances and wraps past learning-held transcript pages before revisiting rel
         SELECT project_id,?,base_offset,length,blob_key,?,created_at,received_at,token_id FROM transcript_segments WHERE transcript_id='tx-held'`,[transcript,event]);
     }
     publishTranscript(f.sqlite,'tx-held',Buffer.byteLength('retained source bytes'));
+    f.sqlite.run("UPDATE session_documents SET last_record_at=1 WHERE session_id='s-held'");
     for(let pass=0;pass<8;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'archived'});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:21});
-    f.sqlite.run("UPDATE deployment_settings SET value='false' WHERE leaf='agent.scheduled_tasks_enabled'");
+    f.sqlite.run("UPDATE session_documents SET state='live',last_record_at=1 WHERE session_id LIKE 's-copy-%'");
     for(let pass=0;pass<30;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:0});
     expect((await listSegments(f.db,{projectId:'proj_1'},'tx-held')).length).toBe(1);

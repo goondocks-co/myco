@@ -1,4 +1,3 @@
-import type { RelationalStore } from '../core/adapters.js';
 import { IN_FLIGHT_RUN_STATUSES } from './run-statuses.js';
 
 export const THIN_LEARNING_REMOVAL_VERSION = 104;
@@ -58,14 +57,4 @@ export function admitThinLearningRemoval(rows: readonly Record<string, unknown>[
   const refusal = rows[0]!.refusal;
   if (refusal === THIN_LEARNING_NOT_DRAINED || refusal === THIN_LEARNING_PAUSE_REQUIRED) throw new Error(refusal);
   if (refusal !== null) throw new Error('thin learning admission returned an invalid refusal');
-}
-
-const incomingRunsAdmission = `WITH thin_learning_runs AS (SELECT json_extract(value,'$.task') AS task,json_extract(value,'$.status') AS status,
-  json_extract(value,'$.queued_at') AS queued_at,json_extract(value,'$.started_at') AS started_at FROM json_each(?)) ${admissionRefusal}`;
-
-/** Restored dispatches meet the same boundary before any artifact row is written. */
-export async function assertThinLearningDrained(db: RelationalStore, runs?: readonly Record<string, unknown>[]): Promise<void> {
-  const result = await (runs === undefined ? db.prepare(THIN_LEARNING_ADMISSION_SQL)
-    : db.prepare(incomingRunsAdmission).bind(JSON.stringify(runs))).all<Record<string, unknown>>();
-  admitThinLearningRemoval(result.results);
 }
