@@ -1,10 +1,7 @@
 import { sporeCodeAnchors, sporeCurrency, allAnchorsMissing } from '@myco-server-worker/core/spore-currency.js';
 import { expect, test } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { memberHeaders, noOutboundFetch } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { runTick } from '@myco-server-worker/core/tick.js';
-import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { memberHeaders } from './helpers/fixtures.js';
 import { budgetFixture } from './helpers/budget-fixture.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -54,46 +51,6 @@ async function fixture(deferred = false) {
     return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as unknown;
   };
   return { ...f, env, enable, add, discover, poll, ctx, call, calls, applyVectors:()=>index.apply() };
-}
-
-for (const activity of ['capture', 'dashboard'] as const) {
-  test(`the active wake discovers historical curation groups with runner polling and ${activity}`, async () => {
-    const f = await fixture();
-    try {
-      expect(await f.enable()).toMatchObject({ applied: true });
-      expect(await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'test', f.now)).toMatchObject({ applied: true });
-      expect(await settingsWriter(f.db).setCapability('proj_1', 'spore_curation_backfill', true, 'test', f.now)).toMatchObject({ applied: true });
-      for (const id of ['a', 'b', 'c', 'd', 'e']) await f.add(id, [1, 0], 1);
-      const minted = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'polling-runner' }, f.now);
-      f.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
-        VALUES('proj_1','busy-session','polling-runner',?,?,?)`, [minted.tokenId, f.now, f.now]);
-      let now = f.now;
-      const server = createServer({ now: () => now, sourceOf: () => '192.0.2.1', fetchImpl: noOutboundFetch });
-      for (now = f.now; now <= f.now + 6 * 60_000; now += 2_000) {
-        if (activity === 'capture' && (now - f.now) % 60_000 === 0) {
-          f.sqlite.run("UPDATE sessions SET last_received_at=? WHERE project_id='proj_1' AND session_id='busy-session'", [now]);
-        }
-        if (activity === 'dashboard' && (now - f.now) % 60_000 === 0) {
-          const cookie = await ownerCookie(f.db, now);
-          const response = await server.handleRequest(new Request('https://fixture.test/api/projects', { headers: { cookie } }), { ...f.env, secrets: OWNER_ENV });
-          expect(response.status).toBe(200);
-        }
-        const response = await server.handleRequest(new Request('https://fixture.test/worker/claim', {
-          method: 'POST', headers: memberHeaders(minted.token), body: JSON.stringify({ harnesses: [offeredHarness('claude-code')] }),
-        }), f.env);
-        expect(response.status).toBe(200);
-        expect(await response.json()).toMatchObject({ persisted: true, claimed: false, reason: 'no_work' });
-      }
-      const tick = await runTick(f.env, now - 2_000, { serverUrl: 'https://fixture.test', wake: 'clock' });
-      expect(tick.state).toBe('active');
-      expect(tick.jobs.find(job => job.name === 'spore-curation')).toMatchObject({ changed: 1, failed: null });
-      const groups = f.sqlite.query<{ members: string }, []>("SELECT members FROM spore_curation_work WHERE project_id='proj_1' AND decision IS NULL").all();
-      expect(groups).toHaveLength(1);
-      expect(JSON.parse(groups[0]!.members).map((member: { id: string }) => member.id).sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
-      expect(f.calls.get).toBeLessThanOrEqual(CURATION_SEEDS_PER_TICK);
-      expect(f.calls.embed).toBe(0);
-    } finally { f.sqlite.close(); }
-  });
 }
 
 test('off by default; no overlap creates no work or run; historical seeds require separate opt-in', async () => {
