@@ -32,7 +32,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { statementRecorder } from '../helpers/statement-recorder.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const ORIGIN = 'https://s';
@@ -158,21 +158,12 @@ describe('a map run a worker claimed', () => {
     const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
     if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
     const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
-    // Rows each holder write changes, by claim.
-    let rewritten = 0;
-    const counted = (statement: PreparedStatement, sql: string): PreparedStatement => ({
-      ...statement,
-      bind: (...values: unknown[]) => counted(statement.bind(...values), sql),
-      run: async () => {
-        const result = await statement.run();
-        if (/^UPDATE agent_runs SET held_by/.test(sql.trim())) rewritten += result.meta.changes;
-        return result;
-      },
-    });
-    const db: RelationalStore = { prepare: (sql: string) => counted(r.e.serverEnv.db.prepare(sql), sql), batch: (statements) => r.e.serverEnv.db.batch(statements) };
+    const recorded = statementRecorder(r.e.serverEnv.db, { accounting: 'native' });
     const claim = async (capabilities: readonly string[]) => {
-      rewritten = 0;
-      await claimNextRun({ ...r.e.serverEnv, db }, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+      recorded.reset();
+      await claimNextRun({ ...r.e.serverEnv, db: recorded.db }, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+      const rewritten = recorded.statements.filter(entry => /^UPDATE agent_runs SET held_by/.test(entry.sql.trim()))
+        .reduce((sum, entry) => sum + (entry.changes ?? 0), 0);
       return { holder: holder(), rewritten };
     };
 
