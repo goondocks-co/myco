@@ -1205,40 +1205,43 @@ it('refuses card writes retryably if the document leaves live after reading, inc
 });
 
 it('retains learning claim deadlines when hash mismatches cover zero, rather than reclaiming every poll', async () => {
-  for (const timing of ['before-material', 'before-complete', 'at-batch', 'no-due']) await withDocumentStores(async db => {
+  await withDocumentStores(async db => {
     const harness = await cardWorker(db);
-    const turn = uuid(1110);
-    await capture(db, 'empty-learning', [{ id: turn, text: 'Keep the backoff when this card no longer matches', at: NOW }], 'project', NOW);
-    await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id='empty-learning'").bind(NOW).run();
-    await publish(db, NOW + HOUR / 4, harness.bindings.BUCKET);
-    await cardAll(db, harness.bindings.BUCKET, 'empty-learning', NOW + HOUR / 4);
-    await db.prepare("UPDATE learning_sessions SET handoff='retained handoff' WHERE session_id='empty-learning'").run();
-    let at = NOW + HOUR;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const claim = await harness.poll(at);
-      if (!claim.claimed) throw new Error('learning retry was not claimed at its deadline');
-      expect(claim.run.task).toBe('extract-curate');
-      const held = await db.prepare("SELECT eligible_at,failures FROM learning_sessions WHERE session_id='empty-learning'").first<{ eligible_at: number; failures: number }>();
-      const mismatch = async () => { await db.prepare("UPDATE turn_cards SET input_hash=NULL WHERE session_id='empty-learning'").run(); };
-      if (timing === 'before-material') await mismatch();
-      await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
-      if (timing === 'before-complete' || timing === 'no-due') await mismatch();
-      if (timing === 'no-due') await db.prepare("UPDATE learning_sessions SET due_cards=0 WHERE session_id='empty-learning'").run();
-      if (timing === 'at-batch') harness.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), mismatch, true);
-      expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'discard empty handoff' }))
-        .toEqual({ completed: true, covered: 0 });
-      harness.bindings.MYCO_DB = db;
-      expect(await db.prepare("SELECT eligible_at,failures,handoff FROM learning_sessions WHERE session_id='empty-learning'").first())
-        .toEqual({ ...held!, handoff: 'retained handoff' });
-      await harness.call(claim.run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'no matching cards', audit: RUN_AUDIT });
-      expect(await endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
-        projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: attempt === 1 ? 'failed' : 'completed',
-      })).toEqual({ ended: true, status: attempt === 1 ? 'failed' : 'completed' });
-      for (const now of [at + 2, at + 2000, held!.eligible_at - 1]) expect(await harness.poll(now)).toMatchObject({ claimed: false });
-      const hash = await db.prepare("SELECT input_hash AS hash FROM session_prompts WHERE session_id='empty-learning' AND prompt_id=?").bind(turn).first<{ hash: string }>();
-      await db.prepare("UPDATE turn_cards SET input_hash=? WHERE session_id='empty-learning'").bind(hash!.hash).run();
-      await db.prepare("UPDATE learning_sessions SET due_cards=1 WHERE session_id='empty-learning'").run();
-      at = held!.eligible_at;
+    for (const [index, timing] of ['before-material', 'before-complete', 'at-batch', 'no-due'].entries()) {
+      const session = `empty-learning-${timing}`;
+      const turn = uuid(1110 + index);
+      await capture(db, session, [{ id: turn, text: 'Keep the backoff when this card no longer matches', at: NOW }], 'project', NOW);
+      await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id=?").bind(NOW, session).run();
+      await publish(db, NOW + HOUR / 4, harness.bindings.BUCKET);
+      await cardAll(db, harness.bindings.BUCKET, session, NOW + HOUR / 4);
+      await db.prepare("UPDATE learning_sessions SET handoff='retained handoff' WHERE session_id=?").bind(session).run();
+      let at = NOW + HOUR;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const claim = await harness.poll(at);
+        if (!claim.claimed) throw new Error('learning retry was not claimed at its deadline');
+        expect(claim.run.task).toBe('extract-curate');
+        const held = await db.prepare("SELECT eligible_at,failures FROM learning_sessions WHERE session_id=?").bind(session).first<{ eligible_at: number; failures: number }>();
+        const mismatch = async () => { await db.prepare("UPDATE turn_cards SET input_hash=NULL WHERE session_id=?").bind(session).run(); };
+        if (timing === 'before-material') await mismatch();
+        await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
+        if (timing === 'before-complete' || timing === 'no-due') await mismatch();
+        if (timing === 'no-due') await db.prepare("UPDATE learning_sessions SET due_cards=0 WHERE session_id=?").bind(session).run();
+        if (timing === 'at-batch') harness.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), mismatch, true);
+        expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'discard empty handoff' }))
+          .toEqual({ completed: true, covered: 0 });
+        harness.bindings.MYCO_DB = db;
+        expect(await db.prepare("SELECT eligible_at,failures,handoff FROM learning_sessions WHERE session_id=?").bind(session).first())
+          .toEqual({ ...held!, handoff: 'retained handoff' });
+        await harness.call(claim.run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'no matching cards', audit: RUN_AUDIT });
+        expect(await endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
+          projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: attempt === 1 ? 'failed' : 'completed',
+        })).toEqual({ ended: true, status: attempt === 1 ? 'failed' : 'completed' });
+        for (const now of [at + 2, at + 2000, held!.eligible_at - 1]) expect(await harness.poll(now)).toMatchObject({ claimed: false });
+        const hash = await db.prepare("SELECT input_hash AS hash FROM session_prompts WHERE session_id=? AND prompt_id=?").bind(session, turn).first<{ hash: string }>();
+        await db.prepare("UPDATE turn_cards SET input_hash=? WHERE session_id=?").bind(hash!.hash, session).run();
+        await db.prepare("UPDATE learning_sessions SET due_cards=1 WHERE session_id=?").bind(session).run();
+        at = held!.eligible_at;
+      }
     }
   });
 });
