@@ -19,7 +19,6 @@ import { serverEnvFromBindings, type CloudflareBindings } from './env.js';
 import type { ServerEnv } from '../../core/adapters.js';
 import { PRODUCER_NAME } from './recovery-producer-object.js';
 import { CLOCK_LOCATION_HINT, CLOCK_NAME } from './clock-name.js';
-import { databaseReadStatus } from '../../read/meta.js';
 
 export { CLOCK_LOCATION_HINT, CLOCK_NAME, RETIRED_CLOCK_NAMES } from './clock-name.js';
 
@@ -236,7 +235,7 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
       await armFloor(this.ctx.storage, this.env, now);
     });
     const continuation = await runContinuations(this.env);
-    if (continuation.sourcePaused && !(await databaseReadStatus(this.env.MYCO_DB)).readable) {
+    if (continuation.sourcePaused) {
       emit({ kind: 'tick_held', held_by: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage });
       await this.schedule(soonestWake(CONTINUATION_FLOOR_MS, continuation.nextInMs));
       return { ticked: false, heldBy: 'recovery_export', attempt: continuation.attempt, stage: continuation.stage };

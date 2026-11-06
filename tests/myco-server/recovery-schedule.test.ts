@@ -272,7 +272,8 @@ it('admits a due backup on a Deployment nobody has touched, and deep sleep still
 it('asserts nothing, and reads only its interval, while automatic recovery is off', async () => {
   const d = await deployment();
   try {
-    expect(await recoveryAttemptDue(d.env as never, d.now)).toBe(false);
+    const env = { ...d.env, recovery: { ...d.env.recovery!, stopAttempt: async () => {} } };
+    expect(await recoveryAttemptDue(env, d.now)).toBe(false);
     // The producer is never asked while the interval is unset: one settings read decides it.
     expect(d.held.reads.status).toBe(0);
     const report = await runTick(d.env as never, d.now, { wake: 'clock' });

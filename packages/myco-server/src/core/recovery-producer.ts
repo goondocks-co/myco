@@ -1389,7 +1389,7 @@ export interface RecoveryProducerPort {
   /** Decide a hold against the attempts, retiring a token no attempt carries; see `HoldSettlement`. */
   settleHold(token: string): Promise<HoldSettlement>;
   status(): Promise<RecoveryProducerStatus>;
-  /** Stop hosted backup work when automatic backups are off. The producer owns terminalization and cleanup. */
+  /** Stop scheduled hosted backup work when automatic backups are off. The producer owns terminalization and cleanup. */
   stopAttempt?(): Promise<void>;
   /** Record that the Deployment's schema drifted from the staged capture, failing the attempt. */
   noteSchemaDrift(attempt: number): Promise<RecoveryProducerStatus>;

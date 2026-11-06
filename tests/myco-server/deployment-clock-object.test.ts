@@ -352,17 +352,17 @@ describe('where the clock is kept (#1510)', () => {
   });
 });
 
-it('holds a tick for an export only when its database probe also refuses', async () => {
-  const f = await budgetFixture();
+it('holds a tick during an export without reading the database, then resumes once the export ends', async () => {
   let ticks = 0;
-  let refusing = false;
+  let reads = 0;
+  let exporting = true;
   const held = state();
-  const env = { MYCO_DB: { prepare: (query: string) => {
-    if (refusing) throw new Error('D1_ERROR: D1 DB is overloaded [code: 7429]');
-    return f.db.prepare(query);
+  const env = { MYCO_DB: { prepare: () => {
+    reads++;
+    throw new Error('the clock must not query the exporting database');
   } }, CLOCK_MODE: 'manual', RECOVERY: {
     idFromName: () => 'recovery', get: () => ({ continue: async () => ({
-      attempt: 3, stage: 'export', nextInMs: 0, sourcePaused: true,
+      attempt: exporting ? 3 : null, stage: exporting ? 'export' : 'idle', nextInMs: exporting ? 0 : null, sourcePaused: exporting,
     }) }),
   } };
   class FixtureClock extends DeploymentClock {
@@ -373,11 +373,9 @@ it('holds a tick for an export only when its database probe also refuses', async
   }
   const clock = new FixtureClock(held.ctx as never, env as never);
   Object.assign(clock, { ctx: held.ctx, env });
-  try {
-    expect(await clock.wake()).toMatchObject({ ticked: true });
-    expect(ticks).toBe(1);
-    refusing = true;
-    expect(await clock.wake()).toMatchObject({ ticked: false, heldBy: 'recovery_export' });
-    expect(ticks).toBe(1);
-  } finally { f.sqlite.close(); }
+  expect(await clock.wake()).toMatchObject({ ticked: false, heldBy: 'recovery_export' });
+  expect({ ticks, reads }).toEqual({ ticks: 0, reads: 0 });
+  exporting = false;
+  expect(await clock.wake()).toMatchObject({ ticked: true });
+  expect({ ticks, reads }).toEqual({ ticks: 1, reads: 0 });
 });

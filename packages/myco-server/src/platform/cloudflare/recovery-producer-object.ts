@@ -1,4 +1,5 @@
 import { readRecoveryForget } from '../../core/recovery-forget.js';
+import { SCHEDULED_BY } from '../../core/recovery-admission.js';
 /**
  * The hosted recovery producer's checkpoint authority: one Durable Object holding every durable fact of one attempt
  * in its own SQLite storage, while the Deployment's database is unavailable to queries for as long as it exports.
@@ -416,11 +417,11 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     return this.gate.shared(() => this.step(limits));
   }
 
-  /** Stop an unfinished attempt and release its upload through the same terminal writer every failure uses. */
+  /** Stop an unfinished scheduled attempt and release its upload through the terminal failure writer. */
   async stopAttempt(): Promise<void> {
     return this.gate.exclusive(async () => {
       const open = this.checkpoint().open();
-      if (open === null) return;
+      if (open === null || open.admission?.configuration.startedBy !== SCHEDULED_BY) return;
       await failAttempt(open, this.checkpoint(), cloudflareFailurePorts(this.bucket()), 'backup_disabled');
     });
   }

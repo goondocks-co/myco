@@ -93,7 +93,7 @@ export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promis
     ? Math.min(INTERVAL_MAX_HOURS, Math.max(INTERVAL_MIN_HOURS, Math.floor(held.value))) : INTERVAL_MAX_HOURS;
 }
 
-/** A cleared backup interval stops hosted work and settles the producer's object hold. */
+/** A cleared backup interval stops scheduled hosted work and settles its object hold. */
 export async function stopDisabledRecovery(env: ServerEnv, now: number): Promise<void> {
   if (env.recovery?.stopAttempt === undefined || await scheduledIntervalHours(env) !== null) return;
   await env.recovery.stopAttempt();
@@ -107,16 +107,12 @@ export const attemptAdvancing = (schedule: RecoverySchedule): boolean =>
 /**
  * Whether a due configured attempt is waiting, for the engine's own depth assertion.
  *
- * A due attempt, or a hosted attempt waiting to stop after automatic backups were switched off, holds the
- * Deployment no deeper than sleep, where the schedule job runs.
+ * A due attempt holds the Deployment no deeper than sleep, where the schedule job runs. An unfinished
+ * attempt's object hold keeps its settlement job awake independently of the backup interval.
  */
 export async function recoveryAttemptDue(env: ServerEnv, now: number): Promise<boolean> {
   if (env.recovery === undefined) return false;
-  if (await scheduledIntervalHours(env) === null) {
-    if (env.recovery.stopAttempt === undefined) return false;
-    const status = await env.recovery.status();
-    return (ADVANCING_STAGES as readonly string[]).includes(status.stage);
-  }
+  if (await scheduledIntervalHours(env) === null) return false;
   const schedule = await recoveryScheduleOf(env, now);
   // A producer whose work runs outside this process has to be asked to carry on, so an attempt in flight keeps
   // the Deployment where the job that asks it runs. A producer driven by its own clock needs no such help.
