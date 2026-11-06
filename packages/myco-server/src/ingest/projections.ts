@@ -55,6 +55,7 @@ export type ReadRows = Record<string, unknown>[][];
 /** A continued row a kind writes under a member-minted key, and how its owning machine is read: `row` when the table carries `machine_id` itself, `session` when ownership runs through the row's session. */
 export interface Identity {
   table: string;
+  index?: string;
   keyColumn: string;
   key: string;
   owner: 'row' | 'session';
@@ -119,8 +120,9 @@ export interface SharedCheck {
 
 
 /** A continued row may only be written, referenced, or continued by the machine that owns it — the row's own `machine_id`, or its session's; an absent row passes, so a first write and a reference to a not-yet-stored row are always admitted. The admission, the read, and the refusal are three views of this one predicate. */
-const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): SharedCheck => {
+const owned = (ctx: WriteContext, { table, index, keyColumn, key, owner }: Identity): SharedCheck => {
   const params = [ctx.projectId, key];
+  const source = `${table} x${index === undefined ? '' : ` INDEXED BY ${index}`}`;
   const [admission, read] =
     owner === 'row'
       ? [
@@ -128,9 +130,9 @@ const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): S
           `SELECT machine_id FROM ${table} WHERE project_id = ? AND ${keyColumn} = ?`,
         ]
       : [
-          `NOT EXISTS (SELECT 1 FROM ${table} x JOIN sessions s ON s.project_id = x.project_id AND s.session_id = x.session_id
+          `NOT EXISTS (SELECT 1 FROM ${source} CROSS JOIN sessions s ON s.project_id = x.project_id AND s.session_id = x.session_id
           WHERE x.project_id = ? AND x.${keyColumn} = ? AND s.machine_id IS NOT ?)`,
-          `SELECT s.machine_id FROM ${table} x JOIN sessions s ON s.project_id = x.project_id AND s.session_id = x.session_id WHERE x.project_id = ? AND x.${keyColumn} = ?`,
+          `SELECT s.machine_id FROM ${source} CROSS JOIN sessions s ON s.project_id = x.project_id AND s.session_id = x.session_id WHERE x.project_id = ? AND x.${keyColumn} = ?`,
         ];
   return {
     admission: { sql: admission, params: [...params, ctx.machineId] },
@@ -245,7 +247,7 @@ export function sharedChecks(
       present(ctx, key, spec.name === 'plan' && typeof p.planKey === 'string' ? p.planKey : undefined),
     ),
     ...named(promptReferenceFields(spec)).flatMap((promptId) => [
-      owned(ctx, { table: 'session_prompts', keyColumn: 'prompt_id', key: promptId, owner: 'session' }),
+      owned(ctx, { table: 'session_prompts', index: 'idx_session_prompts_prompt', keyColumn: 'prompt_id', key: promptId, owner: 'session' }),
       owned(ctx, { table: DOCUMENT_IDENTITIES_SQL, keyColumn: 'record_id', key: promptId, owner: 'session' }),
     ]),
   ];

@@ -1,5 +1,5 @@
 import type { RelationalStore } from './adapters.js';
-import { budgetActivation, BUDGET_ENABLED } from '../db/budget-activation.js';
+import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../db/budget-activation.js';
 import { runOriginSql } from '../db/run-context.js';
 import { LIVE_RUN_STATUSES } from './runs.js';
 import { BUDGET_WINDOW_MS, stageSeedSql, workerTaskSql } from './budget-policy.js';
@@ -40,8 +40,8 @@ export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: s
 }
 
 /** Automatic work requires an active governor and sufficient headroom. */
-export async function automaticFits(db: RelationalStore, estimate: number, now: number, reserveUsd = 0): Promise<boolean> {
-  if (!(await budgetActivation(db)).active) return false;
+export async function automaticFits(db: RelationalStore, estimate: number, now: number, reserveUsd = 0, activation?: BudgetActivation): Promise<boolean> {
+  if (!(activation ?? await budgetActivation(db)).active) return false;
   const predicate = budgetClaimPredicate({ active: true, estimate, reserveUsd, profileJson: '' }, now);
   return (await db.prepare(`SELECT 1 AS fits FROM (SELECT 'automatic' AS origin) WHERE ${predicate.sql}`).bind(...predicate.params).first()) !== null;
 }

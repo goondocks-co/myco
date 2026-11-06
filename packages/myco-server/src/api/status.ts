@@ -12,7 +12,10 @@ import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention
 import { schemaVersion, statusMetadata } from '../read/meta.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '../core/attention-state.js';
 import { listVisibleProjects } from './scope.js';
-import { readFleetProjection } from '../read/fleet.js';
+import { readFleetProjection, fleetTaskReason, fleetSelectionContext } from '../read/fleet.js';
+import { claimSettings } from '../core/worker-selection.js';
+import { readDispatchLimits } from '../core/limits.js';
+import { CARD_TASK, EXTRACTION_TASK } from '../core/task-catalogue.js';
 import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
 import { captureRecency } from '../read/capture.js';
@@ -87,7 +90,14 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
   const learning=await readFact('learning',async()=>{
     const status=await readLearningStatus(env.db,ctx.now);
-    return {...status,line:learningStatusLine(status,budget??null,ctx.now)};
+    let waitingForSignIn = false;
+    if (workerFacts !== undefined && (status.dueSessions > 0 || status.turnsAwaitingCards > 0)) {
+      const [settings, limits] = await Promise.all([claimSettings(env), readDispatchLimits(env)]);
+      const reason = await fleetTaskReason(env, status.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK, workerFacts.fleet,
+        ctx.now, settings, limits, undefined, fleetSelectionContext(env, isAdmin(ctx.member.role)));
+      waitingForSignIn = reason === 'not_signed_in' || reason === 'credential_unavailable';
+    }
+    return {...status,line:learningStatusLine(status,budget??null,ctx.now,waitingForSignIn)};
   });
   const documents=await readFact('documents',()=>readDocumentStatus(env.db));
   return ok({

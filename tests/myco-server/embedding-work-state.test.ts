@@ -6,7 +6,7 @@ import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.j
 import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
 import { INPUT_REFUSAL_RETRY_MS, embeddingFailureWakeAt, reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { VECTOR_DELETE_CONFIRM_MS, VECTOR_DELETE_RETRY_MS } from '@myco-server-worker/core/embedding/provider.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_PAGE, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
+import { WORK_SWEEP_MIN_MS, SOURCE_SWEEP_PAGE, WORK_SWEEP_PAGE, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
 import { memoryBlobStore, sqliteEnv } from './helpers/fixtures.js';
@@ -38,7 +38,7 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
       const fixture = sqliteEnv();
       let allowDispatch = false, launched = 0;
       try {
-        for (let i = 0; i < WORK_SWEEP_PAGE * 3; i++) await plan(db, `plan-${String(i).padStart(4, '0')}`).run();
+        for (let i = 0; i < SOURCE_SWEEP_PAGE * 3; i++) await plan(db, `plan-${String(i).padStart(4, '0')}`).run();
         await db.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
           SELECT project_id,?,record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE project_id='p'`).bind(model).run();
         expect(await hasEmbeddingWork(db, 'p', model, NOW)).toBe(false);
@@ -148,10 +148,10 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
 
   test('a bounded safety sweep reaches late missing work, repairs its marker and backs off when idle', async () => {
     await withEmbeddingStore(target, async (db) => {
-      for (let i = 0; i < WORK_SWEEP_PAGE * 2 + 1; i++) await plan(db, `plan-${String(i).padStart(4, '0')}`).run();
+      for (let i = 0; i < SOURCE_SWEEP_PAGE * 2 + 1; i++) await plan(db, `plan-${String(i).padStart(4, '0')}`).run();
       await receipts(db).run();
       expect(await hasEmbeddingWork(db, 'p', MODEL, NOW)).toBe(false);
-      await db.prepare("DELETE FROM embedding_receipts WHERE project_id='p' AND id=?").bind(`plan-${String(WORK_SWEEP_PAGE * 2).padStart(4, '0')}`).run();
+      await db.prepare("DELETE FROM embedding_receipts WHERE project_id='p' AND id=?").bind(`plan-${String(SOURCE_SWEEP_PAGE * 2).padStart(4, '0')}`).run();
       await db.prepare("UPDATE embedding_work_state SET checked_revision=revision,pending=0,wake_at=NULL,sweep_cursor=NULL,sweep_at=? WHERE project_id='p'").bind(NOW + WORK_SWEEP_MIN_MS).run();
       expect(await hasEmbeddingWork(db, 'p', MODEL, NOW + WORK_SWEEP_MIN_MS - 1)).toBe(false);
       expect(await hasEmbeddingWork(db, 'p', MODEL, NOW + WORK_SWEEP_MIN_MS)).toBe(false);

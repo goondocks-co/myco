@@ -20,6 +20,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_agent_runs_retention', 'run retention seeks eligible terminal runs across the Deployment by cutoff and id'],
   ['idx_agent_runs_activity', 'power resolution seeks the newest run start across the Deployment'],
   ['idx_agent_runs_task_live', 'embedding dispatch checks live runs by task and status across every Project'],
+  ['idx_agent_runs_task_started', 'claim admission counts recent task starts across the Deployment'],
   ['idx_device_requests_pending_expiry', 'the enrollment sweep seeks expired undecided requests across the Deployment'],
   ['idx_device_requests_decided_expiry', 'the enrollment sweep seeks decided requests past retention across the Deployment'],
   ['idx_device_requests_source_pending', 'device admission counts live pending requests per trusted source across the Deployment'],

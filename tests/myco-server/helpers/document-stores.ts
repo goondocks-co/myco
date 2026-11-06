@@ -19,7 +19,7 @@ import {createProject} from '@myco-server-worker/read/sessions.js';
 
 const storeTargets=new WeakMap<RelationalStore,'native'|'D1'>();
 
-export async function withDocumentStores(run: (db: RelationalStore, target: 'native'|'D1') => Promise<void>, through = Infinity): Promise<void> {
+export async function withDocumentStores(run: (db: RelationalStore, target: 'native'|'D1', native?: Database) => Promise<void>, through = Infinity): Promise<void> {
   const native = new Database(':memory:');
   native.exec('PRAGMA foreign_keys=ON');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
@@ -33,7 +33,7 @@ export async function withDocumentStores(run: (db: RelationalStore, target: 'nat
       storeTargets.set(db,index===0?'native':'D1');
       for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
       for(const project of ['project','other'])await createProject(db,project,project,1);
-      await run(db, index === 0 ? 'native' : 'D1');
+      await run(db, index === 0 ? 'native' : 'D1', index === 0 ? native : undefined);
     }
   } finally { native.close(); await mf.dispose(); }
 }
