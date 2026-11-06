@@ -39,6 +39,10 @@ export const latestD1Upgrade: ParityScenario = {
       .toEqual([{ transcript_id: 'upgrade_transcript_read', record_identity_scheme: 'legacy-session-v1' }, { transcript_id: 'upgrade_transcript_unread', record_identity_scheme: 'legacy-session-v1' }]);
     await expect(target.sql("UPDATE transcripts SET record_identity_scheme='source-record-v1' WHERE session_id='upgrade_session'"))
       .rejects.toThrow(/record_identity_scheme_immutable/);
+    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,repository_files)
+      VALUES('proj_parity','upgrade_inventory','upgrade_agent','canopy-map','running','["src/retained.ts"]')`);
+    await target.sql("UPDATE agent_runs SET status='failed' WHERE project_id='proj_parity' AND id='upgrade_inventory'");
+    expect(await target.sql("SELECT repository_files FROM agent_runs WHERE project_id='proj_parity' AND id='upgrade_inventory'")).toEqual([{repository_files:null}]);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     const problems: unknown[] = [];
     for (const { name } of await target.sql(CHECKED_TABLES_SQL)) {

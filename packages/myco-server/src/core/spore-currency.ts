@@ -2,9 +2,9 @@ import { admittedSourcePaths } from '@goondocks/myco-shared/canopy';
 import type { SporeRow } from './spores.js';
 import type { RepositoryInventory } from './repository-inventory.js';
 
-export type SporeCurrency = { available: false; reason: 'no_code_map' | 'no_repository_inventory' | 'unresolved_anchors' | 'snapshot_behind'; unresolved?: string[] }
+export type SporeCurrency = { available: false; reason: 'no_code_map' | 'no_repository_inventory' | 'unresolved_anchors' | 'snapshot_behind' | 'snapshot_moved'; unresolved?: string[] }
   | { available: true; commit: string; present: string[]; missing: string[]; unresolved: string[] };
-export type CurrencySnapshot = {available:true;inventory:RepositoryInventory}
+export type CurrencySnapshot = {available:true;commit:string;generatedAt:number}
   | {available:false;reason:'no_code_map'|'no_repository_inventory'};
 interface InventoryIndex { suffixes: ReadonlySet<string>; roots: ReadonlySet<string>; extensions: ReadonlySet<string> }
 const indexes = new WeakMap<RepositoryInventory, InventoryIndex>();

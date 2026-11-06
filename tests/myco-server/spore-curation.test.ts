@@ -650,7 +650,7 @@ test('currency retires deleted architecture before merging current knowledge thr
         const source = {url:'https://example.test/team/repo',branch:'main',commit};
         f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','connection',?,'main',1,'test')",[source.url]);
         f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
-          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md','packages/myco-server/src/core/runs.ts'])]);
+          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md','packages/myco-server/src/core/runs.ts',...(mode==='current'?Array.from({length:2000},(_,i)=>`packages/source/${i}-${'a'.repeat(80)}.ts`):[])])]);
         f.sqlite.run(`INSERT INTO canopy_maps(project_id,revision,artifact,input_hash,repository_url,repository_branch,repository_commit,source_run_id,generated_at)
           VALUES('proj_1','map','{}','hash',?,'main',?,'map-source',?)`,[source.url,commit,f.now]);
       }
@@ -668,7 +668,12 @@ test('currency retires deleted architecture before merging current knowledge thr
       const claimReads=inventoryReads;
       expect(claimReads).toBe(1);
       const ctx = await f.ctx(claim.run.id,claim.run.attemptId);
-      const members = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!.members;
+      const assignment = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!;
+      const members = assignment.members;
+      const rawContext=(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!;
+      expect(new TextEncoder().encode(rawContext).length).toBeLessThan(8_000);
+      expect(assignment.snapshot).toEqual(mode==='no-map'?{available:false,reason:'no_code_map'}:{available:true,commit,generatedAt:f.now});
+      if(mode==='current') console.info('CURATION_CONTEXT_BYTES',{inventory:f.sqlite.query<{bytes:number},[]>('SELECT length(repository_files) AS bytes FROM agent_runs WHERE id=\'map-source\'').get()!.bytes,context:new TextEncoder().encode(rawContext).length});
       const rows = f.sqlite.query<{spore_id:string;currency:string},[]>('SELECT spore_id,currency FROM spore_curation_candidates').all();
       const fact = JSON.parse(rows.find(row=>row.spore_id==='a')!.currency);
       expect(claim.run.instruction).toContain(`"currency":${JSON.stringify(fact)}`);
@@ -677,13 +682,20 @@ test('currency retires deleted architecture before merging current knowledge thr
       if (mode === 'deleted' || mode === 'mixed') expect(fact).toEqual({available:true,commit,present:[],missing:['packages/myco/src/daemon/api/a.ts','src/removed.ts'],unresolved:[]});
       const merge = (sources: typeof members) => f.call(claim.run.runToken,'myco_spores',{op:'consolidate',source_spore_ids:sources,observation_type:'wisdom',consolidated_content:'Keep current specifics.',agent_line:'Use the current seam.',reason:'Same current seam.'});
       if (mode === 'current') {
-        f.sqlite.run("UPDATE canopy_maps SET source_run_id='next-map-source'");
-        expect(f.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='map-source'").get()).toEqual({repository_files:null});
         await f.add('searched',[1,0],f.now,'The dropped feature used src/deleted-search.ts.');
         await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
         expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'searched'})).toMatchObject({spore:{currency:{available:true,commit,present:[],missing:['src/deleted-search.ts']}}});
         expect(await merge([...members.slice(0,2),{id:'searched',revision:0}])).toMatchObject({ok:false,code:'curation_sources_missing'});
         expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'searched',expect_revision:0,expect_status:'active',reason:'The feature in src/deleted-search.ts was removed.'})).toMatchObject({status:'obsolete'});
+        const nextCommit='b'.repeat(40);
+        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
+          VALUES('proj_1','next-map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:{url:'https://example.test/team/repo',branch:'main',commit:nextCommit}}),JSON.stringify(['src/after-move.ts'])]);
+        f.sqlite.run("UPDATE canopy_maps SET source_run_id='next-map-source',repository_commit=?,generated_at=?",[nextCommit,f.now+1]);
+        expect(f.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='map-source'").get()).toEqual({repository_files:null});
+        await f.add('after-move',[1,0],f.now,'Use src/after-move.ts.');
+        await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
+        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'after-move'})).toMatchObject({spore:{currency:{available:false,reason:'snapshot_moved'}}});
+        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'after-move'})).toMatchObject({spore:{currency:{available:false,reason:'snapshot_moved'}}});
         f.sqlite.run("UPDATE spore_curation_candidates SET currency=NULL WHERE spore_id='b'");
         expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'b'})).toMatchObject({spore:{currency:null}});
       }
@@ -702,9 +714,9 @@ test('currency retires deleted architecture before merging current knowledge thr
       expect(report.details).toBe('Retired old guidance.\nKept current specifics.');
       expect(report.summary).toContain(`${mode==='deleted'||mode==='mixed'?3:mode==='current'?1:0} retired · 0 replaced · ${mode==='deleted'?0:3} merged`);
       expect(await runCloseRefusal(f.db,{projectId:'proj_1'},(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!)).toBeNull();
-      expect(inventoryReads).toBe(claimReads);
+      expect(inventoryReads).toBe(claimReads+(mode==='current'?2:0));
       expect(await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'})).toMatchObject({status:'completed'});
-      expect(JSON.parse((await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!).curation.snapshot).toBeUndefined();
+      expect(JSON.parse((await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!).curation.snapshot).toEqual(assignment.snapshot);
     } finally { f.sqlite.close(); }
   }
 });

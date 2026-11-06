@@ -244,7 +244,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
     return null;
   }
   const members=kept.map(({member:{id,revision}})=>({id,revision}));
-  const snapshot:CurrencySnapshot=inventory===null?{available:false,reason:hasMap?'no_repository_inventory':'no_code_map'}:{available:true,inventory};
+  const snapshot:CurrencySnapshot=inventory===null?{available:false,reason:hasMap?'no_repository_inventory':'no_code_map'}:{available:true,commit:inventory.commit,generatedAt:inventory.generatedAt};
   const assignment:CurationAssignment={kind:'curation',key,members,snapshot};
   return {instruction:curationPrompt(material),inputHash:key,counts:{spores:members.length,material_bytes:materialBytes},context:{curation:assignment,curation_currency:Object.fromEntries(kept.map(({spore})=>[spore.id,spore.currency]))},subject:curationSubject(projectId,key)};
 
@@ -253,7 +253,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
 /** The ask for one bounded cluster and every whole member. */
 export function curationPrompt(material: string): string {
   return [
-    'First judge every whole-read member’s currency before choosing any merge. Its currency is a server-computed fact for the named committed repository snapshot: present and missing list its code anchors. Never guess path existence. Unresolved names carry no absence fact. When available is false (no_code_map, no_repository_inventory, unresolved_anchors or snapshot_behind), there is no absence fact.',
+    'First judge every whole-read member’s currency before choosing any merge. Its currency is a server-computed fact for the named committed repository snapshot: present and missing list its code anchors. Never guess path existence. Unresolved names carry no absence fact. When available is false (no_code_map, no_repository_inventory, unresolved_anchors, snapshot_behind or snapshot_moved), there is no absence fact.',
     'Retire truly outdated knowledge with no relevant replacement, such as a dropped feature: call myco_spores op obsolete with id, expect_revision, expect_status active, and a reason naming the missing paths or explaining what replaced the described feature. Retire these members before merging anything. When in doubt, keep it: present anchors or no code anchors are not grounds for retirement. All-missing anchors require a currency judgment; do not turn retired architecture into fresh wisdom.',
     'The seed may be a lone duplicate pair, one topic, several topics, or part of a topic larger than the cap. Choose the topic with the strongest overlap. Closeness is measured against both spores’ own distance distributions. Relative scores are candidates, not evidence; leave out spores that merely share vocabulary.',
     'For a large topic, consolidate the related material that fits. Left-out sources and the new wisdom can meet in a later group. Whole reads are separate from final membership.',
@@ -332,8 +332,15 @@ export async function curationMaterial(db: RelationalStore, projectId: string, r
   const material = candidate.read === 1 ? read : [...read,candidate];
   const spore = await getSpore(db,{projectId},id);
   if (spore == null || spore.status !== 'active' || spore.revision !== candidate.revision) return { ok: false, error: 'curation material changed' };
-  const currency: SporeCurrency | null = candidate.read === 1 ? JSON.parse(candidate.currency ?? 'null') as SporeCurrency | null
-    : assignment.snapshot.available ? sporeCurrency(spore,assignment.snapshot.inventory,true) : assignment.snapshot;
+  let currency: SporeCurrency | null;
+  if (candidate.read === 1) currency = JSON.parse(candidate.currency ?? 'null') as SporeCurrency | null;
+  else if (!assignment.snapshot.available) currency = assignment.snapshot;
+  else {
+    const inventory = await readRepositoryInventory(db,projectId);
+    currency = inventory?.commit === assignment.snapshot.commit
+      ? sporeCurrency(spore,{...inventory,generatedAt:assignment.snapshot.generatedAt},true)
+      : {available:false,reason:'snapshot_moved'};
+  }
   const bytes = new TextEncoder().encode(JSON.stringify({...spore,currency})).length+1;
   if (candidate.read === 0 && row.read_bytes+bytes > CURATION_MATERIAL_BYTES) return { ok: false, error: 'whole material exceeds the curation bound' };
   if (candidate.read === 0) await writeGuardBatch(db, () => db.prepare(`SELECT CASE
