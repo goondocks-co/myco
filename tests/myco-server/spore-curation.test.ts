@@ -673,7 +673,6 @@ test('currency retires deleted architecture before merging current knowledge thr
       const rawContext=(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!;
       expect(new TextEncoder().encode(rawContext).length).toBeLessThan(8_000);
       expect(assignment.snapshot).toEqual(mode==='no-map'?{available:false,reason:'no_code_map'}:{available:true,commit,generatedAt:f.now});
-      if(mode==='current') console.info('CURATION_CONTEXT_BYTES',{inventory:f.sqlite.query<{bytes:number},[]>('SELECT length(repository_files) AS bytes FROM agent_runs WHERE id=\'map-source\'').get()!.bytes,context:new TextEncoder().encode(rawContext).length});
       const rows = f.sqlite.query<{spore_id:string;currency:string},[]>('SELECT spore_id,currency FROM spore_curation_candidates').all();
       const fact = JSON.parse(rows.find(row=>row.spore_id==='a')!.currency);
       expect(claim.run.instruction).toContain(`"currency":${JSON.stringify(fact)}`);
