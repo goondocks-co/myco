@@ -388,6 +388,7 @@
     "tests/myco-server/bun-oauth-seam.test.ts": 277,
     "tests/myco-server/bytes.test.ts": 4,
     "tests/myco-server/canopy-map-outcome.test.ts": 505,
+    "tests/myco-server/canopy-read-ceilings.test.ts": 4000,
     "tests/myco-server/canopy.test.ts": 33,
     "tests/myco-server/capability-default-on.test.ts": 256,
     "tests/myco-server/capture-recency.test.ts": 49,
