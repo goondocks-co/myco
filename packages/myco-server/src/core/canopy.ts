@@ -57,7 +57,7 @@ export async function pinMapRepositoryAtCommit(db: RelationalStore, scope: ReadS
  * with no completed run behind it counts from its generation.
  */
 export async function capturedSinceMap(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS one FROM sessions
+  const row = await db.prepare(`SELECT 1 AS one FROM sessions INDEXED BY idx_sessions_project_capture
     WHERE project_id = ? AND last_received_at > MAX(
       COALESCE((SELECT MAX(started_at) FROM agent_runs WHERE project_id = ? AND task = ? AND status = 'completed' AND dry_run = 0), -1),
       COALESCE((SELECT generated_at FROM canopy_maps WHERE project_id = ?), -1)) LIMIT 1`)
