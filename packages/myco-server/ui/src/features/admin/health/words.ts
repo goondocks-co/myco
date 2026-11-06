@@ -117,6 +117,7 @@ const PRODUCER_FAILURE_WORDS: Readonly<Record<string, string>> = {
   export_unsettled: 'an earlier export never finished',
   artifact_refused: 'the backup was refused',
   artifact_cancelled: 'the backup was cancelled',
+  backup_disabled: 'automatic backups were switched off',
   download_unranged: 'the download could not resume',
   download_changed: 'the export changed while it downloaded',
   download_lost: 'the download was lost',

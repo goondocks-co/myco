@@ -192,6 +192,7 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
     admit: async (admission) => object().admit(recoveryAdmissionWire(admission, bindings)),
     settleHold: (token) => object().settleHold(token),
     status: () => object().status(),
+    stopAttempt: () => object().stopAttempt(),
     noteSchemaDrift: (attempt) => object().noteSchemaDrift(attempt),
     forgetUnsettledExport: (commandId) => object().forgetUnsettledExport(commandId),
     pendingStagingPrunes: (policy) => object().pendingStagingPrunes({ ...policy, protect: [...policy.protect] }),

@@ -351,3 +351,33 @@ describe('where the clock is kept (#1510)', () => {
     } finally { Date.now = realNow; }
   });
 });
+
+it('holds a tick for an export only when its database probe also refuses', async () => {
+  const f = await budgetFixture();
+  let ticks = 0;
+  let refusing = false;
+  const held = state();
+  const env = { MYCO_DB: { prepare: (query: string) => {
+    if (refusing) throw new Error('D1_ERROR: D1 DB is overloaded [code: 7429]');
+    return f.db.prepare(query);
+  } }, CLOCK_MODE: 'manual', RECOVERY: {
+    idFromName: () => 'recovery', get: () => ({ continue: async () => ({
+      attempt: 3, stage: 'export', nextInMs: 0, sourcePaused: true,
+    }) }),
+  } };
+  class FixtureClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      ticks++;
+      return { nextWakeMs: null, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new FixtureClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  try {
+    expect(await clock.wake()).toMatchObject({ ticked: true });
+    expect(ticks).toBe(1);
+    refusing = true;
+    expect(await clock.wake()).toMatchObject({ ticked: false, heldBy: 'recovery_export' });
+    expect(ticks).toBe(1);
+  } finally { f.sqlite.close(); }
+});

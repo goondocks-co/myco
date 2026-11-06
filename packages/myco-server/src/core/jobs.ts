@@ -136,7 +136,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     name: SCHEDULE_JOB,
     runsThrough: 'sleep',
     wake: 'clock',
-    converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
+    converges: 'a Deployment whose owner set "Back up every" admits one recovery attempt once that interval has passed since the last attempt started, and admits none otherwise: none while an attempt still advances, none while the setting is unset, and none on a Deployment that runs no producer. With automatic backups off, hosted attempts stop and their holds settle. At most one attempt is ever admitted for one due interval, because admission opens the producer hold and a second admission finds the first attempt instead',
   },
   {
     name: STAGING_RETENTION_JOB,

@@ -305,8 +305,9 @@ describe('Health', () => {
     server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, observedAt: NOW, workersBusy: null, runsQueued: null, recentWithinMs: 90_000, fleet: null } }) }));
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText(/Whether machines are running Myco’s work is unknown/)).toBeTruthy();
+    expect(await within(workers).findByText(/Whether machines are running Myco’s work could not be read/)).toBeTruthy();
     expect(workers.textContent).not.toContain('No machine is running');
+    expect(workers.textContent).not.toContain('could not read its own database');
   });
 
   it('shows the command that attaches a machine when none is running Myco’s work', async () => {
@@ -519,4 +520,25 @@ it('names the machine for private held destinations and for repair states', asyn
   const status = await screen.findByRole('region', { name: 'Status' });
   expect(await within(status).findByText("Claude Code's Myco tools on Personal laptop use another Myco")).toBeTruthy();
   expect(await within(status).findByText('Codex on Work laptop: Allow Myco to write Codex configuration')).toBeTruthy();
+});
+
+it('keeps a readable database distinct from failed worker, learning and backup setting reads with no live export', async () => {
+  for (const stage of ['idle', 'failed']) {
+    server(routes({
+      '/api/status': () => Response.json({ ...STATUS, database: { readable: true },
+        workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }),
+      '/api/recovery/exports': () => Response.json({ supported: true, stage, attempt: stage === 'idle' ? null : 3,
+        form: 'staging', error: stage === 'idle' ? null : 'export_failed',
+        schedule: { unreadable: 'Automatic backup settings could not be read.', database: { readable: true } } }),
+    }));
+    mount();
+    await screen.findByText('The database is answering reads.');
+    await screen.findByText('Whether machines are running Myco’s work could not be read.');
+    await screen.findByText('Automatic backup settings could not be read.');
+    await screen.findByText('Couldn’t read learning progress.');
+    expect(document.body.textContent).not.toContain('export pauses');
+    expect(document.body.textContent).not.toContain('could not read its own database');
+    expect(document.body.textContent).not.toContain('This server is not answering');
+    cleanup();
+  }
 });

@@ -1,4 +1,5 @@
 import type { ServerEnv } from '../core/adapters.js';
+import { INTERVAL_SETTING, stopDisabledRecovery } from '../core/recovery-schedule.js';
 import { machineBlockFor } from '../core/machine-settings.js';
 import type { CredentialContext } from '../context.js';
 import type { OwnerContext } from '../context.js';
@@ -48,7 +49,11 @@ const malformed = (leaf: string, reason: string): Response =>
 
 /** The writer for this request, judging writes against this Deployment's target. Membership is the whole authorization: the write path still validates, persists, and records the actor in one order. */
 function writerFor(env: ServerEnv) {
-  return settingsWriter(env.db, { target: env.platform.name });
+  return settingsWriter(env.db, { target: env.platform.name, rearm: async ({ leaf }) => {
+    if (leaf !== INTERVAL_SETTING) return;
+    await stopDisabledRecovery(env, Date.now());
+    await env.wake?.();
+  } });
 }
 
 

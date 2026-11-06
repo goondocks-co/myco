@@ -17,7 +17,8 @@ import { recoveryScheduleOf, type RecoverySchedule } from '../core/recovery-sche
 import { badRequest, ok } from './scope.js';
 import { openOperatorHold } from '../core/recovery-hold.js';
 import { within } from '../core/recovery-inventory.js';
-import { classify, emit } from '../telemetry.js';
+import { classify, emit, readFailureTelemetry } from '../telemetry.js';
+import { databaseReadStatus } from '../read/meta.js';
 
 /**
  * What an owner is told: the attempt's progress, plainly that no staging, complete or not, is recoverable yet, and any
@@ -41,7 +42,8 @@ const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport
  * The schedule is read from this Deployment's own settings, and a running export pauses that database. The
  * producer's answer is already in hand by then, so an unreadable schedule says so and never decides the response.
  */
-type ScheduleReport = RecoverySchedule | { unreadable: string };
+type ScheduleReport = RecoverySchedule | ({ unreadable: string; database: Awaited<ReturnType<typeof databaseReadStatus>> }
+  & ReturnType<typeof readFailureTelemetry>);
 
 /** `GET /api/recovery/exports` on a Deployment that runs no producer: that it runs none, beside the schedule. */
 export interface RecoveryUnsupportedAnswer {
@@ -57,8 +59,12 @@ const scheduleOf = async (env: ServerEnv, now: number, status?: RecoveryProducer
   try {
     return await within(() => recoveryScheduleOf(env, now, status), SCHEDULE_MS, Date.now);
   } catch (error) {
-    emit({ kind: 'recovery_schedule_unreadable', error_class: classify(error) });
-    return { unreadable: 'whether automatic recovery is configured could not be read; a running export pauses its database' };
+    const failure = readFailureTelemetry(error, env.platform?.classifyError);
+    emit({ kind: 'recovery_schedule_unreadable', read: 'automatic_backup_settings', ...failure });
+    const database = await databaseReadStatus(env.db, env.platform?.classifyError);
+    const paused = status?.stage === 'export' && status.export?.running === true && !database.readable;
+    return { unreadable: `Automatic backup settings could not be read.${paused ? ' The database is not answering while a backup export is running.' : ''}`,
+      database, ...failure };
   }
 };
 
@@ -84,7 +90,7 @@ const operatorHoldOf = async (env: ServerEnv): Promise<OperatorHoldReport> => {
       : { open: true, acquiredAt: held.acquiredAt, defers: 'a backup started by hand keeps every stored file: deletions are recorded and deferred, and storage grows by what they would have freed, until that backup completes or is given up' };
   } catch (error) {
     emit({ kind: 'recovery_operator_hold_unreadable', error_class: classify(error) });
-    return { open: 'unknown', reason: 'whether a backup started by hand is running could not be read; a running export pauses its database' };
+    return { open: 'unknown', reason: 'Whether a backup started by hand is running could not be read.' };
   }
 };
 

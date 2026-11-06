@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
 import type { AttemptCheckpoint } from '@myco-server-worker/core/recovery-producer.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -20,6 +21,9 @@ import { HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-s
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
+import { handleResetSetting } from '@myco-server-worker/api/settings.js';
+import { stampRequest } from '@myco-server-worker/core/activity.js';
+import { handleRecoveryExportStatus } from '@myco-server-worker/api/recovery.js';
 import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
 import { newInventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 
@@ -851,5 +855,65 @@ it('producer checkpoints replace parts and inventory atomically, including repla
     checkpoint.recordInventory(id, inventory, [{ ...object, bytes: 32 }]);
     expect(checkpoint.parts(id)).toEqual([]);
     expect(checkpoint.pendingObjects(id, 10)[0]?.bytes).toBe(4);
+  } finally { sql.close(); }
+});
+
+it('stops hosted attempts with backups off, releases their hold and reports no running export after later wakes', async () => {
+  for (const stage of ['export', 'download', 'failed'] as const) {
+    const sql = new Database(':memory:');
+    let aborted = 0;
+    const producer = producerOver(sql, [], undefined, { abort: async () => { aborted++; } });
+    const fixture = authorityStores.get(producer)!;
+    try {
+      const token = 'disabled-' + stage;
+      await acquireRecoveryHold(fixture.db, token, Date.now());
+      const admitted = await producer.admit(admission(token));
+      sql.run("UPDATE attempts SET stage=?, bookmark='held', export_requested_at=?, upload_id=?, in_flight=? WHERE id=?",
+        [stage, Date.now(), stage === 'failed' ? null : 'upload', stage === 'failed' ? null : JSON.stringify({ name: 'source read', startedAt: Date.now() }), admitted.attempt]);
+      const env = { ...fixture.serverEnv, recovery: {
+        admission: { ready: true as const }, admit: (input: RecoveryAdmission) => producer.admit(input),
+        status: () => producer.status(), stopAttempt: () => producer.stopAttempt(),
+        settleHold: (held: string) => producer.settleHold(held),
+        noteSchemaDrift: (attempt: number) => producer.noteSchemaDrift(attempt),
+        pendingStagingPrunes: async () => 0,
+        pruneStagings: async () => ({ releasedFiles: 0, releasedStagings: 0, refused: null, pending: 0 }),
+      } };
+      await stampRequest(fixture.db, Date.now());
+      const report = await runTick(env, Date.now(), { wake: 'clock' });
+      expect(report.jobs.find(job => job.name === 'recovery-export-schedule')?.failed ?? null).toBeNull();
+      expect((await producer.status()).stage).toBe('failed');
+      expect(aborted).toBe(stage === 'failed' ? 0 : 1);
+      expect(sql.query('SELECT upload_id, in_flight FROM attempts').get()).toEqual({ upload_id: null, in_flight: null });
+      expect(await settleOpenHold(env, Date.now())).toBeNull();
+      expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
+      for (let wake = 0; wake < 3; wake++) {
+        expect(await producer.continue()).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
+      }
+      const status = await jsonBody<{ schedule: { unreadable?: string } }>(await handleRecoveryExportStatus(env, { now: Date.now() } as never));
+      expect(status).toMatchObject({ stage: 'failed', export: { running: false }, schedule: { configured: false } });
+      expect(status.schedule.unreadable).toBeUndefined();
+      expect(fixture.sqlite.query("SELECT value FROM deployment_settings WHERE leaf='backup.auto_interval_hours'").get()).toBeNull();
+    } finally { sql.close(); }
+  }
+});
+
+it('clearing Back up every stops an admitted hosted attempt before another continuation', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  try {
+    const token = 'reset-before-export';
+    await acquireRecoveryHold(fixture.db, token, Date.now());
+    await producer.admit(admission(token));
+    fixture.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('backup.auto_interval_hours','168',1,'mem_machine_1')");
+    const env = { ...fixture.serverEnv, recovery: {
+      ...fixture.serverEnv.recovery,
+      stopAttempt: () => producer.stopAttempt(), settleHold: (held: string) => producer.settleHold(held),
+    } } as Parameters<typeof handleResetSetting>[0];
+    const response = await handleResetSetting(env, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    expect(response.status).toBe(200);
+    expect((await producer.status()).error).toBe('backup_disabled');
+    expect(await producer.continue()).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
+    expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
   } finally { sql.close(); }
 });
