@@ -513,11 +513,11 @@ describe('the injection budget', () => {
 
   /**
    * Selection must reserve the curation line the renderer appends. With the
-   * reservation missing from selection alone, seven 130-character spores keep
-   * seven items and render 314 tokens, past the ceiling.
+   * reservation missing from selection alone, seven spores of 168 characters
+   * a line keep seven items and render 346 tokens, past the 326 ceiling.
    */
   it('keeps the rendered block, curation line included, within the ceiling at the selection boundary', () => {
-    const items: InjectionItem[] = Array.from({ length: 7 }, (_, i) => ({ kind: 'spore', id: `spr_${i}`, label: 'gotcha', text: 'g'.repeat(130) }));
+    const items: InjectionItem[] = Array.from({ length: 7 }, (_, i) => ({ kind: 'spore', id: `spr_${i}`, label: 'gotcha', text: 'g'.repeat(148) }));
     const served = itemsWithinBudget(items);
     expect(served).toHaveLength(6);
     expect(estimateTokens(renderInjectionContext(served, true))).toBeLessThanOrEqual(INJECTION_BUDGET_TOKENS);
