@@ -1,3 +1,4 @@
+import { readRepositoryInventory } from '@myco-server-worker/core/repository-inventory.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -396,4 +397,30 @@ describe('when the clock maps a Project', () => {
     r.e.sqlite.run(`UPDATE sessions SET last_received_at = 400 WHERE session_id = 's1'`);
     expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
   });
+});
+
+it('retains the complete map checkout inventory under its worker lease and exact repository pin', async () => {
+  const r = await rig();
+  await r.repositories.save('proj_1',{...SOURCE,revision:null},'mem_worker',r.clock());
+  const run = await r.claimMap();
+  await r.pinCommit(run.id,COMMIT_A);
+  const upload = (files: string[], commit = COMMIT_A) => worker.fetch(new Request(`${ORIGIN}/worker/repository`,{
+    method:'POST',headers:memberHeaders(r.workerCredential.token),body:JSON.stringify({projectId:'proj_1',runId:run.id,...SOURCE,commit,files}),
+  }),r.e.env);
+  expect(await readRepositoryInventory(r.e.db,'proj_1')).toBeNull();
+  expect(await (await upload(['src/main.ts','README.md','links/source'])).json()).toMatchObject({held:true,filesStored:true});
+  expect(await (await upload(['README.md','links/source','src/main.ts'])).json()).toMatchObject({held:true,filesStored:true});
+  expect(await (await upload(['src/main.ts'])).json()).toMatchObject({held:true,filesStored:false});
+  const large=Array.from({length:4000},(_,i)=>`src/${i}-${'a'.repeat(90)}.ts`);
+  expect(await (await upload(large)).json()).toMatchObject({persisted:true,held:true,filesStored:false});
+  expect(await (await upload(['../outside.ts'])).json()).toMatchObject({persisted:false,code:'parse'});
+  expect(await (await upload(['src/main.ts'],COMMIT_B)).json()).toMatchObject({persisted:false,code:'parse'});
+  expect(await r.call(run.runToken,'myco_run_map',{op:'write',artifact:ARTIFACT})).toMatchObject({written:true});
+  expect(await readRepositoryInventory(r.e.db,'proj_1')).toMatchObject({commit:COMMIT_A,files:['README.md','links/source','src/main.ts']});
+  expect(await readRepositoryInventory(r.e.db,'proj_other')).toBeNull();
+  r.e.sqlite.run('UPDATE agent_runs SET lease_expires_at=? WHERE id=?',[1,run.id]);
+  expect(await (await upload(['src/main.ts'])).json()).toMatchObject({held:false});
+  const connection = (await r.repositories.describe('proj_1'))!;
+  await r.repositories.save('proj_1',{...SOURCE,branch:'other',revision:connection.revision},'mem_worker',r.clock());
+  expect(await readRepositoryInventory(r.e.db,'proj_1')).toBeNull();
 });

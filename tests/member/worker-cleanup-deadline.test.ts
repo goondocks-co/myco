@@ -72,7 +72,7 @@ async function exercise(kind: 'return' | 'checkout' | 'both', mode: 'hung' | 'fa
   const checkoutSpy = spyOn(repository, 'prepareWorkerCheckout').mockImplementation(async (_spec, scratchDir) => {
     const source = join(scratchDir, 'repo');
     mkdirSync(source);
-    return { root: source, commit: 'a'.repeat(40), dispose: () => cleanup('checkout') };
+    return { root: source, commit: 'a'.repeat(40), files: [], dispose: () => cleanup('checkout') };
   });
   let claimed = false;
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {

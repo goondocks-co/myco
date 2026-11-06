@@ -567,6 +567,7 @@ async function drive(
       preparing = true;
       checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
         const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
+        if (input.files !== undefined) return answer.kind === 'answered' ? answer.body : {filesStored:false};
         if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
         if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
