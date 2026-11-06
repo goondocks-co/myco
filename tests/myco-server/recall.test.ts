@@ -20,6 +20,7 @@ import {
 } from '@myco-server-worker/core/recall.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
+import { CURATE_LINE } from '@myco-server-worker/core/injection.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -202,7 +203,7 @@ describe('the composed block', () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('a', { observationType: 'decision', content: 'recency is the whole selector' }));
     const served = await compose(db, { text: PLANNING_PROMPT });
-    expect(served.context).toBe(`${PLAN_INTENT_NUDGE}\n\nRelevant project memory — retrieve any item in full by id:\n- [a] (decision) recency is the whole selector`);
+    expect(served.context).toBe(`${PLAN_INTENT_NUDGE}\n\nRelevant project memory — retrieve any item in full by id:\n- [a] (decision) recency is the whole selector\n${CURATE_LINE}`);
     expect(served.parts).toEqual([{ kind: 'plan-nudge' }, { kind: 'spores', sporeIds: ['a'], planIds: [] }]);
     expect(served.skipped).toEqual([]);
   });
