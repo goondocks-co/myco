@@ -63,28 +63,20 @@ export function shownMachineName(owner: MachineOwner | undefined, viewerId: stri
 }
 
 /**
- * The names of `viewerId`'s own machines: each claim's label, else the label its newest live credential carries. Both
- * reads seek the viewer's rows alone.
+ * The names of `viewerId`'s own machines: each claim's label, else the label its newest live credential carries. Each
+ * claim seeks its newest live credential only when its label is absent.
  */
-export async function ownMachineNames(db: RelationalStore, viewerId: string, nowMs: number): Promise<Map<string, string>> {
-  const [claims, credentials] = await db.batch([
-    db.prepare(`SELECT machine_id, label FROM machine_claims WHERE member_id = ?`).bind(viewerId),
-    db.prepare(
-      `SELECT machine_id, runtime_label FROM member_credentials
-        WHERE member_id = ? AND revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
-        ORDER BY issued_at DESC, id DESC`,
-    ).bind(viewerId, nowMs),
-  ]);
-  const carried = new Map<string, string>();
-  for (const row of credentials!.results as { machine_id: string; runtime_label: string }[]) {
-    if (!carried.has(row.machine_id)) carried.set(row.machine_id, row.runtime_label);
-  }
-  const names = new Map<string, string>();
-  for (const row of claims!.results as { machine_id: string; label: string | null }[]) {
-    const name = row.label ?? carried.get(row.machine_id);
-    if (name !== undefined) names.set(row.machine_id, name);
-  }
-  return names;
+export async function ownMachineNames(db: RelationalStore, viewerId: string, nowMs: number, machineIds?: readonly string[]): Promise<Map<string, string>> {
+  if (machineIds?.length === 0) return new Map();
+  const { results } = await db.prepare(`SELECT mc.machine_id, COALESCE(mc.label, (
+      SELECT c.runtime_label FROM member_credentials c
+        WHERE c.machine_id = mc.machine_id AND c.member_id = mc.member_id AND c.revoked_at IS NULL
+          AND c.expires_at > ? AND c.runtime_label IS NOT NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1)) AS name
+    FROM machine_claims mc WHERE mc.member_id = ?
+      ${machineIds === undefined ? '' : 'AND mc.machine_id IN (SELECT value FROM json_each(?))'}`)
+    .bind(nowMs, viewerId, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]))
+    .all<{ machine_id: string; name: string | null }>();
+  return new Map(results.flatMap(row => row.name === null ? [] : [[row.machine_id, row.name] as const]));
 }
 
 /** `rows` with the viewer's own machines named from `names`, and every other machine left unnamed. */

@@ -1,6 +1,6 @@
 /** Canonical machine summaries and activity, scoped to claims owned by the viewer. */
 import type { RelationalStore } from '../core/adapters.js';
-import { machineContactsOf, type ReportedHarness } from '../core/worker-contacts.js';
+import { machineContactsOf, machineContactsStatement, type ReportedHarness } from '../core/worker-contacts.js';
 import { CAPTURE_WINDOW_MS } from './capture.js';
 import { credentialLive } from '../db/liveness.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
@@ -68,10 +68,7 @@ export async function listMachines(
     db.prepare(`SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
        WHERE last_received_at >= ? AND machine_id IN (SELECT value FROM json_each(?))
        GROUP BY machine_id, agent ORDER BY last_event_at DESC, machine_id, agent`).bind(nowMs - CAPTURE_WINDOW_MS, ids),
-    db.prepare(`SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.credential_id, w.offers, w.updated_at AS offer_revision, w.last_seen_at,
-          (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_lease WHERE r.leased_by = w.credential_id) AS last_run_at
-       FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id
-       WHERE COALESCE(w.machine_id, c.machine_id) IN (SELECT value FROM json_each(?)) ORDER BY w.last_seen_at DESC`).bind(ids),
+    machineContactsStatement(db, 'contact', visible.map(row => String(row.machine_id))),
   ]);
   const byId = new Map((credentials!.results as Record<string, unknown>[]).map((row) => [String(row.machine_id), row]));
   const capture = new Map<string, MachineCapture[]>();

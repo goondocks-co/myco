@@ -2084,11 +2084,13 @@ async function extraction_coverage_hasAcknowledgedPrompts(db: extraction_coverag
 
 /** The agents this build declares a prompt identity for: a transcript of one left unpinned is a scheme conflict. */
 /** The live generation's prompts and Myco tool calls of every session, as the measures read them. */
-const kpis_PROMPTS = `(SELECT p.* FROM session_prompts p JOIN session_documents d ON d.project_id = p.project_id AND d.session_id = p.session_id
-  AND d.generation = p.generation AND d.state = 'live')`;
+const kpis_PROMPTS = `(SELECT p.* FROM projects pr CROSS JOIN session_prompts p CROSS JOIN session_documents d
+  WHERE p.project_id = pr.project_id AND d.project_id = p.project_id AND d.session_id = p.session_id
+    AND d.generation = p.generation AND d.state = 'live')`;
 
-const kpis_MYCO_CALLS = `(SELECT c.* FROM myco_tool_calls c JOIN session_documents d ON d.project_id = c.project_id AND d.session_id = c.session_id
-  AND d.generation = c.generation AND d.state = 'live')`;
+const kpis_MYCO_CALLS = `(SELECT c.* FROM projects pr CROSS JOIN myco_tool_calls c CROSS JOIN session_documents d
+  WHERE c.project_id = pr.project_id AND d.project_id = c.project_id AND d.session_id = c.session_id
+    AND d.generation = c.generation AND d.state = 'live')`;
 
 const kpis_DECLARED_AGENTS: readonly string[] = kpis_import_CAPTURE_RULE_BUNDLES.map((bundle) => bundle.name);
 
@@ -2213,11 +2215,6 @@ const kpis_HARNESS_OF = (alias: string): string => `COALESCE((
 const kpis_windowClause = (column: string, since: number | null): { sql: string; params: number[] } =>
   since === null ? { sql: '1 = 1', params: [] } : { sql: `${column} >= ?`, params: [since] };
 
-const kpis_countOf = async (db: kpis_import_RelationalStore, sql: string, params: readonly unknown[]): Promise<number> => {
-  const row = await db.prepare(sql).bind(...params).first<{ n: number }>();
-  return row?.n ?? 0;
-};
-
 /**
  * Prompts that received context the Deployment prepared: a receipt, or the session's plan nudge, whose delivery named
  * the prompt. These are the durable records of what a served answer carried, so the count outlives the answers'
@@ -2227,10 +2224,10 @@ const kpis_countOf = async (db: kpis_import_RelationalStore, sql: string, params
  */
 const kpis_SERVED_PROMPTS = `
   EXISTS (SELECT 1 FROM spore_injections i
-           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id AND ${hook_placement_hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' })} AND i.delivered_at IS NOT NULL)
+           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id AND i.delivered_at IS NOT NULL)
   OR EXISTS (SELECT 1 FROM session_injections j
               WHERE j.project_id = p.project_id AND j.session_id = p.session_id AND j.kind = 'plan-nudge'
-                AND j.delivered_prompt_id = p.prompt_id AND ${hook_placement_hookPlacementSql({ project: 'j.project_id', session: 'j.session_id', prompt: 'j.delivered_prompt_id' })} AND j.delivered_at IS NOT NULL)`;
+                AND j.delivered_prompt_id = p.prompt_id AND j.delivered_at IS NOT NULL)`;
 
 /** Sessions the Deployment served a session start block. */
 const kpis_SESSIONS_STARTED_WITH_BLOCK = `EXISTS (SELECT 1 FROM session_injections j
@@ -2253,16 +2250,14 @@ const kpis_PLAN_READ = `c.myco_tool = 'myco_plans' AND (c.myco_op IS NULL OR c.m
 /** Prompts and the served share of them. */
 async function kpis_promptMeasures(db: kpis_import_RelationalStore, since: number | null): Promise<{ prompts: number; served: number; withSpores: number }> {
   const w = kpis_windowClause('p.created_at', since);
-  const [prompts, served, withSpores] = await Promise.all([
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${w.sql}`, w.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p WHERE ${w.sql} AND (${kpis_SERVED_PROMPTS})`, w.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_PROMPTS} p
-                  WHERE ${w.sql} AND EXISTS (
-                    SELECT 1 FROM spore_injections i
-                     WHERE i.project_id = p.project_id AND i.session_id = p.session_id
-                       AND i.delivered_prompt_id = p.prompt_id AND ${hook_placement_hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' })} AND i.delivered_at IS NOT NULL AND i.spore_ids <> '[]')`, w.params),
-  ]);
-  return { prompts, served, withSpores };
+  const row = await db.prepare(`SELECT COUNT(*) AS prompts,
+      COALESCE(SUM(${kpis_SERVED_PROMPTS}), 0) AS served,
+      COALESCE(SUM(EXISTS (SELECT 1 FROM spore_injections i
+        WHERE i.project_id = p.project_id AND i.session_id = p.session_id
+          AND i.delivered_prompt_id = p.prompt_id AND i.delivered_at IS NOT NULL AND i.spore_ids <> '[]')), 0) AS withSpores
+    FROM ${kpis_PROMPTS} p WHERE ${w.sql}`).bind(...w.params)
+    .first<{ prompts: number; served: number; withSpores: number }>();
+  return row!;
 }
 
 /** Receipts use their delivery instant for the window and their delivery hint for placement. */
@@ -2270,7 +2265,8 @@ async function kpis_deliveryMeasures(db: kpis_import_RelationalStore, since: num
   const w = kpis_windowClause('i.delivered_at', since);
   const placed = hook_placement_hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' });
   const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ${placed} THEN 1 ELSE 0 END), 0) AS placed
-    FROM spore_injections i WHERE i.delivered_at IS NOT NULL AND ${w.sql}`)
+    FROM projects pr CROSS JOIN spore_injections i
+    WHERE i.project_id = pr.project_id AND i.delivered_at IS NOT NULL AND ${w.sql}`)
     .bind(...w.params).first<{ total: number; placed: number }>();
   return { placed: row?.placed ?? 0, unplaced: (row?.total ?? 0) - (row?.placed ?? 0) };
 }
@@ -2321,12 +2317,13 @@ async function kpis_firstInjectionSamples(db: kpis_import_RelationalStore, since
   const w = kpis_windowClause('c.lineage_started_at', since);
   const { results } = await db.prepare(`SELECT c.lineage_root AS lineage, MIN(c.lineage_started_at) AS started,
                      MIN((SELECT MIN(x.created_at) FROM (
-                            SELECT i.created_at, i.project_id, i.session_id FROM spore_injections i
+                            SELECT MIN(i.created_at) AS created_at FROM spore_injections i
+                              WHERE i.project_id = sess.project_id AND i.session_id = sess.session_id
                             UNION ALL
-                            SELECT s.created_at, s.project_id, s.session_id FROM session_injections s) x
-                          WHERE x.project_id = sess.project_id AND x.session_id = sess.session_id)) AS first_served
-                FROM member_credentials c
-                JOIN sessions sess ON sess.created_by_token_id = c.id
+                            SELECT MIN(s.created_at) AS created_at FROM session_injections s
+                              WHERE s.project_id = sess.project_id AND s.session_id = sess.session_id) x)) AS first_served
+                FROM member_credentials c ${since === null ? '' : 'INDEXED BY idx_member_credentials_started'}
+                CROSS JOIN sessions sess ON sess.created_by_token_id = c.id
                WHERE ${w.sql}
                GROUP BY c.lineage_root`)
     .bind(...w.params)
@@ -2348,18 +2345,18 @@ async function kpis_promptIdentityCounts(db: kpis_import_RelationalStore, since:
   const kinds = Object.values(kpis_IDENTITY_KINDS).map((kind) => `SUM(p.prompt_kind = '${kind}') AS "${kind}"`).join(', ');
   const [rows, conflicts, unpinned, duplicates, mixed] = await Promise.all([
     db.prepare(`SELECT ${kpis_HARNESS_OF('p')} AS harness, COUNT(*) AS n, ${kinds}, SUM(p.claim = 'reused') AS reused
-        FROM projects pr CROSS JOIN ${kpis_PROMPTS} p WHERE p.project_id = pr.project_id AND p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
+        FROM ${kpis_PROMPTS} p WHERE p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
       .bind(...claimed.params).all<Record<string, number | string>>(),
     db.prepare(`SELECT ${kpis_HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM projects pr CROSS JOIN prompt_identity_conflicts c
         WHERE c.project_id = pr.project_id AND ${refused.sql} GROUP BY harness`).bind(...refused.params).all<{ harness: string; n: number }>(),
-    db.prepare(`SELECT t.agent AS harness, COUNT(*) AS n FROM transcripts t WHERE t.prompt_identity_scheme IS NULL
+    db.prepare(`SELECT t.agent AS harness, COUNT(*) AS n FROM projects pr CROSS JOIN transcripts t WHERE t.project_id = pr.project_id AND t.prompt_identity_scheme IS NULL
         AND t.agent IN (${kpis_DECLARED_AGENTS.map(() => '?').join(', ')}) AND ${registered.sql} GROUP BY t.agent`)
       .bind(...kpis_DECLARED_AGENTS, ...registered.params).all<{ harness: string; n: number }>(),
-    db.prepare(`SELECT ${kpis_HARNESS_OF('a')} AS harness, COUNT(*) AS n FROM prompt_context_answers a
-        WHERE ${answered.sql} AND EXISTS (SELECT 1 FROM json_each(a.skipped) j WHERE j.value = 'spores:duplicate_prompt') GROUP BY harness`)
+    db.prepare(`SELECT ${kpis_HARNESS_OF('a')} AS harness, COUNT(*) AS n FROM projects pr CROSS JOIN prompt_context_answers a
+        WHERE a.project_id = pr.project_id AND ${answered.sql} AND EXISTS (SELECT 1 FROM json_each(a.skipped) j WHERE j.value = 'spores:duplicate_prompt') GROUP BY harness`)
       .bind(...answered.params).all<{ harness: string; n: number }>(),
-    db.prepare(`SELECT agent AS harness, COUNT(*) AS n FROM (SELECT t.agent AS agent FROM transcripts t
-        WHERE t.agent IN (${kpis_DECLARED_AGENTS.map(() => '?').join(', ')}) AND t.prompt_identity_scheme IS NOT NULL AND ${registered.sql}
+    db.prepare(`SELECT agent AS harness, COUNT(*) AS n FROM (SELECT t.agent AS agent FROM projects pr CROSS JOIN transcripts t
+        WHERE t.project_id = pr.project_id AND t.agent IN (${kpis_DECLARED_AGENTS.map(() => '?').join(', ')}) AND t.prompt_identity_scheme IS NOT NULL AND ${registered.sql}
         GROUP BY t.project_id, t.session_id, t.agent HAVING COUNT(DISTINCT t.prompt_identity_scheme) > 1) GROUP BY agent`)
       .bind(...kpis_DECLARED_AGENTS, ...registered.params).all<{ harness: string; n: number }>(),
   ]);
@@ -2391,17 +2388,21 @@ async function kpis_readKpis(db: kpis_import_RelationalStore, opts: { windowDays
   const sessionWindow = kpis_windowClause('first_received_at', since);
   const callWindow = kpis_windowClause('c.created_at', since);
 
-  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections, identity, deliveries] = await Promise.all([
+  const [{ prompts, served, withSpores }, byHarness, sessionCounts, callCounts, firstInjections, identity, deliveries] = await Promise.all([
     kpis_promptMeasures(db, since),
     kpis_harnessSplit(db, since),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql}`, sessionWindow.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql} AND ${kpis_SESSIONS_STARTED_WITH_BLOCK}`, sessionWindow.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${callWindow.sql} AND ${kpis_PLAN_READ}`, callWindow.params),
-    kpis_countOf(db, `SELECT COUNT(*) AS n FROM ${kpis_MYCO_CALLS} c WHERE ${callWindow.sql} AND ${kpis_MYCO_CALL}`, callWindow.params),
+    db.prepare(`SELECT COUNT(*) AS sessions, COALESCE(SUM(${kpis_SESSIONS_STARTED_WITH_BLOCK}), 0) AS startedWithBlock
+      FROM projects pr CROSS JOIN sessions ON sessions.project_id = pr.project_id WHERE ${sessionWindow.sql}`)
+      .bind(...sessionWindow.params).first<{ sessions: number; startedWithBlock: number }>(),
+    db.prepare(`SELECT COUNT(*) AS mycoCalls, COALESCE(SUM(${kpis_PLAN_READ}), 0) AS planReads
+      FROM ${kpis_MYCO_CALLS} c WHERE ${callWindow.sql} AND ${kpis_MYCO_CALL}`)
+      .bind(...callWindow.params).first<{ mycoCalls: number; planReads: number }>(),
     kpis_firstInjectionSamples(db, since),
     kpis_promptIdentityCounts(db, since),
     kpis_deliveryMeasures(db, since),
   ]);
+  const { sessions, startedWithBlock } = sessionCounts!;
+  const { mycoCalls, planReads } = callCounts!;
 
   return {
     windowDays: opts.windowDays,
@@ -2992,17 +2993,26 @@ interface core_embedding_reconcile_PassedOverSource {
 async function core_embedding_reconcile_passedOverSources(
   db: core_embedding_reconcile_import_RelationalStore, models: readonly string[], now: number, options: { limit: number; notArchived?: boolean; unbuiltUnder?: string },
 ): Promise<{ sources: core_embedding_reconcile_PassedOverSource[]; count: number }> {
-  const scope = `FROM embedding_source_failures f JOIN embedding_sources s ON s.project_id = f.project_id AND s.type = f.type
-    AND s.record_id = f.record_id AND s.revision = f.revision
-    WHERE (f.model_key = '${core_embedding_reconcile_ANY_MODEL}' OR (f.model_key IN (SELECT value FROM json_each(?)) AND f.recorded_at > ?))
-    ${options.notArchived === true ? 'AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = s.project_id AND p.archived_at IS NULL)' : ''}
-    ${options.unbuiltUnder === undefined ? '' : `AND NOT EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type
-      AND r.record_id = s.record_id AND r.revision = s.revision AND r.model_key = ? AND r.ready = ${core_embedding_reconcile_import_RECEIPT.ready})`}`;
-  const binds = [JSON.stringify(models), now - core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS, ...(options.unbuiltUnder === undefined ? [] : [options.unbuiltUnder])];
-  const { results } = await db.prepare(`SELECT f.project_id AS projectId, (SELECT p.name FROM projects p WHERE p.project_id = f.project_id) AS projectName,
-      f.type, f.record_id AS recordId, s.title, f.model_key AS modelKey, f.reason, MAX(f.recorded_at) AS recordedAt
+  const failures = `WITH failures AS (
+    SELECT f.* FROM projects p CROSS JOIN embedding_source_failures f
+      WHERE f.project_id = p.project_id AND f.model_key = '${core_embedding_reconcile_ANY_MODEL}'
+    UNION ALL
+    SELECT f.* FROM projects p CROSS JOIN json_each(?) model CROSS JOIN embedding_source_failures f
+      WHERE f.project_id = p.project_id AND f.model_key = model.value AND f.model_key <> '${core_embedding_reconcile_ANY_MODEL}' AND f.recorded_at > ?), source_failures AS (
+    ${embedding_import_CURRENT_EMBEDDING_SOURCES.map(source => `SELECT f.*, s.title
+      FROM failures f CROSS JOIN (${embedding_import_embeddingSourceSelect(source, "''")}) s
+      CROSS JOIN embedding_versions v
+      WHERE f.type = '${source.type}' AND s.project_id = f.project_id AND s.record_id = f.record_id
+        AND v.project_id = f.project_id AND v.type = f.type AND v.record_id = f.record_id AND v.revision = f.revision`).join(' UNION ALL ')})`;
+  const scope = `FROM source_failures f WHERE 1 = 1
+    ${options.notArchived === true ? 'AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = f.project_id AND p.archived_at IS NULL)' : ''}
+    ${options.unbuiltUnder === undefined ? '' : `AND NOT EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = f.project_id AND r.type = f.type
+      AND r.record_id = f.record_id AND r.revision = f.revision AND r.model_key = ? AND r.ready = ${core_embedding_reconcile_import_RECEIPT.ready})`}`;
+  const binds = [JSON.stringify([...new Set(models)]), now - core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS, ...(options.unbuiltUnder === undefined ? [] : [options.unbuiltUnder])];
+  const { results } = await db.prepare(`${failures} SELECT f.project_id AS projectId, (SELECT p.name FROM projects p WHERE p.project_id = f.project_id) AS projectName,
+      f.type, f.record_id AS recordId, f.title, f.model_key AS modelKey, f.reason, MAX(f.recorded_at) AS recordedAt
     ${scope} GROUP BY f.project_id, f.type, f.record_id ORDER BY recordedAt DESC, f.record_id LIMIT ?`).bind(...binds, options.limit).all<core_embedding_reconcile_PassedOverSource>();
-  const total = await db.prepare(`SELECT COUNT(*) AS n FROM (SELECT 1 ${scope} GROUP BY f.project_id, f.type, f.record_id)`).bind(...binds).first<{ n: number }>();
+  const total = await db.prepare(`${failures} SELECT COUNT(*) AS n FROM (SELECT 1 ${scope} GROUP BY f.project_id, f.type, f.record_id)`).bind(...binds).first<{ n: number }>();
   return { sources: results, count: total?.n ?? 0 };
 }
 
