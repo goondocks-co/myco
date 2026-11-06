@@ -1,3 +1,4 @@
+import { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE } from '../core/spore-curation-contract.js';
 import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
 /**
  * The tools only a run may call.
@@ -28,16 +29,18 @@ const project = { type: 'string', description: RUN_PROJECT_DESCRIPTION } as cons
 export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   {
     name: 'myco_run_curation',
-    description: 'Read seeded or searched spores whole within the cap of twelve, independently of final membership. Choose the final subset with complete for keep, or with one lifecycle call for resolved.',
+    handlerValidated: ['decision', 'members', 'reason'],
+    inputRepair: `Correct the arguments and call myco_run_curation again with ids and revisions read whole by this run. Complete keep example: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members; fix any outstanding myco_spores refusal first.`,
+    description: `Read at most ${CURATION_CLUSTER_CAP} seeded or searched spores whole. Complete keep with a members array of distinct {id,revision} objects: nonempty string ids and exact nonnegative safe integer revisions already read whole. Complete resolved after a successful lifecycle write and omit members. reason is nonempty text of at most ${CURATION_REASON_CHARS} characters. An outstanding refused lifecycle write must be corrected first; retry invalid input once before reporting. Example: ${CURATION_COMPLETE_EXAMPLE}`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {
       op: { type: 'string', enum: ['material', 'complete'] },
       id: { type: 'string', description: 'For material: a seeded id or an id this run’s semantic searches returned.' },
       decision: { type: 'string', enum: ['keep', 'resolved'] },
-      members: { type: 'array', description: 'For keep: the final chosen subset of up to twelve, each as {id,revision}; empty if no group was chosen. For resolved: omit to use the lifecycle call’s final membership.', items: {
-        type: 'object', properties: { id: { type: 'string' }, revision: { type: 'integer' } }, required: ['id', 'revision'],
+      members: { type: 'array', maxItems: CURATION_CLUSTER_CAP, description: `For keep: up to ${CURATION_CLUSTER_CAP} distinct {id,revision} objects, nonempty string id and exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}) read whole by this run; [] if no group. For resolved: omit. Example: [{"id":"spore-a","revision":0}].`, items: {
+        type: 'object', properties: { id: { type: 'string', minLength: 1 }, revision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } }, required: ['id', 'revision'],
       } },
-      reason: { type: 'string', description: 'Why the cluster’s members should stand, or what was resolved and why. At most 2048 characters.' },
+      reason: { type: 'string', minLength: 1, maxLength: CURATION_REASON_CHARS, description: `Why the members stand or what was resolved: nonempty text of at most ${CURATION_REASON_CHARS} characters. Example: "Distinct applicability."` },
       [PROJECT_PIVOT]: project,
     }, required: ['op'] },
   },

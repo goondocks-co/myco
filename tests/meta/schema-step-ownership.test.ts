@@ -205,6 +205,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     sql: "DELETE FROM deployment_settings WHERE leaf='cortex.canopy.refresh.background_enabled'",
     reason: 'The archived map refresh switch has no active consumer.',
   },
+  { step: 699, sql: 'ALTER TABLE spore_curation_work ADD COLUMN write_refusal TEXT CHECK(write_refusal IS NULL OR json_valid(write_refusal))', reason: 'The assignment retains its outstanding lifecycle refusal until a corrected write commits.' },
   { step: 697, sql: 'ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))', reason: 'Map preparation retains its complete committed file inventory.' },
   { step: 697, sql: 'ALTER TABLE spore_curation_candidates ADD COLUMN currency TEXT CHECK(currency IS NULL OR json_valid(currency))', reason: 'Whole-read candidates retain the server currency fact for their revision.' },
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,

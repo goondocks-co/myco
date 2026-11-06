@@ -30,37 +30,44 @@ export function normalizeInput(args: unknown): ToolInput {
   throw new ToolError('invalid_input', 'Tool arguments must be a JSON object');
 }
 
+function invalidInput(definition: ToolDefinition, message: string): ToolError {
+  return new ToolError('invalid_input', definition.inputRepair === undefined ? message
+    : `Not saved: ${message}. ${definition.inputRepair}`);
+}
+
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
   const declared = new Set(Object.keys(definition.inputSchema.properties));
   const undeclared = Object.keys(input).find((key) => !declared.has(key));
   if (undeclared !== undefined) {
-    throw new ToolError('invalid_input', `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`);
+    throw invalidInput(definition, `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`);
   }
   for (const key of definition.inputSchema.required ?? []) {
     if (input[key] === undefined || input[key] === null) {
-      throw new ToolError('invalid_input', `Missing required argument '${key}' for tool ${definition.name}`);
+      throw invalidInput(definition, `Missing required argument '${key}' for tool ${definition.name}`);
     }
   }
   for (const [key, value] of Object.entries(input)) {
     const property = declared.has(key) ? definition.inputSchema.properties[key] : undefined;
-    if (!property || value === undefined) continue;
-    validateProperty(definition.name, key, value, property);
+    if (!property || value === undefined || definition.handlerValidated?.includes(key)) continue;
+    validateProperty(definition, key, value, property);
   }
 }
 
-function validateProperty(tool: string, key: string, value: unknown, property: JsonSchemaProperty): void {
+function validateProperty(definition: ToolDefinition, key: string, value: unknown, property: JsonSchemaProperty): void {
+  const tool = definition.name;
+  const actual = definition.inputRepair === undefined ? '' : `; received ${Array.isArray(value) ? `array with ${value.length} entries` : value === null ? 'null' : typeof value === 'string' ? `string with ${value.length} characters` : typeof value === 'number' ? String(value) : typeof value}`;
   if (value === null) {
-    throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}`);
+    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`);
   }
   if (property.enum && !property.enum.includes(value)) {
-    throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}`);
+    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}${actual}`);
   }
   const types = typeof property.type === 'string' ? [property.type] : property.type ?? [];
   if (types.length > 0 && !types.some((type) => matchesJsonType(value, type))) {
-    throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}`);
+    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`);
   }
   if (types.includes('array') && property.items && Array.isArray(value)) {
-    value.forEach((item, index) => validateProperty(tool, `${key}[${index}]`, item, property.items!));
+    value.forEach((item, index) => validateProperty(definition, `${key}[${index}]`, item, property.items!));
   }
 }
 

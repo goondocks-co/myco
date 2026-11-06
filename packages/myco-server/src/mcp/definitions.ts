@@ -8,6 +8,7 @@
  * say whether any of its ops writes.
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
+import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '../core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
@@ -23,6 +24,11 @@ import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
 export const PROJECT_DESCRIPTION = "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found.";
 
 export interface JsonSchemaProperty {
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  maxItems?: number;
   type?: string | string[];
   enum?: readonly unknown[];
   items?: JsonSchemaProperty;
@@ -46,6 +52,9 @@ export interface ToolAnnotations {
 }
 
 export interface ToolDefinition {
+  inputRepair?: string;
+  /** Fields whose domain validator must consult persisted state before judging their shape. */
+  handlerValidated?: readonly string[];
   name: string;
   description: string;
   inputSchema: ToolInputSchema;
@@ -406,7 +415,8 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_spores",
-    "description": "Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason.",
+    inputRepair: `Correct the arguments and call myco_spores again with the same sources. Consolidate example (use the actual read source ids and revisions): ${CURATION_CONSOLIDATE_EXAMPLE}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. Curation runs consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom. Correct and retry invalid input once before reporting. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -502,7 +512,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
             "required": ["id"],
             "additionalProperties": false
           },
-          "description": "Sources to consolidate as ids or {id, revision?}. New runs require a revision per source; each active source moves independently."
+          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources, each with a nonempty string id and its exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}); each active source moves independently.`
         },
         "consolidated_content": {
           "type": "string",
@@ -529,7 +539,8 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         },
         "agent_line": {
           "type": "string",
-          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters.`
+          minLength: 1, maxLength: AGENT_LINE_MAX_CHARS,
+          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When editing the seam, retain its invariants (src/seam.ts)." Shorten a refused line and call the same op again with the same sources.`
         },
         "provenance_kind": {
           "type": "string",

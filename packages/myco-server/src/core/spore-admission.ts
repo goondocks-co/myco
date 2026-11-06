@@ -1,4 +1,4 @@
-import { curationWriteAdmission, curationWriteStore } from './spore-curation.js';
+import { withCurationWrite } from './spore-curation.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, resolveSpore, SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus, type SporeExpectation } from './spores.js';
@@ -71,15 +71,12 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
 }
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
-/** One refusal for an agent line past the bound the injection renders. */
-const AGENT_LINE_REASON = `agent_line is at most ${AGENT_LINE_MAX_CHARS} characters`;
-
 /** The agent line a write carries, null where it carries none, or the one thing wrong with it. */
 function agentLineOf(input: SporeWriteInput): { ok: true; agentLine: string | null } | SporeWriteFailure {
   const line = str(input.agent_line);
-  if (line === undefined) return failure('agent_line is required');
+  if (line === undefined) return failure(`Not saved: agent_line is missing; the limit is ${AGENT_LINE_MAX_CHARS} characters. Supply a nonempty agent_line and call myco_spores op ${String(input.op)} again with the same sources.`);
   const oneLine = line.replace(/\s+/g, ' ').trim();
-  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(AGENT_LINE_REASON);
+  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(`Not saved: agent_line is ${oneLine.length} characters after whitespace normalization; the limit is ${AGENT_LINE_MAX_CHARS}. Supply a nonempty line within the limit and call myco_spores op ${String(input.op)} again with the same sources.`);
   return { ok: true, agentLine: oneLine };
 }
 const COMMIT_REF = /^[0-9a-f]{7,40}$/;
@@ -128,11 +125,13 @@ function sporeMetadataError(input: SporeWriteInput): string | null {
 
 export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
   if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) {
-    const admitted = await curationWriteAdmission(ctx.env.db, ctx.projectId, ctx.principal.runId, input);
-    if (typeof admitted === 'string') return failure(admitted);
-    if ('ok' in admitted) return admitted;
-    ctx = { ...ctx, env: { ...ctx.env, db: curationWriteStore(ctx.env.db, ctx.projectId, ctx.principal.runId, admitted) } };
+    return withCurationWrite(ctx.env.db,ctx.projectId,ctx.principal.runId,input,
+      db => admittedSporeWrite(input,{...ctx,env:{...ctx.env,db}}));
   }
+  return admittedSporeWrite(input,ctx);
+}
+
+async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
   const invalid = sporeMetadataError(input);
   if (invalid !== null) return failure(invalid);
   try { return await admitSporeWrite(input, ctx); }
