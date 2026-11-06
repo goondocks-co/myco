@@ -9,6 +9,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
+const BEFORE_PAUSE_RETIREMENT = 694;
 
 it('holds unpublished sessions and archives live unlearned source without losing card material on both stores', async () => {
   await withDocumentStores(async db => {
@@ -41,7 +42,8 @@ it('retires pause state and keeps pending counts exact through the final card tr
     const { pendingCardsStatement } = await import('@myco-server-worker/core/learning-sessions.js');
     const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
     await db.prepare("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('learning_paused_at','1'),('learning_resumed_at','2')").run();
-    await db.batch(SCHEMA_STEPS.at(-1)!.statements.map(sql => db.prepare(sql)));
+    for (const step of SCHEMA_STEPS.filter(step => step.version > BEFORE_PAUSE_RETIREMENT))
+      await db.batch(step.statements.map(sql => db.prepare(sql)));
     const turns = 1003;
     expect((await db.prepare("SELECT key FROM schema_meta WHERE key LIKE 'learning_pause%' OR key='learning_resumed_at'").all()).results).toEqual([]);
     await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state) VALUES('project','many','ready')").run();
@@ -54,5 +56,5 @@ it('retires pause state and keeps pending counts exact through the final card tr
     expect(await db.prepare("SELECT pending_cards FROM learning_sessions WHERE session_id='many'").first()).toEqual({ pending_cards: 1 });
     await db.prepare("UPDATE turn_cards SET state='carded' WHERE session_id='many' AND turn_key='1'").run();
     expect(await db.prepare("SELECT pending_cards FROM learning_sessions WHERE session_id='many'").first()).toEqual({ pending_cards: 0 });
-  }, 694);
+  }, BEFORE_PAUSE_RETIREMENT);
 }, 30_000);
