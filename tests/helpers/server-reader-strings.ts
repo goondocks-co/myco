@@ -130,8 +130,17 @@ export function dashboardReaderFields(files: readonly string[]): ReadonlySet<str
   const fields = new Set<string>();
   const rendered = (node: ts.Node): void => {
     if (ts.isJsxAttribute(node)) return;
+    if (ts.isConditionalExpression(node)) { rendered(node.whenTrue); rendered(node.whenFalse); return; }
+    if (ts.isBinaryExpression(node)) {
+      if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) { rendered(node.right); return; }
+      if ((checker.getTypeAtLocation(node).flags & ts.TypeFlags.BooleanLike) !== 0) return;
+    }
     if (ts.isPropertyAccessExpression(node) && stringLike(checker.getTypeAtLocation(node))) fields.add(node.name.text);
-    if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && stringLike(checker.getTypeAtLocation(node))) fields.add(node.argumentExpression.text);
+    if (ts.isElementAccessExpression(node)) {
+      if (ts.isStringLiteralLike(node.argumentExpression) && stringLike(checker.getTypeAtLocation(node))) fields.add(node.argumentExpression.text);
+      rendered(node.expression);
+      return;
+    }
     ts.forEachChild(node, rendered);
   };
   const visit = (node: ts.Node): void => {

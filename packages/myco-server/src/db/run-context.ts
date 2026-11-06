@@ -44,6 +44,3 @@ export function assignmentOf<T extends { kind: string }>(runContext: string | nu
 
 /** The retry state reserved by a card or learning claim, bound to its dispatched attempt. */
 export const LEARNING_RETRY_KEY = 'learningRetry';
-
-/** The sign-in readiness admitted for one canonical dispatched attempt. */
-export const CLAIM_SIGN_IN_KEY = 'claimSignIn';

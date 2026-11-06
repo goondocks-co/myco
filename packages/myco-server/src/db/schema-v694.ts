@@ -1,17 +1,15 @@
-import { CLAIM_SIGN_IN_KEY, LEARNING_RETRY_KEY } from './run-context.js';
+import { LEARNING_RETRY_KEY } from './run-context.js';
 
 const retry = (field: string) => `json_extract(NEW.run_context, '$.${LEARNING_RETRY_KEY}.${field}')`;
 const session = `json_extract(NEW.run_context, '$.session_id')`;
-const admittedSignIn = `CASE WHEN json_valid(NEW.run_context) THEN COALESCE(json_extract(NEW.run_context, '$.${CLAIM_SIGN_IN_KEY}.ready') = 1
-  AND json_extract(NEW.run_context, '$.${CLAIM_SIGN_IN_KEY}.attemptId') = NEW.dispatched_by, 0) ELSE 0 END`;
 const ownedRetry = `${retry('attemptId')} = NEW.dispatched_by`;
 
-/** Sign-in failures admitted with a ready offer release their retry reservation. */
+/** Sign-in failures release the retry reservation; ordinary task failures retain their backoff. */
 export const V694_STATEMENTS: readonly string[] = [
   'DROP TRIGGER card_run_retry',
   `CREATE TRIGGER card_run_retry AFTER UPDATE OF status ON agent_runs
     WHEN NEW.task = 'turn-cards' AND OLD.status IS NOT NEW.status AND NEW.status IN ('completed','failed')
-      AND (NEW.error_code IS NOT 'agent_not_signed_in' OR NOT ${admittedSignIn}) BEGIN
+      AND NEW.error_code IS NOT 'agent_not_signed_in' BEGIN
     UPDATE learning_sessions SET
       card_retry_at = CASE WHEN NEW.status = 'completed' THEN 0 ELSE COALESCE(NEW.completed_at,NEW.started_at) +
         CASE WHEN card_failures <= 1 THEN 3600000 WHEN card_failures = 2 THEN 21600000 ELSE 86400000 END END,
@@ -19,7 +17,7 @@ export const V694_STATEMENTS: readonly string[] = [
     WHERE project_id = NEW.project_id AND session_id = CASE WHEN json_valid(NEW.run_context) THEN ${session} END; END`,
   `CREATE TRIGGER agent_run_login_retry AFTER UPDATE OF status ON agent_runs
     WHEN OLD.status IS NOT NEW.status AND NEW.status = 'failed' AND NEW.error_code = 'agent_not_signed_in'
-      AND json_valid(NEW.run_context) AND ${admittedSignIn} BEGIN
+      AND json_valid(NEW.run_context) BEGIN
     UPDATE learning_sessions SET card_failures = ${retry('cardFailures')}, card_retry_at = ${retry('cardRetryAt')}
       WHERE NEW.task = 'turn-cards' AND ${ownedRetry} AND project_id = NEW.project_id AND session_id = ${session}
         AND card_failures = ${retry('cardFailures')} + 1;

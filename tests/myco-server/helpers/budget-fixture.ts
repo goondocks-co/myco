@@ -33,7 +33,7 @@ export async function budgetFixture(active=true) {
       VALUES(?,?,?,?,?,?,?,?,?)`,[projectId,id,id,worker.tokenId,claimedAt,legacy?null:estimate,legacy?null:amount,legacy?null:amount===null?'unavailable':'actual',legacy?null:JSON.stringify({harness:'codex',profile})]);
   };
   const claim=async(candidate:ClaimCandidate,at=now)=>{
-    const result=await claimQueuedRun(f.serverEnv,candidate,{worker:principal,signInReady:true,leaseExpiresAt:at+60_000,harness:'codex',profile:PROFILE,now:at});
+    const result=await claimQueuedRun(f.serverEnv,candidate,{worker:principal,leaseExpiresAt:at+60_000,harness:'codex',profile:PROFILE,now:at});
     return result?.row ?? null;
   };
   return {...f,now,principal,workerTokenId:worker.tokenId,setting,credential,queue,history,claim};

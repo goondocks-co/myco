@@ -60,7 +60,7 @@ it('keeps actual mint, claim and status reads independent of old history with li
           statements.push(...batch as unknown as MeterStatement[]);
           return f.db.batch(batch);
         }};
-        await claimQueuedRun({...f.serverEnv,db},candidate,{worker:f.principal,signInReady:true,leaseExpiresAt:f.now+60_000,harness:'codex',profile:PROFILE,now:f.now});
+        await claimQueuedRun({...f.serverEnv,db},candidate,{worker:f.principal,leaseExpiresAt:f.now+60_000,harness:'codex',profile:PROFILE,now:f.now});
         const claim=statements.find(entry=>/^UPDATE agent_runs\s+SET status = 'running'/.test(entry.sql));
         if(claim===undefined)throw new Error('No actual claim statement captured');
         const statusStatements:MeterStatement[]=[];

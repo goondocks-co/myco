@@ -140,7 +140,7 @@ it('samples each immutable stage and model separately and bounds the last-fifty 
     await f.setting(10_000);
     await f.claim(f.queue('live-title'));
     await f.claim(f.queue('live-map','automatic','proj_1','canopy-map'));
-    expect(await claimQueuedRun(f.serverEnv,f.queue('second-title'),{worker:f.principal,signInReady:true,leaseExpiresAt:f.now+60_000,harness:'codex',profile:{...PROFILE,effort:'high'},now:f.now})).not.toBeNull();
+    expect(await claimQueuedRun(f.serverEnv,f.queue('second-title'),{worker:f.principal,leaseExpiresAt:f.now+60_000,harness:'codex',profile:{...PROFILE,effort:'high'},now:f.now})).not.toBeNull();
     const exposure=(await readBudgetStatus(f.db,f.now)).pricedExposure!;
     expect(exposure.usd).toBeCloseTo(12.4);
     expect(exposure).toMatchObject({sampleSize:51,missingSamples:0});
