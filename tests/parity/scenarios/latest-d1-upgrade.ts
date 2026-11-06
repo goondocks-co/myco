@@ -23,7 +23,7 @@ export const latestD1Upgrade: ParityScenario = {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
     for (const [table, column] of [
-      ['sessions', 'launch_parent_session_id'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
+      ['agent_runs', 'repository_files'], ['spore_curation_candidates', 'currency'], ['sessions', 'launch_parent_session_id'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
       ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
     ]) {
       const columns = await target.sql(`PRAGMA table_info(${table})`);

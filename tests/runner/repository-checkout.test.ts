@@ -104,7 +104,8 @@ describe('committed repository checkout', () => {
   });
 
   it('writes the digest listing beside a worker checkout only when the run asks for one', async () => {
-    const answer = async (input: Record<string, unknown>) => input.commit === undefined
+    const answer = async (input: Record<string, unknown>) => input.files !== undefined
+      ? (expect(input.files).toEqual(['AGENTS.md']), {filesStored:true}) : input.commit === undefined
       ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
       : { pin: { url, branch: 'main', commit: input.commit } };
     const spec = { url, branch: 'main', historyDepth: 1 };

@@ -181,6 +181,8 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  { step: 697, sql: 'ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))', reason: 'Map preparation retains its complete committed file inventory.' },
+  { step: 697, sql: 'ALTER TABLE spore_curation_candidates ADD COLUMN currency TEXT CHECK(currency IS NULL OR json_valid(currency))', reason: 'Whole-read candidates retain the server currency fact for their revision.' },
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,
     reason: 'Retired pause markers are removed.' })),
   { step: 693, sql: "INSERT INTO spore_curation_changes SELECT project_id,1,1,0 FROM project_capabilities WHERE capability='spore_curation' AND enabled=1", reason: "Enabled Projects begin a cluster discovery pass." },

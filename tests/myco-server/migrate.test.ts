@@ -710,6 +710,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0694_v694.sql': '9b74f9d52d3f1acb53d49012f13b13e9b1a330aa75c38997a508b80839b6b0f5',
   '0695_v695.sql': 'a5fd8f8cad97724d8b8698ead1e2f3d1fac426d1696fc75e93b28f32f48fb8e8',
   '0696_v696.sql': '03a613592a9f5d5730047c3ea1c41cc3c7e958ecbb3406abcfe0620ecf710e65',
+  '0697_v697.sql': 'f8aa5f5a5a87a2834ea4915e2ac7e360cba3beed192968af5f74ad7fc7008715',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1364,6 +1365,7 @@ describe('versioned schema steps', () => {
           : t === 'raw_resources' && c.name === 'kind' ? `'blob'` : t === 'raw_resources' && c.name === 'classification' ? `'raw'`
           : t === 'processed_resources' && c.name === 'kind' ? `'plan'` : t === 'processed_resources' && c.name === 'classification' ? `'processed'`
           : t === 'agent_runs' && (c.name === 'leased_runner_id' || c.name === 'leased_runner_credential_id') ? 'NULL'
+          : (t === 'agent_runs' && c.name === 'repository_files') || (t === 'spore_curation_candidates' && c.name === 'currency') ? 'NULL'
           : t === 'agent_runs' && c.name === 'origin' ? "'manual'"
           : t === 'agent_run_attempts' && c.name === 'settled_seq' ? 'NULL'
           : t === 'agent_run_attempts' && (c.name === 'estimate_usd' || c.name === 'cost_usd') ? '0'

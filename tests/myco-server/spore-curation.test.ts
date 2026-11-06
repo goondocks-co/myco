@@ -636,3 +636,61 @@ test('missing statistics exclude both seed and candidate until model-scoped cali
     await g.discover(); expect(g.calls).toEqual(before);
   }finally{g.sqlite.close();}
 });
+
+test('currency retires deleted architecture before merging current knowledge through the run surface', async () => {
+  for (const mode of ['deleted','current','mixed','unanchored','no-map'] as const) {
+    const f = await fixture();
+    try {
+      const commit = 'a'.repeat(40);
+      if (mode !== 'no-map') {
+        const source = {url:'https://example.test/team/repo',branch:'main',commit};
+        f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','connection',?,'main',1,'test')",[source.url]);
+        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
+          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md'])]);
+        f.sqlite.run(`INSERT INTO canopy_maps(project_id,revision,artifact,input_hash,repository_url,repository_branch,repository_commit,source_run_id,generated_at)
+          VALUES('proj_1','map','{}','hash',?,'main',?,'map-source',1)`,[source.url,commit]);
+      }
+      await f.enable();
+      const ids = mode === 'mixed' ? ['a','b','c','d','e','f'] : ['a','b','c'];
+      for (const id of ids) {
+        const stale = mode === 'deleted' || (mode === 'mixed' && id < 'd');
+        await f.add(id,[1,0],f.now,stale ? `Retired team sync uses packages/myco/src/daemon/api/${id}.ts:12.` : mode === 'unanchored' ? 'Keep ownership explicit and preserve accumulated history.' : 'Use src/current.ts.');
+      }
+      if (mode !== 'unanchored') f.sqlite.run("UPDATE spores SET file_path='src/removed.ts' WHERE id='a'");
+      await f.discover();
+      const claim = await f.poll(); expect(claim.claimed).toBe(true); if (!claim.claimed) throw new Error('curation was not claimed');
+      expect(claim.run.instruction!.indexOf('First judge')).toBeLessThan(claim.run.instruction!.indexOf('Choose the topic'));
+      expect(claim.run.instruction).toContain('curation_sources_missing');
+      const ctx = await f.ctx(claim.run.id,claim.run.attemptId);
+      const members = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!.members;
+      const rows = f.sqlite.query<{spore_id:string;currency:string},[]>('SELECT spore_id,currency FROM spore_curation_candidates').all();
+      const fact = JSON.parse(rows.find(row=>row.spore_id==='a')!.currency);
+      expect(claim.run.instruction).toContain(`"currency":${JSON.stringify(fact)}`);
+      expect(fact).toMatchObject(mode === 'no-map' ? {available:false,reason:'no_code_map'} : {available:true,commit});
+      if (mode === 'unanchored') expect(fact).toEqual({available:true,commit,present:[],missing:[]});
+      if (mode === 'deleted' || mode === 'mixed') expect(fact).toEqual({available:true,commit,present:[],missing:['packages/myco/src/daemon/api/a.ts','src/removed.ts']});
+      const merge = (sources: typeof members) => f.call(claim.run.runToken,'myco_spores',{op:'consolidate',source_spore_ids:sources,observation_type:'wisdom',consolidated_content:'Keep current specifics.',agent_line:'Use the current seam.',reason:'Same current seam.'});
+      if (mode === 'current') {
+        await f.add('searched',[1,0],f.now,'The dropped feature used src/deleted-search.ts.');
+        await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
+        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'searched'})).toMatchObject({spore:{currency:{available:true,commit,present:[],missing:['src/deleted-search.ts']}}});
+        expect(await merge([...members.slice(0,2),{id:'searched',revision:0}])).toMatchObject({ok:false,code:'curation_sources_missing'});
+        expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'searched',expect_revision:0,expect_status:'active',reason:'The feature in src/deleted-search.ts was removed.'})).toMatchObject({status:'obsolete'});
+      }
+      if (mode === 'deleted' || mode === 'mixed') {
+        expect(await merge(members)).toMatchObject({ok:false,code:'curation_sources_missing'});
+        expect(await f.call(claim.run.runToken,'myco_spores',{op:'supersede',old_spore_id:'a',new_spore_id:'b',expect_revision:0,expect_status:'active',reason:'Same guidance.'})).toMatchObject({ok:false,code:'curation_sources_missing'});
+        expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE observation_type='wisdom'").get()).toEqual({n:0});
+        for (const id of ['a','b','c']) expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id,expect_revision:0,expect_status:'active',reason:`Retired team sync: packages/myco/src/daemon/api/${id}.ts is absent from the committed snapshot.`})).toMatchObject({status:'obsolete'});
+        expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE status='obsolete'").get()).toEqual({n:3});
+      }
+      if (mode !== 'deleted') expect(await merge(members.filter(member => mode !== 'mixed' || member.id >= 'd'))).toMatchObject({status:'consolidated'});
+      expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Retired outdated members before merging current guidance.'})).toEqual({completed:true});
+      expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE observation_type='wisdom'").get()).toEqual({n:mode==='deleted'?0:1});
+      expect(await f.call(claim.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Currency judged before merging.'})).toMatchObject({recorded:true});
+      const report = f.sqlite.query<{details:string},[string]>('SELECT details FROM agent_reports WHERE run_id=?').get(claim.run.id)!;
+      expect(JSON.parse(report.details).counts).toEqual({obsoleted:mode==='deleted'||mode==='mixed'?3:mode==='current'?1:0,superseded:0,consolidated:mode==='deleted'?0:3});
+      expect(await runCloseRefusal(f.db,{projectId:'proj_1'},(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!)).toBeNull();
+    } finally { f.sqlite.close(); }
+  }
+});

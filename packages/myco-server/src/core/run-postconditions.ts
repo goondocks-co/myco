@@ -1,4 +1,4 @@
-import { curationCompletedBy } from './spore-curation.js';
+import { curationCompletedBy, curationOutcomeCounts } from './spore-curation.js';
 import { runCardsFinished } from './turn-cards.js';
 import { assignmentOf } from '../db/run-context.js';
 import type { CardAssignment } from './learning-stages.js';
@@ -49,7 +49,7 @@ import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
 import { countSpores, sporeAuthoredBy } from './spores.js';
 import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
-import { CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CURATION_TASK, CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 import { titlingParamsOf } from './titling-params.js';
 import { parseRunAudit } from './run-audit.js';
@@ -271,7 +271,14 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
   const auditRepairs = offered?.ok === true ? offered.repairs : [];
   // The agent's own words, bounded and masked (`agentProse`): stored with the run and kept as long as it is.
   const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
-  const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
+  const notes = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
+  let details = notes;
+  if (run.task === CURATION_TASK) {
+    const counts = await curationOutcomeCounts(db,scope.projectId,run.id);
+    details = JSON.stringify({counts,notes});
+    const overflow = details.length - MAX_REPORT_DETAILS_CHARS;
+    if (overflow > 0) details = JSON.stringify({counts,notes:notes?.slice(0,Math.max(0,notes.length-overflow)) ?? null});
+  }
   return (await insertReport(db, scope, { ...report, summary, details, audit }, caller)) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }
 

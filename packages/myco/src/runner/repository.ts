@@ -40,9 +40,12 @@ export async function prepareWorkerCheckout(
       return pin.commit;
     },
   });
-  if (checkout.digests === undefined) return checkout;
   try {
-    await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
+    if (options.digests) {
+      const result = await request({ url: spec.url, branch: spec.branch, commit: checkout.commit, files: checkout.files }, checkoutSignal);
+      if (result.filesStored !== true) throw new Error('The run could not retain its committed repository inventory.');
+    }
+    if (checkout.digests !== undefined) await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
   } catch (error) {
     await checkout.dispose();
     throw error;

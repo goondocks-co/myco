@@ -1,5 +1,17 @@
 import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
+export const MAX_REPOSITORY_INVENTORY_BYTES = 512_000;
+
+/** A complete committed inventory; oversized inventories are refused, never truncated. */
+export function repositoryFiles(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some(path => typeof path !== 'string' || !path || path.startsWith('/')
+    || path.includes('\0') || path.split('/').some(part => !part || part === '.' || part === '..'))
+    || new Set(value).size !== value.length
+    || new TextEncoder().encode(JSON.stringify(value)).length > MAX_REPOSITORY_INVENTORY_BYTES) {
+    throw new RepositoryInputError('Repository files must be a complete bounded list of distinct relative paths.');
+  }
+  return [...value].sort();
+}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 
