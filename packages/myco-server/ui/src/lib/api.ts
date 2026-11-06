@@ -72,6 +72,7 @@ export function postJson<T>(path: string, body?: unknown): Promise<T> {
 
 /** `GET /api/status`. */
 export interface StatusResponse {
+  learning: { line: string } | null;
   budget?: BudgetStatus;
   /** How far the move of existing sessions to the current view format has come. */
   harnesses?: MachineHarnessHealth[];

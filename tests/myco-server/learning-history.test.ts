@@ -29,7 +29,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
-const IDLE_CLAIM_ROW_LIMIT = 1000;
+const IDLE_CLAIM_ROW_LIMIT = 120;
 const POPULATED_RANGE_END_ROWS = 2;
 const HISTORY_STATUS_ROW_LIMIT = 100;
 const DUE_CLAIM_ROW_LIMIT = 4000;
@@ -161,7 +161,7 @@ it('skips a history backlog before probing it and reports why history waits', as
     env.db = db;
     const status = await readLearningStatus(db, NOW);
     expect(status).toMatchObject({ historyWaiting: status.cap + 1, turnsAwaitingCards: 0, dueSessions: 0, dueCards: 0 });
-    expect(learningStatusLine(status, null, NOW)).toContain('at least 1000 history sessions waiting behind the history switch');
+    expect(learningStatusLine(status, null, NOW)).toContain('at least 1000 older sessions waiting for history learning to be enabled');
   });
 });
 

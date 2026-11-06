@@ -84,6 +84,13 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 
+      {data.unavailable?.includes('learning') ? <ReadUnavailable label="learning progress" onRetry={onRetry} /> : data.learning != null &&
+        <Card className="flex flex-col gap-s2" data-health-learning="">
+          <h3 className="t-h3 text-ink">Learning from sessions</h3>
+          <p className="t-body text-ink-2">{data.learning.line}</p>
+          {data.unavailable?.includes('budget') && <ReadUnavailable label="daily learning spend" onRetry={onRetry} />}
+        </Card>}
+
       <StoppedRecordings projectName={projectName} />
       {data.unavailable?.includes('installedAgents') ? <ReadUnavailable label="installed agents" onRetry={onRetry} /> : harnesses.length > 0 && <div className="flex flex-col gap-s2" data-health-harnesses="">
         <h3 className="t-h3 text-ink">Installed agents</h3>

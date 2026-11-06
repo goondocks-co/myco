@@ -4,7 +4,7 @@ import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
+import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS, SOURCE_SWEEP_PAGE, WORK_SWEEP_PAGE } from '@myco-server-worker/core/embedding/work-state.js';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -410,13 +410,14 @@ test('file continuation seeks each role before joining metadata and hides other 
 });
 
 test('receipt safety pages discover missed retirement work without admitting maintenance', async () => {
+  const sources = 600;
   await project('safety');
   await measured.db
     .prepare(
       `${seq} INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,content_hash,status,created_at,updated_at,token_id,received_at)
     SELECT 'safety',printf('p-%06d',x),'s','e','machine','body','h','active',1,1,'token',1 FROM n`,
     )
-    .bind(600)
+    .bind(sources)
     .run();
   await measured.db
     .prepare(
@@ -436,7 +437,8 @@ test('receipt safety pages discover missed retirement work without admitting mai
     .bind(100 + WORK_SWEEP_MIN_MS)
     .run();
   let admitted = false;
-  for (let step = 0; step < 10 && !admitted; step++)
+  const sweepPages = Math.floor(sources / SOURCE_SWEEP_PAGE) + 1 + Math.floor((sources + 1) / WORK_SWEEP_PAGE) + 1;
+  for (let step = 0; step < sweepPages && !admitted; step++)
     admitted = await hasEmbeddingWork(measured.db, 'safety', 'm', 100 + WORK_SWEEP_MIN_MS + step * WORK_SWEEP_CONTINUE_MS);
   expect(admitted).toBe(true);
   expect((await retiringReceipt(measured.db, 'safety', ['m'], 100 + WORK_SWEEP_MIN_MS))?.id).toBe('zz-legacy');

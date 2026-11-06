@@ -294,7 +294,7 @@ import { RECEIPT as core_embedding_work_sweep_import_RECEIPT } from "../core/emb
 
 import { deletionRetryDue as core_embedding_work_sweep_import_deletionRetryDue } from "../core/embedding/receipt-state.js";
 
-import { WORK_SWEEP_PAGE as core_embedding_work_sweep_import_WORK_SWEEP_PAGE } from "../core/embedding/work-state.js";
+import { SOURCE_SWEEP_PAGE as core_embedding_work_sweep_import_SOURCE_SWEEP_PAGE, WORK_SWEEP_PAGE as core_embedding_work_sweep_import_WORK_SWEEP_PAGE } from "../core/embedding/work-state.js";
 
 import type { WorkSweep as core_embedding_work_sweep_import_WorkSweep } from "../core/embedding/work-state.js";
 
@@ -3134,13 +3134,13 @@ async function core_embedding_work_sweep_embeddingSweep(
     const predicate =
       writes.length === 0
         ? '0'
-        : `(${writes.map(() => `(NOT ${core_embedding_reconcile_SOURCE_HELD} AND NOT ${core_embedding_reconcile_PASSED_OVER})`).join(' OR ')})`;
+        : `(${writes.map(() => `(CASE WHEN ${core_embedding_reconcile_SOURCE_HELD} THEN 0 ELSE NOT ${core_embedding_reconcile_PASSED_OVER} END)`).join(' OR ')})`;
     const rows = (
       await db
         .prepare(
           `WITH page AS MATERIALIZED (SELECT * FROM embedding_versions
-      WHERE project_id = ? AND (type,record_id) > (?,?) ORDER BY type,record_id LIMIT ${core_embedding_work_sweep_import_WORK_SWEEP_PAGE})
-      SELECT s.type,s.record_id,(${core_embedding_source_state_eligibleSource('s')} AND ${predicate}) AS pending FROM page s`,
+      WHERE project_id = ? AND (type,record_id) > (?,?) ORDER BY type,record_id LIMIT ${core_embedding_work_sweep_import_SOURCE_SWEEP_PAGE})
+      SELECT s.type,s.record_id,CASE WHEN ${core_embedding_source_state_eligibleSource('s')} THEN ${predicate} ELSE 0 END AS pending FROM page s`,
         )
         .bind(projectId, cursor.a, cursor.b, ...writes.flatMap((model) => [model, ...core_embedding_reconcile_passedOverBinds(model, now)]))
         .all<{ type: string; record_id: string; pending: number }>()
@@ -3149,7 +3149,7 @@ async function core_embedding_work_sweep_embeddingSweep(
     return {
       pending: rows.some((row) => row.pending === 1),
       cursor:
-        rows.length < core_embedding_work_sweep_import_WORK_SWEEP_PAGE
+        rows.length < core_embedding_work_sweep_import_SOURCE_SWEEP_PAGE
           ? core_embedding_work_sweep_advance('receipts')
           : JSON.stringify({ ...cursor, a: last!.type, b: last!.record_id }),
     };
