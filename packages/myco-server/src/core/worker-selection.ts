@@ -1,3 +1,4 @@
+import type { HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 import type { ServerEnv } from './adapters.js';
 /**
  * Which agent, profile and login a worker's offer resolves a task to, as a
@@ -43,6 +44,8 @@ export interface OfferedHarness {
   id: string;
   installed?: boolean;
   authenticated: boolean;
+  unavailableReason?: 'login_missing';
+  signInFailure?: HarnessSignInFailure;
   profile?: ProfileCapability;
 }
 

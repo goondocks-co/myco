@@ -15,7 +15,7 @@ import { answerRoom, materialPages, type PagedEntry } from './material-pages.js'
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
-import { LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
+import { claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
 import { learningRecencySql, learningRangeSql } from './learning-recency.js';
 import { learningHistoryEnabledSql } from './settings.js';
@@ -30,7 +30,7 @@ export const CARD_RETRY_MS = 3_600_000;
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
 export function claimCardsStatements(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
   run: { runId: string; dispatchedBy: string }): PreparedStatement[] {
-  return [db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
+  return [claimLearningRetryStatement(db, projectId, sessionId, run), db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
       card_failures = card_failures + 1,
       card_retry_at = ? + CASE WHEN card_failures = 0 THEN ? WHEN card_failures = 1 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ?

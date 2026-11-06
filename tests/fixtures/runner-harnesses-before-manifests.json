@@ -302,12 +302,7 @@
         "kind": "native"
       },
       "credential": {
-        "kind": "file-or-command",
-        "path": "~/.claude/.credentials.json",
-        "requires": [
-          "claudeAiOauth",
-          "accessToken"
-        ],
+        "kind": "command",
         "args": [
           "auth",
           "status"
@@ -359,6 +354,23 @@
           "resolvesTo": "resolvedModel",
           "efforts": "supportedEffortLevels"
         }
+      },
+      "omitInherited": [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_CLIENT_DATA_URL",
+        "ANTHROPIC_SMALL_FAST_MODEL"
+      ],
+      "name": "Claude Code",
+      "signInHint": {
+        "default": "Run claude, then /login on this runner.",
+        "darwin": "Open a GUI Terminal on this Mac, run claude, then /login."
       },
       "retryFirstLoginMissing": true
     },
@@ -452,6 +464,10 @@
           "upgrade": "upgrade",
           "efforts": "supportedReasoningEfforts[].reasoningEffort"
         }
+      },
+      "name": "Codex",
+      "signInHint": {
+        "default": "Run codex login on this runner."
       }
     },
     {
@@ -522,6 +538,10 @@
         ],
         "format": "lines",
         "provider": "id-prefix"
+      },
+      "name": "OpenCode",
+      "signInHint": {
+        "default": "Run opencode auth login on this runner."
       }
     },
     {
@@ -565,7 +585,11 @@
         "env": "CURSOR_CONFIG_DIR",
         "sourceReads": "unheld"
       },
-      "sourceGit": "none"
+      "sourceGit": "none",
+      "name": "Cursor",
+      "signInHint": {
+        "default": "Run cursor-agent login on this runner."
+      }
     },
     {
       "id": "antigravity",
@@ -603,7 +627,11 @@
       "asking": {
         "kind": "unheld"
       },
-      "sourceGit": "none"
+      "sourceGit": "none",
+      "name": "Google Antigravity",
+      "signInHint": {
+        "default": "Open Antigravity on this runner and complete its sign-in."
+      }
     }
   ]
 }

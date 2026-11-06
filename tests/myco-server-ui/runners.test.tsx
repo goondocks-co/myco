@@ -285,3 +285,14 @@ describe('runner sign-in controls', () => {
     expect(screen.queryByRole('button', { name: 'Use the server’s stored key' })).toBeNull();
   });
 });
+
+it('shows a failed agent sign-in while another agent keeps the runner online', async () => {
+  mount('admin', { ...RUNNER, offers: [
+    { id: 'claude-code', authenticated: false, unavailableReason: 'login_missing',
+      signInFailure: { name: 'Claude Code', source: 'own', hint: 'Open a GUI Terminal on this Mac, run claude, then /login.' } },
+    { id: 'codex', authenticated: true },
+  ] });
+  const failure = await screen.findByText('Claude Code could not sign in at launch. Open a GUI Terminal on this Mac, run claude, then /login.');
+  expect(failure.closest('details')).toBeNull();
+  expect((await screen.findByText('homelab-mini')).closest('article')?.textContent).toContain('Online');
+});

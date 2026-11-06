@@ -160,6 +160,8 @@ runner:
   # How a worker runs it.
   worker:
     binary: cursor-agent
+    signInHint:
+      default: "Run cursor-agent login on this runner."
     launch: { kind: subcommand, args: [acp] }
     login: { kind: command, args: [status] }
     isolation: { kind: additive }

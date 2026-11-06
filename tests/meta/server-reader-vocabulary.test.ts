@@ -12,12 +12,10 @@ const SRC = path.join(ROOT, 'packages/myco-server/src');
 
 /** Exact diagnostic text allowed at a non-dashboard seam, with its purpose. */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'core/recovery-hold.ts:producer': 'Operator recovery hold wire state; never a dashboard diagnostic.',
   '../../myco-shared/src/run-text.ts:the harness stopped': 'Worker diagnostic code prefix; the dashboard renders reader code words.',
   'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
   'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
   'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
-  'core/worker-selection.ts:deployment': 'LoginPlan discriminator for credential source selection; never dashboard prose.',
   'core/worker-selection.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
   'core/settings-policies.ts:agent.harnesses. … .credential': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
   'core/settings-policies.ts:worker.harness': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
@@ -150,4 +148,28 @@ describe('server reader vocabulary', () => {
       }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+it('distinguishes displayed discriminator values from JSX conditions and label lookups', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-discriminators-'));
+  try {
+    const ui = path.join(dir, 'Page.tsx');
+    const server = path.join(dir, 'api.ts');
+    fs.writeFileSync(ui, [
+      "declare const wire: { kind: 'deployment'; readerNote: string };",
+      "const labels = { deployment: 'Ready' };",
+      "const page = <>{wire.kind === 'deployment' && <p>{wire.readerNote}</p>}",
+      "{wire.kind === 'deployment' ? wire.readerNote : 'Waiting'}",
+      "{labels[wire.kind]}{wire.kind === 'deployment'}</>;",
+    ].join('\n'));
+    fs.writeFileSync(server, "const wire = { kind: 'deployment', readerNote: 'The machine is ready' };");
+    const fields = dashboardReaderFields([ui]);
+    expect(fields.has('readerNote')).toBe(true);
+    expect(fields.has('kind')).toBe(false);
+    expect(serverReaderStrings([server], fields).some(entry => MECHANISM_WORDS.test(entry.text))).toBe(false);
+    fs.writeFileSync(ui, "declare const wire: { kind: string }; const page = <p>{wire.kind}</p>;");
+    const direct = dashboardReaderFields([ui]);
+    expect(direct.has('kind')).toBe(true);
+    expect(serverReaderStrings([server], direct).some(entry => MECHANISM_WORDS.test(entry.text))).toBe(true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

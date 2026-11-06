@@ -484,7 +484,7 @@ export function codexDriverWith(probe: DeveloperDirProbe, log: (line: string) =>
 function codexLaunch(spec: LaunchSpec, probe: DeveloperDirProbe, log: (line: string) => void): { launch: Launch; home: string } {
   const harness = harnessById('codex')!;
   const home = runHome(spec, harness, probe, log);
-  return { home, launch: { env: { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) }, omitInherited: [] } };
+  return { home, launch: { env: { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) }, omitInherited: harness.omitInherited ?? [] } };
 }
 
 export const codexDriver: Driver = codexDriverWith(SYSTEM_DEVELOPER_DIR_PROBE);

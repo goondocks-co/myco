@@ -1477,3 +1477,29 @@ it('approves registration sign-ins together, displays the requested sources and 
     expect(replacement.run.credentialEnv).toEqual({});
   } finally { r.e.sqlite.close(); }
 });
+
+it('carries a launch sign-in failure through contact, selection and dashboard readiness', async () => {
+  const r = rig();
+  try {
+    const { token } = await r.register();
+    await r.json(r.asRunner(token, '/runners/contact', { machineId: 'mini-fixture', os: 'darwin' }));
+    await r.queueTitling();
+    const first = await r.claim(token);
+    expect(first.claimed).toBe(true);
+    expect(await r.json(r.asRunner(token, '/worker/end', { projectId: 'proj_1', runId: first.run.id,
+      attemptId: first.run.attemptId, status: 'failed', error: 'the harness stopped: error (login_missing)',
+    }))).toMatchObject({ ended: true, status: 'failed' });
+    await r.queueTitling();
+    const signedOut = OFFERED.map(offer => ({ ...offer, installed: true, authenticated: false, unavailableReason: 'login_missing',
+      signInFailure: { name: 'Claude Code', source: 'own', hint: 'Open a GUI Terminal on this Mac, run claude, then /login.' } }));
+    expect(await r.json(r.asRunner(token, '/worker/claim', { harnesses: signedOut, capabilities: WORKER_CAPABILITIES })))
+      .toMatchObject({ claimed: false, reason: 'no_harness' });
+    const projection = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+    expect(projection.runners[0].offers).toEqual(signedOut);
+    expect(projection.runners[0].readiness).toMatchObject({ code: 'not_signed_in' });
+    expect(projection.runners[0].readiness.reason).toContain('Claude Code could not sign in at launch');
+    expect(projection.runners[0].readiness.reason).toContain('GUI Terminal');
+    expect(projection.runners[0].readiness.reason).toContain('claude, then /login');
+    expect((await r.claim(token)).claimed).toBe(true);
+  } finally { r.e.sqlite.close(); }
+});

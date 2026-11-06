@@ -5,8 +5,25 @@ import type { HarnessFacts } from './harnesses.js';
 export const HARNESS_FACTS: readonly HarnessFacts[] = [
   {
     "id": "claude-code",
+    "name": "Claude Code",
+    "signInHint": {
+      "default": "Run claude, then /login on this runner.",
+      "darwin": "Open a GUI Terminal on this Mac, run claude, then /login."
+    },
     "retryFirstLoginMissing": true,
     "binary": "claude",
+    "omitInherited": [
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_CLIENT_DATA_URL",
+      "ANTHROPIC_SMALL_FAST_MODEL"
+    ],
     "launch": {
       "kind": "native"
     },
@@ -214,12 +231,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
       "tokenScope": "attempt"
     },
     "credential": {
-      "kind": "file-or-command",
-      "path": "~/.claude/.credentials.json",
-      "requires": [
-        "claudeAiOauth",
-        "accessToken"
-      ],
+      "kind": "command",
       "args": [
         "auth",
         "status"
@@ -228,6 +240,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
   },
   {
     "id": "codex",
+    "name": "Codex",
+    "signInHint": {
+      "default": "Run codex login on this runner."
+    },
     "binary": "codex",
     "launch": {
       "kind": "native"
@@ -340,6 +356,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
   },
   {
     "id": "opencode",
+    "name": "OpenCode",
+    "signInHint": {
+      "default": "Run opencode auth login on this runner."
+    },
     "binary": "opencode",
     "launch": {
       "kind": "subcommand",
@@ -486,6 +506,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
   },
   {
     "id": "cursor",
+    "name": "Cursor",
+    "signInHint": {
+      "default": "Run cursor-agent login on this runner."
+    },
     "binary": "cursor-agent",
     "launch": {
       "kind": "subcommand",
@@ -621,6 +645,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
   },
   {
     "id": "antigravity",
+    "name": "Google Antigravity",
+    "signInHint": {
+      "default": "Open Antigravity on this runner and complete its sign-in."
+    },
     "binary": "agy",
     "launch": {
       "kind": "sidecar",

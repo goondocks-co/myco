@@ -41,3 +41,6 @@ export function assignmentOf<T extends { kind: string }>(runContext: string | nu
     return typeof context?.session_id === 'string' && context.assignment?.kind === kind ? { sessionId: context.session_id, assignment: context.assignment } : null;
   } catch { return null; }
 }
+
+/** The retry state reserved by a card or learning claim, bound to its dispatched attempt. */
+export const LEARNING_RETRY_KEY = 'learningRetry';

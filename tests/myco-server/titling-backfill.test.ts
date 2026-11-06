@@ -887,3 +887,33 @@ describe('sessions that never end', () => {
     });
   });
 });
+
+it('returns the counted titling attempt after a runner sign-in failure', async () => {
+  const r = rig();
+  r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
+  r.session('signed-out', { imported: false });
+  expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+  const run = r.runs()[0]!;
+  r.sqlite.run("UPDATE agent_runs SET status='running',started_at=? WHERE id=?", [NOW, run.id]);
+  expect(r.sqlite.query("SELECT titling_attempts FROM sessions WHERE session_id='signed-out'").get()).toEqual({ titling_attempts: 1 });
+  r.sqlite.run("UPDATE agent_runs SET status='failed',error_code='agent_not_signed_in',completed_at=? WHERE id=?", [NOW + 1, run.id]);
+  expect(r.sqlite.query("SELECT titling_attempts FROM sessions WHERE session_id='signed-out'").get()).toEqual({ titling_attempts: 0 });
+  expect(r.sqlite.query("SELECT attempt_counted FROM agent_runs WHERE id=?").get(run.id)).toEqual({ attempt_counted: 0 });
+  r.sqlite.run("UPDATE agent_runs SET status='failed' WHERE id=?", [run.id]);
+  expect(r.sqlite.query("SELECT titling_attempts FROM sessions WHERE session_id='signed-out'").get()).toEqual({ titling_attempts: 0 });
+});
+
+it('retains a predecessor titling charge after a replacement sign-in failure', async () => {
+  const r = rig();
+  r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0 } } });
+  r.session('replace-sign-in', { imported: false });
+  expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+  const prior = r.runs()[0]!;
+  r.sqlite.run("UPDATE agent_runs SET status='running',started_at=? WHERE id=?", [NOW, prior.id]);
+  r.sqlite.run("UPDATE agent_runs SET status='failed',completed_at=? WHERE id=?", [NOW + 1, prior.id]);
+  r.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,run_context)
+    SELECT project_id,'replacement',agent_id,task,'queued',json_set(run_context,'$.replaces',id) FROM agent_runs WHERE id=?`, [prior.id]);
+  r.sqlite.run("UPDATE agent_runs SET status='running',started_at=? WHERE id='replacement'", [NOW + 2]);
+  r.sqlite.run("UPDATE agent_runs SET status='failed',error_code='agent_not_signed_in',completed_at=? WHERE id='replacement'", [NOW + 3]);
+  expect(r.sqlite.query("SELECT titling_attempts FROM sessions WHERE session_id='replace-sign-in'").get()).toEqual({ titling_attempts: 1 });
+});
