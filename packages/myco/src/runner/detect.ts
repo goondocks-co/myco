@@ -1,3 +1,4 @@
+import { STORED_SIGN_IN_HINT, type RunnerCredentialChoice, type HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 /**
  * Which harnesses this machine has, and which of them are logged in.
  *
@@ -21,9 +22,12 @@ export interface DetectedHarness {
   installed: boolean;
   authenticated: boolean;
   error?: string;
+  unavailableReason?: 'login_missing';
+  signInSource?: RunnerCredentialChoice;
 }
 
 export interface OfferedHarness extends DetectedHarness {
+  signInFailure?: HarnessSignInFailure;
   profile: ProfileCapability;
 }
 
@@ -43,6 +47,7 @@ const probeEnv = (): NodeJS.ProcessEnv => process.env;
 const PROBE_TIMEOUT_MS = 10_000;
 export const HARNESS_DETECTION_MAX_MS = 2 * PROBE_TIMEOUT_MS;
 export const HARNESS_DETECTION_TTL_MS = 30_000;
+export const HARNESS_LOGIN_RECHECK_MS = 5 * 60_000;
 
 /** Where this harness's binary is, or null when the machine has none. */
 export function locate(binary: string, env: NodeJS.ProcessEnv = probeEnv()): string | null {
@@ -83,11 +88,17 @@ function commandSucceeds(binary: string, args: readonly string[], env: NodeJS.Pr
   }
 }
 
+function credentialProbeEnvironment(harness: Harness, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...inherited };
+  for (const key of harness.omitInherited ?? []) delete env[key];
+  return env;
+}
+
 function authenticated(harness: Harness, env: NodeJS.ProcessEnv): boolean {
   const probe = harness.credential;
-  if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args, env);
+  if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args, credentialProbeEnvironment(harness, env));
   const file = credentialFile(harness, env);
-  return fileHolds(file, probe.requires) || (probe.kind === 'file-or-command' && commandSucceeds(harness.binary, probe.args, env));
+  return fileHolds(file, probe.requires);
 }
 
 /** Every harness this machine has, with whether each is logged in, for synchronous diagnostic callers. */
@@ -122,10 +133,10 @@ export async function runnerHarnessPreflight(env: NodeJS.ProcessEnv, ctx: CodexI
 }
 
 /** A bounded local probe; output is read only for binary lookup and is never logged. */
-function probeCommand(binary: string, args: readonly string[], signal?: AbortSignal): Promise<string | null> {
+function probeCommand(binary: string, args: readonly string[], signal?: AbortSignal, env = probeEnv()): Promise<string | null> {
   if (signal?.aborted === true) return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile(binary, [...args], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: probeEnv(), signal }, (error, stdout) => {
+    execFile(binary, [...args], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env, signal }, (error, stdout) => {
       resolve(error === null ? stdout : null);
     });
   });
@@ -169,20 +180,21 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
     if (!installed) return { id: harness.id, installed, authenticated: false };
     try {
       const probe = harness.credential;
-      const fileAuthenticated = probe.kind !== 'command' && (mode.credentialBytes
-        ? await fileHoldsAsync(credentialFile(harness), probe.requires)
-        : await fileNonEmpty(credentialFile(harness)));
-      const authenticated = fileAuthenticated || (probe.kind !== 'file' && await probeCommand(harness.binary, probe.args, signal) !== null);
+      const authenticated = probe.kind === 'command'
+        ? await probeCommand(harness.binary, probe.args, signal, credentialProbeEnvironment(harness, probeEnv())) !== null
+        : mode.credentialBytes ? await fileHoldsAsync(credentialFile(harness), probe.requires) : await fileNonEmpty(credentialFile(harness));
       return { id: harness.id, installed, authenticated };
     } catch (error) { return { id: harness.id, installed, authenticated: false, error: error instanceof Error ? error.message : String(error) }; }
   }));
 }
 
 /** One worker's coalesced detection snapshot; invalidation also refuses results from an older in-flight probe. */
-export function harnessDetection(options: { detect: () => Promise<DetectedHarness[]>; clock: () => number }): {
+export function harnessDetection(options: { detect: (excluded: readonly string[]) => Promise<DetectedHarness[]>; clock: () => number }): {
   read: () => Promise<DetectedHarness[]>;
   invalidate: () => void;
+  loginMissing: (id: string, source?: RunnerCredentialChoice) => void;
 } {
+  const signedOut = new Map<string, { until: number; source: RunnerCredentialChoice; detected: DetectedHarness }>();
   let generation = 0;
   let snapshot: { at: number; detected: DetectedHarness[] } | null = null;
   let pending: { generation: number; work: Promise<DetectedHarness[]> } | null = null;
@@ -192,8 +204,21 @@ export function harnessDetection(options: { detect: () => Promise<DetectedHarnes
         if (snapshot !== null && options.clock() - snapshot.at < HARNESS_DETECTION_TTL_MS) return snapshot.detected;
         if (pending === null) {
           const revision = generation;
-          const work = options.detect().then((detected) => {
-            if (revision === generation) snapshot = { at: options.clock(), detected };
+          const excluded = [...signedOut].filter(([, held]) => options.clock() < held.until).map(([id]) => id);
+          const work = options.detect(excluded).then((fresh) => {
+            const detected = [...fresh, ...excluded.map(id => signedOut.get(id)!.detected)];
+            if (revision === generation) {
+              for (const harness of fresh) {
+                const held = signedOut.get(harness.id);
+                if (held === undefined) continue;
+                if (held.source === 'stored' || harness.authenticated) signedOut.delete(harness.id);
+                else {
+                  harness.unavailableReason = 'login_missing';
+                  signedOut.set(harness.id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS, source: held.source, detected: harness });
+                }
+              }
+              snapshot = { at: options.clock(), detected };
+            }
             return detected;
           }).finally(() => { pending = null; });
           pending = { generation: revision, work };
@@ -204,6 +229,12 @@ export function harnessDetection(options: { detect: () => Promise<DetectedHarnes
       }
     },
     invalidate() { generation += 1; snapshot = null; },
+    loginMissing(id, source = 'own') {
+      const known = snapshot?.detected.find(harness => harness.id === id);
+      signedOut.set(id, { until: options.clock() + HARNESS_LOGIN_RECHECK_MS, source,
+        detected: { ...known, id, installed: known?.installed ?? true, authenticated: false, unavailableReason: 'login_missing', ...(source === 'stored' ? { signInSource: source } : {}) } });
+      generation += 1; snapshot = null;
+    },
   };
 }
 
@@ -218,7 +249,10 @@ export function offerOf(detected: readonly DetectedHarness[]): { offered: Offere
   return {
     offered: detected.flatMap((found) => {
       const harness = harnessById(found.id);
-      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, profile: harness.profile }] : [];
+      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, ...(found.unavailableReason === undefined ? {} : { unavailableReason: found.unavailableReason, signInFailure: {
+        name: harness.name, source: found.signInSource ?? 'own', hint: found.signInSource === 'stored'
+          ? STORED_SIGN_IN_HINT : (process.platform === 'darwin' ? harness.signInHint.darwin : undefined) ?? harness.signInHint.default,
+      } }), profile: harness.profile }] : [];
     }),
     withheld: detected.filter((found) => found.authenticated && !holdable(found)).map((found) => found.id),
   };

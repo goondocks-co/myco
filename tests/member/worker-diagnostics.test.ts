@@ -1,3 +1,4 @@
+import { runnerAgentLoginReady } from '@goondocks/myco-shared/runner-fleet';
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 /**
@@ -254,6 +255,54 @@ describe('first Claude Code login recovery', () => {
       expect(kept).not.toContain('tok_worker');
     }, 20_000);
   }
+});
+
+describe('launch sign-in failures hold the harness until a scheduled probe passes', () => {
+  for (const source of ['own', 'stored'] as const) it(`reports a ${source} sign-in hold on the next contact and releases it on schedule`, async () => {
+    const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-login-hold-')));
+    const dir = stub('claude', fixture<NativeCase>('claude-code.json').login_missing);
+    const probes = join(scratch, 'probes');
+    const binary = join(dir, 'claude');
+    writeFileSync(binary, readFileSync(binary, 'utf8').replace(
+      'if [ "$1" = "auth" ]; then exit 0; fi',
+      `if [ "$1" = "auth" ]; then echo probe >> "${probes}"; exit ${source === 'stored' ? 1 : 0}; fi`,
+    ));
+    const stopping = new AbortController();
+    let now = 0;
+    let claims = 0;
+    const offers: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/worker/claim')) {
+        const offer = JSON.parse(String(init?.body)).harnesses[0];
+        offers.push(offer);
+        if (++claims === 1) {
+          expect(runnerAgentLoginReady(offer, source === 'stored' ? { 'claude-code': 'stored' } : undefined)).toBe(true);
+          return Response.json({ persisted: true, claimed: true, heartbeatMs: 60_000,
+            run: { id: 'run_login', attemptId: 'attempt_login', projectId: 'proj_1', task: 'title-summary',
+            instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: source === 'stored' ? { ANTHROPIC_API_KEY: 'fixture-provider-key' } : {}, profile: STUB_PROFILE, timeoutSeconds: 60 },
+          });
+        }
+        if (claims <= 11) {
+          expect(offer).toMatchObject({ authenticated: false, unavailableReason: 'login_missing', signInFailure: { source } });
+          expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
+          now += 30_000;
+          return Response.json({ persisted: true, claimed: false, reason: 'no_harness', pollAfterMs: 1 });
+        }
+        expect(offer).toMatchObject({ authenticated: source === 'own' });
+        expect(runnerAgentLoginReady(offer, source === 'stored' ? { 'claude-code': 'stored' } : undefined)).toBe(true);
+        expect(offer.unavailableReason).toBeUndefined();
+        stopping.abort();
+      }
+      return Response.json({ persisted: true, ended: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
+    }) as typeof fetch;
+    await withPath(dir, () => runWorker({ serverUrl: 'https://deployment.example', token: 'tok_worker', lockDir: null,
+      runRoot: join(scratch, 'runs'), diagnosticRoot: join(scratch, 'diagnostics'), only: ['claude-code'],
+      pollIdleMs: 1, clock: () => now, signal: stopping.signal, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl),
+    }));
+    expect(claims).toBe(12);
+    expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(3);
+    expect(offers[1]).toMatchObject({ installed: true, authenticated: false, unavailableReason: 'login_missing' });
+  }, 20_000);
 });
 
 describe('the local diagnostics log', () => {

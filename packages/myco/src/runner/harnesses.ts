@@ -46,9 +46,7 @@ export type LaunchShape =
 /** Where a harness keeps its login, and how a probe reads it without printing it. */
 export type CredentialProbe =
   | { kind: 'file'; path: string; requires: readonly string[] }
-  | { kind: 'command'; args: readonly string[] }
-  /** A file, with a command to fall back to where the platform keeps the value in its keyring instead. */
-  | { kind: 'file-or-command'; path: string; requires: readonly string[]; args: readonly string[] };
+  | { kind: 'command'; args: readonly string[] };
 
 /**
  * How a per-run configuration becomes the harness's only tool source.
@@ -128,11 +126,15 @@ export interface MycoCallNames {
 
 export interface Harness {
   id: string;
+  name: string;
+  signInHint: { default: string; darwin?: string };
+  /** Retry a first login failure before any tool call after a passing readiness check. */
+  retryFirstLoginMissing?: boolean;
   binary: string;
+  /** Machine variables excluded from both login probes and launches. */
+  omitInherited?: readonly string[];
   launch: LaunchShape;
   credential: CredentialProbe;
-  /** Recheck readiness and retry a first login failure before any tool call. */
-  retryFirstLoginMissing?: boolean;
   isolation: Isolation;
   asking: Asking;
   sourceGit: SourceGit;

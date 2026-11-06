@@ -377,7 +377,7 @@ function runHomeOf(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter 
  */
 function acpLaunch(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter | undefined): { launch: Launch; asking: RunAsking } {
   const asking = runAsking(harness, runAgentName(), spec.profile);
-  return { asking, launch: { env: { ...spec.credentialEnv, ...asking.env, ...runHomeOf(harness, spec, writeHome) }, omitInherited: [] } };
+  return { asking, launch: { env: { ...spec.credentialEnv, ...asking.env, ...runHomeOf(harness, spec, writeHome) }, omitInherited: harness.omitInherited ?? [] } };
 }
 
 export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {

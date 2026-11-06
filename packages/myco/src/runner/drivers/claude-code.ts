@@ -64,12 +64,6 @@ const NO_HARNESS_TOOLS: readonly string[] = ['--tools', ''];
  */
 const SHELL_SETUP_VARIABLE = 'CLAUDE_ENV_FILE';
 const INHERITED_CREDENTIAL_OVERRIDES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
-const INHERITED_PROFILE_OVERRIDES = [
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
-  'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL', 'ANTHROPIC_SMALL_FAST_MODEL',
-] as const;
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -126,7 +120,7 @@ function refusalsOf(result: Record<string, unknown>): { tool: string; id: string
 function claudeLaunch(spec: LaunchSpec): Launch {
   return {
     env: { ...spec.credentialEnv },
-    omitInherited: [...INHERITED_PROFILE_OVERRIDES, ...(Object.keys(spec.credentialEnv).length > 0 ? INHERITED_CREDENTIAL_OVERRIDES : [])],
+    omitInherited: [...(harnessById('claude-code')!.omitInherited ?? []), ...(Object.keys(spec.credentialEnv).length > 0 ? INHERITED_CREDENTIAL_OVERRIDES : [])],
   };
 }
 

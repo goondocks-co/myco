@@ -174,6 +174,8 @@ runner:
   # How a worker runs it.
   worker:
     binary: agy
+    signInHint:
+      default: "Open Antigravity on this runner and complete its sign-in."
     launch: { kind: sidecar, binary: agy_acp_server.par }
     login: { kind: file, path: ~/.gemini/antigravity-cli/settings.json, requires: [] }
     isolation: { kind: additive }

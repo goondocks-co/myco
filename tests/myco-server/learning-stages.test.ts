@@ -1240,3 +1240,54 @@ it('retains learning claim deadlines when hash mismatches cover zero, rather tha
     }
   });
 });
+
+for (const task of ['turn-cards', 'extract-curate'] as const) it(`does not charge ${task} attempts or backoff for a runner sign-in failure`, async () => {
+  await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    const session = 'sign-in-work';
+    await capture(db, session, [GOTCHAS[0]!]);
+    await publish(db, NOW, harness.bindings.BUCKET);
+    if (task === 'extract-curate') await cardAll(db, harness.bindings.BUCKET, session, NOW);
+    const before = await db.prepare('SELECT failures,eligible_at,card_failures,card_retry_at FROM learning_sessions WHERE session_id=?')
+      .bind(session).first();
+    const turnsBefore = (await db.prepare('SELECT turn_key,due_at FROM turn_cards WHERE session_id=?').bind(session).all()).results;
+    for (let index = 0; index < 5; index++) {
+      const at = NOW + index * 10;
+      const claim = await harness.poll(at);
+      if (!claim.claimed) throw new Error(`sign-in attempt ${index} was not claimed: ${claim.reason}`);
+      expect(claim.run.task).toBe(task);
+      const end = () => endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
+        projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed',
+        error: 'the harness stopped: error (login_missing; exit code 1)',
+      });
+      expect(await end()).toMatchObject({ ended: true, status: 'failed' });
+      expect(await db.prepare('SELECT error_code FROM agent_runs WHERE id=?').bind(claim.run.id).first())
+        .toEqual({ error_code: 'agent_not_signed_in' });
+      expect(await db.prepare('SELECT failures,eligible_at,card_failures,card_retry_at FROM learning_sessions WHERE session_id=?')
+        .bind(session).first()).toEqual(before);
+      expect((await db.prepare('SELECT turn_key,due_at FROM turn_cards WHERE session_id=?').bind(session).all()).results).toEqual(turnsBefore);
+      expect(await end()).toMatchObject({ ended: false });
+    }
+  });
+});
+
+it('retains earlier card failure backoff after a runner sign-in failure', async () => {
+  await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    await capture(db, 'prior-backoff', [GOTCHAS[0]!]);
+    await publish(db, NOW, harness.bindings.BUCKET);
+    const failed = await harness.poll(NOW);
+    if (!failed.claimed) throw new Error('no initial card claim');
+    await endLeasedRun(harness.env, { principal: harness.principal, now: NOW + 1 }, {
+      projectId: 'project', runId: failed.run.id, attemptId: failed.run.attemptId, status: 'failed', error: 'model failed',
+    });
+    const before = await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='prior-backoff'").first();
+    const claim = await harness.poll(NOW + HOUR + 1);
+    if (!claim.claimed) throw new Error('no card retry');
+    await endLeasedRun(harness.env, { principal: harness.principal, now: NOW + HOUR + 2 }, {
+      projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed',
+      error: 'the harness stopped: error (login_missing)',
+    });
+    expect(await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='prior-backoff'").first()).toEqual(before);
+  });
+});

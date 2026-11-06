@@ -1,3 +1,4 @@
+import { LEARNING_RETRY_KEY } from '../db/run-context.js';
 /**
  * Stage two of learning, and the progress both stages share: one `learning_sessions` row per session.
  *
@@ -184,15 +185,29 @@ export async function buildLearningAssignment(db: RelationalStore, projectId: st
   return { kind: 'learning', expectedRevision: progress.revision, turns, more: turns.length < results.length, handoff: progress.handoff };
 }
 
-/** The statement a claim of a slice adds to its batch: the session leaves the eligible set until the claim is presumed lost. */
-export function claimLearningStatement(db: RelationalStore, projectId: string, sessionId: string, now: number,
+/** Reserve the session and turn retry state under the claim's canonical attempt. */
+export function claimLearningRetryStatement(db: RelationalStore, projectId: string, sessionId: string,
   run: { runId: string; dispatchedBy: string }): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
+  return db.prepare(`UPDATE agent_runs SET run_context = json_set(run_context, '$.${LEARNING_RETRY_KEY}',
+      json((SELECT json_object('attemptId', ?, 'failures', failures, 'eligibleAt', eligible_at,
+        'cardFailures', card_failures, 'cardRetryAt', card_retry_at, 'revision', revision,
+        'turns', json((SELECT json_group_array(json_object('turnKey', turn_key, 'changes', changes, 'dueAt', due_at))
+          FROM turn_cards c WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending'
+            AND c.turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(agent_runs.run_context, '$.assignment.turns')))))
+        FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ?)))
+    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status = 'running'`)
+    .bind(run.dispatchedBy, projectId, sessionId, projectId, run.runId, run.dispatchedBy);
+}
+
+/** A slice claim holds its session out of the eligible set until completion or lease loss. */
+export function claimLearningStatements(db: RelationalStore, projectId: string, sessionId: string, now: number,
+  run: { runId: string; dispatchedBy: string }): PreparedStatement[] {
+  return [claimLearningRetryStatement(db, projectId, sessionId, run), db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
       failures = failures + 1,
       eligible_at = ? + CASE WHEN failures = 0 THEN 0 WHEN failures = 1 THEN ? WHEN failures = 2 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
-    .bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy);
+    .bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
 }
 
 export interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }

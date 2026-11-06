@@ -31,7 +31,7 @@ describe('the harness manifest', () => {
       // A harness no worker offers has no driver, so no run is started on it.
       expect({ id: harness.id, driven: driverFor(harness.id) !== null }).toEqual({ id: harness.id, driven: offerable(harness) });
       expect(['flag', 'home', 'additive']).toContain(harness.isolation.kind);
-      expect(['file', 'command', 'file-or-command']).toContain(harness.credential.kind);
+      expect(['file', 'command']).toContain(harness.credential.kind);
       expect(harness.binary.length).toBeGreaterThan(0);
     }
     expect(Object.keys(DRIVERS).sort()).toEqual(HARNESSES.filter(offerable).map((h) => h.id).sort());

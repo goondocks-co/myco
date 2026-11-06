@@ -8,7 +8,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
+import { runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -39,7 +39,7 @@ import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offer
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
 import { STOP_GRACE_MS } from './process-group.js';
-import { harnessById, offerable } from './harnesses.js';
+import { harnessById, HARNESSES, offerable } from './harnesses.js';
 import { recoverAbandonedRunDirectories, retryPendingRunDirectoryDiscards } from './run-directory.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
@@ -939,8 +939,10 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   };
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
-  const detection = harnessDetection({ detect: async () => {
-    const detected = await runnerRequest(signal => detectHarnessesAsync(options.only, signal, options.detection), options.signal);
+  const detection = harnessDetection({ detect: async (excluded) => {
+    const wanted = HARNESSES.filter(harness => (options.only === undefined || options.only.length === 0 || options.only.includes(harness.id))
+      && !excluded.includes(harness.id)).map(harness => harness.id);
+    const detected = wanted.length === 0 ? [] : await runnerRequest(signal => detectHarnessesAsync(wanted, signal, options.detection), options.signal);
     for (const harness of detected) if (harness.error !== undefined) options.log(`${harness.id} unavailable: ${harness.error}`);
     return detected;
   }, clock });
@@ -1098,7 +1100,10 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           keepRunDiagnostic(options, run, coded, error instanceof Error ? error.message : String(error));
           outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
-        if (outcome.status === 'failed') detection.invalidate();
+        if (outcome.status === 'failed') {
+          if (runErrorDiagnostic(outcome.error ?? '') === 'login_missing') detection.loginMissing(run.harness, Object.keys(run.credentialEnv).length > 0 ? 'stored' : 'own');
+          else detection.invalidate();
+        }
         // Only the current lease owner reports the attempt's outcome.
         if (outcome.status !== 'lost' && !lease.lost) {
           const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};

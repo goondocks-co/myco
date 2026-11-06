@@ -758,20 +758,20 @@ const StepRuleSchema = z.object({
  * types each mirrors, and reads the generated table typed by them.
  */
 const RunnerWorkerSchema = z.object({
-  /** Recheck readiness and retry a first login failure before any tool call. */
+  signInHint: z.object({ default: z.string().min(1).max(512), darwin: z.string().min(1).max(512).optional() }).strict(),
   retryFirstLoginMissing: z.boolean().optional(),
   /** What to look for on PATH. */
   binary: z.string().min(1),
+  omitInherited: Strings.optional(),
   launch: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('native') }).strict(),
     z.object({ kind: z.literal('subcommand'), args: Strings }).strict(),
     z.object({ kind: z.literal('sidecar'), binary: z.string().min(1) }).strict(),
   ]),
-  /** Where the harness keeps its login: a file, a command that answers, or a file with a command to fall back to. */
+  /** Where the harness keeps its login: a file or a command that answers. */
   login: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('file'), path: z.string().min(1), requires: Strings }).strict(),
     z.object({ kind: z.literal('command'), args: Strings }).strict(),
-    z.object({ kind: z.literal('file-or-command'), path: z.string().min(1), requires: Strings, args: Strings }).strict(),
   ]),
   isolation: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('flag'), args: Strings }).strict(),

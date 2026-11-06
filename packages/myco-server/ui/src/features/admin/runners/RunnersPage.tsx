@@ -1,3 +1,4 @@
+import { harnessSignInFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -129,6 +130,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
       </div>
       {allowed && [...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
         allowed={allowed && runner.state !== 'removed'} storedAvailable={storedCredentials[agent] === true} />)}
+      {runner.offers?.map(offer => { const failure = harnessSignInFailureWords(offer); return failure === null ? null : <p key={offer.id} className="mt-s2 t-small text-bad">{failure}</p>; })}
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
         <div className="mt-s3 flex flex-col gap-s2 break-words">
