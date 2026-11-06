@@ -4,7 +4,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import { sqliteD1, seededSqlite } from './helpers/d1.js';
 import { applySchemaSteps } from './helpers/migrate.js';
-import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { settingsWriter, type SettingsResult } from '@myco-server-worker/core/settings.js';
 
 const step68 = SCHEMA_STEPS.find((step) => step.version === 68)!;
 const retained = [
@@ -113,7 +113,7 @@ describe('the map refresh switch retirement', () => {
         expect(sqlite.query('SELECT value FROM deployment_settings WHERE leaf=?').get('cortex.canopy.refresh.background_period_minutes')).toEqual({ value: '90' });
         for (const statement of step.statements) sqlite.exec(statement);
         expect(sqlite.query('SELECT leaf,value,updated_at,updated_by FROM retired_deployment_settings WHERE leaf=?').all(leaf)).toEqual(archive);
-        const refusal = { applied: false, refusal: { reason: 'not_deployment_tier', leaf } };
+        const refusal = { applied: false, refusal: { reason: 'not_deployment_tier', leaf } } satisfies SettingsResult;
         expect(await settingsWriter(db).setLeaf(leaf, true, 'mem_owner', 20)).toEqual(refusal);
         expect(await settingsWriter(db).resetLeaf(leaf, 'mem_owner', 21)).toEqual(refusal);
       } finally { sqlite.close(); }

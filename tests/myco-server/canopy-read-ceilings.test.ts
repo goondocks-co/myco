@@ -42,7 +42,11 @@ it('seeks capture since the map without planner statistics or reading another Pr
     await check('new capture', true);
     for (const { scenario, rows, plans } of measurements) {
       expect(rows, scenario).toBeLessThanOrEqual(READ_CEILING);
-      expect(plans).toContainEqual(expect.stringMatching(/SEARCH sessions USING COVERING INDEX .*\(project_id=\? AND last_received_at>\?\)/));
+      expect(plans).toContainEqual(expect.stringMatching(/SEARCH session_read_facts USING COVERING INDEX idx_session_read_activity \(project_id=\? AND last_received_at>\?\)/));
     }
+    sqlite.exec("INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES('mapped','session-0',202,'member')");
+    expect(await capturedSinceMap(db, { projectId: 'mapped' })).toBe(false);
+    sqlite.exec("DELETE FROM session_tombstones WHERE project_id='mapped' AND session_id='session-0'");
+    expect(await capturedSinceMap(db, { projectId: 'mapped' })).toBe(true);
   } finally { sqlite.close(); meter.close(); }
 });

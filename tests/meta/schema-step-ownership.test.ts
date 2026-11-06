@@ -26,7 +26,6 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
-  { step: 699, object: 'idx_sessions_project_capture', table: 'sessions', reason: 'Map freshness seeks captures in one Project after its last settled map.' },
   ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:697,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
   {step:697,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal map runs release unreferenced repository evidence.'},
   { step: 696, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },

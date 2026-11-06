@@ -49,16 +49,16 @@ export async function pinMapRepositoryAtCommit(db: RelationalStore, scope: ReadS
 }
 
 /**
- * Whether the Project captured work after its last settled map pass, or has had
- * none. Captured work is what moves a repository, and a clock that finds none
+ * Whether live capture has moved beyond the Project's last settled map pass.
+ * Captured work is what moves a repository, and a clock that finds none
  * spends no pass on it. A pass settles when a map run completes — with a map
  * written or the current one standing — and it covers all work captured before
  * the run started: the commit it read is pinned after its start. A stored map
  * with no completed run behind it counts from its generation.
  */
 export async function capturedSinceMap(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS one FROM sessions INDEXED BY idx_sessions_project_capture
-    WHERE project_id = ? AND last_received_at > MAX(
+  const row = await db.prepare(`SELECT 1 AS one FROM session_read_facts INDEXED BY idx_session_read_activity
+    WHERE project_id = ? AND has_session = 1 AND tombstoned = 0 AND last_received_at > MAX(
       COALESCE((SELECT MAX(started_at) FROM agent_runs WHERE project_id = ? AND task = ? AND status = 'completed' AND dry_run = 0), -1),
       COALESCE((SELECT generated_at FROM canopy_maps WHERE project_id = ?), -1)) LIMIT 1`)
     .bind(scope.projectId, scope.projectId, MAP_TASK, scope.projectId).first<{ one: number }>();
