@@ -182,7 +182,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   { step: 693, sql: 'INSERT OR IGNORE INTO spore_curation_clock(id) VALUES(1)', reason: 'The curation clock starts its Project traversal at the first opted-in Project.' },
   ...[...LEARNING_SOURCE_STEPS, ...LEARNING_QUIET_STEPS, ...LEARNING_QUIET_MARGIN_STEPS].flatMap(({ version: step, statements }) => statements.filter(sql => !sql.startsWith('CREATE')).map(sql => ({ step, sql,
     reason: 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.' }))),
-  { step: 694, sql: 'DROP TRIGGER card_run_retry', reason: 'The replacement terminal trigger excludes runner sign-in failures from card backoff.' },
+  { step: 694, sql: 'DROP TRIGGER IF EXISTS card_run_retry', reason: 'The replacement terminal trigger excludes runner sign-in failures from card backoff.' },
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_insert', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
   { step: 536, sql: 'DROP TRIGGER IF EXISTS publish_queue_facts_delete', reason: 'Active queue contributions replace the existing insertion and removal status counters in the same migration.' },
   { step: 536, sql: 'ALTER TABLE publish_queue ADD COLUMN retry_cause TEXT CHECK (retry_cause IS NULL OR json_valid(retry_cause))', reason: 'Publication waits retain read and parent dependency causes independently of their retry deadline.' },

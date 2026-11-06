@@ -33,7 +33,7 @@ export interface HarnessSignInFailure {
   source: RunnerCredentialChoice;
 }
 
-export const STORED_SIGN_IN_HINT = 'Update this agent’s stored credential in Deployment Settings.';
+export const STORED_SIGN_IN_HINT = 'Update this agent’s stored key in Settings → Models and keys.';
 
 /** Contact diagnostics retain bounded agent labels and remedies, never harness output. */
 export function parseHarnessSignInFailure(value: unknown): HarnessSignInFailure | undefined {

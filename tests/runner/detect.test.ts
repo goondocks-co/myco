@@ -267,7 +267,7 @@ it('releases stored-sign-in holds on schedule even without a local login', async
     const held = await offer();
     expect(runnerAgentLoginReady(held, stored)).toBe(false);
     expect(held.signInFailure).toMatchObject({ name: 'Claude Code', source: 'stored' });
-    expect(held.signInFailure?.hint).toContain('Deployment Settings');
+    expect(held.signInFailure?.hint).toContain('Settings → Models and keys');
     expect(held.signInFailure?.hint).not.toContain('GUI Terminal');
     for (let poll = 0; poll < 10; poll++) {
       detection.invalidate();
