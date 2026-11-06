@@ -270,14 +270,12 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
     : (offered.ok ? null : offered.error);
   const auditRepairs = offered?.ok === true ? offered.repairs : [];
   // The agent's own words, bounded and masked (`agentProse`): stored with the run and kept as long as it is.
-  const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
-  const notes = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
-  let details = notes;
+  let summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
+  const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
   if (run.task === CURATION_TASK) {
     const counts = await curationOutcomeCounts(db,scope.projectId,run.id);
-    details = JSON.stringify({counts,notes});
-    const overflow = details.length - MAX_REPORT_DETAILS_CHARS;
-    if (overflow > 0) details = JSON.stringify({counts,notes:notes?.slice(0,Math.max(0,notes.length-overflow)) ?? null});
+    const line = `${counts.obsoleted} retired · ${counts.superseded} replaced · ${counts.consolidated} merged`;
+    summary = `${summary.slice(0,MAX_REPORT_SUMMARY_CHARS-line.length-1)}\n${line}`;
   }
   return (await insertReport(db, scope, { ...report, summary, details, audit }, caller)) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }

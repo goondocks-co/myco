@@ -1,4 +1,4 @@
-import { MAP_TASK, admittedSourcePaths } from '@goondocks/myco-shared/canopy';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { repositoryFiles, RepositoryInputError } from '@goondocks/myco-shared/repository';
 import type { RelationalStore } from './adapters.js';
 import { repositoryPinOfRun, type RunLease, type RunRow } from './runs.js';
@@ -21,14 +21,16 @@ export async function storeRepositoryInventory(db: RelationalStore, projectId: s
   return result.meta.changes === 1;
 }
 
+export interface RepositoryInventory { commit: string; generatedAt: number; files: string[] }
+
 /** A map's inventory is evidence only for the connected repository and the exact commit it describes. */
-export async function readRepositoryInventory(db: RelationalStore, projectId: string): Promise<{ commit: string; paths: ReadonlySet<string> } | null> {
-  const row = await db.prepare(`SELECT m.repository_commit AS commitId,r.repository_files AS files
+export async function readRepositoryInventory(db: RelationalStore, projectId: string): Promise<RepositoryInventory | null> {
+  const row = await db.prepare(`SELECT m.repository_commit AS commitId,r.repository_files AS files,m.generated_at AS generatedAt
     FROM canopy_maps m JOIN project_repositories p ON p.project_id=m.project_id AND p.url=m.repository_url AND p.branch=m.repository_branch
     JOIN agent_runs r ON r.project_id=m.project_id AND r.id=m.source_run_id
     WHERE m.project_id=? AND r.repository_files IS NOT NULL
       AND json_extract(r.run_context,'$.repository.url')=m.repository_url
       AND json_extract(r.run_context,'$.repository.branch')=m.repository_branch
-      AND json_extract(r.run_context,'$.repository.commit')=m.repository_commit`).bind(projectId).first<{commitId:string;files:string}>();
-  return row === null ? null : { commit: row.commitId, paths: admittedSourcePaths(repositoryFiles(JSON.parse(row.files)).map(path => ({path}))) };
+      AND json_extract(r.run_context,'$.repository.commit')=m.repository_commit`).bind(projectId).first<{commitId:string;files:string;generatedAt:number}>();
+  return row === null ? null : { commit: row.commitId, generatedAt:row.generatedAt, files:repositoryFiles(JSON.parse(row.files)) };
 }

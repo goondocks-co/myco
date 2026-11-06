@@ -410,13 +410,15 @@ it('retains the complete map checkout inventory under its worker lease and exact
   expect(await readRepositoryInventory(r.e.db,'proj_1')).toBeNull();
   expect(await (await upload(['src/main.ts','README.md','links/source'])).json()).toMatchObject({held:true,filesStored:true});
   expect(await (await upload(['README.md','links/source','src/main.ts'])).json()).toMatchObject({held:true,filesStored:true});
-  expect(await (await upload(['src/main.ts'])).json()).toMatchObject({held:false,filesStored:false});
+  expect(await (await upload(['src/main.ts'])).json()).toMatchObject({held:true,filesStored:false});
+  const large=Array.from({length:4000},(_,i)=>`src/${i}-${'a'.repeat(90)}.ts`);
+  expect(await (await upload(large)).json()).toMatchObject({persisted:true,held:true,filesStored:false});
   expect(await (await upload(['../outside.ts'])).json()).toMatchObject({persisted:false,code:'parse'});
   expect(await (await upload(['src/main.ts'],COMMIT_B)).json()).toMatchObject({persisted:false,code:'parse'});
   expect(await r.call(run.runToken,'myco_run_map',{op:'write',artifact:ARTIFACT})).toMatchObject({written:true});
-  expect(await readRepositoryInventory(r.e.db,'proj_1')).toEqual({commit:COMMIT_A,paths:new Set(['','README.md','links','links/source','src','src/main.ts'])});
+  expect(await readRepositoryInventory(r.e.db,'proj_1')).toMatchObject({commit:COMMIT_A,files:['README.md','links/source','src/main.ts']});
   expect(await readRepositoryInventory(r.e.db,'proj_other')).toBeNull();
-  r.e.sqlite.run('UPDATE agent_runs SET lease_expires_at=? WHERE id=?',[r.clock()-1,run.id]);
+  r.e.sqlite.run('UPDATE agent_runs SET lease_expires_at=? WHERE id=?',[1,run.id]);
   expect(await (await upload(['src/main.ts'])).json()).toMatchObject({held:false});
   const connection = (await r.repositories.describe('proj_1'))!;
   await r.repositories.save('proj_1',{...SOURCE,branch:'other',revision:connection.revision},'mem_worker',r.clock());

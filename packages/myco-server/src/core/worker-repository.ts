@@ -20,7 +20,7 @@ const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRu
   const lease = { worker: worker.worker, now: worker.clock() };
   if (input.body.files !== undefined) {
     const filesStored = await storeRepositoryInventory(env.db, input.projectId, row, input.body, lease);
-    return { persisted: true, held: filesStored, filesStored };
+    return { persisted: true, held: true, filesStored };
   }
   const hadRepositoryPin = row.task === MAP_TASK && repositoryPinOfRun(row) !== null;
   const answer = await prepareRunRepository(env, input.projectId, row, input.body, expected, lease,

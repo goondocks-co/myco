@@ -30,6 +30,8 @@ export const latestD1Upgrade: ParityScenario = {
       expect(columns.some(c => c.name === column)).toBe(true);
       expect((await target.sql(`SELECT ${column} AS value FROM ${table}`)).every(row => row.value === null)).toBe(true);
     }
+    expect((await target.sql("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'curation_inventory_%' ORDER BY name")).map(row=>row.name))
+      .toEqual(['curation_inventory_map_delete','curation_inventory_map_move','curation_inventory_run_end']);
     expect(await target.sql('SELECT COUNT(*) AS n FROM prompt_identity_conflicts')).toEqual([{ n: 0 }]);
     expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
       .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: null }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: null }]);

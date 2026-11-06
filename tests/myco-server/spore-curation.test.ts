@@ -1,3 +1,4 @@
+import { sporeCodeAnchors, sporeCurrency, allAnchorsMissing } from '@myco-server-worker/core/spore-currency.js';
 import { expect, test } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { memberHeaders } from './helpers/fixtures.js';
@@ -640,15 +641,18 @@ test('missing statistics exclude both seed and candidate until model-scoped cali
 test('currency retires deleted architecture before merging current knowledge through the run surface', async () => {
   for (const mode of ['deleted','current','mixed','unanchored','no-map'] as const) {
     const f = await fixture();
+    let inventoryReads=0;
+    const prepare=f.env.db.prepare.bind(f.env.db);
+    f.env.db.prepare=(sql)=>{if(sql.includes('r.repository_files AS files')) inventoryReads++;return prepare(sql);};
     try {
       const commit = 'a'.repeat(40);
       if (mode !== 'no-map') {
         const source = {url:'https://example.test/team/repo',branch:'main',commit};
         f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','connection',?,'main',1,'test')",[source.url]);
         f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
-          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md'])]);
+          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md','packages/myco-server/src/core/runs.ts'])]);
         f.sqlite.run(`INSERT INTO canopy_maps(project_id,revision,artifact,input_hash,repository_url,repository_branch,repository_commit,source_run_id,generated_at)
-          VALUES('proj_1','map','{}','hash',?,'main',?,'map-source',1)`,[source.url,commit]);
+          VALUES('proj_1','map','{}','hash',?,'main',?,'map-source',?)`,[source.url,commit,f.now]);
       }
       await f.enable();
       const ids = mode === 'mixed' ? ['a','b','c','d','e','f'] : ['a','b','c'];
@@ -661,21 +665,27 @@ test('currency retires deleted architecture before merging current knowledge thr
       const claim = await f.poll(); expect(claim.claimed).toBe(true); if (!claim.claimed) throw new Error('curation was not claimed');
       expect(claim.run.instruction!.indexOf('First judge')).toBeLessThan(claim.run.instruction!.indexOf('Choose the topic'));
       expect(claim.run.instruction).toContain('curation_sources_missing');
+      const claimReads=inventoryReads;
+      expect(claimReads).toBe(1);
       const ctx = await f.ctx(claim.run.id,claim.run.attemptId);
       const members = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!.members;
       const rows = f.sqlite.query<{spore_id:string;currency:string},[]>('SELECT spore_id,currency FROM spore_curation_candidates').all();
       const fact = JSON.parse(rows.find(row=>row.spore_id==='a')!.currency);
       expect(claim.run.instruction).toContain(`"currency":${JSON.stringify(fact)}`);
       expect(fact).toMatchObject(mode === 'no-map' ? {available:false,reason:'no_code_map'} : {available:true,commit});
-      if (mode === 'unanchored') expect(fact).toEqual({available:true,commit,present:[],missing:[]});
-      if (mode === 'deleted' || mode === 'mixed') expect(fact).toEqual({available:true,commit,present:[],missing:['packages/myco/src/daemon/api/a.ts','src/removed.ts']});
+      if (mode === 'unanchored') expect(fact).toEqual({available:true,commit,present:[],missing:[],unresolved:[]});
+      if (mode === 'deleted' || mode === 'mixed') expect(fact).toEqual({available:true,commit,present:[],missing:['packages/myco/src/daemon/api/a.ts','src/removed.ts'],unresolved:[]});
       const merge = (sources: typeof members) => f.call(claim.run.runToken,'myco_spores',{op:'consolidate',source_spore_ids:sources,observation_type:'wisdom',consolidated_content:'Keep current specifics.',agent_line:'Use the current seam.',reason:'Same current seam.'});
       if (mode === 'current') {
+        f.sqlite.run("UPDATE canopy_maps SET source_run_id='next-map-source'");
+        expect(f.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='map-source'").get()).toEqual({repository_files:null});
         await f.add('searched',[1,0],f.now,'The dropped feature used src/deleted-search.ts.');
         await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
         expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'searched'})).toMatchObject({spore:{currency:{available:true,commit,present:[],missing:['src/deleted-search.ts']}}});
         expect(await merge([...members.slice(0,2),{id:'searched',revision:0}])).toMatchObject({ok:false,code:'curation_sources_missing'});
         expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'searched',expect_revision:0,expect_status:'active',reason:'The feature in src/deleted-search.ts was removed.'})).toMatchObject({status:'obsolete'});
+        f.sqlite.run("UPDATE spore_curation_candidates SET currency=NULL WHERE spore_id='b'");
+        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'b'})).toMatchObject({spore:{currency:null}});
       }
       if (mode === 'deleted' || mode === 'mixed') {
         expect(await merge(members)).toMatchObject({ok:false,code:'curation_sources_missing'});
@@ -687,10 +697,29 @@ test('currency retires deleted architecture before merging current knowledge thr
       if (mode !== 'deleted') expect(await merge(members.filter(member => mode !== 'mixed' || member.id >= 'd'))).toMatchObject({status:'consolidated'});
       expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Retired outdated members before merging current guidance.'})).toEqual({completed:true});
       expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE observation_type='wisdom'").get()).toEqual({n:mode==='deleted'?0:1});
-      expect(await f.call(claim.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Currency judged before merging.'})).toMatchObject({recorded:true});
-      const report = f.sqlite.query<{details:string},[string]>('SELECT details FROM agent_reports WHERE run_id=?').get(claim.run.id)!;
-      expect(JSON.parse(report.details).counts).toEqual({obsoleted:mode==='deleted'||mode==='mixed'?3:mode==='current'?1:0,superseded:0,consolidated:mode==='deleted'?0:3});
+      expect(await f.call(claim.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Currency judged before merging.',details:'Retired old guidance.\nKept current specifics.'})).toMatchObject({recorded:true});
+      const report = f.sqlite.query<{details:string;summary:string},[string]>('SELECT details,summary FROM agent_reports WHERE run_id=?').get(claim.run.id)!;
+      expect(report.details).toBe('Retired old guidance.\nKept current specifics.');
+      expect(report.summary).toContain(`${mode==='deleted'||mode==='mixed'?3:mode==='current'?1:0} retired · 0 replaced · ${mode==='deleted'?0:3} merged`);
       expect(await runCloseRefusal(f.db,{projectId:'proj_1'},(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!)).toBeNull();
+      expect(inventoryReads).toBe(claimReads);
+      expect(await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'})).toMatchObject({status:'completed'});
+      expect(JSON.parse((await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!).curation.snapshot).toBeUndefined();
     } finally { f.sqlite.close(); }
   }
+});
+
+
+test('currency resolves package-relative anchors conservatively and respects snapshot age',()=>{
+  const inventory={commit:'snapshot',generatedAt:100,files:['packages/myco-server/src/core/runs.ts','tests/current.test.ts','docs/guide.md']};
+  const currency=(content:string,createdAt=100,updatedAt:number|null=null)=>sporeCurrency({filePath:null,content,createdAt,updatedAt},inventory,true);
+  expect(currency('Use `core/runs.ts`.')).toEqual({available:true,commit:'snapshot',present:['core/runs.ts'],missing:[],unresolved:[]});
+  expect(currency('See `packages/myco-server/`.')).toMatchObject({available:true,present:['packages/myco-server'],missing:[]});
+  expect(currency('See `runs.ts`.')).toMatchObject({available:true,present:['runs.ts'],missing:[]});
+  expect(currency('See `missing.ts`.')).toEqual({available:false,reason:'unresolved_anchors',unresolved:['missing.ts']});
+  for(const token of ['@cf/baai/bge-m3','@stablelib/sha256','agents.id','origin/main..HEAD','169.254.0.0/16']) expect(sporeCodeAnchors({filePath:null,content:`Use \`${token}\`.`},inventory)).toEqual([]);
+  expect(allAnchorsMissing(currency('Use packages/myco/src/daemon/routes/team.ts.'))).toBe(true);
+  expect(currency('Use packages/myco/src/daemon/routes/team.ts.',101)).toEqual({available:false,reason:'snapshot_behind'});
+  expect(currency('Use packages/myco/src/daemon/routes/team.ts.',90,101)).toEqual({available:false,reason:'snapshot_behind'});
+  expect(allAnchorsMissing(null)).toBe(false);
 });

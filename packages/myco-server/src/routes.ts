@@ -1,3 +1,4 @@
+import { MAX_REPOSITORY_REQUEST_BYTES } from '@goondocks/myco-shared/repository';
 import { handleSetup } from './api/setup.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
 import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
@@ -114,7 +115,7 @@ export type Route = { authorization: AuthorizationDeclaration } & (
   | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; createProject?: false; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
     & ({ unbound?: never } | { shape: 'answered'; capture: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
-  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
+  | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; maxBodyBytes?: number; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; unconfiguredSignIn?: 'json' | 'browser'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; subject?: 'enrollment' | 'runner-registration'; handler: EnrollHandler }
@@ -211,7 +212,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
   { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
   { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/steps', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerSteps },
-  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/repository', maxBodyBytes: MAX_REPOSITORY_REQUEST_BYTES, auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
   { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/models', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerModels },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },

@@ -1,3 +1,4 @@
+import { V698_STATEMENTS } from '@myco-server-worker/db/schema-v698.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
@@ -26,6 +27,8 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:698,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
+  {step:698,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal runs release unreferenced repository evidence and claim snapshots.'},
   { step: 696, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },
   { step: 695, object: 'idx_turn_cards_session_pending', table: 'turn_cards', reason: 'Pending recounts seek only the pending rows of one session.' },
   { step: 693, object: 'curation_capability_insert', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
@@ -181,6 +184,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V698_STATEMENTS.filter(sql=>sql.startsWith('UPDATE')).map(sql=>({step:698,sql,reason:'Unreferenced completed repository inventories are released.'})),
   { step: 697, sql: 'ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))', reason: 'Map preparation retains its complete committed file inventory.' },
   { step: 697, sql: 'ALTER TABLE spore_curation_candidates ADD COLUMN currency TEXT CHECK(currency IS NULL OR json_valid(currency))', reason: 'Whole-read candidates retain the server currency fact for their revision.' },
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,

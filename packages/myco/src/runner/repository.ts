@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { repositoryFiles, RepositoryInputError, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
@@ -42,8 +42,10 @@ export async function prepareWorkerCheckout(
   });
   try {
     if (options.digests) {
-      const result = await request({ url: spec.url, branch: spec.branch, commit: checkout.commit, files: checkout.files }, checkoutSignal);
-      if (result.filesStored !== true) throw new Error('The run could not retain its committed repository inventory.');
+      let files: string[] | undefined;
+      try { files = repositoryFiles(checkout.files); }
+      catch (error) { if (!(error instanceof RepositoryInputError)) throw error; }
+      if (files !== undefined) await request({ url: spec.url, branch: spec.branch, commit: checkout.commit, files }, checkoutSignal);
     }
     if (checkout.digests !== undefined) await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
   } catch (error) {

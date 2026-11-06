@@ -1,6 +1,8 @@
 import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
 export const MAX_REPOSITORY_INVENTORY_BYTES = 512_000;
+/** Worker/run identity and the repository pin share the inventory request body. */
+export const MAX_REPOSITORY_REQUEST_BYTES = MAX_REPOSITORY_INVENTORY_BYTES + 16_384;
 
 /** A complete committed inventory; oversized inventories are refused, never truncated. */
 export function repositoryFiles(value: unknown): string[] {
