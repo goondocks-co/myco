@@ -158,13 +158,14 @@ export function referencedExistingTables(db: Database, statements: readonly stri
     if (words[0] === 'CREATE' && words[1] === 'TABLE' && !words.some((word,index) => word === 'AS' && ['SELECT','WITH'].includes(words[index+1] ?? ''))) continue;
     // A foreign key's target is a parent the statement names, not a table it changes; the seed reaches parents through their children.
     const resolved = sqlIdentifiers(statement.replace(/\bREFERENCES\s+("[^"]*"|\w+)/gi, '')).map((name) => owners.get(name.toLowerCase()))
-      .filter((owner): owner is string => owner !== undefined && definitions.has(owner.toLowerCase())
-        && owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_'))
+      .filter((owner): owner is string => owner !== undefined && definitions.has(owner.toLowerCase()))
       .map(owner => contentOwner(owner));
     if (resolved.length === 0 && /^\s*(?:DROP\s+(?:INDEX|TRIGGER)|ALTER\s+TABLE|UPDATE|DELETE\s+FROM)/i.test(statement)) {
       throw new Error(`unsupported D1 upgrade fixture: no previous object resolves for ${statement.slice(0, 100)}`);
     }
-    for (const owner of resolved) tables.add(owner);
+    for (const owner of resolved) {
+      if (owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_')) tables.add(owner);
+    }
   }
   return [...tables];
 }

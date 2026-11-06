@@ -12,7 +12,6 @@ import { LEARNING_RETRY_KEY } from '../db/run-context.js';
  * Session learning progress and receipt-time claim admission share this per-session row.
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { LEARNING_RESUMED_AT } from './learning-pause.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { commitAttributedWrite } from './runs.js';
@@ -68,7 +67,6 @@ export const HANDOFF_MAX_BYTES = 4096;
 /** The skip a hand start of learning ends with when no session has a due card. */
 export const NOTHING_DUE = 'nothing_due';
 
-const RESUMED = `EXISTS (SELECT 1 FROM schema_meta WHERE key = '${LEARNING_RESUMED_AT}')`;
 const UNCOVERED = (project: string, session: string) => `(SELECT COUNT(*) FROM turn_cards c INDEXED BY idx_turn_cards_uncovered
   WHERE c.project_id = ${project} AND c.session_id = ${session} AND c.state = 'carded' AND c.covered = 0)`;
 
@@ -112,20 +110,11 @@ export function learningSessionStatement(db: RelationalStore, projectId: string,
     VALUES (?1, ?2, 'ready', (SELECT last_record_at FROM session_documents WHERE project_id = ?1 AND session_id = ?2))`).bind(projectId, sessionId);
 }
 
-/** The statement that recounts a session's turns waiting for their card. */
+/** Recounts pending cards for one session. */
 export function pendingCardsStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET pending_cards = (SELECT COUNT(*) FROM turn_cards c WHERE c.project_id = learning_sessions.project_id
-      AND c.session_id = learning_sessions.session_id AND c.state = 'pending') WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId);
+  return db.prepare(`UPDATE learning_sessions SET pending_cards = (SELECT COUNT(*) FROM turn_cards c INDEXED BY idx_turn_cards_session_pending
+      WHERE c.project_id = learning_sessions.project_id AND c.session_id = learning_sessions.session_id AND c.state = 'pending') WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId);
 }
-
-/** Whether a session still has learning to do: its row is not ready, a turn waits for its card, or a card is due. */
-export function learningIncompleteSql(project: string, session: string): string {
-  return `NOT EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ${project} AND l.session_id = ${session}
-      AND (l.init_state = 'ready' AND l.pending_cards = 0 AND l.due_cards = 0 OR l.skipped_by_owner = 1))`;
-}
-
-/** Whether whole-session learning has resumed; the progress hold applies from then on. */
-export const LEARNING_RESUMED_SQL = RESUMED;
 
 /** One learning slice: the session, the cards it reads, and the progress revision its completion is guarded by. */
 export interface LearningAssignment {
@@ -263,7 +252,7 @@ export async function completeLearning(
   const survivingParams = [assigned, projectId, sessionId];
   const landed = `EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ? AND l.revision = ? AND l.last_completed_run = ?)`;
   const landedParams = [projectId, sessionId, assignment.expectedRevision + 1, runId];
-  const guard = { sql: landed, params: landedParams };
+  const guard = { sql: `${landed} AND NOT (${coversNothing})`, params: [...landedParams, ...survivingParams] };
   const result = await commitAttributedWrite(db, { projectId },
     db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = CASE WHEN ${coversNothing} THEN handoff ELSE ? END,
         last_completed_at = ?, last_completed_run = ?, last_completed_reason = 'completed',
@@ -295,7 +284,6 @@ const STATUS_CAP = 1000;
 const capped = (inner: string) => `(SELECT COUNT(*) FROM (${inner} LIMIT ${STATUS_CAP + 1}))`;
 
 export interface LearningStatus {
-  resumed: boolean;
   dueSessions: number;
   dueCards: number;
   turnsAwaitingCards: number;
@@ -319,7 +307,7 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
     FROM (SELECT ${column} AS n ${scopedSessions(column === 'pending_cards' ? 'idx_learning_source_pending' : 'idx_learning_source_waiting',
       column === 'pending_cards' ? 'pending_cards > 0' : waiting, true)} AND ${column} > 0
       UNION ALL SELECT ${column} AS n ${continuing(column === 'pending_cards' ? 'cards' : 'learning')} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
-  const row = await db.prepare(`SELECT ${RESUMED} AS resumed,
+  const row = await db.prepare(`SELECT
       ${capped(historyEnabled ? `SELECT 1 FROM projects p CROSS JOIN learning_sessions l INDEXED BY idx_learning_ready ON l.project_id = p.project_id
         WHERE eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`
         : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`, true)}
@@ -328,11 +316,11 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
       ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`) : freshCount('pending_cards')} AS turnsAwaitingCards,
       ${historyEnabled ? '0' : capped(`SELECT 1 ${scopedSessions('idx_learning_source_waiting', `(${waiting}) AND NOT ((pending_cards > 0 AND ${freshRetrySql('cards')}) OR (eligible_at IS NOT NULL AND ${freshRetrySql('learning')}))`, false)}`)} AS historyWaiting,
       ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'awaiting_publication'`)} AS awaitingPublication`)
-    .first<{ resumed: number; dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
+    .first<{ dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
   const last = await db.prepare(`SELECT last_completed_at AS at, last_completed_reason AS reason, session_id AS sessionId FROM learning_sessions
     INDEXED BY idx_learning_completed WHERE last_completed_at IS NOT NULL ORDER BY last_completed_at DESC LIMIT 1`).first<{ at: number; reason: string; sessionId: string }>();
   return {
-    resumed: row!.resumed === 1, dueSessions: row!.dueSessions, dueCards: row!.dueCards, turnsAwaitingCards: row!.turnsAwaitingCards,
+    dueSessions: row!.dueSessions, dueCards: row!.dueCards, turnsAwaitingCards: row!.turnsAwaitingCards,
     historyWaiting: row!.historyWaiting,
     awaitingPublication: row!.awaitingPublication, lastCompleted: last, cap: STATUS_CAP,
   };
@@ -340,7 +328,6 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
 
 /** The status line: what is due, what waits and why, the last completion, and spend against the day's budget. */
 export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number): string {
-  if (!status.resumed) return 'Learning is paused until whole-session reading ships.';
   const n = (count: number) => (count > status.cap ? `at least ${status.cap}` : String(count));
   const parts = [
     `${n(status.dueSessions)} sessions due (${n(status.dueCards)} cards to learn)`,

@@ -61,12 +61,6 @@ export const TASK_EXECUTION_PROFILES: Readonly<Record<string, { model: string; e
 
 /** Tasks whose required worker capability is not available for dispatch. */
 export const UNLANDED_TASKS: readonly string[] = [];
-export const LEARNING_PAUSE_MESSAGE = 'Learning resumes with whole-session reading';
-
-/** The declared reason a retained task is unavailable on this Deployment. */
-export function taskAvailabilityNote(task: string): string | null {
-  return UNLANDED_TASKS.includes(task) && (task === EXTRACTION_TASK || task === CARD_TASK) ? LEARNING_PAUSE_MESSAGE : null;
-}
 
 /** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION = {

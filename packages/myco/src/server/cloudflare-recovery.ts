@@ -1,4 +1,3 @@
-import { assertThinLearningDrained } from '@myco-server-worker/db/thin-learning-admission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
@@ -146,7 +145,6 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       const lifecycle = new Database(prepared);
       try {
         const store = sqliteRelationalStore(lifecycle);
-        await assertThinLearningDrained(store);
         await prepareRecoveredTenant(store, options.tenantMode ?? 'replacement', Date.now());
         await resetRecoveryLedger(store);
         await assignRestoreGeneration(store, crypto.randomUUID());

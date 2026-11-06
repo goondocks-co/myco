@@ -1,4 +1,3 @@
-import { assertThinLearningDrained } from '@myco-server-worker/db/thin-learning-admission.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -34,7 +33,6 @@ async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: Nat
   let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
-    await assertThinLearningDrained(store);
     if(rebuildEmbeddings)for(const project of db.query<{project_id:string},[]>('SELECT project_id FROM projects').all())await resetEmbeddingIndex(store,project.project_id);
     await prepareRecoveredTenant(store, tenantMode, Date.now());
     await resetRecoveryLedger(store);
