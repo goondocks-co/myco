@@ -46,6 +46,7 @@ export async function servePage<E>(
     return {
       refusal: runRefusal({
         what: 'material read',
+        read: true,
         actual: `page is ${JSON.stringify(page)}; expected a whole number from 1`,
         next: { tool: materialTool(run), op: 'material', page: 1 },
       }),
@@ -56,6 +57,7 @@ export async function servePage<E>(
       refusal: {
         ...runRefusal({
           what: 'material read',
+          read: true,
           actual: 'the material changed since page 1, or revision is missing',
           next: { tool: materialTool(run), op: 'material', page: 1 },
         }),
@@ -69,18 +71,21 @@ export async function servePage<E>(
     return {
       refusal: runRefusal({
         what: 'material read',
+        read: true,
         actual: `requested page ${page}; the last valid page is ${pages.length}`,
         next:
           materialUnread(run) === null
             ? {
-                tool: materialTool(run),
-                op: materialTool(run) === 'myco_run_cards' ? 'write' : 'complete',
+                tool: materialTool(run) === 'myco_run_cards' ? 'myco_run_cards' : 'myco_spores',
+                op: materialTool(run) === 'myco_run_cards' ? 'write' : 'save',
                 ...(materialTool(run) === 'myco_run_cards' ? { revision } : {}),
               }
             : { tool: materialTool(run), op: 'material', page: (materialRead(run.runContext, run.tokenId)?.through ?? 0) + 1, revision },
         repair:
           materialUnread(run) === null
-            ? 'All material is read; writing comes next.'
+            ? materialTool(run) === 'myco_run_cards'
+              ? 'All material is read; writing comes next.'
+              : 'All material is read. Save the durable spores first, then call myco_run_learning op complete with the handoff.'
             : 'Read the remaining material first; writing comes next.',
       }),
     };

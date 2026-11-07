@@ -119,6 +119,7 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
   if (key === undefined)
     return runRefusal({
       what: 'run state',
+      read: input.op === 'state_get',
       actual: `key is ${typeof input.key === 'string' ? input.key.length : 'missing or not text'} characters; expected 1–${MAX_KEY_CHARS}`,
       next: { tool: 'myco_run', op: 'state_get' },
       repair: 'Supply key.',
@@ -133,6 +134,7 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     if (!Number.isSafeInteger(offset) || offset < 0)
       return runRefusal({
         what: 'state read',
+        read: true,
         actual: `offset is ${JSON.stringify(offset)}; expected a whole number from 0`,
         next: { tool: 'myco_run', op: 'state_get', key, offset: 0 },
       });
@@ -140,6 +142,7 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
       return {
         ...runRefusal({
           what: 'state read',
+          read: true,
           actual: 'the value changed since offset 0, or version is missing',
           next: { tool: 'myco_run', op: 'state_get', key, offset: 0 },
         }),

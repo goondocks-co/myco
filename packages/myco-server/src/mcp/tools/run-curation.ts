@@ -14,6 +14,7 @@ export async function handleRunCuration(input: ToolInput, ctx: ToolContext): Pro
         ? await curationMaterial(ctx.env.db, ctx.projectId, run.runId, assignment, input.id)
         : runRefusal({
             what: 'curation material read',
+            read: true,
             actual: 'id is missing or not text',
             next: { tool: 'myco_run_curation', op: 'material' },
             repair: 'Supply a seeded or searched id.',

@@ -23,7 +23,7 @@ import { CURATION_STAGE, curationAssignment, discoverSporeClusters, CURATION_SEE
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { type ToolDefinition } from '@myco-server-worker/mcp/definitions.js';
-import { CURATION_COMPLETE_EXAMPLE, CURATION_CONSOLIDATE_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_REASON_CHARS } from '@myco-server-worker/core/spore-curation-contract.js';
+import { CURATION_COMPLETE_EXAMPLE, CURATION_CONSOLIDATE_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_SEARCH_LIMIT, CURATION_MATERIAL_BYTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { LEARNING_BACKOFF_MS } from '@myco-server-worker/core/learning-sessions.js';
 import { seedForStage } from '@myco-server-worker/core/budget-policy.js';
 
@@ -115,7 +115,7 @@ test('stale decisions and lifecycle writes refuse concurrent edits; own resoluti
     const assignment = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!;
     f.sqlite.run("UPDATE spores SET content='Concurrent edit',revision=revision+1,updated_at=? WHERE id='a'", [f.now+1]);
     expect(await handleRunCuration({ op: 'complete', decision: 'keep', members: assignment.members, reason: 'Keep' }, ctx)).toMatchObject({ code: 'material_changed' });
-    expect(await handleSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', expect_revision: assignment.members[0]!.revision, expect_status:'active', reason: 'b covers a' }, ctx)).toMatchObject({ ok: false });
+    expect(await handleSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', expect_revision: assignment.members[0]!.revision, expect_status:'active', reason: 'b covers a' }, ctx)).toMatchObject({ ok: false, error:expect.stringContaining('Next call: myco_run {"op":"report"}') });
     expect(f.sqlite.query("SELECT content,status FROM spores WHERE id='a'").get()).toEqual({ content: 'Concurrent edit', status: 'active' });
     expect(await handleSpores({ op: 'supersede', old_spore_id: 'b', new_spore_id: 'a', expect_revision: 999, expect_status:'active', reason: 'a covers b' }, ctx)).toMatchObject({ ok: false });
   } finally { f.sqlite.close(); }
@@ -219,7 +219,14 @@ test('a curation run retries a refused consolidation or keeps the knowledge apar
       expect(f.sqlite.query('SELECT COUNT(*) n FROM resolution_events').get()).toEqual({n:0});
       const premature = await call('myco_run_curation',{op:'complete',decision:'resolved',members:['a','b','c'],reason:'Attempted merge.'}) as {error:string};
       expect(premature.error).toContain('outstanding lifecycle refusal');
-      expect(premature.error).toContain('Next call: myco_run_curation {"op":"complete","decision":"keep"}');
+      expect(premature.error).toContain('Next call: myco_spores {"op":"consolidate"}');
+      expect(premature.error.split('Next call:')).toHaveLength(2);
+      expect(premature.error.split('Not saved:')).toHaveLength(2);
+      expect(premature.error).toContain('Alternatively');
+      const heldRefusal = JSON.parse(f.sqlite.query<{write_refusal:string},[]>('SELECT write_refusal FROM spore_curation_work').get()!.write_refusal);
+      expect(heldRefusal.error).not.toContain('Next call:');
+      expect(heldRefusal.error).not.toContain('Not saved:');
+      expect(heldRefusal.next).toEqual({tool:'myco_spores',op:'consolidate'});
       if (outcome === 'resolved') {
         const wrongSession = await call('myco_spores',{...consolidate,session_id:'unserved-session',agent_line:'Keep related guidance together.'}) as {ok:boolean;error:string};
         expect(wrongSession.ok).toBe(false);
@@ -252,7 +259,7 @@ test('a thrown curation write propagates and leaves retry guidance that a succes
     const input = {op:'consolidate',source_spore_ids:['a','b','c'].map(id=>({id,revision:0})),observation_type:'wisdom',consolidated_content:'Preserve a, b and c.',agent_line:'Keep the knowledge.',reason:'Complementary guidance.'};
     await expect(withCurationWrite(f.db,'proj_1',claim.run.id,input,async () => {throw new Error('fixture write fault');})).rejects.toThrow('fixture write fault');
     const refused = await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Attempted write.'});
-    expect(refused).toMatchObject({ok:false,error:expect.stringContaining('Retry the write with the same sources')});
+    expect(refused).toMatchObject({ok:false,error:expect.stringContaining('the operation did not finish successfully')});
     expect(JSON.stringify(refused)).not.toContain('has not finished');
     expect(await f.call(claim.run.runToken,'myco_spores',input)).toMatchObject({status:'consolidated',sources_consolidated:3});
     expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Combined after retry.'})).toEqual({completed:true});
@@ -419,7 +426,10 @@ test('a capped cluster keeps exclusive open ownership and later unreviewed neigh
     for(let i=0;i<5;i++) await f.add(`search-${i}`,[0,1],f.now+1);
     await f.call(claimed.run.runToken,'myco_search',{query:'other-topic'});
     for(let i=0;i<4;i++) expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:`search-${i}`})).toHaveProperty('spore');
-    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-4'})).toMatchObject({ok:false,error:expect.stringContaining('the limit is')});
+    const capped = await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-4'}) as {ok:boolean;error:string};
+    expect(capped.ok).toBe(false);
+    expect(capped.error).toContain('the limit is');
+    expect(capped.error).toContain('Next call: myco_spores {"op":"consolidate"');
     expect(await handleRunCuration({op:'complete',decision:'keep',members:curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members,reason:'Distinct applicability'},ctx)).toEqual({completed:true});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claimed.run.id,attemptId:claimed.run.attemptId,status:'failed',error:'fixture failure after decision'});
     await f.discover();
@@ -528,7 +538,12 @@ test('material owned by another open group is terminal for that candidate and do
     await f.call(claim.run.runToken,'myco_search',{query:'seam'});
     f.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','other','[]',?)",[f.now]);
     f.sqlite.run("INSERT INTO spore_curation_owners VALUES('proj_1','c','other')");
-    expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'c'})).toMatchObject({available:false,code:'curation_owned'});
+    const owned = await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'c'}) as {ok?:boolean;available:boolean;code:string;reason:string};
+    expect(owned.available).toBe(false);
+    expect(owned.code).toBe('curation_owned');
+    expect(owned.ok).toBeUndefined();
+    expect(owned.reason).toContain('Read another seeded or searched candidate with myco_run_curation op material');
+    expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'a'})).toHaveProperty('spore');
     expect(f.sqlite.query("SELECT read FROM spore_curation_candidates WHERE spore_id='c'").get()).toEqual({read:0});
     expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'keep',members:['a','b'].map(id=>({id,revision:0})),reason:'Distinct seeds; c belongs elsewhere.'})).toEqual({completed:true});
   } finally {f.sqlite.close();}
@@ -830,4 +845,67 @@ test('DROP facts are absent for an existing Project not bound to the Myco remote
       VALUES('proj_other','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
     expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
   } finally { f.sqlite.close(); }
+});
+
+
+test('curation read ceilings preserve the next editorial step for small, mergeable and settled groups', async () => {
+  for (const size of [2, 3, 4]) {
+    const f = await fixture();
+    try {
+      await f.enable();
+      for (const id of ['a', 'b', 'c', 'd'].slice(0, size)) await f.add(id);
+      await f.discover();
+      const claim = await f.poll();
+      expect(claim.claimed).toBe(true);
+      if (!claim.claimed) throw new Error('curation not claimed');
+      await f.add('extra', [0, 1], f.now + 1);
+      await f.call(claim.run.runToken, 'myco_search', { query: 'other-topic' });
+      f.sqlite.run('UPDATE spore_curation_work SET read_bytes=?', [CURATION_MATERIAL_BYTES]);
+      const material = (await f.call(claim.run.runToken, 'myco_run_curation', { op: 'material', id: 'extra' })) as {
+        ok: boolean;
+        error: string;
+      };
+      expect(material.ok).toBe(false);
+      expect(material.error).toContain(`limit is ${CURATION_MATERIAL_BYTES}`);
+      const next =
+        size >= 3 ? 'Next call: myco_spores {"op":"consolidate"' : 'Next call: myco_run_curation {"op":"complete","decision":"keep"';
+      expect(material.error).toContain(next);
+      f.sqlite.run('UPDATE spore_curation_work SET searches=?', [CURATION_SEARCH_LIMIT]);
+      const search = (await f.call(claim.run.runToken, 'myco_search', { query: 'other-topic' })) as { ok: boolean; error: string };
+      expect(search.ok).toBe(false);
+      expect(search.error).toContain(next);
+      if (size >= 3) {
+        if (size === 4) {
+          expect(
+            await f.call(claim.run.runToken, 'myco_spores', {
+              op: 'obsolete',
+              id: 'a',
+              expect_revision: 0,
+              reason: 'Contradicted guidance.',
+            }),
+          ).toMatchObject({ status: 'obsolete' });
+          const afterRetirement = (await f.call(claim.run.runToken, 'myco_search', { query: 'other-topic' })) as { error: string };
+          expect(afterRetirement.error).toContain('Next call: myco_spores {"op":"consolidate"');
+          expect(afterRetirement.error).toContain(
+            '"source_spore_ids":[{"id":"b","revision":0},{"id":"c","revision":0},{"id":"d","revision":0}]',
+          );
+        }
+        const sources = (size === 4 ? ['b', 'c', 'd'] : ['a', 'b', 'c']).map((id) => ({ id, revision: 0 }));
+        expect(
+          await f.call(claim.run.runToken, 'myco_spores', {
+            op: 'consolidate',
+            source_spore_ids: sources,
+            observation_type: 'wisdom',
+            consolidated_content: 'Preserve the related guidance.',
+            agent_line: 'Keep related guidance together.',
+            reason: 'Complementary guidance.',
+          }),
+        ).toHaveProperty('new_spore_id');
+        const settled = (await f.call(claim.run.runToken, 'myco_search', { query: 'other-topic' })) as { error: string };
+        expect(settled.error).toContain('Next call: myco_run_curation {"op":"complete","decision":"resolved"}');
+      }
+    } finally {
+      f.sqlite.close();
+    }
+  }
 });

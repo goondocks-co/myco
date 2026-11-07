@@ -28,10 +28,12 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
   const scope = { projectId: ctx.projectId };
   const { db } = ctx.env;
   const run = await getRun(db, scope, principal.runId);
-  if (run === null) return runRefusal({ what: 'map', actual: 'this run is not one this Project holds', next: REPORT_NEXT });
+  if (run === null)
+    return runRefusal({ what: 'map', read: input.op === 'get', actual: 'this run is not one this Project holds', next: REPORT_NEXT });
   const source = mapSourcePinOfRun(run);
   const repository = repositoryPinOfRun(run);
-  if (source === null || repository === null) return runRefusal({ what: 'map', actual: MAP_SOURCE_UNPINNED, next: REPORT_NEXT });
+  if (source === null || repository === null)
+    return runRefusal({ what: 'map', read: input.op === 'get', actual: MAP_SOURCE_UNPINNED, next: REPORT_NEXT });
 
   if (input.op === 'get') {
     const current = await readCanopyMap(db, scope);
@@ -59,6 +61,7 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
     } catch {
       return runRefusal({
         what: 'map',
+        read: input.op === 'get',
         actual: `artifact: expected one valid JSON object; received invalid JSON ${mapReceived(artifact)}`,
         next: { tool: MAP_WRITE_TOOL, op: 'write' },
         repair: 'Supply artifact as a valid map object.',
@@ -76,6 +79,7 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
       const current = await readCanopyMap(db, scope);
       return runRefusal({
         what: 'map',
+        read: input.op === 'get',
         actual:
           current?.sourceRunId === run.id
             ? 'this run already stored 1 map; the limit is 1 map per run'
@@ -87,6 +91,7 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
     if (error instanceof MapArtifactError)
       return runRefusal({
         what: 'map',
+        read: input.op === 'get',
         actual: error.message,
         next: { tool: MAP_WRITE_TOOL, op: 'write' },
         repair: 'Correct the named artifact field and supply artifact again.',

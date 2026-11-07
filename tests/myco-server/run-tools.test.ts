@@ -3,7 +3,7 @@ import { MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import ts from 'typescript-v6';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
+import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
 import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
 /**
  * The run-only tool surface: what a run calls that a member and a grant cannot.
@@ -680,8 +680,8 @@ describe('the run map', () => {
 
 
 it('requires an explicit report op and directs the agent to finish after the accepted report', () => {
-  expect(runDefinitionOf('myco_run')?.inputSchema.required).toContain('op');
-  expect(runDefinitionOf('myco_run')?.description).toContain('Every call requires an explicit op');
+  expect(RUN_DEFINITIONS.find(definition => definition.name === 'myco_run')?.inputSchema.required).toContain('op');
+  expect(RUN_DEFINITIONS.find(definition => definition.name === 'myco_run')?.description).toContain('Every call requires an explicit op');
   expect(runInstructionsFor(['report'])).toContain('After the report is accepted, end your response.');
   expect(runInstructionsFor(['report'])).toContain('there is no separate close call');
 });
@@ -697,6 +697,11 @@ it('repairs a missing report reasoning and an oversized title through the named 
     expect(title.ok).toBe(false);
     expect(title.error).toContain(`title is ${TITLE_MAX_CHARS+1} characters (1–${TITLE_MAX_CHARS})`);
     expect(title.error).toContain('Next call: myco_run_sessions {"op":"title"}');
+    for (const raw of ['...', '  ………  ']) {
+      const refused = (await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:raw,summary:'A useful session summary.'})).result as {error:string};
+      expect(refused.error).toContain(`title is 0 characters (1–${TITLE_MAX_CHARS})`);
+      expect(refused.error).toContain('Next call: myco_run_sessions');
+    }
     expect((await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:'Repairing delivery',summary:'A useful session summary.'})).result).toMatchObject({written:true});
     const badAudit = {...RUN_AUDIT,reasoning:''};
     const report = (await f.call(f.harness.token,'myco_run',{op:'report',action:'summary',summary:'Titled the session.',audit:badAudit})).result as {ok:boolean;error:string};

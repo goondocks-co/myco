@@ -16,7 +16,7 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  * recorded as the run's read of its session.
  */
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
-import { cleanSummary, cleanTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
+import { cleanSummary, cleanTitle, normalizeTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
 import { documentTitlingMaterial } from '../../content/titling-material.js';
 import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
 import { answerBytes } from '../../core/material-pages.js';
@@ -51,11 +51,19 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   }
 
   const sessionId = run.sessionId;
-  if (sessionId === null) return runRefusal({ what: 'session title', actual: 'this run names no session', next: REPORT_NEXT });
+  if (sessionId === null)
+    return runRefusal({ what: 'session title', read: input.op === 'material', actual: 'this run names no session', next: REPORT_NEXT });
   const params = titlingParamsOf(run.runContext);
-  if (params === null) return runRefusal({ what: 'session title', actual: 'this run names no session', next: REPORT_NEXT });
+  if (params === null)
+    return runRefusal({ what: 'session title', read: input.op === 'material', actual: 'this run names no session', next: REPORT_NEXT });
   const session = await getSession(db, scope, sessionId);
-  if (session === null) return runRefusal({ what: 'session title', actual: `assigned session ${sessionId} not found`, next: REPORT_NEXT });
+  if (session === null)
+    return runRefusal({
+      what: 'session title',
+      read: input.op === 'material',
+      actual: `assigned session ${sessionId} not found`,
+      next: REPORT_NEXT,
+    });
 
   if (input.op === 'material') {
     const counts = await sessionCounts(db, scope, sessionId);
@@ -84,7 +92,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   if (title === null || summary === null) {
     return runRefusal({
       what: 'session title and summary',
-      actual: `title is ${typeof input.title === 'string' ? input.title.trim().length : 'missing or not text'} characters (1–${TITLE_MAX_CHARS}); summary is ${typeof input.summary === 'string' ? input.summary.trim().length : 'missing or not text'} characters (1–${SUMMARY_MAX_CHARS})`,
+      actual: `title is ${typeof input.title === 'string' ? normalizeTitle(input.title).length : 'missing or not text'} characters (1–${TITLE_MAX_CHARS}); summary is ${typeof input.summary === 'string' ? input.summary.trim().length : 'missing or not text'} characters (1–${SUMMARY_MAX_CHARS})`,
       next: { tool: TITLE_WRITE_TOOL, op: 'title' },
       repair: 'Supply both title and summary within these limits.',
     });

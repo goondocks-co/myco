@@ -1183,7 +1183,7 @@ describe('guarded spore lifecycle on MCP', () => {
       }
       expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 0 })).result.status).toBe('obsolete');
       expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result)
-        .toEqual({ ok: false, error: expect.stringContaining('Next call: myco_run'), status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected active at revision 1' });
+        .toEqual({ ok: false, error: expect.stringContaining(`Next call: myco_run_spores ${JSON.stringify({op:'get',id:saved.id})}`), status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected active at revision 1' });
       expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 1 })).result)
         .toEqual({ ok: false, error: expect.stringContaining('runs require active') });
       expect((await f.call(f.member.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 0 })).result)
@@ -1209,9 +1209,9 @@ describe('guarded spore lifecycle on MCP', () => {
         .toEqual({ ok: false, error: expect.stringContaining('expect_revision is required') });
       f.sqlite.run("UPDATE agent_runs SET started_at=? WHERE id='run_1'", [boundary - 1]);
       expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result)
-        .toEqual({ ok: false, error: expect.stringContaining('Next call: myco_run'), status: 'active', revision: 0, reason: 'source is active at revision 0; expected active at revision 1' });
+        .toEqual({ ok: false, error: expect.stringContaining(`Next call: myco_run_spores ${JSON.stringify({op:'get',id:saved.id})}`), status: 'active', revision: 0, reason: 'source is active at revision 0; expected active at revision 1' });
       expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.status).toBe('obsolete');
-      expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.error).toContain('Next call: myco_run');
+      expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.error).toContain(`Next call: myco_run_spores ${JSON.stringify({op:'get',id:saved.id})}`);
     } finally { f.sqlite.close(); }
   });
 

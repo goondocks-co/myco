@@ -1,5 +1,5 @@
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, MAX_FILE_PATH_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from './spore-input-contract.js';
-import { runRefusal } from './run-tool-contract.js';
+import { runRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { withCurationWrite } from './spore-curation.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
@@ -125,17 +125,47 @@ function sporeMetadataError(input: SporeWriteInput): string | null {
 }
 
 export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
-  const apply = async (db: RelationalStore) => {
-    const result = await admittedSporeWrite(input, {...ctx,env:{...ctx.env,db}});
-    if (ctx.principal.kind === 'run' && result !== null && typeof result === 'object' && 'ok' in result && result.ok === false && 'error' in result) {
-      const {repairCall, ...refused} = result as SporeWriteFailure;
-      return {...refused, ...runRefusal({what:`myco_spores op ${String(input.op)}${typeof (input.id ?? input.old_spore_id) === 'string' ? ' for '+JSON.stringify(input.id ?? input.old_spore_id) : ''}`,actual:result.error === 'stale' && 'reason' in result ? String(result.reason) : String(result.error),
-        next:repairCall ?? (result.error === 'stale' ? {tool:'myco_run',op:'report'} : {tool:'myco_spores',op:String(input.op)}),repair:'Correct the named input and retain the same sources. For a stale source, report with myco_run op report instead.'})};
+  const apply = async (db: RelationalStore, refuse: RefuseRunWrite = async (refusal) => runRefusal(refusal)) => {
+    const result = await admittedSporeWrite(input, { ...ctx, env: { ...ctx.env, db } });
+    if (
+      ctx.principal.kind === 'run' &&
+      result !== null &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      result.ok === false &&
+      'error' in result
+    ) {
+      const { repairCall, ...refused } = result as SporeWriteFailure;
+      const stale = result.error === 'stale';
+      const id =
+        input.id ??
+        input.old_spore_id ??
+        (Array.isArray(input.source_spore_ids) ? (input.source_spore_ids[0]?.id ?? input.source_spore_ids[0]) : undefined);
+      const curation = ctx.principal.task === CURATION_TASK;
+      return {
+        ...refused,
+        ...(await refuse({
+          what: `myco_spores op ${String(input.op)}${typeof id === 'string' ? ' for ' + JSON.stringify(id) : ''}`,
+          actual: stale && 'reason' in result ? String(result.reason) : String(result.error),
+          next:
+            repairCall ??
+            (stale
+              ? curation
+                ? { tool: 'myco_run', op: 'report' }
+                : { tool: 'myco_run_spores', op: 'get', id }
+              : { tool: 'myco_spores', op: String(input.op) }),
+          repair: stale
+            ? curation
+              ? 'Assigned sources changed; report the failure.'
+              : 'Re-read the source and reassess its current status and revision before deciding again.'
+            : 'Correct the named input and retain the same sources.',
+        })),
+      };
     }
     return result;
   };
   return ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK
-    ? withCurationWrite(ctx.env.db,ctx.projectId,ctx.principal.runId,input,apply)
+    ? withCurationWrite(ctx.env.db, ctx.projectId, ctx.principal.runId, input, apply)
     : apply(ctx.env.db);
 }
 

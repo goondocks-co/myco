@@ -243,7 +243,11 @@ const definitions: readonly RunToolDefinition[] = [
           description:
             'For state_get: where to read from, for a value longer than one answer. An answer names its next_offset until the last; a call past offset 0 also carries the version offset 0 answered, and a state_changed refusal means restart at offset 0.',
         },
-        value: { type: 'string', minLength: 1, maxLength: RUN_ANSWER_BYTES, description: 'For state_set: the value to store.' },
+        value: {
+          type: 'string',
+          minLength: 1,
+          description: `For state_set: nonempty text that fits one ${RUN_ANSWER_BYTES}-byte JSON answer, including key and version.`,
+        },
         version: {
           type: 'string',
           minLength: RUN_VERSION_CHARS,
@@ -428,7 +432,6 @@ const definitions: readonly RunToolDefinition[] = [
         turn_key: { type: 'string', minLength: 1, maxLength: RUN_KEY_MAX_CHARS, description: 'For get: the card whose raw turn to read.' },
         handoff: {
           type: 'string',
-          maxLength: HANDOFF_MAX_BYTES,
           description: `For complete: at most ${HANDOFF_MAX_BYTES} UTF-8 bytes for the next slice.`,
         },
         [PROJECT_PIVOT]: project,
@@ -446,10 +449,5 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = definitions.map((de
   description: `${definition.description} Example: ${JSON.stringify(RUN_EXAMPLES[definition.name])}`,
   inputSchema: { ...definition.inputSchema, examples: [RUN_EXAMPLES[definition.name]] },
 }));
-
-/** One run-only definition by name, or undefined. */
-export function runDefinitionOf(name: string): RunToolDefinition | undefined {
-  return RUN_DEFINITIONS.find((d) => d.name === name);
-}
 
 export { RUN_TOOLS };

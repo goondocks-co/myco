@@ -29,8 +29,8 @@ import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { claimNextRun, dispatchTask, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
-import { AGENT_LINE_EXAMPLE, EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
-import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
+import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
+import { AGENT_LINE_MAX_CHARS, AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
 import { STATE_CHANGED } from '@myco-server-worker/mcp/tools/run.js';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
@@ -554,7 +554,12 @@ it('serves a learning run\'s slice in answers the harness holds whole, losing no
     expect(results.length).toBe(served.size);
     for (const row of results) expect(served.get(row.key)).toBe(row.card);
     expect(served.get(turns[3]!.id)).toContain('\u0001'.repeat(11_000));
-    expect(await run.material({ page: pages.length + 1, revision: pages[0]!.revision })).toMatchObject({ ok: false, error: expect.stringContaining(`the last valid page is ${pages.length}`) });
+    const past = await run.material({ page: pages.length + 1, revision: pages[0]!.revision });
+    if (!('ok' in past) || past.ok !== false || !('error' in past) || typeof past.error !== 'string') throw new Error('Expected a past-end refusal');
+    expect(past.error).toContain(`the last valid page is ${pages.length}`);
+    expect(past.error).toContain('Next call: myco_spores {"op":"save"}');
+    expect(past.error).toContain('then call myco_run_learning op complete');
+    expect(past.error).toStartWith('Not read:');
   });
 });
 

@@ -91,6 +91,7 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
     const id = str(input.id, MAX_ID_CHARS);
     if (id === undefined)
       return runRefusal({
+        read: true,
         what: 'spore read',
         actual: `id is ${typeof input.id === 'string' ? input.id.length : 'missing or not text'} characters; expected 1–${MAX_ID_CHARS}`,
         next: { tool: 'myco_run_spores', op: 'list' },
@@ -99,6 +100,7 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
     if (spent > window.sporeFullReads) {
       return {
         ...runRefusal({
+          read: true,
           what: 'spore read',
           actual: `${spent} full reads requested; the limit is ${window.sporeFullReads}`,
           next: { tool: 'myco_run_spores', op: 'list' },
@@ -110,11 +112,12 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
     }
     const spore = await getSpore(db, scope, id);
     if (spore === null)
-      return runRefusal({ what: 'spore read', actual: `spore ${id} not found`, next: { tool: 'myco_run_spores', op: 'list' } });
+      return runRefusal({ read: true, what: 'spore read', actual: `spore ${id} not found`, next: { tool: 'myco_run_spores', op: 'list' } });
     const [supersededBy, supersedes] = await Promise.all([listSupersedingSporeIds(db, scope, id), listSupersededSporeIds(db, scope, id)]);
     const asked = int(input.max_chars);
     if (input.max_chars !== undefined && (asked === undefined || asked < 1))
       return runRefusal({
+        read: true,
         what: 'spore read',
         actual: `max_chars is ${JSON.stringify(input.max_chars)}; expected a whole number from 1`,
         next: { tool: 'myco_run_spores', op: 'get', id, max_chars: window.sporeBodyChars },
@@ -125,6 +128,7 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
   const asked = input.status === undefined ? 'active' : input.status;
   if (asked !== 'all' && !(SPORE_STATUSES as readonly unknown[]).includes(asked)) {
     return runRefusal({
+      read: true,
       what: 'spore inventory',
       actual: `status is ${JSON.stringify(asked)}; expected ${SPORE_STATUSES.join(', ')} or all`,
       next: { tool: 'myco_run_spores', op: 'list', status: 'active' },

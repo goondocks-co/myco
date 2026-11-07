@@ -670,17 +670,38 @@ const definitions: readonly ServedToolDefinition[] = [
   }
 ];
 
-export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = definitions.map(definition => {
+export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = definitions.map((definition) => {
   if (definition.name !== 'myco_spores') return definition;
-  const bounds = {...OPTIONAL_TEXT_BOUNDS,content:MAX_SPORE_CONTENT_BYTES,consolidated_content:MAX_SPORE_CONTENT_BYTES,
-    type:MAX_SPORE_ID_CHARS,provenance_ref:PROVENANCE_REF_MAX};
-  const properties = {...definition.inputSchema.properties};
-  for (const [field,maxLength] of Object.entries(bounds)) if (properties[field] !== undefined) properties[field] = {
-    ...properties[field],minLength:1,maxLength,
-    description:`${properties[field].description ?? ''} Nonempty text, at most ${maxLength} ${field === 'content' || field === 'consolidated_content' || field === 'provenance_ref' ? 'UTF-8 bytes' : 'characters'}.`,
+  const properties = { ...definition.inputSchema.properties };
+  const characterBounds = { ...OPTIONAL_TEXT_BOUNDS, type: MAX_SPORE_ID_CHARS };
+  for (const [field, maxLength] of Object.entries(characterBounds))
+    if (properties[field] !== undefined)
+      properties[field] = {
+        ...properties[field],
+        minLength: 1,
+        maxLength,
+        description: `${properties[field].description ?? ''} Nonempty text, at most ${maxLength} characters.`,
+      };
+  const byteBounds = {
+    content: MAX_SPORE_CONTENT_BYTES,
+    consolidated_content: MAX_SPORE_CONTENT_BYTES,
+    provenance_ref: PROVENANCE_REF_MAX,
   };
-  return {...definition,description:`${definition.description} Content and consolidated_content: at most ${MAX_SPORE_CONTENT_BYTES} UTF-8 bytes. Serialized tags: at most ${MAX_SPORE_TAG_CHARS} characters. Optional text bounds in characters: ${JSON.stringify(OPTIONAL_TEXT_BOUNDS)}. Provenance: pr with https URL or commit with ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters, ref at most ${PROVENANCE_REF_MAX} UTF-8 bytes.`,
-    inputSchema:{...definition.inputSchema,properties}};
+  for (const [field, maxBytes] of Object.entries(byteBounds))
+    properties[field] = {
+      ...properties[field],
+      minLength: 1,
+      description: `${properties[field]?.description ?? ''} Nonempty text, at most ${maxBytes} UTF-8 bytes.`,
+    };
+  properties.tags = {
+    ...properties.tags,
+    description: `${properties.tags?.description ?? ''} Serialized tags: at most ${MAX_SPORE_TAG_CHARS} characters.`,
+  };
+  properties.provenance_ref = {
+    ...properties.provenance_ref,
+    description: `${properties.provenance_ref?.description ?? ''} For pr: an https URL; for commit: ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters.`,
+  };
+  return { ...definition, inputSchema: { ...definition.inputSchema, properties } };
 });
 
 /** The definition of a served tool by name, or undefined. */

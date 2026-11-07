@@ -1,5 +1,4 @@
 import { AGENT_LINE_GUIDANCE } from './injection.js';
-export { AGENT_LINE_EXAMPLE } from './injection.js';
 
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [

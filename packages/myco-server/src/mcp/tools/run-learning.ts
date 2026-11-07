@@ -57,7 +57,13 @@ function rawTurnAnswer(turnKey: string, text: string): { turn_key: string; raw: 
 export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, LEARNING_TOOL);
   const held = assignmentOf<LearningAssignment>(run.runContext, 'learning');
-  if (held === null) return runRefusal({ what: 'learning', actual: 'this run carries no learning assignment', next: REPORT_NEXT });
+  if (held === null)
+    return runRefusal({
+      what: 'learning',
+      read: input.op !== 'complete',
+      actual: 'this run carries no learning assignment',
+      next: REPORT_NEXT,
+    });
   const { db } = ctx.env;
   const scope = { projectId: ctx.projectId };
   const cards = await assignedCards(db, ctx.projectId, held.sessionId, held.assignment);
@@ -102,18 +108,20 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
     if (card === undefined)
       return runRefusal({
         what: 'raw turn read',
+        read: true,
         actual: `turn_key ${JSON.stringify(input.turn_key)} names no card of this slice`,
         next: { tool: LEARNING_TOOL, op: 'material', page: 1 },
       });
     if (card.signal !== 'high')
       return runRefusal({
         what: 'raw turn read',
+        read: true,
         actual: `turn ${card.turnKey} has signal ${card.signal}; expected high`,
         next: { tool: LEARNING_TOOL, op: 'material', page: 1 },
       });
     const turn = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, card.turnKey);
     return turn === null
-      ? runRefusal({ what: 'raw turn read', actual: `turn ${card.turnKey} is no longer held`, next: REPORT_NEXT })
+      ? runRefusal({ what: 'raw turn read', read: true, actual: `turn ${card.turnKey} is no longer held`, next: REPORT_NEXT })
       : rawTurnAnswer(card.turnKey, rawTurnText(turn));
   }
   if (input.op === 'complete') {
@@ -134,6 +142,7 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
   }
   return runRefusal({
     what: 'learning',
+    read: input.op !== 'complete',
     actual: `unknown op ${JSON.stringify(input.op)}`,
     next: { tool: LEARNING_TOOL, op: 'material', page: 1 },
   });
