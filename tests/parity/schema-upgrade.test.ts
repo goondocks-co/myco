@@ -118,6 +118,35 @@ it('seeds populated schema 708 for the knowledge-only curation upgrade', async (
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+it('seeds processed plan references before upgrading maintained Health and Today state', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const migration = SCHEMA_STEPS.find(step => step.version === 712)!;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-health-today-upgrade-'));
+  const file = path.join(root, 'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < migration.version)) {
+        for (const sql of step.statements) previous.exec(sql);
+      }
+    } finally { previous.close(); }
+    const touched = seedPreviousSchema(file, migration.statements, migration.version);
+    expect(touched).toContain('processed_resources');
+    const db = new Database(file);
+    try {
+      const sources = touched.filter(table => table !== 'projection_catchup');
+      const before = tableRows(db, sources);
+      expect(db.query('SELECT kind FROM processed_resources').all()).toEqual([{ kind: 'plan' }]);
+      for (const sql of migration.statements) db.exec(sql);
+      expect(tableRows(db, sources)).toEqual(before);
+      expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '712' });
+      expect(db.query("SELECT phase,done FROM projection_catchup WHERE projection='passed_over'").all())
+        .toEqual([{ phase: 'failures', done: 0 }]);
+      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally { db.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {

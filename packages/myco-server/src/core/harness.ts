@@ -1218,7 +1218,7 @@ export async function endLeasedRun(
     sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
     params: [run.projectId, run.runId, row.dispatchedBy, ...TERMINAL_RUN_STATUSES],
   })]);
-  if (changed!.meta.changes === 0) return { ended: false, reason: 'the lease is no longer held' };
+  if (changed!.results.length === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });
   if (unmet !== null) {
     emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, ...workerTelemetry(worker.principal) });

@@ -76,6 +76,8 @@ it('shows that the task-only operator switch is removed from the old clock path 
     await f.db.batch(V102_STATEMENTS.map(sql=>f.db.prepare(sql)));
     expect(await oldClockQueueModel(f.db,NOW+3)).toBe(1);
     expect(await oldClaim(f.db,'proj_1','old-clock',NOW+4)).toBe(true);
+    expect(f.sqlite.query("SELECT status,started_at FROM agent_runs WHERE id='old-clock'").get()).toEqual({status:'running',started_at:NOW+4});
+    expect(await oldClaim(f.db,'proj_1','old-clock',NOW+5)).toBe(false);
   } finally {f.sqlite.close();}
 });
 
@@ -110,6 +112,11 @@ it('models migrate-then-deploy old-code writes and admits only a preflight with 
       expect(live.n===0 && aged.n===0).toBe(admitted);
       await f.db.batch(V102_STATEMENTS.map(sql=>f.db.prepare(sql)));
       expect(await oldRequeueLapsedLease(f.db,{projectId:'proj_1'},'lapsed',null,NOW)).toBe(!admitted);
+      if (!admitted) {
+        expect(f.sqlite.query("SELECT status,started_at,lease_expires_at,held_by FROM agent_runs WHERE id='lapsed'").get())
+          .toEqual({status:'queued',started_at:null,lease_expires_at:null,held_by:'worker'});
+      }
+      expect(await oldRequeueLapsedLease(f.db,{projectId:'proj_1'},'lapsed',null,NOW+1)).toBe(false);
       let archived=0;
       for(let pass=0;pass<3;pass++) archived+=await oldArchive(f.serverEnv,NOW+WINDOW,90);
       expect(archived>0).toBe(!admitted);

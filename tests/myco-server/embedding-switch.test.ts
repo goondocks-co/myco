@@ -392,7 +392,7 @@ describe('what never holds a switch back', () => {
     for (let i = 0; i < 12; i++) await t.step(10_000 + VECTOR_DELETE_CONFIRM_MS + i);
     expect(receipts(t, t.currentKey)).toEqual([]);
     expect(await json(await t.fetch(await asOwner(t.env().db, '/api/embedding/passed-over')))).toEqual({
-      count: 1, sources: [{ projectId: PROJECT, projectName: 'a', type: 'plan', title: 'A plan whose body is gone', reason: 'its stored text is missing', anyModel: true }],
+      state: 'ready', count: 1, sources: [{ projectId: PROJECT, projectName: 'a', type: 'plan', title: 'A plan whose body is gone', reason: 'its stored text is missing', anyModel: true }],
     });
   });
 
@@ -428,7 +428,7 @@ describe('what never holds a switch back', () => {
     // Its text stored again is a new revision: it is read, written, and no longer passed over.
     t.sqlite.run(`UPDATE plans SET content = 'architecture restored', blob_key = NULL WHERE plan_key = 'unreadable'`);
     for (let i = 0; i < 4; i++) await t.step(4_000 + VECTOR_DELETE_CONFIRM_MS + i);
-    expect(await json(await t.fetch(await asOwner(t.env().db, '/api/embedding/passed-over')))).toEqual({ count: 0, sources: [] });
+    expect(await json(await t.fetch(await asOwner(t.env().db, '/api/embedding/passed-over')))).toEqual({ state: 'ready', count: 0, sources: [] });
     expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_source_failures`).get()).toEqual({ n: 0 });
   });
 

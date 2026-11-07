@@ -9,7 +9,7 @@ export async function oldRequeueLapsedLease(db: RelationalStore, scope: ReadScop
   const result = await db.prepare(
     `UPDATE agent_runs SET status = 'queued', leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL,
         lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL, held_by = 'worker'
-      WHERE project_id = ? AND id = ? AND status = 'running' AND ${named} AND lease_expires_at <= ?`,
-  ).bind(scope.projectId, runId, ...params, now).run();
-  return result.meta.changes === 1;
+      WHERE project_id = ? AND id = ? AND status = 'running' AND ${named} AND lease_expires_at <= ? RETURNING id`,
+  ).bind(scope.projectId, runId, ...params, now).all();
+  return result.results.length === 1;
 }

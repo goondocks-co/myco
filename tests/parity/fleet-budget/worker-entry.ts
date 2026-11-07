@@ -1,27 +1,17 @@
+import { statementRecorder } from '../../helpers/statement-recorder.ts';
 import worker, { DeploymentClock, RecoveryProducer } from '../../../packages/myco-server/src/index.ts';
 import { readFleetProjection } from '../../../packages/myco-server/src/read/fleet.ts';
-import type { PreparedStatement, RelationalStore } from '../../../packages/myco-server/src/core/adapters.ts';
+import type { RelationalStore } from '../../../packages/myco-server/src/core/adapters.ts';
 import { serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../../../packages/myco-server/src/platform/cloudflare/env.ts';
 
 export { DeploymentClock, RecoveryProducer };
 
 export function measured(db: RelationalStore): { store: RelationalStore; rowsRead: () => number } {
-  let rows = 0;
-  const wrap = (statement: PreparedStatement): PreparedStatement => ({
-    bind: (...values: unknown[]) => wrap(statement.bind(...values)),
-    all: async <T = Record<string, unknown>>() => {
-      const result = await statement.all<T>();
-      rows += Number((result as typeof result & { meta?: { rows_read?: number } }).meta?.rows_read ?? 0);
-      return result;
-    },
-    first: async <T,>() => {
-      const result = await statement.all<T>();
-      rows += Number((result as typeof result & { meta?: { rows_read?: number } }).meta?.rows_read ?? 0);
-      return result.results[0] ?? null;
-    },
-    run: () => statement.run(),
-  });
-  return { store: { prepare: sql => wrap(db.prepare(sql)), batch: statements => db.batch(statements) }, rowsRead: () => rows };
+  const recorded = statementRecorder(db, { accounting: 'd1' });
+  return {
+    store: recorded.db,
+    rowsRead: () => recorded.statements.reduce((rows, statement) => rows + (statement.rowsRead ?? 0), 0),
+  };
 }
 
 export default {
