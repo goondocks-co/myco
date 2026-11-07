@@ -86,7 +86,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/model-catalogs.ts#recordModelCatalog': [
     { tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' },
   ],
-  'read/catalog/release-provenance.ts#<module>': [
+  'db/release/classification.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
   ],
   'core/runner-updates.ts#runnerUpdateReportStatements': [
