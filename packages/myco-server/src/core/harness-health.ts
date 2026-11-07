@@ -6,9 +6,9 @@ import {
 } from '@goondocks/myco-shared/harness-health';
 export { HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS } from '@goondocks/myco-shared/harness-health';
 import {
-  claimedMachineNames, machineHarnessCaptureSince, machineHarnessReport, provisionedHarnessReportRows,
-  latestHarnessCapture, recentMachineCapture, trustConfirmationCapture, workerMachineActivity,
-} from '../read/harness-health.js';
+  machineHarnessCaptureSince, machineHarnessReport, provisionedHarnessReportRows,
+  trustConfirmationCapture, harnessAttentionRows, harnessHealthRows,
+} from '../db/runners/harness-health.js';
 
 type StoredHarnessFact = ProvisionedHarnessFact & { sinceAt: number };
 type StoredReport = { machineId: string; harnesses: StoredHarnessFact[]; reportedAt: number };
@@ -99,13 +99,9 @@ export type HarnessAttentionFact =
 
 /** Combine the member's current provisioned state with Deployment-owned capture and contact times. */
 export async function provisionedHarnessAttention(db: RelationalStore, now: number): Promise<HarnessAttentionFact[]> {
-  const [reports, sessions, machineSessions, contacts, claims] = await Promise.all([
-    readProvisionedHarnessReports(db),
-    latestHarnessCapture(db),
-    recentMachineCapture(db, now - MACHINE_ACTIVE_MS),
-    workerMachineActivity(db),
-    claimedMachineNames(db),
-  ]);
+  const [rawReports, rawSessions, machineSessions, contacts, claims] = await harnessAttentionRows(db, now - MACHINE_ACTIVE_MS);
+  const reports = rawReports.map(row => ({ machineId: row.machine_id, harnesses: storedFacts(row.harnesses), reportedAt: row.reported_at }));
+  const sessions = rawSessions.filter((row): row is typeof row & { at: number } => row.at !== null);
   const machineNames = new Map(claims.map((row) => [row.machine_id, row.label]));
   const captured = new Map(sessions.map((row) => [`${row.machine_id}\0${row.agent}`, row.at]));
   const trustSince = reports.flatMap((report) => report.harnesses.filter((harness) => harness.state === 'trust_required').map((harness) => harness.sinceAt));
@@ -143,7 +139,8 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
 
 /** Current harness wiring, named by its claimed machine, including informational tool destinations. */
 export async function provisionedHarnessHealth(db: RelationalStore): Promise<Array<ProvisionedHarnessFact & { machineId: string; machineName: string | null }>> {
-  const [reports, claims] = await Promise.all([readProvisionedHarnessReports(db), claimedMachineNames(db)]);
+  const [rawReports, claims] = await harnessHealthRows(db);
+  const reports = rawReports.map(row => ({ machineId: row.machine_id, harnesses: storedFacts(row.harnesses) }));
   const names = new Map(claims.map((claim) => [claim.machine_id, claim.label]));
   return reports.flatMap((report) => report.harnesses.map(({ sinceAt: _sinceAt, ...fact }) => ({ ...fact, machineId: report.machineId, machineName: names.get(report.machineId) ?? null })));
 }

@@ -43,6 +43,8 @@ export interface WorkNowAnswer {
   needsYou: NowNeed[];
   marks: Marks;
   /** How many projects the answer read per-project work for, of how many it covers. */
-  projects: { read: number; total: number };
+  projects: { read: number; total: number; hasMore: boolean; cursor: { activity: number; projectId: string } | null };
+  runningTotal: number;
+  runningHasMore: boolean;
   unavailable: WorkNowSection[];
 }

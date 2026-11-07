@@ -21,7 +21,7 @@ const NOW = Date.now();
 const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
 
 const ANSWER: WorkNowAnswer = {
-  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', recovery: 'b1', fleet: 'f1' }, projects: { read: 1, total: 1 },
+  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', recovery: 'b1', fleet: 'f1' }, projects: { read: 1, total: 1, hasMore: false, cursor: null }, runningTotal: 1, runningHasMore: false,
   running: [{ runId: 'run_live', projectId: MYCO, task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini',
     harness: 'claude-code', model: 'claude-sonnet-4-5', startedAt: NOW - 130_000, step: { words: 'Read a spore', at: NOW - 5_000 } }],
   waiting: [
@@ -57,6 +57,12 @@ describe('Myco’s work now', () => {
     expect(within(need).getByText(/^agent_line was 171 characters; the limit is 158\. Myco tries again at /)).toBeTruthy();
   });
 
+  it('shows the exact running total when the running page has more work', () => {
+    render(<WorkNow answer={{ ...ANSWER, runningTotal: 23, runningHasMore: true }} pending={false} error={null}
+      onRetry={() => {}} now={NOW} projectName={() => null} />, { wrapper: wrap(new QueryClient()) });
+    expect(screen.getByText('Showing 1 of 23 running runs. Open a project to see its work.')).toBeTruthy();
+  });
+
   it('folds the same wait in several projects into one row naming them', () => {
     const map = (projectId: string) => ({ key: `map:${projectId}`, projectId, what: 'Code map', count: null, why: 'Due now. It starts when the server next checks.', since: null, nextAt: null });
     render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', waiting: [map('a'), map('b'), ANSWER.waiting[1]!] }} pending={false} error={null} onRetry={() => {}} now={NOW}
@@ -70,7 +76,7 @@ describe('Myco’s work now', () => {
   });
 
   it('says each part is empty, and names a part the server could not read without hiding the others', () => {
-    render(<WorkNow answer={{ ...ANSWER, running: [], needsYou: [], unavailable: ['needsYou'] }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => null} />, { wrapper: wrap(new QueryClient()) });
+    render(<WorkNow answer={{ ...ANSWER, running: [], runningTotal: 0, needsYou: [], unavailable: ['needsYou'] }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => null} />, { wrapper: wrap(new QueryClient()) });
     expect(screen.getByText('Nothing is running right now.')).toBeTruthy();
     expect(within(document.querySelector('[data-now-part="needsYou"]') as HTMLElement).queryByText('Nothing needs you.')).toBeNull();
     expect(screen.getByText('Curation')).toBeTruthy();
@@ -138,9 +144,9 @@ describe('the shared live refresh', () => {
   });
 
   it('says how many projects it read when it could not read them all, and where the rest are', () => {
-    render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', projects: { read: 25, total: 40 } }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
+    render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', projects: { read: 25, total: 40, hasMore: true, cursor: { activity: 1, projectId: 'p' } } }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
     const more = document.querySelector('[data-now-more]') as HTMLElement;
-    expect(more.textContent).toBe('Checked 25 of 40 projects: those with something running, waiting or failing first. Open a project to see the rest.');
+    expect(more.textContent).toBe('Checked 25 of 40 projects: most recently active first. Open a project to see the rest.');
     expect(within(more).getByRole('link', { name: 'Open a project' }).getAttribute('href')).toBe('/projects');
   });
 

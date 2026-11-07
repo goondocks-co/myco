@@ -85,7 +85,7 @@ describe('Myco’s work now', () => {
     const needs = (await h.read()).needsYou;
     expect(needs.find((item) => item.key === 'failed:proj_1:extract-curate')).toEqual({
       key: 'failed:proj_1:extract-curate', projectId: 'proj_1', what: 'Learn from sessions failed twice in a row',
-      why: 'agent_line was 171 characters; the limit is 158.', at: NOW - HOUR + 1000, runId: 'learn_2', retryAt: null,
+      why: 'the run ended without its artifact', at: NOW - HOUR + 1000, runId: 'learn_2', retryAt: null,
     });
     expect(needs.find((item) => item.key === 'sign-in:rn_mini')).toMatchObject({ projectId: null, what: 'homelab-mini can’t sign in to a coding agent' });
 
@@ -102,7 +102,7 @@ describe('Myco’s work now', () => {
     const answer = await h.read({ all: true });
     expect(answer.needsYou).toEqual([{
       key: 'curation-group:proj_1:k1', projectId: 'proj_1', what: 'A curation group failed twice',
-      why: 'agent_line was 171 characters; the limit is 158.', at: NOW, runId: 'cur_fail', retryAt: NOW + 2 * HOUR,
+      why: 'the run ended without its decision', at: NOW, runId: 'cur_fail', retryAt: NOW + 2 * HOUR,
     }]);
     expect(answer.waiting.filter((item) => item.what === 'Curation')).toEqual([]);
     h.sqlite.run("UPDATE spore_curation_work SET due_at = NULL, decision = 'keep', reason = 'kept apart', decided_at = ? WHERE cluster_key = 'k1'", [NOW]);
@@ -210,13 +210,16 @@ describe('Myco’s work now', () => {
       why: 'Curation stopped after 3 attempts without a decision', runId: 'cur_fail' }]);
   });
 
-  it('reads a failing project first however many projects sort before it, and says how many it read', async () => {
+  it('pages projects by activity and reports the exact coverage', async () => {
     const h = harness();
     for (let i = 0; i < 30; i += 1) h.sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 1)', [`a_project_${String(i).padStart(2, '0')}`, `Earlier ${i}`]);
     h.run('proj_2', 'hidden_failure', 'extract-curate', 'failed', NOW - 1000, { error: 'the run ended without its artifact' });
     const answer = await h.read({ all: true });
-    expect(answer.needsYou.map((item) => item.key)).toEqual(['failed:proj_2:extract-curate']);
-    expect(answer.projects).toEqual({ read: 25, total: 32 });
-    expect((await h.read()).projects).toEqual({ read: 1, total: 1 });
+    expect(answer.needsYou).toEqual([]);
+    expect(answer.projects).toMatchObject({ read: 25, total: 32, hasMore: true });
+    const next = await readWorkNow(h.fixture.serverEnv as never, { all: true }, NOW, true, answer.projects.cursor);
+    expect(next.needsYou.map(item => item.key)).toEqual(['failed:proj_2:extract-curate']);
+    expect(next.projects).toMatchObject({ read: 7, total: 32, hasMore: false });
+    expect((await h.read()).projects).toEqual({ read: 1, total: 1, hasMore: false, cursor: null });
   });
 });

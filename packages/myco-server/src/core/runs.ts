@@ -266,7 +266,7 @@ export interface WriteAdmission {
 async function writeDispatchRecord(db: RelationalStore, statement: PreparedStatement, admission?: { actor?: MemberWriteActor; setup?: PreparedStatement[] }): Promise<boolean> {
   const statements = [...(admission?.setup ?? []), statement];
   const results = admission?.actor === undefined ? await db.batch(statements) : await memberWriteBatch(db, admission.actor, statements);
-  return results[results.length - 1]!.meta.changes === 1;
+  return results[results.length - 1]!.results.length === 1;
 }
 
 export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
@@ -291,7 +291,7 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by, dispatch_spec,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
-   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE}`;
+   WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE} RETURNING id`;
 
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND id = ?`;
@@ -393,20 +393,20 @@ export async function claimRun(
   };
   if (row.dispatchedBy !== null) {
     const caller = runCallerGuard(guard.caller, UNCLAIMED_RUN_STATUSES);
-    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL + caller.sql + admissionSql).bind(
+    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL + caller.sql + admissionSql + ' RETURNING id').bind(
       row.harness, row.instruction, row.provider, row.model, row.startedAt,
       scope.projectId, row.id, row.dispatchedBy, row.task, ...caller.params, ...admissionValues,
     ).run();
-    if (dispatched.meta.changes === 1) return { claimed: true };
+    if (dispatched.results.length === 1) return { claimed: true };
   }
   if (guard.dispatchedOnly === true) return failedClaim();
-  const result = await db.prepare(CLAIM_SQL + admissionSql).bind(
+  const result = await db.prepare(CLAIM_SQL + admissionSql + ' RETURNING id').bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,
     row.dryRun ? 1 : 0, row.startedAt, row.runContext, row.dispatchedBy,
     scope.projectId, row.id, ...admissionValues,
   ).run();
 
-  if (result.meta.changes === 1) return { claimed: true };
+  if (result.results.length === 1) return { claimed: true };
   return failedClaim();
 }
 
@@ -759,7 +759,7 @@ export function runUpdateStatement(
         THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`
     : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
   return db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`)
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql} RETURNING id`)
     .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
       ...(authority?.params ?? []), ...callerGuard.params);
 }
@@ -767,8 +767,8 @@ export function runUpdateStatement(
 /** A run mutation and its direct row count commit with the mutations that follow it. */
 export async function commitRunChange(db: RelationalStore, statement: PreparedStatement, after: PreparedStatement[] = []):
   Promise<{ changed: number; following: RunResult[] }> {
-  const [, count, ...following] = await db.batch([statement, db.prepare('SELECT changes() AS changed'), ...after]);
-  return { changed: (count!.results[0] as { changed: number }).changed, following };
+  const [changed, ...following] = await db.batch([statement, ...after]);
+  return { changed: changed!.results.length, following };
 }
 
 /** Apply the shared update statement and return how many rows changed. */
@@ -1031,7 +1031,7 @@ export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: num
 
 /** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
 const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?
-  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
+  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES} RETURNING id`;
 
 export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<boolean> {
   const result = await commitRunChange(db, db.prepare(FAIL_STALE_SQL).bind(now, error, errorCode, scope.projectId, runId));
@@ -1074,11 +1074,11 @@ export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, l
         db.prepare(`DELETE FROM agent_turns WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_turns', 'run_id')}`).bind(projectId, ...chunk),
         db.prepare(`DELETE FROM agent_reports WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_reports', 'run_id')}`).bind(projectId, ...chunk),
         db.prepare(`DELETE FROM agent_run_attempts WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_run_attempts', 'run_id')}`).bind(projectId, ...chunk),
-        db.prepare(`DELETE FROM agent_runs WHERE project_id = ? AND id IN (${marks}) AND ${NO_STEPS_LEFT('agent_runs', 'id')}`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_runs WHERE project_id = ? AND id IN (${marks}) AND ${NO_STEPS_LEFT('agent_runs', 'id')} RETURNING id`).bind(projectId, ...chunk),
       ];
       const outcomes = await db.batch(statements);
       budget = Math.max(0, budget - (outcomes[0]?.meta.changes ?? 0));
-      removed += outcomes[4]?.meta.changes ?? 0;
+      removed += outcomes[4]?.results.length ?? 0;
     }
   }
   return removed;
@@ -1131,7 +1131,7 @@ const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}${PROJECT_ADMISSION_WHERE}`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}${PROJECT_ADMISSION_WHERE} RETURNING id`;
 
 /** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live, and a write past an actor's ceiling is refused in the same statement. */
 export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor; setup?: PreparedStatement[] } = {}): Promise<boolean> {
@@ -1157,7 +1157,7 @@ export async function recordQueued(db: RelationalStore, scope: ReadScope, record
 const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
    SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, instruction = COALESCE(?, instruction),
        provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
- WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ?${ADMISSION_WHERE}`;
+ WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ?${ADMISSION_WHERE} RETURNING id`;
 
 export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; instruction?: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
   const statement = db.prepare(LAUNCH_QUEUED_SQL).bind(
@@ -1192,7 +1192,7 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
    SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
        queued_at = COALESCE(queued_at, started_at, ?)
- WHERE project_id = ? AND id = ? AND status = 'pending'`;
+ WHERE project_id = ? AND id = ? AND status = 'pending' RETURNING id`;
 
 export async function returnToQueue(
   db: RelationalStore, scope: ReadScope, runId: string,
@@ -1201,7 +1201,7 @@ export async function returnToQueue(
   const result = await db.prepare(RETURN_TO_QUEUE_SQL)
     .bind(hold.heldBy, hold.dispatchSpec, hold.credential, hold.now, scope.projectId, runId)
     .run();
-  return result.meta.changes === 1;
+  return result.results.length === 1;
 }
 
 /** What ending a queued row did: whether the write landed, and the credential that row named when it did. */
@@ -1219,9 +1219,9 @@ export interface QueuedRunEnd {
  */
 export async function restoreDispatchCredential(db: RelationalStore, scope: ReadScope, runId: string, tokenId: string): Promise<boolean> {
   const result = await db
-    .prepare(`UPDATE agent_runs SET dispatched_by = ? WHERE project_id = ? AND id = ? AND status = 'pending'`)
+    .prepare(`UPDATE agent_runs SET dispatched_by = ? WHERE project_id = ? AND id = ? AND status = 'pending' RETURNING id`)
     .bind(tokenId, scope.projectId, runId).run();
-  return result.meta.changes === 1;
+  return result.results.length === 1;
 }
 
 /**
@@ -1543,7 +1543,7 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
         held_by = CASE WHEN ${ends} THEN NULL ELSE 'worker' END,
         leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
       WHERE project_id = ? AND id = ? AND status = 'running' AND ${named}
-        AND dispatched_by IS ? AND lease_expires_at <= ?`,
+        AND dispatched_by IS ? AND lease_expires_at <= ? RETURNING id`,
   ).bind(now, scope.projectId, runId, ...params, attemptId, now));
   return result.changed === 1;
 }
@@ -1833,9 +1833,9 @@ export async function markRunReplaced(db: RelationalStore, scope: ReadScope, run
   const result = await db.prepare(
     `UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), '$.replaced', json('true'))
       WHERE project_id = ? AND id = ?
-        AND (run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object')`,
+        AND (run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object') RETURNING id`,
   ).bind(scope.projectId, runId).run();
-  return result.meta.changes === 1;
+  return result.results.length === 1;
 }
 
 /** Whether some run already names this one as the run it replaces. */
@@ -1928,10 +1928,10 @@ export async function pinMapRepositoryForRun(
       AND (json_type(COALESCE(run_context, '{}'), '$.repository') IS NULL
         OR (json_extract(run_context, '$.repository.url') = ?
           AND json_extract(run_context, '$.repository.branch') = ?
-          AND json_extract(run_context, '$.repository.commit') = ?))`)
+          AND json_extract(run_context, '$.repository.commit') = ?)) RETURNING id`)
     .bind(JSON.stringify(repository), JSON.stringify(source), scope.projectId, run.id, ...authority.params,
       repository.url, repository.branch, repository.commit).run();
-  if (write.meta.changes === 1) return { committed: true };
+  if (write.results.length === 1) return { committed: true };
   if (await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
@@ -1959,9 +1959,9 @@ async function pinRunPreparation(db: RelationalStore, scope: ReadScope, run: Run
     : renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy ?? undefined, true);
   const write = await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), ?, json(?))
     WHERE project_id = ? AND id = ? AND ${authority.sql}
-      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL`)
+      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL RETURNING id`)
     .bind(path, JSON.stringify(value), scope.projectId, run.id, ...authority.params, path).run();
-  if (write.meta.changes === 1) return { committed: true };
+  if (write.results.length === 1) return { committed: true };
   if (lease !== undefined && await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy ?? undefined) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
@@ -1975,11 +1975,11 @@ export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, 
   const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
   const prompt=await db.prepare('SELECT instruction FROM agent_runs WHERE project_id=? AND id=?').bind(scope.projectId,run.id).first<{instruction:string|null}>();
   const mutation = db.prepare(`UPDATE agent_runs SET instruction=?,run_context=json_remove(run_context,'$.checkout')
-    WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql}`)
+    WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql} RETURNING id`)
     .bind(knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,...authority.params);
   const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
     detail:{code:failure.code},recordedAt:lease.now});
-  if (result.meta.changes > 0) return true;
+  if (result.results.length === 1) return true;
   return await db.prepare(`SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout') IS NULL AND ${authority.sql}`)
     .bind(scope.projectId,run.id,...authority.params).first() !== null;
 }

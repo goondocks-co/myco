@@ -3,7 +3,7 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { readSetupProgress } from '@myco-server-worker/read/setup.js';
+import { readSetupProgress } from '@myco-server-worker/db/identity/setup.js';
 import worker from '@myco-server-worker/index.js';
 import { seedMisleadingHistory } from '../setup/fixtures/misleading-history.js';
 
@@ -162,15 +162,20 @@ describe('observed setup progress', () => {
     expect((await read()).workProduced).toBe(false);
   });
 
-  it('requires published output inside the 31 day window; failed runs with output count', async () => {
+  it('recognizes published output from a failed run', async () => {
     const { read, output } = rig(); output(NOW - 1, 'failed');
     expect((await read()).workProduced).toBe(true);
   });
-  for (const [name, at, dry] of [['old output', NOW - 32 * DAY, 0], ['dry-run output', NOW - 1, 1], ['future output', NOW + DAY, 0]] as const)
+  for (const [name, at, dry] of [['dry-run output', NOW - 1, 1], ['future output', NOW + DAY, 0]] as const)
     it(`does not tick work from ${name}`, async () => {
       const { read, output } = rig(); output(at, 'completed', dry);
       expect((await read()).workProduced).toBe(false);
     });
+
+  it('retains produced setup progress beyond the recent Work window', async () => {
+    const { read, output } = rig(); output(NOW - 32 * DAY);
+    expect((await read()).workProduced).toBe(true);
+  });
 
   it('reports a queued project without an enabled registered runner, excluding deleted and archived projects', async () => {
     const { read, sql, runner } = rig();

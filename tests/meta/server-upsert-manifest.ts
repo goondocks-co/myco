@@ -1,10 +1,12 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
+  'db/schema-vNEXT.ts#<module>': Array.from({ length: 7 }, () => ({ tables: ['embedding_passed_over'], order: 'unverified' as const })),
   'db/insights/kpi-reconcile.ts#upsertKpi': [{ tables: ['kpi_fact'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#lineageUpsert': [{ tables: ['kpi_lineage'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#roll': [{ tables: ['kpi_daily'], order: 'unverified' }],
-  'db/schema-vNEXT.ts#<module>': [
+  'db/schema-kpi-step.ts#<module>': [
     ...Array.from({ length: 4 }, () => ({ tables: ['kpi_daily'], order: 'unverified' as const })),
     ...Array.from({ length: 63 }, () => ({ tables: ['kpi_fact'], order: 'unverified' as const })),
     { tables: ['kpi_lineage'], order: 'unverified' },

@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { commit } from '@myco-server-worker/db/index.js';
 import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/insights/kpi-reconcile.js';
 import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
-import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
+import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-kpi-step.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';

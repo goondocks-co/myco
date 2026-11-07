@@ -4,7 +4,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { SERVER_FEATURES } from '@myco-server-worker/constants.js';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, MAX_HARNESS_DEPLOYMENT_CHARS } from '@goondocks/myco-shared/harness-health';
 import { HARNESS_RUN_CAPTURE_MARGIN_MS, HARNESS_SILENT_MS, MACHINE_ACTIVE_MS, parseProvisionedHarnessReport, recordProvisionedHarnessReport, provisionedHarnessHealth } from '@myco-server-worker/core/harness-health.js';
-import { latestHarnessCapture } from '@myco-server-worker/read/harness-health.js';
+import { latestHarnessCapture } from '@myco-server-worker/db/runners/harness-health.js';
 import { readAttention, type AttentionItem } from '@myco-server-worker/core/attention.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 

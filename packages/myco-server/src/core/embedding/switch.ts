@@ -1,3 +1,4 @@
+import { passedOverHealth } from '../../db/embeddings/health.js';
 import { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction } from './provider-failure.js';
 export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, type SwitchFailureAction } from './provider-failure.js';
 /**
@@ -14,7 +15,7 @@ export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, t
  * retires the partial vectors.
  */
 import type { ServerEnv } from '../adapters.js';
-import { EMBEDDING_CATALOGUE, embeddingDimensions, embeddingPrice, type EmbeddingSwitchEstimate, type EmbeddingSwitchStatus, type PassedOverList } from '@goondocks/myco-shared/settings-contract';
+import { EMBEDDING_CATALOGUE, embeddingDimensions, embeddingPrice, type EmbeddingSwitchEstimate, type EmbeddingSwitchStatus, type PassedOverList, type HealthPassedOverList } from '@goondocks/myco-shared/settings-contract';
 import { heldPartitions, judgeEmbeddingChoice, storedEmbedding, writeSwitchedEmbedding, type EmbeddingChoice } from '../settings.js';
 import { resolveSemanticSearch } from '../search.js';
 import { deploymentLatestTaskRun } from '../runs.js';
@@ -160,10 +161,11 @@ async function estimateFor(env: ServerEnv, selection: Pick<EmbeddingSelection, '
 }
 
 /** The sources search by meaning passes over under the model it uses and the model a switch builds, as Health lists them. */
-export async function passedOverForHealth(env: ServerEnv, now: number): Promise<PassedOverList> {
+export async function passedOverForHealth(env: ServerEnv, now: number): Promise<HealthPassedOverList> {
   const plan = await embeddingWorkPlan(env, now);
   const models = plan === null ? [] : [plan.model, ...(plan.switching === null ? [] : [plan.switching])];
-  return passedOverView(await passedOverSources(env.db, models, now, { limit: PASSED_OVER_SHOWN * 5 }));
+  const result = await passedOverHealth(env.db, models, now);
+  return result.state === 'building' ? result : { state: 'ready', ...passedOverView(result) };
 }
 
 /** What switching search to the model `choice` names would read and cost, judged as starting it is. */
