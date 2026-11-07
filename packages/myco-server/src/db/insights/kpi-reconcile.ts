@@ -51,20 +51,29 @@ const sources: Record<KpiGrain, GrainSource> = {
   m: { table: 'transcripts', key: 'x.agent', match: 'x.agent=q.k', eligible: `${mixedTime} IS NOT NULL`, time: mixedTime, harness: 'q.k', measures: { mixed_sessions: '1' } },
 };
 
+function eligibleKpi(grain: KpiGrain, from: string, key = 'q.k'): string {
+  const source = sources[grain];
+  return `SELECT q.project_id,q.session_id,${key} AS key,${dayOf(source.time)} AS day,${source.harness ?? harnessOf('x')} AS harness,
+    ${KPI_MEASURES.map(c => `${source.measures[c] ?? '0'} AS ${c}`).join(',')} FROM ${from} WHERE ${source.eligible}`;
+}
+
+function upsertKpi(grain: KpiGrain, eligible: string): string {
+  const values = ['day', 'harness', ...KPI_MEASURES];
+  return `INSERT INTO kpi_fact(project_id,session_id,grain,key,${values.join(',')})
+      SELECT project_id,session_id,'${grain}',key,${values.join(',')} FROM (${eligible}) WHERE true
+      ON CONFLICT(project_id,session_id,grain,key) DO UPDATE SET (${values.join(',')})=(${values.map(c => `excluded.${c}`).join(',')})
+      WHERE (${values.map(c => `kpi_fact.${c}`).join(',')}) IS NOT (${values.map(c => `excluded.${c}`).join(',')})`;
+}
+
 /** Keys contain project_id, session_id and k; source values are read at execution. */
 export function reconcileKpi(grain: KpiGrain, keys: string): string[] {
   const source = sources[grain];
   const from = grain === 'm' ? `(${keys}) q` : `(${keys}) q JOIN ${source.table} x ON ${sameSession('x', 'q')} AND ${source.match}`;
-  const eligible = `SELECT q.project_id,q.session_id,q.k AS key,${dayOf(source.time)} AS day,${source.harness ?? harnessOf('x')} AS harness,
-    ${KPI_MEASURES.map(c => `${source.measures[c] ?? '0'} AS ${c}`).join(',')} FROM ${from} WHERE ${source.eligible}`;
-  const values = ['day', 'harness', ...KPI_MEASURES];
+  const eligible = eligibleKpi(grain, from);
   return [
     `DELETE FROM kpi_fact WHERE grain='${grain}' AND (project_id,session_id,key) IN (SELECT project_id,session_id,k FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM (${eligible}) e WHERE e.project_id=kpi_fact.project_id AND e.session_id=kpi_fact.session_id AND e.key=kpi_fact.key)`,
-    `INSERT INTO kpi_fact(project_id,session_id,grain,key,${values.join(',')})
-      SELECT project_id,session_id,'${grain}',key,${values.join(',')} FROM (${eligible}) WHERE true
-      ON CONFLICT(project_id,session_id,grain,key) DO UPDATE SET (${values.join(',')})=(${values.map(c => `excluded.${c}`).join(',')})
-      WHERE (${values.map(c => `kpi_fact.${c}`).join(',')}) IS NOT (${values.map(c => `excluded.${c}`).join(',')})`,
+    upsertKpi(grain, eligible),
   ];
 }
 
@@ -117,12 +126,15 @@ export function kpiTriggers(): KpiTrigger[] {
   const rowReconcile = (g: KpiGrain, row: string, key: string) => reconcileKpi(g, rowKey(row, key));
   const forSession = (g: KpiGrain, row: string) => reconcileKpi(g, sessionKeys(g, session(row)));
   const receiptLineage = (row: string, full: boolean) => full ? reconcileLineages(`${rootsFor(row)} AND ${row}.created_at <= (SELECT first_served_at FROM kpi_lineage WHERE lineage_root=c.lineage_root)`) : [incrementLineage(row, true)];
-  const definitions: { table: string; update?: string; body: (row: string) => string[] }[] = [
+  const definitions: { table: string; update?: string; insert?: (row: string) => string[]; body: (row: string) => string[] }[] = [
     { table: 'session_prompts', update: 'generation,prompt_id,created_at,claim,prompt_kind', body: row => [
       ...rowReconcile('p', row, `${row}.prompt_id`),
       ...reconcileKpi('d', `SELECT r.project_id,r.session_id,r.id AS k FROM spore_injections r INDEXED BY idx_spore_injections_delivered WHERE ${sameSession('r', row)} AND r.delivered_prompt_id=${row}.prompt_id`),
     ] },
-    { table: 'session_documents', update: 'state,generation', body: row => (['p', 'c', 'd'] as const).flatMap(g => forSession(g, row)) },
+    { table: 'session_documents', update: 'state,generation',
+      insert: row => (['p', 'c', 'd'] as const).map(g => upsertKpi(g, eligibleKpi(g,
+        `(${session(row)}) q JOIN ${sources[g].table} x ON ${sameSession('x', 'q')}`, sources[g].key))),
+      body: row => (['p', 'c', 'd'] as const).flatMap(g => forSession(g, row)) },
     { table: 'myco_tool_calls', update: 'generation,myco_tool,myco_op,created_at', body: row => rowReconcile('c', row, `${row}.tool_call_id`) },
     { table: 'spore_injections', update: 'delivered_at,delivered_prompt_id,spore_ids,created_at', body: row => [
       ...rowReconcile('d', row, `${row}.id`), ...rowReconcile('p', row, `${row}.delivered_prompt_id`),
@@ -140,7 +152,7 @@ export function kpiTriggers(): KpiTrigger[] {
   ];
   for (const def of definitions) {
     const receipt = def.table === 'spore_injections' || def.table === 'session_injections';
-    add(def.table, 'INSERT', [...def.body('NEW'), ...(receipt ? receiptLineage('NEW', false) : [])]);
+    add(def.table, 'INSERT', [...(def.insert ?? def.body)('NEW'), ...(receipt ? receiptLineage('NEW', false) : [])]);
     add(def.table, 'DELETE', [...def.body('OLD'), ...(receipt ? receiptLineage('OLD', true) : [])]);
     if (def.update) add(def.table, `UPDATE OF ${def.update}`, [
       ...def.body('OLD'), ...def.body('NEW'),

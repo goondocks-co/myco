@@ -132,6 +132,23 @@ function seed() {
 }
 
 describe('KPI projection critical flow', () => {
+  it('projects late document arrival from only its live generation and replays without writes', async () => {
+    const r = seed();
+    try {
+      for (const [state, generation] of [['live', 1], ['live', 2], ['convert', 1]] as const) {
+        r.sqlite.query("DELETE FROM session_documents WHERE project_id=? AND session_id='a'").run(PROJECT);
+        expect(projected(r, null)).toEqual(await oracle(r, null));
+        r.sqlite.query("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
+          .run(PROJECT, state, generation, NOW);
+        expect(projected(r, null)).toEqual(await oracle(r, null));
+        const writes = r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
+        r.sqlite.query("INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
+          .run(PROJECT, state, generation, NOW);
+        expect(r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n).toBe(writes);
+      }
+    } finally { r.sqlite.close(); }
+  });
+
   it('converges after late arrivals, generation replacement, deletion, reattribution and interrupted catch-up', async () => {
     const r = seed();
     try {

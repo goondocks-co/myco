@@ -691,7 +691,6 @@ export async function restoreArtifact(
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
     ...(documents === undefined ? {} : { documents: documents.summary }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
-  await resetProjectionCatchup(db);
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
@@ -705,6 +704,7 @@ export async function restoreArtifact(
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
     ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
   if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) throw new BackupApplyError('raw_claims', 'invalid raw provenance revision');
+  await resetProjectionCatchup(db);
   const offset = provenance.length === 0 ? 0 : await reserveRawRestore(db, hash, sourceRevision);
   for (const table of ['raw_resources', 'raw_archive_refs', 'raw_claims', 'events']) {
     for (const row of byTable.get(table) ?? []) {

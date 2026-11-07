@@ -27,6 +27,8 @@ import { A, B, D, MISSING, REPO, fakeGithub, type Repo } from './helpers/github-
 configureSqliteLibrary();
 const P = 'proj_1';
 const SERVER_SRC = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
+const writesFirstReceipt = (source: string): boolean =>
+  /(?:\bSET\s+|,\s*)first_received_at\s*=|\bSET\s*\([^)]*\bfirst_received_at\b[^)]*\)\s*=/i.test(source);
 const MIN = 60_000;
 const opened: ReturnType<typeof sqliteEnv>[] = [];
 afterEach(() => { for (const f of opened.splice(0)) f.sqlite.close(); });
@@ -185,6 +187,18 @@ describe('embedding revisions follow the values a vector is built from', () => {
     expect({ table: 'knowledge_release_state', unwatched: release }).toEqual({ table: 'knowledge_release_state', unwatched: [] });
   });
 
+  it('distinguishes first-receipt assignments from reads in projection updates', () => {
+    for (const sql of [
+      'UPDATE sessions SET first_received_at = ? WHERE session_id = ?',
+      'UPDATE sessions SET agent = ?, first_received_at = ?',
+      'UPDATE sessions SET (agent, first_received_at) = (?, ?)',
+    ]) expect(writesFirstReceipt(sql)).toBe(true);
+    for (const sql of [
+      'UPDATE kpi_fact SET (day,harness)=(excluded.day,excluded.harness) WHERE day IN (SELECT first_received_at FROM sessions)',
+      'UPDATE sessions SET last_received_at = first_received_at WHERE first_received_at = ?',
+    ]) expect(writesFirstReceipt(sql)).toBe(false);
+  });
+
   it('holds each named exception to the reason it gives', () => {
     const f = fixture();
     // The presented session dates are followed by their own trigger.
@@ -195,7 +209,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
     }
     // Nothing under src writes a session's first receipt after inserting the row.
     const writers = [...new Bun.Glob('**/*.ts').scanSync(SERVER_SRC)]
-      .filter((file) => /first_received_at\s*=|\bSET\b[^;`]*\bfirst_received_at\b/i.test(readFileSync(join(SERVER_SRC, file), 'utf8')));
+      .filter((file) => writesFirstReceipt(readFileSync(join(SERVER_SRC, file), 'utf8')));
     expect(writers).toEqual([]);
   });
 
