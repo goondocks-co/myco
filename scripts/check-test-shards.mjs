@@ -71,6 +71,7 @@ function measure(args) {
     return;
   }
   let milliseconds;
+  let exitCode = 0;
   if (mode === '--finish') {
     milliseconds = Date.now() - JSON.parse(fs.readFileSync(stamp, 'utf8')).started;
     fs.unlinkSync(stamp);
@@ -80,14 +81,15 @@ function measure(args) {
     const started = performance.now();
     const result = spawnSync(command[0], command.slice(1), { cwd: root, env: process.env, stdio: 'inherit' });
     if (result.error) throw result.error;
-    if (result.status !== 0) {
-      process.exitCode = result.status ?? 1;
-      return;
-    }
+    exitCode = result.status ?? 1;
     milliseconds = performance.now() - started;
   }
-  fs.writeFileSync(path.join(timingRoot, `${job}.json`), JSON.stringify({ job, milliseconds }) + '\n');
+  fs.writeFileSync(path.join(timingRoot, `${job}.json`), JSON.stringify({ job, milliseconds, exitCode }) + '\n');
   console.log(`${job}: measured ${Math.ceil(milliseconds)}ms`);
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
+    return;
+  }
   assertJobHeadroom(job, workflow.jobs[job]['timeout-minutes'], milliseconds);
 }
 

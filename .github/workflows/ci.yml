@@ -63,6 +63,13 @@ jobs:
           path: packages/myco-linux-x64/bin/myco
           if-no-files-found: error
           retention-days: 1
+      - name: Share the Linux SQLite library with test shards
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-libsqlite3-linux-x64
+          path: packages/myco/vendor-src/libsqlite3/linux-x64/libsqlite3.so
+          if-no-files-found: error
+          retention-days: 1
 
   # Gate G2 (#1561): a compiled binary answers a no-op hook within its ceiling on every release target a runner here
   # can run. Each target is built the way the release builds it (`--compile --splitting`, darwin signed in place)
@@ -245,16 +252,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: node, shard: '1/10' }
-          - { kind: node, shard: '2/10' }
-          - { kind: node, shard: '3/10' }
-          - { kind: node, shard: '4/10' }
-          - { kind: node, shard: '5/10' }
-          - { kind: node, shard: '6/10' }
-          - { kind: node, shard: '7/10' }
-          - { kind: node, shard: '8/10' }
-          - { kind: node, shard: '9/10' }
-          - { kind: node, shard: '10/10' }
+          - { kind: node, shard: '1/14' }
+          - { kind: node, shard: '2/14' }
+          - { kind: node, shard: '3/14' }
+          - { kind: node, shard: '4/14' }
+          - { kind: node, shard: '5/14' }
+          - { kind: node, shard: '6/14' }
+          - { kind: node, shard: '7/14' }
+          - { kind: node, shard: '8/14' }
+          - { kind: node, shard: '9/14' }
+          - { kind: node, shard: '10/14' }
+          - { kind: node, shard: '11/14' }
+          - { kind: node, shard: '12/14' }
+          - { kind: node, shard: '13/14' }
+          - { kind: node, shard: '14/14' }
           - { kind: dom, shard: '1/2' }
           - { kind: dom, shard: '2/2' }
     env:
@@ -266,7 +277,10 @@ jobs:
       - name: Install dashboard test dependencies
         run: npm ci --prefix packages/myco-server/ui
       - if: matrix.kind == 'node'
-        run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-libsqlite3-linux-x64
+          path: packages/myco/vendor-src/libsqlite3/linux-x64
       - if: matrix.kind == 'node'
         uses: actions/download-artifact@v8
         with:
@@ -330,15 +344,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
       - run: npm ci --prefix packages/myco-server/ui
+      - name: Identify Playwright dependencies
+        id: playwright-version
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Cache the Playwright browser
         id: playwright-cache
         uses: actions/cache@v6
         with:
           path: target/playwright-browsers
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Identify Playwright dependencies
-        id: playwright-version
-        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
       - uses: ./.github/actions/apt-cache
         with:
           recipe: playwright-chromium-${{ steps.playwright-version.outputs.version }}

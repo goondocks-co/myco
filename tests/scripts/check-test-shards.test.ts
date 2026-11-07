@@ -33,10 +33,15 @@ it('measures commands and multi-step work, refusing overruns and preserving chil
   try {
     const failed = invoke('--measure', 'ui-screens', '--', 'node', '-e', 'process.exit(7)');
     expect(failed.status).toBe(7);
+    const timingFile = path.join(reports, 'ci-timings/ui-screens.json');
+    const failedTiming = JSON.parse(fs.readFileSync(timingFile, 'utf8'));
+    expect(failedTiming).toMatchObject({ job: 'ui-screens', exitCode: 7 });
+    expect(failedTiming.milliseconds).toBeGreaterThan(0);
     const success = invoke('--measure', 'ui-screens', '--', 'node', '-e', 'process.stdout.write("measured child")');
     expect(success.status).toBe(0);
     expect(success.stdout).toContain('measured child');
     expect(success.stdout).toContain('ui-screens: measured');
+    expect(JSON.parse(fs.readFileSync(timingFile, 'utf8')).exitCode).toBe(0);
     expect(invoke('--finish', 'hook-startup').status).not.toBe(0);
     expect(invoke('--start', 'hook-startup').status).toBe(0);
     expect(invoke('--finish', 'hook-startup').status).toBe(0);
