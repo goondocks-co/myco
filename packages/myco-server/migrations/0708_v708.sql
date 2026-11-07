@@ -33,9 +33,13 @@ CREATE TRIGGER IF NOT EXISTS sessions_capture_head_reclassify AFTER UPDATE OF pr
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
     WHERE excluded.last_received_at>machine_capture_heads.last_received_at
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));
-    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,(s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) FROM sessions s
-      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
-      ORDER BY (s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) DESC,s.project_id,s.session_id LIMIT 1
+    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT * FROM (SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,(s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) FROM sessions s INDEXED BY idx_sessions_capture
+    WHERE s.machine_id=OLD.machine_id AND s.agent=OLD.agent
+      AND s.last_received_at >= (
+        SELECT (t.last_received_at - ((t.last_received_at % 60000 + 60000) % 60000)) FROM sessions t INDEXED BY idx_sessions_capture
+        WHERE t.machine_id=OLD.machine_id AND t.agent=OLD.agent
+        ORDER BY t.last_received_at DESC LIMIT 1)
+    ORDER BY s.project_id,s.session_id LIMIT 1) WHERE OLD.agent IS NOT NULL
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
     WHERE excluded.last_received_at>machine_capture_heads.last_received_at
@@ -50,9 +54,13 @@ CREATE TRIGGER IF NOT EXISTS sessions_capture_head_delete AFTER DELETE ON sessio
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
     WHERE excluded.last_received_at>machine_capture_heads.last_received_at
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));
-    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,(s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) FROM sessions s
-      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
-      ORDER BY (s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) DESC,s.project_id,s.session_id LIMIT 1
+    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT * FROM (SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,(s.last_received_at - ((s.last_received_at % 60000 + 60000) % 60000)) FROM sessions s INDEXED BY idx_sessions_capture
+    WHERE s.machine_id=OLD.machine_id AND s.agent=OLD.agent
+      AND s.last_received_at >= (
+        SELECT (t.last_received_at - ((t.last_received_at % 60000 + 60000) % 60000)) FROM sessions t INDEXED BY idx_sessions_capture
+        WHERE t.machine_id=OLD.machine_id AND t.agent=OLD.agent
+        ORDER BY t.last_received_at DESC LIMIT 1)
+    ORDER BY s.project_id,s.session_id LIMIT 1) WHERE OLD.agent IS NOT NULL
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
     WHERE excluded.last_received_at>machine_capture_heads.last_received_at

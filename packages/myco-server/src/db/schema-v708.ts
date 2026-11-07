@@ -23,13 +23,21 @@ export function unnamedCaptureHeadSelect(machine: string): string {
     ORDER BY ${receiptMinuteOf('s')} DESC,s.project_id,s.session_id LIMIT 1`;
 }
 
-/** Named-agent deletion and renaming require an equivalent machine-leading seek. */
+/** Named heads choose canonically inside the newest indexed receipt-minute range. */
+export function namedCaptureHeadSelect(machine: string, agent: string): string {
+  return `SELECT ${valuesOf('s')} FROM sessions s INDEXED BY idx_sessions_capture
+    WHERE s.machine_id=${machine} AND s.agent=${agent}
+      AND s.last_received_at >= (
+        SELECT ${receiptMinuteOf('t')} FROM sessions t INDEXED BY idx_sessions_capture
+        WHERE t.machine_id=${machine} AND t.agent=${agent}
+        ORDER BY t.last_received_at DESC LIMIT 1)
+    ORDER BY s.project_id,s.session_id LIMIT 1`;
+}
+
 function rebuildCaptureHead(): string {
   return `DELETE FROM machine_capture_heads WHERE ${groupOf('OLD')};
     ${captureHeadInsert(`SELECT * FROM (${unnamedCaptureHeadSelect('OLD.machine_id')}) WHERE OLD.agent IS NULL`)}
-    ${captureHeadInsert(`SELECT ${valuesOf('s')} FROM sessions s
-      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
-      ORDER BY ${receiptMinuteOf('s')} DESC,s.project_id,s.session_id LIMIT 1`)}`;
+    ${captureHeadInsert(`SELECT * FROM (${namedCaptureHeadSelect('OLD.machine_id', 'OLD.agent')}) WHERE OLD.agent IS NOT NULL`)}`;
 }
 
 const headOfOld = `EXISTS (SELECT 1 FROM machine_capture_heads WHERE ${groupOf('OLD')} AND project_id=OLD.project_id AND session_id=OLD.session_id)`;

@@ -12,7 +12,7 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { Database } from 'bun:sqlite';
-import { CAPTURE_RECEIPT_GRAIN_MS, unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
+import { CAPTURE_RECEIPT_GRAIN_MS, namedCaptureHeadSelect, unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
@@ -109,6 +109,13 @@ describe('capture recency', () => {
       const db = sqliteRelationalStore(sqlite);
       const plan = sqlite.query<{ detail: string }, [string]>(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine');
       expect(plan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_unnamed_machine (machine_id=?)');
+      const namedPlan = sqlite.query<{ id: number; parent: number; detail: string }, [string, string, string, string]>(
+        `EXPLAIN QUERY PLAN ${namedCaptureHeadSelect('?', '?')}`,
+      ).all('new-machine', 'unreported', 'new-machine', 'unreported');
+      expect(namedPlan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_capture (last_received_at>?)');
+      const latest = namedPlan.find(row => /SCAN t USING (?:COVERING )?INDEX idx_sessions_capture/.test(row.detail));
+      expect(latest).toBeDefined();
+      expect(namedPlan.some(row => row.parent === latest?.parent && row.detail.includes('TEMP B-TREE'))).toBe(false);
       const matches = async () => {
         const expected = sqlite.query<Record<string, unknown>, [number]>(`SELECT machine_id,agent,last_received_at AS last_event_at,project_id FROM (
           SELECT *,ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at / ? DESC,project_id,session_id) AS position
@@ -121,6 +128,7 @@ describe('capture recency', () => {
       };
       await matches();
       for (const sql of [
+        "UPDATE sessions SET last_received_at=25 WHERE project_id='first' AND session_id='custom'",
         "UPDATE sessions SET last_received_at=50 WHERE project_id='first' AND session_id='old'",
         "UPDATE sessions SET last_received_at=5 WHERE project_id='first' AND session_id='old'",
         "UPDATE sessions SET machine_id='other-machine',agent='custom' WHERE project_id='first' AND session_id='imported'",
