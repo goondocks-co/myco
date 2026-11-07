@@ -30,8 +30,8 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   {
     name: 'myco_run_curation',
     handlerValidated: ['decision', 'members', 'reason'],
-    inputRepair: `Correct the arguments and call myco_run_curation again with ids and revisions read whole by this run. Complete keep example: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members; fix any outstanding myco_spores refusal first.`,
-    description: `Read at most ${CURATION_CLUSTER_CAP} seeded or searched spores whole. Complete keep with a members array of distinct {id,revision} objects: nonempty string ids and exact nonnegative safe integer revisions already read whole. Complete resolved after a successful lifecycle write and omit members. reason is nonempty text of at most ${CURATION_REASON_CHARS} characters. An outstanding refused lifecycle write must be corrected first; retry invalid input once before reporting. Example: ${CURATION_COMPLETE_EXAMPLE}`,
+    inputRepair: `Correct the arguments and call myco_run_curation again with ids and revisions read whole by this run. Complete keep example: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members and retry any outstanding myco_spores refusal first, or choose keep with the read members.`,
+    description: `Read at most ${CURATION_CLUSTER_CAP} seeded or searched spores whole. Complete keep with a members array of distinct {id,revision} objects: nonempty string ids and exact nonnegative safe integer revisions already read whole. Complete resolved after a successful lifecycle write and omit members. reason is nonempty text of at most ${CURATION_REASON_CHARS} characters. For resolved, an outstanding refused lifecycle write must be corrected first. Keep with the read members remains available and clears the refusal; retry invalid input once before reporting or choosing keep. Example: ${CURATION_COMPLETE_EXAMPLE}`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', properties: {
       op: { type: 'string', enum: ['material', 'complete'] },

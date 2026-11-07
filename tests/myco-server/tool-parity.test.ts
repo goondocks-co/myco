@@ -144,7 +144,7 @@ describe('tool parity', () => {
         expect(current.description.startsWith(frozen.description)).toBe(true);
         expect(current.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
         expect(current.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);
-        expect(current.inputRepair).toContain(CURATION_CONSOLIDATE_EXAMPLE);
+        expect(current.inputRepair).toBe('Correct the named argument and call myco_spores again with the required fields for that op.');
         delete current.inputRepair;
         current.description = frozen.description;
         const line = current.inputSchema.properties.agent_line;

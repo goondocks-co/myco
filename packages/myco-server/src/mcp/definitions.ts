@@ -415,8 +415,8 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_spores",
-    inputRepair: `Correct the arguments and call myco_spores again with the same sources. Consolidate example (use the actual read source ids and revisions): ${CURATION_CONSOLIDATE_EXAMPLE}`,
-    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. Curation runs consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom. Correct and retry invalid input once before reporting. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
+    inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
+    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -540,7 +540,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         "agent_line": {
           "type": "string",
           minLength: 1, maxLength: AGENT_LINE_MAX_CHARS,
-          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When editing the seam, retain its invariants (src/seam.ts)." Shorten a refused line and call the same op again with the same sources.`
+          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When editing the seam, retain its invariants (src/seam.ts)." Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
         },
         "provenance_kind": {
           "type": "string",
