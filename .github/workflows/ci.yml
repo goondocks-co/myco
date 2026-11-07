@@ -67,7 +67,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ci-libsqlite3-linux-x64
-          path: packages/myco/vendor-src/libsqlite3/linux-x64/libsqlite3.so
+          # The library plus the amalgamation it was built from: the budget meter compiles against the source.
+          path: packages/myco/vendor-src/libsqlite3/
           if-no-files-found: error
           retention-days: 1
 
@@ -280,7 +281,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ci-libsqlite3-linux-x64
-          path: packages/myco/vendor-src/libsqlite3/linux-x64
+          path: packages/myco/vendor-src/libsqlite3
       - if: matrix.kind == 'node'
         uses: actions/download-artifact@v8
         with:

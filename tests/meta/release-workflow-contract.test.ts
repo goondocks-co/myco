@@ -239,10 +239,11 @@ function assertRoutingSmoke(workflow: typeof ci): void {
   expect(workflow.jobs.tests.steps.some((step: { uses?: string; with?: { name?: string } }) =>
     step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'rbac-routing-linux-x64')).toBe(true);
   const library = 'ci-libsqlite3-linux-x64';
-  const directory = 'packages/myco/vendor-src/libsqlite3/linux-x64';
+  // The library and the amalgamation it was built from: budget-meter tests compile against the source.
+  const directory = 'packages/myco/vendor-src/libsqlite3';
   expect(build).toContainEqual(expect.objectContaining({
     uses: 'actions/upload-artifact@v7',
-    with: expect.objectContaining({ name: library, path: `${directory}/libsqlite3.so`, 'if-no-files-found': 'error' }),
+    with: expect.objectContaining({ name: library, path: `${directory}/`, 'if-no-files-found': 'error' }),
   }));
   expect(workflow.jobs.tests.steps).toContainEqual(expect.objectContaining({
     if: "matrix.kind == 'node'", uses: 'actions/download-artifact@v8',
