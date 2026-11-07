@@ -160,12 +160,12 @@ describe('tool parity', () => {
         const properties = current.inputSchema.properties;
         const frozenProperties = frozen.inputSchema.properties;
         const sessionDescription = 'For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Curation and seeding runs name no session: omit session_id. Other callers use the Session:: line when known.';
-        const characterLimits = {
-          id: MAX_SPORE_ID_CHARS, old_spore_id: MAX_SPORE_ID_CHARS, new_spore_id: MAX_SPORE_ID_CHARS,
-          type: MAX_SPORE_ID_CHARS, prompt_id: MAX_SPORE_ID_CHARS, session_id: MAX_SESSION_ID_CHARS,
-          reason: MAX_SPORE_CONTENT_BYTES,
-        };
-        for (const [field, maxLength] of Object.entries(characterLimits)) {
+        const characterLimits = [
+          ['id', MAX_SPORE_ID_CHARS], ['old_spore_id', MAX_SPORE_ID_CHARS], ['new_spore_id', MAX_SPORE_ID_CHARS],
+          ['type', MAX_SPORE_ID_CHARS], ['prompt_id', MAX_SPORE_ID_CHARS], ['session_id', MAX_SESSION_ID_CHARS],
+          ['reason', MAX_SPORE_CONTENT_BYTES],
+        ] as const;
+        for (const [field, maxLength] of characterLimits) {
           const original = frozenProperties[field]!;
           expect({ field, schema: properties[field] }).toEqual({ field, schema: {
             ...original, minLength: 1, maxLength,
@@ -173,8 +173,8 @@ describe('tool parity', () => {
           } });
           properties[field] = original;
         }
-        const byteLimits = { content: MAX_SPORE_CONTENT_BYTES, consolidated_content: MAX_SPORE_CONTENT_BYTES, provenance_ref: PROVENANCE_REF_MAX };
-        for (const [field, maxBytes] of Object.entries(byteLimits)) {
+        const byteLimits = [['content', MAX_SPORE_CONTENT_BYTES], ['consolidated_content', MAX_SPORE_CONTENT_BYTES], ['provenance_ref', PROVENANCE_REF_MAX]] as const;
+        for (const [field, maxBytes] of byteLimits) {
           const original = frozenProperties[field]!;
           const provenance = field === 'provenance_ref' ? ` For pr: an https URL; for commit: ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters.` : '';
           expect({ field, schema: properties[field] }).toEqual({ field, schema: {
