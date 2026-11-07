@@ -46,9 +46,15 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
-/** Tell the server a person is using the dashboard. Nothing waits on the answer, and a failure changes nothing. */
+/**
+ * Tell the server a person is using the dashboard. Nothing waits on the answer, and a failure changes nothing. The
+ * answer is read through to its end: a browser holds a request open until its body is read, which would leave the
+ * page never idle.
+ */
 export function reportPresence(): void {
-  void fetch(PRESENCE_PATH, { credentials: 'same-origin', headers: { accept: 'application/json' } }).catch(() => undefined);
+  void fetch(PRESENCE_PATH, { credentials: 'same-origin', headers: { accept: 'application/json' } })
+    .then((res) => res.arrayBuffer())
+    .catch(() => undefined);
 }
 
 /** A read the dashboard makes on its own: it never counts as someone using the server. */
