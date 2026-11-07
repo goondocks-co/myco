@@ -227,7 +227,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
 test('bulk publication fits one wake within its statement budget', async () => {
   await withDocumentStores(async (db, target) => {
     const blobs = memoryBlobStore(), now = Date.now() - 3_600_000;
-    const turns = 500;
+    const turns = 1500;
     let text = '';
     for (let t = 0; t < turns; t += 1) {
       text += user('short' + t);
