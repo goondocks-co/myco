@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
 import type { ConnectAnswer, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../features/today/wire';
-import { freshness } from './use-work';
+import { live } from '../lib/live';
 
 export type { UncapturedAnswer, UncapturedRootItem } from '../features/today/wire';
 
@@ -14,7 +14,7 @@ export function useUncaptured({ enabled }: { enabled: boolean }) {
     queryKey: ['uncaptured'],
     queryFn: ({ signal }) => fetchJson<UncapturedAnswer>('/api/uncaptured', signal),
     enabled,
-    ...freshness(true),
+    ...live<UncapturedAnswer>({ follows: ['sessions'] }),
   });
 }
 

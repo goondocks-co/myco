@@ -125,12 +125,10 @@ test.describe('Myco’s work', () => {
         await expect(page.locator('[data-filter-bar]')).toBeInViewport();
         // Every member, admin or not, can start a task: the menu is there for both.
         await expect(page.getByRole('button', { name: 'Run a task' })).toBeVisible();
-        const first = page.locator('article[data-outcome]').first();
-        await expect(first).toBeVisible();
-        if (viewport === 'desktop') {
-          await expect(first).toBeInViewport();
-          await expect(page.locator('[data-cost]')).toBeInViewport();
-        }
+        // What Myco is doing now leads the page; the week's outcomes and their cost follow it.
+        await expect(page.locator('[data-work-now]')).toBeInViewport();
+        await expect(page.locator('article[data-outcome]').first()).toBeVisible();
+        await expect(page.locator('[data-cost]')).toBeVisible();
         if (onFixture()) await expectFixtureWeek(page, role);
         await expectFits(page, viewport);
         await expectNoRawIds(page);
@@ -234,7 +232,7 @@ test.describe('Myco’s work', () => {
       const { context, page, watch } = await openPage(browser, { path: '/work', viewport, mode, cookie: screensEnv('ownerCookie') });
       try {
         await expect(page.getByRole('heading', { level: 1, name: 'Myco’s work' })).toBeInViewport();
-        await expect(page.getByText('What Myco did in the background, grouped by what came of it.')).toBeVisible();
+        await expect(page.getByText('What Myco is doing now, what waits and why, and what it did, grouped by what came of it.')).toBeVisible();
         await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
         // The same menu as under a project: a task started here asks which project first.
         await page.getByRole('button', { name: 'Run a task' }).click();
@@ -281,7 +279,7 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
     const quietProject = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string }>)[1]!;
     const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(quietProject.projectId)}/work?window=today&outcome=map`, viewport, mode, cookie: screensEnv('ownerCookie') });
     try {
-      await expect(page.getByRole('status')).toContainText('No code map today');
+      await expect(page.getByRole('status').filter({ hasText: 'No code map today' })).toBeVisible();
       await expect(page.locator('[data-lede]')).toHaveCount(0);
       const all = page.getByRole('button', { name: 'Show all · all time' });
       await expect(all).toBeVisible();

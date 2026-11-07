@@ -5,6 +5,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import { readWorkerFleet, fleetReports, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { availableLogin, claimSettings, previewSelection } from '../core/worker-selection.js';
 import { harnessCredentialAvailability } from '../core/secrets.js';
+import { emit, classify } from '../telemetry.js';
 import { dispatchLoad } from '../core/runs.js';
 import { heldBy, readDispatchLimits, type DispatchLimits } from '../core/limits.js';
 
@@ -52,6 +53,26 @@ export async function fleetTaskReason(env: ServerEnv, task: string, fleet: reado
     }
   }
   return reason;
+}
+
+/**
+ * The current wait for each queued task, by the same rule the queue and the claim decide by: one fleet read serves
+ * every task named. A fleet already read for this answer is passed as `fleet`. A read that fails answers every task
+ * `unavailable`, never a guess.
+ */
+export async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)[], now: number, includeSignIn: boolean,
+  fleet?: readonly WorkerFleetRow[]): Promise<Map<string | null, { reason: QueueReason; observedAt: number }>> {
+  const waits = new Map<string | null, { reason: QueueReason; observedAt: number }>();
+  if (tasks.length === 0) return waits;
+  try {
+    const selection = fleetSelectionContext(env, includeSignIn);
+    const [rows, settings, limits] = await Promise.all([fleet ?? readWorkerFleet(env.db, now, includeSignIn), claimSettings(env), readDispatchLimits(env)]);
+    for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, rows, now, settings, limits, undefined, selection), observedAt: now });
+  } catch (error) {
+    emit({ kind: 'fleet_read_failed', errorClass: classify(error) });
+    for (const task of new Set(tasks)) waits.set(task, { reason: 'unavailable', observedAt: now });
+  }
+  return waits;
 }
 
 /** The whole queue is aggregated through its status/queue index; one reason is decided per task and stored hold. */

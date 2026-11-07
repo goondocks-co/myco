@@ -10,6 +10,7 @@ import { StoredValue } from '../StoredValue';
 import type { LeafField } from './catalogue';
 import { EmbeddingSwitchPanel, PassedOverSources, estimateWords, shortModel } from './EmbeddingSwitch';
 import type { LeafRow } from './wire';
+import { live } from '../../../lib/live';
 
 export { shortModel } from './EmbeddingSwitch';
 
@@ -59,7 +60,7 @@ const PENDING_KEY = ['embedding-pending-provider'] as const;
  */
 function usePendingProvider(): [string | null, (next: string | null) => void] {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: PENDING_KEY, queryFn: () => null as string | null, initialData: null as string | null, staleTime: Infinity, gcTime: Infinity });
+  const { data } = useQuery({ queryKey: PENDING_KEY, queryFn: () => null as string | null, initialData: null as string | null, staleTime: Infinity, gcTime: Infinity, ...live('still') });
   return [data ?? null, (next) => client.setQueryData(PENDING_KEY, next)];
 }
 

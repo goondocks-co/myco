@@ -70,6 +70,10 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
   '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
+  '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1 },
+    running: [{ runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', what: 'Learn from sessions', machine: 'homelab-mini', harness: 'codex', model: null, startedAt: NOW - 60_000, step: { words: 'Read session cards', at: NOW - 5_000 } }],
+    waiting: [{ key: 'budget', projectId: null, what: 'Automatic work', count: null, why: 'Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.', since: null, nextAt: null }],
+    needsYou: [{ key: 'sign-in:rn_mini', projectId: null, what: 'homelab-mini can’t sign in to a coding agent', why: 'Sign in to a coding agent on this runner.', at: NOW, runId: null, retryAt: null }] }),
   '/api/kpis': () => Response.json({
     windowDays: 30, since: 0, promptsServed: 2, deliveries: { placed: 2, unplaced: 1 }, servedShare: { value: 0.5, sampleSize: 4 }, sporeServeRate: { value: null, sampleSize: 0 }, sessionStartPresent: { value: null, sampleSize: 0 }, callsPerPrompt: { value: null, sampleSize: 0 },
     callsPerPromptByHarness: [], planReadsPerSession: { value: null, sampleSize: 0 }, firstInjectionMs: { value: null, sampleSize: 0 }, recallQuality: { value: null, sampleSize: 0 }, promptIdentity: [],
@@ -110,9 +114,21 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
   return screen.findByRole('menu');
 }
 
-const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
+const PARTS = [['now', 'Now'], ['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
 
 describe('Health', () => {
+  it('opens on what Myco is doing now across every project, from the same heartbeat the page refreshes by', async () => {
+    const { asked } = server(routes());
+    mount();
+    const now = await screen.findByRole('region', { name: 'Now' });
+    expect(await within(now).findByText('Learn from sessions')).toBeTruthy();
+    expect(within(now).getByText('Myco')).toBeTruthy();
+    expect(within(now).getByText('Now: Read session cards')).toBeTruthy();
+    expect(within(now).getByText('Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.')).toBeTruthy();
+    expect(within(now).getByText('homelab-mini can’t sign in to a coding agent')).toBeTruthy();
+    await waitFor(() => expect(asked.filter((line) => line === 'GET /api/work/now')).toHaveLength(1));
+  });
+
   it('shows the budget and runner sign-in waits beneath one learning heading', async () => {
     for (const reason of ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window', 'waiting for a runner that can sign in']) {
       const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; nothing learned yet; spent $1.00 of $1.00 in the last 24 hours.`;
@@ -260,7 +276,7 @@ describe('Health', () => {
     mount();
     const upkeep = await screen.findByRole('region', { name: 'Upkeep' });
     expect((await within(upkeep).findByText(/Search kept up to date/)).textContent).toBe('Search kept up to date · 1 h ago · 2 retries along the way');
-    const work = asked.find((line) => line.startsWith('GET /api/work'))!;
+    const work = asked.find((line) => line.startsWith('GET /api/work?'))!;
     const params = new URL(work.slice(4), 'https://s').searchParams;
     expect(params.has('project')).toBe(false);
     expect(Number(params.get('until')) - Number(params.get('since'))).toBeGreaterThanOrEqual(24 * 3_600_000);

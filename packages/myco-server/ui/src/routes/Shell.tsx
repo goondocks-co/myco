@@ -7,6 +7,7 @@ import {
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
 import { useAttention } from '../hooks/use-attention';
+import { LiveRefresh } from '../hooks/use-live';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
 import { readLastProject, rememberProject } from '../lib/project-memory';
@@ -100,6 +101,7 @@ export function Shell() {
     >
       {/* The page starts its own reads at once, beside the projects' read, rather than after it: a page that needs a
           project's name shows it when the list arrives, and one whose project the list lacks says not found then. */}
+      <LiveRefresh projectId={current?.projectId ?? null} enabled={inPath === null || projects.data !== undefined} />
       {projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} /> : <Outlet />}
     </AppShell>
   );

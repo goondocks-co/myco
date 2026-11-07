@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { retryCursorRead } from './cursor-retry';
 import { fetchJson } from '../lib/api';
+import { live, type PagedFreshness } from '../lib/live';
 
 export interface Page<T> { rows: T[]; cursor: string | null }
 
@@ -10,9 +11,10 @@ export interface Page<T> { rows: T[]; cursor: string | null }
  * remains. A read with `enabled: false` waits, pending, until it is wanted.
  *
  * `rowKey` lists a row once: its first position, its latest payload. A refresh
- * re-walks the loaded pages.
+ * re-walks the loaded pages. `freshness` says when it is read again, as every
+ * query does (`lib/live.ts`).
  */
-export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
+export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unknown[], path: string, opts: { freshness: PagedFreshness; enabled?: boolean; rowKey?: (row: T) => string }) {
   const client = useQueryClient();
   const query = useInfiniteQuery({
     queryKey: [...key],
@@ -21,6 +23,7 @@ export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unkno
     queryFn: ({ pageParam, signal }) =>
       fetchJson<TPage>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live(opts.freshness),
   });
   const rowKey = opts.rowKey;
   const rows = useMemo(() => {

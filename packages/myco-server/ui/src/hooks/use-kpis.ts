@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { live } from '../lib/live';
 import type { KpiReport } from '../features/admin/health/wire';
 
 export type { HarnessMeasure, KpiReport, Measure } from '../features/admin/health/wire';
@@ -20,10 +21,11 @@ export const DEFAULT_MEASURE_WINDOW: MeasureWindow = '30';
 export const isMeasureWindow = (value: string | null): value is MeasureWindow =>
   value !== null && MEASURE_WINDOWS.some((w) => w.id === value);
 
-/** The measures over a window, counted by the server. */
+/** The measures over a window, counted by the server: a heavy read, read once when shown and again only when asked. */
 export function useKpis(window: MeasureWindow) {
   return useQuery({
     queryKey: ['kpis', window],
     queryFn: ({ signal }) => fetchJson<KpiReport>(`/api/kpis?window=${encodeURIComponent(window)}`, signal),
+    ...live<KpiReport>('heavy'),
   });
 }

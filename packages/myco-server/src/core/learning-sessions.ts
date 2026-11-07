@@ -289,18 +289,25 @@ export interface LearningStatus {
   turnsAwaitingCards: number;
   historyWaiting: number;
   awaitingPublication: number;
-  lastCompleted: { at: number; reason: string; sessionId: string } | null;
+  /** The latest completion; null when none happened, undefined for a Project's status, which reads no completion. */
+  lastCompleted: { at: number; reason: string; sessionId: string } | null | undefined;
   /** Counts at this value are lower bounds. */
   cap: number;
 }
 
-/** What learning has due and waiting, Deployment-wide, from the stages' own indexes. */
-export async function readLearningStatus(db: RelationalStore, now = Date.now()): Promise<LearningStatus> {
+/**
+ * What learning has due and waiting, Deployment-wide or in one Project, from the stages' own indexes: every count a
+ * Project-led seek when `scope` names one, bound once as `?1`. A Project's status leaves out the latest completion: no
+ * Project-led index orders completions.
+ */
+export async function readLearningStatus(db: RelationalStore, now = Date.now(), scope?: { projectId: string }): Promise<LearningStatus> {
   const historyEnabled = await learningHistoryEnabled(db);
-  const scopedSessions = (index: string, predicate: string, fresh: boolean) => `FROM projects p CROSS JOIN learning_sessions l INDEXED BY ${index}
+  const projects = scope === undefined ? 'projects' : '(SELECT project_id FROM projects WHERE project_id = ?1)';
+  const inProject = scope === undefined ? '' : ' AND project_id = ?1';
+  const scopedSessions = (index: string, predicate: string, fresh: boolean) => `FROM ${projects} p CROSS JOIN learning_sessions l INDEXED BY ${index}
     ON l.project_id = p.project_id WHERE ${learningRecencySql(fresh, now)} AND (${predicate})`;
   const waiting = 'pending_cards > 0 OR due_cards > 0';
-  const continuing = (kind: 'cards' | 'learning') => `FROM projects p CROSS JOIN learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_cards_retry' : 'idx_learning_retry'}
+  const continuing = (kind: 'cards' | 'learning') => `FROM ${projects} p CROSS JOIN learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_cards_retry' : 'idx_learning_retry'}
     ON l.project_id = p.project_id WHERE ${kind === 'cards' ? 'pending_cards > 0' : 'eligible_at IS NOT NULL'}
       AND ${freshRetrySql(kind)} AND ${learningRecencySql(false, now)}`;
   const freshCount = (column: 'pending_cards' | 'due_cards') => `(SELECT MIN(${STATUS_CAP + 1},COALESCE(SUM(n),0))
@@ -308,16 +315,16 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
       column === 'pending_cards' ? 'pending_cards > 0' : waiting, true)} AND ${column} > 0
       UNION ALL SELECT ${column} AS n ${continuing(column === 'pending_cards' ? 'cards' : 'learning')} AND ${column} > 0 LIMIT ${STATUS_CAP + 1}))`;
   const row = await db.prepare(`SELECT
-      ${capped(historyEnabled ? `SELECT 1 FROM projects p CROSS JOIN learning_sessions l INDEXED BY idx_learning_ready ON l.project_id = p.project_id
+      ${capped(historyEnabled ? `SELECT 1 FROM ${projects} p CROSS JOIN learning_sessions l INDEXED BY idx_learning_ready ON l.project_id = p.project_id
         WHERE eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`
         : `SELECT 1 ${scopedSessions('idx_learning_source_eligible', `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)}`, true)}
           UNION ALL SELECT 1 ${continuing('learning')} AND learning_ready_at <= ${Math.floor(now)}`)} AS dueSessions,
-      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0`) : freshCount('due_cards')} AS dueCards,
-      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_due_all WHERE state = 'pending'`) : freshCount('pending_cards')} AS turnsAwaitingCards,
+      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY idx_turn_cards_uncovered WHERE state = 'carded' AND covered = 0${inProject}`) : freshCount('due_cards')} AS dueCards,
+      ${historyEnabled ? capped(`SELECT 1 FROM turn_cards INDEXED BY ${scope === undefined ? 'idx_turn_cards_due_all' : 'idx_turn_cards_due'} WHERE state = 'pending'${inProject}`) : freshCount('pending_cards')} AS turnsAwaitingCards,
       ${historyEnabled ? '0' : capped(`SELECT 1 ${scopedSessions('idx_learning_source_waiting', `(${waiting}) AND NOT ((pending_cards > 0 AND ${freshRetrySql('cards')}) OR (eligible_at IS NOT NULL AND ${freshRetrySql('learning')}))`, false)}`)} AS historyWaiting,
-      ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'awaiting_publication'`)} AS awaitingPublication`)
-    .first<{ dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
-  const last = await db.prepare(`SELECT last_completed_at AS at, last_completed_reason AS reason, session_id AS sessionId FROM learning_sessions
+      ${capped(`SELECT 1 FROM learning_sessions INDEXED BY idx_learning_init_pending WHERE init_state <> 'ready' AND init_state = 'awaiting_publication'${inProject}`)} AS awaitingPublication`)
+    .bind(...(scope === undefined ? [] : [scope.projectId])).first<{ dueSessions: number; dueCards: number; turnsAwaitingCards: number; historyWaiting: number; awaitingPublication: number }>();
+  const last = scope !== undefined ? undefined : await db.prepare(`SELECT last_completed_at AS at, last_completed_reason AS reason, session_id AS sessionId FROM learning_sessions
     INDEXED BY idx_learning_completed WHERE last_completed_at IS NOT NULL ORDER BY last_completed_at DESC LIMIT 1`).first<{ at: number; reason: string; sessionId: string }>();
   return {
     dueSessions: row!.dueSessions, dueCards: row!.dueCards, turnsAwaitingCards: row!.turnsAwaitingCards,
@@ -327,7 +334,7 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now()):
 }
 
 /** The status line: what is due, what waits and why, the last completion, and spend against the day's budget. */
-export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number, waitingForSignIn = false): string {
+export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number, waitingForSignIn = false, heldByBudget = false): string {
   const n = (count: number, singular: string, plural = `${singular}s`) => `${count > status.cap ? `at least ${status.cap}` : count} ${count === 1 ? singular : plural}`;
   const spent = budget?.automaticUsd == null ? null : budget.automaticUsd + (budget.manualUsd ?? 0);
   const ready = status.dueSessions > 0 || status.turnsAwaitingCards > 0;
@@ -337,10 +344,10 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
     ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting, 'older session')} waiting for history learning to be enabled`] : []),
     ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication, 'session')} waiting to become readable`] : []),
     ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),
-    ...(ready && spent !== null && budget !== null && spent >= budget.dailyUsd
+    ...(ready && (heldByBudget || (spent !== null && budget !== null && spent >= budget.dailyUsd))
       ? ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window'] : []),
-    status.lastCompleted === null ? 'nothing learned yet'
-      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`,
+    ...(status.lastCompleted === undefined ? [] : [status.lastCompleted === null ? 'nothing learned yet'
+      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`]),
     ...(budget === null || spent === null ? [] : [`spent $${spent.toFixed(2)} of $${budget.dailyUsd.toFixed(2)} in the last 24 hours`]),
   ];
   return `${parts.join('; ')}.`;

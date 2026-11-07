@@ -16,7 +16,7 @@ export { Dialog, DialogTrigger, DialogClose, DialogContent, DialogFooter, Confir
 export { MoreMenu, MenuItem, ActionMenu, type MoreMenuItem, type MoreMenuProps, type ActionMenuItem, type ActionMenuProps } from './primitives/MoreMenu';
 export { Disclosure, type DisclosureProps } from './primitives/Disclosure';
 export { Link, ActionLink, ItemLink, ExternalLink, type LinkProps, type ItemLinkProps, type ExternalLinkProps } from './primitives/Link';
-export { StatusChip, TypeChip, Kbd, type Tone, type StatusChipProps, type TypeChipProps } from './primitives/Chip';
+export { StatusChip, TypeChip, ChipGroup, Kbd, type Tone, type StatusChipProps, type TypeChipProps, type ChipGroupProps } from './primitives/Chip';
 export { HealthDot, type HealthTone, type HealthDotProps } from './primitives/HealthDot';
 export { Avatar, initialsOf, type AvatarProps } from './primitives/Avatar';
 export { Card, type CardProps } from './primitives/Card';

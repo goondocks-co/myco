@@ -14,7 +14,7 @@ import { runControlRefusalCode } from '@goondocks/myco-shared/run-control';
 import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { TURN_END_HEADER } from './ingest/turns.js';
-import { stampRequest } from './core/activity.js';
+import { stampRequest, automaticRequest } from './core/activity.js';
 import { isOwnedPath, matchRoute, methodsServing, UNSERVED_PATHS, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
@@ -426,7 +426,7 @@ export function createServer(deps: ServerDeps) {
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
         if (matched.route.authority === 'account') return await matched.route.handler(env, { ...context, member });
-        await stampRequest(env.db, now);
+        if (!automaticRequest(bounded)) await stampRequest(env.db, now);
         const writeAuthority = matched.route.authority === 'admin' && authorization.action !== 'owner';
         let writeRefused = false;
         const guarded = writeAuthority

@@ -22,7 +22,6 @@ import { useMediaQuery } from '../hooks/use-media-query';
 import { useProjects } from '../hooks/use-projects';
 import { useStatus } from '../hooks/use-status';
 import { useNow, useToday } from '../hooks/use-today';
-import { freshness } from '../hooks/use-work';
 import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
 import { cleanSessionText, sessionHeading, sessionHeadingText } from '../lib/session-text';
@@ -64,7 +63,7 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
   const phone = useMediaQuery(PHONE_QUERY);
   const projects = useProjects();
   const today = useToday({ projectId, day: search.get('day'), now });
-  const status = useStatus(freshness(true));
+  const status = useStatus();
 
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (id: string): string | null => names.get(id) ?? null;

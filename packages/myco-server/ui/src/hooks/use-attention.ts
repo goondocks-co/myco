@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import type { AttentionAnswer } from '../features/today/wire';
-import { freshness } from './use-work';
+import { live } from '../lib/live';
 
 export type { AttentionAnswer, AttentionItem, AttentionKind } from '../features/today/wire';
 
@@ -14,6 +14,6 @@ export function useAttention({ enabled, projectId }: { enabled: boolean; project
     queryKey: projectId === undefined ? ['attention'] : ['attention', projectId],
     queryFn: ({ signal }) => fetchJson<AttentionAnswer>(projectId === undefined ? '/api/attention' : `/api/attention?project=${encodeURIComponent(projectId)}`, signal),
     enabled,
-    ...freshness(true),
+    ...live<AttentionAnswer>({ follows: ['runs', 'sessions', 'fleet'] }),
   });
 }

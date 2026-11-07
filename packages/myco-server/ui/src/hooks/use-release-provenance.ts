@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson, putJson } from '../lib/api';
 
 import type { ReleaseCheck, ReleaseProvenanceAnswer, ReleaseProvenanceRow } from '../features/admin/project/wire';
+import { live, QUICK_MS } from '../lib/live';
 export type { PackageTagMapping, ReleaseCheck, ReleaseProvenanceRow } from '../features/admin/project/wire';
 
 export type ReleaseProvenanceWrite = Pick<ReleaseProvenanceRow, 'enabled' | 'githubRepo' | 'productionRefs' | 'integrationRefs' | 'packageMap' | 'includeUnknown' | 'maxLookups' | 'revision'>
@@ -21,7 +22,7 @@ const key = (projectId: string) => ['release-provenance', projectId];
 const path = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/release-provenance`;
 
 /** How often the settings are read again while a requested or running check has not finished. */
-export const RELEASE_CHECK_REFRESH_MS = 2_000;
+export const RELEASE_CHECK_REFRESH_MS = QUICK_MS;
 
 /** A check was requested after the latest one started, or the latest one has not finished. */
 export function checkPending(check: ReleaseCheck | null | undefined): boolean {
@@ -34,7 +35,7 @@ export function useReleaseProvenance(projectId: string) {
   return useQuery({
     queryKey: key(projectId),
     queryFn: ({ signal }) => fetchJson<ReleaseProvenanceAnswer>(path(projectId), signal),
-    refetchInterval: (query) => (checkPending(query.state.data?.releaseProvenance.check) ? RELEASE_CHECK_REFRESH_MS : false),
+    ...live<ReleaseProvenanceAnswer>({ whileMoving: (data) => checkPending(data?.releaseProvenance.check), quick: true }),
   });
 }
 

@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson, type WorkerRow } from '../../lib/api';
 import type { MachinesAnswer } from './wire';
+import { live } from '../../lib/live';
 
 /** What a worker says of where it runs. */
 export type WorkerLike = Pick<WorkerRow, 'credentialId' | 'machineId'>;
@@ -48,6 +49,7 @@ export function useMachines(options: { enabled?: boolean } = {}) {
     enabled: options.enabled ?? true,
     queryFn: ({ pageParam, signal }) => fetchJson<MachinesAnswer>(`/api/machines?limit=50${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live({ follows: ['fleet', 'sessions'] }),
   });
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((answer) => answer.machines) ?? []).map((row) => [row.machineId, row])).values()], [query.data]);
   const machines = useMemo(() => {

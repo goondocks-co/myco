@@ -244,7 +244,7 @@ it('discards an expired cursor set in a generic paged session read', async () =>
   });
   client.setQueryDefaults(['session', 'p', 's'], { queryFn: () => fetch('/parent').then(r => r.json()) });
   client.setQueryData(['session', 'p', 's'], {});
-  const { result } = renderHook(() => usePaged<{ id: string }>(['turn-tool-calls', 'p', 's', 'turn'], '/calls'), { wrapper });
+  const { result } = renderHook(() => usePaged<{ id: string }>(['turn-tool-calls', 'p', 's', 'turn'], '/calls', { freshness: 'still' }), { wrapper });
   await waitFor(() => expect(result.current.rows).toEqual([{ id: 'old' }]));
   act(() => result.current.more());
   await waitFor(() => expect(result.current.error).toBeTruthy());

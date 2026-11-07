@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { Projects } from '../../packages/myco-server/ui/src/pages/Projects';
-import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
+import { TICK_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { GetStarted } from '../../packages/myco-server/ui/src/features/today/GetStarted';
 import type { SetupProgress } from '../../packages/myco-server/ui/src/features/today/wire';
 import { dashboardMe } from '../helpers/dashboard-permissions';
@@ -99,7 +99,7 @@ describe('Get started checklist', () => {
   });
   for (const role of ['admin', 'member'] as const) it(`retires an all-done ${role} checklist and stops polling`, async () => {
     globalThis.setInterval = ((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
-      originalSetInterval(handler, ms === LIVE_REFRESH_MS ? 10 : ms, ...args)) as typeof setInterval;
+      originalSetInterval(handler, ms === TICK_MS ? 10 : ms, ...args)) as typeof setInterval;
     const { asked } = mount(role, () => Response.json({ ...empty, machines: { signedIn: 1 }, projects: 1,
       liveCapture: true, runnersReady: role === 'admin' ? 1 : null, workProduced: role === 'admin' }));
     await waitFor(() => expect(asked.filter(path => path === '/api/setup')).toHaveLength(1));

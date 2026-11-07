@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { ME_KEY } from '../lib/query-client';
+import { live } from '../lib/live';
 
 /** `GET /auth/me`: the signed-in account and the member it is linked to, or null. A 401 is the signed-out state. */
 export interface Me {
@@ -45,7 +46,7 @@ export function scopeOf(me: Me | undefined, key: 'machines' | 'machineSettings' 
 
 /** `enabled: false` leaves the session unasked, for a page that shows the same thing to everyone. */
 export function useMe(options: { enabled?: boolean } = {}) {
-  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), enabled: options.enabled ?? true });
+  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), enabled: options.enabled ?? true, ...live('still') });
 }
 
 /** Whether the Deployment permits ordinary administration for this viewer. */
