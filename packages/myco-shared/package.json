@@ -151,6 +151,10 @@
       "import": "./dist/execution-profile.js",
       "types": "./dist/execution-profile.d.ts"
     },
+    "./step-words": {
+      "import": "./dist/step-words.js",
+      "types": "./dist/step-words.d.ts"
+    },
     "./call-words": {
       "import": "./dist/call-words.js",
       "types": "./dist/call-words.d.ts"

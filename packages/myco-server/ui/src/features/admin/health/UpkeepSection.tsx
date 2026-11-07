@@ -10,10 +10,10 @@ import { UpkeepLine } from '../../today/Summary';
 import { AdminSection } from '../AdminFrame';
 import type { CheckStatus, MaintenanceAnswer, MaintenanceOutcome, TickReport } from './wire';
 import { CHECK_TITLES, findingWords, groupedFindings, measurementWords, supportWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
+import { live } from '../../../lib/live';
 
 const HOUR = 3_600_000;
 /** How often the checks are read again while one runs, so its outcome appears without a reload. */
-const RUNNING_REFRESH_MS = 5_000;
 
 /**
  * Upkeep: what this server does on its own to stay well. The search index's
@@ -89,7 +89,7 @@ function Maintenance() {
   const status = useQuery({
     queryKey: ['maintenance'],
     queryFn: ({ signal }) => fetchJson<MaintenanceAnswer>('/api/maintenance', signal),
-    refetchInterval: (query) => (query.state.data?.checks.some((c) => c.running) ? RUNNING_REFRESH_MS : false),
+    ...live<MaintenanceAnswer>({ whileMoving: (data) => data?.checks.some((c) => c.running) ?? false, quick: true }),
   });
   return (
     <Card className="flex flex-col gap-s3" data-testid="maintenance">

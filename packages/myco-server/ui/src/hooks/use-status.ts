@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson, type StatusResponse, type WorkerStatus } from '../lib/api';
+import { live } from '../lib/live';
 
-/** `/api/status`. `refetchInterval` keeps it current on a page that shows what is happening now. */
-export function useStatus(options: { refetchInterval?: number | false; refetchIntervalInBackground?: boolean } = {}) {
+/** `/api/status`, read again whenever runs, capture or the runners move. */
+export function useStatus() {
   return useQuery({
     queryKey: ['status'],
     queryFn: ({ signal }) => fetchJson<StatusResponse>('/api/status', signal),
-    ...options,
+    ...live<StatusResponse>({ follows: ['runs', 'sessions', 'fleet'] }),
   });
 }
 

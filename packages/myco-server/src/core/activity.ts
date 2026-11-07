@@ -13,6 +13,18 @@
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 
+/**
+ * The header a dashboard read carries when no one has used the dashboard in the last minute: a page refreshing itself
+ * in front of no one is not a person on the dashboard, so it leaves no activity stamp. It can only withhold a stamp,
+ * never grant anything, so the header is trusted as sent.
+ */
+export const UNATTENDED_HEADER = 'x-myco-unattended';
+
+/** Whether a request says no one is at the dashboard. */
+export function unattendedRequest(request: Request): boolean {
+  return request.headers.get(UNATTENDED_HEADER) === '1';
+}
+
 /** The key under which the Deployment records the last owner request it served. */
 export const LAST_REQUEST_KEY = 'last_request_at';
 /** A request is stamped at most this often; the stamp is a write, and one per minute is as fresh as the tick can read. */

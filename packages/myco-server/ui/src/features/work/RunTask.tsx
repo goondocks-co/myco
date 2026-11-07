@@ -6,7 +6,7 @@ import { ActionLink, ActionMenu, Button, Dialog, DialogContent, DialogFooter, Er
 import { useTaskDescriptions, useTaskStartPreview } from '../../hooks/use-tasks';
 import { useCapabilities } from '../../hooks/use-settings';
 import { useProjects } from '../../hooks/use-projects';
-import { runIsLive, useDispatchTask, useRunDetail, useWorkWhileRunning } from '../../hooks/use-work';
+import { runIsLive, useDispatchTask, useRunDetail, useLiveWork } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { harnessLabel } from '../../lib/harness';
 import { PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
@@ -144,7 +144,7 @@ function Confirm({ projectId, task, onOpenChange, admin, now, onStarted }: RunTa
   const dispatch = useDispatchTask(chosen ?? '');
   const capabilities = useCapabilities(chosen ?? '', { enabled: chosen !== null });
   const preview = useTaskStartPreview(chosen, task);
-  const week = useWorkWhileRunning({ projectId: chosen, ...workBounds('week', now) }, { enabled: chosen !== null });
+  const week = useLiveWork({ projectId: chosen, ...workBounds('week', now) }, { enabled: chosen !== null });
   const [fresh, setFresh] = useState(false);
   // One ask at a time: set before the dispatch goes out, so a second click in the same tick sends nothing.
   const asking = useRef(false);

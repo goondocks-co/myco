@@ -80,6 +80,7 @@ export const RUNNERS_PAGE: ServerPage = { label: 'Runners', icon: Bot, to: RUNNE
 
 /** Where each part of Health sits on its page. */
 export const HEALTH_ANCHORS = {
+  now: 'now',
   needsYou: 'needs-you',
   status: 'status',
   workers: 'workers',

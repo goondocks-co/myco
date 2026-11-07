@@ -3,6 +3,7 @@ import type { SearchAcrossAnswer, SearchAcrossResult, SearchAnswer, SearchResult
 import { SEARCH_API_LIMIT, SEARCH_TYPES } from '@goondocks/myco-shared/search-types';
 import { fetchJson } from '../lib/api';
 import { planPagePath } from './use-knowledge';
+import { live } from '../lib/live';
 
 export type { SearchResult, SearchAcrossResult };
 /** The kinds of record a search answers with. */
@@ -11,7 +12,6 @@ export const SEARCH_DEBOUNCE_MS = 300;
 export const SEARCH_MIN_CHARS = 2;
 /** How many results one search lists at most: the server's own cap, asked for explicitly. */
 export const SEARCH_RESULT_CAP = SEARCH_API_LIMIT;
-const SEARCH_INDEX_REFRESH_MS = 5000;
 
 /** What a search covers: the one project picked, or every project. */
 export type SearchScope = { projectId: string } | 'all';
@@ -65,7 +65,7 @@ export function useSearch(scope: SearchScope, filters: SearchFilters, enabled: b
       return { ...answer, results: answer.results.map((hit) => ({ ...hit, projectId: scope.projectId })) };
     },
     enabled: enabled && filters.query.length >= SEARCH_MIN_CHARS,
-    refetchInterval: (state) => enabled && (state.state.data?.coverage.pending_blobs ?? 0) > 0 ? SEARCH_INDEX_REFRESH_MS : false,
+    ...live<ScopedSearchAnswer>({ follows: ['sessions', 'runs'] }),
   });
 }
 

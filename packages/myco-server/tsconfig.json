@@ -26,6 +26,7 @@
       "@goondocks/myco-shared/run-diagnostic": ["../myco-shared/src/run-diagnostic.ts"],
       "@goondocks/myco-shared/execution-profile": ["../myco-shared/src/execution-profile.ts"],
       "@goondocks/myco-shared/call-words": ["../myco-shared/src/call-words.ts"],
+      "@goondocks/myco-shared/step-words": ["../myco-shared/src/step-words.ts"],
       "@goondocks/myco-shared/settings-contract": ["../myco-shared/src/settings-contract.ts"],
       "@goondocks/myco-shared/redact-secrets": ["../myco-shared/src/redact-secrets.ts"],
       "@goondocks/myco-shared/canopy": ["../myco-shared/src/canopy.ts"],

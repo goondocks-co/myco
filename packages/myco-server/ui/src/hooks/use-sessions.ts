@@ -3,8 +3,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
 import type { ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
-import { isLive, LIVE_WITHIN_MS } from '../features/today/timeline';
-import { LIVE_REFRESH_MS } from './use-work';
+import { LIVE_WITHIN_MS } from '../features/today/timeline';
+import { live } from '../lib/live';
 
 export interface SessionRow {
   sessionId: string;
@@ -376,8 +376,8 @@ export function useSessionList(filters: SessionListFilters) {
 
 /**
  * The sessions live now under the table's filters: open, and heard from within
- * the live span, read as one page. While it holds any, it is read again every
- * 30 s, never from a hidden tab; the span is taken at each read.
+ * the live span, read as one page, and read again whenever capture arrives;
+ * the span is taken at each read.
  */
 export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'active'>, enabled: boolean) {
   const scope = sessionListPath({ ...filters, state: 'open' });
@@ -385,8 +385,7 @@ export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'act
     queryKey: ['sessions', 'live', filters.projectId ?? 'all', scope],
     enabled,
     queryFn: ({ signal }) => fetchJson<SessionListPage>(sessionListPath({ ...filters, state: 'open', active: { since: Date.now() - LIVE_WITHIN_MS } }), signal),
-    refetchInterval: (query) => ((query.state.data?.rows.length ?? 0) > 0 ? LIVE_REFRESH_MS : false),
-    refetchIntervalInBackground: false,
+    ...live<SessionListPage>({ follows: ['sessions'] }),
   });
 }
 
@@ -553,13 +552,12 @@ export function useSetPlanStatus(projectId: string, sessionId: string) {
   });
 }
 
-/** One session and what came of it. While the session is live it is read again every 30 s, never from a hidden tab. */
+/** One session and what came of it, read again whenever capture arrives or a run moves. */
 export function useSession(projectId: string, sessionId: string) {
   return useQuery({
     queryKey: ['session', projectId, sessionId],
     queryFn: ({ signal }) => fetchJson<SessionResponse>(`${project(projectId)}/sessions/${seg(sessionId)}`, signal),
-    refetchInterval: (query) => (query.state.data !== undefined && isLive(query.state.data.session, Date.now()) ? LIVE_REFRESH_MS : false),
-    refetchIntervalInBackground: false,
+    ...live<SessionResponse>({ follows: ['sessions', 'runs'] }),
   });
 }
 

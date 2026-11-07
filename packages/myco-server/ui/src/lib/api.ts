@@ -1,6 +1,7 @@
 import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import type { FleetQueue, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import type { CaptureRow, MachineHarnessHealth } from '../features/today/wire';
+import { unattendedHeader } from './live';
 
 /**
  * A refusal or failure answered by the server, carrying the status, the
@@ -46,7 +47,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 }
 
 export function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  return request<T>(path, { method: 'GET', headers: { accept: 'application/json' }, signal });
+  return request<T>(path, { method: 'GET', headers: { accept: 'application/json', ...unattendedHeader() }, signal });
 }
 
 /** A write with a JSON body. */

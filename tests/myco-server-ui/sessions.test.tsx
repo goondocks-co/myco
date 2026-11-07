@@ -19,7 +19,6 @@ import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
 import { displayPrompt, promptDisplay, replyDisplay } from '@goondocks/myco-shared/prompt-text';
 import { useTurnCollection } from '../../packages/myco-server/ui/src/hooks/use-turn-collection';
@@ -296,7 +295,7 @@ describe('the sessions table', () => {
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
-  it('reads only the live group again every 30 s while it holds a session, never from a hidden tab, and never the pages below', async () => {
+  it('reads only the live group again when capture arrives, never by the clock, and never the pages below', async () => {
     server(base({ '/api/sessions': () => page(ROWS), [livePath({ projectId: 'x' })]: () => page([LIVE]) }));
     const client = mount('/p/x/sessions');
     await waitFor(() => expect(document.querySelector('[data-live]')).not.toBeNull());
@@ -306,10 +305,11 @@ describe('the sessions table', () => {
       return typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false;
     };
     const live = client.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!;
-    expect((live.options as Polled).refetchIntervalInBackground).toBe(false);
-    expect(interval(live)).toBe(LIVE_REFRESH_MS);
+    expect(interval(live)).toBe(false);
+    expect(live.meta?.follows).toEqual(['sessions']);
     const pages = client.getQueryCache().findAll({ queryKey: ['sessions', 'x'] })[0]!;
     expect(interval(pages)).toBe(false);
+    expect(pages.meta?.follows).toBeUndefined();
     cleanup();
 
     server(base({ '/api/sessions': () => page(ROWS.slice(1)), [livePath({ projectId: 'x' })]: () => page([]) }));

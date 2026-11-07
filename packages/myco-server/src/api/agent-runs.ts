@@ -1,9 +1,4 @@
-import { emit, classify } from '../telemetry.js';
-import { readWorkerFleet } from '../core/worker-contacts.js';
-import { fleetSelectionContext, fleetTaskReason } from '../read/fleet.js';
-import { claimSettings } from '../core/worker-selection.js';
-import { readDispatchLimits } from '../core/limits.js';
-import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { fleetWaits } from '../read/fleet.js';
 /**
  * Agent runs, read through the product surface.
  *
@@ -121,19 +116,4 @@ export async function handleProjectRunSteps(env: ServerEnv, ctx: OwnerContext): 
   if (attempt instanceof Response) return attempt;
   const answer = await getRunSteps(env.db, scope, runId, attempt, steps);
   return answer === null ? notFound() : ok(answer);
-}
-
-/** One read supplies the current wait for all queued tasks on a page. */
-async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)[], now: number, includeSignIn: boolean) {
-  const waits = new Map<string | null, { reason: QueueReason; observedAt: number }>();
-  if (tasks.length === 0) return waits;
-  try {
-  const selection = fleetSelectionContext(env, includeSignIn);
-  const [fleet, settings, limits] = await Promise.all([readWorkerFleet(env.db, now, includeSignIn), claimSettings(env), readDispatchLimits(env)]);
-  for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, fleet, now, settings, limits, undefined, selection), observedAt: now });
-  } catch (error) {
-    emit({ kind: 'fleet_read_failed', errorClass: classify(error) });
-    for (const task of new Set(tasks)) waits.set(task, { reason: 'unavailable', observedAt: now });
-  }
-  return waits;
 }

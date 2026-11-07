@@ -11,6 +11,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, projectSetParam, resolveProjectSet } from './scope.js';
 import { DEFAULT_WORK_WINDOW_MS, MAX_WORK_WINDOW_MS, readWork } from '../read/work.js';
+import { readWorkNow } from '../read/work-now.js';
+import { isAdmin } from '../auth/roles.js';
 
 function workCursor(raw: string | null): { at: number; projectId: string; id: string } | undefined | Response {
   if (raw === null) return undefined;
@@ -41,4 +43,18 @@ export async function handleWork(env: ServerEnv, ctx: OwnerContext): Promise<Res
   const set = await resolveProjectSet(env.db, ctx.member, named);
   if (set === null) return notFound();
   return ok(await readWork(env.db, set, start, end, cursor));
+}
+
+/**
+ * `GET /api/work/now`: what Myco is doing now — running, waiting and why, and what needs someone — over one Project
+ * (`project`) or every visible Project. The dashboard's live refresh reads it every tick, so it is bounded on every
+ * store; a runner's sign-in detail is an administrator's, as on Runners.
+ */
+export async function handleWorkNow(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const named = projectSetParam(ctx.url);
+  if (named instanceof Response) return named;
+  if (named.length > 1) return badRequest('name one project, or none for every project');
+  const set = await resolveProjectSet(env.db, ctx.member, named);
+  if (set === null) return notFound();
+  return ok(await readWorkNow(env, named.length === 1 ? { projectId: named[0]! } : { all: true }, ctx.now, isAdmin(ctx.member.role)));
 }

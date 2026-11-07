@@ -23,7 +23,7 @@ import { liftsAt, policyWords, progressWords, waitingWords } from '../../package
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
 import { OUTCOME_TASKS, TASK_TIERS } from '../../packages/myco-server/src/core/task-catalogue';
 import { rawIdsIn } from '../helpers/raw-ids';
-import { settingsRefreshInterval } from '../../packages/myco-server/ui/src/hooks/use-settings';
+import { settingsMoving } from '../../packages/myco-server/ui/src/hooks/use-settings';
 import type { EmbeddingSwitchStatus } from '../../packages/myco-shared/src/settings-contract';
 
 const ADA = 'mem_q3Vb8xRk2LmT7wYz';
@@ -502,8 +502,8 @@ describe('Settings, in five sections', () => {
   });
 
   it('reads Settings again while a switch stands, and stops once it ends', () => {
-    expect(settingsRefreshInterval({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: BUILDING } } as unknown as Parameters<typeof settingsRefreshInterval>[0])).toBe(10_000);
-    expect(settingsRefreshInterval({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: null } } as unknown as Parameters<typeof settingsRefreshInterval>[0])).toBe(false);
+    expect(settingsMoving({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: BUILDING } } as unknown as Parameters<typeof settingsMoving>[0])).toBe(true);
+    expect(settingsMoving({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: null } } as unknown as Parameters<typeof settingsMoving>[0])).toBe(false);
   });
 
   it('shows a switch that waits for its provider, one that has not moved, and the sources it left out, each saying why', async () => {
