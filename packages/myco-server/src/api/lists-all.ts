@@ -38,9 +38,8 @@ async function projectSetOf(env: ServerEnv, ctx: OwnerContext): Promise<ProjectS
 export async function handleSessionsAcross(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const set = await projectSetOf(env, ctx);
   if (set instanceof Response) return set;
-  const page = paging(ctx.url);
+  const page = paging(ctx.url, { decode: decodeProjectCursor, refusal: PROJECT_CURSOR_REFUSAL });
   if (page instanceof Response) return page;
-  if (page.cursor !== undefined && decodeProjectCursor(page.cursor) === null) return badRequest(PROJECT_CURSOR_REFUSAL);
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
   const listed = await listSessionSummariesAcross(env.db, set, { ...page, ...filters }, ctx.now);

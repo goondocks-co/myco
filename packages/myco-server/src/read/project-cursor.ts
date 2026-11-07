@@ -1,7 +1,8 @@
 /**
  * Cursors of lists that span Projects. A row of such a list is keyed by its Project and its id, so the cursor carries
- * `<instant>:<projectId>:<id>` and the list orders by the instant, then the Project, then the id, all descending: two rows
- * of different Projects sharing an instant and an id each keep their own place across a page boundary.
+ * `p1:<instant>:<projectId>:<id>` and the list orders by the instant, then the Project, then the id, all descending: two
+ * rows of different Projects sharing an instant and an id each keep their own place across a page boundary. The `p1:`
+ * prefix names the encoding, so a cursor without it, whatever its id holds, is never read as one of these.
  */
 import type { Page } from './scope.js';
 
@@ -10,17 +11,21 @@ const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** The refusal of a cursor this list did not issue, including one from before cursors carried the Project. */
 export const PROJECT_CURSOR_REFUSAL =
-  'malformed cursor: this list pages by "<instant>:<projectId>:<id>" exactly as its last answer returned it in `cursor`; '
+  'malformed cursor: this list pages by "p1:<instant>:<projectId>:<id>" exactly as its last answer returned it in `cursor`; '
   + 'a cursor issued before lists across Projects carried the Project is refused. Nothing was read: request the first page again without a cursor.';
 
 export interface ProjectCursor { createdAt: number; projectId: string; id: string }
 
+const PREFIX = 'p1:';
+
 export function encodeProjectCursor(key: ProjectCursor): string {
-  return `${key.createdAt}:${key.projectId}:${key.id}`;
+  return `${PREFIX}${key.createdAt}:${key.projectId}:${key.id}`;
 }
 
-/** The cursor's key, or null when the text is not one this kind of list issues. */
-export function decodeProjectCursor(cursor: string): ProjectCursor | null {
+/** The cursor's key, or null when the text is not one this kind of list issues: every text without the `p1:` prefix is refused. */
+export function decodeProjectCursor(text: string): ProjectCursor | null {
+  if (!text.startsWith(PREFIX)) return null;
+  const cursor = text.slice(PREFIX.length);
   const first = cursor.indexOf(':');
   const second = first < 0 ? -1 : cursor.indexOf(':', first + 1);
   if (first <= 0 || second < 0) return null;

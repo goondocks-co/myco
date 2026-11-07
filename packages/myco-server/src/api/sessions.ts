@@ -62,11 +62,11 @@ export function sessionIdParam(raw: string): string | null {
 }
 
 /** The caller's paging arguments, or a refusal. A malformed cursor is refused rather than ignored: silently serving page one to a client that asked for page nine loses rows without saying so. */
-export function paging(url: URL): { limit?: number; cursor?: string } | Response {
+export function paging(url: URL, cursors: { decode: (cursor: string) => unknown; refusal: string } = { decode: decodeCursor, refusal: 'malformed cursor' }): { limit?: number; cursor?: string } | Response {
   const rawLimit = url.searchParams.get('limit');
   const rawCursor = url.searchParams.get('cursor');
   if (rawLimit !== null && !/^[0-9]+$/.test(rawLimit)) return badRequest('limit must be a positive integer');
-  if (rawCursor !== null && decodeCursor(rawCursor) === null) return badRequest('malformed cursor');
+  if (rawCursor !== null && cursors.decode(rawCursor) === null) return badRequest(cursors.refusal);
   return { limit: rawLimit === null ? undefined : Number(rawLimit), cursor: rawCursor ?? undefined };
 }
 
