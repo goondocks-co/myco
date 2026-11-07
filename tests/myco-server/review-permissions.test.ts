@@ -153,7 +153,7 @@ test('run owner rejects invalid status and backwards transitions', async () => {
 });
 
 test('card admission refuses null and array card fields', () => {
-  for (const card of [null, []]) expect(parseCardWrites([{ turns: ['turn'], signal: 'high', card }], new Set(['turn']))).toBe('each card carries its fields');
+  for (const card of [null, []]) expect(parseCardWrites([{ turns: ['turn'], signal: 'high', card }], new Set(['turn']))).toBe('cards[0]: card is missing or malformed; expected an object with all card fields');
 });
 
 test('run state cannot reset server read budgets', async () => {

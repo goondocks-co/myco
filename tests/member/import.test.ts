@@ -27,7 +27,7 @@ import { writeRegistryEntry, readRegistryEntry } from '@myco/member/registry.js'
  *     exist. The projections refuse quietly, the event log doubles, and the
  *     conflict signal a live parse would raise never fires.
  */
-import { describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -861,6 +861,13 @@ describe('import retry explanations', () => {
 import { IMPORT_FAULTS, faultAt, importSnapshot } from './helpers/import-differential.js';
 
 describe('transcript fault/resume differential', () => {
+  let restoreClock: () => void;
+  beforeEach(() => {
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-01T12:00:00Z'));
+    restoreClock = () => clock.mockRestore();
+  });
+  afterEach(() => restoreClock());
+
   for (const persistent of [false, true]) for (const kind of IMPORT_FAULTS) {
     it(`${kind}, ${persistent ? 'persistent' : 'single'} at every request: resume equals uninterrupted rows`, async () => {
       const cwds = [path.join(os.tmpdir(), 'differential-a'), path.join(os.tmpdir(), 'differential-b')];

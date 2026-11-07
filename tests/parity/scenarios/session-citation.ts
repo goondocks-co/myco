@@ -1,6 +1,7 @@
+import { expectRunRefusal } from '../../helpers/run-refusal.js';
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { expectRunRefusal, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /** Body serving, session citation authority and old dispatches through each front door. */
 export const sessionCitation: ParityScenario = {

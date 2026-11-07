@@ -1,7 +1,7 @@
 import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { commitRunUpdate } from '@myco-server-worker/core/release.js';
 import { storedCardFields } from '@goondocks/myco-shared/turn-card';
-import { expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -1338,20 +1338,30 @@ it('learning receives and pins the optional repository before validating new kno
   });
 });
 
-it('claims learning without code on Codex, missing checkout capability, disconnected or unreadable repositories', async () => {
-  for (const scenario of [
-    {connected:false,harness:'codex',capabilities:[],queued:false},
-    {connected:true,harness:'codex',capabilities:[],queued:true},
-    {connected:true,harness:'claude-code',capabilities:[],queued:false},
-    {connected:true,harness:'claude-code',capabilities:WORKER_CAPABILITIES,unreadable:true,queued:false},
-  ]) await withDocumentStores(async db => {
-    const run=await learningRun(db,plainTurns(1),'low',undefined,null,scenario.connected,scenario);
-    expect(run.claimed.harness).toBe(scenario.harness);
-    expect(run.claimed).not.toHaveProperty('repository');
-    expect(run.claimed.instruction).toContain('No usable repository checkout is available');
-    expect(run.claimed.instruction).not.toContain('is pinned at its current commit');
-    await run.readAll();
-    expect(await run.save('Shared counters: increment atomically.')).toHaveProperty('id');
+describe('learning without a repository checkout', () => {
+  const check = async (scenario: { connected: boolean; harness: string; capabilities: readonly string[]; queued: boolean; unreadable?: boolean }) => {
+    await withDocumentStores(async db => {
+      const run=await learningRun(db,plainTurns(1),'low',undefined,null,scenario.connected,scenario);
+      expect(run.claimed.harness).toBe(scenario.harness);
+      expect(run.claimed).not.toHaveProperty('repository');
+      expect(run.claimed.instruction).toContain('No usable repository checkout is available');
+      expect(run.claimed.instruction).not.toContain('is pinned at its current commit');
+      await run.readAll();
+      expect(await run.save('Shared counters: increment atomically.')).toHaveProperty('id');
+    });
+  };
+
+  it('claims learning without code on disconnected Codex', async () => {
+    await check({connected:false,harness:'codex',capabilities:[],queued:false});
+  });
+  it('claims queued learning without code on Codex without checkout capability', async () => {
+    await check({connected:true,harness:'codex',capabilities:[],queued:true});
+  });
+  it('claims learning without code on Claude Code without checkout capability', async () => {
+    await check({connected:true,harness:'claude-code',capabilities:[],queued:false});
+  });
+  it('claims learning without code from an unreadable repository', async () => {
+    await check({connected:true,harness:'claude-code',capabilities:WORKER_CAPABILITIES,unreadable:true,queued:false});
   });
 });
 

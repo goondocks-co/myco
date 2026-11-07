@@ -1,7 +1,8 @@
+import { expectRunRefusal } from '../../helpers/run-refusal.js';
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { memberHeadersFor } from '../harness.ts';
-import { documentsPublished, expectPersisted, expectRunRefusal, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * Spores on both targets: a member's save naming its session carries that
