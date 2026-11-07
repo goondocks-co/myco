@@ -1,3 +1,4 @@
+import { contextAdmission, type ContextAdmission } from '../db/context-records.js';
 import { archivedTranscriptRangeSql } from '../core/transcript-ranges.js';
 import { DOCUMENT_ID_FIELDS, DOCUMENT_IDENTITIES_SQL } from '../db/document-tables.js';
 import { processedResourceProofSql } from '../core/processed-resources.js';
@@ -261,7 +262,7 @@ export function sharedChecks(
  * A session not yet held is writable, as a first event's is.
  */
 export interface SessionWriteAdmission {
-  admission: Fragment;
+  admission: ContextAdmission;
   refusal(db: RelationalStore): Promise<Refusal | null>;
 }
 
@@ -276,10 +277,7 @@ export function sessionWriteAdmission(
     owned(write, { table: 'sessions', keyColumn: 'session_id', key: sessionId, owner: 'row' }),
   ];
   return {
-    admission: {
-      sql: checks.map((check) => `(${check.admission.sql})`).join(' AND '),
-      params: checks.flatMap((check) => check.admission.params),
-    },
+    admission: contextAdmission(ctx.projectId, sessionId, ctx.machineId),
     async refusal(db) {
       for (const check of checks) {
         const row = await db
@@ -373,7 +371,7 @@ const sessionCommit = (
       SELECT ?, ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, ?, ?, '', ? WHERE ${RAW_ROW_GATE}
       ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error,
         captured_at = excluded.captured_at, event_id = excluded.event_id, branch = excluded.branch
-        WHERE ${wins}`,
+        WHERE ${wins} RETURNING 1 AS applied`,
       )
       .bind(
         ctx.projectId,
@@ -403,7 +401,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
       ? []
       : [
           db
-            .prepare(`UPDATE projects SET name = ? WHERE project_id = ? AND name = project_id AND ${RAW_ROW_GATE}`)
+            .prepare(`UPDATE projects SET name = ? WHERE project_id = ? AND name = project_id AND ${RAW_ROW_GATE} RETURNING 1 AS applied`)
             .bind(projectName, ctx.projectId, ...rawGateParams(ctx, e)),
         ];
   const earlier =
@@ -426,7 +424,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
               ${fact('launch_parent_session_id')},
               ${fact('facts_event_id')},
               ${fact('started_at')}
-        WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`,
+        WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
         )
         .bind(
           ...rank,
@@ -590,7 +588,7 @@ const importedTitle = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
         db
           .prepare(
             `UPDATE sessions SET title = ?, summary = ?, titled_at = ?
-        WHERE project_id = ? AND session_id = ? AND titled_by IS NULL AND ${RAW_ROW_GATE}`,
+        WHERE project_id = ? AND session_id = ? AND titled_by IS NULL AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
           )
           .bind(
             p.title,
@@ -630,7 +628,7 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
           ended_by = CASE WHEN ${END_APPLIES_SQL} THEN ? ELSE ended_by END,
           titling_requested_at = CASE WHEN ? IS NULL OR NOT ${END_APPLIES_SQL} THEN titling_requested_at
             ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
-        WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`,
+        WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
         )
         .bind(
           ...endAppliesParams(endedAt),
@@ -750,19 +748,19 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
         .prepare(
           `INSERT INTO plans (${merged.insert.columns.join(', ')})
         SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}
-        ON CONFLICT(project_id,plan_key) DO UPDATE SET ${merged.update.sql}`,
+        ON CONFLICT(project_id,plan_key) DO UPDATE SET ${merged.update.sql} RETURNING 1 AS applied`,
         )
         .bind(...merged.insert.params, ...rawGateParams(ctx, e), ...merged.update.params),
       // Tags follow every event at least as new as the row, identical content included: a tags-only save lands.
       db
         .prepare(
-          `DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${current} AND ${RAW_ROW_GATE}`,
+          `DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id = ? AND ${current} AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
         )
         .bind(ctx.projectId, planKey, ctx.projectId, planKey, e.createdAt, e.eventId, ...rawGateParams(ctx, e)),
       db
         .prepare(
           `INSERT OR IGNORE INTO tags (project_id, entity_kind, entity_id, tag)
-          SELECT ?, 'plan', ?, value FROM json_each(?) WHERE ${current} AND ${RAW_ROW_GATE}`,
+          SELECT ?, 'plan', ?, value FROM json_each(?) WHERE ${current} AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
         )
         .bind(ctx.projectId, planKey, tags, ctx.projectId, planKey, e.createdAt, e.eventId, ...rawGateParams(ctx, e)),
     ],
@@ -823,7 +821,7 @@ const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
         .prepare(
           `INSERT INTO attachments (${merged.insert.columns.join(',')})
           SELECT ${merged.insert.sql} ${merged.insert.source!.sql} AND ${RAW_ROW_GATE}
-          ON CONFLICT (project_id, attachment_id) DO NOTHING`,
+          ON CONFLICT (project_id, attachment_id) DO NOTHING RETURNING 1 AS applied`,
         )
         .bind(...merged.insert.params, ...merged.insert.source!.params, ...rawGateParams(ctx, e)),
     ],
@@ -878,7 +876,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
         .prepare(
           `INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND NOT ${archivedTranscriptRangeSql('?', '?', '?')}
-          ON CONFLICT (project_id, transcript_id, base_offset) DO NOTHING`,
+          ON CONFLICT (project_id, transcript_id, base_offset) DO NOTHING RETURNING 1 AS applied`,
         )
         .bind(
           ctx.projectId,
@@ -904,7 +902,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ${admitted.sql}, ${record.sql} WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
           ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
             last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash),
-            imported_at = excluded.imported_at`,
+            imported_at = excluded.imported_at RETURNING 1 AS applied`,
         )
         .bind(
           ctx.projectId,
@@ -931,7 +929,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
       db
         .prepare(
           `UPDATE sessions SET agent = COALESCE(agent, ?) WHERE project_id = ? AND session_id = ?
-          AND ${RAW_ROW_GATE} AND ${segmentWritten}`,
+          AND ${RAW_ROW_GATE} AND ${segmentWritten} RETURNING 1 AS applied`,
         )
         .bind(
           opt(p.agent),

@@ -1092,18 +1092,7 @@ export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, l
  * still names is left: `agent_runs.dispatched_by` references it, and the run
  * retention pass above is what clears that reference.
  */
-const REVOKED_CREDENTIALS_SQL = `DELETE FROM member_credentials
-  WHERE id IN (
-    SELECT c.id FROM member_credentials c
-     WHERE c.member_id = ? AND c.revoked_at IS NOT NULL AND c.revoked_at < ?
-       AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.dispatched_by = c.id)
-     ORDER BY c.revoked_at ASC LIMIT ?)`;
-
-/** Remove revoked credentials of one member older than the cutoff, up to `limit`. Answers how many went. */
-export async function pruneRevokedCredentials(db: RelationalStore, memberId: string, cutoffMs: number, limit: number): Promise<number> {
-  const result = await db.prepare(REVOKED_CREDENTIALS_SQL).bind(memberId, cutoffMs, limit).run();
-  return result.meta.changes ?? 0;
-}
+export { pruneRevokedCredentials } from '../db/credential-retention.js';
 
 /** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
 const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs

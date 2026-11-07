@@ -98,7 +98,7 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
   const credentialAt = statements.indexOf(credential);
   const results = await env.db.batch(statements);
   if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
-  const issuedCredential = results[credentialAt]!.meta.changes === 1;
+  const issuedCredential = results[credentialAt]!.results.length === 1;
 
   if (!issuedCredential) {
     // Enrollment refusals precede identity refusals.

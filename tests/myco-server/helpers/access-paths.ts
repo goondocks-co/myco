@@ -8,6 +8,7 @@
  * declared once and judged the same way by both.
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
+  ['idx_kpi_lineage_started', 'KPI lineage samples seek lineages started inside the window (S3a.2 reader)'],
   ['idx_curation_changes_due', 'curation discovery seeks changed Projects across the Deployment'],
   ['idx_curation_projects', 'curation discovery seeks one opted-in Project after its saved cursor across the Deployment'],
   ['idx_view_active_leases', 'view slot admission seeks unexpired build leases across Projects'],

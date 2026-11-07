@@ -150,29 +150,29 @@ export async function tombstoneSession(
   const statements = [
     ...metadata,
     // Segments first: `transcripts` is the only route to them.
-    env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
+    env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION}) RETURNING 1 AS removed`).bind(projectId, projectId, sessionId),
     ...(['event'] as const).map(kind=>{
       const table='events';const id='event_id';
       return env.db.prepare(`DELETE FROM storage_cleanup_omissions WHERE rowid IN
         (SELECT o.rowid FROM ${table} r CROSS JOIN storage_cleanup_omissions o
           WHERE r.project_id=? AND r.session_id=? AND o.project_id=r.project_id
-            AND o.resource_kind=? AND o.resource_id=r.${id})`).bind(projectId,sessionId,kind);
+            AND o.resource_kind=? AND o.resource_id=r.${id}) RETURNING 1 AS removed`).bind(projectId,sessionId,kind);
     }),
     // Served snapshots belong to the receiving session's receipt, not the source plan's session.
     env.db.prepare(`DELETE FROM injection_served_items WHERE project_id = ? AND receipt_id IN
-      (SELECT id FROM spore_injections WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),
-    ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
+      (SELECT id FROM spore_injections WHERE project_id = ? AND session_id = ?) RETURNING 1 AS removed`).bind(projectId, projectId, sessionId),
+    ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId)),
     // The runs that read the session keep their own rows; only their record of reading this one goes.
-    env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
-    env.db.prepare(`DELETE FROM run_served_material WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
-    env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
+    env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId),
+    env.db.prepare(`DELETE FROM run_served_material WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId),
+    env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?) RETURNING 1 AS removed`).bind(projectId, projectId),
   ];
   // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows,
   // so an interruption before the decision below leaves the candidates for the drain rather than for no one.
   const pairs = keys.map((key) => ({ projectId, key }));
   const candidates = recordBlobCandidates(env.db, pairs, nowMs);
   const results = await env.db.batch([...statements, ...candidates]);
-  const removed = results.slice(metadata.length, statements.length).reduce((n, r) => n + r.meta.changes, 0);
+  const removed = results.slice(metadata.length, statements.length).reduce((n, r) => n + r.results.length, 0);
 
   const released = await releaseBlobs(env.db, pairs, nowMs);
   const blobsFreed = released.released;

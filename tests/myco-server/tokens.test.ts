@@ -63,13 +63,17 @@ describe('member tokens', () => {
     expect(old.expiresAt).toBe(5_000 + MEMBER_TOKEN_TTL_MS);
   });
 
-  it('revokes a whole lineage by any of its ids in one statement, counting the rows that changed', async () => {
-    const { db, calls } = recordingDb(3);
-    expect(await revokeMemberLineage(db, 'mt_mid', 9_000, 'mem_machine_1')).toEqual({ revoked: 3 });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \? WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL/);
-    expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_mid']);
-    expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000, 'mem_machine_1')).toEqual({ revoked: 0 });
+  it('revokes the direct rows of one lineage and returns zero for a repeat or absent lineage', async () => {
+    const e = sqliteEnv();
+    try {
+      const member = { memberId: 'mem_machine_1', machineId: 'machine_1' };
+      const root = await issueMemberToken(e.db, member, 1_000);
+      const middle = await issueMemberToken(e.db, member, 2_000, { predecessorId: root.tokenId, lineageRoot: root.tokenId, lineageStartedAt: 1_000 });
+      await issueMemberToken(e.db, member, 3_000, { predecessorId: middle.tokenId, lineageRoot: root.tokenId, lineageStartedAt: 1_000 });
+      expect(await revokeMemberLineage(e.db, middle.tokenId, 9_000, member.memberId)).toEqual({ revoked: 3 });
+      expect(await revokeMemberLineage(e.db, root.tokenId, 9_001, member.memberId)).toEqual({ revoked: 0 });
+      expect(await revokeMemberLineage(e.db, 'mt_missing', 9_001, member.memberId)).toEqual({ revoked: 0 });
+    } finally { e.sqlite.close(); }
   });
 
   it('revokes an admitted lineage, preserves other members for ordinary callers, and refuses unknown credentials', async () => {

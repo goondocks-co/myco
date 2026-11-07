@@ -109,7 +109,7 @@ describe('operator scripts', () => {
   it('revoke --lineage prints the one update that revokes every live token of the lineage the id belongs to, applicable as printed', () => {
     const { code, out, err } = run('revoke-local.ts', ['mt_mid', 'mem_m', '--lineage']);
     expect(code).toBe(0);
-    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+, revoked_by = 'mem_m' WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = 'mt_mid'\) AND revoked_at IS NULL;$/);
+    expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+, revoked_by = 'mem_m' WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = 'mt_mid'\) AND revoked_at IS NULL RETURNING id;$/);
     expect(err).toContain('lineage');
     const sqlite = new Database(':memory:');
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
@@ -117,7 +117,7 @@ describe('operator scripts', () => {
     sqlite.exec(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at) VALUES ('mem_m', 'm', 0, NULL)`);
     sqlite.exec(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at)
                  VALUES ('mt_root', 'mem_m', 'm', 'h1', 0, 9, 1, 0, NULL, 'mt_root', 0), ('mt_mid', 'mem_m', 'm', 'h2', 0, 9, NULL, 0, 'mt_root', 'mt_root', 0), ('mt_tip', 'mem_m', 'm', 'h3', 0, 9, NULL, 0, 'mt_mid', 'mt_root', 0), ('mt_other', 'mem_m', 'm', 'h4', 0, 9, NULL, 0, NULL, 'mt_other', 0)`);
-    sqlite.exec(out.trim());
+    expect((sqlite.query(out.trim()).all() as { id: string }[]).map(row => row.id).sort()).toEqual(['mt_mid', 'mt_tip']);
     expect(sqlite.query(`SELECT id FROM member_credentials WHERE revoked_at IS NULL`).all()).toEqual([{ id: 'mt_other' }]);
     expect(run('revoke-local.ts', ['--lineage']).code).toBe(2);
   });

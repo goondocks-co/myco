@@ -1,3 +1,4 @@
+import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { clearArchivedTranscriptRanges, restoreTranscriptSegmentStatement } from './transcript-ranges.js';
 import { excludeDeletedRestoreRows, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
@@ -110,7 +111,9 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  'setting_revisions', 'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
+  'setting_revisions',
+  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup',
+  'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
@@ -701,6 +704,7 @@ export async function restoreArtifact(
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
     ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
   if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) throw new BackupApplyError('raw_claims', 'invalid raw provenance revision');
+  await resetProjectionCatchup(db);
   const offset = provenance.length === 0 ? 0 : await reserveRawRestore(db, hash, sourceRevision);
   for (const table of ['raw_resources', 'raw_archive_refs', 'raw_claims', 'events']) {
     for (const row of byTable.get(table) ?? []) {
