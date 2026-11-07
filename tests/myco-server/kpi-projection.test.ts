@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { commit } from '@myco-server-worker/db/index.js';
 import { KPI_MEASURES, kpiTriggers, reconcileKpi, type KpiMeasure } from '@myco-server-worker/db/insights/kpi-reconcile.js';
-import { catchUpKpiPhase, catchUpProjections, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
+import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
 import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { median, readKpis, type KpiReport } from '@myco-server-worker/read/kpis.js';
@@ -54,9 +54,9 @@ function transcript(r: Fixture, session: string, id: string, agent: string, sche
     VALUES(?,?,?,'m1',?,0,0,?,?,'cred_1',?,?)`).run(project, session, id, agent, at, at, primary ? 'primary' : 'subagent', scheme);
 }
 
-function answer(r: Fixture, id: string, skipped: string[], at = NOW) {
+function answer(r: Fixture, id: string, skipped: string[] | string, at = NOW) {
   r.sqlite.query(`INSERT INTO prompt_context_answers(project_id,session_id,id,prompt_id,ask_protocol,asked_at,outcome,context_chars,parts,skipped,failures,selection,created_at)
-    VALUES(?,'a',?,'p1','v1',?,'empty',0,'[]',?,'[]','{}',?)`).run(PROJECT, id, at, JSON.stringify(skipped), at);
+    VALUES(?,'a',?,'p1','v1',?,'empty',0,'[]',?,'[]','{}',?)`).run(PROJECT, id, at, typeof skipped === 'string' ? skipped : JSON.stringify(skipped), at);
 }
 
 function clearProjection(r: Fixture) {
@@ -204,9 +204,50 @@ describe('KPI projection critical flow', () => {
 
   it('pins frozen trigger SQL, derived backup exclusions and fresh-store readiness', async () => {
     expect(VNEXT_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual(kpiTriggers().map(t => t.sql));
+    expect(VNEXT_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup'))).toEqual(kpiCatchupSeed());
     for (const table of ['kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup']) expect(EXCLUDED_TABLES.has(table)).toBe(true);
     const r = rig();
     try { expect(await projectionReadiness(r.db, 'kpi')).toBe('ready'); } finally { r.sqlite.close(); }
+  });
+
+  it('preserves malformed skipped text on answer insert and update without counting it', () => {
+    const r = rig();
+    try {
+      r.session('a');
+      answer(r, 'malformed', 'not json');
+      const source = () => r.sqlite.query("SELECT skipped FROM prompt_context_answers WHERE id='malformed'").get();
+      const count = () => r.sqlite.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM kpi_fact WHERE grain='a'").get()!.n;
+      expect(source()).toEqual({ skipped: 'not json' });
+      expect(count()).toBe(0);
+      r.sqlite.query("UPDATE prompt_context_answers SET skipped=? WHERE id='malformed'").run('["spores:duplicate_prompt"]');
+      expect(count()).toBe(1);
+      r.sqlite.query("UPDATE prompt_context_answers SET skipped=? WHERE id='malformed'").run('x');
+      expect(source()).toEqual({ skipped: 'x' });
+      expect(count()).toBe(0);
+      expect(projected(r, null).promptIdentity).toEqual([]);
+    } finally { r.sqlite.close(); }
+  });
+
+  it('drains multiple five-session document pages within budget and requests more until done', async () => {
+    const r = rig();
+    try {
+      for (let i = 0; i < 11; i++) {
+        const session = `s${String(i).padStart(2, '0')}`;
+        r.session(session, { agent: null }); r.prompt('p', session);
+      }
+      r.sqlite.exec("DELETE FROM kpi_fact WHERE grain='p'; UPDATE projection_catchup SET done=0,frontier=NULL,after_key='[]' WHERE projection='kpi' AND phase='documents'");
+      let calls = 0;
+      const counted: RelationalStore = { ...r.db, batch: statements => { calls += statements.length; return r.db.batch(statements); } };
+      expect(await catchUpProjections(counted, { budget: { calls: 19, wallMs: 100 }, clock: () => 0 })).toEqual({ changed: 10, more: true });
+      expect(calls).toBe(19);
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM kpi_fact WHERE grain='p'").get()).toEqual({ n: 10 });
+      expect(await projectionReadiness(r.db, 'kpi')).toBe('building');
+      expect(await catchUpProjections(r.db, { budget: { calls: 19, wallMs: 0 }, clock: () => 0 })).toEqual({ changed: 0, more: true });
+      expect(await catchUpProjections(r.db, { budget: { calls: 10, wallMs: 100 }, clock: () => 0 })).toEqual({ changed: 1, more: false });
+      expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
+      expect(await catchUpProjections(r.db)).toEqual({ changed: 0, more: false });
+      expect(projected(r, null)).toEqual(await oracle(r, null));
+    } finally { r.sqlite.close(); }
   });
 
   it('invalidates readiness through the restore path and converges again through the wake job', async () => {

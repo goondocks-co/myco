@@ -46,7 +46,7 @@ const sources: Record<KpiGrain, GrainSource> = {
     deliveries: '1', placed: `EXISTS (SELECT 1 FROM session_prompts p WHERE ${sameSession('p', 'x')} AND p.prompt_id=x.delivered_prompt_id AND ${live('p', 'x')})`,
   } },
   i: { table: 'prompt_identity_conflicts', key: conflictKey('x'), match: conflictColumns.map((c, i) => `x.${c}=json_extract(q.k,'$[${i}]')`).join(' AND '), eligible: '1', time: 'x.created_at', measures: { identity_conflicts: '1' } },
-  a: { table: 'prompt_context_answers', key: 'x.id', match: 'x.id=q.k', eligible: `EXISTS (SELECT 1 FROM json_each(x.skipped) WHERE value='spores:duplicate_prompt')`, time: 'x.created_at', measures: { duplicate_skips: '1' } },
+  a: { table: 'prompt_context_answers', key: 'x.id', match: 'x.id=q.k', eligible: `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(x.skipped) THEN x.skipped ELSE '[]' END) WHERE value='spores:duplicate_prompt')`, time: 'x.created_at', measures: { duplicate_skips: '1' } },
   t: { table: 'transcripts', key: 'x.transcript_id', match: 'x.transcript_id=q.k', eligible: 'x.prompt_identity_scheme IS NULL', time: 'x.first_received_at', harness: `COALESCE(x.agent,'')`, measures: { scheme_conflicts: '1' } },
   m: { table: 'transcripts', key: 'x.agent', match: 'x.agent=q.k', eligible: `${mixedTime} IS NOT NULL`, time: mixedTime, harness: 'q.k', measures: { mixed_sessions: '1' } },
 };

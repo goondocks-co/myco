@@ -1,8 +1,10 @@
-import type { RelationalStore } from '../../core/adapters.js';
+import type { JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { KPI_DOCUMENT_RECONCILE, KPI_JSON_KEYS, KPI_LINEAGE_RECONCILE, KPI_RECONCILE, reconcileKpi } from '../insights/kpi-reconcile.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
+export const KPI_DOCUMENT_PAGE_SIZE = 5;
+export const PROJECTION_CATCHUP_BUDGET: Readonly<JobBudget> = { calls: 120, wallMs: 2_000 };
 interface Phase {
   projection: string;
   phase: string;
@@ -14,10 +16,11 @@ interface Source {
   table: string;
   columns: readonly string[];
   where?: string;
+  pageSize?: number;
 }
 export const KPI_PHASE_SOURCES = {
   sessions: { table: 'sessions', columns: ['project_id', 'session_id'] },
-  documents: { table: 'session_documents', columns: ['project_id', 'session_id'], where: "state='live'" },
+  documents: { table: 'session_documents', columns: ['project_id', 'session_id'], where: "state='live'", pageSize: KPI_DOCUMENT_PAGE_SIZE },
   receipts: { table: 'spore_injections', columns: ['project_id', 'session_id', 'id'] },
   conflicts: { table: 'prompt_identity_conflicts', columns: ['project_id', 'session_id', 'prompt_id', 'source_key', 'source_thread', 'source_record'] },
   answers: { table: 'prompt_context_answers', columns: ['project_id', 'session_id', 'id'] },
@@ -33,6 +36,7 @@ const advance = write<[string, number, string, string, string]>({ name: 'project
 
 const tuple = (columns: readonly string[]) => columns.length === 1 ? columns[0]! : `(${columns.join(',')})`;
 const jsonTuple = (columns: readonly string[], json: string) => tuple(columns.map((_, i) => `json_extract(${json},'$[${i}]')`));
+const pageSize = (phase: KpiPhase) => (KPI_PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(KPI_PHASE_SOURCES).map(([phase, spec]) => {
   const source: Source = spec;
   const order = source.columns.join(',');
@@ -44,7 +48,7 @@ const pages = Object.fromEntries(Object.entries(KPI_PHASE_SOURCES).map(([phase, 
     keys: read<[], { key: string }>({ name: `projection.${phase}Keys`, sql: `SELECT DISTINCT ${key} AS key FROM ${source.table}
       WHERE ${source.where ?? '1'} AND ${tuple(source.columns)} > ${jsonTuple(source.columns, `COALESCE(NULLIF((SELECT after_key FROM projection_catchup WHERE ${state}),'[]'),'${JSON.stringify(source.columns.map(() => ''))}')`)}
       AND ${tuple(source.columns)} <= ${jsonTuple(source.columns, `(SELECT frontier FROM projection_catchup WHERE ${state})`)}
-      ORDER BY ${order} LIMIT ${PROJECTION_PAGE_SIZE}` }),
+      ORDER BY ${order} LIMIT ${source.pageSize ?? PROJECTION_PAGE_SIZE}` }),
   }];
 })) as Record<KpiPhase, {
   frontier: ReturnType<typeof write<[]>>;
@@ -82,7 +86,7 @@ export async function catchUpKpiPhase(db: RelationalStore, phase: KpiPhase): Pro
   if (held.done === 1) return 0;
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
   await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys)),
-    advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < PROJECTION_PAGE_SIZE ? 1 : 0, 'kpi', phase, held.after_key));
+    advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < pageSize(phase) ? 1 : 0, 'kpi', phase, held.after_key));
   return keys.length;
 }
 
@@ -95,15 +99,30 @@ export async function resetProjectionCatchup(db: RelationalStore): Promise<void>
   await commit(db, reset.bind());
 }
 
-/** Each wake advances one bounded page of every unfinished phase. */
-export async function catchUpProjections(db: RelationalStore): Promise<number> {
-  const [rows] = await readSet(db, pending.bind());
-  let count = 0;
-  for (const row of rows) {
+/** Drains atomic pages within a statement and elapsed-time allowance; unfinished phases request another wake. */
+export async function catchUpProjections(
+  db: RelationalStore,
+  { budget = PROJECTION_CATCHUP_BUDGET, clock = Date.now }: { budget?: Readonly<JobBudget>; clock?: () => number } = {},
+): Promise<{ changed: number; more: boolean }> {
+  const deadline = clock() + budget.wallMs;
+  let [rows] = await readSet(db, pending.bind());
+  let changed = 0;
+  let calls = 1;
+  let longestPageMs = 0;
+  while (rows.length > 0) {
+    const row = rows[0]!;
     if (row.projection !== 'kpi' || !Object.hasOwn(KPI_PHASE_SOURCES, row.phase)) throw new Error(`Unknown projection phase: ${row.projection}/${row.phase}`);
-    count += await catchUpKpiPhase(db, row.phase as KpiPhase);
+    const phase = row.phase as KpiPhase;
+    // Three frontier/key statements, reconciliation, the cursor write and one fresh pending read.
+    const pageCalls = 3 + reconciles[phase].length + 2;
+    const start = clock();
+    if (calls + pageCalls > budget.calls || start + longestPageMs >= deadline) break;
+    changed += await catchUpKpiPhase(db, phase);
+    [rows] = await readSet(db, pending.bind());
+    calls += pageCalls;
+    longestPageMs = Math.max(longestPageMs, clock() - start);
   }
-  return count;
+  return { changed, more: rows.length > 0 };
 }
 
 export function kpiCatchupSeed(): string[] {
