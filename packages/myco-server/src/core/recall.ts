@@ -8,9 +8,7 @@ import {preparePromptAnswer,prepareSessionRecord,commitContextWrite,type Context
  *
  * This module OWNS `session_injections`. One row per (project, session, kind)
  * carries a contributor a session receives at most once; the `INSERT OR IGNORE`
- * and the `meta.changes` it answers from are the pattern `core/injection.ts`
- * already proves on both targets — the store decides, and the caller reads the
- * decision off the write.
+ * returns the inserted row; the caller reads the decision off that row.
  *
  * The row holds NO foreign key to `sessions`: the prompt hook answers before
  * the session's own event lands on the server, so a record may precede the
@@ -145,7 +143,7 @@ export async function recordSessionInjection(
   commit:ContextCommit=commitContextWrite,
 ): Promise<SessionRecordWrite> {
   const [written]=await commit(db,prepareSessionRecord(db,scope.projectId,sessionId,kind,now,admission.admission));
-  if (written!.meta.changes === 1) return { outcome: 'recorded' };
+  if (written!.results.length === 1) return { outcome: 'recorded' };
   const refusal = await admission.refusal(db);
   return refusal === null ? { outcome: 'repeat' } : { outcome: 'refused', refusal };
 }
@@ -253,7 +251,7 @@ async function recordPromptAnswer(
       outcome:answer.context.length>0?'served':'empty',chars:answer.context.length,
       parts:answer.parts.map(part=>part.kind==='spores'?{kind:part.kind,sporeCount:part.sporeIds.length,planCount:part.planIds.length}:part),
       skipped:answer.skipped,failures,selection,now},admission.admission));
-    if (written!.meta.changes === 1) return { ...answer, answerId };
+    if (written!.results.length === 1) return { ...answer, answerId };
     const refusal = await admission.refusal(db);
     if (refusal !== null) return { context: '', parts: [], skipped: answer.skipped, refusal };
     unrecorded = 'unknown';
