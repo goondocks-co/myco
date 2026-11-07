@@ -9,7 +9,8 @@ import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
 import { storedBytes } from '../ingest/live-credential.js';
 import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
-import { schemaVersion, statusMetadata } from '../read/meta.js';
+import { databaseReadStatus, schemaVersion, statusMetadata } from '../read/meta.js';
+import { emit, readFailureTelemetry } from '../telemetry.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '../core/attention-state.js';
 import { listVisibleProjects } from './scope.js';
 import { readFleetProjection, fleetTaskReason, fleetSelectionContext } from '../read/fleet.js';
@@ -60,9 +61,15 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   const capabilities = deploymentCapabilities(env);
   const target = deploymentTarget(env);
   const unavailable: string[] = [];
+  const readFailures: Record<string, ReturnType<typeof readFailureTelemetry>> = {};
   const readFact = async <T>(name: string, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); }
-    catch { unavailable.push(name); return undefined; }
+    catch (error) {
+      unavailable.push(name);
+      readFailures[name] = readFailureTelemetry(error, env.platform?.classifyError);
+      emit({ kind: 'status_read_failed', read: name, ...readFailures[name] });
+      return undefined;
+    }
   };
   const ownedMachines = await readFact('machines', () => machinesOf(env.db, ctx.member.id));
   const own = isAdmin(ctx.member.role) ? null : ownedMachines;
@@ -101,6 +108,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   });
   const documents=await readFact('documents',()=>readDocumentStatus(env.db));
   return ok({
+    database: await databaseReadStatus(env.db, env.platform?.classifyError), readFailures,
     budget,
     learning:learning??null,
     documents:documents??null,

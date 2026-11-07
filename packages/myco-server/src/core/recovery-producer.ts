@@ -124,6 +124,7 @@ export interface AttemptState {
    * admitted without one settles at `downloaded`, as the producer that admitted it did.
    */
   admission: AdmittedManifest | null;
+  /** The operation in progress, retained as diagnostic evidence when the attempt fails. */
   inFlight?: ProducerOperation | null;
 }
 
@@ -368,6 +369,7 @@ export type ProducerRefusal =
   | 'export_unsettled'
   /** A native producer's own child refused the artifact, or its caller withdrew it. */
   | 'artifact_refused' | 'artifact_cancelled'
+  | 'backup_disabled'
   | 'download_unranged' | 'download_changed' | 'download_lost' | 'staging_unreconciled'
   | 'staging_changed' | 'inventory_disagrees' | 'inventory_unreadable' | 'inventory_oversize'
   | 'object_missing' | 'object_changed' | 'copy_stalled' | 'staging_incomplete'
@@ -459,7 +461,7 @@ export async function continueAttempt(
 
 /** Fails an attempt: the terminal state is durable first, then its upload is aborted and its signed download cleared, and the refusal is announced. */
 export async function failAttempt(
-  attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: ProducerPorts, refusal: ProducerRefusal,
+  attempt: AttemptState, checkpoint: AttemptCheckpoint, ports: Pick<ProducerPorts, 'now' | 'abortUpload'>, refusal: ProducerRefusal,
   facts: Record<string, number | boolean> = {}, shape?: ThrownShape, cleanupMs = FAILURE_CLEANUP_MS,
 ): Promise<ContinuationReport> {
   const upload = attempt.uploadId;
@@ -617,9 +619,8 @@ async function pollExportStage(
     if (answer.status === 'ended') {
       requested = null;
       checkpoint.update(attempt.id, { polls, exportRequestedAt: null, exportAnsweredAt: ports.now(), exportAbsentAt: null });
-      // An export this attempt held ended without a result: it asks for another inside its bound. A fresh request
-      // that ended at once ends the attempt: there is no earlier export to return to.
-      if (bookmark !== null) return restartExport({ ...attempt, bookmark, polls }, checkpoint, ports, limits, 'export_failed');
+      // A confirmed absent export may be requested again inside the attempt's bound. A failed export is terminal.
+      if (answer.absent === true && bookmark !== null) return restartExport({ ...attempt, bookmark, polls }, checkpoint, ports, limits, 'export_failed');
       return failAttempt(attempt, checkpoint, ports, 'export_failed', { polls });
     }
     bookmark = answer.bookmark;
@@ -631,7 +632,7 @@ async function pollExportStage(
     // An export followed without a recorded request (a deploy mid-export) records one now, so it is never
     // taken as settled while it runs.
     if (requested === null) requested = exportStartedAt ?? ports.now();
-    checkpoint.update(attempt.id, { bookmark, polls, exportRequestedAt: requested, exportAnsweredAt: ports.now(), exportAbsentAt: null });
+    checkpoint.update(attempt.id, { bookmark, polls, exportRequestedAt: requested, exportAnsweredAt: ports.now(), exportAbsentAt: null, error: null });
     // An export still running past the budget ends the attempt; a completion a poll inside the budget answered
     // stands.
     if (stalled(ports.now())) {
@@ -1280,6 +1281,8 @@ export interface RecoveryProducerStatus {
     objects: { registered: number; staged: number };
   } | null;
   export: {
+    /** An advancing attempt whose latest provider answer says its export runs. */
+    running: boolean;
     polls: number; bookmark: boolean; reExports: number; waiting: ExportWait | null;
     /** The request instant of the export it waits on, which bounds the wait (`exportWaitBoundMs`); null when it waits on none. */
     waitingSince: number | null;
@@ -1387,6 +1390,8 @@ export interface RecoveryProducerPort {
   /** Decide a hold against the attempts, retiring a token no attempt carries; see `HoldSettlement`. */
   settleHold(token: string): Promise<HoldSettlement>;
   status(): Promise<RecoveryProducerStatus>;
+  /** Stop scheduled hosted backup work when automatic backups are off. The producer owns terminalization and cleanup. */
+  stopAttempt?(): Promise<void>;
   /** Record that the Deployment's schema drifted from the staged capture, failing the attempt. */
   noteSchemaDrift(attempt: number): Promise<RecoveryProducerStatus>;
   /** How many staged payloads this policy lets go of and retention has not finished releasing. */

@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 /**
  * What "Back up every" actually drives, and what an owner is told about it.
  *
@@ -271,7 +272,8 @@ it('admits a due backup on a Deployment nobody has touched, and deep sleep still
 it('asserts nothing, and reads only its interval, while automatic recovery is off', async () => {
   const d = await deployment();
   try {
-    expect(await recoveryAttemptDue(d.env as never, d.now)).toBe(false);
+    const env = { ...d.env, recovery: { ...d.env.recovery!, stopAttempt: async () => {} } };
+    expect(await recoveryAttemptDue(env, d.now)).toBe(false);
     // The producer is never asked while the interval is unset: one settings read decides it.
     expect(d.held.reads.status).toBe(0);
     const report = await runTick(d.env as never, d.now, { wake: 'clock' });
@@ -402,5 +404,26 @@ it('asserts nothing for an operator hold, which only its own operator settles', 
     // An operator's backup holds this Deployment's objects until that operator's artifact completes. No job here
     // settles it, so it is not work this engine may claim to owe.
     expect(await holdSettlementDue(d.env as never)).toBe(false);
+  } finally { d.close(); }
+});
+
+it('does not report a paused database when backup settings fail with an idle or settled producer', async () => {
+  const d = await deployment();
+  try {
+    for (const stage of ['idle', 'failed'] as const) {
+      d.held.set({ attempt: stage === 'idle' ? null : 3, stage, error: stage === 'idle' ? null : 'export_failed' });
+      const db = { ...d.env.db, prepare: (query: string) => {
+        if (query.includes('FROM deployment_settings')) throw new Error('D1_ERROR: no such column: private-fixture');
+        return d.env.db.prepare(query);
+      } };
+      const response = await handleRecoveryExportStatus({ ...d.env, db }, { now: d.now } as never);
+      const body = await jsonBody<{ stage: string; schedule: { unreadable: string } }>(response);
+      expect(body.stage).toBe(stage);
+      expect(body.schedule).toMatchObject({ unreadable: 'Automatic backup settings could not be read.',
+        database: { readable: true }, read_failure: 'query_invalid' });
+      expect(JSON.stringify(body)).not.toContain('private-fixture');
+      expect(body.schedule.unreadable).not.toContain('paus');
+      expect(body.schedule.unreadable).not.toContain('export');
+    }
   } finally { d.close(); }
 });

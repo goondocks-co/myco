@@ -1,9 +1,11 @@
 import type { ServerEnv } from '../core/adapters.js';
+import { INTERVAL_SETTING, stopDisabledRecovery } from '../core/recovery-schedule.js';
 import { machineBlockFor } from '../core/machine-settings.js';
 import type { CredentialContext } from '../context.js';
 import type { OwnerContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
-import { classify, emit } from '../telemetry.js';
+import { classify, emit, failureTelemetry } from '../telemetry.js';
+import { within } from '../core/recovery-inventory.js';
 import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
@@ -46,9 +48,26 @@ const refused = (r: SettingsRefusal): Response => Response.json({ applied: false
 const malformed = (leaf: string, reason: string): Response =>
   Response.json({ applied: false, reason: 'malformed', leaf, detail: reason }, { status: 400 });
 
+/** The time a saved backup setting waits for each follow-up operation before the schedule reconciles it. */
+const RECOVERY_REARM_MS = 5_000;
+
+/** Saved backup settings retain their success response when follow-up work fails. */
+async function rearmRecovery(env: ServerEnv): Promise<void> {
+  const followUp = async (kind: 'recovery_stop_deferred' | 'recovery_wake_deferred', work: () => Promise<void>) => {
+    try { await within(work, RECOVERY_REARM_MS, Date.now); }
+    catch (error) { emit({ kind, ...failureTelemetry(error, env.platform.classifyError) }); }
+  };
+  await followUp('recovery_stop_deferred', () => stopDisabledRecovery(env, Date.now()));
+  const wake = env.wake;
+  if (wake !== undefined) await followUp('recovery_wake_deferred', wake);
+}
+
 /** The writer for this request, judging writes against this Deployment's target. Membership is the whole authorization: the write path still validates, persists, and records the actor in one order. */
 function writerFor(env: ServerEnv) {
-  return settingsWriter(env.db, { target: env.platform.name });
+  return settingsWriter(env.db, { target: env.platform.name, rearm: async ({ leaf }) => {
+    if (leaf !== INTERVAL_SETTING) return;
+    await rearmRecovery(env);
+  } });
 }
 
 

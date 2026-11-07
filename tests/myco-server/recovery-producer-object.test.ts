@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
 import type { AttemptCheckpoint } from '@myco-server-worker/core/recovery-producer.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -20,7 +21,11 @@ import { HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-s
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
-import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
+import { handleResetSetting } from '@myco-server-worker/api/settings.js';
+import { stampRequest } from '@myco-server-worker/core/activity.js';
+import { handleStartRecoveryExport, handleRecoveryExportStatus } from '@myco-server-worker/api/recovery.js';
+import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
+import { recoveryAttemptDue, recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
 import { newInventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 
 function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
@@ -82,6 +87,18 @@ function producerOver(
   authorityStores.set(producer, authority);
   Object.assign(producer, { ctx, env });
   return producer;
+}
+
+function envOverProducer(producer: RecoveryProducer) {
+  const fixture = authorityStores.get(producer)!;
+  return { ...fixture.serverEnv, recovery: {
+    admission: { ready: true as const }, admit: (input: RecoveryAdmission) => producer.admit(input),
+    status: () => producer.status(), stopAttempt: () => producer.stopAttempt(),
+    settleHold: (held: string) => producer.settleHold(held),
+    noteSchemaDrift: (attempt: number) => producer.noteSchemaDrift(attempt),
+    pendingStagingPrunes: async () => 0,
+    pruneStagings: async () => ({ releasedFiles: 0, releasedStagings: 0, refused: null, pending: 0 }),
+  } };
 }
 
 const admission = (holdToken: string): RecoveryAdmission => ({
@@ -378,7 +395,8 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   expect((await producer.settleHold('token-stall')).state).toBe('open');
   sql.run("UPDATE attempts SET last_progress_at = ?, upload_id = 'upload-in-flight' WHERE id = ?", [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
   const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
-  checkpoint.update(first.attempt!, { inFlight: { name: 'upload part 7', startedAt: Date.now() } });
+  const stalledOperation = { name: 'upload part 7' as const, startedAt: Date.now() };
+  checkpoint.update(first.attempt!, { inFlight: stalledOperation });
   expect((await producer.status()).inFlight?.name).toBe('upload part 7');
   const logged: string[] = [];
   const log = console.log;
@@ -389,6 +407,7 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   // The stalled attempt is failed through the one failure path: terminal first, its upload and signed download cleared,
   // and the refusal announced with what its clean-up reached.
   expect(sql.query('SELECT stage, error, upload_id FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
+  expect((await producer.status()).inFlight).toEqual(stalledOperation);
   const announced = logged.map((line) => JSON.parse(line) as Record<string, unknown>).find((event) => event.kind === 'recovery_attempt_failed');
   expect(announced).toMatchObject({ refusal: 'producer_stalled', attempt: first.attempt, stage: 'copy', signedUrlCleared: true, operation: 'upload part 7', operationStartedAt: expect.any(Number) });
   expect(typeof announced?.uploadAborted).toBe('boolean');
@@ -402,6 +421,7 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   // Across a restart the terminal attempt stays terminal, and a continuation finds nothing to advance.
   const restarted = producerOver(sql, []);
   expect((await restarted.continue()).attempt).toBeNull();
+  expect((await restarted.status()).inFlight).toEqual(stalledOperation);
   expect((await restarted.admit(admission('token-stall'))).stage).toBe('failed');
   sql.close();
 });
@@ -853,3 +873,130 @@ it('producer checkpoints replace parts and inventory atomically, including repla
     expect(checkpoint.pendingObjects(id, 10)[0]?.bytes).toBe(4);
   } finally { sql.close(); }
 });
+
+it('stops scheduled hosted attempts with backups off, releases their hold and reports no running export after later wakes', async () => {
+  for (const stage of ['export', 'download', 'failed'] as const) {
+    const sql = new Database(':memory:');
+    let aborted = 0;
+    const producer = producerOver(sql, [], undefined, { abort: async () => { aborted++; } });
+    const fixture = authorityStores.get(producer)!;
+    try {
+      const token = 'disabled-' + stage;
+      await acquireRecoveryHold(fixture.db, token, Date.now());
+      const admitted = await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
+      const operation = stage === 'failed' ? null : { name: 'source read', startedAt: Date.now() };
+      sql.run("UPDATE attempts SET stage=?, bookmark='held', export_requested_at=?, upload_id=?, in_flight=? WHERE id=?",
+        [stage, Date.now(), stage === 'failed' ? null : 'upload', operation === null ? null : JSON.stringify(operation), admitted.attempt]);
+      const env = envOverProducer(producer);
+      await stampRequest(fixture.db, Date.now());
+      const report = await runTick(env, Date.now(), { wake: 'clock' });
+      expect(report.jobs.find(job => job.name === 'recovery-export-schedule')?.failed ?? null).toBeNull();
+      expect((await producer.status()).stage).toBe('failed');
+      expect(aborted).toBe(stage === 'failed' ? 0 : 1);
+      expect(sql.query('SELECT upload_id, in_flight FROM attempts').get()).toEqual({ upload_id: null, in_flight: operation === null ? null : JSON.stringify(operation) });
+      expect(await settleOpenHold(env, Date.now())).toBeNull();
+      expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
+      for (let wake = 0; wake < 3; wake++) {
+        expect(await producer.continue()).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
+      }
+      const status = await jsonBody<{ schedule: { unreadable?: string } }>(await handleRecoveryExportStatus(env, { now: Date.now() } as never));
+      expect(status).toMatchObject({ stage: 'failed', export: { running: false }, schedule: { configured: false } });
+      expect(status.schedule.unreadable).toBeUndefined();
+      expect(fixture.sqlite.query("SELECT value FROM deployment_settings WHERE leaf='backup.auto_interval_hours'").get()).toBeNull();
+    } finally { sql.close(); }
+  }
+});
+
+it('clearing Back up every stops an admitted hosted attempt before another continuation', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  try {
+    const token = 'reset-before-export';
+    await acquireRecoveryHold(fixture.db, token, Date.now());
+    await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
+    fixture.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('backup.auto_interval_hours','168',1,'mem_machine_1')");
+    const env = envOverProducer(producer);
+    const response = await handleResetSetting(env, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    expect(response.status).toBe(200);
+    expect((await producer.status()).error).toBe('backup_disabled');
+    expect(await producer.continue()).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
+    expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
+  } finally { sql.close(); }
+});
+
+it('keeps a member-started backup advancing through a clock tick while automatic backups are off', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  const env = envOverProducer(producer);
+  try {
+    const response = await handleStartRecoveryExport(env, { member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    expect(response.status).toBe(200);
+    const before = await producer.status();
+    expect(before.stage).toBe('export');
+    expect(await recoveryAttemptDue(env, Date.now())).toBe(false);
+    const report = await runTick(env, Date.now(), { wake: 'clock' });
+    expect(report.jobs.find(job => job.name === 'recovery-export-schedule')?.failed ?? null).toBeNull();
+    expect(await producer.status()).toEqual(before);
+    expect(await settleOpenHold(env, Date.now())).toMatchObject({ state: 'open', attempt: before.attempt });
+    expect(fixture.sqlite.query("SELECT value FROM deployment_settings WHERE leaf='backup.auto_interval_hours'").get()).toBeNull();
+  } finally { sql.close(); }
+});
+
+it('returns a saved backup setting after follow-up failures and reconciles the stop on a clock tick', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  const env = envOverProducer(producer);
+  const logged: string[] = [];
+  const log = spyOn(console, 'log').mockImplementation((line: string) => { logged.push(line); });
+  try {
+    const token = 'deferred-stop';
+    await acquireRecoveryHold(fixture.db, token, Date.now());
+    await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
+    fixture.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('backup.auto_interval_hours','168',1,'mem_machine_1')");
+    let wakes = 0;
+    const refused = { ...env, recovery: { ...env.recovery, stopAttempt: async () => { throw new Error('private-producer-refusal'); } },
+      wake: async () => { wakes++; throw new Error('private-wake-refusal'); } };
+    const response = await handleResetSetting(refused, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    expect(response.status).toBe(200);
+    expect(await jsonBody(response)).toEqual({ applied: true });
+    expect(fixture.sqlite.query("SELECT value FROM deployment_settings WHERE leaf='backup.auto_interval_hours'").get()).toBeNull();
+    expect((await producer.status()).stage).toBe('export');
+    expect(wakes).toBe(1);
+    expect(logged.map(line => JSON.parse(line).kind)).toEqual(expect.arrayContaining(['recovery_stop_deferred', 'recovery_wake_deferred']));
+    expect(logged.join(' ')).not.toContain('private-');
+    const report = await runTick(env, Date.now(), { wake: 'clock' });
+    expect(report.jobs.find(job => job.name === 'recovery-export-schedule')?.failed ?? null).toBeNull();
+    expect((await producer.status()).error).toBe('backup_disabled');
+    expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
+  } finally { log.mockRestore(); sql.close(); }
+});
+
+it('bounds a blocked post-save stop and lets a later clock tick settle the scheduled attempt', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  const env = envOverProducer(producer);
+  const logged: string[] = [];
+  const log = spyOn(console, 'log').mockImplementation((line: string) => { logged.push(line); });
+  try {
+    const token = 'blocked-stop';
+    await acquireRecoveryHold(fixture.db, token, Date.now());
+    await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
+    fixture.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('backup.auto_interval_hours','168',1,'mem_machine_1')");
+    let woke = false;
+    const blocked = { ...env, recovery: { ...env.recovery, stopAttempt: () => new Promise<void>(() => {}) },
+      wake: async () => { woke = true; } };
+    const started = Date.now();
+    const response = await handleResetSetting(blocked, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: started } as never);
+    expect(response.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(woke).toBe(true);
+    expect(logged.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ kind: 'recovery_stop_deferred', error_reason: 'Error:unknown' }));
+    await runTick(env, Date.now(), { wake: 'clock' });
+    expect((await producer.status()).error).toBe('backup_disabled');
+    expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
+  } finally { log.mockRestore(); sql.close(); }
+}, 10_000);

@@ -1,4 +1,5 @@
 import { readRecoveryForget } from '../../core/recovery-forget.js';
+import { SCHEDULED_BY } from '../../core/recovery-admission.js';
 /**
  * The hosted recovery producer's checkpoint authority: one Durable Object holding every durable fact of one attempt
  * in its own SQLite storage, while the Deployment's database is unavailable to queries for as long as it exports.
@@ -33,7 +34,7 @@ import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, within, type SavedDig
 import type { StatementScan } from '../../core/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
 import {
-  admittedStarter, boundRecoveryConfiguration, cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, recordedAdmission, STAGING_TARGET,
+  admittedStarter, boundRecoveryConfiguration, cloudflareFailurePorts, cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, recordedAdmission, STAGING_TARGET,
   type RecoveryAdmissionWire, type StagingBucket,
 } from './recovery-export.js';
 import type { CloudflareBindings } from './env.js';
@@ -416,6 +417,15 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     return this.gate.shared(() => this.step(limits));
   }
 
+  /** Stop an unfinished scheduled attempt and release its upload through the terminal failure writer. */
+  async stopAttempt(): Promise<void> {
+    return this.gate.exclusive(async () => {
+      const open = this.checkpoint().open();
+      if (open === null || open.admission?.configuration.startedBy !== SCHEDULED_BY) return;
+      await failAttempt(open, this.checkpoint(), cloudflareFailurePorts(this.bucket()), 'backup_disabled');
+    });
+  }
+
   private async step(limits: ProducerLimits): Promise<ContinuationReport> {
     // A caller's limits stand on the defaults, so a partial set bounds the step it names and nothing else. Every
     // part but the last must clear the provider's floor, or the completion it accepts today is refused.
@@ -551,7 +561,8 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,
         objects: { registered: objects.registered, staged: objects.staged },
       },
-      export: { polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports, ...this.waitOf(row) },
+      export: { running: row.stage === 'export' && row.bookmark !== null && row.export_absent_at === null && row.error === null,
+        polls: row.polls, bookmark: row.bookmark !== null, reExports: row.re_exports, ...this.waitOf(row) },
       error: row.error as RecoveryProducerStatus['error'],
       ...this.unsettledOf(),
       transientSpent: row.attempts,

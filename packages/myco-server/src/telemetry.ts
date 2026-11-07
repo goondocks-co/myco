@@ -69,6 +69,17 @@ export function failureTelemetry(error: unknown, platform?: ErrorClassifier): { 
   return { error_class: category, error_reason: `${name}:${category}` };
 }
 
+/** Read failures name a fixed cause without carrying SQL, stored values or provider text. */
+export function readFailureTelemetry(error: unknown, platform?: ErrorClassifier) {
+  const message = error instanceof Error ? error.message : '';
+  const read_failure = /no such (table|column|index)|has no column|ambiguous column|syntax error|no query solution|too many SQL variables/i.test(message) ? 'query_invalid'
+    : /overloaded/i.test(message) ? 'database_busy'
+    : /network connection lost/i.test(message) ? 'connection'
+    : error instanceof Error && ['Stalled', 'TimeoutError', 'AbortError'].includes(error.name) ? 'timeout'
+    : 'unknown';
+  return { ...failureTelemetry(error, platform), read_failure };
+}
+
 /**
  * How a blob store put failed: the received bytes did not match the declared
  * digest, or something else. Every store reports a mismatch in its own wording,

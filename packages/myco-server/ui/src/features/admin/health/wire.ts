@@ -200,7 +200,7 @@ export interface RecoveryProducerStatus {
   error?: string | null;
   /** An export an attempt requested and never saw settle, and from when it may be forgotten. */
   unsettledExport?: { attempt: number; forgettableAt: number };
-  /** The schedule, or that this Deployment's settings could not be read while an export pauses its database. */
+  /** The schedule, or that this Deployment's automatic backup settings could not be read. */
   schedule: RecoverySchedule | { unreadable: string };
 }
 

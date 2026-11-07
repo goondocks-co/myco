@@ -12,7 +12,8 @@
 import type { ServerEnv } from './adapters.js';
 import { storedSettings } from './settings.js';
 import { deferringOperatorHold } from './object-release.js';
-import type { ExportWait, ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
+import { settleOpenHold } from './recovery-hold.js';
+import { ADVANCING_STAGES, type ExportWait, type ProducerRefusal, type RecoveryProducerStatus } from './recovery-producer.js';
 
 /** The setting an owner edits as "Back up every", in hours. */
 export const INTERVAL_SETTING = 'backup.auto_interval_hours';
@@ -20,9 +21,6 @@ export const INTERVAL_SETTING = 'backup.auto_interval_hours';
 export { SCHEDULE_JOB } from './jobs.js';
 
 const HOUR_MS = 60 * 60 * 1000;
-
-/** The stages an attempt rests in: it advances no further, whatever it reached. */
-const RESTING = ['complete', 'failed'] as const;
 
 /** What recovery data this Deployment has, in the only terms that are true of what its own producer wrote. */
 export type RecoveryAvailability =
@@ -95,16 +93,22 @@ export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promis
     ? Math.min(INTERVAL_MAX_HOURS, Math.max(INTERVAL_MIN_HOURS, Math.floor(held.value))) : INTERVAL_MAX_HOURS;
 }
 
+/** A cleared backup interval stops scheduled hosted work and settles its object hold. */
+export async function stopDisabledRecovery(env: ServerEnv, now: number): Promise<void> {
+  if (env.recovery?.stopAttempt === undefined || await scheduledIntervalHours(env) !== null) return;
+  await env.recovery.stopAttempt();
+  await settleOpenHold(env, now);
+}
+
 /** Whether the last attempt is still going: it has settled in none of the stages an attempt rests in. */
 export const attemptAdvancing = (schedule: RecoverySchedule): boolean =>
-  schedule.latest !== null && !(RESTING as readonly string[]).includes(schedule.latest.stage);
+  schedule.latest !== null && (ADVANCING_STAGES as readonly string[]).includes(schedule.latest.stage);
 
 /**
  * Whether a due configured attempt is waiting, for the engine's own depth assertion.
  *
- * Reads the interval first and stops there when automatic recovery is off, so a Deployment that schedules
- * nothing pays one query for its deepest state. A Deployment that does schedule one is held no deeper than
- * sleep while an attempt is due, which is where the job that admits it runs.
+ * A due attempt holds the Deployment no deeper than sleep, where the schedule job runs. An unfinished
+ * attempt's object hold keeps its settlement job awake independently of the backup interval.
  */
 export async function recoveryAttemptDue(env: ServerEnv, now: number): Promise<boolean> {
   if (env.recovery === undefined) return false;

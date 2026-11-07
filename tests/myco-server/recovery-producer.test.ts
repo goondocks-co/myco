@@ -645,30 +645,17 @@ it('ends an export nothing completes, and stops holding the source back', async 
   expect(polls).toBeLessThanOrEqual(steps * limits.maxPollsPerStep);
 });
 
-it('starts the export again when the provider says one it holds ended, and ends when that bound is spent', async () => {
-  const ended = (): ExportAnswer => ({ status: 'ended', bookmark: 'b1' });
-  // An export this attempt holds that the provider says ended: the export restarts, within the same bound as a lost download.
+it('settles a failed export without requesting another export or continuing the attempt', async () => {
   const state = checkpoint({ stage: 'export', bookmark: 'b1', polls: 4, exportStartedAt: 0, exportRequestedAt: 0 });
   state.signed = 'https://signed/one';
-  const { port } = ports({ exports: [ended()] });
-  const restarted = await continueAttempt(state, port, PRODUCER_LIMITS);
-  expect([restarted.stage, restarted.sourcePaused, restarted.nextInMs]).toEqual(['export', false, 0]);
-  // The origin stands through a restart: the budget belongs to the attempt, not to each export it asks for. The export
-  // that ended is no longer one that may run.
-  expect([state.state.bookmark, state.state.reExports, state.state.exportStartedAt, state.state.exportRequestedAt]).toEqual([null, 1, 0, null]);
-  expect(state.signed).toBeNull();
-
-  // A fresh request that ends at once ends the attempt: there is no earlier export to return to.
-  const fresh = checkpoint({ stage: 'export', bookmark: null });
-  const { port: refusing } = ports({ exports: [{ status: 'ended', bookmark: null }] });
-  const over = await continueAttempt(fresh, refusing, PRODUCER_LIMITS);
-  expect([over.stage, over.error, fresh.state.exportRequestedAt]).toEqual(['failed', 'export_failed', null]);
-
-  // And once the re-export bound is spent, an ended export ends the attempt rather than restarting again.
-  const spent = checkpoint({ stage: 'export', bookmark: 'b9', reExports: 3 });
-  const { port: last } = ports({ exports: [ended()] });
-  const exhausted = await continueAttempt(spent, last, { ...PRODUCER_LIMITS, maxReExports: 3 });
-  expect([exhausted.stage, exhausted.error]).toEqual(['failed', 'export_failed']);
+  const { port, calls } = ports({ exports: [{ status: 'ended', bookmark: 'b1' }] });
+  const failed = await continueAttempt(state, port, PRODUCER_LIMITS);
+  expect(failed).toMatchObject({ stage: 'failed', error: 'export_failed', sourcePaused: false, nextInMs: null });
+  expect([state.state.reExports, state.state.exportRequestedAt, state.signed]).toEqual([0, null, null]);
+  for (let wake = 0; wake < 3; wake++) {
+    expect(await continueAttempt(state, port, PRODUCER_LIMITS)).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
+  }
+  expect(calls.polls).toBe(1);
 });
 
 it('keeps following an export Cloudflare says nothing is exporting for until that answer has held for the confirm window from the first of them, and only then starts another (#1497)', async () => {
@@ -811,12 +798,12 @@ it('announces a terminal refusal only after it is durable, and keeps it when cle
 });
 
 it('keeps one export budget across restarts, and spends it once', async () => {
-  const state = checkpoint({ stage: 'export', bookmark: 'b1', exportStartedAt: 0, polls: 1 });
+  const state = checkpoint({ stage: 'export', bookmark: 'b1', exportStartedAt: 0, exportAbsentAt: 0, polls: 1 });
   let clock = 95;
-  const refusal: ExportAnswer = { status: 'ended', bookmark: 'b1' };
+  const refusal: ExportAnswer = { status: 'ended', bookmark: 'b1', absent: true };
   const running: ExportAnswer = { status: 'running', bookmark: 'b2' };
   const { port } = ports({ exports: [refusal, running], now: () => clock });
-  const limits = { ...PRODUCER_LIMITS, exportPollMs: 100, maxPollsPerStep: 1 };
+  const limits = { ...PRODUCER_LIMITS, exportPollMs: 100, exportAbsentConfirmMs: 1, maxPollsPerStep: 1 };
 
   const restarted = await continueAttempt(state, port, limits);
   expect([restarted.stage, state.state.exportStartedAt, state.state.reExports]).toEqual(['export', 0, 1]);

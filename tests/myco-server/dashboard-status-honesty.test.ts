@@ -1,3 +1,4 @@
+import { jsonBody } from '../helpers/json-body.js';
 import { recordProvisionedHarnessReport } from '@myco-server-worker/core/harness-health.js';
 import { describe, expect, it } from 'bun:test';
 import { handleStatus } from '@myco-server-worker/api/status.js';
@@ -125,4 +126,24 @@ describe('dashboard status and scope honesty on both store adapters', () => {
       } finally { f.sqlite.close(); }
     });
   }
+});
+
+it('reports readable storage and identifies worker and learning query failures without exposing their text', async () => {
+  const f = sqliteEnv();
+  try {
+    const aud = await deploymentIdentity(f.db);
+    const db: RelationalStore = { ...f.db, prepare: query => {
+      if (query.includes('FROM deployment_settings')) throw new Error('D1_ERROR: no such table: private-settings-detail');
+      return f.db.prepare(query);
+    } };
+    const body = await jsonBody<StatusResponse & { readFailures: Record<string, { read_failure: string }> }>(await handleStatus({ ...f.serverEnv, db }, context(aud)));
+    expect(body.database).toEqual({ readable: true });
+    expect(body.schema.matches).toBe(true);
+    expect(body.unavailable).toEqual(expect.arrayContaining(['workers', 'learning']));
+    expect(body.readFailures.workers).toMatchObject({ read_failure: 'query_invalid' });
+    expect(body.readFailures.learning).toMatchObject({ read_failure: 'query_invalid' });
+    expect(body.workers.available).toBe(false);
+    expect(body.learning).toBeNull();
+    expect(JSON.stringify(body)).not.toContain('private-settings-detail');
+  } finally { f.sqlite.close(); }
 });
