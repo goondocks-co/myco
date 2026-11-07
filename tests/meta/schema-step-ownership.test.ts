@@ -26,6 +26,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: 700, object: 'idx_curation_first_started', table: 'spore_curation_work', reason: 'Daily admission counts a bounded indexed window of first cluster attempts.' },
   ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:697,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
   {step:697,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal map runs release unreferenced repository evidence.'},
   { step: 696, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },
@@ -205,6 +206,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     sql: "DELETE FROM deployment_settings WHERE leaf='cortex.canopy.refresh.background_enabled'",
     reason: 'The archived map refresh switch has no active consumer.',
   },
+  { step: 700, sql: 'ALTER TABLE spore_curation_work ADD COLUMN first_started_at INTEGER', reason: 'A cluster retains the time of its first admitted attempt across retries.' },
+  { step: 700, sql: `UPDATE spore_curation_work AS w SET first_started_at=firsts.started_at FROM
+    (SELECT project_id,subject,MIN(started_at) AS started_at FROM agent_runs WHERE task='curate-spores' AND started_at IS NOT NULL GROUP BY project_id,subject) AS firsts
+    WHERE firsts.project_id=w.project_id AND firsts.subject='curation:'||w.project_id||':'||w.cluster_key`, reason: 'Existing clusters retain their first start through their canonical run subjects.' },
+  { step: 699, sql: 'ALTER TABLE spore_curation_work ADD COLUMN write_refusal TEXT CHECK(write_refusal IS NULL OR json_valid(write_refusal))', reason: 'The assignment retains its outstanding lifecycle refusal until a corrected write commits.' },
   { step: 697, sql: 'ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))', reason: 'Map preparation retains its complete committed file inventory.' },
   { step: 697, sql: 'ALTER TABLE spore_curation_candidates ADD COLUMN currency TEXT CHECK(currency IS NULL OR json_valid(currency))', reason: 'Whole-read candidates retain the server currency fact for their revision.' },
   ...V695_STATEMENTS.filter(sql => !sql.startsWith('CREATE')).map(sql => ({step:695,sql,
