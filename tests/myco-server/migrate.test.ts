@@ -1175,6 +1175,8 @@ describe('versioned schema steps', () => {
   });
 
   it('keeps earlier tables and columns except declared retirements', () => {
+    const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
+    const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredAt86 = new Set([
       'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
       ...['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `skill_records_fts${suffix}`),
@@ -1196,7 +1198,11 @@ describe('versioned schema steps', () => {
           continue;
         }
         expect(after.has(table)).toBe(true);
-        for (const [col, type] of cols) expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
+        for (const [col, type] of cols) {
+          if (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) {
+            expect(after.get(table)!.has(col)).toBe(false);
+          } else expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
+        }
       }
       // Outside the explicit v86 retirement, a step may DROP only a table it created in that same step — the guard-table
       // idiom, where a CHECK-bearing scratch table aborts the step on a precondition
@@ -1236,14 +1242,22 @@ describe('versioned schema steps', () => {
           expect({ step: n + 1, droppedView, replaced }).toEqual({ step: n + 1, droppedView, replaced: true });
           continue;
         }
-        // A trigger holds no rows either: the same step creates it again, after the drop, doing what it did.
+        // Retained triggers are recreated by their replacing step; retirements are explicit.
         const droppedTrigger = /^DROP TRIGGER (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
+            || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
+          continue;
+        }
+        const droppedColumn = /^ALTER TABLE (\w+) DROP COLUMN (\w+)$/i.exec(s);
+        if (droppedColumn !== null) {
+          const target = `${droppedColumn[1]}.${droppedColumn[2]}`;
+          expect({ step: n + 1, target, allowed: SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target) })
+            .toEqual({ step: n + 1, target, allowed: true });
           continue;
         }
         expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);

@@ -95,6 +95,29 @@ it('upgrades populated Health read fixtures through schemas 702–708', async ()
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+it('seeds populated schema 708 for the knowledge-only curation upgrade', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const migration = SCHEMA_STEPS.find(step => step.version === 709)!;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-knowledge-upgrade-'));
+  const file = path.join(root, 'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < migration.version)) {
+        for (const sql of step.statements) previous.exec(sql);
+      }
+    } finally { previous.close(); }
+    expect(seedPreviousSchema(file, migration.statements, migration.version)).toContain('spore_curation_candidates');
+    const db = new Database(file);
+    try {
+      for (const sql of migration.statements) db.exec(sql);
+      expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '709' });
+      expect(db.query('SELECT COUNT(*) AS n FROM spore_curation_candidates').get()).toEqual({ n: 1 });
+      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally { db.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {
