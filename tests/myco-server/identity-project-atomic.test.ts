@@ -32,7 +32,7 @@ describe('identity and Project atomic writes', () => {
     expect(r.sqlite.query("SELECT member_id FROM deployment_ownership_audit WHERE member_id='mem_machine_1'").all()).toHaveLength(1);
   });
 
-  it('admits unarchive against the capacity inside its batch and names the refusal through the API', async () => {
+  it('refuses a restore when a competing creation fills Project capacity', async () => {
     const r = sqliteEnv();
     r.sqlite.query("UPDATE projects SET archived_at=1,archived_by='fixture' WHERE project_id='proj_1'").run();
     const active = (r.sqlite.query('SELECT COUNT(*) AS n FROM projects WHERE archived_at IS NULL').get() as { n: number }).n;
@@ -63,16 +63,19 @@ describe('identity and Project atomic writes', () => {
     expect(await createProject(r.db, 'over_capacity', 'Over capacity', NOW)).toBe(false);
   });
 
-  it('rolls naming back and reports one bounded failure while sign-in remains usable', async () => {
+  it('preserves the stored name and emits a bounded operator diagnostic when naming fails', async () => {
     const r = sqliteEnv();
     r.sqlite.run("UPDATE members SET label=NULL WHERE id='mem_machine_1'");
     r.sqlite.run(
       "CREATE TRIGGER fail_login BEFORE INSERT ON schema_meta WHEN NEW.key LIKE 'github_login:%' BEGIN SELECT RAISE(ABORT,'private-storage-detail'); END",
     );
-    const log = spyOn(console, 'log').mockImplementation(() => {});
+    const output: string[] = [];
+    const log = spyOn(console, 'log').mockImplementation(line => {
+      output.push(String(line));
+    });
     try {
       expect(await tryNameMemberFromLogin(r.db, 'mem_machine_1', '583231', 'octocat')).toBeNull();
-      const events = log.mock.calls.map(([line]) => JSON.parse(String(line))).filter((event) => event.kind === 'member_naming_failed');
+      const events = output.map(line => JSON.parse(line)).filter((event) => event.kind === 'member_naming_failed');
       expect(events).toEqual([
         { kind: 'member_naming_failed', memberId: 'mem_machine_1', error_class: 'unknown', error_reason: 'Unknown:unknown' },
       ]);

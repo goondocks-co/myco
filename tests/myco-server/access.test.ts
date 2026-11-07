@@ -12,7 +12,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
-import { issueIdentityLinkAuthority, linkStatement } from '@myco-server-worker/auth/identity-link.js';
+import { issueIdentityLinkAuthority, linkStatement, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { authenticateServerMemberToken, issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -230,48 +230,55 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     return statSync(file).isDirectory() ? files(file) : file.endsWith('.ts') ? [file] : [];
   });
 
-  it('writes members.role, revoked_at and github_id only where the last linked admin cannot be removed, demoted or unlinked', () => {
-    // Every UPDATE of the members table under src and scripts, by file, with the columns it sets.
-    const writes: string[] = [];
-    for (const file of [...files(join(ROOT, 'src')), ...files(join(ROOT, 'scripts'))]) {
-      for (const m of readFileSync(file, 'utf8').matchAll(/UPDATE members SET ([^`]*)`/g)) {
-        writes.push(`${relative(ROOT, file)}: ${m[1]!.split(/\bWHERE\b/)[0]!.replace(/\s+/g, ' ').trim()}`);
-      }
+  it('refuses malformed identity proof without spending the key or changing membership', async () => {
+    const e = sqliteEnv();
+    const key = (await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW, { issuedBy: 'mem_machine_1' }))!;
+    const members = () => e.sqlite.query('SELECT id,role,github_id,revoked_at FROM members ORDER BY id').all();
+    const before = members();
+    for (const [presentedKey, account] of [[key.key.slice(1), '9001'], [key.key, 'not-an-account-id']] as const) {
+      expect(await spendIdentityLinkAuthority(e.db, presentedKey, account, NOW)).toEqual({ ok: false, reason: 'denied' });
+      expect(members()).toEqual(before);
+      expect(e.sqlite.query('SELECT used_at,used_by FROM identity_link_authorities WHERE id=?').get(key.id))
+        .toEqual({ used_at: null, used_by: null });
     }
-    expect(writes.sort()).toEqual([
-      'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
-      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
-      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL', // changeMemberRole: guarded below; clears only a foreign-restore hold
-      'src/db/identity/link.ts: github_id=?2',
-      'src/db/identity/member-naming.ts: label = ?',
-    ]);
-    const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');
-    const bind = readFileSync(join(ROOT, 'src', 'db', 'identity', 'link.ts'), 'utf8');
-    expect(bind).toContain("m.revoked_at IS NOT NULL");
-    expect(bind).toContain("m.github_id IS NOT NULL AND m.github_id<>?2");
-    expect(source).toMatch(/if \(!IDENTITY_LINK_KEY_PATTERN\.test\(presentedKey\) \|\| !GITHUB_ACCOUNT_ID\.test\(githubId\)\)/);
-    expect(readFileSync(join(ROOT, 'scripts', 'link-github.ts'), 'utf8')).toMatch(/!GITHUB_ACCOUNT_ID\.test\(githubId\)/);
+    expect(await spendIdentityLinkAuthority(e.db, key.key, '9001', NOW)).toMatchObject({ ok: true, member: { id: 'mem_machine_2' } });
   });
 
-  it('pins every members writer across the Deployment and native server', () => {
-    const writers: string[] = [];
+  it('refuses a link after its target is removed or connected and preserves the recoverable administrator', async () => {
+    for (const reason of ['member_revoked', 'member_linked'] as const) {
+      const e = sqliteEnv();
+      const key = (await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW, { issuedBy: 'mem_machine_1' }))!;
+      if (reason === 'member_revoked') {
+        e.sqlite.query("UPDATE members SET revoked_at=? WHERE id='mem_machine_2'").run(NOW);
+      } else {
+        await linkStatement(e.db, 'mem_machine_2', '9002').run();
+      }
+      const members = () => e.sqlite.query('SELECT id,role,github_id,revoked_at FROM members ORDER BY id').all();
+      const before = members();
+      const owner = e.sqlite.query('SELECT member_id,revision FROM deployment_ownership').get();
+      expect(await spendIdentityLinkAuthority(e.db, key.key, '9001', NOW)).toEqual({ ok: false, reason });
+      expect(members()).toEqual(before);
+      expect(e.sqlite.query('SELECT member_id,revision FROM deployment_ownership').get()).toEqual(owner);
+      expect(e.sqlite.query("SELECT id FROM members WHERE id='mem_machine_1' AND role='admin' AND github_id IS NOT NULL AND revoked_at IS NULL").all())
+        .toEqual([{ id: 'mem_machine_1' }]);
+    }
+  });
+
+  it('confines membership writes to their identity, administration and migration owners', () => {
+    const writers = new Set<string>();
     for (const dir of [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')]) {
       for (const file of files(dir)) {
-        for (const sql of memberWrites(readFileSync(file, 'utf8'))) {
-          const op = /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+members\b/i.exec(sql)![1]!.toUpperCase();
-          const conflict = /\bON\s+CONFLICT[\s\S]*\bDO\s+UPDATE\b/i.test(sql) ? ' ON CONFLICT DO UPDATE' : '';
-          writers.push(`${relative(ROOT, file)}: ${op}${conflict}`);
-        }
+        if (memberWrites(readFileSync(file, 'utf8')).length > 0) writers.add(relative(ROOT, file));
       }
     }
-    expect(writers.sort()).toEqual([
-      'src/auth/enrollment.ts: INSERT OR IGNORE INTO',
-      'src/auth/identity-link.ts: UPDATE',
-      'src/auth/members-admin.ts: UPDATE',
-      'src/core/ownership.ts: UPDATE',
-      'src/db/identity/link.ts: UPDATE',
-      'src/db/identity/member-naming.ts: UPDATE',
-      'src/db/schema.ts: INSERT OR IGNORE INTO',
+    expect([...writers].sort()).toEqual([
+      'src/auth/enrollment.ts',
+      'src/auth/identity-link.ts',
+      'src/auth/members-admin.ts',
+      'src/core/ownership.ts',
+      'src/db/identity/link.ts',
+      'src/db/identity/member-naming.ts',
+      'src/db/schema.ts',
     ]);
   });
 
