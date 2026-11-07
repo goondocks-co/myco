@@ -8,4 +8,4 @@ export {
   type lineage_SessionLineage as SessionLineage,
   lineage_CHILDREN_INDEX as CHILDREN_INDEX,
   lineage_sessionLineage as sessionLineage,
-} from './catalog-store.js';
+} from './catalog/lineage.js';

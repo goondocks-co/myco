@@ -1,4 +1,4 @@
-import { injectionServedIds, injectionPromptHeld } from '../read/catalog-store.js';
+import { injectionServedIds, injectionPromptHeld } from '../read/catalog/injection.js';
 import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the

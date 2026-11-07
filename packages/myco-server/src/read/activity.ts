@@ -3,4 +3,4 @@ export {
   activity_DEFAULT_FEED as DEFAULT_FEED,
   activity_MAX_FEED as MAX_FEED,
   activity_activityFeed as activityFeed,
-} from './catalog-store.js';
+} from './catalog/activity.js';

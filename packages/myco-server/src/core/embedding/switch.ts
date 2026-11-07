@@ -1,6 +1,6 @@
 import { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction } from './provider-failure.js';
 export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, type SwitchFailureAction } from './provider-failure.js';
-import { prepareSwitchEnd } from '../../read/catalog-store.js';
+import { prepareSwitchEnd } from '../../read/catalog/embedding-switch-store.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
  * answering with the current one.

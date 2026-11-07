@@ -49,7 +49,7 @@ const allFiles = (dir: string): string[] =>
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
 
 it('defines the extraction unread predicate once and never writes the historical processed flag', () => {
-  const owner = join(SRC, 'read/catalog-store.ts');
+  const owner = join(SRC, 'read/catalog/extraction-coverage.ts');
   const coverageDeclarations = new Set(['MATERIAL_READS', 'effectiveMaterial', 'effectiveStatement',
     'extraction_coverage_ACKNOWLEDGED_PROMPTS_SQL']);
   const historicalDdl = new Set([
@@ -919,10 +919,15 @@ describe('gates', () => {
       // docstring that names a table in prose is not one. Scanning raw source made
       // the gate fire on its own explanation of what it protects.
       let source = stripComments(readFileSync(file, 'utf8'));
-      if (rel === join('read', 'catalog-store.ts')) {
-        const permitted = new Set(['core_embedding_reconcile_PASSED_OVER', 'core_embedding_reconcile_passedOverSources',
-          'core_embedding_reconcile_embeddingFailureWakeAt', 'core_embedding_switch_store_BUILDING_SQL',
-          'core_embedding_switch_store_completionStatements', 'prepareSwitchedSettings']);
+      const catalogOwners: Record<string, readonly string[]> = {
+        [join('read', 'catalog', 'embedding-reconcile.ts')]: ['core_embedding_reconcile_PASSED_OVER',
+          'core_embedding_reconcile_passedOverSources', 'core_embedding_reconcile_embeddingFailureWakeAt'],
+        [join('read', 'catalog', 'embedding-switch-store.ts')]: ['core_embedding_switch_store_BUILDING_SQL',
+          'core_embedding_switch_store_completionStatements'],
+        [join('read', 'catalog', 'settings.ts')]: ['prepareSwitchedSettings'],
+      };
+      if (rel in catalogOwners) {
+        const permitted = new Set(catalogOwners[rel]);
         const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
         const ranges = parsed.statements.filter(node => {
           const name = ts.isFunctionDeclaration(node) ? node.name : ts.isVariableStatement(node) ? node.declarationList.declarations[0]?.name : undefined;

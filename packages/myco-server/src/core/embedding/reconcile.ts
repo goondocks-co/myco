@@ -1,9 +1,10 @@
 import { embeddingProviderReady, embeddingProviderRevision, recordEmbeddingProviderFailure, clearEmbeddingProviderHold } from './provider-state.js';
 import { prepareEmbeddingDue, retainEmbeddingModels } from './due.js';
-import { core_embedding_reconcile_ANY_MODEL as ANY_MODEL } from '../../read/catalog-store.js';
-export { core_embedding_reconcile_ANY_MODEL as ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS as INPUT_REFUSAL_RETRY_MS } from '../../read/catalog-store.js';
-import { prepareEmbeddingSelection, prepareEmbeddingSource, prepareEmbeddingReadyReceipt } from '../../read/catalog-store.js';
-export { type core_embedding_reconcile_PassedOverSource as PassedOverSource, core_embedding_reconcile_passedOverSources as passedOverSources, core_embedding_reconcile_embeddingFailureWakeAt as embeddingFailureWakeAt } from "../../read/catalog-store.js";
+import { core_embedding_reconcile_ANY_MODEL as ANY_MODEL } from '../../read/catalog/embedding-reconcile.js';
+export { core_embedding_reconcile_ANY_MODEL as ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS as INPUT_REFUSAL_RETRY_MS } from '../../read/catalog/embedding-reconcile.js';
+import { prepareEmbeddingSelection } from '../../read/catalog/embedding-selection.js';
+import { prepareEmbeddingSource, prepareEmbeddingReadyReceipt } from '../../read/catalog/embedding-reconcile.js';
+export { type core_embedding_reconcile_PassedOverSource as PassedOverSource, core_embedding_reconcile_passedOverSources as passedOverSources, core_embedding_reconcile_embeddingFailureWakeAt as embeddingFailureWakeAt } from "../../read/catalog/embedding-reconcile.js";
 import type { BlobStore, RelationalStore } from '../adapters.js';
 import { EMBEDDING_TEXT_CHARS, VECTOR_WRITE_TIMEOUT_MS, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { VECTOR_TYPES, vectorId, type VectorMetadata, type VectorStore, type VectorType } from './vectors.js';

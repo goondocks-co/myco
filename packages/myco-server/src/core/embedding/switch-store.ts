@@ -1,4 +1,4 @@
-export { core_embedding_switch_store_switchProgress as switchProgress, core_embedding_switch_store_sourceTotals as sourceTotals, core_embedding_switch_store_switchComplete as switchComplete } from "../../read/catalog-store.js";
+export { core_embedding_switch_store_switchProgress as switchProgress, core_embedding_switch_store_sourceTotals as sourceTotals, core_embedding_switch_store_switchComplete as switchComplete } from "../../read/catalog/embedding-switch-store.js";
 /**
  * The Deployment's embedding model switch, as stored: at most one row, read, started, paused, resumed and ended only
  * through this module.
