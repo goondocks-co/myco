@@ -8,7 +8,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { migrateAndSeed } from './helpers/d1.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
+import { asOwner, asOwnerPatch, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
 
 const handles: Database[] = [];
 afterEach(() => { for (const handle of handles.splice(0)) handle.close(); });
@@ -58,6 +58,53 @@ it('reports conflict after a second patch race and never reports that patch appl
   expect(races).toBe(2);
   expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', revision: 2 } });
   expect((await settingsWriter(r.db).leaves())['agent.tasks']?.value).toEqual({ 'canopy-map': { schedule: { enabled: false } } });
+});
+
+it('refuses stale client revisions on both task patch routes and rereads the current values', async () => {
+  for (const route of ['tier', 'switch'] as const) {
+    const e = sqliteEnv();
+    try {
+      const env = { ...e.env, ...OWNER_ENV };
+      const stale = route === 'tier'
+        ? await asOwnerPatch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' })
+        : await asOwnerPut(e.db, '/api/titling-backfill', { enabled: true });
+      expect(stale.headers.get('if-match')).toBe('0');
+      const current = { 'title-summary': { reasoningLevel: 'low', schedule: { enabled: false } } };
+      expect(await settingsWriter(e.db).setLeaf('agent.tasks', current, 'other', 1)).toEqual({ applied: true });
+      const refused = await worker.fetch(stale, env);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'agent.tasks', revision: 1 });
+      const read = await worker.fetch(await asOwner(e.db, '/api/settings'), env);
+      const answer = await read.json() as { leaves: { leaf: string; value: unknown; revision: string }[] };
+      expect(answer.leaves.find(row => row.leaf === 'agent.tasks')).toMatchObject({ value: current, revision: '1' });
+      expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual(current);
+    } finally { e.sqlite.close(); }
+  }
+});
+
+it('resets only configured embedding parts during selection writes and switch completion', async () => {
+  for (const completing of [false, true]) {
+    const r = rig();
+    const writer = settingsWriter(r.db, { target: 'cloudflare' });
+    const write = async (now: number) => {
+      if (!completing) return (await writer.setEmbedding({ provider: 'workers-ai' }, 'owner', now)).applied;
+      r.sqlite.run(`INSERT INTO embedding_switches(slot,id,provider,model,endpoint,model_key,from_model_key,estimated_tokens,estimated_sources,progressed_at,state,started_at,started_by,updated_at)
+        VALUES('deployment','switch','workers-ai','@cf/baai/bge-m3',NULL,'new','old',0,0,1,'building',1,'owner',1)`);
+      const sw = await readSwitch(r.db);
+      return writeSwitchedEmbedding(r.db, { 'embedding.provider': 'workers-ai', 'embedding.model': sw!.model }, 'owner', now, sw!);
+    };
+    expect(await write(1)).toBe(true);
+    expect(r.sqlite.query('SELECT * FROM deployment_setting_resets').all()).toEqual([]);
+    expect(Object.keys(await settingsRevisions(r.db)).sort()).toEqual(completing ? ['embedding.model', 'embedding.provider'] : ['embedding.provider']);
+    r.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('embedding.base_url','"https://example.test"',1,'owner')`);
+    expect(await write(2)).toBe(true);
+    const receipt = r.sqlite.query("SELECT * FROM deployment_setting_resets WHERE leaf='embedding.base_url'").get();
+    expect(receipt).toEqual({ leaf: 'embedding.base_url', reset_at: 2, reset_by: 'owner' });
+    const revision = (await settingsRevisions(r.db))['embedding.base_url'];
+    expect(await write(3)).toBe(true);
+    expect((await settingsRevisions(r.db))['embedding.base_url']).toBe(revision);
+    expect(r.sqlite.query("SELECT * FROM deployment_setting_resets WHERE leaf='embedding.base_url'").get()).toEqual(receipt);
+  }
 });
 
 it('distinguishes reset then the same value at the same timestamp and rejects stale readers', async () => {

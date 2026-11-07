@@ -649,14 +649,13 @@ export async function storedEmbedding(db: RelationalStore): Promise<StoredEmbedd
   return stored;
 }
 
-/** The last reset instant of every leaf ever reset. */
 /** The models whose vectors the search index holds: every partition with a receipt not yet deleted. */
 export async function heldPartitions(db: RelationalStore) {
   const { results } = await db.prepare(`SELECT DISTINCT model_key FROM embedding_receipts WHERE ready >= 0`).all<{ model_key: string }>();
   return results.map((row) => heldPartition(row.model_key));
 }
 
-/** The stored embedding leaves as one write reads and conditions on them: each parsed, with the stamp of its last write. */
+/** The stored embedding leaves as one write reads and conditions on them: each parsed, with its persistent revision. */
 async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbedding; revisions: Record<string, number> }> {
   const states = await readSettingStates(db, EMBEDDING_SELECTION_LEAVES);
   const stored: StoredEmbedding = {};
@@ -666,6 +665,11 @@ async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbed
     try { stored[part] = JSON.parse(row.value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; stored[part] = { malformed: row.value }; }
   }
   return { stored, revisions: Object.fromEntries([...states].map(([leaf, row]) => [leaf, row.revision])) };
+}
+
+function embeddingWriteParts(parts: ReadonlyArray<readonly [EmbeddingSelectionLeaf, unknown]>, before: StoredEmbedding) {
+  return parts.filter(([leaf, value]) => value !== undefined || Object.hasOwn(before, leaf))
+    .map(([leaf, value]) => ({ leaf, value }));
 }
 
 /** Why a candidate embedding selection, with `changes` the parts a write names, cannot be stored on the target; or what it resolves to. */
@@ -727,7 +731,7 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
   if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
 
   const written = await persistSettings(db, admittedChange({
-    parts: parts.map(([leaf, value]) => ({ leaf, value })), expected: { ...revisions, ...expectedRevisions },
+    parts: embeddingWriteParts(parts, before), expected: { ...revisions, ...expectedRevisions },
     actor, now: nowMs, embeddingEmpty: held.length === 0,
   }));
   return written === 'applied' ? { applied: true } : conflict(db, leaf);
@@ -737,9 +741,10 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
 export async function writeSwitchedEmbedding(
   db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number, sw: EmbeddingSwitch,
 ): Promise<boolean> {
-  const { revisions } = await embeddingRows(db);
+  const { stored: before, revisions } = await embeddingRows(db);
   const written = await persistSettings(db, admittedChange({
-    parts: EMBEDDING_SELECTION_LEAVES.map(leaf => ({ leaf, value: choice[leaf] })), expected: revisions, actor, now: nowMs,
+    parts: embeddingWriteParts(EMBEDDING_SELECTION_LEAVES.map(leaf => [leaf, choice[leaf]] as const), before),
+    expected: revisions, actor, now: nowMs,
   }), { sw, now: nowMs });
   return written === 'applied';
 }
@@ -835,6 +840,7 @@ export function settingsWriter(
   };
 
   const TASK_PATCH_ATTEMPTS = 2;
+  /** Per-key patches retry once only when the caller supplies no revision. */
   const patchTask = async (task: string, actor: string, nowMs: number, expectedRevision: number | undefined,
     patch: (entry: Record<string, unknown>) => Record<string, unknown> | null, repairEntry = false, validate?: () => string | null): Promise<SettingsResult> => {
     const leaf = 'agent.tasks';
@@ -859,7 +865,7 @@ export function settingsWriter(
         const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, value, held);
         if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
         const written = await apply(leaf, { parts: [{ leaf, value }], expected, actor, now: nowMs });
-        if (written.applied || written.refusal.reason !== 'conflict') return written;
+        if (written.applied || written.refusal.reason !== 'conflict' || expectedRevision !== undefined) return written;
       }
       return conflict(db, leaf);
     });
