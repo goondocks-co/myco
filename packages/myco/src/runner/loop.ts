@@ -46,7 +46,7 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
@@ -537,7 +537,7 @@ async function drive(
   if (options.signal.aborted) onAbort();
   let lost = false;
   let overran = false;
-  const preparationAllowance = run.repository === undefined ? 0 : REPOSITORY_PREPARATION_TIMEOUT_MS;
+  const preparationAllowance = run.repository !== undefined && REPOSITORY_TASKS.includes(run.task) ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
   const cleanupDeadline = clock() + preparationAllowance + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
   /**
    * The budget, settled by the timer rather than by the harness.
@@ -605,7 +605,7 @@ async function drive(
         profile: run.profile,
         sourceReadOnly: checkout !== undefined,
         sourceFilesOnly: KNOWLEDGE_REPOSITORY_TASKS.includes(run.task),
-        serverToolsOnly: checkout === undefined,
+        serverToolsOnly: KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) ? checkout === undefined : !REPOSITORY_TASKS.includes(run.task),
       }, stopping.signal)[Symbol.asyncIterator]();
     };
     stream = start();

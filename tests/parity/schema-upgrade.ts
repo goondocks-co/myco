@@ -194,9 +194,17 @@ function omittedObject(statement: string): { kind: string; name: string } | unde
 
 export function isLocalMigrationSqlFailure(error: unknown, omittedStatement: string): boolean {
   if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
+  const message = error.message.replace(/\u001b\[[0-9;]*m/g, '');
+  const tokens = sqlIdentifiers(omittedStatement);
+  const words = tokens.map(token => token.toUpperCase());
+  if (words[0] === 'DROP' && words[1] === 'TRIGGER') {
+    const name = tokens[words[2] === 'IF' && words[3] === 'EXISTS' ? 4 : 2];
+    const retained = /\berror in trigger ([^\r\n]+?) after drop column: no such column: [^\r\n]+:\s*SQLITE_ERROR\b/i.exec(message);
+    return name !== undefined && retained !== null && sqlIdentifiers(retained[1]!).join(' ').toLowerCase() === name.toLowerCase();
+  }
   const omitted = omittedObject(omittedStatement);
   // The store names the object and then its own code (`no such table: t: SQLITE_ERROR`), in terminal colours.
-  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(error.message.replace(/\u001b\[[0-9;]*m/g, ''));
+  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(message);
   if (omitted === undefined || missing === null) return false;
   const missingKind = missing[1]!.toLowerCase();
   if (missingKind !== omitted.kind && !(omitted.kind === 'view' && missingKind === 'table')) return false;

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
+import { sleep } from '../utils/sleep.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { repositoryBranch, repositoryUrl, REPOSITORY_COMMIT_PATTERN } from '@goondocks/myco-shared/repository';
 
@@ -34,7 +34,9 @@ export async function withRepositoryMirror<T>(
   const lockPath=join(directory,'mirror.lock');
   let lease=LifecycleLock.acquire(lockPath,{command:'myco runner repository cache'});
   while (!lease.acquired) {
-    await pause(CACHE_LOCK_RETRY_MS,undefined,{signal});
+    signal.throwIfAborted();
+    await sleep(CACHE_LOCK_RETRY_MS);
+    signal.throwIfAborted();
     lease=LifecycleLock.acquire(lockPath,{command:'myco runner repository cache'});
   }
   try {

@@ -182,6 +182,21 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
   } finally { db.close(); }
 });
 
+it('detects an omitted trigger drop only after observing the failed upgrade state', async () => {
+  const omitted = 'DROP TRIGGER IF EXISTS curation_inventory_map_move';
+  const refusal = new Error('wrangler d1 migrations apply exited 1: error in trigger curation_inventory_map_move after drop column: no such column: repository_files: SQLITE_ERROR');
+  expect(isLocalMigrationSqlFailure(refusal, omitted)).toBe(true);
+  expect(isLocalMigrationSqlFailure(refusal, 'DROP TRIGGER IF EXISTS curation_inventory_map_delete')).toBe(false);
+  expect(isLocalMigrationSqlFailure(refusal, 'CREATE TRIGGER curation_inventory_map_move AFTER DELETE ON source BEGIN SELECT 1; END')).toBe(false);
+  expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'), omitted)).toBe(false);
+  await assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => {
+    throw new UpgradeStateMismatchError('trigger and version still belong to the previous schema');
+  });
+  await expect(assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => {})).rejects.toBe(refusal);
+  const unrelated = new Error('unrelated database read failure');
+  await expect(assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => { throw unrelated; })).rejects.toBe(unrelated);
+});
+
 it('recognizes schema-qualified D1 missing objects while refusing a different object', () => {
   const omitted = 'CREATE TABLE run_served_material (id TEXT PRIMARY KEY)';
   for (const name of [
