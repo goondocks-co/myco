@@ -303,6 +303,10 @@ describe('the measures', () => {
     expect(details).toContain('SEARCH i USING COVERING INDEX idx_spore_injections_session (project_id=? AND session_id=?)');
     expect(details).toMatch(/SEARCH s USING INDEX \S+ \(project_id=\? AND session_id=\?\)/);
     expect(details).not.toMatch(/SCAN (sess|i|s)\b/);
+    const harness = recorded.statements.find(statement => statement.sql.includes('SELECT t.agent FROM transcripts t'))!;
+    const harnessPlans = r.sqlite.query(`EXPLAIN QUERY PLAN ${harness.sql}`).all(...harness.binds as never[]) as { detail: string }[];
+    expect(harnessPlans.map(row => row.detail).join('\n'))
+      .toContain('SEARCH t USING INDEX idx_transcripts_session (project_id=? AND session_id=?)');
     r.sqlite.close();
   });
 

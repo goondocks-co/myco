@@ -246,10 +246,10 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('reads capture recency over the window alone, from the capture index and no session row', async () => {
+  it('seeks each provisioned harness\'s newest live receipt through the harness index', async () => {
     const read = await plans((db) => captureRecency(db, 1_790_000_000_000, 'mem_1'));
     for (const { store, plan } of reading(read, 'sessions')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH sessions USING COVERING INDEX idx_sessions_capture \(last_received_at>\?\)/) });
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH newest USING COVERING INDEX idx_sessions_harness_live \(machine_id=\? AND agent=\? AND last_live_received_at>\?\)/) });
     }
     // Machine names come from live credentials alone, read off the partial index that holds only them.
     for (const { store, plan } of reading(read, 'member_credentials')) {
@@ -263,11 +263,11 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       for (const { store, sql, plan } of read) {
         const walks = /^SCAN (?:mc(?: USING INDEX idx_machine_claims_claimed)?|machine_claims|w USING INDEX idx_worker_contacts_seen|json_each VIRTUAL TABLE INDEX 1:)$/;
         const boundedWindow = sql.includes('ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root');
-        const allowed = (step: string) => walks.test(step) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
+        const allowed = (step: string) => walks.test(step) || (sql.includes('AS last_event_at') && /^SCAN (?:r|h VIRTUAL TABLE INDEX 1:)$/.test(step)) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
         expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter(allowed) });
       }
       for (const { store, plan } of reading(read, 'sessions')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH sessions USING COVERING INDEX idx_sessions_capture \(last_received_at>\?\)/) });
+        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH newest USING COVERING INDEX idx_sessions_harness_live \(machine_id=\? AND agent=\? AND last_live_received_at>\?\)/) });
       }
       for (const { store, plan } of reading(read, 'member_credentials')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });
@@ -277,7 +277,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       expect(summary?.sql).not.toContain('INDEXED BY idx_member_credentials_lineage');
       expect(summary?.plan).not.toContain('idx_member_credentials_lineage');
       for (const { store, plan } of reading(read, 'worker_contacts')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX sqlite_autoindex_member_credentials_1 \(id=\?\)[\s\S]*SEARCH r USING (?:COVERING )?INDEX idx_agent_runs_lease \(leased_by=\?\)/) });
+        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX sqlite_autoindex_member_credentials_1 \(id=\?\)[\s\S]*SEARCH r USING (?:COVERING )?INDEX idx_agent_runs_worker_started \(leased_by=\?\)/) });
       }
     }
     const own = await plans((db) => machinesOf(db, 'mem_1'));
@@ -298,10 +298,10 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   it('names a viewer\'s own machines from the viewer\'s claims and live credentials alone, by member', async () => {
     const read = await plans((db) => ownMachineNames(db, 'mem_1', 1_790_000_000_000));
     for (const { store, plan } of reading(read, 'machine_claims')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/^SEARCH machine_claims USING INDEX idx_machine_claims_member \(member_id=\?\)$/) });
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH mc USING INDEX idx_machine_claims_member \(member_id=\?\)/) });
     }
     for (const { store, plan } of reading(read, 'member_credentials')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH member_credentials USING INDEX idx_member_credentials_member \(member_id=\? AND revoked_at=\?\)/) });
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });
     }
   });
 

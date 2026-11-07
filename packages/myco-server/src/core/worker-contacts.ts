@@ -526,19 +526,13 @@ export interface MachineContact {
  * every run unleased would walk the runs instead.
  */
 export function machineContactsStatement(db: RelationalStore, order: 'contact' | 'offers' = 'contact', machineIds?: readonly string[]): PreparedStatement {
-  const ids = JSON.stringify(machineIds);
   return db.prepare(
-    `${machineIds === undefined ? '' : `WITH contacts AS (
-       SELECT w.* FROM worker_contacts w WHERE w.machine_id IN (SELECT value FROM json_each(?))
-       UNION ALL
-       SELECT w.* FROM member_credentials c CROSS JOIN worker_contacts w ON w.credential_id = c.id
-         WHERE c.machine_id IN (SELECT value FROM json_each(?)) AND w.machine_id IS NULL)`}
-     SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.credential_id, w.offers, w.updated_at AS offer_revision, w.last_seen_at,
+    `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.credential_id, w.offers, w.updated_at AS offer_revision, w.last_seen_at,
             (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_worker_started WHERE r.leased_by = w.credential_id) AS last_run_at
-       FROM ${machineIds === undefined ? 'worker_contacts' : 'contacts'} w
-      CROSS JOIN member_credentials c ON c.id = w.credential_id
-      ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
-  ).bind(...(machineIds === undefined ? [] : [ids, ids]));
+       FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id
+       ${machineIds === undefined ? '' : 'WHERE COALESCE(w.machine_id, c.machine_id) IN (SELECT value FROM json_each(?))'}
+       ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
+  ).bind(...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
 }
 
 interface MachineOfferObservation {

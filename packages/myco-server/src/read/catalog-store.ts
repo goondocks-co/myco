@@ -2207,7 +2207,7 @@ function kpis_median(sorted: readonly number[]): number | null {
  * `unrecorded` rather than being dropped from the split.
  */
 const kpis_HARNESS_OF = (alias: string): string => `COALESCE((
-  SELECT t.agent FROM transcripts t
+  SELECT t.agent FROM transcripts t INDEXED BY idx_transcripts_session
    WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND t.role = 'primary'
    ORDER BY t.first_received_at LIMIT 1), 'unrecorded')`;
 

@@ -1,5 +1,5 @@
 /**
- * Capture recency on `/api/status`: when each machine's agents last sent anything, across every Project.
+ * Capture recency on `/api/status`: when each provisioned harness last sent live capture, across every Project.
  *
  * One row per machine and agent, its latest receipt and the Project that receipt landed in, over the last thirty
  * days, most recent first. A machine is named to the member it belongs to alone, by its claim's label or else the label
@@ -23,15 +23,21 @@ describe('capture recency', () => {
     const env = { ...fixture.env, ...OWNER_ENV };
     const { sqlite } = fixture;
     seedMemberRoleAccount(sqlite);
-    const session = (project: string, id: string, machine: string, agent: string | null, at: number) =>
-      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-                  VALUES (?, ?, ?, 'tok_1', ?, ?, ?)`, [project, id, machine, at - 1000, at, agent]);
+    const session = (project: string, id: string, machine: string, agent: string | null, at: number, liveAt: number | null = at) =>
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, last_live_received_at, agent)
+                  VALUES (?, ?, ?, 'tok_1', ?, ?, ?, ?)`, [project, id, machine, at - 1000, at, liveAt, agent]);
     session('proj_1', 's1', 'laptop', 'claude-code', now - 60_000);
     session('proj_2', 's2', 'laptop', 'claude-code', now - 10_000);
     session('proj_1', 's3', 'laptop', 'codex', now - 3_600_000);
     session('proj_2', 's4', 'desktop', 'cursor', now - 7_200_000);
     session('proj_1', 's5', 'desktop', 'pi', now - CAPTURE_WINDOW_MS - 1);
     session('proj_1', 's6', 'admin-box', 'codex', now - 5_000);
+    session('proj_1', 'import-only', 'laptop', 'claude-code', now, null);
+    session('proj_1', 'imported-later', 'laptop', 'claude-code', now, now - 120_000);
+    for (const [machine, agents] of [['laptop', ['claude-code', 'codex']], ['desktop', ['cursor', 'pi']], ['admin-box', ['codex']]] as const) {
+      sqlite.run('INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at) VALUES(?,?,?)',
+        [machine, JSON.stringify(agents.map(id => ({ id, provisioned: true, state: 'ready', sinceAt: 0 }))), now]);
+    }
     sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('laptop', 'mem_machine_2', 0), ('desktop', 'mem_machine_2', 0), ('admin-box', 'mem_machine_1', 0)`);
     seedCredential(sqlite, { id: 'mt_old', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 1, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_new', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 2, expiresAt: now + 60_000 });
@@ -63,7 +69,7 @@ describe('capture recency', () => {
   it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {
     const fixture = sqliteEnv();
     const inner = fixture.env.MYCO_DB;
-    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (/MAX\(last_received_at\)/.test(sql)) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
+    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (sql.includes('AS last_event_at')) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
     const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db), 'cf-connecting-ip': '1.2.3.4' } }), env);
     const body = await res.json() as { schema: { matches: boolean }; projects: unknown[]; workers: { available: boolean }; capture: unknown[]; unavailable: string[] };
     expect({ status: res.status, matches: body.schema.matches, projects: body.projects.length, workers: body.workers.available, capture: body.capture, unavailable: body.unavailable })

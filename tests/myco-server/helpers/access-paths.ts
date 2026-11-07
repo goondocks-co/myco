@@ -52,7 +52,6 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_sessions_untitled_ended', 'the titling convergence takes ended, untitled sessions across the Deployment, newest end first'],
   ['idx_sessions_untitled_open', 'the titling convergence takes open, untitled sessions across the Deployment by how long they have been quiet, newest first'],
   ['idx_sessions_titled_recent', 'the titling convergence takes titled sessions active within the day across the Deployment, most recent first'],
-  ['idx_worker_contacts_machine', 'Health reads contacts for the machine claims on its current page'],
   ['idx_worker_contacts_seen', 'the worker-contact sweep forgets Deployment-wide observations by age, and a worker names no Project'],
   ['idx_worker_model_catalogs_received', 'Settings reads the model lists machines sent lately, and the lease sweep forgets the rest by age; a machine names no Project'],
   ['idx_sessions_occurred_deployment', 'the sessions list spans every Project, newest first'],

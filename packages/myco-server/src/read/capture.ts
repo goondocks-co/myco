@@ -1,11 +1,9 @@
 /**
  * Capture recency, and how every read names a machine.
  *
- * Capture recency is when each machine's agents last sent anything, across every Project. It is read off the sessions
- * a capture keeps current (`last_received_at` moves with every event a session receives), per machine and agent, over
- * a recent window. `idx_sessions_capture` leads with that receipt, so the read covers the window's sessions alone and
- * never a session row. A deleted session still counts: what this answers is whether a machine's capture reaches the
- * Deployment, and deleting a session afterwards does not change that it did.
+ * Capture recency is each provisioned harness's latest live receipt across every Project, over a recent window.
+ * Each reported machine/harness pair seeks one session through `idx_sessions_harness_live`. Imported bytes do not
+ * establish live capture. A deleted session still counts: capture recency records receipt, independent of deletion.
  *
  * A machine's name is its claim's label, or, for a machine claimed before names lived there, the label its newest live
  * credential carries. A read shows a viewer the name of the viewer's own machines alone: anyone else's machine is
@@ -100,15 +98,17 @@ export interface CaptureRow {
   projectId: string;
 }
 
-/** The latest receipt per machine and agent over the window, most recent first. */
-export function captureRecencyStatement(db: RelationalStore, nowMs: number): PreparedStatement {
-  // `project_id` is a bare column beside MAX(): SQLite takes it from the row that holds the maximum.
-  return db.prepare(
-    `SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
-      WHERE last_received_at >= ? AND machine_id IS NOT NULL
-      GROUP BY machine_id, agent
-      ORDER BY last_event_at DESC, machine_id, agent`,
-  ).bind(nowMs - CAPTURE_WINDOW_MS);
+/** The latest live receipt per provisioned machine/harness pair, most recent first. */
+export function captureRecencyStatement(db: RelationalStore, nowMs: number, machineIds?: readonly string[]): PreparedStatement {
+  return db.prepare(`SELECT s.machine_id, s.agent, s.last_live_received_at AS last_event_at, s.project_id
+    FROM machine_harness_reports r CROSS JOIN json_each(r.harnesses) h CROSS JOIN sessions s
+    WHERE s.rowid = (SELECT newest.rowid FROM sessions newest INDEXED BY idx_sessions_harness_live
+      WHERE newest.machine_id = r.machine_id AND newest.agent = json_extract(h.value, '$.id')
+        AND newest.last_live_received_at IS NOT NULL AND newest.last_live_received_at >= ?
+      ORDER BY newest.last_live_received_at DESC LIMIT 1)
+      ${machineIds === undefined ? '' : 'AND r.machine_id IN (SELECT value FROM json_each(?))'}
+    ORDER BY last_event_at DESC, s.machine_id, s.agent`)
+    .bind(nowMs - CAPTURE_WINDOW_MS, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
 }
 
 /** The rows `captureRecencyStatement` answers, as `viewerId` is shown them. */
@@ -126,7 +126,7 @@ export function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<stri
   });
 }
 
-/** The latest receipt per machine and agent over the window, most recent first, as `viewerId` is shown it. */
+/** The latest live receipts of provisioned harnesses, most recent first, as `viewerId` is shown them. */
 export async function captureRecency(db: RelationalStore, nowMs: number, viewerId: string): Promise<CaptureRow[]> {
   const [recent, claims, credentials] = await db.batch([captureRecencyStatement(db, nowMs), ...machineOwnerStatements(db, nowMs)]);
   return captureRowsOf(recent!.results, machineOwnersOf(claims!.results, credentials!.results), viewerId);

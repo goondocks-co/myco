@@ -1,4 +1,4 @@
-/** Machine pages seek contacts by reported machine. */
+/** Machine pages seek each worker credential's latest run. */
 export const V706_STATEMENTS: readonly string[] = [
-  "CREATE INDEX IF NOT EXISTS idx_worker_contacts_machine ON worker_contacts(machine_id,last_seen_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_agent_runs_worker_started ON agent_runs(leased_by,started_at DESC)",
 ];
