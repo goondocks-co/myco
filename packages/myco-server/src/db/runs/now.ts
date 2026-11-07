@@ -1,29 +1,38 @@
+import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import type { RelationalStore } from '../../core/adapters.js';
+import { NOW_WATCHED_TASKS, unresolvedFailureRows } from './outcomes.js';
 import { RUN_TOOL_EVENT } from '../../core/runs.js';
 import { read, readSet } from '../index.js';
 
 export const NOW_PROJECTS_MAX = 25;
 export const NOW_RUNNING_MAX = 20;
 export type TodayScope = { projectId: string } | { all: true };
-export interface ProjectCursor { activity: number; projectId: string }
+export interface ProjectCursor { priority: number; activity: number; projectId: string }
 type Row = Record<string, unknown>;
 const scopeSql = `(?1 IS NULL AND EXISTS(SELECT 1 FROM projects p WHERE p.project_id=r.project_id AND p.archived_at IS NULL) OR r.project_id=?1)`;
-const projectRows = `SELECT p.project_id,COALESCE((SELECT f.last_received_at FROM session_read_facts f
-  WHERE f.project_id=p.project_id AND f.has_session=1 AND f.tombstoned=0 ORDER BY f.last_received_at DESC LIMIT 1),p.created_at) AS activity
-  FROM projects p WHERE p.archived_at IS NULL AND (?1 IS NULL OR p.project_id=?1)`;
-const projects = read<[string | null, number | null, string | null], { project_id: string; activity: number }>({
-  name: 'runs.todayProjects', sql: `SELECT * FROM (${projectRows}) WHERE ?2 IS NULL OR activity<?2 OR (activity=?2 AND project_id>?3)
-    ORDER BY activity DESC,project_id LIMIT ${NOW_PROJECTS_MAX + 1}`,
+const projectScope = '(?1 IS NULL AND p.archived_at IS NULL OR p.project_id=?1)';
+const projectRows = `WITH live AS MATERIALIZED (SELECT DISTINCT project_id FROM agent_runs INDEXED BY idx_agent_runs_claimable
+    WHERE ${IN_FLIGHT_RUN_STATUSES})
+  SELECT p.project_id,CASE WHEN EXISTS(SELECT 1 FROM live WHERE live.project_id=p.project_id)
+    OR EXISTS(SELECT 1 FROM json_each('${JSON.stringify(NOW_WATCHED_TASKS)}') t
+      WHERE EXISTS(SELECT 1 FROM (${unresolvedFailureRows('p.project_id', 't.value')}))) THEN 1 ELSE 0 END AS priority,
+    COALESCE((SELECT f.last_received_at FROM session_read_facts f
+      WHERE f.project_id=p.project_id AND f.has_session=1 AND f.tombstoned=0 ORDER BY f.last_received_at DESC LIMIT 1),p.created_at) AS activity
+    FROM projects p WHERE ${projectScope}`;
+const projects = read<[string | null, number | null, number | null, string | null], { project_id: string; priority: number; activity: number }>({
+  name: 'runs.todayProjects', sql: `SELECT * FROM (${projectRows}) WHERE ?2 IS NULL OR priority<?2
+    OR (priority=?2 AND (activity<?3 OR (activity=?3 AND project_id>?4)))
+    ORDER BY priority DESC,activity DESC,project_id LIMIT ${NOW_PROJECTS_MAX + 1}`,
 });
-const projectTotal = read<[string | null], { n: number }>({ name: 'runs.todayProjectTotal', sql: 'SELECT COUNT(*) AS n FROM projects WHERE archived_at IS NULL AND (?1 IS NULL OR project_id=?1)' });
+const projectTotal = read<[string | null], { n: number }>({ name: 'runs.todayProjectTotal', sql: `SELECT COUNT(*) AS n FROM projects p WHERE ${projectScope}` });
 export async function todayProjects(db: RelationalStore, scope: TodayScope, cursor: ProjectCursor | null = null) {
   const id = 'projectId' in scope ? scope.projectId : null;
-  const [rows, total] = await readSet(db, projects.bind(id, cursor?.activity ?? null, cursor?.projectId ?? null), projectTotal.bind(id));
+  const [rows, total] = await readSet(db, projects.bind(id, cursor?.priority ?? null, cursor?.activity ?? null, cursor?.projectId ?? null), projectTotal.bind(id));
   const page = rows.slice(0, NOW_PROJECTS_MAX);
   const last = page.at(-1);
   const hasMore = rows.length > NOW_PROJECTS_MAX;
   return { read: page.map(row => row.project_id), total: total[0]!.n, hasMore,
-    cursor: hasMore && last ? { activity: last.activity, projectId: last.project_id } : null };
+    cursor: hasMore && last ? { priority: last.priority, activity: last.activity, projectId: last.project_id } : null };
 }
 const runningSql = `SELECT r.project_id,r.id,r.task,r.harness,r.model,r.started_at,n.name AS runner
   FROM agent_runs r INDEXED BY idx_agent_runs_claimable LEFT JOIN runners n ON n.id=r.leased_runner_id

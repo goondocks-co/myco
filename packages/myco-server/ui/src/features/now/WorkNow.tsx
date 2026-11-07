@@ -33,7 +33,7 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
             <div className="flex flex-col gap-s3">
               {data.projects.read < data.projects.total && (
                 <p className="t-small text-muted" data-now-more="">
-                  Checked {data.projects.read} of {data.projects.total} projects: most recently active first.
+                  Checked {data.projects.read} of {data.projects.total} projects: those with unresolved failures or live work first, then most recently active.
                   {' '}<Link to={PROJECTS_PATH}>Open a project</Link> to see the rest.
                 </p>
               )}

@@ -144,9 +144,9 @@ describe('the shared live refresh', () => {
   });
 
   it('says how many projects it read when it could not read them all, and where the rest are', () => {
-    render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', projects: { read: 25, total: 40, hasMore: true, cursor: { activity: 1, projectId: 'p' } } }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
+    render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', projects: { read: 25, total: 40, hasMore: true, cursor: { priority: 0, activity: 1, projectId: 'p' } } }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
     const more = document.querySelector('[data-now-more]') as HTMLElement;
-    expect(more.textContent).toBe('Checked 25 of 40 projects: most recently active first. Open a project to see the rest.');
+    expect(more.textContent).toBe('Checked 25 of 40 projects: those with unresolved failures or live work first, then most recently active. Open a project to see the rest.');
     expect(within(more).getByRole('link', { name: 'Open a project' }).getAttribute('href')).toBe('/projects');
   });
 

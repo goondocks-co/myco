@@ -1,3 +1,5 @@
+import { runChangeStatement, commitRunChange } from '../db/runs/change.js';
+export { commitRunChange } from '../db/runs/change.js';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { INPUT_UNCHANGED,SCHEDULE_ACTOR_SQL,SCHEDULE_ENTRY_SQL } from '../db/schedule-entry.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
@@ -42,7 +44,7 @@ import type { RunErrorCode } from './reader-codes.js';
 import { storedAudit, type RunAudit } from './run-audit.js';
 import { runnerContactStatement, workerContactStatement } from './worker-contacts.js';
 import { recordAttemptStatement } from './run-steps.js';
-import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import type { MaterialRead } from './material-pages.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
@@ -758,17 +760,8 @@ export function runUpdateStatement(
     ? `, run_context = CASE WHEN run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object'
         THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`
     : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
-  return db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql} RETURNING id`)
-    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
-      ...(authority?.params ?? []), ...callerGuard.params);
-}
-
-/** A run mutation and its direct row count commit with the mutations that follow it. */
-export async function commitRunChange(db: RelationalStore, statement: PreparedStatement, after: PreparedStatement[] = []):
-  Promise<{ changed: number; following: RunResult[] }> {
-  const [changed, ...following] = await db.batch([statement, ...after]);
-  return { changed: changed!.results.length, following };
+  return runChangeStatement(db, `UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`, [...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
+      ...(authority?.params ?? []), ...callerGuard.params]);
 }
 
 /** Apply the shared update statement and return how many rows changed. */
@@ -1031,10 +1024,10 @@ export async function listLiveRunsAcrossProjects(db: RelationalStore, limit: num
 
 /** A live run whose runtime went away is failed exactly once; a run that landed terminal on its own in the meantime is left as it landed. */
 const FAIL_STALE_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?
-  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES} RETURNING id`;
+  WHERE project_id = ? AND id = ? AND ${LIVE_RUN_STATUSES}`;
 
 export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<boolean> {
-  const result = await commitRunChange(db, db.prepare(FAIL_STALE_SQL).bind(now, error, errorCode, scope.projectId, runId));
+  const result = await commitRunChange(db, runChangeStatement(db, FAIL_STALE_SQL, [now, error, errorCode, scope.projectId, runId]));
   return result.changed === 1;
 }
 
@@ -1453,8 +1446,9 @@ export async function recordTaskHolder(db: RelationalStore, tasks: readonly stri
 export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string, quote?:{usd:number;at:number}): Promise<void> {
   if(quote!==undefined&&(heldBy!=='budget'||!Number.isFinite(quote.usd)||quote.usd<0||!Number.isSafeInteger(quote.at)))throw new Error('Invalid queued budget quote');
   const context=quote===undefined?'':`,run_context=json_set(${RUN_CONTEXT_OBJECT_SQL},'$.${BUDGET_QUOTE_USD_KEY}',?,'$.${BUDGET_QUOTE_AT_KEY}',?)`;
-  await db.prepare(`UPDATE agent_runs SET held_by = ?${context} WHERE project_id = ? AND id = ? AND status = 'queued' AND ${holderAdmissionSql(heldBy)}`)
-    .bind(heldBy,...(quote===undefined?[]:[quote.usd,quote.at]),scope.projectId,runId).run();
+  await db.prepare(`UPDATE agent_runs SET held_by = ?${context} WHERE project_id = ? AND id = ? AND status = 'queued' AND ${holderAdmissionSql(heldBy)}
+    AND (held_by IS NOT ?${quote===undefined?'':` OR ${contextValue(BUDGET_QUOTE_USD_KEY)} IS NOT ? OR ${contextValue(BUDGET_QUOTE_AT_KEY)} IS NOT ?`})`)
+    .bind(heldBy,...(quote===undefined?[]:[quote.usd,quote.at]),scope.projectId,runId,heldBy,...(quote===undefined?[]:[quote.usd,quote.at])).run();
 }
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
@@ -1533,7 +1527,7 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
     : owner.kind === 'member' ? 'leased_by = ? AND leased_runner_id IS NULL' : 'leased_by IS NULL AND leased_runner_id = ? AND leased_runner_credential_id = ?';
   const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
   const ends = 'subject IS NOT NULL';
-  const result = await commitRunChange(db, db.prepare(
+  const result = await commitRunChange(db, runChangeStatement(db,
     `UPDATE agent_runs SET status = CASE WHEN ${ends} THEN 'failed' ELSE 'queued' END,
         completed_at = CASE WHEN ${ends} THEN ? ELSE completed_at END,
         error_code = CASE WHEN ${ends} THEN '${LEASE_LAPSED}' ELSE error_code END,
@@ -1543,8 +1537,8 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
         held_by = CASE WHEN ${ends} THEN NULL ELSE 'worker' END,
         leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
       WHERE project_id = ? AND id = ? AND status = 'running' AND ${named}
-        AND dispatched_by IS ? AND lease_expires_at <= ? RETURNING id`,
-  ).bind(now, scope.projectId, runId, ...params, attemptId, now));
+        AND dispatched_by IS ? AND lease_expires_at <= ?`,
+    [now, scope.projectId, runId, ...params, attemptId, now]));
   return result.changed === 1;
 }
 

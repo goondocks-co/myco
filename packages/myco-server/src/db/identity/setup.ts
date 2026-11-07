@@ -1,6 +1,5 @@
-import { producedSql } from '../../read/run-outcome.js';
+import { producedSql, PRODUCING_TASKS } from '../../read/run-outcome.js';
 import { read, readSet } from '../index.js';
-import { TASK_WORDS } from '../../core/task-catalogue.js';
 import { repositoriesNeeded } from '../../read/repository-requirements.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { deploymentOwnerSql, linkedHumanAdminSql } from '../../core/ownership.js';
@@ -90,7 +89,7 @@ function setupStatement(all: boolean) {
 const adminSetup = setupStatement(true);
 const memberSetup = setupStatement(false);
 const producedRead = read<[number], { produced: number }>({ name: 'identity.setupProduced', sql: `SELECT EXISTS(SELECT 1 FROM projects p
-  CROSS JOIN json_each('${JSON.stringify(Object.keys(TASK_WORDS))}') t
+  CROSS JOIN json_each('${JSON.stringify(PRODUCING_TASKS)}') t
   WHERE p.archived_at IS NULL AND EXISTS(SELECT 1 FROM agent_runs a INDEXED BY idx_agent_runs_task
     WHERE a.project_id=p.project_id AND a.task=t.value AND a.status IN ('completed','failed') AND COALESCE(a.completed_at,a.started_at)<=? AND ${producedSql('a')})) AS produced` });
 

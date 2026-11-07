@@ -1,5 +1,5 @@
 import { todayProjects, todayRunning, todayQueued, NOW_PROJECTS_MAX, NOW_RUNNING_MAX, type ProjectCursor } from '../db/runs/now.js';
-import { failureReasons, unresolvedFailures, FAILURE_STREAK_SHOWN } from '../db/runs/outcomes.js';
+import { failureReasons, unresolvedFailures, FAILURE_STREAK_SHOWN, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
 import { todaySchedules, curationDispositions, NOW_FAILING_GROUPS } from '../db/learning/curation-now.js';
 import { todayMarks } from '../db/meta/marks.js';
 export { NOW_PROJECTS_MAX, NOW_RUNNING_MAX, NOW_FAILING_GROUPS };
@@ -12,7 +12,7 @@ import { callWords } from '@goondocks/myco-shared/call-words';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 import type { Marks } from '@goondocks/myco-shared/live-marks';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
-import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
+import { CURATION_TASK, EXTRACTION_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
 import { readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { applyFleetSignInAvailability, fleetSelectionContext, fleetWaits } from './fleet.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
@@ -37,7 +37,7 @@ interface FailingGroup { projectId: string; group: Record<string, unknown> }
 const SETTLED_DECISIONS: readonly string[] = ['keep', 'resolved', 'changed'];
 
 /** The tasks whose failure needs someone: what Myco learns, maps, seeds and curates. */
-export const NOW_WATCHED_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK, CURATION_TASK, SEEDING_TASK];
+export { NOW_WATCHED_TASKS };
 
 export type WorkNowSection = 'running' | 'waiting' | 'needsYou';
 
@@ -101,7 +101,7 @@ export interface WorkNowAnswer {
   marks: Marks;
   /**
    * How many Projects this answer read per-Project work for, of how many it covers. A Deployment-wide answer reads
-   * Projects by capture activity up to `NOW_PROJECTS_MAX`; when
+   * Projects with live work or unresolved failures first, then by capture activity up to `NOW_PROJECTS_MAX`; when
    * `read` is below `total` the page says so and offers each Project's own page.
    */
   projects: { read: number; total: number; hasMore: boolean; cursor: ProjectCursor | null };

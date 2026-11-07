@@ -1,4 +1,4 @@
-import { RUN_CONTROL_REFUSAL_WORDS } from '@goondocks/myco-shared/run-control';
+import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
 /**
  * Myco's work in words: every sentence the page and the run panel show, built
  * from the numbers the server answers. A run reads as what it came to, a
@@ -380,32 +380,12 @@ const REPOSITORY_FAILURE_WORDS = {
 } satisfies Readonly<Record<RepositoryFailure['code'], string>>;
 
 export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null): string {
-  const words: Readonly<Record<string, string>> = {
-    ...RUN_CONTROL_REFUSAL_WORDS,
-    machine_did_not_start: 'No machine started the task within a day.',
-    machine_unresponsive: 'The machine running it stopped responding.',
-    task_start_failed: 'The machine could not start the task.',
-    model_not_applied: 'The agent couldn’t use the chosen model.',
-    report_without_audit: 'The agent didn’t account for the steps it took, so its work couldn’t be checked.',
-    agent_not_signed_in: 'The agent isn’t signed in on the machine that ran it.',
-    agent_rate_limited: 'The agent’s provider limited how often it could ask, so it stopped.',
-    agent_model_refused: 'The agent’s model refused to carry on with the task.',
-    agent_timed_out: 'The agent ran out of time before it finished.',
-    agent_crashed: 'The agent quit unexpectedly before it finished.',
-    agent_failed: 'The agent reported an error and stopped.',
-    agent_launch_failed: 'The agent couldn’t be started on the machine that ran it.',
-    agent_protocol_error: 'The agent answered in a way the machine couldn’t read, so the task stopped.',
-    agent_permission_refused: 'The agent was refused a tool the task needs.',
-    agent_tools_unlisted: 'The machine couldn’t list the task’s tools for the agent.',
-    agent_tools_unused: 'The agent didn’t use Myco’s tools.',
-    run_cancelled: 'A member cancelled this run.',
-    run_failed: 'The task stopped before it could finish.',
-  };
+
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   if (code === 'repository_unprepared') return repositoryFailure === null
     ? REPOSITORY_PREPARATION_WORDS
     : REPOSITORY_FAILURE_WORDS[repositoryFailure.code] ?? REPOSITORY_PREPARATION_WORDS;
-  return words[code ?? ''] ?? words.run_failed!;
+  return RUN_FAILURE_WORDS[code ?? ''] ?? RUN_FAILURE_WORDS.run_failed!;
 }
 
 /** The failures a machine's agent explained in its own words, which the machine keeps in its worker log. */
