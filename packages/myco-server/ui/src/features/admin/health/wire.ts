@@ -21,11 +21,17 @@ export interface HarnessMeasure extends Measure {
 
 /** `GET /api/kpis?window=`. */
 export interface KpiMetadata {
+  /** Complete UTC days before today, or null for all history through today. */
   windowDays: number | null;
+  /** Inclusive lower time bound in epoch milliseconds; null for all history. */
   since: number | null;
+  /** Start of the first UTC day in epoch milliseconds; null for all history. */
   windowStart: number | null;
+  /** End of today in UTC, inclusive, in epoch milliseconds. */
   windowEnd: number;
+  /** Observation instant in epoch milliseconds. */
   asOf: number;
+  /** Schema step defining the meaning of these measures. */
   metricVersion: number;
 }
 
@@ -35,32 +41,55 @@ export type KpiAnswer = KpiReport | (KpiMetadata & {
 });
 
 export interface KpiReport extends KpiMetadata {
+  /** All historical projection phases are complete. */
   state: 'ready';
+  /** Prompts in the window named by a delivered spore receipt or plan nudge. */
   promptsServed: number;
+  /** Spore receipts delivered in the window, split by placement on a live prompt; excludes plan nudges. */
   deliveries: { placed: number; unplaced: number };
+  /** Prompts served context as a share of live prompts in the window. */
   servedShare: Measure;
+  /** Live prompts delivered at least one spore as a share of live prompts in the window. */
   sporeServeRate: Measure;
+  /** Sessions with a cortex block, delivered or not, as a share of sessions started in the window. */
   sessionStartPresent: Measure;
+  /** Myco tool calls per live prompt across the Deployment. */
   callsPerPrompt: Measure;
+  /** Per-harness calls and prompt samples, including harnesses with calls but no prompts. */
   callsPerPromptByHarness: HarnessMeasure[];
+  /** Myco plan reads (list, get or absent op) per session started in the window. */
   planReadsPerSession: Measure;
+  /** Median milliseconds from lineage start to its first context receipt, delivered or not. The window selects lineage starts; negative waits are excluded. */
   firstInjectionMs: Measure;
+  /** Release recall score over its fixed evaluation cases; independent of the traffic window. */
   recallQuality: Measure;
+  /** Per-harness prompt naming counts; sampleSize counts claimed live prompts in the window. */
   promptIdentity: PromptIdentityCounts[];
 }
 
 /** One agent's counts of transcript lines its parse kept without naming them the usual way. Counts only. */
 export interface PromptIdentityCounts {
+  /** Agent recorded by the session primary transcript, or the transcript agent for scheme counts. */
   harness: string;
+  /** Live prompts carrying a claim in the window. */
   sampleSize: number;
+  /** Claimed prompt records whose shape or opener class is unknown. */
   unrecognized: number;
+  /** Claimed prompt records with no field naming who opened the turn. */
   unmarked: number;
+  /** Claimed prompt records whose fields name two opener classes. */
   openerConflict: number;
+  /** Claimed prompt records that contradict the registered transcript role. */
   contractViolation: number;
+  /** Later submissions reusing a key an earlier submission owns. */
   reused: number;
+  /** Refused attempts by a second source to name an existing prompt id. */
   identityConflicts: number;
+  /** Unpinned transcripts of declared agents in the window. */
   schemeConflicts: number;
+  /** Sessions of a declared agent with at least two schemes represented in the window. */
   mixedSchemeSessions: number;
+  /** Retained context answers skipped for a prompt id already named by a receipt. */
   duplicatePromptSkips: number;
 }
 

@@ -21,11 +21,11 @@ export const DEFAULT_MEASURE_WINDOW: MeasureWindow = '30';
 export const isMeasureWindow = (value: string | null): value is MeasureWindow =>
   value !== null && MEASURE_WINDOWS.some((w) => w.id === value);
 
-/** The measures over a window, counted by the server: a heavy read, read once when shown and again only when asked. */
+/** The measures over a window, counted by the server: refreshed while historical measurement is building. */
 export function useKpis(window: MeasureWindow) {
   return useQuery({
     queryKey: ['kpis', window],
     queryFn: ({ signal }) => fetchJson<KpiAnswer>(`/api/kpis?window=${encodeURIComponent(window)}`, signal),
-    ...live<KpiAnswer>('heavy'),
+    ...live<KpiAnswer>({ whileMoving: data => data?.state === 'building' }),
   });
 }

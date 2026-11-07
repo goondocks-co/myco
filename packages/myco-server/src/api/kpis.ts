@@ -1,3 +1,9 @@
+/**
+ * The measures surface: what this Deployment can say about itself, measured.
+ *
+ * A ready answer always carries every measure, including those with an empty
+ * sample. A building answer carries observation metadata and catch-up progress.
+ */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, ok } from './scope.js';

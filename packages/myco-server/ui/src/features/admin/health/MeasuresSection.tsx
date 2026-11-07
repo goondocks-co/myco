@@ -2,7 +2,7 @@ import { type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Card, ErrorState, LoadingState, Select, Stat } from '../../../design';
 import { DEFAULT_MEASURE_WINDOW, isMeasureWindow, MEASURE_WINDOWS, useKpis, type MeasureWindow } from '../../../hooks/use-kpis';
-import { formatElapsed } from '../../../lib/format';
+import { formatDateTime, formatElapsed } from '../../../lib/format';
 import { harnessLabel } from '../../../lib/harness';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
@@ -95,7 +95,7 @@ function Measures({ report }: { report: KpiAnswer }) {
   return (
     <div className="flex flex-col gap-s4">
       <p className="t-small text-muted" data-measure-window="">{windowLabel}</p>
-      <p className="t-meta text-faint">As of <time dateTime={new Date(report.asOf).toISOString()}>{new Date(report.asOf).toISOString()}</time></p>
+      <p className="t-meta text-faint">As of <time dateTime={new Date(report.asOf).toISOString()}>{formatDateTime(report.asOf, { timeZone: 'UTC', timeZoneName: 'short' })}</time></p>
       {report.state === 'building'
         ? <p role="status">Measuring history ({report.progress.completed} of {report.progress.total})</p>
         : <ReadyMeasures report={report} />}

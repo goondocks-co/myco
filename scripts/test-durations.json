@@ -334,7 +334,7 @@
     "tests/myco-server-ui/error-states.test.tsx": 677,
     "tests/myco-server-ui/health.test.tsx": 11000,
     "tests/myco-server-ui/intelligence.test.tsx": 4222,
-    "tests/myco-server-ui/measures.test.tsx": 907,
+    "tests/myco-server-ui/measures.test.tsx": 10907,
     "tests/myco-server-ui/member-view.test.tsx": 2739,
     "tests/myco-server-ui/moved.test.tsx": 532,
     "tests/myco-server-ui/operations.test.tsx": 2000,

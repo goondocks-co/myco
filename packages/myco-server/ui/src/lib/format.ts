@@ -35,9 +35,9 @@ export function formatUntil(ts: number, now: number = Date.now(), coarse = false
   return `${Math.round(delta / DAY)}d`;
 }
 
-export function formatDateTime(ts: number | null): string {
+export function formatDateTime(ts: number | null, options?: Intl.DateTimeFormatOptions): string {
   if (ts === null) return '—';
-  return new Date(toMillis(ts)).toLocaleString();
+  return new Date(toMillis(ts)).toLocaleString(undefined, options);
 }
 
 export function formatCount(n: number, singular: string, plural = `${singular}s`): string {

@@ -21,8 +21,8 @@ page cannot fall out of live data by omission.
 |---|---|---|
 | `{ follows: ['runs' \| 'sessions' \| 'knowledge' \| 'recovery' \| 'fleet'] }` | Any read that shows what is happening now: Today, Myco's work, the session list, Knowledge's spores and plans, backups and automatic recovery, status, Needs you, runners | Re-read only when the heartbeat says that mark moved. Never by the clock. |
 | `{ follows, until: (data) => instant }` | A read that also goes stale by time alone: the live sessions group, whose first session falls quiet 15 minutes after its last capture | As `follows`, and once more at `until`, captured or not. |
-| `{ whileMoving: (data) => boolean }` | One small read of one thing in motion, such as an open running run or an embedding switch under way | Every `MOVING_MS` (10 s) while its own answer says it moves. `quick` is every `QUICK_MS` (2 s), for a check a person just asked for. |
-| `'heavy'` | Measures and anything else that aggregates long windows (`/api/kpis`) | Read once when shown. No clock, no tab-return refetch, no heartbeat. Only a person asks again. |
+| `{ whileMoving: (data) => boolean }` | One read of work in motion: a running run, an embedding switch, or KPI historical measurement in the building state | Every `MOVING_MS` (10 s) while its own answer says it moves. `quick` is every `QUICK_MS` (2 s), for a check a person just asked for. |
+| `'heavy'` | An aggregate read that waits for a person to request another observation | Read once when shown. No clock, no tab-return refetch, no heartbeat. Only a person asks again. |
 | `'still'` | A past window; what only a person changes here (settings, members); or a child a parent re-reads when its revision moves (a session's turns, files and commits, through `useFollowLive`) | Never re-read on its own. |
 
 **The heartbeat** is `GET /api/work/now`, read by `LiveRefresh` (`ui/src/hooks/use-live.tsx`). It is mounted once, in
