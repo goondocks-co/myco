@@ -182,12 +182,14 @@ it('GATE: persists the bookmark and schema transition before the first migration
   });
 });
 
-it('GATE: failed, missing and invalid bookmarks leave deployment data and remote resources unchanged', async () => {
-  for (const overrides of [
-    { bookmarkExit: 1 }, { bookmarkOutput: '' }, { bookmarkOutput: '{}' },
-    { bookmarkOutput: JSON.stringify({ bookmark: `${BOOKMARK}; echo invalid` }) },
-    { bookmarkOutput: JSON.stringify({ bookmark: 'short' }) },
-  ]) await fixture(overrides, async ({ home, update, calls }) => {
+for (const [failure, overrides] of [
+  ['failed', { bookmarkExit: 1 }],
+  ['empty', { bookmarkOutput: '' }],
+  ['missing', { bookmarkOutput: '{}' }],
+  ['invalid characters', { bookmarkOutput: JSON.stringify({ bookmark: `${BOOKMARK}; echo invalid` }) }],
+  ['too short', { bookmarkOutput: JSON.stringify({ bookmark: 'short' }) }],
+] as const) it(`GATE: ${failure} bookmarks leave deployment data and remote resources unchanged`, async () => {
+  await fixture(overrides, async ({ home, update, calls }) => {
     const before = fs.readFileSync(deploymentRecordPath(home), 'utf8');
     await expect(update()).rejects.toThrow('a current D1 Time Travel bookmark is required');
     expect(fs.readFileSync(deploymentRecordPath(home), 'utf8')).toBe(before);
