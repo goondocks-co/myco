@@ -245,15 +245,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { kind: node, shard: '1/9' }
-          - { kind: node, shard: '2/9' }
-          - { kind: node, shard: '3/9' }
-          - { kind: node, shard: '4/9' }
-          - { kind: node, shard: '5/9' }
-          - { kind: node, shard: '6/9' }
-          - { kind: node, shard: '7/9' }
-          - { kind: node, shard: '8/9' }
-          - { kind: node, shard: '9/9' }
+          - { kind: node, shard: '1/10' }
+          - { kind: node, shard: '2/10' }
+          - { kind: node, shard: '3/10' }
+          - { kind: node, shard: '4/10' }
+          - { kind: node, shard: '5/10' }
+          - { kind: node, shard: '6/10' }
+          - { kind: node, shard: '7/10' }
+          - { kind: node, shard: '8/10' }
+          - { kind: node, shard: '9/10' }
+          - { kind: node, shard: '10/10' }
           - { kind: dom, shard: '1/2' }
           - { kind: dom, shard: '2/2' }
     env:
