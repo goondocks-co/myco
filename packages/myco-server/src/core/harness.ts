@@ -39,7 +39,7 @@ import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
 import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
-import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
+import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
 import { runnerContactStatement, workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
@@ -343,7 +343,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
  */
 export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<Queued> {
   const setup = [ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now)];
-  const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
+  const runId = spec.runId ?? `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, { ...options, setup }))) {
@@ -566,7 +566,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     mint.statement,
   ];
 
-  const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
+  const runId = spec.runId ?? `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
   // The run's bound rides its context with the task's parameters, so the sweep
   // that fails a run whose runtime went away reads the same bound the runtime
   // received. A parameter reader ignores the key it does not name.
@@ -1141,7 +1141,7 @@ async function pullAtClaim(
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
-    const runId = `run_${crypto.randomUUID()}`;
+    const runId = `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
       reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params },
       ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {

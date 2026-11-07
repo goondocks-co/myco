@@ -37,7 +37,7 @@ export const setupProgress: ParityScenario = {
       VALUES ('reclaimed_setup_machine',${lit(MEMBER_ID)},${now})`);
     await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
       VALUES ('mt_setup_current',${lit(MEMBER_ID)},'reclaimed_setup_machine','fixture-current-hash',${now},${now + 86_400_000},'mt_setup_current',${now})`);
-    type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean } };
+    type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean; workProduced: boolean } };
     const measure = async (): Promise<Measurement> => {
       if (target.name !== 'cloudflare') return { rowsRead: null, progress: await read() };
       const response = await fetch(`${target.url}/__setup-read-budget`);
@@ -83,9 +83,17 @@ export const setupProgress: ParityScenario = {
       SELECT 'proj_setup_parity','old_' || i,'agent_setup_parity','extract-curate','completed',${old},${old} FROM n`);
     await target.sql(`INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,recorded_at)
       SELECT project_id,id,'tool_call','myco_run_sessions',${old} FROM agent_runs WHERE id LIKE 'old_%'`);
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3000)
+      INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
+      SELECT 'proj_setup_parity','member_spore_' || i,'agent_setup_parity','gotcha','active','Imported member knowledge',${lit(MEMBER_ID)},${old} FROM n`);
     const unrelated = await measure();
     expect(unrelated.progress.liveCapture).toBe(true);
+    expect(unrelated.progress.workProduced).toBe(false);
     expectFlat('unrelated history', establishedLarge, unrelated);
+    await target.sql(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
+      VALUES('proj_setup_parity','run_output','agent_setup_parity','gotcha','active','Run knowledge','run_setup_empty',${now})`);
+    expect((await read()).workProduced).toBe(true);
+
 
     // A project's notice stays a primary-key read even when the Deployment-wide list overflows.
     await target.sql(`INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by)
