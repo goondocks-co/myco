@@ -35,6 +35,6 @@ export async function commitRunUpdate(env: ServerEnv, scope: ReadScope, runId: s
     revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, options.caller.tokenId, options.now, { sql: 'changes() = 1', params: [] }),
   ] : []);
   const retired = following[0];
-  if (retired !== undefined) emit({ kind: 'credential_revoked', tokenId: options.caller.tokenId, revokedBy: HARNESS_MEMBER_ID, revoked: retired.meta.changes === 1 });
+  if (retired !== undefined) emit({ kind: 'credential_revoked', tokenId: options.caller.tokenId, revokedBy: HARNESS_MEMBER_ID, revoked: retired.results.length === 1 });
   return changed;
 }

@@ -7,7 +7,7 @@ import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type C
  * This module OWNS `spore_injections`. Its consumer is the member route
  * `POST /context/prompt`: the route calls the selector and hands the
  * rendered context to the hook. The store's `INSERT OR IGNORE` decides whether
- * to write a record, and `meta.changes` answers that decision.
+ * to write a record, and its returned row answers that decision.
  *
  * The record carries what 1.4 spreads across a status allowlist, a session-wide
  * exclusion set and a UNIQUE content hash, and the two rules hold to different
@@ -441,7 +441,7 @@ async function readSporesForPrompt(
         scope.projectId, input.sessionId, receiptId);
   });
   const [written] = await duringInjection('record', counts, () => commit(db,{...receipt,statements:[...receipt.statements,...snapshots]}));
-  if (written!.meta.changes !== 1) {
+  if (written!.results.length !== 1) {
     if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
     // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
     const named = promptId === null ? null : await duringInjection('record', counts, () => injectionPromptHeld(db)

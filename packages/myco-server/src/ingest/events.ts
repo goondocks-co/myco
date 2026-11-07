@@ -513,7 +513,7 @@ export async function planEventWrite(
       if (
         plan.projections.length > 0 &&
         storedRow.replayed !== 1 &&
-        projectionResults.every((r) => r.meta.changes === 0)
+        projectionResults.every((r) => r.results.length === 0)
       ) {
         const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
         emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });

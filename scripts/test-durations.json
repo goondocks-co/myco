@@ -860,7 +860,8 @@
     "tests/myco-server/work-now.test.ts": 1500,
     "tests/myco-server/work-now-read-ceilings.test.ts": 12500,
     "tests/myco-server-ui/work-now.test.tsx": 2500,
-    "tests/meta/run-tool-contract.test.ts": 1500
+    "tests/meta/run-tool-contract.test.ts": 1500,
+    "tests/myco-server/kpi-projection.test.ts": 2000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

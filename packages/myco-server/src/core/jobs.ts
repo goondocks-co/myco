@@ -80,6 +80,7 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  { name: 'projection-catch-up', runsThrough: 'sleep', converges: "every maintained projection holds exactly its sources' contributions through bounded checkpointed pages; readiness is published at each phase's captured frontier" },
   { name: 'spore-curation', runsThrough: 'idle', converges: 'bounded vector-only pages discover seed groups for opted-in Projects; final-member revision receipts keep unchanged groups settled' },
   { name: 'estimate-refresh', runsThrough: 'sleep', converges: 'each priced stage and execution profile has its own recent cost and exposure sample' },
   { name: 'learning-source-repair', runsThrough: 'sleep', onWorkWake: true, converges: 'every card and learning row with published source material has source activity independent of retry clocks, repaired in bounded pages' },

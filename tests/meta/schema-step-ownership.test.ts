@@ -1,4 +1,5 @@
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
+import { NEXT, VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
 import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
@@ -31,6 +32,18 @@ const LISTED: readonly Exception[] = [
   ...['deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities'].flatMap(table =>
     ['insert', 'update', 'delete'].map(operation => ({ step: 710, object: `${table}_revision_${operation}`, table,
       reason: 'Setting mutations advance the persistent leaf revision in the same transaction.' }))),
+  ...[
+    { table: 'session_prompts', actions: ['insert', 'delete', 'update'], reason: 'Live prompts maintain their measures and receipt placement.' },
+    { table: 'session_documents', actions: ['insert', 'delete', 'update'], reason: 'Document eligibility changes reconcile live prompts, calls and receipt placement.' },
+    { table: 'myco_tool_calls', actions: ['insert', 'delete', 'update'], reason: 'Live Myco calls maintain their count and plan-read contribution.' },
+    { table: 'spore_injections', actions: ['insert', 'delete', 'update'], reason: 'Receipts maintain delivery, served prompts and first-context lineage samples.' },
+    { table: 'session_injections', actions: ['insert', 'delete', 'update'], reason: 'Session records maintain start blocks, served plan nudges and lineage samples.' },
+    { table: 'sessions', actions: ['insert', 'update'], reason: 'Session receipt time and credential attribution maintain session and lineage measures.' },
+    { table: 'transcripts', actions: ['insert', 'delete'], reason: 'Transcript membership maintains scheme measures and canonical harness attribution.' },
+    { table: 'prompt_identity_conflicts', actions: ['insert', 'delete'], reason: 'Identity-conflict retention maintains keyed diagnostics.' },
+    { table: 'prompt_context_answers', actions: ['insert', 'delete', 'update'], reason: 'Answer retention and skip evidence maintain duplicate-prompt diagnostics.' },
+    { table: 'member_credentials', actions: ['delete'], reason: 'Credential removal retracts its lineage sample evidence.' },
+  ].flatMap(({ table, actions, reason }) => actions.map(action => ({ step: NEXT, object: `kpi_${table}_${action}`, table, reason }))),
   { step: 702, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
   { step: 703, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
   { step: 704, object: 'idx_transcripts_received', table: 'transcripts', reason: 'Prompt identity diagnostics seek transcript receipts in the selected time window.' },
@@ -203,6 +216,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),
+  ...VNEXT_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: NEXT, sql, reason: 'Projection phases record whether existing source history needs catch-up.' })),
   ...V708_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 708, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
   })),

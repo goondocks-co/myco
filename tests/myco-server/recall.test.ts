@@ -1,3 +1,5 @@
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { applySchemaSteps } from './helpers/migrate.js';
 import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
 import { promptAnswerRetentionStatements } from '@myco-server-worker/core/prompt-answer-retention.js';
 /**
@@ -97,6 +99,38 @@ function store(): { db: RelationalStore; sqlite: Database } {
   sqlite.query(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, NOW);
   return { db: sqliteRelationalStore(sqlite), sqlite };
 }
+
+it('records the first plan nudge and cortex once with projection triggers on both stores', async () => {
+  const mf = new Miniflare(convertV4MiniflareOptions({
+    modules: true, script: 'export default { fetch() { return new Response(null); } }',
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'],
+  }));
+  const native = store();
+  try {
+    const d1 = await mf.getD1Database('DB');
+    await applySchemaSteps(d1);
+    await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)')
+      .bind(SCOPE.projectId, SCOPE.projectId, NOW).run();
+    for (const db of [native.db, d1]) {
+      await db.prepare("INSERT INTO members(id,created_at) VALUES('mem_context',?)").bind(NOW).run();
+      await db.prepare(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
+        VALUES('credential','mem_context','machine_1','context-digest',?,?,'credential',?)`).bind(NOW, NOW + 60_000, NOW).run();
+      await db.prepare('INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES(?,?,?,?,?,?)')
+        .bind(SCOPE.projectId, SESSION, 'machine_1', 'credential', NOW, NOW).run();
+      for (const kind of ['plan-nudge', 'cortex']) {
+        expect(await recordSessionInjection(db, SCOPE, SESSION, kind, NOW, admit(SCOPE.projectId, SESSION)))
+          .toEqual({ outcome: 'recorded' });
+        expect(await recordSessionInjection(db, SCOPE, SESSION, kind, NOW + 1, admit(SCOPE.projectId, SESSION)))
+          .toEqual({ outcome: 'repeat' });
+      }
+      expect(await db.prepare('SELECT SUM(started_with_block) AS starts FROM kpi_fact WHERE project_id=?')
+        .bind(SCOPE.projectId).first()).toEqual({ starts: 1 });
+    }
+  } finally {
+    native.sqlite.close();
+    await mf.dispose();
+  }
+});
 
 const spore = (id: string, over: Partial<SporeInsert> = {}): SporeInsert => ({
   id, agentId: AGENT, sessionId: null, observationType: 'gotcha',
@@ -236,8 +270,11 @@ describe('the composed block', () => {
   it('names a contributor that failed and serves the rest', async () => {
     const { db, sqlite } = store();
     await insertSpore(db, SCOPE, spore('a'));
-    sqlite.exec('DROP TABLE spore_injections');
-    const served = await compose(db, { text: PLANNING_PROMPT });
+    const unavailable: RelationalStore = { ...db, prepare(sql) {
+      if (sql.trimStart().startsWith('SELECT') && sql.includes('spore_injections')) throw new Error('receipt read unavailable');
+      return db.prepare(sql);
+    } };
+    const served = await compose(unavailable, { text: PLANNING_PROMPT });
     expect(served.skipped).toEqual(['spores']);
     expect(served.context).toBe(PLAN_INTENT_NUDGE);
     expect(served.parts).toEqual([{ kind: 'plan-nudge' }]);

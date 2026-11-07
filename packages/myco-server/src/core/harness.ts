@@ -1219,7 +1219,7 @@ export async function endLeasedRun(
     params: [run.projectId, run.runId, row.dispatchedBy, ...TERMINAL_RUN_STATUSES],
   })]);
   if (changed!.meta.changes === 0) return { ended: false, reason: 'the lease is no longer held' };
-  emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.meta.changes === 1 });
+  emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });
   if (unmet !== null) {
     emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, ...workerTelemetry(worker.principal) });
   }

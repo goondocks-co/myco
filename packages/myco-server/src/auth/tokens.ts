@@ -107,14 +107,14 @@ export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKin
  */
 export interface MintOptions {
   rotates?: boolean;
-  /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's change count. */
+  /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's returned row. */
   gate?: { sql: string; params: unknown[] };
 }
 
 /** A successor is minted only from a live row whose issuer let it rotate. */
 const ROTATING_PREDECESSOR = 'EXISTS (SELECT 1 FROM member_credentials WHERE id = ? AND rotates = 1)';
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's change count says whether it was); a root has no predecessor. Both obey the optional admission gate. */
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's returned row says whether it was); a root has no predecessor. Both obey the optional admission gate. */
 function memberTokenInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
   options: MintOptions,
@@ -128,7 +128,7 @@ function memberTokenInsert(
   const statement = db
     .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind, rotates)
               SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?, ?
-               WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))${gate === undefined ? '' : ` AND (${gate.sql})`}`)
+               WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))${gate === undefined ? '' : ` AND (${gate.sql})`} RETURNING id`)
     .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, rotates,
       predecessorId, predecessorId, predecessorId, ...(gate?.params ?? []));
   return { statement, expiresAt };
@@ -169,7 +169,7 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
  */
 export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
   return db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`}`)
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`} RETURNING id`)
     .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor, controlActor]));
 }
 
@@ -180,8 +180,8 @@ export async function revokeCredentialAsMember(
   const revokedBy = actor.id;
   if (!authorize(await memberSubject(db, actor.id, 'http'), 'edit', await credentialResource(db, tokenId))) return { revoked: false, revokedBy };
   const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, null, actor.id).run();
-  const revoked = result.meta.changes > 0;
-  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.meta.changes });
+  const revoked = result.results.length > 0;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.results.length });
   return { revoked, revokedBy };
 }
 
@@ -195,10 +195,10 @@ export async function revokeMachineCredentialsAsMember(
         AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE}
         AND ${memberWritePredicate('?', 'member_credentials.member_id')}
         AND EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id
-          AND mc.member_id = member_credentials.member_id)`)
+          AND mc.member_id = member_credentials.member_id) RETURNING id`)
     .bind(nowMs, actor.id, machineId, actor.id, actor.id).run();
-  emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: result.meta.changes > 0, rows: result.meta.changes });
-  return { revoked: result.meta.changes, revokedBy: actor.id };
+  emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: result.results.length > 0, rows: result.results.length });
+  return { revoked: result.results.length, revokedBy: actor.id };
 }
 
 /**
@@ -211,7 +211,7 @@ export function revokeCredentialOfMemberStatement(
   db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
   condition?: { sql: string; params: readonly unknown[] },
 ): PreparedStatement {
-  return db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL${condition === undefined ? '' : ` AND (${condition.sql})`}`)
+  return db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL${condition === undefined ? '' : ` AND (${condition.sql})`} RETURNING id`)
     .bind(nowMs, memberId, tokenId, memberId, ...(condition?.params ?? []));
 }
 
@@ -220,7 +220,7 @@ export async function revokeCredentialOfMember(
   db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
 ): Promise<boolean> {
   const result = await revokeCredentialOfMemberStatement(db, memberId, tokenId, nowMs).run();
-  const revoked = result.meta.changes === 1;
+  const revoked = result.results.length === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy: memberId, revoked });
   return revoked;
 }
@@ -236,7 +236,7 @@ export function revokeCredentialsOfMember(db: RelationalStore, memberId: string,
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
   const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs).run();
-  return { revoked: result.meta.changes };
+  return { revoked: result.results.length };
 }
 
 /** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. It stays open past the token's own expiry: a token that lapsed with its holder offline still asks for its successor until `MEMBER_LINEAGE_IDLE_MS` after its own `issued_at` (`lineageInactive`); past that it answers `lineage_expired`, the code every member build treats as final. A lineage is never refused for its age: every successor expires one TTL from its refresh. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one, and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
@@ -255,7 +255,7 @@ export async function refreshMemberToken(db: RelationalStore, subject: RefreshSu
     db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL AND ${TOKEN_LIVE}`).bind(nowMs, subject.tokenId, subject.tokenId),
     successor.statement,
   ]);
-  if (inserted.meta.changes !== 1) throw new TokenRevokedError(subject.tokenId);
+  if (inserted.results.length !== 1) throw new TokenRevokedError(subject.tokenId);
   return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 

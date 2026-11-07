@@ -724,6 +724,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0708_v708.sql': '4d2b61672de11bd28ccb6e32fca7ebd459ef4f192438550c6a6904f33d99fcbe',
   '0709_v709.sql': '06203843a273b3483e0b562553c5bdc607d99c5261d2cc97b060c2ffdd76c239',
   '0710_v710.sql': 'cbac86e79576df28a925c4ee8b99377008ef0ba0c6ba83ab21d8c2c90edb7184',
+  '0711_v711.sql': '631ee0615aeb4da0c3fafca42b01571133f584f5473b6e71245c0e8b8e9b07d9',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1357,6 +1358,7 @@ describe('versioned schema steps', () => {
       })).toMatchObject({ persisted: true, projected: true });
       writerRows.set('publish_queue', source.sqlite.query('SELECT * FROM publish_queue LIMIT 1').get() as Record<string, unknown>);
       writerRows.set('machine_capture_heads', source.sqlite.query('SELECT * FROM machine_capture_heads LIMIT 1').get() as Record<string, unknown>);
+      writerRows.set('kpi_fact', source.sqlite.query('SELECT * FROM kpi_fact LIMIT 1').get() as Record<string, unknown>);
       await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('learning_sessions', source.sqlite.query('SELECT * FROM learning_sessions').get() as Record<string, unknown>);
@@ -1424,7 +1426,7 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
-      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
+      'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',

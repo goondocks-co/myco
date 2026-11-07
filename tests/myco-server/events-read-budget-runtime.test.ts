@@ -42,11 +42,17 @@ const SESSION_HEALTH_INDEX_WRITES = 2;
 const TRANSCRIPT_HEALTH_INDEX_WRITES = 1;
 /** Heads write on receipt-minute advances and canonical identity changes. */
 const CAPTURE_HEAD_INSERT_WRITES = 1;
+/** A new session contributes one fact, one daily row and at most one lineage row. */
+const KPI_PROJECTION_WRITES = 3;
+/** A live prompt contributes one fact and one daily row. */
+const KPI_PROMPT_PROJECTION_WRITES = 2;
+/** An unpinned transcript contributes one scheme-conflict fact and one daily row. */
+const KPI_TRANSCRIPT_PROJECTION_WRITES = 2;
 /** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
 const LEARNING_SLICE_COMPLETION_WRITES = 20;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES,
+  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES,
   'publication-progress UPDATE': 3, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
