@@ -1,7 +1,7 @@
 /**
  * Capture recency on `/api/status`: when each machine's agents last sent anything, across every Project.
  *
- * One row per machine and agent, its latest receipt and the Project that receipt landed in, over the last thirty
+ * One row per machine and agent, ranked by receipt minute and canonical Project/session ties, over the last thirty
  * days, most recent first. A machine is named to the member it belongs to alone, by its claim's label or else the label
  * its newest live credential carries; anyone else is shown the member. A member who is not an admin reads their own
  * machines' capture; an admin reads every machine's.
@@ -12,7 +12,7 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { Database } from 'bun:sqlite';
-import { unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
+import { CAPTURE_RECEIPT_GRAIN_MS, unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
@@ -21,7 +21,7 @@ import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/
 const LAPTOP_MEMBER = { id: 'mem_machine_2', label: 'machine_2' };
 
 describe('capture recency', () => {
-  it('answers the latest receipt per machine and agent over the window, with its Project and the machine\'s name, a member their own machines alone', async () => {
+  it('answers each machine and agent’s canonical receipt over the window, with its Project and the machine\'s name, a member their own machines alone', async () => {
     const now = Date.now();
     const fixture = sqliteEnv();
     const env = { ...fixture.env, ...OWNER_ENV };
@@ -30,7 +30,7 @@ describe('capture recency', () => {
     const session = (project: string, id: string, machine: string, agent: string | null, at: number) =>
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
                   VALUES (?, ?, ?, 'tok_1', ?, ?, ?)`, [project, id, machine, at - 1000, at, agent]);
-    session('proj_1', 's1', 'laptop', 'claude-code', now - 60_000);
+    session('proj_1', 's1', 'laptop', 'claude-code', now - 2 * CAPTURE_RECEIPT_GRAIN_MS);
     session('proj_2', 's2', 'laptop', 'claude-code', now - 10_000);
     session('proj_1', 's3', 'laptop', 'codex', now - 3_600_000);
     session('proj_2', 's4', 'desktop', 'cursor', now - 7_200_000);
@@ -110,12 +110,14 @@ describe('capture recency', () => {
       const plan = sqlite.query<{ detail: string }, [string]>(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine');
       expect(plan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_unnamed_machine (machine_id=?)');
       const matches = async () => {
-        const expected = sqlite.query<Record<string, unknown>, []>(`SELECT machine_id,agent,MAX(last_received_at) AS last_event_at,project_id FROM sessions
-          WHERE machine_id IS NOT NULL GROUP BY machine_id,agent ORDER BY last_event_at DESC,machine_id,agent`).all();
+        const expected = sqlite.query<Record<string, unknown>, [number]>(`SELECT machine_id,agent,last_received_at AS last_event_at,project_id FROM (
+          SELECT *,ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at / ? DESC,project_id,session_id) AS position
+          FROM sessions WHERE machine_id IS NOT NULL) WHERE position=1 ORDER BY last_event_at DESC,machine_id,agent`).all(CAPTURE_RECEIPT_GRAIN_MS);
         expect((await captureRecencyStatement(db, 100).all()).results).toEqual(expected);
-        expect(sqlite.query(`SELECT COUNT(*) AS n FROM machine_capture_heads h WHERE NOT EXISTS (
+        expect(sqlite.query<{ n: number }, [number]>(`SELECT COUNT(*) AS n FROM machine_capture_heads h WHERE NOT EXISTS (
           SELECT 1 FROM sessions s WHERE s.project_id=h.project_id AND s.session_id=h.session_id
-            AND s.machine_id=h.machine_id AND json_quote(s.agent)=h.agent_json AND s.last_received_at=h.last_received_at)`).get()).toEqual({ n: 0 });
+            AND s.machine_id=h.machine_id AND json_quote(s.agent)=h.agent_json
+            AND s.last_received_at - s.last_received_at % ? = h.last_received_at)`).get(CAPTURE_RECEIPT_GRAIN_MS)).toEqual({ n: 0 });
       };
       await matches();
       for (const sql of [
@@ -130,7 +132,30 @@ describe('capture recency', () => {
     } finally { sqlite.close(); }
   });
 
-  it('refreshes a continuing head at one minute and advances newer identities and canonical ties immediately', () => {
+  it('derives identical head rows from identical sessions across arrival orders and receipt batches', async () => {
+    const histories = [
+      [['a', 0], ['a', 50_000], ['b', 40_000]],
+      [['b', 40_000], ['a', 0], ['a', 50_000]],
+      [['a', 0], ['b', 40_000], ['a', 50_000]],
+      [['a', 50_000], ['b', 40_000]],
+    ] as const;
+    for (const history of histories) {
+      const f = sqliteEnv();
+      try {
+        for (const [session, received] of history) {
+          f.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
+            VALUES('proj_1',?,'order-machine','token',0,?,'codex')
+            ON CONFLICT(project_id,session_id) DO UPDATE SET last_received_at=excluded.last_received_at`, [session, received]);
+        }
+        expect(f.sqlite.query("SELECT * FROM machine_capture_heads WHERE machine_id='order-machine'").get())
+          .toEqual({ project_id: 'proj_1', machine_id: 'order-machine', agent_json: '"codex"', session_id: 'a', last_received_at: 0 });
+        expect((await captureRecencyStatement(f.db, CAPTURE_RECEIPT_GRAIN_MS).all()).results)
+          .toEqual([{ machine_id: 'order-machine', agent: 'codex', last_event_at: 50_000, project_id: 'proj_1' }]);
+      } finally { f.sqlite.close(); }
+    }
+  });
+
+  it('stores receipt minutes and breaks ties by canonical project and session', () => {
     const f = sqliteEnv();
     try {
       const head = () => f.sqlite.query("SELECT project_id,session_id,last_received_at FROM machine_capture_heads WHERE machine_id='minute-machine'").get();
@@ -141,10 +166,10 @@ describe('capture recency', () => {
       f.sqlite.run("UPDATE sessions SET last_received_at=60000 WHERE project_id='proj_1' AND session_id='continuing'");
       expect(head()).toEqual({ project_id: 'proj_1', session_id: 'continuing', last_received_at: 60000 });
       f.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
-        VALUES('proj_1','next','minute-machine','token',60001,60001,'codex'),('proj_2','next','minute-machine','token',60002,60002,'codex')`);
-      expect(head()).toEqual({ project_id: 'proj_2', session_id: 'next', last_received_at: 60002 });
-      f.sqlite.run("UPDATE sessions SET last_received_at=60002 WHERE project_id='proj_1' AND session_id='next'");
-      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'next', last_received_at: 60002 });
+        VALUES('proj_1','next','minute-machine','token',120001,120001,'codex'),('proj_2','next','minute-machine','token',120002,120002,'codex')`);
+      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'next', last_received_at: 120000 });
+      f.sqlite.run("UPDATE sessions SET last_received_at=120002 WHERE project_id='proj_1' AND session_id='next'");
+      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'next', last_received_at: 120000 });
     } finally { f.sqlite.close(); }
   });
 });

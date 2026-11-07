@@ -1,19 +1,18 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
-const CAPTURE_HEAD_REFRESH_MS = 60_000;
+export const CAPTURE_RECEIPT_GRAIN_MS = 60_000;
 
 const groupOf = (row: string) => `machine_id=${row}.machine_id AND agent_json=json_quote(${row}.agent)`;
 const columns = 'project_id,machine_id,agent_json,session_id,last_received_at';
-const valuesOf = (row: string) => `${row}.project_id,${row}.machine_id,json_quote(${row}.agent),${row}.session_id,${row}.last_received_at`;
+const receiptMinuteOf = (row: string) => `(${row}.last_received_at - ((${row}.last_received_at % ${CAPTURE_RECEIPT_GRAIN_MS} + ${CAPTURE_RECEIPT_GRAIN_MS}) % ${CAPTURE_RECEIPT_GRAIN_MS}))`;
+const valuesOf = (row: string) => `${row}.project_id,${row}.machine_id,json_quote(${row}.agent),${row}.session_id,${receiptMinuteOf(row)}`;
 
-/** Same-session receipt stamps advance at most once per minute; newer source identities and canonical ties advance immediately. */
+/** Receipt minutes order heads; equal minutes choose the canonical project and session. */
 function captureHeadInsert(select: string): string {
   return `INSERT INTO machine_capture_heads(${columns}) ${select}
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+${CAPTURE_HEAD_REFRESH_MS}
-      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
-        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
+    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));`;
 }
 
@@ -21,7 +20,7 @@ function captureHeadInsert(select: string): string {
 export function unnamedCaptureHeadSelect(machine: string): string {
   return `SELECT ${valuesOf('s')} FROM sessions s INDEXED BY idx_sessions_unnamed_machine
     WHERE s.machine_id=${machine} AND s.agent IS NULL
-    ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1`;
+    ORDER BY ${receiptMinuteOf('s')} DESC,s.project_id,s.session_id LIMIT 1`;
 }
 
 /** Named-agent deletion and renaming require an equivalent machine-leading seek. */
@@ -30,7 +29,7 @@ function rebuildCaptureHead(): string {
     ${captureHeadInsert(`SELECT * FROM (${unnamedCaptureHeadSelect('OLD.machine_id')}) WHERE OLD.agent IS NULL`)}
     ${captureHeadInsert(`SELECT ${valuesOf('s')} FROM sessions s
       WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
-      ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1`)}`;
+      ORDER BY ${receiptMinuteOf('s')} DESC,s.project_id,s.session_id LIMIT 1`)}`;
 }
 
 const headOfOld = `EXISTS (SELECT 1 FROM machine_capture_heads WHERE ${groupOf('OLD')} AND project_id=OLD.project_id AND session_id=OLD.session_id)`;
@@ -57,6 +56,6 @@ export const V708_STATEMENTS: readonly string[] = [
     WHEN ${headOfOld} BEGIN ${rebuildCaptureHead()} END`,
   captureHeadInsert(`SELECT ${valuesOf('s')} FROM (
     SELECT project_id,machine_id,agent,session_id,last_received_at,
-      ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at DESC,project_id,session_id) AS head_rank
+      ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY ${receiptMinuteOf('sessions')} DESC,project_id,session_id) AS head_rank
     FROM sessions WHERE machine_id IS NOT NULL) s WHERE s.head_rank=1`),
 ];

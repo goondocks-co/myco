@@ -40,7 +40,7 @@ const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
 const SESSION_HEALTH_INDEX_WRITES = 2;
 /** Health's receipt-time index adds one transcript insert entry. */
 const TRANSCRIPT_HEALTH_INDEX_WRITES = 1;
-/** A new head writes once; same-session receipts refresh at most once per minute. */
+/** Heads write on receipt-minute advances and canonical identity changes. */
 const CAPTURE_HEAD_INSERT_WRITES = 1;
 /** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
 const LEARNING_SLICE_COMPLETION_WRITES = 20;

@@ -23,7 +23,7 @@ import { publishFixture } from '../myco-server/helpers/fixtures.js';
  *   - running it again changes nothing, and sends nothing a Deployment refuses
  *     or retries.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -896,6 +896,13 @@ async function differentialImport(f: Fixture, fetch = f.rig.fetch, signal?: Abor
 }
 
 describe('vault import fault/resume differential', () => {
+  let restoreClock: () => void;
+  beforeEach(() => {
+    const clock = spyOn(Date, 'now').mockReturnValue(NOW_S * 1000);
+    restoreClock = () => clock.mockRestore();
+  });
+  afterEach(() => restoreClock());
+
   for (const persistent of [false, true]) for (const kind of IMPORT_FAULTS) {
     it(`${kind}, ${persistent ? 'persistent' : 'single'} at every request: resume equals uninterrupted rows`, async () => {
       const originalHome = process.env.HOME;

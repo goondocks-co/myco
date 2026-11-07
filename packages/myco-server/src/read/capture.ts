@@ -100,10 +100,13 @@ export interface CaptureRow {
   projectId: string;
 }
 
-/** The newest receipt per machine and agent, read from maintained heads. */
+/** Canonical receipt-minute heads resolve their exact session receipt by primary key. */
 export function captureRecencyStatement(db: RelationalStore, nowMs: number, machineIds?: readonly string[]): PreparedStatement {
   return db.prepare(`SELECT machine_id,json_extract(agent_json,'$') AS agent,MAX(last_received_at) AS last_event_at,project_id
-    FROM machine_capture_heads WHERE last_received_at >= ?
+    FROM (
+      SELECT h.machine_id,h.agent_json,h.project_id,s.last_received_at
+      FROM machine_capture_heads h CROSS JOIN sessions s ON s.project_id=h.project_id AND s.session_id=h.session_id
+    ) WHERE last_received_at >= ?
       ${machineIds === undefined ? '' : 'AND machine_id IN (SELECT value FROM json_each(?))'}
     GROUP BY machine_id,agent_json ORDER BY last_event_at DESC,machine_id,agent`)
     .bind(nowMs - CAPTURE_WINDOW_MS, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
@@ -124,7 +127,7 @@ export function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<stri
   });
 }
 
-/** The newest receipts per machine and agent, most recent first, as `viewerId` is shown them. */
+/** Receipt-minute heads with their source receipts, most recent first, as `viewerId` is shown them. */
 export async function captureRecency(db: RelationalStore, nowMs: number, viewerId: string): Promise<CaptureRow[]> {
   const [recent, claims, credentials] = await db.batch([captureRecencyStatement(db, nowMs), ...machineOwnerStatements(db, nowMs)]);
   return captureRowsOf(recent!.results, machineOwnersOf(claims!.results, credentials!.results), viewerId);
