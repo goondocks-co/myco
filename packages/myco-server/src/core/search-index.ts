@@ -1,6 +1,6 @@
 import { prepareNextSearchBlob } from '../read/catalog/search-index.js';
 export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/catalog/search-index.js";
-import { registeredObjectKeySql } from './blob-objects.js';
+import { claimSearchBlob, commitSearchChunks, type QueuedBlob } from '../db/search/index-queue.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
 
@@ -49,13 +49,17 @@ async function* chunks(body: ReadableStream, start: number): AsyncGenerator<Text
   }
 }
 
-/** The single writer of derived blob text. A committed chunk and its resume cursor advance in one transaction. */
+/**
+ * The single writer of derived blob text. A pass claims its blob before reading it, and its chunks and resume cursor
+ * land in one transaction only while that claim still holds the blob at the offset read; a pass that lost its claim
+ * stores nothing.
+ */
 export async function reconcileSearchIndex(db: RelationalStore, blobs: BlobStore, now: number): Promise<number> {
   const row = await prepareNextSearchBlob(db)
-    .first<{ project_id: string; blob_key: string; next_offset: number; object_key: string | null }>();
+    .first<QueuedBlob & { object_key: string | null }>();
   if (row === null) return 0;
-  await db.prepare(`UPDATE search_blob_queue SET attempted_at = ? WHERE project_id = ? AND blob_key = ?`)
-    .bind(now, row.project_id, row.blob_key).run();
+  const generation = await claimSearchBlob(db, row, now);
+  if (generation === null) return 0;
   const held = row.object_key === null ? null : await blobs.get(row.object_key);
   if (held === null) throw new Error('a captured text blob is missing from object storage');
   const page: TextChunk[] = [];
@@ -65,13 +69,5 @@ export async function reconcileSearchIndex(db: RelationalStore, blobs: BlobStore
   }
   const last = page[page.length - 1];
   if (last === undefined) throw new Error('search indexing produced no progress');
-  const insertions = page.map((c) => db.prepare(`INSERT OR IGNORE INTO search_blob_chunks(project_id, blob_key, offset, text)
-    SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM search_blob_queue WHERE project_id = ? AND blob_key = ?) RETURNING rowid`)
-    .bind(row.project_id, row.blob_key, c.offset, c.text, row.project_id, row.blob_key));
-  const results = await db.batch([...insertions,
-    db.prepare(`UPDATE search_blob_queue SET next_offset = MAX(next_offset, ?), complete = MAX(complete, ?)
-      WHERE project_id = ? AND blob_key = ?`)
-      .bind(last.nextOffset, last.complete ? 1 : 0, row.project_id, row.blob_key),
-  ]);
-  return results.slice(0, page.length).reduce((n, r) => n + r.results.length, 0);
+  return await commitSearchChunks(db, row, generation, page, { offset: last.nextOffset, complete: last.complete }) ?? 0;
 }

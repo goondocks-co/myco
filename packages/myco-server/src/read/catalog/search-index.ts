@@ -27,7 +27,7 @@ async function core_search_index_searchBacklog(db: core_search_index_import_Rela
 }
 
 export function prepareNextSearchBlob(db: sessions_import_RelationalStore) {
-  return db.prepare(`SELECT q.project_id, q.blob_key, q.next_offset, ${core_search_index_import_registeredObjectKeySql('q.project_id', 'q.blob_key')} AS object_key
+  return db.prepare(`SELECT q.project_id, q.blob_key, q.next_offset, q.attempted_at, ${core_search_index_import_registeredObjectKeySql('q.project_id', 'q.blob_key')} AS object_key
     FROM search_blob_queue q
     WHERE q.complete = 0 AND (${core_search_index_REFERENCED}) ORDER BY q.attempted_at, q.project_id, q.blob_key LIMIT 1`);
 }

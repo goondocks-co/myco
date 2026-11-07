@@ -86,7 +86,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/runner-updates.ts', 22],
   ['core/runs.ts', 171],
   ['core/scheduled-tasks.ts', 1],
-  ['core/search-index.ts', 7],
   ['core/secrets.ts', 6],
   ['core/served-material.ts', 11],
   ['core/session-artifacts.ts', 8],
