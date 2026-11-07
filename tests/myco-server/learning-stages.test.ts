@@ -1014,8 +1014,8 @@ it('finishes and retires an assigned pending turn that its material cannot serve
   });
 });
 
-it('keeps a fresh admission through four card attempts after source aging, then finishes learning or waits for history', async () => {
-  for (const outcome of ['cards-exhausted', 'learning-complete', 'learning-exhausted']) await withDocumentStores(async db => {
+for (const outcome of ['cards-exhausted', 'learning-complete', 'learning-exhausted']) it(`keeps a fresh admission through four card attempts after source aging: ${outcome}`, async () => {
+  await withDocumentStores(async db => {
     const succeeds = outcome !== 'cards-exhausted';
     const harness = await cardWorker(db);
     await settingsWriter(db).setLeaf('agent.learning_history_enabled', false, 'owner', NOW);

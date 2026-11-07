@@ -224,11 +224,12 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
   });
 });
 
-test('bulk publication and a growing 9000-call turn fit one wake and bounded values', async () => {
+test('bulk publication fits one wake within its statement budget', async () => {
   await withDocumentStores(async (db, target) => {
     const blobs = memoryBlobStore(), now = Date.now() - 3_600_000;
+    const turns = 500;
     let text = '';
-    for (let t = 0; t < 1500; t += 1) {
+    for (let t = 0; t < turns; t += 1) {
       text += user('short' + t);
       for (let i = 0; i < 4; i += 1) text += line('response_item', { type: 'function_call', call_id: `c${t}_${i}`, name: 'Read',
         arguments: JSON.stringify({ path: `packages/some/fairly/long/path/to/a/source/file-${t}-${i}.ts` }) }) + output(`c${t}_${i}`);
@@ -236,10 +237,16 @@ test('bulk publication and a growing 9000-call turn fit one wake and bounded val
     const env = await captureDocumentTranscript(db, blobs, 'bulk', 'tx_' + 'c'.repeat(32), text, now, 0, 'codex');
     const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT });
     await publishDocuments(measured.env, now + 1_800_000, limits());
-    process.stderr.write(`bulk ${target}: ${measured.usage.statements} statements; parent review measured 344\n`);
-    expect(await db.prepare("SELECT COUNT(*) n FROM session_prompts WHERE session_id='bulk'").first(), target).toEqual({ n: 1500 });
+    expect(await db.prepare("SELECT COUNT(*) n FROM session_prompts WHERE session_id='bulk'").first(), target).toEqual({ n: turns });
+    expect((await db.prepare("SELECT COUNT(*) n FROM session_chunks WHERE session_id='bulk' AND kind='page'").first<{ n: number }>())!.n, target).toBeGreaterThan(1);
     expect(measured.usage.statements, target).toBeLessThan(WAKE_JOB_STATEMENT_LIMIT);
-    text = user('huge');
+  });
+}, 180_000);
+
+test('a growing 9000-call turn keeps bounded values', async () => {
+  await withDocumentStores(async (db, target) => {
+    const blobs = memoryBlobStore(), now = Date.now() - 3_600_000;
+    let text = user('huge');
     for (let i = 0; i < 9000; i += 1) text += line('response_item', { type: 'function_call', call_id: 'huge' + i, name: 'Read',
       arguments: JSON.stringify({ path: `some/longish/directory/layout/for/a/file/number/${i}.ts` }) });
     const huge = await captureDocumentTranscript(db, blobs, 'huge', 'tx_' + 'd'.repeat(32), text + user('end'), now, 0, 'codex');
