@@ -12,6 +12,8 @@ export const PARSER_VERSION = 6;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
+/** The namespace of Deployment-minted agent run identities. */
+export const RUN_ID_PREFIX = 'run_';
 
 /**
  * The `revoked_by` of every authority row a restore from another Deployment inserted. On a member it is a hold the

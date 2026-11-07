@@ -244,11 +244,15 @@ describe('maintained Health and Today contracts', () => {
   it('finds retained setup output behind empty completed work', async () => {
     const f = fixture();
     try {
-      f.run('old-output', 'completed', NOW - 90 * DAY);
+      f.run('run_old-output', 'completed', NOW - 90 * DAY);
+      for (const author of ['mem_importer', 'grant_editor']) {
+        f.sqlite.run(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
+          VALUES('proj_1',?,'a','gotcha','active','Member knowledge',?,?)`, [author, author, NOW]);
+      }
       for (let i = 0; i < 205; i++) f.run(`empty-${i}`, 'completed', NOW - i);
       expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(false);
       f.sqlite.run(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
-        VALUES('proj_1','output','a','gotcha','active','retained output','old-output',?)`, [NOW - 90 * DAY]);
+        VALUES('proj_1','output','a','gotcha','active','retained output','run_old-output',?)`, [NOW - 90 * DAY]);
       expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(true);
       f.sqlite.run("DELETE FROM spores WHERE id='output'");
       expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(false);
