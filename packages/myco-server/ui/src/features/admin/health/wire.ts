@@ -20,9 +20,22 @@ export interface HarnessMeasure extends Measure {
 }
 
 /** `GET /api/kpis?window=`. */
-export interface KpiReport {
+export interface KpiMetadata {
   windowDays: number | null;
   since: number | null;
+  windowStart: number | null;
+  windowEnd: number;
+  asOf: number;
+  metricVersion: number;
+}
+
+export type KpiAnswer = KpiReport | (KpiMetadata & {
+  state: 'building';
+  progress: { completed: number; total: number };
+});
+
+export interface KpiReport extends KpiMetadata {
+  state: 'ready';
   promptsServed: number;
   deliveries: { placed: number; unplaced: number };
   servedShare: Measure;

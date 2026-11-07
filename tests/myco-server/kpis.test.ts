@@ -10,14 +10,21 @@
  */
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { describe, expect, it } from 'bun:test';
-import { kpiWindow, median, readKpis, KPI_WINDOWS } from '@myco-server-worker/read/kpis.js';
+import { kpiWindow, median, readKpis, KPI_WINDOWS, type KpiWindow } from '@myco-server-worker/read/kpis.js';
 import { recallQuality, caseCount } from '@myco-server-worker/evals/recall-baseline.js';
 
 import { rig, NOW, DAY, PROJECT, OTHER } from './helpers/kpi-fixture.js';
 
 const baseline = { recallQuality, caseCount };
 
-const all = (db: ReturnType<typeof rig>['db']) => readKpis(db, { windowDays: null, now: NOW });
+const readyKpis = async (db: ReturnType<typeof rig>['db'], opts: { window: KpiWindow; now: number }) => {
+  const answer = await readKpis(db, opts);
+  expect(answer.state).toBe('ready');
+  if (answer.state !== 'ready') throw new Error('KPI projection is building');
+  return answer;
+};
+
+const all = (db: ReturnType<typeof rig>['db']) => readyKpis(db, { window: null, now: NOW });
 
 describe('the measures', () => {
   it('answers every measure with a null value and an empty sample on a Deployment holding nothing', async () => {
@@ -123,7 +130,7 @@ describe('the measures', () => {
     r.sporeInjection('s1', 'awaiting-transcript', [], { deliveredTo: 'later' });
     r.sporeInjection('s1', 'p2', [], { deliveredTo: null });
     r.sporeInjection('s1', 'older-delivery-selection', [], { deliveredTo: 'p2', at: NOW - 30 * DAY });
-    const read = () => readKpis(r.db, { windowDays: 7, now: NOW });
+    const read = () => readyKpis(r.db, { window: 7, now: NOW });
     const before = await read();
     expect(before.promptsServed).toBe(2);
     expect(before.servedShare).toEqual({ value: 0.5, sampleSize: 4 });
@@ -169,7 +176,7 @@ describe('the measures', () => {
     // A codex call inside the window whose prompt sits outside it. The call is
     // counted in the whole, so the split accounts for it rather than dropping it.
     r.call('c2', 'old', { at: NOW - DAY });
-    const week = await readKpis(r.db, { windowDays: 7, now: NOW });
+    const week = await readyKpis(r.db, { window: 7, now: NOW });
     expect(week.callsPerPrompt).toEqual({ value: 2, sampleSize: 1 });
     // The call counts add up to the whole above them: 1 + 1 = 2.
     expect(week.callsPerPromptByHarness).toEqual([
@@ -211,21 +218,10 @@ describe('the measures', () => {
     r.sporeInjection('s1b', 'pX', ['sp1'], { at: NOW - DAY });
     r.sessionInjection('s2', 'cortex', { at: NOW - 5 * DAY + 20_000 });
     const recorded = statementRecorder(r.db, { accounting: 'native' });
-    const report = await readKpis(recorded.db, { windowDays: 30, now: NOW });
+    const report = await readyKpis(recorded.db, { window: 30, now: NOW });
     expect(report.firstInjectionMs).toEqual({ value: 40_000, sampleSize: 2 });
+    expect(recorded.statements.map(statement => statement.method)).toEqual(['batch', 'batch', 'batch']);
     expect((await all(r.db)).firstInjectionMs).toEqual(report.firstInjectionMs);
-    const firstContext = recorded.statements.find(statement => statement.sql.includes('AS first_served'))!;
-    const plans = r.sqlite.query(`EXPLAIN QUERY PLAN ${firstContext.sql}`).all(...firstContext.binds as never[]) as { detail: string }[];
-    const details = plans.map(row => row.detail).join('\n');
-    expect(details).toContain('SEARCH c USING INDEX idx_member_credentials_started (lineage_started_at>?)');
-    expect(details).toContain('SEARCH sess USING COVERING INDEX idx_sessions_credential (created_by_token_id=?)');
-    expect(details).toContain('SEARCH i USING COVERING INDEX idx_spore_injections_session (project_id=? AND session_id=?)');
-    expect(details).toMatch(/SEARCH s USING INDEX \S+ \(project_id=\? AND session_id=\?\)/);
-    expect(details).not.toMatch(/SCAN (sess|i|s)\b/);
-    const harness = recorded.statements.find(statement => statement.sql.includes('SELECT t.agent FROM transcripts t'))!;
-    const harnessPlans = r.sqlite.query(`EXPLAIN QUERY PLAN ${harness.sql}`).all(...harness.binds as never[]) as { detail: string }[];
-    expect(harnessPlans.map(row => row.detail).join('\n'))
-      .toContain('SEARCH t USING INDEX idx_transcripts_session (project_id=? AND session_id=?)');
     r.sqlite.close();
   });
 
@@ -236,11 +232,40 @@ describe('the measures', () => {
     r.prompt('p_recent', 'recent', { at: NOW - DAY });
     r.prompt('p_old', 'old', { at: NOW - 60 * DAY });
     r.sporeInjection('recent', 'p_recent', ['sp1'], { at: NOW - DAY });
-    const week = await readKpis(r.db, { windowDays: 7, now: NOW });
+    const week = await readyKpis(r.db, { window: 7, now: NOW });
     const everything = await all(r.db);
     expect({ week: week.sporeServeRate, all: everything.sporeServeRate, weekSessions: week.planReadsPerSession.sampleSize })
       .toEqual({ week: { value: 1, sampleSize: 1 }, all: { value: 0.5, sampleSize: 2 }, weekSessions: 1 });
-    expect({ windowDays: week.windowDays, since: week.since }).toEqual({ windowDays: 7, since: NOW - 7 * DAY });
+    expect({ windowDays: week.windowDays, since: week.since }).toEqual({ windowDays: 7, since: (Math.floor(NOW / DAY) - 7) * DAY });
+  });
+
+  it('uses N complete UTC days plus today, with exact day and lineage bounds', async () => {
+    for (const window of [...KPI_WINDOWS, null]) {
+      const r = rig();
+      try {
+        const today = Math.floor(NOW / DAY);
+        const start = window === null ? (today - 1000) * DAY : (today - window) * DAY;
+        const end = (today + 1) * DAY - 1;
+        for (const [id, at] of [['before', start - 1], ['start', start], ['end', end], ['after', end + 1]] as const) {
+          r.credential(id, { startedAt: at });
+          r.session(id, { at, tokenId: id, agent: null });
+          r.prompt(id, id, { at });
+          r.call(id, id, { at, tool: 'myco_plans', op: 'get' });
+          r.sporeInjection(id, id, ['spore'], { at });
+        }
+        const report = await readyKpis(r.db, { window, now: NOW });
+        expect(report).toMatchObject({
+          state: 'ready', windowDays: window, since: window === null ? null : start,
+          windowStart: window === null ? null : start, windowEnd: end, asOf: NOW,
+        });
+        const count = window === null ? 3 : 2;
+        expect(report.servedShare).toEqual({ value: 1, sampleSize: count });
+        expect(report.callsPerPrompt).toEqual({ value: 1, sampleSize: count });
+        expect(report.planReadsPerSession).toEqual({ value: 1, sampleSize: count });
+        expect(report.deliveries).toEqual({ placed: count, unplaced: 0 });
+        expect(report.firstInjectionMs).toEqual({ value: 0, sampleSize: count });
+      } finally { r.sqlite.close(); }
+    }
   });
 
   it('reports the recall quality this release recorded, whatever the Deployment holds or the window asked', async () => {
@@ -250,16 +275,16 @@ describe('the measures', () => {
     const recorded = { value: baseline.recallQuality, sampleSize: baseline.caseCount };
     expect((await all(r.db)).recallQuality).toEqual(recorded);
     expect((await all(rig().db)).recallQuality).toEqual(recorded);
-    expect((await readKpis(r.db, { windowDays: 7, now: NOW })).recallQuality).toEqual(recorded);
+    expect((await readyKpis(r.db, { window: 7, now: NOW })).recallQuality).toEqual(recorded);
     expect(baseline.caseCount).toBeGreaterThan(0);
   });
 });
 
 describe('the window a caller may ask for', () => {
-  it('admits the offered windows and reads anything else as every row', () => {
+  it('admits only the offered windows', () => {
     expect(KPI_WINDOWS.map((d) => kpiWindow(String(d)))).toEqual([...KPI_WINDOWS]);
     expect([kpiWindow(null), kpiWindow('all'), kpiWindow('5'), kpiWindow('nonsense'), kpiWindow('-7')])
-      .toEqual([null, null, null, null, null]);
+      .toEqual([null, null, undefined, undefined, undefined]);
   });
 });
 

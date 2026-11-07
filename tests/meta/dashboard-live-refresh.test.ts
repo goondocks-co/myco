@@ -90,7 +90,7 @@ describe('dashboard live refresh', () => {
 
   it('reads the measures as a heavy read, never by the clock or a mark', () => {
     const kpis = fs.readFileSync(path.join(UI_SRC, 'hooks', 'use-kpis.ts'), 'utf8');
-    expect(kpis).toContain("live<KpiReport>('heavy')");
+    expect(kpis).toContain("live<KpiAnswer>('heavy')");
     expect(kpis).not.toMatch(/follows|whileMoving/);
   });
 

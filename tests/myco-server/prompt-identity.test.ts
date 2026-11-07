@@ -262,7 +262,11 @@ describe('what outlives the answers', () => {
     // The nudge alone: the receipt this answer carried is set aside, so only the nudge can credit the prompt.
     s.e.sqlite.run(`DELETE FROM spore_injections`);
     expect(await s.deliver(1, { answerId: s.answer.answerId, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
-    const present = async () => (await readKpis(s.e.db, { windowDays: null, now: NOW })).servedShare;
+    const present = async () => {
+      const report = await readKpis(s.e.db, { window: null, now: NOW });
+      if (report.state !== 'ready') throw new Error('KPI projection is building');
+      return report.servedShare;
+    };
     expect(await present()).toEqual({ value: 1, sampleSize: 1 });
     expect(await s.prune()).toBe(1);
     expect(rows(s.e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
@@ -278,7 +282,9 @@ describe('what outlives the answers', () => {
     // The member renders the cached answer long after: it reports the answer and the record it carried.
     expect(await s.deliver(1, { answerId: s.answer.answerId, sessionRecord: s.answer.sessionRecord, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
     expect(rows(s.e.sqlite, `SELECT delivered_prompt_id, delivered_at IS NOT NULL AS delivered FROM session_injections WHERE kind = 'plan-nudge'`)).toEqual([{ delivered_prompt_id: uuid(2), delivered: 1 }]);
-    expect((await readKpis(s.e.db, { windowDays: null, now: NOW })).servedShare).toEqual({ value: 1, sampleSize: 1 });
+    const report = await readKpis(s.e.db, { window: null, now: NOW });
+    if (report.state !== 'ready') throw new Error('KPI projection is building');
+    expect(report.servedShare).toEqual({ value: 1, sampleSize: 1 });
   });
 
   it('lists one row for an answer and the receipt it carried, and the receipt alone once the answer is pruned', async () => {

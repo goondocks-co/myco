@@ -29,7 +29,7 @@ export const KPI_PHASE_SOURCES = {
 } satisfies Record<string, Source>;
 export type KpiPhase = keyof typeof KPI_PHASE_SOURCES;
 
-const phases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
+export const projectionPhases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
 const pending = read<[], Phase>({ name: 'projection.pending', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY projection,phase' });
 const reset = write<[]>({ name: 'projection.reset', sql: "UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL" });
 const advance = write<[string, number, string, string, string]>({ name: 'projection.advance', sql: 'UPDATE projection_catchup SET after_key=?,done=? WHERE projection=? AND phase=? AND after_key=? AND done=0' });
@@ -90,9 +90,19 @@ export async function catchUpKpiPhase(db: RelationalStore, phase: KpiPhase): Pro
   return keys.length;
 }
 
+export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
+  const expected = Object.keys(KPI_PHASE_SOURCES);
+  const progress = {
+    completed: expected.filter(phase => phases.some(row => row.phase === phase && row.done === 1)).length,
+    total: expected.length,
+  };
+  const state = phases.length === progress.total && progress.completed === progress.total ? 'ready' : 'building';
+  return { state, progress } as const;
+}
+
 export async function projectionReadiness(db: RelationalStore, projection: 'kpi'): Promise<'ready' | 'building'> {
-  const [rows] = await readSet(db, phases.bind(projection));
-  return rows.length === Object.keys(KPI_PHASE_SOURCES).length && rows.every(row => row.done === 1) ? 'ready' : 'building';
+  const [rows] = await readSet(db, projectionPhases.bind(projection));
+  return kpiReadiness(rows).state;
 }
 
 export async function resetProjectionCatchup(db: RelationalStore): Promise<void> {

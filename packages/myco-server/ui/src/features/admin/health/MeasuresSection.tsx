@@ -6,7 +6,7 @@ import { formatElapsed } from '../../../lib/format';
 import { harnessLabel } from '../../../lib/harness';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
-import type { KpiReport, Measure, PromptIdentityCounts } from './wire';
+import type { KpiAnswer, KpiReport, Measure, PromptIdentityCounts } from './wire';
 import { countOf, percent, perUnit, sampleWords } from './words';
 
 interface MeasureProps {
@@ -87,7 +87,23 @@ export function MeasuresSection() {
   );
 }
 
-function Measures({ report }: { report: KpiReport }) {
+function Measures({ report }: { report: KpiAnswer }) {
+  const date = (stamp: number) => new Date(stamp).toISOString().slice(0, 10);
+  const windowLabel = report.windowStart === null
+    ? 'All time (UTC), through today'
+    : `Last ${report.windowDays} days (UTC), through today · ${date(report.windowStart)} – ${date(report.windowEnd)}`;
+  return (
+    <div className="flex flex-col gap-s4">
+      <p className="t-small text-muted" data-measure-window="">{windowLabel}</p>
+      <p className="t-meta text-faint">As of <time dateTime={new Date(report.asOf).toISOString()}>{new Date(report.asOf).toISOString()}</time></p>
+      {report.state === 'building'
+        ? <p role="status">Measuring history ({report.progress.completed} of {report.progress.total})</p>
+        : <ReadyMeasures report={report} />}
+    </div>
+  );
+}
+
+function ReadyMeasures({ report }: { report: KpiReport }) {
   return (
     <div className="flex flex-col gap-s4">
       <div className="grid gap-s3 sm:grid-cols-2">

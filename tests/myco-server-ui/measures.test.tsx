@@ -21,7 +21,7 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 
 /** Every measure a served report carries, each overridable by name. */
 const report = (over: Record<string, unknown> = {}) => ({
-  windowDays: 30,
+  state: 'ready', windowStart: 1697328000000, windowEnd: 1700006399999, asOf: 1700000000000, metricVersion: 711, windowDays: 30,
   since: 0,
   promptsServed: 0,
   deliveries: { placed: 0, unplaced: 0 },
@@ -133,6 +133,30 @@ async function tiles(): Promise<Array<{ label: string; value: string | null; sam
 }
 
 describe('the measures on Health', () => {
+  it('shows catch-up progress and the observation window without partial figures', async () => {
+    server(base({
+      '/api/kpis?window=30': () => Response.json({
+        state: 'building', windowDays: 7, since: 1699315200000,
+        windowStart: 1699315200000, windowEnd: 1700006399999,
+        asOf: 1700000000000, metricVersion: 711, progress: { completed: 3, total: 7 },
+      }),
+    }));
+    mount('/status/health');
+    expect(await screen.findByText('Measuring history (3 of 7)')).toBeTruthy();
+    expect(screen.getByText('Last 7 days (UTC), through today · 2023-11-07 – 2023-11-14')).toBeTruthy();
+    expect(screen.getByText('2023-11-14T22:13:20.000Z').getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
+    expect(screen.queryAllByTestId('measure-tile')).toHaveLength(0);
+    expect(screen.queryByText('Prompts served')).toBeNull();
+    expect(screen.queryByText('Deliveries')).toBeNull();
+  });
+
+  it('labels an all-time answer with its UTC window and observation time', async () => {
+    server(base({ '/api/kpis?window=all': () => Response.json(report({ windowDays: null, windowStart: null, since: null })) }));
+    mount('/status/health?window=all');
+    expect(await screen.findByText('All time (UTC), through today')).toBeTruthy();
+    expect(screen.getByText('2023-11-14T22:13:20.000Z')).toBeTruthy();
+  });
+
   it('renders no measure without its sample, whatever the report holds', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json(report({
