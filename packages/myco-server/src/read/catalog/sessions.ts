@@ -2,21 +2,20 @@ import { sessionDocumentUnreadSql } from '../../db/document-tables.js';
 import type { PreparedStatement as sessions_import_PreparedStatement } from "../../core/adapters.js";
 import type { RelationalStore as sessions_import_RelationalStore } from "../../core/adapters.js";
 import type { RunResult as sessions_import_RunResult } from "../../core/adapters.js";
-import { occurredAt as sessions_import_occurredAt } from "../../db/session-dates.js";
-import { presentedEndedAt as sessions_import_presentedEndedAt } from "../../db/session-dates.js";
-import { presentedStartedAt as sessions_import_presentedStartedAt } from "../../db/session-dates.js";
-import { containsPattern as sessions_import_containsPattern } from "../scope.js";
 import { inListChunks as sessions_import_inListChunks } from "../scope.js";
-import { keyset as sessions_import_keyset } from "../scope.js";
-import { page as sessions_import_page } from "../scope.js";
-import { projectKeyset as sessions_import_projectKeyset, projectPage as sessions_import_projectPage } from "../project-cursor.js";
-import { projectsFiltering as sessions_import_projectsFiltering } from "../scope.js";
+import { page as sessions_import_page, clampLimit as sessions_import_clampLimit, decodeCursor as sessions_import_decodeCursor } from "../scope.js";
+import { decodeProjectCursor as sessions_import_decodeProjectCursor, projectPage as sessions_import_projectPage } from "../project-cursor.js";
+import {
+  firstPromptSql as sessions_import_firstPromptSql, PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT, PRESENTED_STARTED_AT as sessions_import_PRESENTED_STARTED_AT,
+  readSessionPage as sessions_import_readSessionPage, SESSION_COLUMNS as sessions_import_SESSION_COLUMNS, SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
+  sessionFrom as sessions_import_sessionFrom, SESSIONS_ACROSS_INDEX as sessions_import_SESSIONS_ACROSS_INDEX, SESSIONS_ACTIVE_INDEX as sessions_import_SESSIONS_ACTIVE_INDEX,
+  SESSIONS_WORKING_INDEX as sessions_import_SESSIONS_WORKING_INDEX, WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
+} from "../../db/sessions/browse.js";
 import type { Page as sessions_import_Page } from "../scope.js";
 import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
 import type { ReadScope as sessions_import_ReadScope } from "../scope.js";
 import { notTombstonedSql as sessions_import_notTombstonedSql } from "../../db/session-read-model.js";
 import { NOT_TOMBSTONED_PARAMS as sessions_import_NOT_TOMBSTONED_PARAMS } from "../../db/session-read-model.js";
-import { sessionMaterialReadySql as sessions_import_sessionMaterialReadySql } from "../material-readiness.js";
 import { CAPTURE_RULE_BUNDLES as sessions_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { sourceTimestampsRecorded as sessions_import_sourceTimestampsRecorded } from "@goondocks/myco-shared/capture-rules";
 import { queryRows } from './shared.js';
@@ -109,9 +108,7 @@ const sessions_FIRST_PROMPT_CHARS = 160;
 /** The longest label the fallback rule produces. */
 const sessions_LABEL_MAX_CHARS = 80;
 
-/** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
-const sessions_firstPromptSql = (alias: string): string =>
-  `(SELECT first_prompt FROM session_documents first_doc WHERE first_doc.project_id = ${alias}.project_id AND first_doc.session_id = ${alias}.session_id)`;
+const sessions_firstPromptSql = sessions_import_firstPromptSql;
 
 const sessions_FIRST_PROMPT_SQL = sessions_firstPromptSql('s');
 
@@ -142,44 +139,14 @@ function sessions_relatedSessionLabel(title: string | null, firstPrompt: string 
   return sessions_namedLabel(title, firstPrompt, agent) ?? sessions_UNTITLED_SESSION_LABEL;
 }
 
-/** Presented conversation dates fall back to raw lifecycle dates. */
-const sessions_PRESENTED_STARTED_AT = sessions_import_presentedStartedAt('s.');
-
-const sessions_PRESENTED_ENDED_AT = sessions_import_presentedEndedAt('s.');
-
-/** All joins land on primary keys, preserving the session row count. */
-const sessions_SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
-     s.agent, s.branch, ${sessions_PRESENTED_STARTED_AT} AS started_at, ${sessions_PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason, s.launch_parent_session_id,
-     s.title, s.summary, s.titled_at, s.ended_by, ${sessions_FIRST_PROMPT_SQL} AS first_prompt,
-     c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
-
-const sessions_SESSION_FROM = sessions_sessionFrom('');
-
-/** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
-function sessions_sessionFrom(indexedBy: string): string {
-  return `FROM sessions s${indexedBy === '' ? '' : ` INDEXED BY ${indexedBy}`}
-     LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
-     LEFT JOIN members m ON m.id = c.member_id
-     LEFT JOIN members e ON e.id = s.ended_by`;
-}
-
-/** The Deployment-wide order every read of sessions across Projects walks. */
-const sessions_SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
-
-/**
- * The index an activity window reads: it leads with the last receipt, so the read seeks the sessions received from
- * the window's start on, however long ago they started, and sorts that set alone.
- */
-const sessions_SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
-
-/** The index the sessions working now are read through: it holds the sessions with an open turn alone. */
-const sessions_SESSIONS_WORKING_INDEX = 'idx_sessions_working';
-
-/**
- * How long a turn may stay open and still read as working. A turn ends when its end reaches the Deployment; this
- * bounds only a turn whose end never does (a crash, an interrupt no hook reports), which reads as working no longer.
- */
-const sessions_WORKING_CAP_MS = 3 * 60 * 60 * 1000;
+const sessions_PRESENTED_STARTED_AT = sessions_import_PRESENTED_STARTED_AT;
+const sessions_PRESENTED_ENDED_AT = sessions_import_PRESENTED_ENDED_AT;
+const sessions_SESSION_COLUMNS = sessions_import_SESSION_COLUMNS;
+const sessions_SESSION_FROM = sessions_import_sessionFrom('');
+const sessions_SESSIONS_ACROSS_INDEX = sessions_import_SESSIONS_ACROSS_INDEX;
+const sessions_SESSIONS_ACTIVE_INDEX = sessions_import_SESSIONS_ACTIVE_INDEX;
+const sessions_SESSIONS_WORKING_INDEX = sessions_import_SESSIONS_WORKING_INDEX;
+const sessions_WORKING_CAP_MS = sessions_import_WORKING_CAP_MS;
 
 /** A deleted session is absent from session reads, project counts, and latest activity. */
 const sessions_LIVE_SESSION = sessions_import_notTombstonedSql('s');
@@ -295,10 +262,6 @@ interface sessions_SessionFilters {
   fidelity?: 'full' | 'any';
 }
 
-/** Every primary and sibling transcript is fully parsed at full fidelity. */
-const sessions_FULL_FIDELITY = `${sessions_import_sessionMaterialReadySql('s')} AND NOT EXISTS (SELECT 1 FROM transcripts t
-  WHERE t.project_id = s.project_id AND t.session_id = s.session_id
-    AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
 /**
  * When a session happened, for ordering: its own start where it has one, and
@@ -316,10 +279,10 @@ const sessions_FULL_FIDELITY = `${sessions_import_sessionMaterialReadySql('s')} 
  * across pages rather than failing.
  */
 /** The instant a session is ordered by: `PRESENTED_STARTED_AT` falling through to the first receipt, spelled flat. `idx_sessions_occurred` indexes this exact expression; a nested form plans as a sort instead, so the two are written the same way and move together. */
-const sessions_SESSION_OCCURRED_AT = sessions_import_occurredAt('s.');
+const sessions_SESSION_OCCURRED_AT = sessions_import_SESSION_OCCURRED_AT;
 
 async function sessions_listSessions(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, opts: { limit?: number; cursor?: string } & sessions_SessionFilters = {}): Promise<sessions_import_Page<sessions_SessionRow>> {
-  const listed = await sessions_selectSessions(db, { sql: 's.project_id = ?', params: [scope.projectId] }, opts, sessions_activityWindow(opts) ? sessions_SESSIONS_ACTIVE_INDEX : '');
+  const listed = await sessions_selectSessions(db, { projectId: scope.projectId }, opts);
   return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
 }
 
@@ -332,7 +295,7 @@ async function sessions_listSessions(db: sessions_import_RelationalStore, scope:
  * and the cursor carries all three: sessions of different Projects sharing an instant and an id each keep their place.
  */
 async function sessions_listSessionsAcross(db: sessions_import_RelationalStore, set: sessions_import_ProjectSet, opts: { limit?: number; cursor?: string } & sessions_SessionFilters = {}): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
-  return sessions_selectSessions(db, sessions_import_projectsFiltering(set, 's'), opts, sessions_activityWindow(opts) ? sessions_SESSIONS_ACTIVE_INDEX : sessions_SESSIONS_ACROSS_INDEX, true);
+  return sessions_selectSessions(db, set, opts);
 }
 
 /** Whether the read bounds sessions by the span they were active. An activity window with no start instant bounds nothing it can seek. */
@@ -343,86 +306,32 @@ function sessions_activityWindow(opts: sessions_SessionFilters): boolean {
 }
 
 /**
- * The one session page: `projects` admits the rows, the filters narrow them, and the order and the cursor are the
- * occurred instant and the id. `walks` names the index the statement reads through. A read that walks the
- * Deployment-wide order also takes the cursor's instant as an upper bound beside the keyset predicate, which the
- * predicate already implies, so the walk seeks to the cursor instead of reading every newer row again. An activity
- * window reads the sessions received from its start on and sorts them.
+ * The one session page: the stored rows `readSessionPage` answers for the scope and filters, merged and presented, and
+ * the cursor of the next page. A cursor this list did not issue reads nothing.
  */
 async function sessions_selectSessions(
   db: sessions_import_RelationalStore,
-  projects: { sql: string; params: readonly unknown[] },
+  scope: { projectId: string } | sessions_import_ProjectSet,
   opts: { limit?: number; cursor?: string } & sessions_SessionFilters,
-  walks: string = '',
-  across = false,
 ): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
   const active = sessions_activityWindow(opts);
-  const k = across
-    ? sessions_import_projectKeyset(opts, { order: sessions_SESSION_OCCURRED_AT, project: 's.project_id', id: 's.session_id' })
-    : sessions_import_keyset(opts, { order: sessions_SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const read = (window: 'receipt' | 'working', through: string): Promise<Record<string, unknown>[]> => (async()=>{
-    const bounded = through === sessions_SESSIONS_ACROSS_INDEX;
-    const conditions = [projects.sql, sessions_LIVE_SESSION];
-    if ((opts.fidelity ?? 'full') === 'full') conditions.push(sessions_FULL_FIDELITY);
-    const params: unknown[] = [...projects.params];
-    if (opts.branch !== undefined) { conditions.push('s.branch = ?'); params.push(opts.branch); }
-    if (opts.agent !== undefined) { conditions.push('s.agent = ?'); params.push(opts.agent); }
-    if (window === 'working') {
-      // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
-      conditions.push('s.working_since IS NOT NULL', 's.working_since > ?', `(${sessions_PRESENTED_ENDED_AT} IS NULL OR ${sessions_PRESENTED_ENDED_AT} < s.working_since)`);
-      params.push(opts.now! - sessions_WORKING_CAP_MS);
-    } else if (active) {
-      // Active in the window: a receipt at or after its start, and no end recorded before it.
-      conditions.push('s.last_received_at >= ?', `(${sessions_PRESENTED_ENDED_AT} IS NULL OR ${sessions_PRESENTED_ENDED_AT} >= ?)`);
-      params.push(opts.since!, opts.since!);
-    } else if (opts.since !== undefined) {
-      // The instant the page is ordered by, so the filter admits what the order shows.
-      conditions.push(`${sessions_SESSION_OCCURRED_AT} >= ?`); params.push(opts.since);
-    }
-    if (opts.until !== undefined) { conditions.push(`${sessions_SESSION_OCCURRED_AT} < ?`); params.push(opts.until); }
-    // Open and ended as the page shows them, each session under one. A session working again after its recorded end is
-    // open while it works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it
-    // out.
-    if (opts.state === 'open' && window !== 'working') conditions.push(`${sessions_PRESENTED_ENDED_AT} IS NULL`);
-    if (opts.state === 'ended') {
-      conditions.push(`${sessions_PRESENTED_ENDED_AT} IS NOT NULL`);
-      if (opts.now !== undefined) {
-        conditions.push(`NOT (s.working_since IS NOT NULL AND s.working_since > ${sessions_PRESENTED_ENDED_AT} AND s.working_since > ?)`);
-        params.push(opts.now - sessions_WORKING_CAP_MS);
-      }
-    }
-    if (opts.memberLabel !== undefined) { conditions.push('m.label = ?'); params.push(opts.memberLabel); }
-    if (opts.sessionId !== undefined) { conditions.push('s.session_id = ?'); params.push(opts.sessionId); }
-    if (opts.q !== undefined && opts.q.trim() !== '') {
-      const pattern = sessions_import_containsPattern(opts.q.trim());
-      conditions.push(`(s.title LIKE ? ESCAPE '\\' OR s.agent LIKE ? ESCAPE '\\' OR s.branch LIKE ? ESCAPE '\\' OR s.session_id LIKE ? ESCAPE '\\' OR ${sessions_firstPromptSql('s')} LIKE ? ESCAPE '\\')`);
-      params.push(pattern, pattern, pattern, pattern, pattern);
-    }
-    if (k.where !== '') {
-      if (bounded) { conditions.push(`${sessions_SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
-      conditions.push(k.where); params.push(...k.params);
-    }
-    const { results } = await db.prepare(`SELECT s.project_id, ${sessions_SESSION_COLUMNS} ${sessions_sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${sessions_SESSION_OCCURRED_AT} DESC,${across ? ' s.project_id DESC,' : ''} s.session_id DESC LIMIT ?`).bind(...[...params,k.limit+1])
-      .all<Record<string, unknown>>();
-    return results;
-  })();
-  const received = await read('receipt', walks);
-  // An activity window judged at an instant also lists the sessions working now, read apart through the index that
-  // holds them alone, and merged into the page in its own order.
-  const working = active && opts.now !== undefined ? await read('working', sessions_SESSIONS_WORKING_INDEX) : [];
+  const across = !('projectId' in scope);
+  const limit = sessions_import_clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : across ? sessions_import_decodeProjectCursor(opts.cursor) : sessions_import_decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const { received, working } = await sessions_import_readSessionPage(db, { scope, filters: opts, active, after, limit });
   const rows = sessions_mergeSessionPages(received, working).map((row) => ({ ...sessions_toSession(row, opts.now), projectId: row.project_id as string }));
   // The cursor carries the same value the sort ordered by. Both columns are
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
   return across
-    ? sessions_import_projectPage(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, projectId: r.projectId, id: r.sessionId }))
-    : sessions_import_page(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
+    ? sessions_import_projectPage(rows, limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, projectId: r.projectId, id: r.sessionId }))
+    : sessions_import_page(rows, limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
 }
 
-/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then Project, then id. */
 const descending = (x: string, y: string): number => (x < y ? 1 : x === y ? 0 : -1);
 
+/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then Project, then id. */
 function sessions_mergeSessionPages(a: Record<string, unknown>[], b: Record<string, unknown>[]): Record<string, unknown>[] {
   if (b.length === 0) return a;
   const key = (row: Record<string, unknown>) => `${row.project_id as string}\u0000${row.session_id as string}`;

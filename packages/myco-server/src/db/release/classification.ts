@@ -58,4 +58,3 @@ export async function writeReleaseClassification(db: RelationalStore, identity: 
   if (written.results.length === 0) return false;
   return before.results[0]?.state !== written.results[0]!.state;
 }
-

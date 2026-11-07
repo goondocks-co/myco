@@ -640,7 +640,7 @@ describe('a titling run reads and writes its own session', () => {
 });
 
 describe('a sweep consolidates through the member op', () => {
-  it('records the wisdom spore and moves every active source in one write, and refuses a source already resolved', async () => {
+  it('records the wisdom spore and moves every active source in one write, and refuses by name a source already resolved', async () => {
     const { harness, dispatch, call, spore, prompt, sqlite, db } = await setup();
     await dispatch('run_s', SWEEP);
     prompt('source-prompt');
@@ -658,13 +658,16 @@ describe('a sweep consolidates through the member op', () => {
       .toEqual([{ status: 'consolidated' }, { status: 'consolidated' }]);
     expect(sqlite.query(`SELECT author FROM spores WHERE id = ?`).get(answered.new_spore_id)).toEqual({ author: 'run_s' });
 
-    // The member op counts only sources that were active, and leaves a
-    // resolved one where it stands.
+    // A source already resolved refuses the whole consolidation by name: no wisdom spore is stored and it stays where it stands.
     const second = (await call(harness.token, 'myco_spores', {
       op: 'consolidate', source_spore_ids: [{ id: 'sp_gone', revision: 0 }], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
-    expect(second.sources_consolidated).toBe(0);
-    expect(sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get()).toEqual({ status: 'superseded' });
+    expect(second).toMatchObject({ ok: false, spore_id: 'sp_gone', revision: 0,
+      error: expect.stringMatching(/^Not saved: .*source sp_gone is superseded at revision 0.*Next call: myco_spores \{"op":"get"\}/) });
+    expect({
+      gone: sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get(),
+      wisdom: sqlite.query(`SELECT COUNT(*) AS n FROM spores WHERE content = 'again'`).get(),
+    }).toEqual({ gone: { status: 'superseded' }, wisdom: { n: 0 } });
   });
 });
 

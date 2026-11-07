@@ -3,7 +3,7 @@
  * `<instant>:<projectId>:<id>` and the list orders by the instant, then the Project, then the id, all descending: two rows
  * of different Projects sharing an instant and an id each keep their own place across a page boundary.
  */
-import { clampLimit, type Page } from './scope.js';
+import type { Page } from './scope.js';
 
 /** The Project id grammar the schema enforces: no `:`, so the cursor splits unambiguously. */
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -28,24 +28,6 @@ export function decodeProjectCursor(cursor: string): ProjectCursor | null {
   const projectId = cursor.slice(first + 1, second);
   const id = cursor.slice(second + 1);
   return Number.isSafeInteger(createdAt) && PROJECT_ID.test(projectId) && id.length > 0 ? { createdAt, projectId, id } : null;
-}
-
-/**
- * The page size and the predicate after the cursor for a newest-first list ordered by `order`, `project`, `id`, or
- * null for a cursor this list did not issue. `where` is empty on page one; its first parameter is the cursor's instant.
- */
-export function projectKeyset(opts: { limit?: number; cursor?: string }, spec: { order: string; project: string; id: string }):
-  { limit: number; where: string; params: readonly (number | string)[] } | null {
-  const limit = clampLimit(opts.limit);
-  if (opts.cursor === undefined) return { limit, where: '', params: [] };
-  const after = decodeProjectCursor(opts.cursor);
-  if (after === null) return null;
-  const { order, project, id } = spec;
-  return {
-    limit,
-    where: `${order} <= ? AND (${order} < ? OR (${order} = ? AND (${project} < ? OR (${project} = ? AND ${id} < ?))))`,
-    params: [after.createdAt, after.createdAt, after.createdAt, after.projectId, after.projectId, after.id],
-  };
 }
 
 /** The first `limit` rows and, when more remain, the cursor after the last. */
