@@ -1,4 +1,4 @@
-import { encodeCard, isCardFields, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
+import { encodeCard, cardFieldsError, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
 export { renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 /**
@@ -14,7 +14,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.j
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
-import { CARD_FIELDS, CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
+import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
 import { learningRecencySql, learningRangeSql } from './learning-recency.js';
@@ -92,24 +92,21 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   if (!Array.isArray(raw)) return 'cards must be an array';
   const seen = new Set<string>();
   const writes: CardWrite[] = [];
-  for (const entry of raw as Record<string, unknown>[]) {
+  for (const [index, entry] of (raw as Record<string, unknown>[]).entries()) {
+    const label = `cards[${index}]`;
     const turns = entry?.turns;
-    if (!Array.isArray(turns) || turns.length === 0 || !turns.every((t) => typeof t === 'string')) return 'each card names its turns';
+    if (!Array.isArray(turns) || turns.length === 0 || !turns.every((t) => typeof t === 'string')) return `${label}.turns is ${JSON.stringify(turns) ?? 'missing'}; expected a nonempty array of served turn_key strings; available turns: ${[...assigned].join(', ')}`;
     for (const turn of turns as string[]) {
-      if (!assigned.has(turn)) return `turn ${turn} was not served to this run`;
-      if (seen.has(turn)) return `turn ${turn} appears in more than one card`;
+      if (!assigned.has(turn)) return `${label}.turns names unserved turn ${turn}; available turns: ${[...assigned].join(', ')}`;
+      if (seen.has(turn)) return `turn ${turn} appears more than once (at ${label}.turns); every served turn appears in exactly one card`;
       seen.add(turn);
     }
-    if (!(CARD_SIGNALS as readonly unknown[]).includes(entry.signal)) return 'signal must be none, low or high';
-    const card = entry.card as Record<string, unknown> | undefined;
-    if (card === undefined || card === null || typeof card !== 'object' || Array.isArray(card)) return 'each card carries its fields';
-    for (const field of CARD_FIELDS) {
-      const value = card[field];
-      const text = ['asked', 'done', 'outcome'].includes(field);
-      if (text ? typeof value !== 'string' : !Array.isArray(value)) return `card field ${field} is missing or malformed`;
-    }
-    if (!isCardFields(card)) return 'card fields are malformed';
-    if (renderCard(card).length > CARD_MAX_CHARS) return `a card runs past ${CARD_MAX_CHARS} characters`;
+    if (!(CARD_SIGNALS as readonly unknown[]).includes(entry.signal)) return `${label}.signal is ${JSON.stringify(entry.signal) ?? 'missing'}; expected none, low or high`;
+    const invalid = cardFieldsError(entry.card);
+    if (invalid !== null) return `${label}: ${invalid}`;
+    const card = entry.card as CardFields;
+    const chars = renderCard(card).length;
+    if (chars > CARD_MAX_CHARS) return `${label} renders to ${chars} characters; the limit is ${CARD_MAX_CHARS}`;
     writes.push({ turns: turns as string[], signal: entry.signal as CardSignal, card });
   }
   return writes;
@@ -263,4 +260,11 @@ export async function runCardsFinished(db: RelationalStore, projectId: string, s
   const row = await db.prepare(`SELECT COUNT(*) AS remaining ${remainingCardsSql}`)
     .bind(JSON.stringify(turns), projectId, sessionId, runId).first<{ remaining: number }>();
   return row?.remaining === 0;
+}
+
+/** Assigned unchanged turns still awaiting this run's cards. */
+export async function runCardsRemaining(db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): Promise<string[]> {
+  const rows = await db.prepare(`SELECT c.turn_key AS turnKey ${remainingCardsSql}`)
+    .bind(JSON.stringify(turns),projectId,sessionId,runId).all<{turnKey:string}>();
+  return rows.results.map(row => row.turnKey);
 }

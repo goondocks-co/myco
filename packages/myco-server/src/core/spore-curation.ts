@@ -1,3 +1,4 @@
+import { runRefusal, REPORT_NEXT, type RunRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
 import { droppedFeatureFacts } from './dropped-features.js';
 import { mutualCloseness } from '@goondocks/myco-shared/relevance';
@@ -18,9 +19,9 @@ import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 import { writeGuardStore, writeGuardBatch } from './write-guard-store.js';
 import { curationChangeSql } from '../db/curation-changes.js';
 import { VECTOR_LOST_MS } from './embedding/provider.js';
-import { AGENT_LINE_MAX_CHARS } from './injection.js';
-import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE } from './spore-curation-contract.js';
-export { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS } from './spore-curation-contract.js';
+import { AGENT_LINE_GUIDANCE } from './injection.js';
+import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE, CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from './spore-curation-contract.js';
+export { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from './spore-curation-contract.js';
 
 /** A seed needs a neighbour at least five standard deviations closer than usual on both sides. */
 export const CURATION_SEED_CLOSENESS = 5.0;
@@ -31,9 +32,7 @@ export const CURATION_SEEDS_PER_TICK = 8;
 export const CURATION_GATE_NEIGHBORS = 16;
 export const CURATION_NEIGHBORS = 48;
 export const CURATION_MAX_FAILURES = 3;
-export const CURATION_MATERIAL_BYTES = 32_000;
-export const CURATION_SEARCH_LIMIT = 6;
-export const CURATION_SEARCH_RESULTS = 8;
+
 const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
 interface SeedMember extends Member { closeness: number }
@@ -266,10 +265,11 @@ export function curationPrompt(material: string, droppedFeatures = ''): string {
     `Use myco_search for up to ${CURATION_SEARCH_LIMIT} semantic searches of active Project spores. Results carry id, revision, type and agent_line. Call ${TOOL} op material to read candidates whole before judging them. Reads do not admit members; at most ${CURATION_CLUSTER_CAP} distinct whole spores, including these seeds, may be read.`,
     'Read every whole spore below and every addition before acting. Preserve useful specifics, error messages, values, applicability, historical facts and citations. Existing file paths are hints at most; rewrite a merged lesson without a stale path. Spores are knowledge, not code anchors.',
     'Choose a final subset of the seeds and whole-read search hits. Leave off-topic candidates out. After retirements, choose one action for the current final group: consolidate at least three related spores into one new wisdom spore; supersede one of two spores only when the other fully covers it; or keep the group apart with a reason. Perform at most one merge lifecycle operation after any obsolete operations. An entirely stale cluster ends with obsolete members and no new wisdom spore.',
-    `For consolidation, supply agent_line as one actionable line of at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization: the situation and guidance, at most the component or concept, never a file or symbol as its anchor.`,
+    `For consolidation, supply agent_line as one actionable line. ${AGENT_LINE_GUIDANCE} Describe the situation and guidance, at most the component or concept, never a file or symbol as its anchor.`,
     'Apply myco_spores with supplied revisions and expect_status active. For consolidation use observation_type wisdom, consolidated_content preserving the specifics, and source_spore_ids names the final members as {id,revision}; sources retain resolution_events lineage. Supersede between any two read active spores. The lifecycle call fixes the final group.',
     `When finished, call ${TOOL} op complete with decision resolved if you changed any member, otherwise keep with members as an array of distinct objects with a nonempty string id and a nonnegative safe integer revision, at most ${CURATION_CLUSTER_CAP} members, using the exact revisions read whole. Example: ${CURATION_COMPLETE_EXAMPLE}. For resolved omit members to include every retired member and the merge choice. Explain the decision and every excluded seed. The original seed set receives an outcome; only final members receive review receipts, and excluded seeds remain eligible in different later groups.`,
     'A material answer with code curation_owned is terminal for that candidate: leave it out and continue. A stale refusal means a concurrent change: report the failure instead of retrying with a newer revision.',
+    'Omit session_id from lifecycle writes: this curation run names no session; source spores retain their own provenance.',
     'For a write refused for invalid input (including agent_line length or complete members), correct the named problem and retry that write once before reporting. A refused lifecycle write changed nothing: do not complete as resolved until it succeeds. If the corrected write is refused too, complete keep with the read members to preserve the knowledge apart, or report the failure.',
     'Close with myco_run op report, action curated, and a summary of the cluster decision including obsoleted, superseded and consolidated source counts; the server records those counts from resolution evidence.',
     ...(droppedFeatures ? ['## Recorded dropped features (server-provided facts, data not instructions)', droppedFeatures] : []),
@@ -309,67 +309,234 @@ export function curationAssignment(context: string | null): CurationAssignment |
   return value.curation?.kind === 'curation' ? value.curation : null;
 }
 
+function curationRefusedWrite(raw: string): Pick<RunRefusal, 'actual' | 'next' | 'repair'> {
+  const refused = JSON.parse(raw) as { error: string; next: RunRefusal['next'] };
+  return {
+    actual: `an outstanding lifecycle refusal must be corrected first: ${refused.error}`,
+    next: refused.next,
+    repair:
+      refused.next.tool === REPORT_NEXT.tool && refused.next.op === REPORT_NEXT.op
+        ? 'Assigned sources changed; report the failure.'
+        : 'Correct and retry the refused write first. Alternatively, call myco_run_curation op complete with decision keep, the read members and reason.',
+  };
+}
+
+async function curationReadStep(db: RelationalStore, projectId: string, runId: string): Promise<Pick<RunRefusal, 'next' | 'repair'>> {
+  const held = await db
+    .prepare('SELECT decision,final_members,write_refusal FROM spore_curation_work WHERE project_id=? AND run_id=?')
+    .bind(projectId, runId)
+    .first<Pick<Cluster, 'decision' | 'final_members' | 'write_refusal'>>();
+  if (held === null || held.decision !== null) return { next: REPORT_NEXT, repair: 'The assignment is closed; report the failure.' };
+  if (held.final_members !== null) {
+    return {
+      next: { tool: TOOL, op: 'complete', decision: 'resolved' },
+      repair: 'The lifecycle write landed. Supply reason and omit members.',
+    };
+  }
+  if (held.write_refusal !== null) {
+    const { next, repair } = curationRefusedWrite(held.write_refusal);
+    return { next, repair };
+  }
+  const read = (
+    await db
+      .prepare(
+        `SELECT c.spore_id AS id,c.revision,s.status,s.revision AS currentRevision FROM spore_curation_candidates c
+    LEFT JOIN spores s ON s.project_id=c.project_id AND s.id=c.spore_id WHERE c.project_id=? AND c.run_id=? AND c.read=1 ORDER BY c.spore_id`,
+      )
+      .bind(projectId, runId)
+      .all<Member & { status: string | null; currentRevision: number | null }>()
+  ).results;
+  const members = read
+    .filter((member) => member.status === 'active' && member.revision === member.currentRevision)
+    .map(({ id, revision }) => ({ id, revision }));
+  const resolved =
+    (await db.prepare('SELECT 1 FROM resolution_events WHERE project_id=? AND author=? LIMIT 1').bind(projectId, runId).first()) !== null;
+  if (members.length !== read.length && !resolved) return { next: REPORT_NEXT, repair: 'Assigned sources changed; report the failure.' };
+  if (members.length < CURATION_CONSOLIDATE_MIN && resolved)
+    return {
+      next: { tool: TOOL, op: 'complete', decision: 'resolved' },
+      repair: 'The lifecycle write landed. Supply reason and omit members.',
+    };
+  return members.length >= CURATION_CONSOLIDATE_MIN
+    ? {
+        next: { tool: 'myco_spores', op: 'consolidate', source_spore_ids: members, observation_type: 'wisdom' },
+        repair:
+          'Compare the read members and supply consolidated_content, agent_line and reason to merge related guidance. If they are distinct, complete keep with these members and reason.',
+      }
+    : {
+        next: { tool: TOOL, op: 'complete', decision: 'keep', members },
+        repair: 'Fewer than the consolidation minimum are read. Supply reason to keep the read members apart.',
+      };
+}
+
 /** Searches use the shared semantic path; a durable reservation bounds concurrent calls per run. */
 export async function searchCuration(env: ServerEnv, projectId: string, runId: string, query: string): Promise<unknown> {
-  const reserved = await env.db.prepare(`UPDATE spore_curation_work SET searches=searches+1
-    WHERE project_id=? AND run_id=? AND decision IS NULL AND searches<? RETURNING searches`)
-    .bind(projectId, runId, CURATION_SEARCH_LIMIT).first<{ searches: number }>();
-  if (reserved === null) return { ok: false, error: 'curation search budget exhausted or assignment closed' };
-  const answer = await searchDeployment(env, { projectId }, { query, type: 'spore', status: 'active', mode: 'semantic', limit: CURATION_SEARCH_RESULTS });
-  if (answer.provider_unavailable || answer.mode !== 'semantic') return { ok: false, error: 'semantic search is unavailable' };
-  const spores = await Promise.all(answer.results.map(result => getSpore(env.db, { projectId }, result.id)));
-  const active = spores.flatMap(spore => spore !== null && spore.status === 'active' ? [spore] : []);
-  if (active.length > 0) await env.db.batch(active.map(spore => env.db.prepare(`INSERT OR IGNORE INTO spore_curation_candidates(project_id,run_id,spore_id,revision)
-    SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND run_id=? AND decision IS NULL)`)
-    .bind(projectId, runId, spore.id, spore.revision, projectId, runId)));
-  return { results: active.map(spore => ({ id: spore.id, revision: spore.revision, type: spore.observationType, agent_line: spore.agentLine })), searches_remaining: CURATION_SEARCH_LIMIT-reserved.searches };
+  const reserved = await env.db
+    .prepare(
+      `UPDATE spore_curation_work SET searches=searches+1
+    WHERE project_id=? AND run_id=? AND decision IS NULL AND searches<? RETURNING searches`,
+    )
+    .bind(projectId, runId, CURATION_SEARCH_LIMIT)
+    .first<{ searches: number }>();
+  if (reserved === null)
+    return runRefusal({
+      what: 'curation search',
+      read: true,
+      actual: `the ${CURATION_SEARCH_LIMIT}-search budget is exhausted or the assignment is closed`,
+      ...(await curationReadStep(env.db, projectId, runId)),
+    });
+  const answer = await searchDeployment(
+    env,
+    { projectId },
+    { query, type: 'spore', status: 'active', mode: 'semantic', limit: CURATION_SEARCH_RESULTS },
+  );
+  if (answer.provider_unavailable || answer.mode !== 'semantic')
+    return runRefusal({ what: 'curation search', read: true, actual: 'semantic search is unavailable', next: REPORT_NEXT });
+  const spores = await Promise.all(answer.results.map((result) => getSpore(env.db, { projectId }, result.id)));
+  const active = spores.flatMap((spore) => (spore !== null && spore.status === 'active' ? [spore] : []));
+  if (active.length > 0)
+    await env.db.batch(
+      active.map((spore) =>
+        env.db
+          .prepare(
+            `INSERT OR IGNORE INTO spore_curation_candidates(project_id,run_id,spore_id,revision)
+    SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND run_id=? AND decision IS NULL)`,
+          )
+          .bind(projectId, runId, spore.id, spore.revision, projectId, runId),
+      ),
+    );
+  return {
+    results: active.map((spore) => ({ id: spore.id, revision: spore.revision, type: spore.observationType, agent_line: spore.agentLine })),
+    searches_remaining: CURATION_SEARCH_LIMIT - reserved.searches,
+  };
 }
 
 /** A candidate owned elsewhere is terminal for that candidate, leaving this run free to continue. */
-export const curationOwned = () => ({ available: false, code: 'curation_owned', reason: 'Another open group owns this spore; leave it out and continue.' });
+export const curationOwned = (id: unknown) => ({
+  available: false,
+  code: 'curation_owned',
+  reason: `Another open group owns spore ${JSON.stringify(id)}; leave it out. Read another seeded or searched candidate with myco_run_curation op material and its id.`,
+});
 
 /** Whole reads reserve a bounded read slot, independently of the final group. */
-export async function curationMaterial(db: RelationalStore, projectId: string, runId: string, assignment: CurationAssignment, id: string): Promise<unknown> {
+export async function curationMaterial(
+  db: RelationalStore,
+  projectId: string,
+  runId: string,
+  assignment: CurationAssignment,
+  id: string,
+): Promise<unknown> {
   const row = await work(db, projectId, assignment.key);
-  if (row === null || row.run_id !== runId || row.decision !== null) return { ok: false, error: 'curation assignment closed' };
-  const candidate = await db.prepare('SELECT spore_id AS id,revision,read FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=?')
-    .bind(projectId,runId,id).first<Member & { read: number }>();
-  if (candidate === null) return { ok: false, error: 'spore was not seeded or returned by this run’s searches' };
-  if (await db.prepare('SELECT 1 FROM spore_curation_owners WHERE project_id=? AND spore_id=? AND cluster_key<>?').bind(projectId,id,row.cluster_key).first() !== null) return curationOwned();
-  const read = (await db.prepare('SELECT spore_id AS id,revision FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND read=1')
-    .bind(projectId,runId).all<Member>()).results;
-  if (candidate.read === 0 && read.length >= CURATION_CLUSTER_CAP) return { ok: false, error: 'curation whole-read cap reached' };
-  const material = candidate.read === 1 ? read : [...read,candidate];
-  const spore = await getSpore(db,{projectId},id);
-  if (spore == null || spore.status !== 'active' || spore.revision !== candidate.revision) return { ok: false, error: 'curation material changed' };
-  const bytes = new TextEncoder().encode(JSON.stringify(spore)).length+1;
-  if (candidate.read === 0 && row.read_bytes+bytes > CURATION_MATERIAL_BYTES) return { ok: false, error: 'whole material exceeds the curation bound' };
-  if (candidate.read === 0) await writeGuardBatch(db, () => db.prepare(`SELECT CASE
+  if (row === null || row.run_id !== runId || row.decision !== null)
+    return runRefusal({ what: 'curation material read', read: true, actual: 'curation assignment closed', next: REPORT_NEXT });
+  const candidate = await db
+    .prepare('SELECT spore_id AS id,revision,read FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=?')
+    .bind(projectId, runId, id)
+    .first<Member & { read: number }>();
+  if (candidate === null)
+    return runRefusal({
+      what: 'curation material read',
+      read: true,
+      actual: `spore ${JSON.stringify(id)} was not seeded or returned by this run’s searches`,
+      next: { tool: TOOL, op: 'material', id: assignment.members[0]?.id },
+      repair: 'Use a seeded id, or search active Project spores and then read a returned id.',
+    });
+  if (
+    (await db
+      .prepare('SELECT 1 FROM spore_curation_owners WHERE project_id=? AND spore_id=? AND cluster_key<>?')
+      .bind(projectId, id, row.cluster_key)
+      .first()) !== null
+  )
+    return curationOwned(id);
+  const read = (
+    await db
+      .prepare('SELECT spore_id AS id,revision FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND read=1')
+      .bind(projectId, runId)
+      .all<Member>()
+  ).results;
+  if (candidate.read === 0 && read.length >= CURATION_CLUSTER_CAP)
+    return runRefusal({
+      what: 'curation material read',
+      read: true,
+      actual: `read count ${read.length}; the limit is ${CURATION_CLUSTER_CAP} whole spores`,
+      ...(await curationReadStep(db, projectId, runId)),
+    });
+  const material = candidate.read === 1 ? read : [...read, candidate];
+  const spore = await getSpore(db, { projectId }, id);
+  if (spore == null || spore.status !== 'active' || spore.revision !== candidate.revision)
+    return runRefusal({
+      what: 'curation material read',
+      read: true,
+      actual: `spore ${JSON.stringify(id)} changed from assigned active revision ${candidate.revision} to ${spore === null ? 'missing' : spore.status + ' revision ' + spore.revision}`,
+      next: REPORT_NEXT,
+    });
+  const bytes = new TextEncoder().encode(JSON.stringify(spore)).length + 1;
+  if (candidate.read === 0 && row.read_bytes + bytes > CURATION_MATERIAL_BYTES)
+    return runRefusal({
+      what: 'curation material read',
+      read: true,
+      actual: `whole material would total ${row.read_bytes + bytes} UTF-8 bytes; the limit is ${CURATION_MATERIAL_BYTES}`,
+      ...(await curationReadStep(db, projectId, runId)),
+    });
+  if (candidate.read === 0)
+    await writeGuardBatch(
+      db,
+      () =>
+        db
+          .prepare(
+            `SELECT CASE
     WHEN EXISTS (SELECT 1 FROM spore_curation_owners WHERE project_id=? AND spore_id=? AND cluster_key<>?) THEN json_extract('[]','$[myco_curation_owned]')
     WHEN EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=? AND decision IS NULL AND final_members IS NULL AND read_bytes+?<=?)
       AND EXISTS (SELECT 1 FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=? AND read=0)
       AND (SELECT COUNT(*) FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND read=1)<?
       AND EXISTS (SELECT 1 FROM spores WHERE project_id=? AND id=? AND revision=? AND status='active')
-    THEN 1 ELSE json_extract('[]','$[myco_curation_changed]') END`)
-    .bind(projectId,id,row.cluster_key,projectId,row.cluster_key,runId,bytes,CURATION_MATERIAL_BYTES,projectId,runId,id,projectId,runId,CURATION_CLUSTER_CAP,projectId,id,candidate.revision),error => { throw error; },[
-      db.prepare('UPDATE spore_curation_work SET read_bytes=read_bytes+? WHERE project_id=? AND cluster_key=?').bind(bytes,projectId,row.cluster_key),
-      db.prepare('UPDATE spore_curation_candidates SET read=1 WHERE project_id=? AND run_id=? AND spore_id=?').bind(projectId,runId,id),
-    ]);
-  return { spore, read: material.map(({id,revision}) => ({id,revision})) };
+    THEN 1 ELSE json_extract('[]','$[myco_curation_changed]') END`,
+          )
+          .bind(
+            projectId,
+            id,
+            row.cluster_key,
+            projectId,
+            row.cluster_key,
+            runId,
+            bytes,
+            CURATION_MATERIAL_BYTES,
+            projectId,
+            runId,
+            id,
+            projectId,
+            runId,
+            CURATION_CLUSTER_CAP,
+            projectId,
+            id,
+            candidate.revision,
+          ),
+      (error) => {
+        throw error;
+      },
+      [
+        db
+          .prepare('UPDATE spore_curation_work SET read_bytes=read_bytes+? WHERE project_id=? AND cluster_key=?')
+          .bind(bytes, projectId, row.cluster_key),
+        db.prepare('UPDATE spore_curation_candidates SET read=1 WHERE project_id=? AND run_id=? AND spore_id=?').bind(projectId, runId, id),
+      ],
+    );
+  return { spore, read: material.map(({ id, revision }) => ({ id, revision })) };
 }
 
 /** Final members must be distinct exact revisions already served whole to this run. */
-async function finalMembers(db: RelationalStore, projectId: string, runId: string, input: unknown): Promise<Member[] | string> {
-  if (!Array.isArray(input)) return `members is ${input === undefined ? 'missing' : JSON.stringify(input)}; expected an array of {id,revision} objects`;
-  if (input.length > CURATION_CLUSTER_CAP) return `members has ${input.length} entries; at most ${CURATION_CLUSTER_CAP} are allowed`;
+async function finalMembers(db: RelationalStore, projectId: string, runId: string, input: unknown, assignment: CurationAssignment, next: {tool:string;op:string} = {tool:TOOL,op:'complete'}): Promise<Member[] | {error:string;next:{tool:string;op:string;id?:string}}> {
+  const bad = (error:string, repair: {tool:string;op:string;id?:string} = next): {error:string;next:{tool:string;op:string;id?:string}} => ({error,next:repair});
+  if (!Array.isArray(input)) return bad(`members is ${input === undefined ? 'missing' : JSON.stringify(input)}; expected an array of {id,revision} objects`);
+  if (input.length > CURATION_CLUSTER_CAP) return bad(`members has ${input.length} entries; at most ${CURATION_CLUSTER_CAP} are allowed`);
   const members: Member[] = [];
   const seen = new Set<string>();
   for (const [index, member] of input.entries()) {
     const label = `members[${index}]`;
-    if (member === null || typeof member !== 'object' || Array.isArray(member)) return `${label} is ${JSON.stringify(member)}; expected an {id,revision} object`;
-    if (typeof member.id !== 'string' || member.id.length === 0) return `${label}.id is ${JSON.stringify(member.id) ?? 'missing'}; expected a nonempty string`;
-    if (!Number.isSafeInteger(member.revision) || member.revision < 0) return `${label}.revision is ${JSON.stringify(member.revision) ?? 'missing'}; expected an integer from 0 to ${Number.MAX_SAFE_INTEGER}`;
-    if (seen.has(member.id)) return `${label}.id duplicates ${JSON.stringify(member.id)}; each member must be distinct`;
+    if (member === null || typeof member !== 'object' || Array.isArray(member)) return bad(`${label} is ${JSON.stringify(member)}; expected an {id,revision} object`);
+    if (typeof member.id !== 'string' || member.id.length === 0) return bad(`${label}.id is ${JSON.stringify(member.id) ?? 'missing'}; expected a nonempty string`);
+    if (!Number.isSafeInteger(member.revision) || member.revision < 0) return bad(`${label}.revision is ${JSON.stringify(member.revision) ?? 'missing'}; expected an integer from 0 to ${Number.MAX_SAFE_INTEGER}`);
+    if (seen.has(member.id)) return bad(`${label}.id duplicates ${JSON.stringify(member.id)}; each member must be distinct`);
     seen.add(member.id);
     members.push({id:member.id,revision:member.revision});
   }
@@ -377,21 +544,22 @@ async function finalMembers(db: RelationalStore, projectId: string, runId: strin
     const served = await db.prepare('SELECT revision,read FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=?')
       .bind(projectId,runId,member.id).first<{revision:number;read:number}>();
     const label = `members[${index}] (${JSON.stringify(member.id)})`;
-    if (served === null) return `${label} was not seeded or found by this run; use this run's search results and call ${TOOL} op material with the chosen id first`;
-    if (served.read !== 1) return `${label} has not been read whole; call ${TOOL} with {"op":"material","id":${JSON.stringify(member.id)}} first`;
-    if (served.revision !== member.revision) return `${label}.revision is ${member.revision}; this run read revision ${served.revision}; use ${JSON.stringify({id:member.id,revision:served.revision})}`;
+    if (served === null) return bad(`${label} was not seeded or found by this run; omit it and read a seeded member first`, assignment.members[0] === undefined ? REPORT_NEXT : {tool:TOOL,op:'material',id:assignment.members[0].id});
+    if (served.read !== 1) return bad(`${label} has not been read whole; call ${TOOL} with {"op":"material","id":${JSON.stringify(member.id)}} first`, {tool:TOOL,op:'material',id:member.id});
+    if (served.revision !== member.revision) return bad(`${label}.revision is ${member.revision}; this run read revision ${served.revision}; use ${JSON.stringify({id:member.id,revision:served.revision})}`);
   }
   members.sort((a,b)=>a.id.localeCompare(b.id));
   return members;
 }
 
 /** Retirements precede the one merge group chosen from the whole-read ledger. */
-async function curationWriteAdmission(db: RelationalStore, projectId: string, runId: string, input: Record<string, unknown>): Promise<CurationWriteAssignment | string> {
+async function curationWriteAdmission(db: RelationalStore, projectId: string, runId: string, input: Record<string, unknown>): Promise<CurationWriteAssignment | string | {error:string;next:{tool:string;op:string;id?:string}}> {
   const run = await db.prepare('SELECT run_context FROM agent_runs WHERE project_id=? AND id=?').bind(projectId,runId).first<{run_context:string|null}>();
   const assigned = curationAssignment(run?.run_context ?? null);
-  if (assigned === null) return 'this run carries no curation assignment';
+  if (assigned === null) return {error:'this run carries no curation assignment',next:REPORT_NEXT};
   const row = await work(db,projectId,assigned.key);
-  if (row?.run_id !== runId || row.decision !== null || row.final_members !== null) return 'this curation decision is closed or already chose its final group';
+  if (row?.run_id !== runId || row.decision !== null) return {error:'this curation decision is closed',next:REPORT_NEXT};
+  if (row.final_members !== null) return {error:'this curation decision already chose its final group',next:{tool:TOOL,op:'complete'}};
   let selected: unknown;
   if (input.op === 'obsolete') selected = [{id:input.id,revision:input.expect_revision}];
   else if (input.op === 'consolidate') {
@@ -402,12 +570,14 @@ async function curationWriteAdmission(db: RelationalStore, projectId: string, ru
     selected = input.source_spore_ids;
   }
   else if (input.op === 'supersede' && typeof input.new_spore_id === 'string' && (input.old_spore_id ?? input.id) !== input.new_spore_id) {
-    const target = await db.prepare('SELECT revision FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=? AND read=1')
-      .bind(projectId,runId,input.new_spore_id).first<{revision:number}>();
+    const target = await db.prepare('SELECT revision,read FROM spore_curation_candidates WHERE project_id=? AND run_id=? AND spore_id=?')
+      .bind(projectId,runId,input.new_spore_id).first<{revision:number;read:number}>();
+    if (target === null) return {error:`new_spore_id ${JSON.stringify(input.new_spore_id)} was not seeded or found by this run`,next:{tool:TOOL,op:'material',id:assigned.members[0]?.id}};
+    if (target.read !== 1) return {error:`new_spore_id ${JSON.stringify(input.new_spore_id)} has not been read whole`,next:{tool:TOOL,op:'material',id:input.new_spore_id}};
     selected = [{id:input.old_spore_id ?? input.id,revision:input.expect_revision},{id:input.new_spore_id,revision:target?.revision}];
   } else return 'curation obsoletes a read member, supersedes two distinct read members, consolidates at least three into wisdom, or keeps them apart';
-  const members = await finalMembers(db,projectId,runId,selected);
-  if (typeof members === 'string') return members;
+  const members = await finalMembers(db,projectId,runId,selected,assigned,{tool:'myco_spores',op:String(input.op)});
+  if (!Array.isArray(members)) return members;
   return {...assigned,members,operation:input.op === 'obsolete' ? 'obsolete' : 'merge'};
 }
 
@@ -432,31 +602,65 @@ function decisionGuard(db: RelationalStore, projectId: string, runId: string, me
 }
 
 /** Completion refusals name the invalid input and the next complete call. */
-function curationCompletionRefusal(error: string): {ok:false;error:string} {
-  return {ok:false,error:`Not saved: curation decision; ${error}. Correct the input and call myco_run_curation again, using the ids and revisions read whole by this run: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members.`};
+function curationCompletionRefusal(error: string, next: {tool:string;op:string;id?:string} = {tool:TOOL,op:'complete'}): {ok:false;error:string} {
+  return runRefusal({what:'curation decision',actual:error,next,repair:`Correct the input using the ids and revisions read whole by this run: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members; perform any named prerequisite first.`});
 }
 
 /** The decision and its revision guards commit together; a keep decision cannot acknowledge unseen changes. */
-export async function completeCuration(db: RelationalStore, projectId: string, runId: string, assignment: CurationAssignment,
-  decision: unknown, reason: unknown, now: number, selected?: unknown): Promise<boolean | { ok: false; error: string }> {
+export async function completeCuration(
+  db: RelationalStore,
+  projectId: string,
+  runId: string,
+  assignment: CurationAssignment,
+  decision: unknown,
+  reason: unknown,
+  now: number,
+  selected?: unknown,
+): Promise<boolean | { ok: false; error: string }> {
   const held = await work(db, projectId, assignment.key);
-  if (held === null || held.run_id !== runId || held.decision !== null) return {ok:false,error:'Not saved: curation decision; this run no longer owns an open assignment. Call myco_run op report with the failure.'};
-  if (decision === 'resolved' && held.write_refusal !== null) return {ok:false,error:`Not saved: curation decision. ${JSON.parse(held.write_refusal).error} Retry that write first, or call myco_run_curation op complete with decision keep and the read members.`};
-  if (decision !== 'keep' && decision !== 'resolved') return curationCompletionRefusal(`decision is ${JSON.stringify(decision) ?? 'missing'}; expected keep or resolved`);
-  if (typeof reason !== 'string' || !reason.trim() || reason.length > CURATION_REASON_CHARS) return curationCompletionRefusal(`reason is ${typeof reason === 'string' ? reason.length : 'missing or not text'} characters; expected nonempty text within the ${CURATION_REASON_CHARS} character limit`);
-  const retired = decision === 'resolved' ? (await db.prepare(`SELECT c.spore_id AS id,c.revision FROM spore_curation_candidates c
+  if (held === null || held.run_id !== runId || held.decision !== null)
+    return runRefusal({ what: 'curation decision', actual: 'this run no longer owns an open assignment', next: REPORT_NEXT });
+  if (decision === 'resolved' && held.write_refusal !== null)
+    return runRefusal({ what: 'curation decision', ...curationRefusedWrite(held.write_refusal) });
+  if (decision !== 'keep' && decision !== 'resolved')
+    return curationCompletionRefusal(`decision is ${JSON.stringify(decision) ?? 'missing'}; expected keep or resolved`);
+  if (typeof reason !== 'string' || !reason.trim() || reason.length > CURATION_REASON_CHARS)
+    return curationCompletionRefusal(
+      `reason is ${typeof reason === 'string' ? reason.length : 'missing or not text'} characters; expected nonempty text within the ${CURATION_REASON_CHARS} character limit`,
+    );
+  const retired =
+    decision === 'resolved'
+      ? (
+          await db
+            .prepare(
+              `SELECT c.spore_id AS id,c.revision FROM spore_curation_candidates c
     WHERE c.project_id=? AND c.run_id=? AND c.read=1 AND EXISTS
-      (SELECT 1 FROM resolution_events e WHERE e.project_id=c.project_id AND e.spore_id=c.spore_id AND e.author=c.run_id AND e.action='obsolete')`)
-    .bind(projectId,runId).all<Member>()).results : [];
-  if (decision === 'resolved' && held.final_members === null && retired.length === 0) return curationCompletionRefusal('resolved needs a successful myco_spores obsolete, supersede or consolidate first; call it, or complete keep with the members');
-  if (decision === 'resolved' && selected !== undefined) return curationCompletionRefusal(`decision is resolved but members was supplied (${Array.isArray(selected) ? selected.length : typeof selected}); omit members`);
-  const chosen: unknown = decision === 'resolved'
-    ? [...JSON.parse(held.final_members ?? '[]') as Member[],...retired] : selected;
-  const members = await finalMembers(db,projectId,runId,chosen);
-  if (typeof members === 'string') return curationCompletionRefusal(members);
-  const results = await writeGuardBatch(db, () => decisionGuard(db,projectId,runId,members,decision,true,assignment.key,
-    decision === 'resolved' ? held.final_members : null), error => { throw error; },
-    closeStatements(db,projectId,held,decision,reason.trim(),now,members));
+      (SELECT 1 FROM resolution_events e WHERE e.project_id=c.project_id AND e.spore_id=c.spore_id AND e.author=c.run_id AND e.action='obsolete')`,
+            )
+            .bind(projectId, runId)
+            .all<Member>()
+        ).results
+      : [];
+  if (decision === 'resolved' && held.final_members === null && retired.length === 0)
+    return curationCompletionRefusal(
+      'resolved needs a successful myco_spores obsolete, supersede or consolidate first; call it, or complete keep with the members',
+      { tool: TOOL, op: 'complete' },
+    );
+  if (decision === 'resolved' && selected !== undefined)
+    return curationCompletionRefusal(
+      `decision is resolved but members was supplied (${Array.isArray(selected) ? selected.length : typeof selected}); omit members`,
+    );
+  const chosen: unknown = decision === 'resolved' ? [...(JSON.parse(held.final_members ?? '[]') as Member[]), ...retired] : selected;
+  const members = await finalMembers(db, projectId, runId, chosen, assignment);
+  if (!Array.isArray(members)) return curationCompletionRefusal(members.error, members.next);
+  const results = await writeGuardBatch(
+    db,
+    () => decisionGuard(db, projectId, runId, members, decision, true, assignment.key, decision === 'resolved' ? held.final_members : null),
+    (error) => {
+      throw error;
+    },
+    closeStatements(db, projectId, held, decision, reason.trim(), now, members),
+  );
   return results[0]!.meta.changes === 1;
 }
 
@@ -479,32 +683,74 @@ function curationWriteStore(db: RelationalStore, projectId: string, runId: strin
 }
 
 /** Lifecycle attempts retain refusal evidence until a correction or a keep decision commits. */
-export async function withCurationWrite(db: RelationalStore, projectId: string, runId: string, input: Record<string,unknown>,
-  apply: (db: RelationalStore) => Promise<unknown>): Promise<unknown> {
+export async function withCurationWrite(
+  db: RelationalStore,
+  projectId: string,
+  runId: string,
+  input: Record<string, unknown>,
+  apply: (db: RelationalStore, refuse: RefuseRunWrite) => Promise<unknown>,
+): Promise<unknown> {
   const token = crypto.randomUUID();
-  const pending = JSON.stringify({token,error:`The myco_spores op ${String(input.op)} write has not finished. Wait for its result before completing.`});
-  const started = await db.prepare(`UPDATE spore_curation_work SET write_refusal=?
-    WHERE project_id=? AND run_id=? AND decision IS NULL AND final_members IS NULL`)
-    .bind(pending,projectId,runId).run();
+  const pending = JSON.stringify({
+    token,
+    error: `The myco_spores op ${String(input.op)} write has not finished. Wait for its result before completing.`,
+    next: { tool: 'myco_spores', op: String(input.op) },
+  });
+  const started = await db
+    .prepare(
+      `UPDATE spore_curation_work SET write_refusal=?
+    WHERE project_id=? AND run_id=? AND decision IS NULL AND final_members IS NULL`,
+    )
+    .bind(pending, projectId, runId)
+    .run();
   if (started.meta.changes !== 1) {
-    const held = await db.prepare('SELECT final_members FROM spore_curation_work WHERE project_id=? AND run_id=? AND decision IS NULL').bind(projectId,runId).first<{final_members:string|null}>();
-    return {ok:false,error:held?.final_members != null
-      ? 'Not saved: another lifecycle write; the final group is already recorded. Call myco_run_curation op complete with decision resolved, reason, and no members.'
-      : 'Not saved: curation lifecycle write; this run has no open assignment. Report the failure with myco_run op report.'};
+    const held = await db
+      .prepare('SELECT final_members FROM spore_curation_work WHERE project_id=? AND run_id=? AND decision IS NULL')
+      .bind(projectId, runId)
+      .first<{ final_members: string | null }>();
+    return runRefusal({
+      what: 'curation lifecycle write',
+      actual: held?.final_members != null ? 'the final group is already recorded' : 'this run has no open assignment',
+      next: held?.final_members != null ? { tool: TOOL, op: 'complete', decision: 'resolved' } : REPORT_NEXT,
+      repair: held?.final_members != null ? 'Supply reason and omit members.' : 'Report the failure.',
+    });
   }
-  const recordRefusal = (error: unknown) => db.prepare('UPDATE spore_curation_work SET write_refusal=? WHERE project_id=? AND run_id=? AND write_refusal=?')
-    .bind(JSON.stringify({token,error}),projectId,runId,pending).run();
+  const recordRefusal = (refusal: RunRefusal) =>
+    db
+      .prepare('UPDATE spore_curation_work SET write_refusal=? WHERE project_id=? AND run_id=? AND write_refusal=?')
+      .bind(JSON.stringify({ token, error: refusal.actual, next: refusal.next }), projectId, runId, pending)
+      .run();
+  const refuse: RefuseRunWrite = async (refusal) => {
+    const result = runRefusal(refusal);
+    await recordRefusal(refusal);
+    return result;
+  };
   try {
-    const assignment = await curationWriteAdmission(db,projectId,runId,input);
-    const result = typeof assignment === 'string'
-      ? {ok:false,error:`Not saved: curation lifecycle write; ${assignment}. Correct the arguments and call myco_spores op ${String(input.op)} again with the read members and revisions.`}
-      : await apply(curationWriteStore(db,projectId,runId,assignment,pending));
-    if (result !== null && typeof result === 'object' && 'ok' in result && result.ok === false && 'error' in result) {
-      await recordRefusal(result.error);
-    }
+    const assignment = await curationWriteAdmission(db, projectId, runId, input);
+    const result =
+      typeof assignment === 'string'
+        ? await refuse({
+            what: 'curation lifecycle write',
+            actual: assignment,
+            next: { tool: 'myco_spores', op: String(input.op) },
+            repair: 'Correct the arguments using the read members and revisions; perform any named prerequisite first.',
+          })
+        : 'error' in assignment
+          ? await refuse({
+              what: 'curation lifecycle write',
+              actual: assignment.error,
+              next: assignment.next,
+              repair: 'Correct the named member; read it whole first if requested.',
+            })
+          : await apply(curationWriteStore(db, projectId, runId, assignment, pending), refuse);
     return result;
   } catch (error) {
-    await recordRefusal(`Not saved: myco_spores op ${String(input.op)} did not finish successfully. Retry the write with the same sources, or complete keep with the read members.`);
+    await recordRefusal({
+      what: `myco_spores op ${String(input.op)}`,
+      actual: 'the operation did not finish successfully',
+      next: { tool: 'myco_spores', op: String(input.op) },
+      repair: 'Retry the write with the same sources, or complete keep with the read members.',
+    });
     throw error;
   }
 }

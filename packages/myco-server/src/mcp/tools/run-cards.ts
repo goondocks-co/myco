@@ -1,3 +1,4 @@
+import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 /**
  * `myco_run_cards`: the card stage's own material and writes.
  *
@@ -6,10 +7,17 @@
  * answers the harness holds whole, and one card per turn. A write is admitted only once this attempt has read every page
  * of the last revision it started reading.
  */
-import { failure, runOf, type ToolContext } from '../context.js';
+import { runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 import { commitAttributedWrite } from '../../core/runs.js';
-import { cardMaterialPages, cardsWrittenStatement, parseCardWrites, writeRunCards, type CardMaterial } from '../../core/turn-cards.js';
+import {
+  cardMaterialPages,
+  cardsWrittenStatement,
+  parseCardWrites,
+  writeRunCards,
+  runCardsRemaining,
+  type CardMaterial,
+} from '../../core/turn-cards.js';
 import { trimTurn } from '../../core/turn-card-rules.js';
 import { SessionDocument } from '../../content/session-pages.js';
 import { documentTurnInput } from '../../content/turn-material.js';
@@ -22,7 +30,7 @@ import { materialRead, MATERIAL_CHANGED } from '../../core/material-pages.js';
 export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, CARD_TOOL);
   const held = assignmentOf<CardAssignment>(run.runContext, 'cards');
-  if (held === null) return failure('this run carries no card assignment');
+  if (held === null) return runRefusal({ what: 'cards', actual: 'this run carries no card assignment', next: REPORT_NEXT });
   const { db } = ctx.env;
   const scope = { projectId: ctx.projectId };
   if (input.op === 'material') {
@@ -42,15 +50,58 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
     const unread = materialUnread(run);
     if (unread !== null) return unread;
     const read = materialRead(run.runContext, run.tokenId)!;
-    if (input.revision !== read.revision) return { ...failure('each card write carries the revision read by this attempt; read the material again if it changed'), code: MATERIAL_CHANGED };
+    if (input.revision !== read.revision)
+      return {
+        ...runRefusal({
+          what: 'cards',
+          actual: `revision is ${JSON.stringify(input.revision) ?? 'missing'}; expected ${JSON.stringify(read.revision)}`,
+          next: { tool: CARD_TOOL, op: 'material', page: 1 },
+        }),
+        code: MATERIAL_CHANGED,
+      };
     const writes = parseCardWrites(input.cards, new Set(held.assignment.turns.map((turn) => turn.turnKey)));
-    if (typeof writes === 'string') return failure(writes);
-    const result = await writeRunCards(ctx.env, ctx.projectId, held.sessionId, held.assignment.turns, writes,
-      { runId: run.runId, model: run.model }, ctx.now,
-      held.assignment.turns.filter(turn => read.unavailable?.includes(turn.turnKey)));
-    await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId, held.assignment.turns),
-      { runId: run.runId, toolName: CARD_TOOL, op: 'write', recordedAt: ctx.now, detail: { written: result.written } });
+    if (typeof writes === 'string')
+      return runRefusal({
+        what: 'cards',
+        actual: writes,
+        repair: 'Correct the named card and retain the material revision.',
+        next: { tool: CARD_TOOL, op: 'write', revision: read.revision },
+      });
+    const result = await writeRunCards(
+      ctx.env,
+      ctx.projectId,
+      held.sessionId,
+      held.assignment.turns,
+      writes,
+      { runId: run.runId, model: run.model },
+      ctx.now,
+      held.assignment.turns.filter((turn) => read.unavailable?.includes(turn.turnKey)),
+    );
+    if (writes.length === 0 && read.items > 0) {
+      const unavailable = new Set(read.unavailable ?? []);
+      const missing = (await runCardsRemaining(db, ctx.projectId, held.sessionId, run.runId, held.assignment.turns)).filter(
+        (key) => !unavailable.has(key),
+      );
+      if (missing.length > 0)
+        return runRefusal({
+          what: 'cards',
+          actual: `missing turns: ${missing.join(', ')}; each needs exactly one card`,
+          next: { tool: CARD_TOOL, op: 'write', revision: read.revision },
+          repair: 'Supply cards naming these turns.',
+        });
+    }
+    await commitAttributedWrite(db, scope, cardsWrittenStatement(db, ctx.projectId, held.sessionId, run.runId, held.assignment.turns), {
+      runId: run.runId,
+      toolName: CARD_TOOL,
+      op: 'write',
+      recordedAt: ctx.now,
+      detail: { written: result.written },
+    });
     return { written: result.written, changed_since_served: result.changed };
   }
-  return failure('unknown card operation');
+  return runRefusal({
+    what: 'cards',
+    actual: `unknown op ${JSON.stringify(input.op)}`,
+    next: { tool: CARD_TOOL, op: 'material', page: 1 },
+  });
 }

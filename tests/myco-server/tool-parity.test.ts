@@ -8,6 +8,8 @@ import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js'
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
+import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
+import { MAX_SPORE_ID_CHARS, MAX_SESSION_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '@myco-server-worker/core/spore-input-contract.js';
 import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '@myco-server-worker/core/spore-curation-contract.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
@@ -117,7 +119,7 @@ describe('tool parity', () => {
     expect([...ADDED_AFTER_FREEZE].filter((name) => member.has(name))).toEqual([]);
   });
 
-  it('preserves the frozen contract except for retired discovery, search pagination and curation write guidance', () => {
+  it('preserves the frozen contract except for retired discovery, search pagination, curation guidance and run-tool input contracts', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name))) {
       const frozen = structuredClone(member.get(server.name)!);
@@ -155,6 +157,33 @@ describe('tool parity', () => {
         const sources = current.inputSchema.properties.source_spore_ids;
         expect(sources.description).toContain(`${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources`);
         sources.description = frozen.inputSchema.properties.source_spore_ids!.description;
+        const properties = current.inputSchema.properties;
+        const frozenProperties = frozen.inputSchema.properties;
+        const sessionDescription = 'For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Curation and seeding runs name no session: omit session_id. Other callers use the Session:: line when known.';
+        const characterLimits = [
+          ['id', MAX_SPORE_ID_CHARS], ['old_spore_id', MAX_SPORE_ID_CHARS], ['new_spore_id', MAX_SPORE_ID_CHARS],
+          ['type', MAX_SPORE_ID_CHARS], ['prompt_id', MAX_SPORE_ID_CHARS], ['session_id', MAX_SESSION_ID_CHARS],
+          ['reason', MAX_SPORE_CONTENT_BYTES],
+        ] as const;
+        for (const [field, maxLength] of characterLimits) {
+          const original = frozenProperties[field]!;
+          expect({ field, schema: properties[field] }).toEqual({ field, schema: {
+            ...original, minLength: 1, maxLength,
+            description: `${field === 'session_id' ? sessionDescription : original.description} Nonempty text, at most ${maxLength} characters.`,
+          } });
+          properties[field] = original;
+        }
+        const byteLimits = [['content', MAX_SPORE_CONTENT_BYTES], ['consolidated_content', MAX_SPORE_CONTENT_BYTES], ['provenance_ref', PROVENANCE_REF_MAX]] as const;
+        for (const [field, maxBytes] of byteLimits) {
+          const original = frozenProperties[field]!;
+          const provenance = field === 'provenance_ref' ? ` For pr: an https URL; for commit: ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters.` : '';
+          expect({ field, schema: properties[field] }).toEqual({ field, schema: {
+            ...original, minLength: 1, description: `${original.description} Nonempty text, at most ${maxBytes} UTF-8 bytes.${provenance}`,
+          } });
+          properties[field] = original;
+        }
+        expect(properties.tags).toEqual({ ...frozenProperties.tags, description: `${frozenProperties.tags!.description} Serialized tags: at most ${MAX_SPORE_TAG_CHARS} characters.` });
+        properties.tags = frozenProperties.tags!;
       }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
       if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');

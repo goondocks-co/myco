@@ -17,7 +17,7 @@ export const MATERIAL_CHANGED = 'material_changed';
 export const MATERIAL_UNREAD = 'material_unread';
 
 /** How far this attempt has read one revision of its material: every page up to and including `through`. */
-export interface MaterialRead { tokenId: string; revision: string; pages: number; through: number; unavailable?: readonly string[] }
+export interface MaterialRead { tokenId: string; revision: string; pages: number; through: number; items: number; unavailable?: readonly string[] }
 
 /** What the material says now, as the token that binds its pages to one another. */
 export async function materialRevision(entries: readonly unknown[]): Promise<string> {

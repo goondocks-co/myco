@@ -1,3 +1,4 @@
+import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { publishFixture } from './helpers/fixtures.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 /**
@@ -192,7 +193,7 @@ describe('POST /mcp', () => {
     const saved = (await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'named', session_id: 'sess_mine', prompt_id: 'p_first' })).result;
     expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine', prompt_id: null });
 
-    const refusal = { ok: false, error: 'session_id not found' };
+    const refusal = { ok: false, error: expect.stringContaining('session_id not found') };
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'x', session_id: 'sess_nowhere' })).result).toEqual(refusal);
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'x', session_id: 'sess_theirs' })).result).toEqual(refusal);
     expect((sqlite.query(`SELECT COUNT(*) c FROM spores WHERE content = 'x'`).get() as any).c).toBe(0);
@@ -225,7 +226,7 @@ describe('POST /mcp', () => {
     expect(sqlite.query(`SELECT session_id, COUNT(*) c FROM resolution_events WHERE new_spore_id = ? GROUP BY session_id`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', c: 2 });
 
     const third = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'c' })).result;
-    expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: third.id, reason: 'gone', session_id: 'sess_theirs' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: third.id, reason: 'gone', session_id: 'sess_theirs' })).result).toEqual({ ok: false, error: expect.stringContaining('session_id not found') });
     expect(sqlite.query(`SELECT status FROM spores WHERE id = ?`).get(third.id)).toEqual({ status: 'active' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE spore_id = ?`).get(third.id) as any).c).toBe(0);
   });
@@ -313,7 +314,7 @@ describe('POST /mcp', () => {
 
   it('caps a spore body, and consolidates in one write counting only the sources it moved', async () => {
     const { call, sqlite, t1 } = await setup();
-    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: `content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes` });
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) });
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');
@@ -769,7 +770,7 @@ describe('POST /mcp over a run credential', () => {
     await dispatch(harness, 'run_1', SWEEP);
     const listed = await list(harness.token);
     expect(listed.status).toBe(200);
-    const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }));
+    const expected = runDefinitions(runAllowlist(TASK_TOOLS[SWEEP], { dryRun: false }),SWEEP);
     expect(listed.body.result.tools).toEqual(expected.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
     expect(listed.body.result.tools.map((t: any) => t.name).sort()).toEqual(['myco_run', 'myco_run_learning', 'myco_run_sessions', 'myco_run_spores', 'myco_search', 'myco_spores']);
     const spores = listed.body.result.tools.find((t: any) => t.name === 'myco_spores');
@@ -840,10 +841,8 @@ describe('POST /mcp over a run credential', () => {
     const { harness, member, dispatch, call, sqlite, executed, serve } = await runSetup();
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
     const args = { op: 'save', type: 'gotcha', content: 'Learned from the whole session', session_id: 'sess_1' };
-    expect((await call(harness.token, 'myco_spores', { ...args, session_id: undefined })).result)
-      .toEqual({ ok: false, error: 'session_id is required for extraction spore writes' });
-    expect((await call(harness.token, 'myco_spores', args)).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', { ...args, session_id: undefined })).result, 'session_id is missing', { tool: 'myco_run_learning', op: 'material', page: 1 });
+    expectRunRefusal((await call(harness.token, 'myco_spores', args)).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     expect(sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
     const from = executed.length;
     const [served] = await serve();
@@ -866,16 +865,14 @@ describe('POST /mcp over a run credential', () => {
     sqlite.run(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at)
       VALUES ('proj_1','other-served','other-run','other-session','other-prompt',1)`);
     for (const sessionId of ['missing-session', 'other-session']) {
-      expect((await call(harness.token, 'myco_spores', { ...args, session_id: sessionId })).result)
-        .toEqual({ ok: false, error: 'session_id not served to this run' });
-      expect((await call(harness.token, 'myco_spores', {
+      expectRunRefusal((await call(harness.token, 'myco_spores', { ...args, session_id: sessionId })).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
+      expectRunRefusal((await call(harness.token, 'myco_spores', {
         op: 'consolidate', source_spore_ids: [{ id: combined.new_spore_id, revision: 0 }], consolidated_content: 'Unserved', observation_type: 'wisdom', session_id: sessionId,
-      })).result).toEqual({ ok: false, error: 'session_id not served to this run' });
+      })).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     }
     expect((await call(harness.token, 'myco_spores', { ...args, project: 'proj_2' })).error.data.code).toBe('unknown_tool');
     sqlite.run(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by) VALUES ('proj_1','sess_1','deleted',1,'mem_machine_1')`);
-    expect((await call(harness.token, 'myco_spores', args)).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', args)).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
   });
 
   it('admits every served session regardless of the dispatch-named session and refuses an unserved session', async () => {
@@ -894,8 +891,7 @@ describe('POST /mcp over a run credential', () => {
     const consolidation = { op: 'consolidate', source_spore_ids: [{ id: saved.id, revision: 0 }], consolidated_content: 'Served session wisdom', observation_type: 'wisdom', session_id: 'sess_2' };
     expect((await call(harness.token, 'myco_spores', consolidation)).result.new_spore_id).toEqual(expect.any(String));
     for (const input of [args, consolidation]) {
-      expect((await call(harness.token, 'myco_spores', { ...input, session_id: 'sess_3' })).result)
-        .toEqual({ ok: false, error: 'session_id not served to this run' });
+      expectRunRefusal((await call(harness.token, 'myco_spores', { ...input, session_id: 'sess_3' })).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     }
   });
 
@@ -916,7 +912,7 @@ describe('POST /mcp over a run credential', () => {
     ]) {
       const answer = await call(harness.token, 'myco_spores', input);
       expect(answer.error).toBeUndefined();
-      expect(answer.result).toEqual({ ok: false, error: 'session_id not served to this run' });
+      expectRunRefusal(answer.result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     }
     expect(sqlite.query("SELECT id,status FROM spores WHERE project_id='proj_1'").all()).toEqual([{ id: 'source', status: 'active' }]);
   });
@@ -962,7 +958,7 @@ describe('POST /mcp over a run credential', () => {
       const answer = await call(harness.token, 'myco_spores', op === 'save'
         ? { op, type: 'gotcha', content: 'A raced finding', session_id: 'sess_1' }
         : { op, source_spore_ids: [{ id: 'source', revision: 0 }], consolidated_content: 'Raced wisdom', observation_type: 'wisdom', session_id: 'sess_1' });
-      expect(answer.result).toEqual({ ok: false, error: 'session_id not served to this run' });
+      expectRunRefusal(answer.result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
       expect(armed).toBe(false);
       expect(sqlite.query('SELECT id,status FROM spores').all()).toEqual([{ id: 'source', status: 'active' }]);
       expect(sqlite.query('SELECT * FROM resolution_events').all()).toEqual([]);
@@ -984,13 +980,11 @@ describe('POST /mcp over a run credential', () => {
     sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(boundary)]);
     await dispatch(harness, 'run_1', SWEEP, { sessionId: null, startedAt: boundary });
     const args = { op: 'save', type: 'gotcha', content: 'Boundary finding', prompt_id: 'p_1' };
-    expect((await call(harness.token, 'myco_spores', args)).result)
-      .toEqual({ ok: false, error: 'session_id is required for extraction spore writes' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', args)).result, 'session_id is missing', { tool: 'myco_run_learning', op: 'material', page: 1 });
     sqlite.run(`UPDATE agent_runs SET queued_at = ? WHERE id = 'run_1'`, [boundary - 1]);
     expect((await call(harness.token, 'myco_spores', args)).result.id).toEqual(expect.any(String));
     const modern = { op: 'save', type: 'gotcha', content: 'Claimed after the boundary', session_id: 'sess_1' };
-    expect((await call(harness.token, 'myco_spores', modern)).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', modern)).result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     await serve();
     const saved = (await call(harness.token, 'myco_spores', modern)).result;
     expect(saved.id).toEqual(expect.any(String));
@@ -1002,8 +996,7 @@ describe('POST /mcp over a run credential', () => {
     sqlite.run(`UPDATE agent_runs SET queued_at = NULL, started_at = ?, resumed_at = ? WHERE id = 'run_1'`, [boundary - 1, boundary + 1]);
     expect((await call(harness.token, 'myco_spores', args)).result.id).toEqual(expect.any(String));
     sqlite.run(`UPDATE agent_runs SET started_at = ? WHERE id = 'run_1'`, [boundary + 1]);
-    expect((await call(harness.token, 'myco_spores', args)).result)
-      .toEqual({ ok: false, error: 'session_id is required for extraction spore writes' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', args)).result, 'session_id is missing', { tool: 'myco_run_learning', op: 'material', page: 1 });
   });
 
   it('keeps old extraction prompt citation while storing only the source session', async () => {
@@ -1017,10 +1010,10 @@ describe('POST /mcp over a run credential', () => {
       VALUES ('proj_2', 'foreign-session', 'm1', 'tok_1', ?, ?)`, [RUN_NOW, RUN_NOW]);
     sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_2' AS project_id,'foreign-session' AS session_id,'foreign-prompt' AS prompt_id,'foreign-event' AS event_id,'foreign' AS text,'user' AS origin,'foreign' AS content_hash,? AS created_at,? AS updated_at,'tok_1' AS token_id,? AS received_at)`, [RUN_NOW, RUN_NOW, RUN_NOW]);
     catalogPrompts(sqlite);
-    expect((await call(harness.token, 'myco_spores', args)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
-    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'missing' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
-    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'foreign-prompt' })).result).toEqual({ ok: false, error: 'prompt_id not found' });
-    expect((await call(member.token, 'myco_spores', { ...args, session_id: 'sess_1', prompt_id: 'p_1' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', args)).result, 'prompt_id is required for extraction spore writes', { tool: 'myco_spores', op: 'save' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'missing' })).result, 'prompt_id not found', { tool: 'myco_spores', op: 'save' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'foreign-prompt' })).result, 'prompt_id not found', { tool: 'myco_spores', op: 'save' });
+    expect((await call(member.token, 'myco_spores', { ...args, session_id: 'sess_1', prompt_id: 'p_1' })).result).toEqual({ ok: false, error: expect.stringContaining('session_id not found') });
     const saved = (await call(harness.token, 'myco_spores', { ...args, prompt_id: 'p_1' })).result;
     expect(sqlite.query('SELECT author, session_id, prompt_id FROM spores WHERE id = ?').get(saved.id)).toEqual({
       author: 'run_1', session_id: 'sess_1', prompt_id: null,
@@ -1028,9 +1021,9 @@ describe('POST /mcp over a run credential', () => {
     const read = (await call(member.token, 'myco_spores', { op: 'get', id: saved.id })).result;
     expect(read).toMatchObject({ session_id: 'sess_1', source_created_at: RUN_NOW - 10_000 });
     expect(read).not.toHaveProperty('prompt_id');
-    expect((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'p_1', session_id: 'another-session' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', { ...args, prompt_id: 'p_1', session_id: 'another-session' })).result, 'session_id not found', { tool: 'myco_spores', op: 'save' });
     const consolidation = { op: 'consolidate', source_spore_ids: [{ id: saved.id, revision: 0 }], consolidated_content: 'Combined observation', observation_type: 'wisdom' };
-    expect((await call(harness.token, 'myco_spores', consolidation)).result).toEqual({ ok: false, error: 'prompt_id is required for extraction spore writes' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', consolidation)).result, 'prompt_id is required for extraction spore writes', { tool: 'myco_spores', op: 'consolidate' });
     const combined = (await call(harness.token, 'myco_spores', { ...consolidation, prompt_id: 'p_1' })).result;
     expect(sqlite.query('SELECT session_id, prompt_id FROM spores WHERE id = ?').get(combined.new_spore_id)).toEqual({ session_id: 'sess_1', prompt_id: null });
   });
@@ -1044,7 +1037,7 @@ describe('POST /mcp over a run credential', () => {
     const second = (await call(harness.token, 'myco_spores', { op: 'save', type: 'decision', content: 'the successor', prompt_id: 'p_1' })).result;
     expect((await call(harness.token, 'myco_spores', { op: 'supersede', old_spore_id: saved.id, new_spore_id: second.id, expect_revision: 0, reason: 'replaced' })).result.status).toBe('superseded');
     expect(sqlite.query(`SELECT agent_id, author, session_id FROM resolution_events WHERE spore_id = ?`).get(saved.id)).toEqual({ agent_id: 'myco-agent', author: 'run_1', session_id: 'sess_1' });
-    expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other', prompt_id: 'p_1' })).result).toEqual({ ok: false, error: 'session_id not found' });
+    expectRunRefusal((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', session_id: 'sess_other', prompt_id: 'p_1' })).result, 'session_id not found', { tool: 'myco_spores', op: 'save' });
     // A run reads a body through its own bounded inventory, not the member tool.
     expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: saved.id })).result.spore.author).toBe('run_1');
 
@@ -1178,14 +1171,13 @@ describe('guarded spore lifecycle on MCP', () => {
       expect((await f.call(f.harness.token, 'myco_run_spores', { op: 'list' })).result.spores[0].revision).toBe(0);
       const obsolete = { op: 'obsolete', id: saved.id, reason: 'retired' };
       for (const extra of [{}, { source_spore_ids: [] }, { source_spore_ids: [{ id: saved.id, revision: 0 }] }]) {
-        expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, ...extra })).result)
-          .toEqual({ ok: false, error: 'expect_revision is required' });
+        expectRunRefusal((await f.call(f.harness.token, 'myco_spores', { ...obsolete, ...extra })).result, 'expect_revision is required', { tool: 'myco_spores', op: 'obsolete' });
       }
       expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 0 })).result.status).toBe('obsolete');
-      expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result)
-        .toEqual({ ok: false, error: 'stale', status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected active at revision 1' });
-      expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 1 })).result)
-        .toEqual({ ok: false, error: 'runs require expect_status active' });
+      const stale = (await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result;
+      expectRunRefusal(stale, 'source is obsolete at revision 1; expected active at revision 1', { tool: 'myco_run_spores', op: 'get', id: saved.id });
+      expect(stale).toMatchObject({ status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected active at revision 1' });
+      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 1 })).result, 'runs require active', { tool: 'myco_spores', op: 'obsolete' });
       expect((await f.call(f.member.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 0 })).result)
         .toEqual({ ok: false, error: 'stale', status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected obsolete at revision 0' });
       expect((await f.call(f.member.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete' })).result.status).toBe('obsolete');
@@ -1205,13 +1197,13 @@ describe('guarded spore lifecycle on MCP', () => {
       f.sqlite.run("UPDATE agent_runs SET queued_at=?, started_at=? WHERE id='run_1'", [boundary - 1, Date.now()]);
       const saved = (await f.call(f.member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'old run' })).result;
       const obsolete = { op: 'obsolete', id: saved.id, reason: 'retired' };
-      expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result)
-        .toEqual({ ok: false, error: 'expect_revision is required' });
+      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', obsolete)).result, 'expect_revision is required', { tool: 'myco_spores', op: 'obsolete' });
       f.sqlite.run("UPDATE agent_runs SET started_at=? WHERE id='run_1'", [boundary - 1]);
-      expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result)
-        .toEqual({ ok: false, error: 'stale', status: 'active', revision: 0, reason: 'source is active at revision 0; expected active at revision 1' });
+      const stale = (await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result;
+      expectRunRefusal(stale, 'source is active at revision 0; expected active at revision 1', { tool: 'myco_run_spores', op: 'get', id: saved.id });
+      expect(stale).toMatchObject({ status: 'active', revision: 0, reason: 'source is active at revision 0; expected active at revision 1' });
       expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.status).toBe('obsolete');
-      expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.error).toBe('stale');
+      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', obsolete)).result, 'source is obsolete at revision 1; expected active', { tool: 'myco_run_spores', op: 'get', id: saved.id });
     } finally { f.sqlite.close(); }
   });
 
@@ -1222,7 +1214,7 @@ describe('guarded spore lifecycle on MCP', () => {
       f.sqlite.run("UPDATE schema_meta SET value='1' WHERE key='guard_enabled_at'");
       const saved = (await f.call(f.member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'source' })).result;
       const args = { op: 'consolidate', source_spore_ids: [saved.id], consolidated_content: 'wisdom', observation_type: 'wisdom' };
-      expect((await f.call(f.harness.token, 'myco_spores', args)).result).toEqual({ ok: false, error: 'revision is required for every source_spore_ids item' });
+      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', args)).result, 'is missing revision', { tool: 'myco_spores', op: 'consolidate' });
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM spores').get()).toEqual({ n: 1 });
     } finally { f.sqlite.close(); }
   });

@@ -31,18 +31,18 @@ export interface RunAudit {
   omitted: number;
 }
 
-const MAX_ITEM_CHARS = 500;
-const MAX_REASONING_CHARS = 4_000;
-const MAX_STEPS = 60;
-const MAX_LISTED = 100;
-const MAX_FAILURES = 40;
+export const MAX_ITEM_CHARS = 500;
+export const MAX_REASONING_CHARS = 4_000;
+export const MAX_STEPS = 60;
+export const MAX_LISTED = 100;
+export const MAX_FAILURES = 40;
 /** The most characters a serialized audit offered as text may hold before it is read. */
 export const MAX_AUDIT_CHARS = 256 * 1024;
 
 export const RUN_AUDIT_FIELDS = ['steps', 'examined', 'commands', 'failures', 'reasoning'] as const;
 
 /** What a report whose audit is refused is told to file: the fields, their shape and their bounds. */
-export const RUN_AUDIT_SHAPE = `audit is an object of steps (what you did, in order; at least one), examined (the files and areas you read), commands (the commands you ran), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is; required); up to ${MAX_STEPS} steps, ${MAX_LISTED} files or commands and ${MAX_FAILURES} failures, each entry at most ${MAX_ITEM_CHARS} characters`;
+export const RUN_AUDIT_SHAPE = `audit is an object of steps (what you did, in order; at least one), examined (the files and areas you read), commands (the commands you ran), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is; required); up to ${MAX_STEPS} steps, ${MAX_LISTED} files or commands and ${MAX_FAILURES} failures, each entry at most ${MAX_ITEM_CHARS} characters, reasoning at most ${MAX_REASONING_CHARS} characters`;
 
 /** What one audit answered: the stored shape and the repairs that reach it, or why it is refused. */
 export type AuditParse = { ok: true; audit: RunAudit; repairs: string[] } | { ok: false; error: string };
@@ -100,7 +100,7 @@ function failureOf(entry: unknown): RunAuditFailure | null {
 export function parseRunAudit(value: unknown): AuditParse {
   let raw = value;
   if (typeof raw === 'string') {
-    if (raw.length > MAX_AUDIT_CHARS) return { ok: false, error: `audit is at most ${MAX_AUDIT_CHARS} characters` };
+    if (raw.length > MAX_AUDIT_CHARS) return { ok: false, error: `audit is ${raw.length} characters; the limit is ${MAX_AUDIT_CHARS}` };
     try { raw = JSON.parse(raw); } catch { return { ok: false, error: 'audit is not a readable object' }; }
   }
   if (!isRecord(raw)) return { ok: false, error: 'audit must be an object' };

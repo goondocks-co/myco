@@ -109,6 +109,12 @@ const MAX_PREFIX_CHARS = '\n- ['.length + MAX_ID_CHARS + '] ('.length + MAX_LABE
 
 /** The most an item's text may carry, and the cut a fallback preview takes. */
 export const AGENT_LINE_MAX_CHARS = MAX_LINE_CHARS - MAX_PREFIX_CHARS;
+/** Drafting room per short word, including its separating space. */
+export const AGENT_LINE_WORD_ROOM_CHARS = 10;
+export const AGENT_LINE_TARGET_WORDS = Math.floor(AGENT_LINE_MAX_CHARS / AGENT_LINE_WORD_ROOM_CHARS);
+export const AGENT_LINE_EXAMPLE = 'Changing run tools: declare write operations so dry runs enforce the same policy.';
+export const AGENT_LINE_GUIDANCE = `Aim for at most ${AGENT_LINE_TARGET_WORDS} short words in agent_line; use plain words and keep long identifiers in content. The hard limit remains ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: ${AGENT_LINE_EXAMPLE}`;
+
 
 /** The leaves this selector reads. */
 export const INJECTION_LEAVES: readonly string[] = ['cortex.spores.inject_on_prompt_submit', 'cortex.spores.max_per_prompt'];

@@ -1,3 +1,4 @@
+import { runRefusal } from '../core/run-tool-contract.js';
 /**
  * Argument validation for a tool call, against the definition's `inputSchema`.
  *
@@ -14,7 +15,10 @@ export type ToolInput = Record<string, unknown>;
 
 /** A failure the caller can act on, carried to the wire as a JSON-RPC error with `data.code`. */
 export class ToolError extends Error {
-  constructor(readonly code: 'invalid_input' | 'unknown_tool' | 'not_served' | 'tool_call_failed', message: string) {
+  constructor(
+    readonly code: 'invalid_input' | 'unknown_tool' | 'not_served' | 'tool_call_failed',
+    message: string,
+  ) {
     super(message);
     this.name = 'ToolError';
   }
@@ -30,57 +34,91 @@ export function normalizeInput(args: unknown): ToolInput {
   throw new ToolError('invalid_input', 'Tool arguments must be a JSON object');
 }
 
-function invalidInput(definition: ToolDefinition, message: string): ToolError {
-  return new ToolError('invalid_input', definition.inputRepair === undefined ? message
-    : `Not saved: ${message}. ${definition.inputRepair}`);
+function invalidInput(definition: ToolDefinition, message: string, op?: unknown): ToolError {
+  return new ToolError(
+    'invalid_input',
+    definition.inputRepair === undefined
+      ? message
+      : runRefusal({
+          what: `${definition.name} input`,
+          actual: message,
+          repair: definition.inputRepair,
+          next: {
+            tool: definition.name,
+            op:
+              typeof op === 'string' && definition.inputSchema.properties.op?.enum?.includes(op)
+                ? op
+                : String(definition.inputSchema.properties.op?.enum?.[0] ?? 'list'),
+          },
+        }).error,
+  );
 }
 
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
   const declared = new Set(Object.keys(definition.inputSchema.properties));
   const undeclared = Object.keys(input).find((key) => !declared.has(key));
   if (undeclared !== undefined) {
-    throw invalidInput(definition, `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`);
+    throw invalidInput(
+      definition,
+      `Unknown argument '${undeclared}' for tool ${definition.name}: declared arguments are ${[...declared].join(', ')}`,
+      input.op,
+    );
   }
   for (const key of definition.inputSchema.required ?? []) {
     if (input[key] === undefined || input[key] === null) {
-      throw invalidInput(definition, `Missing required argument '${key}' for tool ${definition.name}`);
+      throw invalidInput(definition, `Missing required argument '${key}' for tool ${definition.name}`, input.op);
     }
   }
   for (const [key, value] of Object.entries(input)) {
     const property = declared.has(key) ? definition.inputSchema.properties[key] : undefined;
     if (!property || value === undefined || definition.handlerValidated?.includes(key)) continue;
-    validateProperty(definition, key, value, property);
+    validateProperty(definition, key, value, property, input.op);
   }
 }
 
-function validateProperty(definition: ToolDefinition, key: string, value: unknown, property: JsonSchemaProperty): void {
+function validateProperty(definition: ToolDefinition, key: string, value: unknown, property: JsonSchemaProperty, op?: unknown): void {
   const tool = definition.name;
-  const actual = definition.inputRepair === undefined ? '' : `; received ${Array.isArray(value) ? `array with ${value.length} entries` : value === null ? 'null' : typeof value === 'string' ? `string with ${value.length} characters` : typeof value === 'number' ? String(value) : typeof value}`;
+  const actual =
+    definition.inputRepair === undefined
+      ? ''
+      : `; received ${Array.isArray(value) ? `array with ${value.length} entries` : value === null ? 'null' : typeof value === 'string' ? `string with ${value.length} characters` : typeof value === 'number' ? String(value) : typeof value}`;
   if (value === null) {
-    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`);
+    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`, op);
   }
   if (property.enum && !property.enum.includes(value)) {
-    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}${actual}`);
+    throw invalidInput(
+      definition,
+      `Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}${actual}`,
+      op,
+    );
   }
-  const types = typeof property.type === 'string' ? [property.type] : property.type ?? [];
+  const types = typeof property.type === 'string' ? [property.type] : (property.type ?? []);
   if (types.length > 0 && !types.some((type) => matchesJsonType(value, type))) {
-    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`);
+    throw invalidInput(definition, `Invalid argument '${key}' for tool ${tool}: expected ${expected(property)}${actual}`, op);
   }
   if (types.includes('array') && property.items && Array.isArray(value)) {
-    value.forEach((item, index) => validateProperty(definition, `${key}[${index}]`, item, property.items!));
+    value.forEach((item, index) => validateProperty(definition, `${key}[${index}]`, item, property.items!, op));
   }
 }
 
 function matchesJsonType(value: unknown, type: string): boolean {
   switch (type) {
-    case 'string': return typeof value === 'string';
-    case 'number': return typeof value === 'number' && Number.isFinite(value);
-    case 'integer': return typeof value === 'number' && Number.isInteger(value);
-    case 'boolean': return typeof value === 'boolean';
-    case 'array': return Array.isArray(value);
-    case 'object': return typeof value === 'object' && value !== null && !Array.isArray(value);
-    case 'null': return value === null;
-    default: return true;
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return typeof value === 'object' && value !== null && !Array.isArray(value);
+    case 'null':
+      return value === null;
+    default:
+      return true;
   }
 }
 

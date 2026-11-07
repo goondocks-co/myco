@@ -1,7 +1,4 @@
-import { AGENT_LINE_MAX_CHARS } from './injection.js';
-
-/** The example agent line the rules give, which obeys the bound it illustrates. */
-export const AGENT_LINE_EXAMPLE = 'Adding a run tool that writes: declare its write operation so dry runs use the same policy.';
+import { AGENT_LINE_GUIDANCE } from './injection.js';
 
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [
@@ -13,7 +10,7 @@ export const EXTRACTION_RULES = [
   '',
   'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds" is.',
   '',
-  `Give every spore an \`agent_line\`: one line, at most ${AGENT_LINE_MAX_CHARS} characters, that an agent can act on — the situation that triggers it, then the guidance, at most naming the component or concept, never a file or symbol as its anchor. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. Example: "${AGENT_LINE_EXAMPLE}" Open the \`content\` with the same line, then the detail.`,
+  `Give every spore an \`agent_line\`: one line that an agent can act on — the situation that triggers it, then the guidance, at most naming the component or concept, never a file or symbol as its anchor. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. ${AGENT_LINE_GUIDANCE} Open the \`content\` with the same line, then the detail.`,
   '',
   'Types: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture. Tags: two to four, naming the subsystem and the theme.',
   '',
