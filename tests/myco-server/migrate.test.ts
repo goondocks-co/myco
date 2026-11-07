@@ -722,6 +722,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0706_v706.sql': '2363b7ecd3679925da6283eb421eec1f076323d8fc00066e2ef6ccde24a14134',
   '0707_v707.sql': 'c6271d046acd451688c983c0185fe9027457b2c891c9e326feb89f0b8f62e06b',
   '0708_v708.sql': '4d2b61672de11bd28ccb6e32fca7ebd459ef4f192438550c6a6904f33d99fcbe',
+  '0709_v709.sql': '06203843a273b3483e0b562553c5bdc607d99c5261d2cc97b060c2ffdd76c239',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1174,6 +1175,8 @@ describe('versioned schema steps', () => {
   });
 
   it('keeps earlier tables and columns except declared retirements', () => {
+    const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
+    const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredAt86 = new Set([
       'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
       ...['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `skill_records_fts${suffix}`),
@@ -1195,7 +1198,11 @@ describe('versioned schema steps', () => {
           continue;
         }
         expect(after.has(table)).toBe(true);
-        for (const [col, type] of cols) expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
+        for (const [col, type] of cols) {
+          if (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) {
+            expect(after.get(table)!.has(col)).toBe(false);
+          } else expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
+        }
       }
       // Outside the explicit v86 retirement, a step may DROP only a table it created in that same step — the guard-table
       // idiom, where a CHECK-bearing scratch table aborts the step on a precondition
@@ -1235,14 +1242,22 @@ describe('versioned schema steps', () => {
           expect({ step: n + 1, droppedView, replaced }).toEqual({ step: n + 1, droppedView, replaced: true });
           continue;
         }
-        // A trigger holds no rows either: the same step creates it again, after the drop, doing what it did.
+        // Retained triggers are recreated by their replacing step; retirements are explicit.
         const droppedTrigger = /^DROP TRIGGER (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
+            || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
+          continue;
+        }
+        const droppedColumn = /^ALTER TABLE (\w+) DROP COLUMN (\w+)$/i.exec(s);
+        if (droppedColumn !== null) {
+          const target = `${droppedColumn[1]}.${droppedColumn[2]}`;
+          expect({ step: n + 1, target, allowed: SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target) })
+            .toEqual({ step: n + 1, target, allowed: true });
           continue;
         }
         expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);
@@ -1378,7 +1393,6 @@ describe('versioned schema steps', () => {
           : t === 'raw_resources' && c.name === 'kind' ? `'blob'` : t === 'raw_resources' && c.name === 'classification' ? `'raw'`
           : t === 'processed_resources' && c.name === 'kind' ? `'plan'` : t === 'processed_resources' && c.name === 'classification' ? `'processed'`
           : t === 'agent_runs' && (c.name === 'leased_runner_id' || c.name === 'leased_runner_credential_id') ? 'NULL'
-          : (t === 'agent_runs' && c.name === 'repository_files') || (t === 'spore_curation_candidates' && c.name === 'currency') ? 'NULL'
           : t === 'agent_runs' && c.name === 'origin' ? "'manual'"
           : t === 'agent_run_attempts' && c.name === 'settled_seq' ? 'NULL'
           : t === 'agent_run_attempts' && (c.name === 'estimate_usd' || c.name === 'cost_usd') ? '0'
@@ -1620,4 +1634,29 @@ it('retains each cluster first attempt from canonical run subjects across the da
     ]);
     expect(version(sqlite)).toBe('700');
   } finally {sqlite.close();}
+});
+
+it('removes inventory facts while preserving spore history and curation lifecycle state in schema 709', async () => {
+  const sqlite = fresh();
+  try {
+    await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(step => step.version < 709));
+    sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1);
+      INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1);
+      INSERT INTO agent_runs(project_id,id,agent_id,task,status,repository_files) VALUES('proj_1','run','agent','curate-spores','running','["src/gone.ts"]');
+      INSERT INTO spores(project_id,id,agent_id,content,observation_type,file_path,created_at) VALUES('proj_1','spore','agent','Atomic counters survive their code','gotcha','src/gone.ts',1);
+      INSERT INTO spore_curation_work(project_id,cluster_key,members,run_id) VALUES('proj_1','group','[{"id":"spore","revision":0}]','run');
+      INSERT INTO spore_curation_candidates(project_id,run_id,spore_id,revision,read,currency) VALUES('proj_1','run','spore',0,1,'{"available":true,"missing":["src/gone.ts"]}');`);
+    const spore = sqlite.query('SELECT * FROM spores').get();
+    const work = sqlite.query('SELECT * FROM spore_curation_work').get();
+    await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(step => step.version === 709));
+    expect(sqlite.query('SELECT * FROM spores').get()).toEqual(spore);
+    expect(sqlite.query('SELECT * FROM spore_curation_work').get()).toEqual(work);
+    expect(sqlite.query('SELECT * FROM spore_curation_candidates').all())
+      .toEqual([{project_id:'proj_1',run_id:'run',spore_id:'spore',revision:0,read:1}]);
+    for (const [table,column] of [['agent_runs','repository_files'],['spore_curation_candidates','currency']]) {
+      expect(sqlite.query(`PRAGMA table_info(${table})`).all().some(row => (row as {name:string}).name === column)).toBe(false);
+    }
+    expect(sqlite.query("SELECT name FROM sqlite_master WHERE name LIKE 'curation_inventory_%'").all()).toEqual([]);
+    expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
+  } finally { sqlite.close(); }
 });

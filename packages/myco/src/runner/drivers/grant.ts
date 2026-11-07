@@ -17,7 +17,7 @@
  * granted.
  */
 import { commandArgument } from '@goondocks/myco-shared/shell-command';
-import { canReadSource } from '@goondocks/myco-shared/execution-profile';
+import { canReadSource, canReadSourceFiles } from '@goondocks/myco-shared/execution-profile';
 import { sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -69,9 +69,9 @@ export interface RunGrant {
  * environment that confines it.
  */
 export function runGrant(spec: RunSpec, harness: Pick<Harness, 'sourceGit' | 'asking'> & Partial<Pick<Harness, 'id'>>, platform: NodeJS.Platform = process.platform): RunGrant {
-  if (spec.sourceReadOnly === true && !canReadSource(harness.asking)) throw new Error(sourceReadUnavailable(harness.id ?? 'harness'));
+  if (spec.sourceReadOnly === true && !(spec.sourceFilesOnly === true ? canReadSourceFiles : canReadSource)(harness.asking)) throw new Error(sourceReadUnavailable(harness.id ?? 'harness'));
   const source = spec.sourceReadOnly === true ? sourceAccess(spec.scratchDir) : null;
-  const git = spec.sourceReadOnly === true && harness.sourceGit === 'shim' ? prepareSourceGit(spec.scratchDir, platform) : null;
+  const git = spec.sourceReadOnly === true && spec.sourceFilesOnly !== true && harness.sourceGit === 'shim' ? prepareSourceGit(spec.scratchDir, platform) : null;
   return {
     source,
     rules: [SERVER_GRANT, ...(source === null ? [] : sourceReadTools(spec.scratchDir, git))],

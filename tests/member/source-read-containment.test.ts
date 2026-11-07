@@ -12,6 +12,7 @@ import { canOfferHarness, canReadSource } from '@goondocks/myco-shared/execution
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { stubClaudeSource } from '../helpers/stub-claude-source.js';
+import { flagValue } from '../helpers/argv-flag.js';
 import { ToolCalls } from '@myco/runner/drivers/acp-permission.js';
 
 const { renameSync } = fencedFs;
@@ -167,4 +168,27 @@ describe('source file permission boundary (#1636)', () => {
       expect(access(path.endsWith('undeclared.txt') ? path : realpathSync(path))).toBe('deny');
     }
   });
+});
+
+it('knowledge validation grants native reads and searches inside the checkout with no shell or edits', async () => {
+  const spec = {...fixture(), sourceFilesOnly:true};
+  const inputs = [
+    {tool_name:'Read',tool_input:{file_path:join(spec.repo,'README.md')}},
+    {tool_name:'Grep',tool_input:{path:spec.repo,pattern:'source'}},
+    {tool_name:'Glob',tool_input:{path:spec.repo,pattern:'**/*.ts'}},
+    {tool_name:'Bash',tool_input:{command:'git log'}},
+    {tool_name:'Edit',tool_input:{file_path:join(spec.repo,'README.md'),old_string:'source',new_string:'changed'}},
+    {tool_name:'Read',tool_input:{file_path:spec.mcpConfigPath}},
+  ];
+  const grant = runGrant(spec, HARNESSES.find(h=>h.id==='claude-code')!);
+  expect(grant.rules).toEqual(['mcp__myco']);
+  const bin = stubClaudeSource(['{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}'], inputs);
+  const previousPath=process.env.PATH;
+  try {
+    process.env.PATH=`${bin}:${previousPath}`;
+    for await (const _event of claudeCodeDriver.run(spec,new AbortController().signal)) { /* consume */ }
+  } finally { process.env.PATH=previousPath; }
+  expect(JSON.parse(readFileSync(join(bin,'decisions.json'),'utf8'))).toEqual(['allow','allow','allow','deny','deny','deny']);
+  const args=readFileSync(join(bin,'argv.txt'),'utf8').split('\n');
+  expect(flagValue(args,'--tools')).toBe('Read,Glob,Grep');
 });

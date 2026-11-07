@@ -294,3 +294,12 @@ export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: 
 export function harnessCredentialAvailable(db: RelationalStore, wrappingKey: SecretWrappingKey, harness: string): Promise<boolean> {
   return harnessCredentialAvailability(db, wrappingKey)(harness);
 }
+
+/** Credential usability is a boolean; plaintext remains inside the secret owner. */
+export async function secretReadable(db: RelationalStore, wrappingKey: SecretWrappingKey, name: string): Promise<boolean> {
+  try { return await deploymentSecretStore(db,wrappingKey).get(name) !== null; }
+  catch (error) {
+    if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
+    throw error;
+  }
+}

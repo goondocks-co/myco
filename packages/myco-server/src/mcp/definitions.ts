@@ -540,7 +540,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         "agent_line": {
           "type": "string",
           minLength: 1, maxLength: AGENT_LINE_MAX_CHARS,
-          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, with the file or symbol it anchors to. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When editing the seam, retain its invariants (src/seam.ts)." Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
+          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, at most naming a component or concept, never a file or symbol as its anchor. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When changing ownership, retain the component’s invariants." Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
         },
         "provenance_kind": {
           "type": "string",

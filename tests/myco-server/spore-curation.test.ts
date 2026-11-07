@@ -1,4 +1,7 @@
-import { sporeCodeAnchors, sporeCurrency, allAnchorsMissing } from '@myco-server-worker/core/spore-currency.js';
+import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
+import { droppedFeatureFacts } from '@myco-server-worker/core/dropped-features.js';
+import { recordProjectRemote } from '@myco-server-worker/core/remotes.js';
 import { expect, test } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { memberHeaders } from './helpers/fixtures.js';
@@ -46,7 +49,7 @@ async function fixture(deferred = false) {
       VALUES('proj_1','curation-fixture',?,'spore',?,?,1,?,?,?)`, [key, id, source.revision, f.now,stats?.mean??null,stats?.std??null]);
   };
   const discover = async () => { for (let i=0; i<4; i++) await discoverSporeClusters(env, f.now); };
-  const poll = (now = f.now) => claimNextRun(env, { principal: f.principal, harnesses: [offeredHarness('claude-code')], now });
+  const poll = (now = f.now) => claimNextRun(env, { principal: f.principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
   const ctx = async (runId: string, tokenId: string) => runToolContext(env, { projectId: 'proj_1', run: { ...(await getRun(f.db, { projectId: 'proj_1' }, runId))!, projectId: 'proj_1' }, tokenId, now: f.now, body: '' });
   const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
   const request = async (token: string, method: string, params?: unknown) => {
@@ -151,7 +154,7 @@ test('first cluster attempts spend the daily allowance while retries retain back
     expect(JSON.parse((await getRun(f.db,{projectId:'proj_1'},second.run.id))!.runContext!).curation.members.map((member:{id:string})=>member.id).sort()).toEqual(['c','d']);
     const retryAt = f.now+LEARNING_BACKOFF_MS[0];
     const otherWorker = await issueMemberToken(f.db,{memberId:'mem_worker',machineId:'curation-worker-2'},f.now);
-    expect(await claimNextRun(f.env,{principal:legacyWorker(otherWorker.tokenId,'curation-worker-2'),harnesses:[offeredHarness('claude-code')],now:retryAt})).toMatchObject({claimed:false});
+    expect(await claimNextRun(f.env,{principal:legacyWorker(otherWorker.tokenId,'curation-worker-2'),harnesses:[offeredHarness('claude-code')],capabilities:WORKER_CAPABILITIES,now:retryAt})).toMatchObject({claimed:false});
     expect(await f.call(second.run.runToken,'myco_run_curation',{op:'complete',decision:'keep',members:['c','d'].map(id=>({id,revision:0})),reason:'Distinct applicability.'})).toEqual({completed:true});
     expect(await f.call(second.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Kept apart.'})).toMatchObject({recorded:true});
     await endLeasedRun(f.env, { principal: f.principal, now: f.now+4 }, { projectId: 'proj_1', runId: second.run.id, attemptId: second.run.attemptId, status: 'completed' });
@@ -548,7 +551,7 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
     await settingsWriter(meter.db).setLeaf('agent.budget.daily_usd',attempts*0.01+0.8,'mem_worker',f.now);
     const key=estimateKey('curate-spores','claude-code',{tier:'low',model:'sonnet'});
     await mutateState(meter.db,{projectId:'proj_1'},'myco-agent',key,()=>JSON.stringify({estimate:0.35}),f.now);
-    const poll=()=>claimNextRun(env,{principal,harnesses:[offeredHarness('claude-code')],now:f.now});
+    const poll=()=>claimNextRun(env,{principal,harnesses:[offeredHarness('claude-code')],capabilities:WORKER_CAPABILITIES,now:f.now});
     meter.reset(); expect(await poll()).toMatchObject({claimed:false}); const idle=meter.reads();
     await d1.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','a','myco-agent','A','decision',1),('proj_1','b','myco-agent','B','decision',1)").run();
     await d1.prepare("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','band',?,?)").bind(JSON.stringify(['a','b'].map(id=>({id,revision:0}))),f.now).run();
@@ -745,99 +748,69 @@ test('missing statistics exclude both seed and candidate until model-scoped cali
   }finally{g.sqlite.close();}
 });
 
-test('currency retires deleted architecture before merging current knowledge through the run surface', async () => {
-  for (const mode of ['deleted','current','mixed','unanchored','no-map'] as const) {
+
+test('knowledge curation retires a dropped feature citing its decision and merges durable lessons without file-existence facts', async () => {
+  for (const connected of [false, true]) {
     const f = await fixture();
-    let inventoryReads=0;
-    const prepare=f.env.db.prepare.bind(f.env.db);
-    f.env.db.prepare=(sql)=>{if(sql.includes('r.repository_files AS files')) inventoryReads++;return prepare(sql);};
     try {
-      const commit = 'a'.repeat(40);
-      if (mode !== 'no-map') {
-        const source = {url:'https://example.test/team/repo',branch:'main',commit};
-        f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','connection',?,'main',1,'test')",[source.url]);
-        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
-          VALUES('proj_1','map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:source}),JSON.stringify(['src/current.ts','README.md','packages/myco-server/src/core/runs.ts',...(mode==='current'?Array.from({length:2000},(_,i)=>`packages/source/${i}-${'a'.repeat(80)}.ts`):[])])]);
-        f.sqlite.run(`INSERT INTO canopy_maps(project_id,revision,artifact,input_hash,repository_url,repository_branch,repository_commit,source_run_id,generated_at)
-          VALUES('proj_1','map','{}','hash',?,'main',?,'map-source',?)`,[source.url,commit,f.now]);
-      }
+      await recordProjectRemote(f.db, 'proj_1', 'github.com/goondocks-co/myco', f.now);
+      if (connected) f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+        VALUES('proj_1','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
       await f.enable();
-      const ids = mode === 'mixed' ? ['a','b','c','d','e','f'] : ['a','b','c'];
-      for (const id of ids) {
-        const stale = mode === 'deleted' || (mode === 'mixed' && id < 'd');
-        await f.add(id,[1,0],f.now,stale ? `Retired team sync uses packages/myco/src/daemon/api/${id}.ts:12.` : mode === 'unanchored' ? 'Keep ownership explicit and preserve accumulated history.' : 'Use src/current.ts.');
-      }
-      if (mode !== 'unanchored') f.sqlite.run("UPDATE spores SET file_path='src/removed.ts' WHERE id='a'");
+      await f.add('retired', [1,0], f.now, 'skill-evolve generates and evolves skills automatically.');
+      for (const id of ['a','b','c']) await f.add(id, [1,0], f.now + 1, 'Increment counters atomically to preserve concurrent updates. Historical hint: src/gone.ts.');
+      f.sqlite.run("UPDATE spores SET file_path='src/gone.ts' WHERE id='a'");
       await f.discover();
-      const claim = await f.poll(); expect(claim.claimed).toBe(true); if (!claim.claimed) throw new Error('curation was not claimed');
-      expect(claim.run.instruction!.indexOf('First judge')).toBeLessThan(claim.run.instruction!.indexOf('Choose the topic'));
-      expect(claim.run.instruction).toContain('curation_sources_missing');
-      const claimReads=inventoryReads;
-      expect(claimReads).toBe(1);
-      const ctx = await f.ctx(claim.run.id,claim.run.attemptId);
-      const assignment = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!;
-      const members = assignment.members;
-      const rawContext=(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!;
-      expect(new TextEncoder().encode(rawContext).length).toBeLessThan(8_000);
-      expect(assignment.snapshot).toEqual(mode==='no-map'?{available:false,reason:'no_code_map'}:{available:true,commit,generatedAt:f.now});
-      const rows = f.sqlite.query<{spore_id:string;currency:string},[]>('SELECT spore_id,currency FROM spore_curation_candidates').all();
-      const fact = JSON.parse(rows.find(row=>row.spore_id==='a')!.currency);
-      expect(claim.run.instruction).toContain(`"currency":${JSON.stringify(fact)}`);
-      expect(fact).toMatchObject(mode === 'no-map' ? {available:false,reason:'no_code_map'} : {available:true,commit});
-      if (mode === 'unanchored') expect(fact).toEqual({available:true,commit,present:[],missing:[],unresolved:[]});
-      if (mode === 'deleted' || mode === 'mixed') expect(fact).toEqual({available:true,commit,present:[],missing:['packages/myco/src/daemon/api/a.ts','src/removed.ts'],unresolved:[]});
-      const merge = (sources: typeof members) => f.call(claim.run.runToken,'myco_spores',{op:'consolidate',source_spore_ids:sources,observation_type:'wisdom',consolidated_content:'Keep current specifics.',agent_line:'Use the current seam.',reason:'Same current seam.'});
-      if (mode === 'current') {
-        await f.add('searched',[1,0],f.now,'The dropped feature used src/deleted-search.ts.');
-        await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
-        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'searched'})).toMatchObject({spore:{currency:{available:true,commit,present:[],missing:['src/deleted-search.ts']}}});
-        expect(await merge([...members.slice(0,2),{id:'searched',revision:0}])).toMatchObject({ok:false,code:'curation_sources_missing'});
-        expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'searched',expect_revision:0,expect_status:'active',reason:'The feature in src/deleted-search.ts was removed.'})).toMatchObject({status:'obsolete'});
-        const nextCommit='b'.repeat(40);
-        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,run_context,repository_files)
-          VALUES('proj_1','next-map-source','myco-agent','canopy-map','completed',1,?,?)`,[JSON.stringify({repository:{url:'https://example.test/team/repo',branch:'main',commit:nextCommit}}),JSON.stringify(['src/after-move.ts'])]);
-        f.sqlite.run("UPDATE canopy_maps SET source_run_id='next-map-source',repository_commit=?,generated_at=?",[nextCommit,f.now+1]);
-        expect(f.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='map-source'").get()).toEqual({repository_files:null});
-        await f.add('after-move',[1,0],f.now,'Use src/after-move.ts.');
-        await f.call(claim.run.runToken,'myco_search',{query:'same topic',type:'spore',status:'active',mode:'semantic'});
-        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'after-move'})).toMatchObject({spore:{currency:{available:false,reason:'snapshot_moved'}}});
-        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'after-move'})).toMatchObject({spore:{currency:{available:false,reason:'snapshot_moved'}}});
-        f.sqlite.run("UPDATE spore_curation_candidates SET currency=NULL WHERE spore_id='b'");
-        expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'material',id:'b'})).toMatchObject({spore:{currency:null}});
+      const claim = await f.poll();
+      expect(claim.claimed).toBe(true); if (!claim.claimed) throw new Error('curation not claimed');
+      const prompt = claim.run.instruction!;
+      const ledgerRow = prompt.split('\n').find(line => line.startsWith('skill-evolve |'));
+      expect(prompt).toContain('DROP decisions');
+      expect(ledgerRow).toContain('#1152');
+      expect(prompt).toContain('later spore or session');
+      expect(prompt).toContain('A missing file alone is never a reason to retire');
+      expect(prompt).toContain('When in doubt, keep it');
+      expect(prompt).not.toContain('curation_sources_missing');
+      expect(prompt).not.toContain('"currency"');
+      if (connected) {
+        expect(claim.run.repository).toEqual({url:'https://github.com/goondocks-co/myco',branch:'main',historyDepth:1});
+        const pin = await prepareWorkerRepository(f.env, {worker:f.principal,clock:()=>f.now}, {
+          projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,
+          body:{url:'https://github.com/goondocks-co/myco',branch:'main',commit:'a'.repeat(40)},
+        });
+        expect(pin).toMatchObject({held:true,pin:{commit:'a'.repeat(40)}});
+      } else {
+        expect(claim.run).not.toHaveProperty('repository');
+        expect(prompt).toContain('No usable repository checkout is available');
       }
-      if (mode === 'deleted' || mode === 'mixed') {
-        expect(await merge(members)).toMatchObject({ok:false,code:'curation_sources_missing'});
-        expect(await f.call(claim.run.runToken,'myco_spores',{op:'supersede',old_spore_id:'a',new_spore_id:'b',expect_revision:0,expect_status:'active',reason:'Same guidance.'})).toMatchObject({ok:false,code:'curation_sources_missing'});
-        expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE observation_type='wisdom'").get()).toEqual({n:0});
-        for (const id of ['a','b','c']) expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id,expect_revision:0,expect_status:'active',reason:`Retired team sync: packages/myco/src/daemon/api/${id}.ts is absent from the committed snapshot.`})).toMatchObject({status:'obsolete'});
-        expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE status='obsolete'").get()).toEqual({n:3});
-      }
-      if (mode !== 'deleted') expect(await merge(members.filter(member => mode !== 'mixed' || member.id >= 'd'))).toMatchObject({status:'consolidated'});
-      expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Retired outdated members before merging current guidance.'})).toEqual({completed:true});
-      expect(f.sqlite.query("SELECT COUNT(*) n FROM spores WHERE observation_type='wisdom'").get()).toEqual({n:mode==='deleted'?0:1});
-      expect(await f.call(claim.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Currency judged before merging.',details:'Retired old guidance.\nKept current specifics.'})).toMatchObject({recorded:true});
-      const report = f.sqlite.query<{details:string;summary:string},[string]>('SELECT details,summary FROM agent_reports WHERE run_id=?').get(claim.run.id)!;
-      expect(report.details).toBe('Retired old guidance.\nKept current specifics.');
-      expect(report.summary).toContain(`${mode==='deleted'||mode==='mixed'?3:mode==='current'?1:0} retired · 0 replaced · ${mode==='deleted'?0:3} merged`);
+      // The stand-in model chooses by the supplied knowledge and DROP decision, then calls the real run tools.
+      const reason = `skill-evolve is retired by docs/architecture/myco-2.0.md ${ledgerRow}`;
+      expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'retired',expect_revision:0,expect_status:'active',reason}))
+        .toMatchObject({status:'obsolete'});
+      const source_spore_ids = ['a','b','c'].map(id=>({id,revision:0}));
+      expect(await f.call(claim.run.runToken,'myco_spores',{op:'consolidate',source_spore_ids,observation_type:'wisdom',
+        consolidated_content:'Increment counters atomically to preserve concurrent updates.',agent_line:'Updating shared counters: increment atomically.',reason:'The same durable concurrency lesson.'}))
+        .toMatchObject({status:'consolidated'});
+      expect(await f.call(claim.run.runToken,'myco_run_curation',{op:'complete',decision:'resolved',reason:'Retired the dropped feature and merged the durable lesson.'}))
+        .toEqual({completed:true});
+      expect(f.sqlite.query("SELECT file_path FROM spores WHERE id='a'").get()).toEqual({file_path:'src/gone.ts'});
+      expect(f.sqlite.query("SELECT file_path,content FROM spores WHERE observation_type='wisdom'").get())
+        .toEqual({file_path:null,content:'Increment counters atomically to preserve concurrent updates.'});
+      expect(f.sqlite.query("SELECT reason FROM resolution_events WHERE spore_id='retired'").get()).toEqual({reason});
+      expect(await f.call(claim.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Judged the knowledge.'})).toMatchObject({recorded:true});
       expect(await runCloseRefusal(f.db,{projectId:'proj_1'},(await getRun(f.db,{projectId:'proj_1'},claim.run.id))!)).toBeNull();
-      expect(inventoryReads).toBe(claimReads+(mode==='current'?2:0));
-      expect(await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'})).toMatchObject({status:'completed'});
-      expect(JSON.parse((await getRun(f.db,{projectId:'proj_1'},claim.run.id))!.runContext!).curation.snapshot).toEqual(assignment.snapshot);
+      expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
     } finally { f.sqlite.close(); }
   }
 });
 
-
-test('currency resolves package-relative anchors conservatively and respects snapshot age',()=>{
-  const inventory={commit:'snapshot',generatedAt:100,files:['packages/myco-server/src/core/runs.ts','tests/current.test.ts','docs/guide.md']};
-  const currency=(content:string,createdAt=100,updatedAt:number|null=null)=>sporeCurrency({filePath:null,content,createdAt,updatedAt},inventory,true);
-  expect(currency('Use `core/runs.ts`.')).toEqual({available:true,commit:'snapshot',present:['core/runs.ts'],missing:[],unresolved:[]});
-  expect(currency('See `packages/myco-server/`.')).toMatchObject({available:true,present:['packages/myco-server'],missing:[]});
-  expect(currency('See `runs.ts`.')).toMatchObject({available:true,present:['runs.ts'],missing:[]});
-  expect(currency('See `missing.ts`.')).toEqual({available:false,reason:'unresolved_anchors',unresolved:['missing.ts']});
-  for(const token of ['@cf/baai/bge-m3','@stablelib/sha256','agents.id','origin/main..HEAD','169.254.0.0/16']) expect(sporeCodeAnchors({filePath:null,content:`Use \`${token}\`.`},inventory)).toEqual([]);
-  expect(allAnchorsMissing(currency('Use packages/myco/src/daemon/routes/team.ts.'))).toBe(true);
-  expect(currency('Use packages/myco/src/daemon/routes/team.ts.',101)).toEqual({available:false,reason:'snapshot_behind'});
-  expect(currency('Use packages/myco/src/daemon/routes/team.ts.',90,101)).toEqual({available:false,reason:'snapshot_behind'});
-  expect(allAnchorsMissing(null)).toBe(false);
+test('DROP facts are absent for an existing Project not bound to the Myco remote', async () => {
+  const f=await fixture();
+  try {
+    f.sqlite.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_other','Other',1)");
+    await recordProjectRemote(f.db,'proj_other','github.com/example/other',f.now);
+    f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+      VALUES('proj_other','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
+    expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
+  } finally { f.sqlite.close(); }
 });

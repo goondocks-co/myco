@@ -13,7 +13,7 @@
  * A dispatch limit and a per-day ceiling answer differently, and the difference
  * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
-import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { projectRepositories } from './repositories.js';
 import { deploymentSecretStore } from './secrets.js';
 import type { ServerEnv } from './adapters.js';
@@ -172,7 +172,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   if (last !== null && now - last < intervalMs) return 'not_yet';
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
-  if (REPOSITORY_TASKS.includes(task)) {
+  if (REQUIRED_REPOSITORY_TASKS.includes(task)) {
     const repository = await projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey)).describe(projectId);
     if (repository === null) return 'repository_missing';
     if (repository.credential !== null && (!repository.credential.configured || !repository.credential.readable)) return 'repository_unavailable';

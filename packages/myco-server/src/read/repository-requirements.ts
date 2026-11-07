@@ -1,5 +1,5 @@
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { allTasksReadRepository } from '@goondocks/myco-shared/repository';
+import { allTasksRequireRepository } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from '../core/adapters.js';
 import { admissionForTask, RETAINED_TASKS } from '../core/task-catalogue.js';
 import { capabilityExplicitlyOnSql, capabilityOnSql } from '../core/settings.js';
@@ -13,9 +13,9 @@ const CAPABILITY_TASKS = RETAINED_TASKS.reduce((groups, task) => {
   if (gate?.kind === 'capability') groups.set(gate.capability, [...(groups.get(gate.capability) ?? []), task]);
   return groups;
 }, new Map<string, string[]>());
-const CODE_CAPABILITIES = [...CAPABILITY_TASKS].filter(([, tasks]) => allTasksReadRepository(tasks)).map(([capability]) => capability);
+const CODE_CAPABILITIES = [...CAPABILITY_TASKS].filter(([, tasks]) => allTasksRequireRepository(tasks)).map(([capability]) => capability);
 
-const MAP_ONLY = [...CAPABILITY_TASKS.values()].filter(allTasksReadRepository).flat().every(task => task === MAP_TASK);
+const MAP_ONLY = [...CAPABILITY_TASKS.values()].filter(allTasksRequireRepository).flat().every(task => task === MAP_TASK);
 export interface RepositoryRequirement { projectId: string; codeMap?: boolean }
 export interface RepositoryRequirements { projects: RepositoryRequirement[]; overflow: boolean }
 

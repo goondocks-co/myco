@@ -23,7 +23,7 @@ export const latestD1Upgrade: ParityScenario = {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
     for (const [table, column] of [
-      ['agent_runs', 'repository_files'], ['spore_curation_candidates', 'currency'], ['sessions', 'launch_parent_session_id'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
+      ['sessions', 'launch_parent_session_id'], ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
       ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
     ]) {
       const columns = await target.sql(`PRAGMA table_info(${table})`);
@@ -31,7 +31,7 @@ export const latestD1Upgrade: ParityScenario = {
       expect((await target.sql(`SELECT ${column} AS value FROM ${table}`)).every(row => row.value === null)).toBe(true);
     }
     expect((await target.sql("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'curation_inventory_%' ORDER BY name")).map(row=>row.name))
-      .toEqual(['curation_inventory_map_delete','curation_inventory_map_move','curation_inventory_run_end']);
+      .toEqual([]);
     expect(await target.sql('SELECT COUNT(*) AS n FROM prompt_identity_conflicts')).toEqual([{ n: 0 }]);
     expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
       .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: null }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: null }]);
@@ -39,10 +39,9 @@ export const latestD1Upgrade: ParityScenario = {
       .toEqual([{ transcript_id: 'upgrade_transcript_read', record_identity_scheme: 'legacy-session-v1' }, { transcript_id: 'upgrade_transcript_unread', record_identity_scheme: 'legacy-session-v1' }]);
     await expect(target.sql("UPDATE transcripts SET record_identity_scheme='source-record-v1' WHERE session_id='upgrade_session'"))
       .rejects.toThrow(/record_identity_scheme_immutable/);
-    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,repository_files)
-      VALUES('proj_parity','upgrade_inventory','upgrade_agent','canopy-map','running','["src/retained.ts"]')`);
-    await target.sql("UPDATE agent_runs SET status='failed' WHERE project_id='proj_parity' AND id='upgrade_inventory'");
-    expect(await target.sql("SELECT repository_files FROM agent_runs WHERE project_id='proj_parity' AND id='upgrade_inventory'")).toEqual([{repository_files:null}]);
+    for (const [table, column] of [['agent_runs', 'repository_files'], ['spore_curation_candidates', 'currency']]) {
+      expect((await target.sql(`PRAGMA table_info(${table})`)).some(row => row.name === column)).toBe(false);
+    }
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     const problems: unknown[] = [];
     for (const { name } of await target.sql(CHECKED_TABLES_SQL)) {

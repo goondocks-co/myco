@@ -3,7 +3,7 @@
  * the worker writes into the run's scratch directory as the run's instructions
  * file.
  *
- * A seeding run is the one outcome with a checkout. The worker clones the
+ * A seeding run reads a repository checkout. The worker clones the
  * Project's connected repository beside the instructions file, at the path the
  * ask names, and the harness explores it with its own file and shell tools —
  * code and git history both — while every write of knowledge goes over the
@@ -34,9 +34,9 @@ export const SEEDING_RULES = [
   '',
   '## What a spore is',
   '',
-  'A spore is one durable observation a developer or agent new to this code would pay to know: an architectural invariant, a convention the code follows everywhere, a decision and the trade-off behind it, a gotcha that is not obvious from the code. Anchor every one to a path, a symbol or a commit. "Uses TypeScript" is not a spore; "Every daemon API handler takes a ProjectScope rather than a project id string: the scope binds the database, the project and the machine at once, and a handler that takes a bare id reaches the wrong vault under a second Grove (packages/myco/src/daemon/api/*.ts)" is.',
+  'A spore is one durable observation a developer or agent new to this code would pay to know: an architectural invariant, a convention the code follows everywhere, a decision and the trade-off behind it, a gotcha that is not obvious from the code. Describe the situation and guidance, at most naming the component or concept; never anchor it to a file or symbol. "Uses TypeScript" is not a spore; "Capture binds a session to an immutable Project destination; changing routes cannot send queued history to a new Project" is.',
   '',
-  'Give every spore an `agent_line`: one line an agent can act on — the situation that triggers it, then the guidance, then the anchor. It is what a session is served in place of the body, so it has to stand alone. Open the `content` with the same line, then the detail.',
+  'Give every spore an `agent_line`: one line an agent can act on — the situation that triggers it, then the guidance. It is what a session is served in place of the body, so it has to stand alone. Open the `content` with the same line, then the detail.',
   '',
   'Types: architecture, pattern, decision, trade_off, gotcha, cross-cutting, wisdom. Tags: two to four, naming the subsystem and the theme. Do not pass `session_id`: this run names no session.',
   '',
@@ -70,7 +70,7 @@ export function seedingPrompt(repository: { url: string; branch: string }): stri
     '',
     `1. Call \`myco_run_spores\` op "list" once. A \`total\` of ${SEEDED_SPORE_FLOOR} or more active spores means this project is already seeded: close at once with action "${RUN_SKIP_ACTION}", say so in the summary, and file its \`audit\`.`,
     `2. Orient, in about ten tool calls: the README, the primary manifest, the top-level layout, the docs directory if there is one, and the git history as the rules describe. Name three to eight themes worth drilling into: architectural layers, cross-cutting concepts, integration points, conventions.`,
-    '3. Drill into each theme with searches and targeted reads of the two to four most informative files. Collect concrete observations anchored to paths, symbols or commits. Prefer cross-cutting modules over leaf files.',
+    '3. Drill into each theme with searches and targeted reads of the two to four most informative files. Collect concrete knowledge about concepts, components and decisions. Prefer cross-cutting modules over leaf files.',
     `4. For each observation, call \`myco_search\` with \`type\` "spore" first; a Project being seeded is rarely empty of an earlier pass. Then \`myco_spores\` op "save" with \`content\`, \`type\` and \`tags\`. Write between ten and ${SEEDING_SPORE_CEILING} spores; past the ceiling, keep the most load-bearing and drop the rest.`,
     `5. Close by calling \`myco_run\` op "report": action "${SEEDING_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"spores\\":24,\\"themes\\":6,\\"thin_coverage\\":[\\"deploy\\"]}", where thin_coverage names the themes that yielded fewer than three observations. ${RUN_AUDIT_INSTRUCTION}`,
     '',

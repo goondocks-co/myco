@@ -1,3 +1,4 @@
+import { REPOSITORY_PREPARATION_TIMEOUT_MS } from '@goondocks/myco-shared/repository';
 import type { RunRow } from './runs.js';
 
 /** Millisecond UTC time evaluated by SQLite at statement execution. */
@@ -22,7 +23,10 @@ export function timeoutSecondsOf(runContext: string | null): number {
 
 /** The instant past which a runtime has outlived its bound and the Deployment's margin. */
 export function staleAfter(startedAt: number, runContext: string | null): number {
-  return startedAt + timeoutSecondsOf(runContext) * 1000 + RUN_OVERRUN_MARGIN_MS;
+  let context: unknown = null;
+  try { context = runContext === null ? null : JSON.parse(runContext); } catch { /* A malformed context carries no preparation allowance. */ }
+  const preparation = context !== null && typeof context === 'object' && 'preparationTimeoutMs' in context && context.preparationTimeoutMs === REPOSITORY_PREPARATION_TIMEOUT_MS ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
+  return startedAt + timeoutSecondsOf(runContext) * 1000 + preparation + RUN_OVERRUN_MARGIN_MS;
 }
 
 /** The deadline of the dispatch's current attempt. */
@@ -38,5 +42,11 @@ export function runDeadlineSql(): string {
       THEN json_extract(run_context, '$.timeoutSeconds') ELSE ${DEFAULT_DISPATCH_TIMEOUT_SECONDS} END
     ELSE ${DEFAULT_DISPATCH_TIMEOUT_SECONDS} END`;
   return `(CASE WHEN COALESCE(resumed_at, started_at) IS NULL THEN 0
-    ELSE COALESCE(resumed_at, started_at) + (${timeout}) * 1000 + ${RUN_OVERRUN_MARGIN_MS} END)`;
+    ELSE COALESCE(resumed_at, started_at) + (${timeout}) * 1000 + ${preparationAllowanceSql()} + ${RUN_OVERRUN_MARGIN_MS} END)`;
+}
+
+/** Only the claim-authored preparation bound extends an attempt's deadline. */
+export function preparationAllowanceSql(): string {
+  return `CASE WHEN json_valid(run_context) THEN CASE WHEN json_extract(run_context,'$.preparationTimeoutMs')=${REPOSITORY_PREPARATION_TIMEOUT_MS}
+    THEN ${REPOSITORY_PREPARATION_TIMEOUT_MS} ELSE 0 END ELSE 0 END`;
 }
