@@ -1,3 +1,4 @@
+import { V706_STATEMENTS } from '@myco-server-worker/db/schema-v706.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
@@ -26,6 +27,16 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: 701, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
+  { step: 702, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
+  { step: 703, object: 'idx_transcripts_received', table: 'transcripts', reason: 'Prompt identity diagnostics seek transcript receipts in the selected time window.' },
+  { step: 704, object: 'idx_spore_injections_delivery', table: 'spore_injections', reason: 'Delivery counts seek delivered injections in the selected time window.' },
+  { step: 705, object: 'idx_agent_runs_worker_started', table: 'agent_runs', reason: 'Machine reads seek the latest run for each worker credential.' },
+  ...['insert', 'update', 'reclassify', 'delete'].map(action => ({
+    step: 706, object: `sessions_capture_head_${action}`, table: 'sessions',
+    reason: 'Session mutations maintain the canonical machine and agent receipt head.',
+  })),
+  { step: 707, object: 'idx_sessions_unnamed_machine', table: 'sessions', reason: 'Unnamed-head classification seeks only the machine’s unnamed sessions.' },
   { step: 700, object: 'idx_curation_first_started', table: 'spore_curation_work', reason: 'Daily admission counts a bounded indexed window of first cluster attempts.' },
   ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:697,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
   {step:697,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal map runs release unreferenced repository evidence.'},
@@ -185,6 +196,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V706_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
+    step: 706, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
+  })),
   {
     step: 698,
     sql: `INSERT OR IGNORE INTO retired_deployment_settings (leaf,value,updated_at,updated_by,retired_at)
