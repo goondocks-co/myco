@@ -1,13 +1,13 @@
+import { memoryBlobStore } from './helpers/fixtures.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { commit } from '@myco-server-worker/db/index.js';
 import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/insights/kpi-reconcile.js';
 import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
-import { V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
-import { BACKUP_FORMAT, deploymentId, EXCLUDED_TABLES, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, deploymentId, backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { rig, NOW, DAY, PROJECT, OTHER } from './helpers/kpi-fixture.js';
@@ -197,12 +197,32 @@ describe('KPI projection critical flow', () => {
     } finally { r.sqlite.close(); }
   });
 
-  it('pins frozen trigger SQL, derived backup exclusions and fresh-store readiness', async () => {
-    expect(V711_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual(kpiTriggers().map(t => t.sql));
-    expect(V711_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup'))).toEqual(kpiCatchupSeed());
-    for (const table of ['kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup']) expect(EXCLUDED_TABLES.has(table)).toBe(true);
-    const r = rig();
-    try { expect(await projectionReadiness(r.db, 'kpi')).toBe('ready'); } finally { r.sqlite.close(); }
+  it('rebuilds generated KPI state and restores source history without stale derived counts', async () => {
+    const r = rig(), target = rig();
+    try {
+      expect((await readKpis(r.db, { window: null, now: NOW })).state).toBe('ready');
+      for (const trigger of kpiTriggers()) {
+        r.sqlite.exec(`DROP TRIGGER ${trigger.name}`);
+        r.sqlite.exec(trigger.sql);
+      }
+      r.session('generated'); r.prompt('p', 'generated');
+      const expected = await oracle(r, null);
+      expect(await measured(r, null)).toEqual(expected);
+      r.sqlite.exec("DELETE FROM projection_catchup WHERE projection='kpi'");
+      for (const sql of kpiCatchupSeed()) r.sqlite.exec(sql);
+      expect((await readKpis(r.db, { window: null, now: NOW })).state).toBe('building');
+      await catchUpProjections(r.db, { budget: { calls: 2000, wallMs: 10000 } });
+      expect(await measured(r, null)).toEqual(expected);
+      r.sqlite.exec('UPDATE kpi_daily SET prompts=999');
+      const blobs = memoryBlobStore();
+      const saved = await createBackup(r.db, blobs, { producer: 'test', now: NOW });
+      const artifact = (await backupArtifact(r.db, blobs, saved.id))!;
+      await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      await catchUpProjections(target.db, { budget: { calls: 2000, wallMs: 10000 } });
+      expect(target.sqlite.query("SELECT session_id FROM sessions WHERE session_id='generated'").all()).toEqual([{ session_id: 'generated' }]);
+      expect(await measured(target, null)).toEqual(await oracle(target, null));
+      expect((await measured(target, null)).servedShare.sampleSize).toBe(0);
+    } finally { r.sqlite.close(); target.sqlite.close(); }
   });
 
   it('preserves malformed skipped text on answer insert and update without counting it', async () => {

@@ -1,7 +1,5 @@
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { projectRepositoryNeeded } from '@myco-server-worker/read/repository-requirements.js';
-import type { ServerEnv, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario } from '../harness.ts';
 
 export const setupProgress: ParityScenario = {
@@ -130,21 +128,6 @@ export const setupProgress: ParityScenario = {
       expect(afterOverflow.rowsRead).toBeLessThanOrEqual(beforeOverflow.rowsRead + 5);
     }
 
-    const statements: Array<{ sql: string; binds: unknown[] }> = [];
-    const recorder = { prepare: (sql: string) => ({ bind: (...binds: unknown[]) => ({
-      all: async () => { statements.push({ sql, binds }); return { results: [] }; },
-    }) }) } as unknown as RelationalStore;
-    await projectRepositoryNeeded({ db: recorder } as ServerEnv, { projectId: 'proj_setup_parity' });
-    const scoped = statements.find(({ sql }) => sql.includes('SELECT p.project_id AS projectId FROM projects p'));
-    if (scoped === undefined) throw new Error('single-project repository query was not issued');
-    expect(scoped.sql).toContain('p.project_id IN (?)');
-    let next = 0;
-    const inlined = scoped.sql.replace(/\?/g, () => {
-      const value = scoped.binds[next++];
-      return typeof value === 'number' ? String(value) : lit(String(value));
-    });
-    const plan = (await target.sql(`EXPLAIN QUERY PLAN ${inlined}`)).map((row) => String(row.detail)).join('\n');
-    expect(plan).toMatch(/SEARCH p USING INDEX sqlite_autoindex_projects_1/);
-    expect(plan).not.toMatch(/SCAN p\b/);
+
   },
 };

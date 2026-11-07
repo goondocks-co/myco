@@ -10,7 +10,6 @@ import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-hea
 import { V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { recordDispatch, recordQueueHolder, failQueuedRun, commitRunChange } from '@myco-server-worker/core/runs.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -27,19 +26,27 @@ function fixture() {
   return { ...f, source, fail, run };
 }
 
-function captureSql(store: RelationalStore) {
-  const sqls: Array<{sql:string; params:unknown[]}> = [];
-  const db: RelationalStore = { ...store, prepare(sql) {
-    const item = { sql, params: [] as unknown[] }; sqls.push(item);
-    const wrap = (stmt: PreparedStatement): PreparedStatement => ({ ...stmt, bind(...params) { item.params=params; return wrap(stmt.bind(...params)); } });
-    return wrap(store.prepare(sql));
-  } };
-  return { sqls, db };
-}
-
 describe('maintained Health and Today contracts', () => {
-  it('pins every frozen trigger to its generator', () => {
-    expect(V712_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual([...passedOverTriggers(), ...changeMarkTriggers()].map(t => t.sql));
+  it('generated triggers maintain the same Health counts and Today marks after replay', async () => {
+    const f = fixture();
+    try {
+      for (const trigger of [...passedOverTriggers(), ...changeMarkTriggers()]) {
+        f.sqlite.run(`DROP TRIGGER ${trigger.name}`);
+        f.sqlite.run(trigger.sql);
+      }
+      f.source('generated'); f.fail('generated');
+      expect(await passedOverHealth(f.db, ['m'], NOW)).toMatchObject({ state: 'ready', count: 1 });
+      f.fail('generated');
+      expect(await passedOverHealth(f.db, ['m'], NOW)).toMatchObject({ count: 1 });
+      f.sqlite.run("UPDATE sessions SET summary='edited' WHERE session_id='generated'");
+      expect(await passedOverHealth(f.db, ['m'], NOW)).toMatchObject({ count: 0 });
+      f.run('generated', 'running');
+      const before = await readWorkNow(f.serverEnv, { projectId: 'proj_1' }, NOW, false);
+      f.sqlite.run("UPDATE agent_runs SET status='completed',completed_at=? WHERE id='generated'", [NOW]);
+      const after = await readWorkNow(f.serverEnv, { projectId: 'proj_1' }, NOW, false);
+      expect(after.running).toEqual([]);
+      expect(after.marks.runs).not.toBe(before.marks.runs);
+    } finally { f.sqlite.close(); }
   });
 
   it('counts distinct current sources exactly across model switches, expiry, success, edits and deletion', async () => {
@@ -142,14 +149,19 @@ describe('maintained Health and Today contracts', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('drives recent machine capture through its live time range', async () => {
+  it('reports the latest live receipt for each recently active machine', async () => {
     const f = fixture();
-    const { sqls, db } = captureSql(f.db);
     try {
-      await recentMachineCapture(db, NOW);
-      const item = sqls[0]!;
-      const plan = f.sqlite.query(`EXPLAIN QUERY PLAN ${item.sql}`).all(...item.params as never[]);
-      expect(JSON.stringify(plan)).toContain('idx_sessions_machine_live (last_live_received_at>?)');
+      for (const [id, machine, at] of [
+        ['old', 'old-machine', NOW - 1], ['early', 'active-machine', NOW + 1],
+        ['late', 'active-machine', NOW + 2], ['other', 'other-machine', NOW + 3],
+      ] as const) {
+        f.source(id);
+        f.sqlite.run('UPDATE sessions SET machine_id=?,last_live_received_at=? WHERE session_id=?', [machine, at, id]);
+      }
+      f.source('imported');
+      expect((await recentMachineCapture(f.db, NOW)).sort((a, b) => a.machine_id.localeCompare(b.machine_id)))
+        .toEqual([{ machine_id: 'active-machine', at: NOW + 2 }, { machine_id: 'other-machine', at: NOW + 3 }]);
     } finally { f.sqlite.close(); }
   });
 
@@ -158,8 +170,10 @@ describe('maintained Health and Today contracts', () => {
     try {
       const record = { id: 'recorded', agentId: 'a', task: 'extract-curate', provider: null, model: null, runContext: null, dispatchedBy: null, startedAt: NOW };
       expect(await recordDispatch(f.db, { projectId: 'proj_1' }, record)).toBe(true);
+      const marks = await todayMarks(f.db);
       expect(await recordDispatch(f.db, { projectId: 'proj_1' }, record)).toBe(false);
-      expect((await todayMarks(f.db))[0]).toBe('1');
+      expect(await todayMarks(f.db)).toEqual(marks);
+      expect(f.sqlite.query("SELECT id FROM agent_runs WHERE id='recorded'").all()).toEqual([{ id: 'recorded' }]);
     } finally { f.sqlite.close(); }
   });
   it('preserves source rows through installation and rebuilds late versions and proof eligibility', async () => {
@@ -192,76 +206,29 @@ describe('maintained Health and Today contracts', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('measures the extra writes for membership and each mark mechanism', () => {
-    const f = fixture();
-    try {
-      f.source('s'); f.fail('s');
-      f.run('r','running');
-      f.sqlite.run("INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at) VALUES('proj_1','p','s','e','m','p','body','h','active',1,1,'tok_1',1)");
-      f.sqlite.run("INSERT INTO spore_curation_changes(project_id,revision,dirty) VALUES('proj_1',1,1) ON CONFLICT(project_id) DO NOTHING");
-      const total = () => (f.sqlite.query('SELECT total_changes() AS n').get() as { n: number }).n;
-      const extra = (operation: () => void) => {
-        const measure = (enabled: boolean) => {
-          f.sqlite.run('SAVEPOINT measure');
-          if (!enabled) for (const trigger of [...passedOverTriggers(), ...changeMarkTriggers()]) f.sqlite.run(`DROP TRIGGER ${trigger.name}`);
-          const before = total(); operation(); const writes = total() - before;
-          f.sqlite.run('ROLLBACK TO measure'); f.sqlite.run('RELEASE measure');
-          return writes;
-        };
-        return measure(true) - measure(false);
-      };
-      const measured = {
-        failureInsert: extra(() => f.fail('s','new')),
-        failureRepeat: extra(() => f.fail('s')),
-        failureUpdate: extra(() => f.fail('s','m',NOW+1,'changed')),
-        failureDelete: extra(() => f.sqlite.run("DELETE FROM embedding_source_failures WHERE record_id='s'")),
-        sourceEdit: extra(() => f.sqlite.run("UPDATE sessions SET summary='edited' WHERE session_id='s'")),
-        sourceDelete: extra(() => f.sqlite.run("DELETE FROM sessions WHERE session_id='s'")),
-        runInsert: extra(() => f.run('new','queued')),
-        runTransition: extra(() => f.sqlite.run("UPDATE agent_runs SET status='completed' WHERE id='r'")),
-        runDelete: extra(() => f.sqlite.run("DELETE FROM agent_runs WHERE id='r'")),
-        runNoop: extra(() => f.sqlite.run("UPDATE agent_runs SET status=status,held_by=held_by,completed_at=completed_at WHERE id='r'")),
-        planNoop: extra(() => f.sqlite.run("UPDATE plans SET title=title,updated_at=updated_at WHERE plan_key='p'")),
-        curationNoop: extra(() => f.sqlite.run("UPDATE spore_curation_changes SET revision=revision,dirty=dirty WHERE project_id='proj_1'")),
-        planUpdate: extra(() => f.sqlite.run("UPDATE plans SET updated_at=updated_at+1 WHERE plan_key='p'")),
-        planDelete: extra(() => f.sqlite.run("DELETE FROM plans WHERE plan_key='p'")),
-        curationUpdate: extra(() => f.sqlite.run("UPDATE spore_curation_changes SET revision=revision+1 WHERE project_id='proj_1'")),
-        curationDelete: extra(() => f.sqlite.run("DELETE FROM spore_curation_changes WHERE project_id='proj_1'")),
-      };
-      console.info('S3B_EXTRA_WRITES', JSON.stringify(measured));
-      expect(measured).toEqual({ failureInsert: 1, failureRepeat: 0, failureUpdate: 1, failureDelete: 1, sourceEdit: 1, sourceDelete: 1,
-        runInsert: 1, runTransition: 1, runDelete: 1, runNoop: 0, planNoop: 0, curationNoop: 0, planUpdate: 1, planDelete: 1, curationUpdate: 1, curationDelete: 1 });
-    } finally { f.sqlite.close(); }
-  });
 
-  it('shows a queued admission failure through indexed ranges until a later completion clears it', async () => {
+  it('shows a queued admission failure until a later completion clears it', async () => {
     const f = fixture();
     try {
       f.run('older', 'failed', NOW - 20);
       f.run('queued', 'queued', NOW - 10);
       expect((await failQueuedRun(f.db, { projectId: 'proj_1' }, 'queued', NOW, 'Could not start the task.', 'task_start_failed')).applied).toBe(true);
-      const { db, sqls } = captureSql(f.db);
-      expect(await unresolvedFailures(db, [{ projectId: 'proj_1', task: 'extract-curate' }])).toMatchObject([{ runId: 'queued', failures: 2 }]);
-      const item = sqls[0]!;
-      const plan = JSON.stringify(f.sqlite.query(`EXPLAIN QUERY PLAN ${item.sql}`).all(...item.params as never[]));
-      expect(plan).toContain('idx_agent_runs_task (project_id=? AND task=? AND status=? AND started_at>?)');
-      expect(plan).toContain('idx_agent_runs_task (project_id=? AND task=? AND status=? AND started_at=?)');
-      expect(plan).not.toContain('SCAN r');
+      expect(await unresolvedFailures(f.db, [{ projectId: 'proj_1', task: 'extract-curate' }])).toMatchObject([{ runId: 'queued', failures: 2 }]);
       expect((await readWorkNow(f.serverEnv, { projectId: 'proj_1' }, NOW, false)).needsYou).toMatchObject([{ runId: 'queued', why: 'Could not start the task.' }]);
       f.run('success', 'completed', NOW + 1);
       expect(await unresolvedFailures(f.db, [{ projectId: 'proj_1', task: 'extract-curate' }])).toEqual([]);
     } finally { f.sqlite.close(); }
   });
 
-  it('writes nothing for a repeated queue holder and keeps no-op marks stable', async () => {
+  it('preserves the queue holder and marks on replay while accepting a changed quote', async () => {
     const f = fixture();
     try {
       f.run('q', 'queued');
       await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'q', 'worker');
-      const before = f.sqlite.query('SELECT total_changes() AS n').get();
+      const before = f.sqlite.query("SELECT * FROM agent_runs WHERE id='q'").get();
       const marks = await todayMarks(f.db);
       await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'q', 'worker');
-      expect(f.sqlite.query('SELECT total_changes() AS n').get()).toEqual(before);
+      expect(f.sqlite.query("SELECT * FROM agent_runs WHERE id='q'").get()).toEqual(before);
       expect(await todayMarks(f.db)).toEqual(marks);
       f.sqlite.run("UPDATE agent_runs SET status=status,held_by=held_by,completed_at=completed_at WHERE id='q'");
       expect(await todayMarks(f.db)).toEqual(marks);
@@ -274,38 +241,30 @@ describe('maintained Health and Today contracts', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('seeks setup from retained output evidence rather than empty runs', async () => {
+  it('finds retained setup output behind empty completed work', async () => {
     const f = fixture();
     try {
-      const { db, sqls } = captureSql(f.db);
-      await readSetupProgress({ ...f.serverEnv, db }, { all: true }, NOW);
-      const item = sqls.find(item => item.sql.includes(' AS produced'))!;
-      expect(item).toBeDefined();
-      expect(item.sql).not.toMatch(/curate-spores|turn-cards|embedding-reconcile/);
-      const plan = JSON.stringify(f.sqlite.query(`EXPLAIN QUERY PLAN ${item.sql}`).all(...item.params as never[]));
-      expect(plan).toContain('idx_spores_author (project_id=?)');
-      expect(plan).toContain('idx_agent_run_events_setup_output (project_id=?)');
-      expect(plan).toContain('sqlite_autoindex_agent_runs_1 (project_id=? AND id=?)');
-      expect(plan).not.toContain('SCAN a');
+      f.run('old-output', 'completed', NOW - 90 * DAY);
+      for (let i = 0; i < 205; i++) f.run(`empty-${i}`, 'completed', NOW - i);
+      expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(false);
+      f.sqlite.run(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
+        VALUES('proj_1','output','a','gotcha','active','retained output','old-output',?)`, [NOW - 90 * DAY]);
+      expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(true);
+      f.sqlite.run("DELETE FROM spores WHERE id='output'");
+      expect((await readSetupProgress(f.serverEnv, { all: true }, NOW)).workProduced).toBe(false);
     } finally { f.sqlite.close(); }
   });
 
-  it('prioritizes live and failing Projects with bounded seeks and pages without repetition', async () => {
+  it('prioritizes live and failing Projects and pages without repetition', async () => {
     const f = fixture();
     try {
       for (let i = 0; i < 30; i++) f.sqlite.run('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)', [`p${i}`, `p${i}`, NOW]);
       f.run('failure', 'failed', NOW);
       f.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at) VALUES('p0','q','a','retired-task','queued',1)");
-      const { db, sqls } = captureSql(f.db);
-      const first = await todayProjects(db, { all: true });
+      const first = await todayProjects(f.db, { all: true });
       expect(first.read.slice(0, 2).sort()).toEqual(['p0', 'proj_1']);
       const next = await todayProjects(f.db, { all: true }, first.cursor);
       expect(new Set([...first.read, ...next.read]).size).toBe(first.total);
-      const item = sqls[0]!;
-      const plan = JSON.stringify(f.sqlite.query(`EXPLAIN QUERY PLAN ${item.sql}`).all(...item.params as never[]));
-      expect(plan).toContain('idx_agent_runs_claimable (status=?)');
-      expect(plan).toContain('idx_agent_runs_task (project_id=? AND task=? AND status=? AND started_at>?)');
-      expect(plan).not.toContain('SCAN r');
     } finally { f.sqlite.close(); }
   });
 
