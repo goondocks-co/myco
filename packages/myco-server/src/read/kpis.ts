@@ -8,4 +8,4 @@ export {
   kpis_kpiWindow as kpiWindow,
   kpis_median as median,
   kpis_readKpis as readKpis,
-} from './catalog-store.js';
+} from './catalog/kpis.js';

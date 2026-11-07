@@ -462,7 +462,7 @@ describe('the settings contract', () => {
     const READERS = /\b(leafValues|settingTexts|storedSettings|storedEmbedding|leafOffChecks)\b/;
     const readers = filesUnder(SERVER_SRC).map((file) => {
       let source=readFileSync(file,'utf8');
-      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/catalog-store.ts') {
+      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/catalog/settings.ts') {
         const parsed=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
         const factories=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='prepareSwitchedSettings');
         expect(factories).toHaveLength(1);

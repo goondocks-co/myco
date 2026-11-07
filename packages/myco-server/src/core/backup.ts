@@ -37,7 +37,7 @@ import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureC
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
-import { prepareRestoredSessionUnread } from '../read/catalog-store.js';
+import { prepareRestoredSessionUnread } from '../read/catalog/sessions.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';

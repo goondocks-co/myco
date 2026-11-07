@@ -10,7 +10,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/learning-sessions.ts#repairLearningSources': [{ tables: ['schema_meta'], order: 'arrival-order' }],
-  'read/catalog-store.ts#prepareHubnessPopulation': [{ tables: ['embedding_hubness_population'], order: 'arrival-order' }],
+  'read/catalog/embedding-hubness.ts#prepareHubnessPopulation': [{ tables: ['embedding_hubness_population'], order: 'arrival-order' }],
   'db/schema.ts#withStamp': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/embedding-due.ts#embeddingDueInsert': [{ tables: ['embedding_due'], order: 'arrival-order' }],
   'db/budget-activation.ts#budgetMigration': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],
@@ -77,7 +77,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/model-catalogs.ts#recordModelCatalog': [
     { tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' },
   ],
-  'read/catalog-store.ts#<module>': [
+  'read/catalog/release-provenance.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
   ],
   'core/runner-updates.ts#runnerUpdateReportStatements': [
@@ -107,7 +107,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['deployment_settings'], order: 'writer-revision' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],
-  'read/catalog-store.ts#prepareSwitchedSettings': [
+  'read/catalog/settings.ts#prepareSwitchedSettings': [
     { tables: ['deployment_settings'], order: 'unverified' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],

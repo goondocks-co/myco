@@ -7,7 +7,7 @@ import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublished
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
-import { sessions_projectExists as projectExists, type sessions_ArchiveOutcome as ArchiveOutcome, type sessions_UnarchiveOutcome as UnarchiveOutcome } from './catalog-store.js';
+import { sessions_projectExists as projectExists, type sessions_ArchiveOutcome as ArchiveOutcome, type sessions_UnarchiveOutcome as UnarchiveOutcome } from './catalog/sessions.js';
 export {
   type sessions_ProjectRow as ProjectRow,
   type sessions_SessionRow as SessionRow,
@@ -52,7 +52,7 @@ export {
   sessions_heldSessionIds as heldSessionIds,
   sessions_sessionsOwnedByImporter as sessionsOwnedByImporter,
   sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
-} from './catalog-store.js';
+} from './catalog/sessions.js';
 export { containsPattern } from './scope.js';
 
 
