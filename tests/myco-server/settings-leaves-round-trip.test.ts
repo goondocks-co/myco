@@ -15,7 +15,7 @@ import { describe, expect, it } from 'bun:test';
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { asOwner, OWNER_ENV } from './helpers/owner.js';
+import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
 
 /**
  * The leaves §7.8 names as the 2.0 Settings surface, with a value each that
@@ -41,11 +41,7 @@ async function harness() {
   const fixture = sqliteEnv();
   const env = { ...fixture.env, ...OWNER_ENV };
   const put = async (leaf: string, value: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const res = await worker.fetch(new Request(`https://s/api/settings/${encodeURIComponent(leaf)}`, {
-      method: 'PUT',
-      headers: { cookie: (await asOwner(fixture.db, '/')).headers.get('cookie')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
-      body: JSON.stringify({ value }),
-    }), env);
+    const res = await worker.fetch(await asOwnerPut(fixture.db, `/api/settings/${encodeURIComponent(leaf)}`, { value }), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   /** Every leaf the server holds a value for, by name. */

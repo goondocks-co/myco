@@ -12,6 +12,8 @@
 export interface CapabilitiesAnswer {
   capabilities: Record<string, boolean>;
   settings: Record<string, number>;
+  revisions: Record<string, number>;
+  capabilityRevisions: Record<string, number>;
   retiredCapabilities?: Record<string, boolean>;
 }
 

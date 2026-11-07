@@ -3,13 +3,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { embeddingPrice, type EmbeddingChoices, type EmbeddingModelChoice, type EmbeddingProviderId } from '@goondocks/myco-shared/settings-contract';
 import { Button, ConfirmDialog, Input, Select } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
-import { settingsRefusalText, switchRefusalText, useSettings, useSettingsActions } from '../../../hooks/use-settings';
+import { isSettingsConflict, settingsRefusalText, switchRefusalText, useSettings, useSettingsActions } from '../../../hooks/use-settings';
 import { useNow } from '../../../hooks/use-today';
 import { SettingRow } from '../AdminFrame';
 import { StoredValue } from '../StoredValue';
 import type { LeafField } from './catalogue';
 import { EmbeddingSwitchPanel, PassedOverSources, estimateWords, shortModel } from './EmbeddingSwitch';
-import type { LeafRow } from './wire';
+import type { LeafRow, SettingsAnswer } from './wire';
 import { live } from '../../../lib/live';
 
 export { shortModel } from './EmbeddingSwitch';
@@ -53,15 +53,26 @@ export function inUseWords(choices: EmbeddingChoices): string {
 
 /** The cache key holding the provider a person has picked and not yet chosen a model for. */
 const PENDING_KEY = ['embedding-pending-provider'] as const;
+const SELECTION_LEAVES = ['embedding.provider', 'embedding.model', 'embedding.base_url'] as const;
+const revisionsOf = (leaves: readonly LeafRow[]) => Object.fromEntries(SELECTION_LEAVES.map(leaf => {
+  const row = leaves.find(row => row.leaf === leaf);
+  if (row === undefined) throw new Error('Read the embedding settings before changing them');
+  return [leaf, Number(row.revision)];
+}));
+type PendingProvider = { provider: string; revisions: Record<string, number> } | null;
 
 /**
  * The provider a person has picked and not yet chosen a model for, shared by the provider and model rows through the
  * page's query cache. Picking a provider writes nothing: only a model chosen for it does.
  */
-function usePendingProvider(): [string | null, (next: string | null) => void] {
+function usePendingProvider(): [string | null, (next: string | null) => void, Record<string, number> | undefined] {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: PENDING_KEY, queryFn: () => null as string | null, initialData: null as string | null, staleTime: Infinity, gcTime: Infinity, ...live('still') });
-  return [data ?? null, (next) => client.setQueryData(PENDING_KEY, next)];
+  const { data } = useQuery({ queryKey: PENDING_KEY, queryFn: () => null as PendingProvider, initialData: null as PendingProvider, staleTime: Infinity, gcTime: Infinity, ...live('still') });
+  return [data?.provider ?? null, next => {
+    const settings = client.getQueryData<SettingsAnswer>(['settings']);
+    if (next !== null && settings === undefined) throw new Error('Read the embedding settings before changing them');
+    client.setQueryData(PENDING_KEY, next === null ? null : { provider: next, revisions: revisionsOf(settings!.leaves) });
+  }, data?.revisions];
 }
 
 /**
@@ -73,9 +84,15 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   const settings = useSettings();
   const actions = useSettingsActions();
   const admin = useIsAdmin();
-  const [pending, setPendingProvider] = usePendingProvider();
+  const [pending, setPendingProvider, pendingRevisions] = usePendingProvider();
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
+  const [draftRevisions, setDraftRevisions] = useState<Record<string, number> | undefined>(undefined);
+  const changeDraft = (next: string | null) => {
+    if (next === null) setDraftRevisions(undefined);
+    else if (draft === null && settings.data !== undefined) setDraftRevisions(revisionsOf(settings.data.leaves));
+    setDraft(next);
+  };
   const [offer, setOffer] = useState<SwitchOffer | null>(null);
   const [confirming, setConfirming] = useState(false);
   const now = useNow();
@@ -100,18 +117,22 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   const locked = !admin;
   const id = `leaf-${field.leaf}`;
 
+  const onRefusal = (err: unknown) => {
+    if (isSettingsConflict(err)) { changeDraft(null); setPendingProvider(null); }
+    setError(settingsRefusalText(err));
+  };
   const choose = (choice: { provider: string; model?: string; endpoint?: string }) => {
     setError(null);
     if (locked) return;
-    actions.setEmbedding.mutate(choice, {
-      onError: (err) => setError(settingsRefusalText(err)),
-      onSuccess: () => { setDraft(null); setPendingProvider(null); },
+    actions.setEmbedding.mutate({ ...choice, revisions: draftRevisions ?? pendingRevisions }, {
+      onError: onRefusal,
+      onSuccess: () => { changeDraft(null); setPendingProvider(null); },
     });
   };
   const reset = () => {
     setError(null);
     if (locked) return;
-    actions.resetLeaf.mutate({ leaf: field.leaf }, { onError: (err) => setError(settingsRefusalText(err)) });
+    actions.resetLeaf.mutate({ leaf: field.leaf, revision: draftRevisions?.[field.leaf] ?? Number(row?.revision) }, { onError: onRefusal });
   };
   const endpointOf = (): { endpoint?: string } => storedEndpoint === null ? {} : { endpoint: storedEndpoint };
   const pickModel = (next: string) => {
@@ -137,7 +158,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   const startSwitch = () => {
     if (offer === null || actions.estimateSwitch.data === undefined) return;
     actions.startSwitch.mutate(offered(offer), {
-      onSuccess: () => { setOffer(null); setConfirming(false); setDraft(null); setPendingProvider(null); },
+      onSuccess: () => { setOffer(null); setConfirming(false); changeDraft(null); setPendingProvider(null); },
     });
   };
 
@@ -185,7 +206,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
             <p className="t-small text-ink-2">{offerWords(offer, choices)}</p>
             <div className="flex flex-wrap gap-s2">
               <Button size="sm" variant="primary" onClick={confirmSwitch}>Switch to this model</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setOffer(null); setDraft(null); }}>Keep {model === null ? 'the current model' : shortModel(model)}</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setOffer(null); changeDraft(null); }}>Keep {model === null ? 'the current model' : shortModel(model)}</Button>
             </div>
             <ConfirmDialog
               open={confirming}
@@ -219,7 +240,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
             placeholder="Another model this server has loaded"
             value={draft ?? ''}
             disabled={busy}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => changeDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && draft !== null && draft.trim() !== '') pickModel(draft.trim()); }}
             onBlur={() => { if (draft !== null && draft.trim() !== '') pickModel(draft.trim()); }}
           />
@@ -240,7 +261,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
     const shown = draft ?? (storedEndpoint ?? '');
     const commit = () => {
       if (draft === null || provider === null) return;
-      if (draft.trim() === '') { if (row?.configured) reset(); setDraft(null); return; }
+      if (draft.trim() === '') { if (row?.configured) reset(); changeDraft(null); return; }
       choose({ provider: provider.id, ...(model === null ? {} : { model }), endpoint: draft.trim() });
     };
     labelled = editable;
@@ -252,7 +273,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
         value={shown}
         readOnly={locked || choices.switch !== null}
         placeholder={provider?.endpoint.url ?? 'http://models.internal:8080/v1'}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => changeDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') commit(); }}
       />

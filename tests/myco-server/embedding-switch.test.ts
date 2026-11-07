@@ -536,7 +536,7 @@ describe('guards the completion and the settings writer carry', () => {
     const db = racing(sqliteRelationalStore(t.sqlite), () => t.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, started_at, started_by, updated_at)
       VALUES ('deployment', 'raced', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 0, 0, 1, 'building', NULL, 1, 'mem_machine_1', 1)`));
     const written = await settingsWriter(db, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai', model: '@cf/baai/bge-large-en-v1.5' }, 'mem_machine_1', 5_000);
-    expect(written).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider' } });
+    expect(written).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider', revision: 0 } });
     expect(storedModel(t)).toBeUndefined();
   });
 });

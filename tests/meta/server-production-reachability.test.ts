@@ -9,10 +9,6 @@ const PREFIX = 'packages/myco-server/src/';
 /** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
 const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
 
-  'db/index.ts': 'database-kernel fixture: tests/myco-server/db-kernel.test.ts',
-  'db/kernel/commit.ts': 'database-kernel fixture through db/index.ts',
-  'db/kernel/statement.ts': 'database-kernel fixture through db/index.ts',
-  'db/kernel/limits.ts': 'database-kernel fixture through db/index.ts',
   'context.ts': 'type declarations consumed by route handlers',
   'core/cost/types.ts': 'type declarations consumed by cost resolution',
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',

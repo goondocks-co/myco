@@ -1,6 +1,5 @@
 import { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction } from './provider-failure.js';
 export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, type SwitchFailureAction } from './provider-failure.js';
-import { prepareSwitchEnd } from '../../read/catalog/embedding-switch-store.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
  * answering with the current one.
@@ -225,7 +224,7 @@ export async function completeEmbeddingSwitch(env: ServerEnv, now: number): Prom
     await pauseSwitch(env.db, sw.id, unresolved(sw.model), now);
     return false;
   }
-  return writeSwitchedEmbedding(env.db, choice, sw.startedBy, now, sw, prepareSwitchEnd(env.db, sw, now));
+  return writeSwitchedEmbedding(env.db, choice, sw.startedBy, now, sw);
 }
 
 /** Whether a standing switch's model is asked now: building, and not held off after a failure. */

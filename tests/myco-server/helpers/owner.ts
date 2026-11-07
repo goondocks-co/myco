@@ -1,3 +1,4 @@
+import { settingsRevisions } from '@myco-server-worker/core/settings.js';
 import { setCookie, signSession } from '@myco-server-worker/auth/owner/cookie.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -28,15 +29,30 @@ export function seedMemberRoleAccount(sqlite: { query(sql: string): { run(...arg
   sqlite.query(`UPDATE members SET github_id = ?, role = 'member' WHERE id = '${MEMBER_PRINCIPAL.id}'`).run(MEMBER_SUB);
 }
 
+/** Settings editors carry the revision from their read on the next request. */
+async function settingMatch(db: RelationalStore, path: string, body?: unknown): Promise<Record<string, string>> {
+  if (path === '/api/embedding') {
+    const held = await settingsRevisions(db);
+    return { 'if-match': JSON.stringify(Object.fromEntries(['embedding.provider','embedding.model','embedding.base_url'].map(leaf => [leaf, held[leaf] ?? 0]))) };
+  }
+  const capability = /^\/api\/projects\/([^/]+)\/capabilities\/([^/]+)$/.exec(path);
+  const setting = /^\/api\/settings\/([^/]+)/.exec(path);
+  const project = typeof body === 'object' && body !== null && 'project_id' in body ? String(body.project_id) : '';
+  const scope = capability ? `capability:${decodeURIComponent(capability[1]!)}` : project;
+  const leaf = capability ? decodeURIComponent(capability[2]!) : setting ? decodeURIComponent(setting[1]!) : path === '/api/titling-backfill' ? 'agent.tasks' : null;
+  if (leaf === null) return {};
+  return { 'if-match': String((await settingsRevisions(db, scope))[leaf] ?? 0) };
+}
+
 /** An authenticated owner GET. */
 export const asOwner = async (db: RelationalStore, path: string): Promise<Request> =>
-  new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4' } });
+  new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', ...await settingMatch(db, path) } });
 
 /** An authenticated owner PATCH, same-origin so the CSRF check admits it. */
 export const asOwnerPatch = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'PATCH',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingMatch(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -44,7 +60,7 @@ export const asOwnerPatch = async (db: RelationalStore, path: string, body?: unk
 export const asOwnerPut = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'PUT',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingMatch(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -52,6 +68,6 @@ export const asOwnerPut = async (db: RelationalStore, path: string, body?: unkno
 export const asOwnerPost = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'POST',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingMatch(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });

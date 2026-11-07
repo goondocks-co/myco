@@ -169,7 +169,7 @@ describe('task document repair', () => {
     let raced = false;
     const db = {
       prepare: (sql: string) => {
-        if (!raced && sql.startsWith('UPDATE deployment_settings SET value = ?')) {
+        if (!raced && sql.includes('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id)')) {
           raced = true;
           r.sqlite.run(`UPDATE deployment_settings SET value = ?, updated_at = 2, updated_by = 'mem_sibling' WHERE leaf = 'agent.tasks'`, [JSON.stringify(latest)]);
         }
@@ -179,7 +179,7 @@ describe('task document repair', () => {
     };
     const rearmed: string[] = [];
     expect(await settingsWriter(db, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
-      .toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks' } });
+      .toMatchObject({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', revision: 2 } });
     expect(raced).toBe(true);
     expect((await r.w.leaves())['agent.tasks']).toEqual({ value: latest, updatedAt: 2, updatedBy: 'mem_sibling' });
     expect(rearmed).toEqual([]);

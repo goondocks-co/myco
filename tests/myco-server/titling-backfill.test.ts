@@ -15,7 +15,7 @@ import { deploymentTaskCeilingWindow } from '@myco-server-worker/core/runs.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
-import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { OWNER_ENV, ownerCookie, asOwnerPut } from './helpers/owner.js';
 import { overwriteTitle, writeTitle } from '@myco-server-worker/read/sessions.js';
 import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
 import { count, withHarness } from './helpers/fixtures.js';
@@ -386,8 +386,8 @@ describe('the imported-session backfill', () => {
     r.setting('agent.scheduled_tasks_enabled', true);
     r.session('a');
     const cookie = await ownerCookie(r.env.db);
-    const request = (method: string, body?: unknown) => worker.fetch(new Request('https://s/api/titling-backfill', {
-      method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    const request = async (method: string, body?: unknown) => worker.fetch(new Request('https://s/api/titling-backfill', {
+      method, headers: { cookie, 'if-match': (await asOwnerPut(r.env.db, '/api/titling-backfill')).headers.get('if-match')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), { ...r.bindings, ...OWNER_ENV });
     const read = async () => (await request('GET')).json() as Promise<{ enabled: boolean; backfillEnabled: boolean; remaining: number }>;
@@ -594,8 +594,8 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
 
     const cookie = await ownerCookie(r.env.db);
-    const request = (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, {
-      method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+    const request = async (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, {
+      method, headers: { cookie, 'if-match': (await asOwnerPut(r.env.db, '/api/titling-backfill')).headers.get('if-match')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), { ...r.bindings, ...OWNER_ENV });
     expect((await request('GET', '/api/titling-backfill')).status).toBe(200);

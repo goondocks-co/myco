@@ -4,7 +4,7 @@ import { allTasksRequireRepository, REQUIRED_REPOSITORY_TASKS } from '@goondocks
 import { useProjects } from '../../../hooks/use-projects';
 import { useTaskDescriptions } from '../../../hooks/use-tasks';
 import { ActionLink, Button, Input, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
-import { settingsRefusalText, useCapabilities, useRepository, useSettingsActions } from '../../../hooks/use-settings';
+import { isSettingsConflict, settingsRefusalText, useCapabilities, useRepository, useSettingsActions } from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS, projectRepositoryPath } from '../../../routes/nav';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import type { RepositoryRow } from './wire';
@@ -25,8 +25,8 @@ function repositoryName(connection: RepositoryRow): string {
 }
 
 /** One capability's switch, saving as it is flipped and saying why when the server refuses. */
-function CapabilityRow({ projectId, capability, enabled, repository, repositoryState, tasks, taskState }: {
-  projectId: string; capability: string; enabled: boolean;
+function CapabilityRow({ projectId, capability, enabled, revision, repository, repositoryState, tasks, taskState }: {
+  projectId: string; capability: string; enabled: boolean; revision: number;
   repository: RepositoryRow | null | undefined; repositoryState: 'ready' | 'loading' | 'error';
   tasks: readonly TaskDescription[] | undefined; taskState: 'ready' | 'loading' | 'error';
 }) {
@@ -76,7 +76,7 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
           disabled={actions.setCapability.isPending}
           onCheckedChange={(checked) => {
             setError(null);
-            actions.setCapability.mutate({ projectId, capability, enabled: checked }, { onError: (err) => setError(settingsRefusalText(err)) });
+            actions.setCapability.mutate({ projectId, capability, enabled: checked, revision }, { onError: (err) => setError(settingsRefusalText(err)) });
           }}
         />
       )}
@@ -84,15 +84,26 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   );
 }
 
-function CurationLimit({ projectId, value }: { projectId: string; value: number }) {
+function CurationLimit({ projectId, value, revision }: { projectId: string; value: number; revision: number }) {
   const actions = useSettingsActions();
-  const [draft, setDraft] = useState(String(value));
+  const [draft, setDraft] = useState<string | null>(null);
+  const [draftRevision, setDraftRevision] = useState<number | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  const shown = draft ?? String(value);
+  const clearDraft = () => { setDraft(null); setDraftRevision(undefined); };
+  const save = () => {
+    setError(null);
+    actions.setProjectSetting.mutate({ projectId, leaf: CURATION_LIMIT.leaf, value: Number(shown), revision: draftRevision ?? revision }, {
+      onSuccess: clearDraft,
+      onError: err => { if (isSettingsConflict(err)) clearDraft(); setError(settingsRefusalText(err)); },
+    });
+  };
   return <SettingRow setting={CURATION_LIMIT.leaf} label="Curation clusters per day" htmlFor="curation-daily-limit"
     note={`Starts at ${CURATION_LIMIT.rule.default}. Raise this Project’s limit after judging a live batch.`} status={error ?? undefined} refused={error !== null}
-    control={<div className="flex items-center gap-2"><Input id="curation-daily-limit" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={draft} onChange={event => setDraft(event.target.value)} />
-      <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(draft)) || Number(draft)<CURATION_LIMIT.rule.min || Number(draft)>CURATION_LIMIT.rule.max || Number(draft)===value}
-        onClick={() => { setError(null); actions.setProjectSetting.mutate({ projectId, leaf: CURATION_LIMIT.leaf, value: Number(draft) }, { onError: err => setError(settingsRefusalText(err)) }); }}>Save limit</Button></div>} />;
+    control={<div className="flex items-center gap-2"><Input id="curation-daily-limit" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
+      onChange={event => { if (draft === null) setDraftRevision(revision); setDraft(event.target.value); }} />
+      <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(shown)) || Number(shown)<CURATION_LIMIT.rule.min || Number(shown)>CURATION_LIMIT.rule.max || Number(shown)===value}
+        onClick={save}>Save limit</Button></div>} />;
 }
 
 /** What Myco does in a project: a switch per capability. */
@@ -112,14 +123,14 @@ export function Capabilities({ projectId }: { projectId: string }) {
             <RowCard label="What Myco does here">
               {Object.entries(caps.data.capabilities).filter(([capability]) => Object.hasOwn(CAPABILITY_WORDS, capability)).map(([capability, enabled]) => (
                 <CapabilityRow
-                  key={capability} projectId={projectId} capability={capability} enabled={enabled}
+                  key={capability} projectId={projectId} capability={capability} enabled={enabled} revision={caps.data.capabilityRevisions[capability] ?? 0}
                   repository={repository.isSuccess ? repository.data.repository : undefined}
                   repositoryState={repository.isSuccess ? 'ready' : repository.isError ? 'error' : 'loading'}
                   tasks={tasks.data?.tasks}
                   taskState={tasks.isSuccess ? 'ready' : tasks.isError ? 'error' : 'loading'}
                 />
               ))}
-              <CurationLimit key={`${projectId}:${caps.data.settings[CURATION_LIMIT.leaf]}`} projectId={projectId} value={caps.data.settings[CURATION_LIMIT.leaf]!} />
+              <CurationLimit key={projectId} projectId={projectId} value={caps.data.settings[CURATION_LIMIT.leaf]!} revision={caps.data.revisions[CURATION_LIMIT.leaf] ?? 0} />
             </RowCard>
 
             {Object.keys(caps.data.retiredCapabilities ?? {}).length > 0 && (

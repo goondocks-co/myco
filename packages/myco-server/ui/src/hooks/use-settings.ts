@@ -52,6 +52,8 @@ export function useCapabilities(projectId: string, options: { enabled?: boolean 
   });
 }
 
+export const isSettingsConflict = (error: unknown): error is ApiError => error instanceof ApiError && error.status === 409;
+
 /** What the server said when it refused a settings change, in the person's words. */
 export function settingsRefusalText(err: unknown): string {
   if (err instanceof ApiError) {
@@ -66,7 +68,7 @@ export function settingsRefusalText(err: unknown): string {
       case 'retired':
         return 'That setting is retired.';
       case 'conflict':
-        return 'This changed since the page read it. Refresh before saving again.';
+        return 'This changed since the page read it. Review the current value before saving again.';
       case 'invalid_value':
         return typeof body.detail === 'string' && body.detail !== '' ? `The server refused that value: ${body.detail.replace(/\.$/, '')}.` : 'The server refused that value.';
       case 'unknown_capability':
@@ -91,26 +93,38 @@ export function switchRefusalText(err: unknown): string {
 export function useSettingsActions() {
   const client = useQueryClient();
   const refresh = (...keys: string[]) => Promise.all(keys.map((k) => client.invalidateQueries({ queryKey: [k] })));
+  const revisionFor = (leaf: string, revision?: number) => {
+    const current = revision ?? client.getQueryData<SettingsAnswer>(['settings'])?.leaves.find(row => row.leaf === leaf)?.revision;
+    if (current === undefined) throw new Error('Read the setting before changing it');
+    return { 'if-match': String(current) };
+  };
+  const onConflict = async (error: unknown) => {
+    if (isSettingsConflict(error)) await refresh('settings', 'capabilities', 'titling-backfill', 'tasks');
+  };
   return {
     setLeaf: useMutation({
       gcTime: 0,
-      mutationFn: (v: { leaf: string; value: unknown }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }),
+      mutationFn: (v: { leaf: string; value: unknown; revision?: number }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }, revisionFor(v.leaf, v.revision)),
       // Where titling stands reads the scheduling switch and the task overrides, so it is read again with the settings.
+      onError: onConflict,
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     resetLeaf: useMutation({
       gcTime: 0,
-      mutationFn: (v: { leaf: string }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`),
+      mutationFn: (v: { leaf: string; revision?: number }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, revisionFor(v.leaf, v.revision)),
+      onError: onConflict,
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     repairDocument: useMutation({
       gcTime: 0,
-      mutationFn: (v: { leaf: string }) => postJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}/repair`, {}),
+      mutationFn: (v: { leaf: string }) => postJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}/repair`, {}, revisionFor(v.leaf)),
+      onError: onConflict,
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     setEmbedding: useMutation({
       gcTime: 0,
-      mutationFn: (v: { provider: string; model?: string; endpoint?: string }) => putJson<{ applied: true }>('/api/embedding', v),
+      mutationFn: ({ revisions, ...choice }: { provider: string; model?: string; endpoint?: string; revisions?: Record<string, number> }) => putJson<{ applied: true }>('/api/embedding', choice, { 'if-match': JSON.stringify(revisions ?? Object.fromEntries(['embedding.provider', 'embedding.model', 'embedding.base_url'].map(leaf => [leaf, Number(revisionFor(leaf)['if-match'])]))) }),
+      onError: onConflict,
       onSuccess: () => refresh('settings'),
     }),
     estimateSwitch: useMutation({
@@ -121,41 +135,49 @@ export function useSettingsActions() {
     startSwitch: useMutation({
       gcTime: 0,
       mutationFn: (v: { provider: string; model: string; endpoint?: string }) => postJson<SwitchAnswer>('/api/embedding/switch', { ...v, confirm: true }),
+      onError: onConflict,
       onSuccess: () => refresh('settings', SWITCH_KEY[0]),
     }),
     cancelSwitch: useMutation({
       gcTime: 0,
       mutationFn: (v: { id: string }) => deleteJson<SwitchAnswer>(`/api/embedding/switch/${encodeURIComponent(v.id)}`),
+      onError: onConflict,
       onSuccess: () => refresh('settings', SWITCH_KEY[0]),
     }),
     resumeSwitch: useMutation({
       gcTime: 0,
       mutationFn: (v: { id: string }) => postJson<SwitchAnswer>(`/api/embedding/switch/${encodeURIComponent(v.id)}/resume`),
+      onError: onConflict,
       onSuccess: () => refresh('settings', SWITCH_KEY[0]),
     }),
     setTaskTier: useMutation({
       gcTime: 0,
-      mutationFn: (v: { task: string; tier: ReasoningTier | null }) => patchJson<{ applied: true }>('/api/settings/agent.tasks', v),
+      mutationFn: (v: { task: string; tier: ReasoningTier | null }) => patchJson<{ applied: true }>('/api/settings/agent.tasks', v, revisionFor('agent.tasks')),
+      onError: onConflict,
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     setSecret: useMutation({
       gcTime: 0,
       mutationFn: (v: { name: string; value: string }) => putJson<SecretRow>(`/api/secrets/${encodeURIComponent(v.name)}`, { value: v.value }),
+      onError: onConflict,
       onSuccess: () => refresh('secrets'),
     }),
     deleteSecret: useMutation({
       gcTime: 0,
       mutationFn: (v: { name: string }) => deleteJson<{ deleted: boolean }>(`/api/secrets/${encodeURIComponent(v.name)}`),
+      onError: onConflict,
       onSuccess: () => refresh('secrets'),
     }),
     setProjectSetting: useMutation({
-      mutationFn: (v: { projectId: string; leaf: string; value: number }) =>
-        putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { project_id: v.projectId, value: v.value }),
+      mutationFn: (v: { projectId: string; leaf: string; value: number; revision: number }) =>
+        putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { project_id: v.projectId, value: v.value }, { 'if-match': String(v.revision) }),
+      onError: onConflict,
       onSuccess: () => refresh('capabilities', 'tasks'),
     }),
     setCapability: useMutation({
-      mutationFn: (v: { projectId: string; capability: string; enabled: boolean }) =>
-        putJson<{ applied: true }>(`/api/projects/${encodeURIComponent(v.projectId)}/capabilities/${encodeURIComponent(v.capability)}`, { enabled: v.enabled }),
+      mutationFn: (v: { projectId: string; capability: string; enabled: boolean; revision: number }) =>
+        putJson<{ applied: true }>(`/api/projects/${encodeURIComponent(v.projectId)}/capabilities/${encodeURIComponent(v.capability)}`, { enabled: v.enabled }, { 'if-match': String(v.revision) }),
+      onError: onConflict,
       onSuccess: () => refresh('capabilities', 'tasks', 'attention', 'setup-progress'),
     }),
   };
@@ -205,7 +227,12 @@ export function useTitlingBackfill() {
 export function useSetTitlingBackfill() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (enabled: boolean) => putJson<TitlingBackfillProgress>('/api/titling-backfill', { enabled }),
+    mutationFn: (enabled: boolean) => {
+      const revision = client.getQueryData<SettingsAnswer>(['settings'])?.leaves.find(row => row.leaf === 'agent.tasks')?.revision;
+      if (revision === undefined) throw new Error('Read settings before changing titling');
+      return putJson<TitlingBackfillProgress>('/api/titling-backfill', { enabled }, { 'if-match': String(revision) });
+    },
+    onError: async () => { await Promise.all(['settings', 'titling-backfill'].map(key => client.invalidateQueries({ queryKey: [key] }))); },
     onSuccess: (data) => { client.setQueryData([...TITLING_KEY], data); void client.invalidateQueries({ queryKey: ['settings'] }); },
   });
 }

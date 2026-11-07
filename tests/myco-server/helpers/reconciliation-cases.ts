@@ -4,7 +4,7 @@ export const RECONCILIATION_MATRICES = {
   plan: { 'ingest/projections.ts#plan': ['event-rank'] },
   provenance: { 'ingest/projections.ts#sessionCommit': ['event-rank'] },
   roots: {},
-  embedding: { 'core/settings.ts#writeEmbedding': ['writer-revision'] },
+  embedding: { 'db/settings/leaves.ts#<module>': ['writer-revision'] },
   catalog: { 'core/model-catalogs.ts#recordModelCatalog': ['reporter-stamp'] },
   runner: { 'core/runner-updates.ts#runnerUpdateReportStatements': ['reporter-stamp'] },
   budget: { 'db/budget-activation.ts#indexWitness': ['catalogue-snapshot'] },

@@ -13,7 +13,7 @@ import { describe, expect, it } from 'bun:test';
 import type * as Settings from '../../packages/myco-server/ui/src/features/admin/settings/wire.ts';
 import type * as Project from '../../packages/myco-server/ui/src/features/admin/project/wire.ts';
 import type { SecretDescription } from '../../packages/myco-server/src/core/secrets.ts';
-import type { ProjectCapability } from '../../packages/myco-server/src/core/settings.ts';
+import type { projectSettingsEditor } from '../../packages/myco-server/src/core/settings.ts';
 import type { TitlingBackfillProgress } from '../../packages/myco-server/src/core/titling.ts';
 import type { RepositoryConnection } from '../../packages/myco-server/src/core/repositories.ts';
 import type { ReleaseCheck, ReleaseProvenanceView } from '../../packages/myco-server/src/core/release-provenance.ts';
@@ -42,7 +42,7 @@ const READS: [
   Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices }, Settings.SettingsAnswer>,
   Reads<{ secrets: ServerSecret[] }, Settings.SecretsAnswer>,
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
-  Reads<{ capabilities: Record<ProjectCapability, boolean>; settings: Record<string, number> }, Project.CapabilitiesAnswer>,
+  Reads<Awaited<ReturnType<typeof projectSettingsEditor>>, Project.CapabilitiesAnswer>,
   Reads<RepositoryConnection, Project.RepositoryRow>,
   Reads<{ repository: RepositoryConnection | null }, Project.RepositoryAnswer>,
   Reads<ReleaseProvenanceView, Project.ReleaseProvenanceRow>,

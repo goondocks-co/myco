@@ -1,3 +1,4 @@
+import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { planKind } from '@myco-server-worker/ingest/projections.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { connectMachineRoot, disconnectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
@@ -23,6 +24,7 @@ function interleavedReads(db: RelationalStore, match: string): RelationalStore {
   let release!: () => void;
   const ready = new Promise<void>(resolve => { release = resolve; });
   const originals = new WeakMap<PreparedStatement, PreparedStatement>();
+  const matching = new WeakSet<PreparedStatement>();
   const observe = (sql: string, statement: PreparedStatement): PreparedStatement => {
     const wrapped: PreparedStatement = ({
     ...statement,
@@ -40,9 +42,14 @@ function interleavedReads(db: RelationalStore, match: string): RelationalStore {
     },
     });
     originals.set(wrapped, statement);
+    if (sql.includes(match)) matching.add(wrapped);
     return wrapped;
   };
-  return { prepare: sql => observe(sql, db.prepare(sql)), batch: ss => db.batch(ss.map(s => originals.get(s) ?? s)) };
+  return { prepare: sql => observe(sql, db.prepare(sql)), batch: async ss => {
+    const results = await db.batch(ss.map(s => originals.get(s) ?? s));
+    if (ss.some(s => matching.has(s)) && arrivals < 2) { if (++arrivals === 2) release(); await ready; }
+    return results;
+  } };
 }
 
 const permutations = <T,>(values: T[]): T[][] => values.length === 0 ? [[]] : values.flatMap((v, i) => permutations(values.filter((_, j) => i !== j)).map(rest => [v, ...rest]));
@@ -140,17 +147,17 @@ const reconciliationRuns: Record<ReconciliationCase, (db: RelationalStore) => Pr
   embedding: async (db) => {
     const reset = async () => { await db.prepare('DELETE FROM deployment_settings').run(); await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('embedding.provider','\"ollama\"',1,'member')").run(); };
     await reset();
-    const writer = settingsWriter(interleavedReads(db, 'SELECT leaf, value,'), { target: 'bun' });
+    const writer = settingsWriter(interleavedReads(db, 'FROM json_each(?2) requested'), { target: 'bun' });
     const result = await Promise.all([writer.setEmbedding({ provider: 'openai' }, 'member', 100), writer.setLeaf('embedding.model', 'nomic-embed-text', 'member', 100)]);
     equal(result.map(r => r.applied), [true, false], 'F9 same-ms same-actor stale edit conflicts');
     check(!result[1]!.applied && result[1]!.refusal.reason === 'conflict', 'F9 named conflict');
     const stored = Object.fromEntries((await db.prepare('SELECT leaf,value FROM deployment_settings').all<{ leaf: string; value: string }>()).results.map(r => [r.leaf, JSON.parse(r.value)]));
     check(resolveEmbedding(stored, 'bun').leaves['embedding.model'].state !== 'invalid', 'F9 valid serialized pair');
     const sequential = settingsWriter(db, { target: 'bun' });
-    check((await sequential.setEmbedding({ provider: 'ollama' }, 'member', 99)).applied, 'F9 edit reads UUID revision after rollback');
+    check((await sequential.setEmbedding({ provider: 'ollama' }, 'member', 99)).applied, 'F9 edit reads the persistent revision after rollback');
     check((await sequential.setLeaf('embedding.model', 'nomic-embed-text', 'member', 99)).applied, 'F9 sequential stamped edit');
     await reset();
-    check((await sequential.setEmbedding({ provider: 'openai' }, 'member', 1)).applied, 'F9 NULL revision compatibility');
+    check((await sequential.setEmbedding({ provider: 'openai' }, 'member', 1)).applied, 'F9 seeded revision permits a fresh edit');
   },
   catalog: async (db) => {
     for (const owner of [{ kind: 'machine', machineId: 'machine' }, { kind: 'runner', runnerId: 'r' }] as const) {
@@ -210,8 +217,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
 export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE event_refs(project_id TEXT,event_id TEXT,session_id TEXT,kind TEXT,record_id TEXT,blob TEXT,output_blob TEXT,PRIMARY KEY(project_id,event_id))',
   'CREATE TABLE events(project_id TEXT,event_id TEXT,ingest_nonce TEXT,session_id TEXT,kind TEXT,payload TEXT,payload_format TEXT,archived_prompt_origin TEXT,created_at INTEGER,PRIMARY KEY(project_id,event_id))',
-  'CREATE TABLE projects(project_id TEXT PRIMARY KEY,name TEXT)',
-  "INSERT INTO projects VALUES ('p','p')",
+  'CREATE TABLE projects(project_id TEXT PRIMARY KEY,name TEXT,archived_at INTEGER)',
+  "INSERT INTO projects(project_id,name) VALUES ('p','p')",
   'CREATE TABLE sessions(project_id TEXT,session_id TEXT,agent TEXT,branch TEXT,origin_path TEXT,parent_session_id TEXT,parent_reason TEXT,launch_parent_session_id TEXT,facts_event_id TEXT,started_at INTEGER,ended_at INTEGER,ended_by TEXT,titling_requested_at INTEGER,PRIMARY KEY(project_id,session_id))',
   "INSERT INTO sessions(project_id,session_id) VALUES ('p','s')",
   'CREATE TABLE prompt_batches(project_id TEXT,session_id TEXT,origin TEXT,created_at INTEGER)',
@@ -225,6 +232,9 @@ export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE machine_settings(machine_id TEXT,leaf TEXT,value TEXT,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(machine_id,leaf))',
   'CREATE TABLE deployment_settings(leaf TEXT PRIMARY KEY,value TEXT,updated_at INTEGER,updated_by TEXT,write_id TEXT)',
   'CREATE TABLE deployment_setting_resets(leaf TEXT PRIMARY KEY,reset_at INTEGER,reset_by TEXT)',
+  'CREATE TABLE project_settings(project_id TEXT,leaf TEXT,value TEXT,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(project_id,leaf))',
+  'CREATE TABLE project_capabilities(project_id TEXT,capability TEXT,enabled INTEGER,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(project_id,capability))',
+  ...V710_STATEMENTS,
   'CREATE TABLE embedding_receipts(model_key TEXT,ready INTEGER)',
   'CREATE TABLE embedding_switches(slot TEXT,id TEXT,provider TEXT,model TEXT,endpoint TEXT,model_key TEXT,from_model_key TEXT,estimated_tokens INTEGER,estimated_sources INTEGER,state TEXT,reason TEXT,retry_at INTEGER,failures INTEGER,progressed_at INTEGER,started_at INTEGER,started_by TEXT)',
   ...['worker_model_catalogs', 'runner_model_catalogs'].map((table, i) => `CREATE TABLE ${table}(${i === 0 ? 'machine_id' : 'runner_id'} TEXT,harness TEXT,catalog TEXT,resolutions TEXT,fetched_at INTEGER,received_at INTEGER,observed_order INTEGER,PRIMARY KEY(${i === 0 ? 'machine_id' : 'runner_id'},harness))`),
