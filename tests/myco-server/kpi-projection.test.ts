@@ -115,10 +115,10 @@ describe('KPI projection critical flow', () => {
     try {
       for (const [state, generation] of [['live', 1], ['live', 2], ['convert', 1]] as const) {
         r.sqlite.query("DELETE FROM session_documents WHERE project_id=? AND session_id='a'").run(PROJECT);
-        expect(projected(r, null)).toEqual(await oracle(r, null));
+        expect(await measured(r, null)).toEqual(await oracle(r, null));
         r.sqlite.query("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
           .run(PROJECT, state, generation, NOW);
-        expect(projected(r, null)).toEqual(await oracle(r, null));
+        expect(await measured(r, null)).toEqual(await oracle(r, null));
         const writes = r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
         r.sqlite.query("INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
           .run(PROJECT, state, generation, NOW);
