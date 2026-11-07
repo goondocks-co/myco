@@ -36,7 +36,7 @@ import { drainObjectReleases } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
-import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
+import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB, stopDisabledRecovery } from './recovery-schedule.js';
 import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
 import { backfillTitles, titleReadySessions } from './titling.js';
 import { reconcileReleaseProvenance } from './release-provenance.js';
@@ -79,7 +79,11 @@ export interface JobOutcome {
  */
 async function scheduledRecoveryExport(env: ServerEnv, now: number): Promise<number> {
   const schedule = await recoveryScheduleOf(env, now);
-  if (!schedule.supported || !schedule.configured) return 0;
+  if (!schedule.supported) return 0;
+  if (!schedule.configured) {
+    await stopDisabledRecovery(env, now);
+    return 0;
+  }
   // An attempt in flight is carried on, never replaced: a producer whose work runs elsewhere is asked here, and
   // one driven by its own clock implements none of this.
   if (attemptAdvancing(schedule)) {

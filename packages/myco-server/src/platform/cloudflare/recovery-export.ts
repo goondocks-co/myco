@@ -188,6 +188,13 @@ export interface SourceObjects {
   get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
 }
 
+/** Failure cleanup needs only the staging store, independently of export credentials. */
+export function cloudflareFailurePorts(bucket: StagingBucket, now = Date.now) {
+  return { now, async abortUpload(prefix: string, uploadId: string) {
+    await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).abort());
+  } };
+}
+
 /** The producer's ports over one Deployment's own bindings. */
 export function cloudflareProducerPorts(
   target: ExportTarget, bucket: StagingBucket, source: SourceObjects,
@@ -200,7 +207,7 @@ export function cloudflareProducerPorts(
   const requestMs = options.requestMs ?? PRODUCER_LIMITS.requestMs;
   const deadline = (): AbortSignal => AbortSignal.timeout(requestMs);
   return {
-    now,
+    ...cloudflareFailurePorts(bucket, now),
     async pollExport(bookmark) {
       let response: Response;
       try {
@@ -315,9 +322,6 @@ export function cloudflareProducerPorts(
         if (/does not exist|NoSuchUpload|10024/i.test(detail)) return null;
         return stored(() => Promise.reject(error));
       }
-    },
-    async abortUpload(prefix, uploadId) {
-      await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).abort());
     },
     async readStoredRange(prefix, offset, length, signal) {
       return stored(async () => {

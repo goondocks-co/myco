@@ -351,3 +351,31 @@ describe('where the clock is kept (#1510)', () => {
     } finally { Date.now = realNow; }
   });
 });
+
+it('holds a tick during an export without reading the database, then resumes once the export ends', async () => {
+  let ticks = 0;
+  let reads = 0;
+  let exporting = true;
+  const held = state();
+  const env = { MYCO_DB: { prepare: () => {
+    reads++;
+    throw new Error('the clock must not query the exporting database');
+  } }, CLOCK_MODE: 'manual', RECOVERY: {
+    idFromName: () => 'recovery', get: () => ({ continue: async () => ({
+      attempt: exporting ? 3 : null, stage: exporting ? 'export' : 'idle', nextInMs: exporting ? 0 : null, sourcePaused: exporting,
+    }) }),
+  } };
+  class FixtureClock extends DeploymentClock {
+    protected override async tick(): Promise<TickReport> {
+      ticks++;
+      return { nextWakeMs: null, jobs: [] } as unknown as TickReport;
+    }
+  }
+  const clock = new FixtureClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  expect(await clock.wake()).toMatchObject({ ticked: false, heldBy: 'recovery_export' });
+  expect({ ticks, reads }).toEqual({ ticks: 0, reads: 0 });
+  exporting = false;
+  expect(await clock.wake()).toMatchObject({ ticked: true });
+  expect({ ticks, reads }).toEqual({ ticks: 1, reads: 0 });
+});

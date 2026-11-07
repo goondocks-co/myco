@@ -79,6 +79,9 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
           <span className="flex h-lh shrink-0 items-center"><HealthDot tone={schema.tone} label={schema.tone === 'ok' ? 'Current' : 'Needs attention'} /></span>
           <span>{schema.words}</span>
         </p>
+        {data.database !== undefined && <p className="t-small text-muted" data-testid="database-readable">
+          {data.database.readable ? 'The database is answering reads.' : 'The database did not answer the read check.'}
+        </p>}
         {data.unavailable?.includes('schema') && <ReadUnavailable label="the database version" onRetry={onRetry} />}
         {data.unavailable?.includes('transcriptBacklog') && <ReadUnavailable label="transcripts waiting to be processed" onRetry={onRetry} />}
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
