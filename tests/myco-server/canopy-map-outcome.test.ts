@@ -193,7 +193,7 @@ describe('a map run a worker claimed', () => {
     }
 
     // Before the checkout is pinned the run holds no input to read or write against.
-    expect(await r.call(run.runToken, 'myco_run_map', { op: 'get' })).toEqual({ ok: false, error: MAP_SOURCE_UNPINNED });
+    expect(await r.call(run.runToken, 'myco_run_map', { op: 'get' })).toEqual({ ok: false, error: expect.stringContaining(MAP_SOURCE_UNPINNED) });
 
     expect(await r.pinCommit(run.id, COMMIT_A)).toMatchObject({ held: true, pin: { ...SOURCE, commit: COMMIT_A } });
     const pinned = mapSourcePinOfRun((await getRun(r.e.db, scope, run.id))!);
@@ -256,7 +256,7 @@ describe('a map run a worker claimed', () => {
     expect(reported).toMatchObject({ recorded: true });
     const stored = r.e.sqlite.query('SELECT audit FROM agent_reports WHERE run_id = ?').get(run.id) as { audit: string };
     expect(JSON.parse(stored.audit).failures).toEqual([
-      { what: diagnostic, recovery: 'Corrected the digest.' },
+      { what: expect.stringContaining(diagnostic), recovery: 'Corrected the digest.' },
       { what: 'Tool output: … and …', recovery: 'Ignored the output.' },
     ]);
     expect(stored.audit).not.toContain('invalid-digest-content');
@@ -273,10 +273,10 @@ describe('a map run a worker claimed', () => {
     await r.pinCommit(run.id, COMMIT_A);
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'get' })).toMatchObject({ commit: COMMIT_A, unchanged: false, map: null });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: { directories: [], domains: [] } }))
-      .toEqual({ ok: false, error: `artifact.directories: expected an array of 1..${MAP_LIMITS.directories} entries; received array length 0.` });
+      .toEqual({ ok: false, error: expect.stringContaining(`artifact.directories: expected an array of 1..${MAP_LIMITS.directories} entries; received array length 0.`) });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: JSON.stringify(ARTIFACT) })).toMatchObject({ written: true, commit: COMMIT_A });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: { ...ARTIFACT, domains: [{ ...ARTIFACT.domains[0]!, title: 'Other' }] } }))
-      .toEqual({ ok: false, error: 'this run already stored its map; a run writes one map' });
+      .toEqual({ ok: false, error: expect.stringContaining('Next call: myco_run') });
     await r.call(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
     expect(await r.end(run.id)).toEqual({ ended: true, status: 'completed' });
     expect(r.e.sqlite.query(`SELECT source_run_id AS runId, repository_commit AS commitId FROM canopy_maps WHERE project_id = 'proj_1'`).get())

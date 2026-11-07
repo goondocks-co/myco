@@ -1,3 +1,4 @@
+import { AGENT_LINE_GUIDANCE } from './injection.js';
 /**
  * The instruction a `vault-seed` run receives: the ask, and the standing rules
  * the worker writes into the run's scratch directory as the run's instructions
@@ -36,7 +37,7 @@ export const SEEDING_RULES = [
   '',
   'A spore is one durable observation a developer or agent new to this code would pay to know: an architectural invariant, a convention the code follows everywhere, a decision and the trade-off behind it, a gotcha that is not obvious from the code. Describe the situation and guidance, at most naming the component or concept; never anchor it to a file or symbol. "Uses TypeScript" is not a spore; "Capture binds a session to an immutable Project destination; changing routes cannot send queued history to a new Project" is.',
   '',
-  'Give every spore an `agent_line`: one line an agent can act on — the situation that triggers it, then the guidance. It is what a session is served in place of the body, so it has to stand alone. Open the `content` with the same line, then the detail.',
+  `Give every spore an \`agent_line\`: one line an agent can act on — the situation that triggers it, then the guidance. It is what a session is served in place of the body, so it has to stand alone. Open the \`content\` with the same line, then the detail. ${AGENT_LINE_GUIDANCE}`,
   '',
   'Types: architecture, pattern, decision, trade_off, gotcha, cross-cutting, wisdom. Tags: two to four, naming the subsystem and the theme. Do not pass `session_id`: this run names no session.',
   '',

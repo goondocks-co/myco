@@ -1,3 +1,4 @@
+import { TITLE_MAX_CHARS } from '@myco-server-worker/core/titling-params.js';
 import { MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import ts from 'typescript-v6';
@@ -327,7 +328,7 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, sqlite } = await setup();
     await dispatch('run_map', MAP_TASK);
     const refused = await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'skip', summary: 'nothing changed' });
-    expect(refused.result).toEqual({ ok: false, error: `a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"` });
+    expect(refused.result).toEqual({ ok: false, error: expect.stringContaining(`a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"`) });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_map'`).get()).toEqual({ n: 0 });
     expect((await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing changed' })).result).toEqual({ recorded: true, action: MAP_UNCHANGED_ACTION });
   });
@@ -388,11 +389,11 @@ describe('the read window binds on the MCP path', () => {
     for (let i = 0; i < budget; i += 1) spore(`sp_${i}`, 'body');
     // A read of an id the Project does not hold still spends a unit: the count
     // is taken before the row is fetched.
-    expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_absent' }) as any).result).toEqual({ ok: false, error: 'Spore not found' });
+    expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_absent' }) as any).result).toEqual({ ok: false, error: expect.stringContaining('spore sp_absent not found') });
     for (let i = 1; i < budget; i += 1) {
       expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: `sp_${i}` }) as any).result.spore.id).toBe(`sp_${i}`);
     }
-    expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_0' }) as any).result).toEqual({ spore: null, budget: 'spent' });
+    expect((await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_0' }) as any).result).toMatchObject({ spore: null, budget: 'spent',error:expect.stringContaining('Next call: myco_run_spores') });
   });
 
   it('cuts a body past the window and says so', async () => {
@@ -465,7 +466,7 @@ describe('a run\'s state is a compare-and-set', () => {
       await f.dispatch('run_e', SWEEP);
       for (const key of ['server.schedule.extract-curate.ramp', 'server.schedule.skip.canopy-map', estimateKey('title-summary','codex',{tier:'low',model:'fixture'})]) {
         const result = await f.call(f.harness.token, 'myco_run', { op: 'state_set', key, value: 'oops' });
-        expect(result.result).toMatchObject({ ok: false, error: 'server control state is read-only' });
+        expect(result.result).toMatchObject({ ok: false, error: expect.stringContaining('is read-only') });
         expect(f.sqlite.query('SELECT value FROM agent_state WHERE key=?').get(key)).toBeNull();
       }
     } finally { f.sqlite.close(); }
@@ -614,7 +615,7 @@ describe('a titling run reads and writes its own session', () => {
     const calls = (await runToolCalls(db, { projectId: 'proj_1' }, 'run_t')).map(({ tool, op, failure }) => ({ tool, op, failure }));
     expect(calls).toEqual([
       { tool: 'myco_run_sessions', op: 'material', failure: { code: 'tool_call_failed', message: 'Session capture is incomplete or has errors; retry after its transcripts are fully published.' } },
-      { tool: 'myco_run_sessions', op: 'title', failure: { code: 'tool_failure', message: expect.stringContaining('a title is 1 to') } },
+      { tool: 'myco_run_sessions', op: 'title', failure: { code: 'tool_failure', message: expect.stringContaining('Next call: myco_run_sessions') } },
       { tool: 'myco_run_sessions', op: 'material', failure: undefined },
     ]);
   });
@@ -633,7 +634,7 @@ describe('a titling run reads and writes its own session', () => {
   it('refuses a run whose dispatch named no session, rather than failing its write', async () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_t', TITLING, { sessionId: null, mode: 'claim' });
-    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' }) as any).result).toEqual({ ok: false, error: 'this run names no session' });
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' }) as any).result).toEqual({ ok: false, error: expect.stringContaining('this run names no session') });
   });
 });
 
@@ -683,4 +684,25 @@ it('requires an explicit report op and directs the agent to finish after the acc
   expect(runDefinitionOf('myco_run')?.description).toContain('Every call requires an explicit op');
   expect(runInstructionsFor(['report'])).toContain('After the report is accepted, end your response.');
   expect(runInstructionsFor(['report'])).toContain('there is no separate close call');
+});
+
+
+it('repairs a missing report reasoning and an oversized title through the named next calls', async () => {
+  const f = await setup();
+  try {
+    f.prompt('first');
+    await publishFixture(f);
+    await f.dispatch('report-repair',TITLING,{mode:'owner'});
+    const title = (await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:'x'.repeat(TITLE_MAX_CHARS+1),summary:'A useful session summary.'})).result as {ok:boolean;error:string};
+    expect(title.ok).toBe(false);
+    expect(title.error).toContain(`title is ${TITLE_MAX_CHARS+1} characters (1–${TITLE_MAX_CHARS})`);
+    expect(title.error).toContain('Next call: myco_run_sessions {"op":"title"}');
+    expect((await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:'Repairing delivery',summary:'A useful session summary.'})).result).toMatchObject({written:true});
+    const badAudit = {...RUN_AUDIT,reasoning:''};
+    const report = (await f.call(f.harness.token,'myco_run',{op:'report',action:'summary',summary:'Titled the session.',audit:badAudit})).result as {ok:boolean;error:string};
+    expect(report.ok).toBe(false);
+    expect(report.error).toContain('audit is missing reasoning');
+    expect(report.error).toContain('Next call: myco_run {"op":"report"}');
+    expect((await f.call(f.harness.token,'myco_run',{op:'report',action:'summary',summary:'Titled the session.',audit:RUN_AUDIT})).result).toMatchObject({recorded:true});
+  } finally {f.sqlite.close();}
 });

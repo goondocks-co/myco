@@ -182,13 +182,13 @@ test('a curation run retries a refused consolidation or keeps the knowledge apar
       await f.enable(); for (const id of ['a','b','c']) await f.add(id); await f.discover();
       const claim = await f.poll(); expect(claim.claimed).toBe(true); if (!claim.claimed) return;
       const call = (name: string, args: Record<string,unknown>) => f.call(claim.run.runToken,name,args);
-      expect(claim.run.instruction).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
+      expect(claim.run.instruction).toContain(`${AGENT_LINE_MAX_CHARS} characters`);
       expect(claim.run.instruction).toContain('correct the named problem and retry that write once before reporting');
       expect(claim.run.instruction).toContain('"members":[{"id":"spore-a","revision":0}]');
       const definitions = await f.list(claim.run.runToken);
       const sporesTool = definitions.find(tool=>tool.name==='myco_spores')!;
       const curationTool = definitions.find(tool=>tool.name==='myco_run_curation')!;
-      expect(sporesTool.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
+      expect(sporesTool.description).toContain(`${AGENT_LINE_MAX_CHARS} characters`);
       expect(sporesTool.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);
       expect(sporesTool.inputSchema.properties.agent_line.maxLength).toBe(AGENT_LINE_MAX_CHARS);
       expect(curationTool.description).toContain(CURATION_COMPLETE_EXAMPLE);
@@ -204,13 +204,30 @@ test('a curation run retries a refused consolidation or keeps the knowledge apar
         [[{id:'',revision:0}], 'members[0].id is ""; expected a nonempty string'],
         [[sources[0],sources[0]], 'members[1].id duplicates "a"; each member must be distinct'],
         [[{id:'a',revision:1}], 'members[0] ("a").revision is 1; this run read revision 0; use {"id":"a","revision":0}'],
-      ] as const) expect(await call('myco_run_curation',{...complete,members})).toMatchObject({ok:false,error:expect.stringContaining(error)});
-      const refusal = `Not saved: agent_line is ${AGENT_LINE_MAX_CHARS+1} characters after whitespace normalization; the limit is ${AGENT_LINE_MAX_CHARS}. Supply a nonempty line within the limit and call myco_spores op consolidate again with the same sources.`;
-      expect(await call('myco_spores',{...consolidate,agent_line:'x'.repeat(AGENT_LINE_MAX_CHARS+1)})).toEqual({ok:false,error:refusal});
+      ] as const) {
+        const result = await call('myco_run_curation',{...complete,members}) as {ok:boolean;error:string};
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain(error);
+        expect(result.error).toContain('Next call: myco_run_curation');
+      }
+      const refused = await call('myco_spores',{...consolidate,agent_line:'x'.repeat(AGENT_LINE_MAX_CHARS+1)}) as {ok:boolean;error:string};
+      expect(refused.ok).toBe(false);
+      expect(refused.error).toContain(`agent_line is ${AGENT_LINE_MAX_CHARS+1} characters`);
+      expect(refused.error).toContain(`limit is ${AGENT_LINE_MAX_CHARS}`);
+      expect(refused.error).toContain('Next call: myco_spores {"op":"consolidate"}');
       expect(f.sqlite.query('SELECT final_members,decision FROM spore_curation_work').get()).toEqual({final_members:null,decision:null});
       expect(f.sqlite.query('SELECT COUNT(*) n FROM resolution_events').get()).toEqual({n:0});
-      expect(await call('myco_run_curation',{op:'complete',decision:'resolved',members:['a','b','c'],reason:'Attempted merge.'})).toEqual({ok:false,error:`Not saved: curation decision. ${refusal} Retry that write first, or call myco_run_curation op complete with decision keep and the read members.`});
+      const premature = await call('myco_run_curation',{op:'complete',decision:'resolved',members:['a','b','c'],reason:'Attempted merge.'}) as {error:string};
+      expect(premature.error).toContain('outstanding lifecycle refusal');
+      expect(premature.error).toContain('Next call: myco_run_curation {"op":"complete","decision":"keep"}');
       if (outcome === 'resolved') {
+        const wrongSession = await call('myco_spores',{...consolidate,session_id:'unserved-session',agent_line:'Keep related guidance together.'}) as {ok:boolean;error:string};
+        expect(wrongSession.ok).toBe(false);
+        expect(wrongSession.error).toContain('session_id "unserved-session"');
+        expect(wrongSession.error).toContain('no session id is valid: omit session_id');
+        expect(wrongSession.error).toContain('Next call: myco_spores {"op":"consolidate"}');
+        expect(f.sqlite.query('SELECT COUNT(*) n FROM resolution_events').get()).toEqual({n:0});
+
         expect(await call('myco_spores',{...consolidate,agent_line:'x'.repeat(AGENT_LINE_MAX_CHARS)})).toMatchObject({status:'consolidated',sources_consolidated:3});
         expect(await call('myco_run_curation',{op:'complete',decision:'resolved',reason:'Combined the three complementary sources.'})).toEqual({completed:true});
       } else {
@@ -402,7 +419,7 @@ test('a capped cluster keeps exclusive open ownership and later unreviewed neigh
     for(let i=0;i<5;i++) await f.add(`search-${i}`,[0,1],f.now+1);
     await f.call(claimed.run.runToken,'myco_search',{query:'other-topic'});
     for(let i=0;i<4;i++) expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:`search-${i}`})).toHaveProperty('spore');
-    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-4'})).toMatchObject({ok:false,error:expect.stringContaining('cap')});
+    expect(await f.call(claimed.run.runToken,'myco_run_curation',{op:'material',id:'search-4'})).toMatchObject({ok:false,error:expect.stringContaining('the limit is')});
     expect(await handleRunCuration({op:'complete',decision:'keep',members:curationAssignment(ctx.principal.kind==='run'?ctx.principal.runContext:null)!.members,reason:'Distinct applicability'},ctx)).toEqual({completed:true});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claimed.run.id,attemptId:claimed.run.attemptId,status:'failed',error:'fixture failure after decision'});
     await f.discover();

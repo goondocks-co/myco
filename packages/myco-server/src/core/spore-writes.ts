@@ -110,7 +110,7 @@ export async function planSporeConsolidation(
   if (sources.length === 0) return { ok: false, reason: 'source_spore_ids is required for op: consolidate' };
   if (content === undefined) return { ok: false, reason: 'consolidated_content is required for op: consolidate' };
   if (observationType === undefined) return { ok: false, reason: 'observation_type is required for op: consolidate' };
-  if (overSporeCap(content)) return { ok: false, reason: SPORE_CAP_REASON };
+  if (overSporeCap(content)) return { ok: false, reason: `${SPORE_CAP_REASON}; consolidated_content is ${new TextEncoder().encode(content).byteLength} UTF-8 bytes` };
   for (const { id } of sources) {
     if ((await getSpore(db, scope, id)) === null) return { ok: false, reason: `source_spore_id not found: ${id}` };
   }
@@ -123,12 +123,12 @@ export async function sporeExpectations(
 ): Promise<{ ok: true; expect: SporeExpectation; sources?: SporeSource[] } | { ok: false; reason: string }> {
   const status = input.expect_status;
   const revision = input.expect_revision;
-  if (status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(status)) return { ok: false, reason: 'expect_status must be a spore status' };
+  if (status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(status)) return { ok: false, reason: `expect_status is ${JSON.stringify(status)}; expected ${SPORE_STATUSES.join(', ')}` };
   const validRevision = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-  if (revision !== undefined && !validRevision(revision)) return { ok: false, reason: 'expect_revision must be a nonnegative safe integer' };
+  if (revision !== undefined && !validRevision(revision)) return { ok: false, reason: `expect_revision is ${JSON.stringify(revision)}; expected an integer from 0 to ${Number.MAX_SAFE_INTEGER}` };
   let required = false;
   if (runId !== undefined) {
-    if (status !== undefined && status !== 'active') return { ok: false, reason: 'runs require expect_status active' };
+    if (status !== undefined && status !== 'active') return { ok: false, reason: `expect_status is ${JSON.stringify(status)}; runs require active` };
     required = await sporeRevisionRequired(db, scope, runId);
   }
   let sources: SporeSource[] | undefined;
@@ -136,16 +136,16 @@ export async function sporeExpectations(
     if (!Array.isArray(input.source_spore_ids)) return { ok: false, reason: 'source_spore_ids must be an array' };
     if (status !== undefined && status !== 'active') return { ok: false, reason: 'consolidation requires expect_status active' };
     sources = [];
-    for (const value of input.source_spore_ids) {
+    for (const [index,value] of input.source_spore_ids.entries()) {
       const source = typeof value === 'string' ? { id: value } : value;
       if (typeof source !== 'object' || source === null || Array.isArray(source)
         || typeof source.id !== 'string' || source.id.length === 0
         || Object.keys(source).some(key => key !== 'id' && key !== 'revision')
         || (source.revision !== undefined && !validRevision(source.revision))) {
-        return { ok: false, reason: 'source_spore_ids requires ids or {id, revision?}' };
+        return { ok: false, reason: `source_spore_ids[${index}] requires a nonempty id or {id,revision}, with revision an integer from 0 to ${Number.MAX_SAFE_INTEGER}` };
       }
-      if (required && source.revision === undefined) return { ok: false, reason: 'revision is required for every source_spore_ids item' };
-      if (sources.some(held => held.id === source.id)) return { ok: false, reason: 'source_spore_ids must be distinct' };
+      if (required && source.revision === undefined) return { ok: false, reason: `source_spore_ids[${index}] (${JSON.stringify(source.id)}) is missing revision; use the exact revision read` };
+      if (sources.some(held => held.id === source.id)) return { ok: false, reason: `source_spore_ids[${index}] duplicates ${JSON.stringify(source.id)}; each source must be distinct` };
       sources.push({ id: source.id, ...(source.revision === undefined ? {} : { revision: source.revision }) });
     }
   } else if (required && revision === undefined) return { ok: false, reason: 'expect_revision is required' };

@@ -309,6 +309,11 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     const slice = await call(learn.run.runToken, 'myco_run_learning', { op: 'material' }) as { session_id: string; cards: { card: string }[] };
     expect(slice.session_id).toBe('session');
     expect(slice.cards[0]!.card).toContain("error: Cannot find module '@myco-server-worker/core/x.js' from 'tests/a.test.ts'");
+    const refusedLine = await call(learn.run.runToken,'myco_spores',{op:'save',type:'gotcha',session_id:'session',agent_line:'x'.repeat(AGENT_LINE_MAX_CHARS+1),content:'Use the pinned Bun.'}) as {ok:boolean;error:string};
+    expect(refusedLine.ok).toBe(false);
+    expect(refusedLine.error).toContain(`agent_line is ${AGENT_LINE_MAX_CHARS+1} characters`);
+    expect(refusedLine.error).toContain(`limit is ${AGENT_LINE_MAX_CHARS}`);
+    expect(refusedLine.error).toContain('Next call: myco_spores {"op":"save"}');
     expect(await call(learn.run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', session_id: 'session', agent_line: 'When running tests, use the pinned Bun.', content: 'Tests need the pinned Bun: PATH=$HOME/tools/bun-1.4.0:$PATH npm test.' }))
       .toMatchObject({ id: expect.any(String) });
     expect(await call(learn.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'nothing open' })).toEqual({ completed: true, covered: 4 });
@@ -401,7 +406,7 @@ it('serves a card run\'s material in answers the harness holds whole, losing not
     expect([...inputs.keys()]).toEqual([uuid(30), uuid(31)]);
     const whole = await documentTurnInput(run.env, 'project', 'long', uuid(30));
     expect(inputs.get(uuid(30))).toBe(trimTurn(whole!).text);
-    expect((await run.material({ page: pages + 1, revision })).error).toContain(`ends at page ${pages}`);
+    expect((await run.material({ page: pages + 1, revision })).error).toContain(`the last valid page is ${pages}`);
   });
 });
 
@@ -461,7 +466,7 @@ it('refuses a continuation when capture publishes between pages, and a restart r
 });
 
 it('credits material reads to the attempt that made them', () => {
-  const read = { tokenId: 'attempt', revision: 'r', pages: 2, through: 2 };
+  const read = { tokenId: 'attempt', revision: 'r', pages: 2, through: 2, items: 2 };
   expect(materialRead(JSON.stringify({ materialRead: read }), 'attempt')).toEqual(read);
   expect(materialRead(JSON.stringify({ materialRead: read }), 'next-attempt')).toBeNull();
 });
@@ -549,7 +554,7 @@ it('serves a learning run\'s slice in answers the harness holds whole, losing no
     expect(results.length).toBe(served.size);
     for (const row of results) expect(served.get(row.key)).toBe(row.card);
     expect(served.get(turns[3]!.id)).toContain('\u0001'.repeat(11_000));
-    expect(await run.material({ page: pages.length + 1, revision: pages[0]!.revision })).toMatchObject({ ok: false, error: expect.stringContaining(`ends at page ${pages.length}`) });
+    expect(await run.material({ page: pages.length + 1, revision: pages[0]!.revision })).toMatchObject({ ok: false, error: expect.stringContaining(`the last valid page is ${pages.length}`) });
   });
 });
 
@@ -624,7 +629,7 @@ it('keeps state usable within one answer: a value that cannot fit is refused, an
     const run = await learningRun(db, plainTurns(1), 'low');
     await run.readAll();
     const key = 'long-key';
-    expect(await run.call('myco_run', { op: 'state_set', key, value: 'x'.repeat(RUN_ANSWER_BYTES) })).toMatchObject({ ok: false, error: expect.stringContaining('must fit one') });
+    expect(await run.call('myco_run', { op: 'state_set', key, value: 'x'.repeat(RUN_ANSWER_BYTES) })).toMatchObject({ ok: false, error: expect.stringContaining('JSON UTF-8 bytes; the limit is') });
     expect(await run.call('myco_run', { op: 'state_set', key, value: '\u0001'.repeat(7_000) })).toMatchObject({ ok: false });
     expect(await run.call('myco_run', { op: 'state_set', key, value: 'short' })).toEqual({ key, applied: true });
     const long = '増"\n'.repeat(30_000);
@@ -662,7 +667,7 @@ it('refuses a state continuation once the value has changed, so parts of two ver
 
     expect(await run.call('myco_run', { op: 'state_set', key, value: 'newer', version: first.version })).toEqual({ key, applied: true });
     const refused = await run.call('myco_run', { ...continuation, version: first.version });
-    expect(refused).toMatchObject({ ok: false, code: STATE_CHANGED, error: expect.stringContaining('restart at offset 0') });
+    expect(refused).toMatchObject({ ok: false, code: STATE_CHANGED, error: expect.stringContaining('version is missing') });
     expect(refused).not.toHaveProperty('value');
     expect(refused).not.toHaveProperty('version');
     expect(await run.call('myco_run', { op: 'state_set', key, value: first.value, version: first.version })).toEqual({ key, applied: false });
@@ -717,7 +722,7 @@ it('answers a learning run\'s save with the closest active spores, and that is e
 it('states the agent line\'s bound in the rules, by an example inside it, and rules out adding by default', () => {
   expect(AGENT_LINE_EXAMPLE.length).toBeLessThanOrEqual(AGENT_LINE_MAX_CHARS);
   expect(EXTRACTION_RULES).toContain(AGENT_LINE_EXAMPLE);
-  expect(EXTRACTION_RULES).toContain(`one line, at most ${AGENT_LINE_MAX_CHARS} characters`);
+  expect(EXTRACTION_RULES).toContain(`${AGENT_LINE_MAX_CHARS} characters`);
   expect(EXTRACTION_RULES).toContain('When in doubt, keep it');
   expect(EXTRACTION_RULES).toContain('Preserve useful commands');
 });
@@ -1365,5 +1370,33 @@ it('continues a learning attempt after unavailable source, preserving material a
     expect(await endLeasedRun(run.env,{principal:run.principal,now:NOW+DAY+3},{
       projectId:'project',runId:run.claimed.id,attemptId:run.claimed.attemptId,status:'completed',
     })).toMatchObject({status:'completed'});
+  });
+});
+
+
+it('repairs card refusals through the next named call without losing assigned turns', async () => {
+  await withDocumentStores(async db => {
+    const keys = [uuid(1301),uuid(1302)];
+    const run = await cardRun(db,keys.map((id,index) => ({id,text:'Repair capture delivery '+index,at:10+index})));
+    const unread = JSON.parse((await run.raw({op:'write',cards:[]})).content[0]!.text) as {error:string};
+    expect(unread.error).toContain('Next call: myco_run_cards {"op":"material","page":1');
+    const material = await run.material();
+    const check = async (cards: unknown, detail: string) => {
+      const result = JSON.parse((await run.raw({op:'write',revision:material.revision,cards})).content[0]!.text) as {ok:boolean;error:string};
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(detail);
+      expect(result.error).toContain('Next call: myco_run_cards {"op":"write"');
+      expect(await db.prepare("SELECT COUNT(*) AS n FROM turn_cards WHERE state='carded'").first()).toEqual({n:0});
+    };
+    await check([],keys[0]!);
+    await check([{signal:'high',card:EMPTY_CARD}],'cards[0].turns');
+    await check([{turns:[keys[0],keys[0]],signal:'high',card:EMPTY_CARD}],keys[0]!);
+    await check([{turns:[keys[0]],signal:'high',card:{...EMPTY_CARD,corrections:null}}],'corrections');
+    await check([{turns:[keys[0]],signal:'high',card:{...EMPTY_CARD,outcome:[]}}],'expected a string');
+    const past = await run.material({page:material.page+1,revision:material.revision});
+    expect(past.error).toContain('the last valid page is');
+    expect(past.error).toContain('Next call: myco_run_cards {"op":"write"');
+    const good = JSON.parse((await run.raw({op:'write',revision:material.revision,cards:keys.map(key => ({turns:[key],signal:'high',card:EMPTY_CARD}))})).content[0]!.text);
+    expect(good).toMatchObject({written:2});
   });
 });

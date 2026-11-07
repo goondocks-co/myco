@@ -1,3 +1,6 @@
+import { CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from '../core/spore-curation-contract.js';
+import { CURATION_TASK } from '../core/task-catalogue.js';
+import { acceptedActions } from '../core/run-postconditions.js';
 /**
  * The run-scoped surface: what a run's credential may call over MCP.
  *
@@ -36,25 +39,91 @@ import { handleRunCards } from './tools/run-cards.js';
 import { handleRunLearning } from './tools/run-learning.js';
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
-const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({ handler, authorization: toolPolicy('run', action, ['run']) });
+const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({
+  handler,
+  authorization: toolPolicy('run', action, ['run']),
+});
 
 export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<string, RegistryEntry> }> = {
-  myco_run: { defaultOp: 'report', ops: { report: runOperation(handleRun, 'execute'), state_get: runOperation(handleRun, 'read'), state_set: runOperation(handleRun, 'execute') } },
+  myco_run: {
+    defaultOp: 'report',
+    ops: {
+      report: runOperation(handleRun, 'execute'),
+      state_get: runOperation(handleRun, 'read'),
+      state_set: runOperation(handleRun, 'execute'),
+    },
+  },
   myco_run_spores: { defaultOp: 'list', ops: { list: runOperation(handleRunSpores, 'read'), get: runOperation(handleRunSpores, 'read') } },
-  myco_run_sessions: { defaultOp: 'list', ops: { list: runOperation(handleRunSessions, 'read'), material: runOperation(handleRunSessions, 'read'), title: runOperation(handleRunSessions, 'execute') } },
+  myco_run_sessions: {
+    defaultOp: 'list',
+    ops: {
+      list: runOperation(handleRunSessions, 'read'),
+      material: runOperation(handleRunSessions, 'read'),
+      title: runOperation(handleRunSessions, 'execute'),
+    },
+  },
   myco_run_map: { defaultOp: 'get', ops: { get: runOperation(handleRunMap, 'read'), write: runOperation(handleRunMap, 'execute') } },
-  myco_run_curation: { defaultOp: 'complete', ops: { material: runOperation(handleRunCuration, 'execute'), complete: runOperation(handleRunCuration, 'execute') } },
-  myco_run_cards: { defaultOp: 'material', ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') } },
-  myco_run_learning: { defaultOp: 'material', ops: { material: runOperation(handleRunLearning, 'read'), get: runOperation(handleRunLearning, 'read'), complete: runOperation(handleRunLearning, 'execute') } },
+  myco_run_curation: {
+    defaultOp: 'complete',
+    ops: { material: runOperation(handleRunCuration, 'execute'), complete: runOperation(handleRunCuration, 'execute') },
+  },
+  myco_run_cards: {
+    defaultOp: 'material',
+    ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') },
+  },
+  myco_run_learning: {
+    defaultOp: 'material',
+    ops: {
+      material: runOperation(handleRunLearning, 'read'),
+      get: runOperation(handleRunLearning, 'read'),
+      complete: runOperation(handleRunLearning, 'execute'),
+    },
+  },
 };
 
 export { ALWAYS_ALLOWED, isRunCall, RUN_PROJECT_DESCRIPTION, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget };
 
 /** The definitions a run is listed: its allowlisted names across both sets, each op enum narrowed to what it may call. */
-export function runDefinitions(allow: RunAllowlist): ToolDefinition[] {
-  return narrowDefinitions([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS], Object.fromEntries(allow), RUN_PROJECT_DESCRIPTION);
+export function runDefinitions(allow: RunAllowlist, task: string | null = null): ToolDefinition[] {
+  const actions = acceptedActions(task);
+  const definitions = narrowDefinitions([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS], Object.fromEntries(allow), RUN_PROJECT_DESCRIPTION);
+  return definitions.map((definition) => {
+    if (definition.name === 'myco_search' && task === CURATION_TASK) {
+      const bounds = `This curation run may search at most ${CURATION_SEARCH_LIMIT} times; each call returns up to ${CURATION_SEARCH_RESULTS} active spore matches, using semantic search.`;
+      return {
+        ...definition,
+        description: `${bounds} ${definition.description}`,
+        inputSchema: {
+          ...definition.inputSchema,
+          properties: {
+            ...definition.inputSchema.properties,
+            query: { ...definition.inputSchema.properties.query, description: `${bounds} Supply the topic to compare.` },
+          },
+        },
+      };
+    }
+
+    if (definition.name !== 'myco_run' || actions === null) return definition;
+    const baseExample = definition.inputSchema.examples![0]!;
+    const example = { ...baseExample, action: actions[0] };
+    const contextual = (text: string) => text.replace(JSON.stringify(baseExample), JSON.stringify(example));
+    return {
+      ...definition,
+      handlerValidated: [...(definition.handlerValidated ?? []), 'action'],
+      inputRepair: definition.inputRepair === undefined ? undefined : contextual(definition.inputRepair),
+      description: `This task reports action ${actions.join(' or ')}. ${contextual(definition.description)}`,
+      inputSchema: {
+        ...definition.inputSchema,
+        examples: [example],
+        properties: { ...definition.inputSchema.properties, action: { ...definition.inputSchema.properties.action, enum: actions } },
+      },
+    };
+  });
 }
 
 /** Every operation a Myco tool takes, served or run-only: the only operations a step a worker names a Myco call keeps. */
-export const MYCO_TOOL_OPS: ReadonlySet<string> = new Set([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS]
-  .flatMap((definition) => (definition.inputSchema.properties.op?.enum ?? []).filter((op): op is string => typeof op === 'string')));
+export const MYCO_TOOL_OPS: ReadonlySet<string> = new Set(
+  [...TOOL_DEFINITIONS, ...RUN_DEFINITIONS].flatMap((definition) =>
+    (definition.inputSchema.properties.op?.enum ?? []).filter((op): op is string => typeof op === 'string'),
+  ),
+);
