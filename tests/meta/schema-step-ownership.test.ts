@@ -30,6 +30,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: V712, object: 'idx_agent_run_events_setup_output', table: 'agent_run_events', reason: 'Setup seeks recorded title and map output without scanning empty run history.' },
   { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_version_${action}`, table: 'embedding_versions', reason: 'Version mutations retract stale passed-over membership.' })),

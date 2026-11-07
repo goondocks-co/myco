@@ -1,4 +1,5 @@
-import { producedSql, PRODUCING_TASKS } from '../../read/run-outcome.js';
+import { SETUP_OUTPUT_EVENT_INDEX, SETUP_OUTPUT_EVENT_WHERE } from '../schema-v712.js';
+import { producedSql } from '../../read/run-outcome.js';
 import { read, readSet } from '../index.js';
 import { repositoriesNeeded } from '../../read/repository-requirements.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
@@ -88,10 +89,15 @@ function setupStatement(all: boolean) {
 }
 const adminSetup = setupStatement(true);
 const memberSetup = setupStatement(false);
-const producedRead = read<[number], { produced: number }>({ name: 'identity.setupProduced', sql: `SELECT EXISTS(SELECT 1 FROM projects p
-  CROSS JOIN json_each('${JSON.stringify(PRODUCING_TASKS)}') t
-  WHERE p.archived_at IS NULL AND EXISTS(SELECT 1 FROM agent_runs a INDEXED BY idx_agent_runs_task
-    WHERE a.project_id=p.project_id AND a.task=t.value AND a.status IN ('completed','failed') AND COALESCE(a.completed_at,a.started_at)<=? AND ${producedSql('a')})) AS produced` });
+const outputRun = (source: string, key: string, predicate: string) => `EXISTS (
+  SELECT 1 FROM ${source} CROSS JOIN agent_runs a ON a.project_id=p.project_id AND a.id=${key}
+  WHERE ${predicate} AND a.status IN ('completed','failed')
+    AND COALESCE(a.completed_at,a.started_at)<=?1 AND ${producedSql('a')})`;
+const producedRead = read<[number], { produced: number }>({ name: 'identity.setupProduced', sql: `SELECT EXISTS(
+  SELECT 1 FROM projects p WHERE p.archived_at IS NULL AND (
+    ${outputRun('spores sp INDEXED BY idx_spores_author', 'sp.author', 'sp.project_id=p.project_id')}
+    OR ${outputRun(`agent_run_events e INDEXED BY ${SETUP_OUTPUT_EVENT_INDEX}`, 'e.run_id',
+      `e.project_id=p.project_id AND ${SETUP_OUTPUT_EVENT_WHERE}`)})) AS produced` });
 
 const setupIdentityRead = read<[string], { owner_linked: number; viewer_is_owner: number }>({ name: 'identity.setupIdentity', sql: `SELECT
     EXISTS (SELECT 1 FROM members m INDEXED BY idx_members_github_id

@@ -83,6 +83,8 @@ export const setupProgress: ParityScenario = {
     await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
       INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at)
       SELECT 'proj_setup_parity','old_' || i,'agent_setup_parity','extract-curate','completed',${old},${old} FROM n`);
+    await target.sql(`INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,recorded_at)
+      SELECT project_id,id,'tool_call','myco_run_sessions',${old} FROM agent_runs WHERE id LIKE 'old_%'`);
     const unrelated = await measure();
     expect(unrelated.progress.liveCapture).toBe(true);
     expectFlat('unrelated history', establishedLarge, unrelated);

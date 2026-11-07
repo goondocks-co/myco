@@ -274,7 +274,7 @@ describe('maintained Health and Today contracts', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('seeks setup output only for tasks that can publish output', async () => {
+  it('seeks setup from retained output evidence rather than empty runs', async () => {
     const f = fixture();
     try {
       const { db, sqls } = captureSql(f.db);
@@ -283,7 +283,9 @@ describe('maintained Health and Today contracts', () => {
       expect(item).toBeDefined();
       expect(item.sql).not.toMatch(/curate-spores|turn-cards|embedding-reconcile/);
       const plan = JSON.stringify(f.sqlite.query(`EXPLAIN QUERY PLAN ${item.sql}`).all(...item.params as never[]));
-      expect(plan).toContain('idx_agent_runs_task (project_id=? AND task=? AND status=?)');
+      expect(plan).toContain('idx_spores_author (project_id=?)');
+      expect(plan).toContain('idx_agent_run_events_setup_output (project_id=?)');
+      expect(plan).toContain('sqlite_autoindex_agent_runs_1 (project_id=? AND id=?)');
       expect(plan).not.toContain('SCAN a');
     } finally { f.sqlite.close(); }
   });

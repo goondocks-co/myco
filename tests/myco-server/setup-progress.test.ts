@@ -172,6 +172,27 @@ describe('observed setup progress', () => {
       expect((await read()).workProduced).toBe(false);
     });
 
+  for (const [task, tool] of [['title-summary', 'myco_run_sessions'], ['canopy-map', 'myco_run_map']] as const) {
+    it(`recognizes retained ${task} output and retracts removed evidence`, async () => {
+      const { read, output, sql } = rig();
+      output(NOW - 32 * DAY, 'failed');
+      sql("DELETE FROM spores WHERE id='sp_setup'");
+      sql("UPDATE agent_runs SET task=? WHERE id='run_setup'", task);
+      expect((await read()).workProduced).toBe(false);
+      sql(`INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,recorded_at)
+        VALUES ('proj_1','run_setup','run_write',?,?)`, tool, NOW - 32 * DAY);
+      expect((await read()).workProduced).toBe(true);
+      sql("UPDATE agent_runs SET dry_run=1 WHERE id='run_setup'");
+      expect((await read()).workProduced).toBe(false);
+      sql("UPDATE agent_runs SET dry_run=0 WHERE id='run_setup'");
+      sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_1'");
+      expect((await read()).workProduced).toBe(false);
+      sql("UPDATE projects SET archived_at=NULL WHERE project_id='proj_1'");
+      sql("DELETE FROM agent_run_events WHERE run_id='run_setup'");
+      expect((await read()).workProduced).toBe(false);
+    });
+  }
+
   it('retains produced setup progress beyond the recent Work window', async () => {
     const { read, output } = rig(); output(NOW - 32 * DAY);
     expect((await read()).workProduced).toBe(true);
