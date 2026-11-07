@@ -10,6 +10,7 @@ import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
+import { statementRecorder } from '../helpers/statement-recorder.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
@@ -90,30 +91,26 @@ describe('catalog availability from current machine offers', () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
     await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
-    const report = (credentialId: string, authenticated: boolean) => recordWorkerContact(r.db, {
-      credentialId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated }], capabilities: [], now: r.now,
-    });
-    await report(r.token.tokenId, true);
     let announce!: () => void;
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => { announce = resolve; });
     const continued = new Promise<void>((resolve) => { resume = resolve; });
-    const prepare = r.db.prepare.bind(r.db);
-    let intercept = true;
-    r.db.prepare = (sql) => {
-      const statement = prepare(sql);
-      if (intercept && sql.includes('w.updated_at AS offer_revision')) {
-        intercept = false;
-        const all = statement.all.bind(statement);
-        statement.all = async <T>() => {
-          const rows = await all<T>();
+    let intercept = false;
+    const observed = statementRecorder(r.db, {
+      accounting: 'native',
+      after: async (entry) => {
+        if (intercept && entry.method === 'all' && entry.sql.includes('w.updated_at AS offer_revision')) {
+          intercept = false;
           announce();
           await continued;
-          return rows;
-        };
-      }
-      return statement;
-    };
+        }
+      },
+    });
+    const report = (credentialId: string, authenticated: boolean) => recordWorkerContact(observed.db, {
+      credentialId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated }], capabilities: [], now: r.now,
+    });
+    await report(r.token.tokenId, true);
+    intercept = true;
     const reauth = report(r.token.tokenId, true);
     await paused;
     try { await report(successor.tokenId, false); } finally { resume(); }

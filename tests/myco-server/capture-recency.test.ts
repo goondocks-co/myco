@@ -107,10 +107,10 @@ describe('capture recency', () => {
           ('second','other-project','new-machine','token',5,40,NULL)`);
       for (const step of SCHEMA_STEPS.filter(step => step.version >= 708)) for (const sql of step.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
-      const plan = sqlite.query(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine') as { detail: string }[];
+      const plan = sqlite.query<{ detail: string }, [string]>(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine');
       expect(plan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_unnamed_machine (machine_id=?)');
       const matches = async () => {
-        const expected = sqlite.query(`SELECT machine_id,agent,MAX(last_received_at) AS last_event_at,project_id FROM sessions
+        const expected = sqlite.query<Record<string, unknown>, []>(`SELECT machine_id,agent,MAX(last_received_at) AS last_event_at,project_id FROM sessions
           WHERE machine_id IS NOT NULL GROUP BY machine_id,agent ORDER BY last_event_at DESC,machine_id,agent`).all();
         expect((await captureRecencyStatement(db, 100).all()).results).toEqual(expected);
         expect(sqlite.query(`SELECT COUNT(*) AS n FROM machine_capture_heads h WHERE NOT EXISTS (
