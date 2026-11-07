@@ -16,7 +16,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { costOf, summarize } from '../../packages/myco-server/ui/src/features/work/outcomes';
 import { outcomeHeadline, runLineWords, skipWords, spendWords, startedByWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { workBounds } from '../../packages/myco-server/ui/src/features/work/WorkPage';
@@ -64,6 +63,10 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
   '/api/tasks/names': () => Response.json({ tasks: TASK_DESCRIPTIONS.map(({ task, name }) => ({ task, name })) }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
+  '/api/work/now': (url) => Response.json({ observedAt: NOW, scope: url.searchParams.has('project') ? 'project' : 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1 },
+    running: [{ runId: 'run_live_now', projectId: P, task: 'canopy-map', what: 'Keep the code map', machine: 'homelab-mini', harness: 'claude-code', model: null, startedAt: NOW - 70_000, step: { words: 'Read the code map', at: NOW - 3_000 } }],
+    waiting: [{ key: `map:${P}`, projectId: P, what: 'Code map', count: null, why: 'It refreshes every 6 hours. Only after new session material arrives.', since: null, nextAt: NOW + 2 * 3_600_000 }],
+    needsYou: [] }),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
   [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: (over.taskRuns ?? taskRunsFor(((over.who ?? ADMIN) as typeof ADMIN).member.id))[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
   [`/api/projects/${P}/capabilities`]: () => Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } }),
@@ -479,12 +482,12 @@ describe('Myco’s work', () => {
     expect(screen.getByRole('combobox', { name: /^Outcome(?::|$)/ }).textContent).toBe('Code map');
   });
 
-  it('reads again every 30 s only while a run is queued or running, never from a hidden tab', async () => {
+  it('reads again whenever runs move, never by the clock', async () => {
     const live: WorkAnswer = { ...WEEK_WORK, outcomes: WEEK_WORK.outcomes.map((o) => (o.kind === 'learn' ? { ...o, runs: { ...o.runs, queued: 1 } } : o)) };
     type Polled = { refetchInterval?: number | false | ((q: unknown) => number | false); refetchIntervalInBackground?: boolean };
     const intervals = (key: string) => client.getQueryCache().findAll({ queryKey: key === 'runs' ? ['runs', P, 'task'] : [key] }).flatMap((query) => query.observers.map((observer) => {
-      const { refetchInterval, refetchIntervalInBackground } = observer.options as Polled;
-      return { interval: typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false, background: refetchIntervalInBackground };
+      const { refetchInterval } = observer.options as Polled;
+      return { interval: typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false, follows: (observer.options.meta as { follows?: unknown } | undefined)?.follows };
     }));
     server(week({ work: live }));
     mount(`/p/${P}/work`);
@@ -493,7 +496,7 @@ describe('Myco’s work', () => {
     for (const key of ['work', 'runs']) {
       const options = intervals(key);
       expect(options.length).toBeGreaterThan(0);
-      for (const option of options) expect({ key, ...option }).toEqual({ key, interval: LIVE_REFRESH_MS, background: false });
+      for (const option of options) expect({ key, ...option }).toEqual({ key, interval: false, follows: ['runs'] });
     }
     cleanup();
     client.clear();
@@ -504,13 +507,24 @@ describe('Myco’s work', () => {
     for (const key of ['work', 'runs']) for (const option of intervals(key)) expect({ key, interval: option.interval }).toEqual({ key, interval: false });
   });
 
+  it('heads a project’s work with what Myco is doing now, read by the page’s one heartbeat', async () => {
+    const asked = server(week());
+    mount(`/p/${P}/work`);
+    const now = await screen.findByRole('region', { name: 'Myco’s work now' });
+    expect((await within(now).findByText('Keep the code map')).closest('a')!.getAttribute('href')).toBe(`/p/${P}/work/runs/run_live_now`);
+    expect(within(now).getByText('It refreshes every 6 hours. Only after new session material arrives.')).toBeTruthy();
+    expect(within(now).getByText('Nothing needs you.')).toBeTruthy();
+    expect(document.querySelector('[data-live-mark]')).not.toBeNull();
+    expect(asked.filter((url) => url.pathname === '/api/work/now').map((url) => url.searchParams.get('project'))).toEqual([P]);
+  });
+
   it('spans every project at /work: each run names its project, no project’s run list is read, and Run a task is offered here too', async () => {
     const asked = server(week({
       work: { ...WEEK_WORK, outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', outcome: { spores: 1, sessions: 1, maps: 0 } })] },
     }));
     mount('/work');
     await waitFor(() => expect(card('learn')).not.toBeNull());
-    expect(screen.getByText('What Myco did in the background, grouped by what came of it.')).toBeTruthy();
+    expect(screen.getByText('What Myco is doing now, what waits and why, and what it did, grouped by what came of it.')).toBeTruthy();
     expect(asked.find((url) => url.pathname === '/api/work')!.searchParams.get('project')).toBeNull();
     expect(document.querySelector('[data-lede]')!.textContent).toContain('This week, Myco learned 7 spores from 5 sessions');
     expect(document.querySelector('[data-lede]')!.textContent).toContain('across 2 projects');

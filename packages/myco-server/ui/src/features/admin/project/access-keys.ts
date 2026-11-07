@@ -3,6 +3,7 @@ import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { formatUntil } from '../../../lib/format';
 import { ago } from '../../today/words';
 import type { GrantRow, GrantsAnswer } from '../wire';
+import { live } from '../../../lib/live';
 
 /** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
 export const GRANT_EXPIRY_ACTOR = 'expiry';
@@ -12,7 +13,7 @@ const grantsKey = (projectId: string) => ['grants', projectId] as const;
 
 /** A project's access keys, live and ended. */
 export function useGrants(projectId: string) {
-  return useQuery({ queryKey: [...grantsKey(projectId)], queryFn: ({ signal }) => fetchJson<GrantsAnswer>(grantsPath(projectId), signal) });
+  return useQuery({ queryKey: [...grantsKey(projectId)], queryFn: ({ signal }) => fetchJson<GrantsAnswer>(grantsPath(projectId), signal), ...live('still') });
 }
 
 /** A key the server answers once. */

@@ -14,7 +14,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use-today';
 import { buildTimeline, ledeCounts, sporesWritten } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { attentionWords, machineNames, repositoryWords, workHeadline, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
@@ -622,7 +621,7 @@ describe('Today', () => {
     expect(workHeadline('learn', entry.runs)).toBe('Myco learned 2 spores from 1 session');
   });
 
-  it('asks again every 30 s while it shows today, never from a hidden tab, and not at all for a past day', async () => {
+  it('asks again whenever capture or runs move while it shows today, never by the clock, and not at all for a past day', async () => {
     server(day());
     mount('/');
     await timeline();
@@ -632,16 +631,16 @@ describe('Today', () => {
       const options = observed(key);
       expect(options.length).toBeGreaterThan(0);
       for (const option of options) {
-        expect({ key, interval: option.refetchInterval, background: option.refetchIntervalInBackground }).toEqual({ key, interval: LIVE_REFRESH_MS, background: false });
+        expect({ key, interval: option.refetchInterval }).toEqual({ key, interval: false });
+        expect((option.meta as { follows?: string[] } | undefined)?.follows?.length ?? 0).toBeGreaterThan(0);
       }
     }
-    expect(LIVE_REFRESH_MS).toBe(30_000);
     cleanup();
     client.clear();
     server(day());
     mount(`/?day=${YESTERDAY}`);
     await screen.findByRole('heading', { level: 1, name: 'Monday, September 28' });
-    for (const key of ['today', 'work']) for (const option of observed(key)) expect(option.refetchInterval).toBe(false);
+    for (const key of ['today', 'work']) for (const option of observed(key)) expect({ interval: option.refetchInterval, meta: option.meta }).toEqual({ interval: false, meta: undefined });
   });
 
   it('narrows to one project at /p/:project, asking only for it, and marks Today in the nav', async () => {

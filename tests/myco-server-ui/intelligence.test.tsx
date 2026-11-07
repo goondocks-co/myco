@@ -21,7 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
+import { MOVING_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { dailyLimitWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
@@ -246,7 +246,7 @@ describe('a run’s panel', () => {
     open = await panel();
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Waiting to start');
     expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^2 ahead of it\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since \d+m ago\.$/);
-    expect(interval('run_q0000000001')).toEqual({ interval: LIVE_REFRESH_MS, background: false });
+    expect(interval('run_q0000000001')).toEqual({ interval: MOVING_MS, background: false });
   });
 
   it('closes back to Myco’s work with its filters, and says a run the project doesn’t hold isn’t there', async () => {

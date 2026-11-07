@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, patchJson, postJson, type ProjectsResponse } from '../lib/api';
+import { live } from '../lib/live';
 
 /** Every project, archived ones included: one read serves the landing page, the navigation and a project's home, each filtering as it needs. */
 export function useProjects(options: { enabled?: boolean } = {}) {
@@ -7,6 +8,7 @@ export function useProjects(options: { enabled?: boolean } = {}) {
     queryKey: ['projects'],
     queryFn: ({ signal }) => fetchJson<ProjectsResponse>('/api/projects?include=archived', signal),
     enabled: options.enabled ?? true,
+    ...live({ follows: ['sessions'] }),
   });
 }
 

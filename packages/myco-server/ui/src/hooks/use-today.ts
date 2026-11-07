@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { buildTimeline, ledeCounts, type LedeCounts, type TimelineEntry } from '../features/today/timeline';
 import type { TodaySession, TodaySessionPage, TodaySporePage } from '../features/today/wire';
-import { freshness, LIVE_REFRESH_MS, useWork } from './use-work';
+import { useWork } from './use-work';
+import { CLOCK_MS, live } from '../lib/live';
 
 /** The most sessions one read of a day asks for at a time, and how many pages it reads before it says there are more. */
 export const SESSION_PAGE = 200;
@@ -91,21 +92,21 @@ export interface TodayQuery {
 /**
  * Today: the day's sessions and Myco's work merged into one timeline, with the
  * lede's counts read off that same timeline. While the day is today, every read
- * asks again every 30 s, and never while the tab is hidden.
+ * is read again whenever capture arrives or a run moves.
  */
 export function useToday({ projectId, day, now }: TodayQuery) {
   const window = dayWindow(day, now);
   const scope = projectId ?? 'all';
-  const live = freshness(window.isToday);
+  const fresh = live(window.isToday ? { follows: ['sessions', 'runs'] } : 'still');
   const sessions = useQuery({
     queryKey: ['today', 'sessions', scope, window.start],
     queryFn: ({ signal }) => readDaySessions(projectId, window, signal),
-    ...live,
+    ...fresh,
   });
   const spores = useQuery({
     queryKey: ['today', 'spores', scope, window.start],
     queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${dayBounds(window)}&limit=${SPORE_PAGE}${projectParam(projectId)}`, signal),
-    ...live,
+    ...fresh,
   });
   const work = useWork({ projectId, since: window.start, until: window.end, live: window.isToday });
 
@@ -129,7 +130,7 @@ export function useToday({ projectId, day, now }: TodayQuery) {
 }
 
 /** The clock a page reads relative times against, moved on every `intervalMs` so "4 min ago" stays true. */
-export function useNow(intervalMs: number = LIVE_REFRESH_MS): number {
+export function useNow(intervalMs: number = CLOCK_MS): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), intervalMs);

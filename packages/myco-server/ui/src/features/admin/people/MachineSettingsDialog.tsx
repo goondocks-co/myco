@@ -8,6 +8,7 @@ import { X } from 'lucide-react';
 import { useMemberNames } from '../members';
 import { ago } from '../../today/words';
 import { StoredValue } from '../StoredValue';
+import { live } from '../../../lib/live';
 
 /** The extra folders a machine's agents write plans to. */
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
@@ -130,6 +131,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
   const settings = useQuery({
     queryKey: ['machine-settings', machine.id],
     queryFn: ({ signal }) => fetchJson<{ leaves: MachineLeaf[] }>(settingsPath(machine.id), signal),
+    ...live('still'),
   });
   // A leaf the server does not list is not offered: it would be a setting this server cannot hold.
   const fields = FIELDS.flatMap((field) => {

@@ -6,6 +6,7 @@ import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
 import { projectPath } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
+import { live } from '../../../lib/live';
 
 const CLAIM_LABEL = 'Claim raw data with no recorded uploader';
 const CLAIM_KEY = ['raw-claims'] as const;
@@ -56,7 +57,7 @@ function Preview({ preview, compact = false }: { preview: RawClaimPreview; compa
 /** The recorded owner reviews one revision before claiming raw data whose uploader is absent. */
 export function RawClaims() {
   const client = useQueryClient();
-  const preview = useQuery({ queryKey: CLAIM_KEY, queryFn: ({ signal }) => fetchJson<RawClaimPreview>('/api/raw-claims', signal) });
+  const preview = useQuery({ queryKey: CLAIM_KEY, queryFn: ({ signal }) => fetchJson<RawClaimPreview>('/api/raw-claims', signal), ...live('still') });
   const [review, setReview] = useState<RawClaimPreview | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);

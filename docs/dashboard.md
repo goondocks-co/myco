@@ -40,7 +40,15 @@ A session's page has the conversation turn by turn, with the tool calls inside e
 
 ### Myco's work
 
-**Myco's work** shows what Myco's own work came to: what it learned, the sessions it titled, the code map updates and what it learned from the code. Open any run to see what it read, what it produced, and who started it.
+**Myco's work** opens on what Myco is doing now:
+
+- **Running now:** each task running, the machine and model running it, how long it has run, and what it did last.
+- **Waiting:** work that is queued or due, and why it waits. For example, no runner can sign in, the daily curation limit is spent, or the code map is not due yet.
+- **Needs you:** work that keeps failing, in Myco's own words, with a link to the run. An item goes away by itself once a later run succeeds.
+
+Below that, Myco's work shows what Myco's own work came to: what it learned, the sessions it titled, the code map updates and what it learned from the code. Open any run to see what it read, what it produced, and who started it.
+
+Open pages keep themselves up to date while they are in view, and update sooner while something is running. A page in a background tab stops checking until you come back to it. With many projects, Myco's work across every project checks the ones with something running, waiting or failing first and says when it did not check them all.
 
 **Run a task** starts work now instead of waiting for the schedule:
 
@@ -110,6 +118,7 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 
 **Health** is one page about the server itself:
 
+- **Now:** what Myco is doing across every project: running, waiting and why, and what needs you.
 - **Needs you:** what is waiting for an administrator.
 - **Status:** whether the server is set up to hold your team's knowledge, and what each project last sent.
 - **Workers:** the execution status machines last reported. Use **Runners** to manage runner registrations.

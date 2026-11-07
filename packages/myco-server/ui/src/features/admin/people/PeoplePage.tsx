@@ -418,7 +418,7 @@ function Invitations({ invitations, viewerId, nameOf, people }: InvitationsProps
 
 /** The credentials Myco's runs signed in with, newest first; a live one can be stopped. */
 function RunCredentials() {
-  const runs = usePaged<CredentialRow>(['credentials', 'run'], '/api/credentials?purpose=run&limit=50');
+  const runs = usePaged<CredentialRow>(['credentials', 'run'], '/api/credentials?purpose=run&limit=50', { freshness: 'still' });
   const stop = useAccessActions().revokeCredentials;
   const [stopping, setStopping] = useState<CredentialRow | null>(null);
   const [error, setError] = useState<string | null>(null);

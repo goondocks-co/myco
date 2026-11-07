@@ -4,6 +4,7 @@ import type {
   PlanBoardPage, PlanBoardRow, PlanFields, PlanPageAnswer, SporeArticleAnswer, SporeFacets, SporeStreamPage, SporeStreamRow,
 } from '../features/knowledge/wire';
 import { fetchJson } from '../lib/api';
+import { live } from '../lib/live';
 
 const seg = (value: string) => encodeURIComponent(value);
 
@@ -51,6 +52,7 @@ export function useSporeStream(filters: SporeStreamFilters) {
       const loaded = pages.reduce((sum, page) => sum + page.spores.length, 0);
       return last.spores.length > 0 && loaded < (pages[0]?.total ?? 0) ? loaded : undefined;
     },
+    ...live({ follows: ['knowledge', 'runs'] }),
   });
   // A spore saved between two pages shifts the offsets; it is listed once, where it was first read.
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.spores) ?? []).map((row) => [`${row.projectId}/${row.id}`, row])).values()], [query.data]);
@@ -73,6 +75,7 @@ export function useSporeArticle(projectId: string, sporeId: string) {
   return useQuery({
     queryKey: ['spore', projectId, sporeId],
     queryFn: ({ signal }) => fetchJson<SporeArticleAnswer>(`/api/projects/${seg(projectId)}/spores/${seg(sporeId)}`, signal),
+    ...live({ follows: ['knowledge'] }),
   });
 }
 
@@ -82,6 +85,7 @@ export function useSporeNeighbours(projectId: string, ids: readonly string[]) {
     queries: ids.map((id) => ({
       queryKey: ['spore', projectId, id],
       queryFn: ({ signal }: { signal: AbortSignal }) => fetchJson<SporeArticleAnswer>(`/api/projects/${seg(projectId)}/spores/${seg(id)}`, signal),
+      ...live({ follows: ['knowledge'] }),
     })),
   });
 }
@@ -105,6 +109,7 @@ export function usePlanColumn(projectId: string | null, status: string, q: strin
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<PlanBoardPage>(pageParam === null ? path : `${path}&cursor=${seg(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live({ follows: ['knowledge', 'runs'] }),
   });
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.plans) ?? []).map((row) => [`${row.projectId}/${row.planKey}`, row])).values()], [query.data]);
   return {
@@ -130,5 +135,6 @@ export function usePlan(projectId: string, planKey: string) {
   return useQuery({
     queryKey: ['plan', projectId, planKey],
     queryFn: async ({ signal }): Promise<PlanFields> => (await fetchJson<PlanPageAnswer>(`/api/projects/${seg(projectId)}/plans/${seg(planKey)}`, signal)).plan,
+    ...live({ follows: ['knowledge'] }),
   });
 }

@@ -14,13 +14,14 @@ import { machineOfWorker, useMachines } from '../machines';
 import { LEGACY_WORKER_LABEL, REASON_WORDS, taskWords } from '../workers';
 import { LegacyWorker, refreshFleet } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
+import { live } from '../../../lib/live';
 
 const RUNNERS_KEY = ['runners'] as const;
 interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean> }
 
 /** Every machine entrusted with Myco's work, with observations separated from server controls and assignments. */
 export function RunnersPage() {
-  const runners = useQuery({ queryKey: RUNNERS_KEY, queryFn: ({ signal }) => fetchJson<FleetAnswer>('/api/runners', signal), refetchInterval: 15_000 });
+  const runners = useQuery({ queryKey: RUNNERS_KEY, queryFn: ({ signal }) => fetchJson<FleetAnswer>('/api/runners', signal), ...live<FleetAnswer>({ follows: ['fleet', 'runs'] }) });
   const permission = permissionOf(useMe().data, 'runners');
   const machines = useMachines();
   const [setup, setSetup] = useState(false);

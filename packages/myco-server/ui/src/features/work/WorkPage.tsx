@@ -8,7 +8,7 @@ import {
 } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useNow } from '../../hooks/use-today';
-import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkEvidence, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
+import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkEvidence, useLiveWork, workHasLiveRun } from '../../hooks/use-work';
 import { sessionHeadingText } from '../../lib/session-text';
 import {
   CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX,
@@ -27,6 +27,8 @@ import { RunTaskConfirm, RunTaskMenu, StartedLine, type StartedRun } from './Run
 import type { RunPageRow } from './wire';
 import { workBounds } from './window';
 import { PageScope } from '../../routes/scope';
+import { LiveMark, WorkNow } from '../now/WorkNow';
+import { useWorkNow } from '../../hooks/use-live';
 import {
   atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
@@ -78,10 +80,11 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const window: WorkWindow = filters.values.window === 'today' ? 'today' : 'week';
   const picked = KIND_ORDER.find((kind) => kind === filters.values.outcome) ?? null;
   const bounds = workBounds(window, now);
-  const work = useWorkWhileRunning({ projectId, ...bounds });
+  const work = useLiveWork({ projectId, ...bounds });
   const evidence = useWorkEvidence({ projectId, ...bounds }, work.data);
-  const week = useWorkWhileRunning({ projectId, ...workBounds('week', now) }, { enabled: projectId !== null });
+  const week = useLiveWork({ projectId, ...workBounds('week', now) }, { enabled: projectId !== null });
   const live = workHasLiveRun(work.data);
+  const workNow = useWorkNow(projectId);
   const [asking, setAsking] = useState<string | null>(null);
   const [started, setStarted] = useState<StartedRun | null>(null);
   const name = projectId === null ? null : projectName(projectId) ?? 'this project';
@@ -102,14 +105,16 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
             <h1 className="t-display text-ink">Myco’s work</h1>
             <PageScope />
+            <LiveMark answer={workNow.data} />
           </div>
-          <p className="max-w-measure t-body text-muted">What Myco did in the background, grouped by what came of it.</p>
+          <p className="max-w-measure t-body text-muted">What Myco is doing now, what waits and why, and what it did, grouped by what came of it.</p>
         </div>
         <div className="flex flex-wrap items-center gap-s3">
           <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>Tasks</OnwardLink>
           <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
         </div>
       </header>
+      <WorkNow answer={workNow.data} pending={workNow.isPending} error={workNow.error} onRetry={() => { void workNow.refetch(); }} now={now} projectName={projectName} />
       <BudgetLine />
       {started !== null && <StartedLine started={started} />}
       <FilterBar

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { useMe } from './use-me';
 import type { TaskNamesAnswer, TasksAnswer, TaskStartPreview } from '../features/tasks/wire';
+import { live } from '../lib/live';
 
 /** Task names for run links, reusing a registry already loaded for this project. */
 export function useTaskNames(projectId: string) {
@@ -13,6 +14,7 @@ export function useTaskNames(projectId: string) {
       return registry === undefined ? undefined : { tasks: registry.tasks.map(({ task, name }) => ({ task, name })) };
     },
     queryFn: ({ signal }) => fetchJson<TaskNamesAnswer>(`/api/tasks/names?${new URLSearchParams({ project: projectId })}`, signal),
+    ...live('still'),
   });
 }
 
@@ -24,6 +26,7 @@ export function useTaskDescriptions(projectId: string | null) {
     queryKey: ['tasks', projectId ?? 'all', projectId],
     enabled: me.data?.member != null,
     queryFn: ({ signal }) => fetchJson<TasksAnswer>(`/api/tasks${query}`, signal),
+    ...live('still'),
   });
 }
 
@@ -35,5 +38,6 @@ export function useTaskStartPreview(projectId: string | null, task: string | nul
     staleTime: 0,
     gcTime: 0,
     queryFn: ({ signal }) => fetchJson<TaskStartPreview>(`/api/tasks/start?${new URLSearchParams({ project: projectId!, task: task! })}`, signal),
+    ...live({ follows: ['fleet', 'runs'] }),
   });
 }

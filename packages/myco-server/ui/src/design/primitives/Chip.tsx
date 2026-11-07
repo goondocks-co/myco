@@ -32,6 +32,21 @@ export function TypeChip({ className, ...props }: TypeChipProps) {
   return <span className={cn(chipBase, TONE.neutral, className)} {...props} />;
 }
 
+export interface ChipGroupProps {
+  /** Each item's words, in order: every one is shown, wrapping onto more lines rather than cut short. */
+  items: readonly string[];
+  className?: string;
+}
+
+/** Several quiet chips side by side, such as the projects one row stands for. They wrap; none is hidden. */
+export function ChipGroup({ items, className }: ChipGroupProps) {
+  return (
+    <span className={cn('flex min-w-0 flex-wrap items-center gap-s1', className)} data-chip-group="">
+      {items.map((item, i) => <TypeChip key={`${i}:${item}`}>{item}</TypeChip>)}
+    </span>
+  );
+}
+
 /** A keyboard key, as in "⌘K". */
 export function Kbd({ className, ...props }: HTMLAttributes<HTMLElement>) {
   return <kbd className={cn('inline-flex h-[20px] items-center rounded-chip border border-line-strong bg-surface-2 px-s1 t-meta font-medium text-muted', className)} {...props} />;

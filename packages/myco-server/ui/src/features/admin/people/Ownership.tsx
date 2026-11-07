@@ -5,6 +5,7 @@ import { Button, Card, ConfirmDialog, ErrorState, Input, LoadingState, Select } 
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { useIdentityMutation } from '../../../hooks/use-me';
 import { AdminSection } from '../AdminFrame';
+import { live } from '../../../lib/live';
 
 const OWNERSHIP_KEY = ['ownership'] as const;
 type Review = { kind: 'record' | 'transfer'; revision: string; memberId: string; name: string };
@@ -13,7 +14,7 @@ type Candidate = DeploymentOwnershipPreview['candidates'][number];
 /** The server's preview supplies eligible admins and the revision for an explicit owner change. */
 export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; nameOfCandidate: (candidate: Candidate) => string }) {
   const client = useQueryClient();
-  const ownership = useQuery({ queryKey: OWNERSHIP_KEY, queryFn: ({ signal }) => fetchJson<DeploymentOwnershipPreview>('/api/ownership', signal) });
+  const ownership = useQuery({ queryKey: OWNERSHIP_KEY, queryFn: ({ signal }) => fetchJson<DeploymentOwnershipPreview>('/api/ownership', signal), ...live('still') });
   const [selected, setSelected] = useState('');
   const [review, setReview] = useState<Review | null>(null);
   const [confirmed, setConfirmed] = useState(false);

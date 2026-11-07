@@ -5,23 +5,17 @@ import type { SessionResponse } from './use-sessions';
 import type { DispatchAnswer, RunAttempt, RunCall, RunCallPage, RunDetailAnswer, RunPage, RunPageRow, RunStep, RunStepPage } from '../features/work/wire';
 import { MAX_RUN_STEPS } from '@goondocks/myco-shared/worker-steps';
 import { usePaged } from './use-paged';
+import { live } from '../lib/live';
 
 export type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../features/today/wire';
 
-/** How often a page that shows what is happening now asks again. A hidden tab never asks; a returning one asks once. */
-export const LIVE_REFRESH_MS = 30_000;
-
-/** The polling a hook takes: every `LIVE_REFRESH_MS` while `live`, never while the tab is hidden. */
-export function freshness(live: boolean): { refetchInterval: number | false; refetchIntervalInBackground: false } {
-  return { refetchInterval: live ? LIVE_REFRESH_MS : false, refetchIntervalInBackground: false };
-}
 
 export interface WorkQuery {
   /** The Project to read, or null for every Project. */
   projectId: string | null;
   since: number;
   until: number;
-  /** Whether the window reaches now, so the answer can still change. */
+  /** Whether the window reaches now, so the answer can still change: then it is read again whenever runs move. */
   live: boolean;
 }
 
@@ -37,7 +31,7 @@ export function useWork(query: WorkQuery) {
   return useQuery({
     queryKey: ['work', query.projectId ?? 'all', query.since, query.until],
     queryFn: ({ signal }) => fetchJson<WorkAnswer>(workPath(query), signal),
-    ...freshness(query.live),
+    ...live<WorkAnswer>(query.live ? { follows: ['runs'] } : 'still'),
   });
 }
 
@@ -51,13 +45,13 @@ export function runIsLive(status: string): boolean {
 /** How many of a task's latest runs an outcome lists under it. */
 export const TASK_RUNS_SHOWN = 6;
 
-/** A project's latest runs of one task, newest first, polling while `live`. */
-export function useTaskRuns(projectId: string, task: string, live: boolean, enabled = true, bounds?: { since: number; until: number }) {
+/** A project's latest runs of one task, newest first, read again whenever runs move while `live`. */
+export function useTaskRuns(projectId: string, task: string, isLive: boolean, enabled = true, bounds?: { since: number; until: number }) {
   return useQuery({
     enabled,
     queryKey: ['runs', projectId, 'task', task, bounds?.since, bounds?.until],
     queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN), ...(bounds === undefined ? {} : { since: String(bounds.since), until: String(bounds.until) }) })}`, signal),
-    ...freshness(live),
+    ...live<RunPage>(isLive ? { follows: ['runs'] } : 'still'),
   });
 }
 
@@ -71,8 +65,7 @@ export function useRunDetail(projectId: string, runId: string, options: { enable
     ...options,
     queryKey: ['run', projectId, runId],
     queryFn: ({ signal }) => fetchJson<RunDetailAnswer>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}`, signal),
-    refetchInterval: (query) => (query.state.data !== undefined && runIsLive(query.state.data.run.status) ? LIVE_REFRESH_MS : false),
-    refetchIntervalInBackground: false,
+    ...live<RunDetailAnswer>({ whileMoving: (data) => data !== undefined && runIsLive(data.run.status) }),
   });
 }
 
@@ -115,6 +108,7 @@ export function useWindowSpores(projectId: string | null, since: number, until: 
     queryKey: ['work-spores', projectId ?? 'all', since, until],
     enabled,
     queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${params}`, signal),
+    ...live({ follows: ['knowledge', 'runs'] }),
   });
 }
 
@@ -127,18 +121,18 @@ export function useSessionsById(sessions: ReadonlyArray<{ projectId: string; ses
     queries: sessions.map(({ projectId, sessionId }) => ({
       queryKey: ['session', projectId, sessionId],
       queryFn: ({ signal }: { signal: AbortSignal }) => fetchJson<SessionResponse>(`/api/projects/${seg(projectId)}/sessions/${seg(sessionId)}`, signal),
+      ...live({ follows: ['sessions', 'runs'] }),
     })),
   });
 }
 
-/** Myco's work over a window, read again every `LIVE_REFRESH_MS` only while one of its runs is queued or running, never from a hidden tab. */
-export function useWorkWhileRunning(query: Omit<WorkQuery, 'live'>, options: { enabled?: boolean } = {}) {
+/** Myco's work over a window, read again whenever runs move: a run starts, finishes, queues or fails. */
+export function useLiveWork(query: Omit<WorkQuery, 'live'>, options: { enabled?: boolean } = {}) {
   return useQuery({
     enabled: options.enabled ?? true,
     queryKey: ['work', query.projectId ?? 'all', query.since, query.until],
     queryFn: ({ signal }) => fetchJson<WorkAnswer>(workPath(query), signal),
-    refetchInterval: (state) => (workHasLiveRun(state.state.data) ? LIVE_REFRESH_MS : false),
-    refetchIntervalInBackground: false,
+    ...live<WorkAnswer>({ follows: ['runs'] }),
   });
 }
 
@@ -154,6 +148,7 @@ export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswe
       pageParam === null ? path : `${path}&cursor=${encodeURIComponent(pageParam)}`, signal,
     ),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live('still'),
   });
   return {
     rows: first === undefined ? [] : [first.runs, ...(result.data?.pages.slice(1).map((page) => page.runs) ?? [])].flat(),
@@ -176,7 +171,7 @@ export const TASK_RUN_PAGE = 20;
 /** Every run of one task in a project, newest first, a page at a time on the server's cursor, read once it is wanted. */
 export function useAllTaskRuns(projectId: string, task: string, enabled: boolean) {
   const path = `/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUN_PAGE) })}`;
-  return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
+  return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { freshness: { follows: ['runs'] }, enabled, rowKey: (row) => row.id });
 }
 
 /** The most calls or steps one page reads: the server's page bound. */
@@ -225,6 +220,7 @@ export function useAllRunCalls(projectId: string, runId: string, first: { rows: 
     enabled: first.cursor !== null,
     queryFn: ({ signal }) => follow(first, MAX_CALL_PAGES, (cursor) => fetchJson<RunCallPage>(
       `/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(EVIDENCE_PAGE) })}`, signal)),
+    ...live('still'),
   });
   if (first.cursor === null) return { rows: first.rows, complete: true, pending: false, error: null };
   return { rows: query.data?.rows ?? first.rows, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error };
@@ -249,6 +245,7 @@ export function useAttemptSteps(
       );
       return follow(start ?? await page(null), MAX_STEP_PAGES, page);
     },
+    ...live('still'),
   });
   if (!has) return { rows: NO_ROWS, complete: true, pending: false, error: null, refetch: NOTHING };
   return { rows: query.data?.rows ?? NO_ROWS, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error, refetch: () => void query.refetch() };

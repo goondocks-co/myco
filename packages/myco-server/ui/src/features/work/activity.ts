@@ -14,15 +14,13 @@
  * what is provably different is flagged.
  */
 import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
-import { STEP_WORDS } from '@goondocks/myco-shared/runner-step-words.generated';
-import type { StepKind } from '@goondocks/myco-shared/worker-steps';
+import { ELIDED, mycoToolOf, stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from './call-words';
 import { count, listed } from '../today/words';
 import { times } from './words';
 import type { RunAttempt, RunAudit, RunCall, RunStep } from './wire';
 
-/** The mark a shaped form carries where it kept no word. */
-export const ELIDED = '…';
+export { ELIDED, mycoToolOf };
 
 /** How far apart, on the two clocks, a step and a Myco call may be recorded and still be read as the same call. */
 export const PAIR_SLACK_MS = 30_000;
@@ -48,43 +46,6 @@ export interface ActivityRow {
   durationMs: number | null;
   call: RunCall | null;
   step: RunStep | null;
-}
-
-/** Leads for a step by its kind: with a target, and without one. */
-const STEP_LEADS: Readonly<Record<Exclude<StepKind, 'myco' | 'tool'>, readonly [string, string]>> = {
-  read: ['Read', 'Read a file'],
-  search: ['Searched', 'Searched the files'],
-  edit: ['Edited', 'Edited a file'],
-  command: ['Ran', 'Ran a command'],
-  fetch: ['Looked up', 'Looked something up online'],
-};
-
-/** The names a step falls back to where its harness names a call nothing narrower. */
-const UNNAMED_TOOLS: ReadonlySet<string> = new Set(['tool', 'call', 'other']);
-
-/** The Myco tool a step names: its tool's last segment where that is a `myco_…` name, as Myco records the call. */
-export function mycoToolOf(stepTool: string): string {
-  const tail = stepTool.split(/__|[./:]/).at(-1) ?? stepTool;
-  return /^myco_[a-z_]+$/.test(tail) ? tail : stepTool;
-}
-
-/** A tool's name in plain words: `ToolSearch` reads "tool search", `web_fetch` reads "web fetch". */
-function plainName(tool: string): string {
-  return tool.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:/]+/g, ' ').trim().toLowerCase();
-}
-
-/** A target worth showing: one that keeps at least one word. */
-const shown = (target: string | null): string | null => (target === null || target.replaceAll(ELIDED, '').trim() === '' ? null : target);
-
-function stepLead(step: RunStep, harness: string | null): { lead: string; target: string | null } {
-  if (step.kind === 'myco') return { lead: callWords(mycoToolOf(step.tool), step.target), target: null };
-  if (step.kind === 'tool') {
-    const words = harness === null ? undefined : STEP_WORDS[harness]?.[step.tool];
-    return { lead: words ?? (UNNAMED_TOOLS.has(step.tool) ? 'Used a tool' : `Used ${plainName(step.tool)}`), target: null };
-  }
-  const target = shown(step.target);
-  const [withTarget, without] = STEP_LEADS[step.kind];
-  return target === null ? { lead: without, target: null } : { lead: withTarget, target };
 }
 
 const STEP_STATE: Readonly<Record<RunStep['outcome'], RowState>> = { ok: 'ok', error: 'failed', refused: 'refused', unfinished: 'unfinished' };
@@ -119,7 +80,7 @@ function fromStep(step: RunStep, call: RunCall | null, harness: string | null): 
     };
   }
   return {
-    key: `step-${step.seq}`, at: step.startedAt, ...stepLead(step, harness), state: STEP_STATE[step.outcome], reason: stepReason(step),
+    key: `step-${step.seq}`, at: step.startedAt, ...stepWords(step, harness), state: STEP_STATE[step.outcome], reason: stepReason(step),
     retried: false, laterSuccess: false, durationMs: stepDuration(step), call: null, step,
   };
 }

@@ -6,10 +6,11 @@ import { useNeedsYou } from '../../../hooks/use-needs-you';
 import { useProjects } from '../../../hooks/use-projects';
 import { useStatus } from '../../../hooks/use-status';
 import { useNow } from '../../../hooks/use-today';
-import { freshness } from '../../../hooks/use-work';
 import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { NeedsYouPanel } from '../../today/NeedsYou';
+import { LiveMark, WorkNow } from '../../now/WorkNow';
+import { useWorkNow } from '../../../hooks/use-live';
 import { AdminPage, useAnchorScroll } from '../AdminFrame';
 import { BackupsSection } from './BackupsSection';
 import { MeasuresSection } from './MeasuresSection';
@@ -19,6 +20,7 @@ import { WorkersSection } from './WorkersSection';
 
 /** The parts of Health, in the order the page lists them. */
 const JUMPS: ReadonlyArray<{ anchor: string; label: string }> = [
+  { anchor: HEALTH_ANCHORS.now, label: 'Now' },
   { anchor: HEALTH_ANCHORS.needsYou, label: 'Needs you' },
   { anchor: HEALTH_ANCHORS.status, label: 'Status' },
   { anchor: HEALTH_ANCHORS.workers, label: 'Workers' },
@@ -34,13 +36,14 @@ const JUMPS: ReadonlyArray<{ anchor: string; label: string }> = [
  */
 export function HealthPage() {
   const now = useNow();
-  const status = useStatus(freshness(true));
+  const status = useStatus();
   const attention = useAttention({ enabled: true });
   const backups = useBackups();
   const projects = useProjects();
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
   const needsYou = useNeedsYou({ now, projectName });
+  const workNow = useWorkNow(null);
   useAnchorScroll(!status.isPending && !attention.isPending && !backups.list.isPending);
 
   return (
@@ -65,6 +68,10 @@ export function HealthPage() {
           </RouterLink>
         ))}
       </nav>
+      <section id={HEALTH_ANCHORS.now} aria-label="Now" className="flex scroll-mt-s6 flex-col gap-s3">
+        <h2 className="flex items-center gap-s3 t-h2 text-ink">Myco’s work now <LiveMark answer={workNow.data} /></h2>
+        <WorkNow answer={workNow.data} pending={workNow.isPending} error={workNow.error} onRetry={() => { void workNow.refetch(); }} now={now} projectName={projectName} />
+      </section>
       <section id={HEALTH_ANCHORS.needsYou} aria-label="Needs you" className="scroll-mt-s6">
         <NeedsYouPanel {...needsYou} />
       </section>

@@ -34,7 +34,7 @@ export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowPro
       <>
         {leading != null && <span className="flex shrink-0 items-center">{leading}</span>}
         <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-          {kicker != null && <span className="flex min-w-0 items-center gap-s2">{kicker}</span>}
+          {kicker != null && <span className="flex min-w-0 flex-wrap items-center gap-s2">{kicker}</span>}
           <span className={cn(wrap ? 'break-words' : 'truncate', 't-body font-medium text-ink')}>{title}</span>
           {meta != null && <span className={cn(wrap ? 'break-words' : 'truncate', 't-small text-muted')}>{meta}</span>}
         </span>
