@@ -9,8 +9,9 @@ import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { OWNER_ENV, PRINCIPAL, ownerCookie } from './helpers/owner.js';
 import { saveReleaseSettings } from '@myco-server-worker/db/settings/release-connection.js';
+import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import type { OwnerContext } from '@myco-server-worker/context.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -50,11 +51,14 @@ describe('identity and Project atomic writes', () => {
       batch: (statements) =>
         r.db.batch([r.db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('last_slot','Last',1)"), ...statements]),
     };
-    const response = await handleUnarchiveProject({ ...r.serverEnv, db: racing }, {
-      params: { projectId: 'proj_1' },
-      member: { id: 'mem_machine_1' },
-      now: NOW,
-    } as OwnerContext);
+    const url = new URL('https://s/api/projects/proj_1/unarchive');
+    const context: OwnerContext = {
+      request: new Request(url, { method: 'POST' }), url,
+      params: { projectId: 'proj_1' }, member: PRINCIPAL, now: NOW, source: '192.0.2.5',
+      session: { aud: await deploymentIdentity(r.db), sub: '583231', login: 'octocat', iat: NOW, exp: NOW + 60_000 },
+      config: { clientId: OWNER_ENV.GITHUB_CLIENT_ID, clientSecret: OWNER_ENV.GITHUB_CLIENT_SECRET, sessionSecret: OWNER_ENV.SESSION_SECRET },
+    };
+    const response = await handleUnarchiveProject({ ...r.serverEnv, db: racing }, context);
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       error: 'project_limit', active: MAX_PROJECTS, limit: MAX_PROJECTS,
