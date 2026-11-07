@@ -861,8 +861,7 @@
     "tests/meta/run-tool-contract.test.ts": 1500,
     "tests/myco-server/kpi-projection.test.ts": 2000,
     "tests/myco-server/health-today-projection.test.ts": 2000,
-    "tests/myco-server/identity-project-atomic.test.ts": 10000,
-    "tests/parity/identity-project-writes.test.ts": 1000
+    "tests/myco-server/identity-project-atomic.test.ts": 10000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -896,6 +895,7 @@
     "harness deployment activity: scoped silence, legacy exclusion and replacement": 60000,
     "hook placement then wake: retention excludes fresh context answers": 60000,
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
+    "identity and Project writes: capacity admission and atomic credential replacement": 40000,
     "learning dispatch needs no pause or resume marker": 100000,
     "learning: verbatim failure becomes a session-citing spore and daily spend stops the next claim": 15000,
     "legacy spores: later vault retirement converges and replays once": 60000,
