@@ -1,3 +1,4 @@
+import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 /**
  * A run's report carries the agent's audit, and a run of an outcome closes completed only on one.
@@ -70,7 +71,7 @@ describe('a run whose report carries no audit', () => {
     const run = await r.claimedTitling();
     const answered = await r.asRun(run.runToken, { op: 'report', action: TITLING_REPORT_ACTION, summary: 'titled one session' });
     expect(answered.ok).toBe(false);
-    expect(String(answered.error)).toContain('recorded without its audit (the report carries no audit)');
+    expect(String(answered.error)).toContain('the report was recorded without its audit');
     expect((await listReports(r.e.db, SCOPE, run.id)).map((report) => [report.action, report.audit])).toEqual([[TITLING_REPORT_ACTION, null]]);
 
     expect(await r.end(run.id)).toEqual({ ended: true, status: 'failed' });
@@ -161,8 +162,7 @@ describe('the audit\'s shape', () => {
     const r = await rig();
     const run = await r.claimedTitling();
     const answered = await r.asRun(run.runToken, { op: 'report', action: TITLING_REPORT_ACTION, summary: 'titled', audit: { ...RUN_AUDIT, reasoning: '' } });
-    expect(answered).toMatchObject({ ok: false });
-    expect(String(answered.error)).toContain('(audit is missing reasoning)');
+    expectRunRefusal(answered, 'audit is missing reasoning', { tool: 'myco_run', op: 'report' });
     // What is stored is the judged audit or nothing: never the offer as it came, and never a credential it carried.
     await r.asRun(run.runToken, { op: 'report', action: TITLING_REPORT_ACTION, summary: 'titled', audit: { ...RUN_AUDIT, commands: ['mysql -uroot -pPa55word app'] } });
     const stored = r.e.sqlite.query(`SELECT audit FROM agent_reports WHERE run_id = ? ORDER BY id`).all(run.id) as Array<{ audit: string | null }>;

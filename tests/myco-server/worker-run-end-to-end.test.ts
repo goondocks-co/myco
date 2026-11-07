@@ -1,3 +1,4 @@
+import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { queuePrePauseExtraction, claimPrePauseExtraction } from './helpers/held-extraction.js';
@@ -225,7 +226,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
     const refused = await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'title', summary: 'wrote the title' });
-    expect(refused).toEqual({ ok: false, error: `a title-summary run closes with action "${TITLING_REPORT_ACTION}" or "${RUN_SKIP_ACTION}"` });
+    expectRunRefusal(refused, `a title-summary run closes with action "${TITLING_REPORT_ACTION}" or "${RUN_SKIP_ACTION}"`, { tool: 'myco_run', op: 'report' });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = ?`).get(run.id)).toEqual({ n: 0 });
     // A retry under an accepted action lands. The skip is still the model's word:
     // the session carries no title, so the server does not agree and the run fails on its artifact.
@@ -359,7 +360,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', {serverUrl:ORIGIN,actor:'mem_worker'}, NOW);
     const claimed = await claimNextRun(r.e.serverEnv, {principal:legacyWorker(r.workerToken,'m1'),harnesses:OFFERED,capabilities:WORKER_CAPABILITIES,now:NOW+1});
     if (!claimed.claimed) throw new Error('held extraction fixture was not claimed');
-    expect(await r.asRun(claimed.run.runToken,'myco_run',{op:'report',audit:RUN_AUDIT,action:RUN_SKIP_ACTION,summary:'nothing to read'})).toMatchObject({ok:false,error:'a extract-curate run closes with action "extract"'});
+    expectRunRefusal(await r.asRun(claimed.run.runToken,'myco_run',{op:'report',audit:RUN_AUDIT,action:RUN_SKIP_ACTION,summary:'nothing to read'}), 'a extract-curate run closes with action "extract"', { tool: 'myco_run', op: 'report' });
     expect(await r.workerEnds(claimed.run.id,'completed',NOW+3)).toEqual({ended:true,status:'failed'});
     expect(r.outcome(claimed.run.id)).toEqual({status:'failed',error:RUN_CLOSE_ERROR});
   });

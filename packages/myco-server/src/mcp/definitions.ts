@@ -1,3 +1,5 @@
+import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '../core/spore-input-contract.js';
+import { MAX_SPORE_CONTENT_BYTES } from '../core/spores.js';
 /**
  * The MCP tool definitions this Deployment serves.
  *
@@ -9,7 +11,7 @@
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '../core/spore-curation-contract.js';
-import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
+import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
 
@@ -29,6 +31,7 @@ export interface JsonSchemaProperty {
   minimum?: number;
   maximum?: number;
   maxItems?: number;
+  minItems?: number;
   type?: string | string[];
   enum?: readonly unknown[];
   items?: JsonSchemaProperty;
@@ -39,6 +42,7 @@ export interface JsonSchemaProperty {
 }
 
 export interface ToolInputSchema {
+  examples?: Record<string,unknown>[];
   type: 'object';
   properties: Record<string, JsonSchemaProperty>;
   required?: string[];
@@ -65,7 +69,7 @@ export interface ToolDefinition {
 /** A definition of one of the catalogued tools; the run-only surface declares its own beside these. */
 export type ServedToolDefinition = ToolDefinition & { name: ServedTool };
 
-export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
+const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
     "description": "Search project sessions, spores, plans, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.",
@@ -416,7 +420,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
   {
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -524,7 +528,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         },
         "session_id": {
           "type": "string",
-          "description": "For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Other callers use the Session:: line when known."
+          "description": "For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Curation and seeding runs name no session: omit session_id. Other callers use the Session:: line when known."
         },
         "prompt_id": {
           "type": "string",
@@ -540,7 +544,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         "agent_line": {
           "type": "string",
           minLength: 1, maxLength: AGENT_LINE_MAX_CHARS,
-          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, at most naming a component or concept, never a file or symbol as its anchor. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: "When changing ownership, retain the component’s invariants." Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
+          "description": `For op: "save" and "consolidate": one line an agent can act on — the situation that triggers the spore, then the guidance, at most naming a component or concept, never a file or symbol as its anchor. Rendered in place of the body wherever the spore is served; at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. ${AGENT_LINE_GUIDANCE} Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
         },
         "provenance_kind": {
           "type": "string",
@@ -665,6 +669,40 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
     }
   }
 ];
+
+export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = definitions.map((definition) => {
+  if (definition.name !== 'myco_spores') return definition;
+  const properties = { ...definition.inputSchema.properties };
+  const characterBounds = { ...OPTIONAL_TEXT_BOUNDS, type: MAX_SPORE_ID_CHARS };
+  for (const [field, maxLength] of Object.entries(characterBounds))
+    if (properties[field] !== undefined)
+      properties[field] = {
+        ...properties[field],
+        minLength: 1,
+        maxLength,
+        description: `${properties[field].description ?? ''} Nonempty text, at most ${maxLength} characters.`,
+      };
+  const byteBounds = {
+    content: MAX_SPORE_CONTENT_BYTES,
+    consolidated_content: MAX_SPORE_CONTENT_BYTES,
+    provenance_ref: PROVENANCE_REF_MAX,
+  };
+  for (const [field, maxBytes] of Object.entries(byteBounds))
+    properties[field] = {
+      ...properties[field],
+      minLength: 1,
+      description: `${properties[field]?.description ?? ''} Nonempty text, at most ${maxBytes} UTF-8 bytes.`,
+    };
+  properties.tags = {
+    ...properties.tags,
+    description: `${properties.tags?.description ?? ''} Serialized tags: at most ${MAX_SPORE_TAG_CHARS} characters.`,
+  };
+  properties.provenance_ref = {
+    ...properties.provenance_ref,
+    description: `${properties.provenance_ref?.description ?? ''} For pr: an https URL; for commit: ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters.`,
+  };
+  return { ...definition, inputSchema: { ...definition.inputSchema, properties } };
+});
 
 /** The definition of a served tool by name, or undefined. */
 export function definitionOf(name: string): ToolDefinition | undefined {

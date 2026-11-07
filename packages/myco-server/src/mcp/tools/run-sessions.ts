@@ -1,3 +1,4 @@
+import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 /**
  * `myco_run_sessions`: settled sessions as material, and this run's own session.
  *
@@ -15,7 +16,7 @@
  * recorded as the run's read of its session.
  */
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
-import { cleanSummary, cleanTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
+import { cleanSummary, cleanTitle, normalizeTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
 import { documentTitlingMaterial } from '../../content/titling-material.js';
 import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
 import { answerBytes } from '../../core/material-pages.js';
@@ -23,11 +24,10 @@ import { preview } from '../../core/run-material.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
 import { assertSessionMaterialReady } from '../../read/material-readiness.js';
-import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
+import { noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const int = (v: unknown): number | undefined => (typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined);
-
 
 export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, 'myco_run_sessions');
@@ -51,11 +51,19 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   }
 
   const sessionId = run.sessionId;
-  if (sessionId === null) return failure('this run names no session');
+  if (sessionId === null)
+    return runRefusal({ what: 'session title', read: input.op === 'material', actual: 'this run names no session', next: REPORT_NEXT });
   const params = titlingParamsOf(run.runContext);
-  if (params === null) return failure('this run names no session');
+  if (params === null)
+    return runRefusal({ what: 'session title', read: input.op === 'material', actual: 'this run names no session', next: REPORT_NEXT });
   const session = await getSession(db, scope, sessionId);
-  if (session === null) return failure('Session not found');
+  if (session === null)
+    return runRefusal({
+      what: 'session title',
+      read: input.op === 'material',
+      actual: `assigned session ${sessionId} not found`,
+      next: REPORT_NEXT,
+    });
 
   if (input.op === 'material') {
     const counts = await sessionCounts(db, scope, sessionId);
@@ -70,7 +78,9 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       prompt_count: counts.prompts,
       ...(session.title === null ? {} : { current_title: session.title }),
       ...(session.summary === null ? {} : { current_summary: session.summary }),
-      ...(params.mode !== 'claim' ? { note: 'The batches are the session\'s earliest and latest prompts in order; the middle is omitted.' } : {}),
+      ...(params.mode !== 'claim'
+        ? { note: "The batches are the session's earliest and latest prompts in order; the middle is omitted." }
+        : {}),
       batches: material.map((line, i) => ({ prompt_number: i + 1, user_prompt: line.prompt, response_excerpt: line.response })),
     };
     while (answer.batches.length > 1 && answerBytes({ result: answer }) > RUN_ANSWER_BYTES) answer.batches.pop();
@@ -80,12 +90,18 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   const title = typeof input.title === 'string' ? cleanTitle(input.title) : null;
   const summary = typeof input.summary === 'string' ? cleanSummary(input.summary) : null;
   if (title === null || summary === null) {
-    return failure(`a title is 1 to ${TITLE_MAX_CHARS} characters and a summary 1 to ${SUMMARY_MAX_CHARS}; both are required`);
+    return runRefusal({
+      what: 'session title and summary',
+      actual: `title is ${typeof input.title === 'string' ? normalizeTitle(input.title).length : 'missing or not text'} characters (1–${TITLE_MAX_CHARS}); summary is ${typeof input.summary === 'string' ? input.summary.trim().length : 'missing or not text'} characters (1–${SUMMARY_MAX_CHARS})`,
+      next: { tool: TITLE_WRITE_TOOL, op: 'title' },
+      repair: 'Supply both title and summary within these limits.',
+    });
   }
   const attribution = { runId: run.runId, toolName: TITLE_WRITE_TOOL, op: 'title', recordedAt: ctx.now, detail: { session_id: sessionId } };
-  const written = params.mode !== 'claim'
-    ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null, attribution)
-    : await writeTitle(db, ctx.projectId, sessionId, title, summary, attribution);
+  const written =
+    params.mode !== 'claim'
+      ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null, attribution)
+      : await writeTitle(db, ctx.projectId, sessionId, title, summary, attribution);
   if (!written) await assertSessionMaterialReady(db, ctx.projectId, sessionId);
   if (written) {
     emit({ kind: 'session_titled', projectId: ctx.projectId, sessionId, mode: params.mode, runId: run.runId });

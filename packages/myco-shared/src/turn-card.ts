@@ -11,21 +11,33 @@ export interface CardFields {
   files: string[]; commands: string[]; open_questions: string[];
 }
 
-const PAIR_FIELDS = [['decisions', 'decision', 'reason'], ['rejected', 'approach', 'reason'], ['errors', 'error', 'fix'], ['corrections', 'wrong', 'right']] as const;
+export const CARD_TEXT_FIELDS = ['asked', 'done', 'outcome'] as const;
+export const CARD_LIST_FIELDS = ['files', 'commands', 'open_questions'] as const;
+export const CARD_PAIR_FIELDS = [['decisions', 'decision', 'reason'], ['rejected', 'approach', 'reason'], ['errors', 'error', 'fix'], ['corrections', 'wrong', 'right']] as const;
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The first malformed field, with its expected shape. */
+export function cardFieldsError(value: unknown): string | null {
+  if (!record(value)) return 'card is missing or malformed; expected an object with all card fields';
+  for (const field of CARD_TEXT_FIELDS) if (typeof value[field] !== 'string') return `card field ${field} is missing or malformed; expected a string (use "" when empty)`;
+  for (const field of CARD_LIST_FIELDS) {
+    const items = value[field];
+    if (!Array.isArray(items)) return `card field ${field} is missing or malformed; expected an array of strings (use [] when empty)`;
+    const index = items.findIndex(item => typeof item !== 'string');
+    if (index !== -1) return `card field ${field}[${index}] is malformed; expected a string`;
+  }
+  for (const [field, text, detail] of CARD_PAIR_FIELDS) {
+    const items = value[field];
+    if (!Array.isArray(items)) return `card field ${field} is missing or malformed; expected an array of {${text}:string,${detail}:string} (use [] when empty)`;
+    const index = items.findIndex(item => !record(item) || typeof item[text] !== 'string' || typeof item[detail] !== 'string');
+    if (index !== -1) return `card field ${field}[${index}] is malformed; expected {${text}:string,${detail}:string}`;
+  }
+  return null;
+}
 
 /** Every admitted field has the same shape at write and read time. */
 export function isCardFields(value: unknown): value is CardFields {
-  return record(value)
-    && ['asked', 'done', 'outcome'].every(field => typeof value[field] === 'string')
-    && ['files', 'commands', 'open_questions'].every(field => {
-      const items = value[field];
-      return Array.isArray(items) && items.every(item => typeof item === 'string');
-    })
-    && PAIR_FIELDS.every(([field, text, detail]) => {
-      const items = value[field];
-      return Array.isArray(items) && items.every(item => record(item) && typeof item[text] === 'string' && typeof item[detail] === 'string');
-    });
+  return cardFieldsError(value) === null;
 }
 
 const CARD_FORMAT = 'Myco card v1\n';

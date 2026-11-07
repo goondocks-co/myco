@@ -1,3 +1,5 @@
+import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, MAX_FILE_PATH_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from './spore-input-contract.js';
+import { runRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { withCurationWrite } from './spore-curation.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
@@ -8,7 +10,7 @@ import { extractionSourceSession } from '../read/prompts.js';
 import { promptInSession } from '../read/turns.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
-import { AGENT_LINE_MAX_CHARS } from './injection.js';
+import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from './injection.js';
 import { nearSpores } from './spore-near-matches.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { importPolicy } from './import-policy.js';
@@ -20,13 +22,10 @@ export type SporePrincipal = { kind: 'member'; memberId: string; machineId: stri
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
 export interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
-type SporeWriteFailure = { ok: false; error: string };
-const failure = (error: string): SporeWriteFailure => ({ ok: false, error });
+type SporeWriteFailure = { ok: false; error: string; repairCall?: {tool:string;op:string;page?:number} };
+const failure = (error: string, repairCall?: SporeWriteFailure['repairCall']): SporeWriteFailure => ({ ok: false, error, ...(repairCall === undefined ? {} : {repairCall}) });
 const SESSION_NOT_FOUND = 'session_id not found';
-const MAX_SPORE_ID_CHARS = 192;
-const MAX_SESSION_ID_CHARS = 384;
-const MAX_SPORE_TAG_CHARS = 4096;
-const MAX_FILE_PATH_CHARS = 4096;
+
 const writerOf = (ctx: SporeWriteContext) => {
   const p = ctx.principal;
   return p.kind === 'member' ? { agentId: USER_AGENT_ID, author: p.memberId }
@@ -37,8 +36,8 @@ async function sessionOf(ctx: SporeWriteContext, scope: ReadScope, input: SporeW
   const p = ctx.principal;
   if (p.kind === 'grant') return named === undefined ? { ok: true, sessionId: null } : failure(SESSION_NOT_FOUND);
   if (p.kind === 'run') {
-    if (named !== undefined && named !== p.sessionId) return failure(SESSION_NOT_FOUND);
-    return { ok: true, sessionId: p.sessionId !== null && await projectHoldsSession(ctx.env.db, scope, p.sessionId) ? p.sessionId : null };
+    if (named !== undefined && named !== p.sessionId) return failure(`session_id ${JSON.stringify(named)} is invalid for this run; ${p.sessionId === null ? 'no session id is valid: omit session_id' : 'valid session_id is '+JSON.stringify(p.sessionId)}`);
+    return { ok: true, sessionId:p.sessionId !== null && await projectHoldsSession(ctx.env.db,scope,p.sessionId) ? p.sessionId : null };
   }
   if (named !== undefined && !await sessionHeldByMachine(ctx.env.db, scope, named, p.machineId)) return failure(SESSION_NOT_FOUND);
   return { ok: true, sessionId: named ?? null };
@@ -52,9 +51,9 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
   if (ctx.principal.kind === 'run' && ctx.principal.task === EXTRACTION_TASK) {
     if (!(await dispatchedBeforeLedger(ctx.env.db, scope, ctx.principal.runId)) || (promptId === undefined && str(input.session_id) !== undefined)) {
       const sessionId = str(input.session_id);
-      if (sessionId === undefined) return failure('session_id is required for extraction spore writes');
+      if (sessionId === undefined) return failure('session_id is missing; extraction requires the supporting session served in material',{tool:'myco_run_learning',op:'material',page:1});
       const db = await servedSessionStore(ctx.env.db, scope, ctx.principal.runId, sessionId);
-      if (db === null) return failure(SESSION_NOT_SERVED);
+      if (db === null) return failure(`${SESSION_NOT_SERVED}; requested session_id ${JSON.stringify(sessionId)}`,{tool:'myco_run_learning',op:'material',page:1});
       return { ok: true, sessionId, db };
     }
     if (promptId === undefined) return failure('prompt_id is required for extraction spore writes');
@@ -74,13 +73,13 @@ const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
 /** The agent line a write carries, null where it carries none, or the one thing wrong with it. */
 function agentLineOf(input: SporeWriteInput): { ok: true; agentLine: string | null } | SporeWriteFailure {
   const line = str(input.agent_line);
-  if (line === undefined) return failure(`Not saved: agent_line is missing; the limit is ${AGENT_LINE_MAX_CHARS} characters. Supply a nonempty agent_line and call myco_spores op ${String(input.op)} again with the same sources.`);
+  if (line === undefined) return failure(`agent_line is missing; expected nonempty text within ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE}`);
   const oneLine = line.replace(/\s+/g, ' ').trim();
-  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(`Not saved: agent_line is ${oneLine.length} characters after whitespace normalization; the limit is ${AGENT_LINE_MAX_CHARS}. Supply a nonempty line within the limit and call myco_spores op ${String(input.op)} again with the same sources.`);
+  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(`agent_line is ${oneLine.length} characters after whitespace normalization; the limit is ${AGENT_LINE_MAX_CHARS}. ${AGENT_LINE_GUIDANCE}`);
   return { ok: true, agentLine: oneLine };
 }
-const COMMIT_REF = /^[0-9a-f]{7,40}$/;
-const PROVENANCE_REF_MAX = 512;
+const COMMIT_REF = new RegExp(`^[0-9a-f]{${COMMIT_REF_MIN_CHARS},${COMMIT_REF_MAX_CHARS}}$`);
+
 /** One refusal for every malformed citation, so a caller learns the shape and nothing about the store. */
 const PROVENANCE_REASON = 'provenance_kind and provenance_ref are given together: kind "pr" with an https URL, or kind "commit" with a sha';
 
@@ -89,10 +88,10 @@ function provenanceOf(input: SporeWriteInput): { ok: true; provenance: SporeProv
   const kind = str(input.provenance_kind);
   const ref = str(input.provenance_ref);
   if (input.provenance_kind === undefined && input.provenance_ref === undefined) return { ok: true, provenance: null };
-  if (kind === undefined || ref === undefined || !PROVENANCE_KINDS.has(kind)) return failure(PROVENANCE_REASON);
-  if (new TextEncoder().encode(ref).byteLength > PROVENANCE_REF_MAX) return failure(PROVENANCE_REASON);
-  if (kind === 'commit' && !COMMIT_REF.test(ref)) return failure(PROVENANCE_REASON);
-  if (kind === 'pr' && !ref.startsWith('https://')) return failure(PROVENANCE_REASON);
+  if (kind === undefined || ref === undefined || !PROVENANCE_KINDS.has(kind)) return failure(`${PROVENANCE_REASON}; kind is ${JSON.stringify(kind) ?? 'missing'}, ref is ${ref === undefined ? 'missing' : ref.length+' characters'}`);
+  if (new TextEncoder().encode(ref).byteLength > PROVENANCE_REF_MAX) return failure(`provenance_ref is ${new TextEncoder().encode(ref).byteLength} UTF-8 bytes; the limit is ${PROVENANCE_REF_MAX}`);
+  if (kind === 'commit' && !COMMIT_REF.test(ref)) return failure(`provenance_ref is ${ref.length} characters; commit requires ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters`);
+  if (kind === 'pr' && !ref.startsWith('https://')) return failure(`provenance_ref is ${ref.length}-character text without an https:// prefix; pr requires an https URL`);
   return { ok: true, provenance: { kind: kind as SporeProvenance['kind'], ref } };
 }
 
@@ -109,27 +108,65 @@ async function resolve(
   return outcome === 'duplicate' ? 'duplicate' : true;
 }
 
-const OPTIONAL_TEXT_BOUNDS: Readonly<Record<string, number>> = {
-  id: MAX_SPORE_ID_CHARS, old_spore_id: MAX_SPORE_ID_CHARS, new_spore_id: MAX_SPORE_ID_CHARS, event_id: MAX_SPORE_ID_CHARS, session_id: MAX_SESSION_ID_CHARS, prompt_id: MAX_SPORE_ID_CHARS,
-  context: MAX_SPORE_CONTENT_BYTES, content_hash: MAX_SPORE_ID_CHARS, properties: MAX_SPORE_CONTENT_BYTES, reason: MAX_SPORE_CONTENT_BYTES,
-};
-
 function sporeMetadataError(input: SporeWriteInput): string | null {
   if (input.channel === 'import' && input.file_path != null && (typeof input.file_path !== 'string' || !input.file_path || input.file_path.length > MAX_FILE_PATH_CHARS)) return `file_path must be nonempty text of at most ${MAX_FILE_PATH_CHARS} characters`;
   for (const [field, max] of Object.entries(OPTIONAL_TEXT_BOUNDS)) {
     const value = input[field];
-    if (value !== undefined && value !== null && (typeof value !== 'string' || value.length === 0 || value.length > max)) return `${field} must be nonempty text of at most ${max} characters`;
+    if (value !== undefined && value !== null && (typeof value !== 'string' || value.length === 0 || value.length > max)) return `${field} is ${typeof value === 'string' ? value.length : 'not text'} characters; expected nonempty text of at most ${max} characters`;
   }
-  if (input.tags !== undefined && input.tags !== null && (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string') || (sporeTags(input.tags)?.length ?? 0) > MAX_SPORE_TAG_CHARS)) return 'tags must be bounded text tags';
+  if (input.tags !== undefined && input.tags !== null) {
+    if (!Array.isArray(input.tags)) return `tags is ${typeof input.tags}; expected an array of strings`;
+    const malformed = input.tags.findIndex(tag => typeof tag !== 'string');
+    if (malformed !== -1) return `tags[${malformed}] is ${typeof input.tags[malformed]}; expected a string`;
+    const chars = sporeTags(input.tags)?.length ?? 0;
+    if (chars > MAX_SPORE_TAG_CHARS) return `serialized tags is ${chars} characters; the limit is ${MAX_SPORE_TAG_CHARS}`;
+  }
   return null;
 }
 
 export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
-  if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) {
-    return withCurationWrite(ctx.env.db,ctx.projectId,ctx.principal.runId,input,
-      db => admittedSporeWrite(input,{...ctx,env:{...ctx.env,db}}));
-  }
-  return admittedSporeWrite(input,ctx);
+  const apply = async (db: RelationalStore, refuse: RefuseRunWrite = async (refusal) => runRefusal(refusal)) => {
+    const result = await admittedSporeWrite(input, { ...ctx, env: { ...ctx.env, db } });
+    if (
+      ctx.principal.kind === 'run' &&
+      result !== null &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      result.ok === false &&
+      'error' in result
+    ) {
+      const { repairCall, ...refused } = result as SporeWriteFailure;
+      const stale = result.error === 'stale';
+      const id =
+        input.id ??
+        input.old_spore_id ??
+        (Array.isArray(input.source_spore_ids) ? (input.source_spore_ids[0]?.id ?? input.source_spore_ids[0]) : undefined);
+      const curation = ctx.principal.task === CURATION_TASK;
+      return {
+        ...refused,
+        ...(await refuse({
+          what: `myco_spores op ${String(input.op)}${typeof id === 'string' ? ' for ' + JSON.stringify(id) : ''}`,
+          actual: stale && 'reason' in result ? String(result.reason) : String(result.error),
+          next:
+            repairCall ??
+            (stale
+              ? curation
+                ? { tool: 'myco_run', op: 'report' }
+                : { tool: 'myco_run_spores', op: 'get', id }
+              : { tool: 'myco_spores', op: String(input.op) }),
+          repair: stale
+            ? curation
+              ? 'Assigned sources changed; report the failure.'
+              : 'Re-read the source and reassess its current status and revision before deciding again.'
+            : 'Correct the named input and retain the same sources.',
+        })),
+      };
+    }
+    return result;
+  };
+  return ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK
+    ? withCurationWrite(ctx.env.db, ctx.projectId, ctx.principal.runId, input, apply)
+    : apply(ctx.env.db);
 }
 
 async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
@@ -137,9 +174,9 @@ async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext
   if (invalid !== null) return failure(invalid);
   try { return await admitSporeWrite(input, ctx); }
   catch (error) {
-    if (error instanceof Error && error.message.includes('[myco_curation_changed]')) return failure('assigned spores changed or the curation decision is closed');
+    if (error instanceof Error && error.message.includes('[myco_curation_changed]')) return failure('assigned spores changed or the curation decision is closed',{tool:'myco_run',op:'report'});
     if (error instanceof MemberWriteRefused) return failure('import authority required');
-    if (error instanceof ServedSessionRefused) return failure(SESSION_NOT_SERVED);
+    if (error instanceof ServedSessionRefused) return failure(SESSION_NOT_SERVED,{tool:'myco_run_learning',op:'material',page:1});
     throw error;
   }
 }
@@ -148,7 +185,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
   const scope = { projectId: ctx.projectId };
   const { db } = ctx.env;
   const op = input.op;
-  if (input.status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(input.status)) return failure('invalid spore status');
+  if (input.status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(input.status)) return failure(`status is ${JSON.stringify(input.status)}; expected ${SPORE_STATUSES.join(', ')}`);
   if (input.channel === 'import') return importSporeWrite(input, ctx);
   if (ctx.principal.kind === 'grant' && ['supersede', 'obsolete', 'consolidate'].includes(String(op))) {
     const ids = op === 'supersede' || (op === 'consolidate' && input.new_spore_id !== undefined) ? [input.old_spore_id ?? input.id, input.new_spore_id] : op === 'obsolete' ? [input.id]
@@ -162,8 +199,8 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const content = str(input.content);
     const type = str(input.type);
     if (content === undefined) return failure('content is required for op: save');
-    if (type === undefined || type.length > MAX_SPORE_ID_CHARS) return failure('type is required for op: save, at most 192 characters');
-    if (overSporeCap(content)) return failure(SPORE_CAP_REASON);
+    if (type === undefined || type.length > MAX_SPORE_ID_CHARS) return failure(`type is ${type === undefined ? 'missing or not text' : type.length+' characters'}; expected nonempty text of at most ${MAX_SPORE_ID_CHARS} characters`);
+    if (overSporeCap(content)) return failure(`${SPORE_CAP_REASON}; content is ${new TextEncoder().encode(String(input.content ?? input.consolidated_content ?? '')).length} UTF-8 bytes`);
     const by = writerOf(ctx);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;

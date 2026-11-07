@@ -46,9 +46,12 @@ export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable'
   | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
 
+/** A title normalized to one line with no trailing period or ellipsis. */
+export const normalizeTitle = (title:string):string => title.replace(/\s+/g, ' ').trim().replace(/[.…]+$/, '').trim();
+
 /** A title as the run offered it, made fit to store: one line, no trailing period, inside the bound; null when nothing usable remains. */
 export function cleanTitle(title: string): string | null {
-  const cleaned = title.replace(/\s+/g, ' ').trim().replace(/[.…]+$/, '').trim();
+  const cleaned = normalizeTitle(title);
   return cleaned.length === 0 || cleaned.length > TITLE_MAX_CHARS ? null : cleaned;
 }
 

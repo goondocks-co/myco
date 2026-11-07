@@ -41,7 +41,6 @@ import { ALWAYS_ALLOWED, isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './
 import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { RUN_ANSWER_BYTES } from '../core/read-window.js';
 import { answerBytes } from '../core/material-pages.js';
-import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
 import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
@@ -205,11 +204,12 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
     };
   }
   if (p.kind === 'run') {
+    const definitions = runDefinitions(p.allow,p.task);
     return {
       principalKind: 'run', memberId: null,
       instructions: runInstructionsFor(acceptedActions(p.task)),
-      definitions: runDefinitions(p.allow),
-      definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
+      definitions,
+      definitionOf: (name) => definitions.find(definition => definition.name === name),
       opOf: (name, input) => runOpOf(name, input),
       allows: (name, op) => isRunCall(p.allow, name as AnyTool, op),
       admits: async (scope) => {
