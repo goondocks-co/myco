@@ -10,7 +10,7 @@ export function useBackups() {
   const qc = useQueryClient();
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['backups'] }); };
   return {
-    list: useQuery({ queryKey: ['backups'], queryFn: ({ signal }) => fetchJson<BackupsAnswer>('/api/backups', signal), ...live('still') }),
+    list: useQuery({ queryKey: ['backups'], queryFn: ({ signal }) => fetchJson<BackupsAnswer>('/api/backups', signal), ...live({ follows: ['recovery'] }) }),
     create: useMutation({ mutationFn: () => postJson<{ backup: BackupRow; pruned: number }>('/api/backups', {}), onSuccess: invalidate }),
     pin: useMutation({ mutationFn: (v: { id: string; pinned: boolean }) => postJson<{ pinned: boolean }>(`/api/backups/${encodeURIComponent(v.id)}/pin`, { pinned: v.pinned }), onSuccess: invalidate }),
     preview: useMutation({ mutationFn: (id: string) => postJson<RestorePreview>(`/api/backups/${encodeURIComponent(id)}/restore-preview`, {}) }),

@@ -175,6 +175,28 @@ describe('Myco’s work now', () => {
     expect(answer.waiting.find((item) => item.what === 'Curation')?.why).toBe('A group of overlapping spores is due; it starts when the server next checks, inside the daily budget.');
   });
 
+  it('moves its knowledge mark when a spore is edited or retired, and its recovery mark as a backup advances', async () => {
+    const h = harness();
+    h.sqlite.run("INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?)", [NOW, NOW]);
+    h.sqlite.run("INSERT INTO spores (project_id, id, agent_id, session_id, observation_type, status, content, author, created_at) VALUES ('proj_1', 'sp1', 'agent_1', 's1', 'gotcha', 'active', 'x', 'agent_1', ?)", [NOW - HOUR]);
+    const saved = (await h.read()).marks.knowledge;
+    h.sqlite.run("UPDATE spores SET content = 'y', revision = revision + 1, updated_at = ? WHERE id = 'sp1'", [NOW]);
+    const edited = (await h.read()).marks.knowledge;
+    expect(edited).not.toBe(saved);
+    h.sqlite.run("UPDATE spores SET status = 'obsolete', revision = revision + 1, updated_at = ? WHERE id = 'sp1'", [NOW + 1]);
+    expect((await h.read()).marks.knowledge).not.toBe(edited);
+
+    let stage = 'export';
+    const recovery = { status: async () => ({ attempt: 7, stage, form: 'staging', startedAt: NOW - MINUTE, recoverable: false, staged: { prefix: 'p', sqlBytes: null, downloadedBytes: 0, parts: 0 } }) };
+    const read = () => readWorkNow({ ...h.fixture.serverEnv, recovery } as never, { all: true }, NOW, true);
+    const copying = await read();
+    expect(copying.waiting.find((item) => item.key === 'backup')?.why).toBe('A backup is copying the database. Work that reads it waits until the copy finishes.');
+    stage = 'complete';
+    const done = await read();
+    expect(done.marks.recovery).not.toBe(copying.marks.recovery);
+    expect(done.waiting.find((item) => item.key === 'backup')).toBeUndefined();
+  });
+
   it('settles a curation failure once its group is decided, and keeps a group curation gave up on', async () => {
     const h = harness();
     h.sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','spore_curation',1,1,'fixture')");

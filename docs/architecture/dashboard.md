@@ -19,7 +19,7 @@ page cannot fall out of live data by omission.
 
 | Freshness | Use it for | What it costs |
 |---|---|---|
-| `{ follows: ['runs' \| 'sessions' \| 'knowledge' \| 'fleet'] }` | Any read that shows what is happening now: Today, Myco's work, the session list, Knowledge's spores and plans, status, Needs you, runners | Re-read only when the heartbeat says that mark moved. Never by the clock. |
+| `{ follows: ['runs' \| 'sessions' \| 'knowledge' \| 'recovery' \| 'fleet'] }` | Any read that shows what is happening now: Today, Myco's work, the session list, Knowledge's spores and plans, backups and automatic recovery, status, Needs you, runners | Re-read only when the heartbeat says that mark moved. Never by the clock. |
 | `{ follows, until: (data) => instant }` | A read that also goes stale by time alone: the live sessions group, whose first session falls quiet 15 minutes after its last capture | As `follows`, and once more at `until`, captured or not. |
 | `{ whileMoving: (data) => boolean }` | One small read of one thing in motion, such as an open running run or an embedding switch under way | Every `MOVING_MS` (10 s) while its own answer says it moves. `quick` is every `QUICK_MS` (2 s), for a check a person just asked for. |
 | `'heavy'` | Measures and anything else that aggregates long windows (`/api/kpis`) | Read once when shown. No clock, no tab-return refetch, no heartbeat. Only a person asks again. |
@@ -31,7 +31,8 @@ the shell, for the page's scope: the project in the path, or every project. It i
 
 - `runs` moves when a run starts, finishes, queues or fails.
 - `sessions` moves when capture arrives.
-- `knowledge` moves when a spore is written or a plan changes.
+- `knowledge` moves when a spore is written, edited, retired or deleted (the per-project spore revision the spore triggers keep in `spore_curation_changes`, one row per project) or a plan changes.
+- `recovery` moves when a backup attempt starts, advances or settles (the producer status the heartbeat already reads for the backup wait).
 - `fleet` moves when a runner comes, goes, pauses or takes a run.
 
 When a mark moves, `LiveRefresh` invalidates only the open queries that follow it.

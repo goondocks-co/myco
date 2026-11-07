@@ -75,7 +75,7 @@ describe('dashboard live refresh', () => {
     expect(paged).toContain('...live(opts.freshness)');
   });
 
-  it('keeps the pages that show stored knowledge and session lists following their marks', () => {
+  it('keeps the pages that show stored knowledge, session lists and backups following their marks', () => {
     const follows = (file: string, key: string, marks: string) => {
       const query = queries(path.join(UI_SRC, file)).find((q) => q.options.includes(key));
       expect({ file, key, options: query?.options.includes(marks) }).toEqual({ file, key, options: true });
@@ -83,6 +83,8 @@ describe('dashboard live refresh', () => {
     follows('hooks/use-knowledge.ts', "'spore-stream'", "follows: ['knowledge', 'runs']");
     follows('hooks/use-knowledge.ts', "'plans'", "follows: ['knowledge', 'runs']");
     follows('hooks/use-sessions.ts', "'live'", 'until: liveUntil');
+    follows('hooks/use-recovery.ts', "'recovery'", "follows: ['recovery']");
+    follows('hooks/use-backups.ts', "'backups'", "follows: ['recovery']");
     expect(fs.readFileSync(path.join(UI_SRC, 'hooks', 'use-sessions.ts'), 'utf8')).toMatch(/freshness: \{ follows: \['sessions', 'runs'\] \},\n\s+rowKey/);
   });
 

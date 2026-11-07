@@ -37,7 +37,7 @@ import { CURATION_MAX_FAILURES } from '../core/spore-curation.js';
 import { capabilityOf } from '../core/worker-selection.js';
 import { PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { TASK_SCHEDULE } from '../core/jobs.js';
-import { ADVANCING_STAGES } from '../core/recovery-producer.js';
+import { ADVANCING_STAGES, type RecoveryProducerStatus } from '../core/recovery-producer.js';
 import { within } from '../core/recovery-inventory.js';
 import { OUTCOME_LOOKBACK_MS } from '../core/attention-state.js';
 
@@ -121,10 +121,12 @@ export interface WorkNowAnswer {
   needsYou: NowNeed[];
   /**
    * What moved between answers: `runs` changes when a run starts, finishes, queues or fails; `sessions` when
-   * any session receives capture; `knowledge` when a spore is written or a plan changes; `fleet` when a runner comes,
-   * goes, pauses or takes a run. The dashboard re-reads a page's other reads only when the mark they follow moves.
+   * any session receives capture; `knowledge` when a spore is written, edited, retired or deleted (the per-Project
+   * spore revision the spore triggers keep) or a plan changes; `recovery` when a backup attempt starts, advances or
+   * settles; `fleet` when a runner comes, goes, pauses or takes a run. The dashboard re-reads a page's other reads only
+   * when the mark they follow moves.
    */
-  marks: { runs: string; sessions: string; knowledge: string; fleet: string };
+  marks: { runs: string; sessions: string; knowledge: string; recovery: string; fleet: string };
   /**
    * How many Projects this answer read per-Project work for, of how many it covers. A Deployment-wide answer reads
    * Projects with something running, queued or recently failed first, then the rest up to `NOW_PROJECTS_MAX`; when
@@ -305,7 +307,8 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
 }
 
 /** Deployment-wide holds: the rolling budget spent, learning's backlog, and a backup that holds the database. */
-async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly WorkerFleetRow[], live: ReadonlySet<string>, now: number, includeSignIn: boolean): Promise<NowWaiting[]> {
+async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly WorkerFleetRow[], live: ReadonlySet<string>, now: number, includeSignIn: boolean,
+  recovery: RecoveryProducerStatus | null): Promise<NowWaiting[]> {
   const waiting: NowWaiting[] = [];
   const holds = await readBudgetHolds(env.db);
   const held = holds.heldHeads ?? [];
@@ -327,13 +330,9 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
       held.some((head) => head.task === task));
     waiting.push({ key: 'learning', projectId, what: 'Learning from sessions', count: learning.dueSessions, why: line[0]!.toUpperCase() + line.slice(1), since: null, nextAt: null });
   }
-  const recovery = env.recovery;
-  if (recovery !== undefined) {
-    const status = await within(() => recovery.status(), BACKUP_STATUS_MS, Date.now).catch(() => null);
-    if (status !== null && (ADVANCING_STAGES as readonly string[]).includes(status.stage)) {
-      waiting.push({ key: 'backup', projectId: null, what: 'Backup', count: null, since: status.startedAt, nextAt: null,
-        why: 'A backup is copying the database. Work that reads it waits until the copy finishes.' });
-    }
+  if (recovery !== null && (ADVANCING_STAGES as readonly string[]).includes(recovery.stage)) {
+    waiting.push({ key: 'backup', projectId: null, what: 'Backup', count: null, since: recovery.startedAt, nextAt: null,
+      why: 'A backup is copying the database. Work that reads it waits until the copy finishes.' });
   }
   return waiting;
 }
@@ -424,7 +423,8 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
   const settle = async <T>(section: WorkNowSection, read: () => Promise<T>, fallback: T): Promise<T> => {
     try { return await read(); } catch { if (!unavailable.includes(section)) unavailable.push(section); return fallback; }
   };
-  const [fleet, marks, running] = await Promise.all([
+  const producer = env.recovery;
+  const [fleet, marks, running, recovery] = await Promise.all([
     settle('waiting', async () => {
       const rows = await readWorkerFleet(env.db, now, includeSignIn);
       if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true).available);
@@ -433,12 +433,13 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
     env.db.batch([
       env.db.prepare('SELECT MAX(started_at) AS at FROM agent_runs'),
       env.db.prepare('SELECT MAX(last_live_received_at) AS at FROM sessions WHERE last_live_received_at IS NOT NULL'),
-      env.db.prepare('SELECT MAX(created_at) AS at FROM spores INDEXED BY idx_spores_created_deployment'),
+      env.db.prepare('SELECT SUM(revision) AS at FROM spore_curation_changes'),
       env.db.prepare('SELECT MAX(updated_at) AS at FROM plans INDEXED BY idx_plans_updated_deployment'),
     ]).then((answers) => answers.map((answer) => String((answer.results[0] as { at?: unknown } | undefined)?.at ?? '')),
       // Marks that cannot be read move on every answer, so the reads that follow them refresh rather than freeze.
       () => Array.from({ length: 4 }, () => `unread:${now}`)),
     settle('running', () => readRunning(env.db, scope), [] as NowRunning[]),
+    producer === undefined ? null : within(() => producer.status(), BACKUP_STATUS_MS, Date.now).catch(() => null),
   ]);
   const queued = await settle('waiting', () => readQueued(env, scope, fleet, now, includeSignIn), [] as NowWaiting[]);
   const live = new Set([...running.map((r) => `${r.projectId}\u0000${r.task}`), ...queued.map((q) => q.key.slice('queued:'.length).split('\u0000').slice(0, 2).join('\u0000'))]);
@@ -446,7 +447,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
   const projects = await settle('needsYou', () => projectsOf(env.db, scope, active), { read: [] as string[], total: 0 });
   const [scheduled, holds] = await Promise.all([
     settle('waiting', () => readScheduled(env, projects.read, 'projectId' in scope, live, now), { waiting: [], failingGroups: [] as FailingGroup[] }),
-    settle('waiting', () => readHolds(env, scope, fleet, live, now, includeSignIn), [] as NowWaiting[]),
+    settle('waiting', () => readHolds(env, scope, fleet, live, now, includeSignIn, recovery), [] as NowWaiting[]),
   ]);
   const needsYou = await settle('needsYou', () => readNeeds(env, projects.read, scheduled.failingGroups, fleet, now), [] as NowNeed[]);
   const waiting = [...holds, ...queued, ...scheduled.waiting];
@@ -457,6 +458,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
       runs: [marks[0], ...running.map((r) => r.runId), ...waiting.map((w) => `${w.key}=${w.count ?? ''}`), ...needsYou.map((n) => n.key)].join('|'),
       sessions: marks[1]!,
       knowledge: `${marks[2]}|${marks[3]}`,
+      recovery: recovery === null ? '' : `${recovery.attempt ?? ''}:${recovery.stage}:${recovery.staged?.parts ?? ''}:${recovery.staged?.downloadedBytes ?? ''}`,
       fleet: fleet.map((row) => `${row.runner?.id ?? row.credentialId}:${row.runnerDetails?.display ?? (row.recent ? 'recent' : 'quiet')}:${row.busy?.runId ?? ''}`).join('|'),
     },
   };

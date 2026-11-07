@@ -15,7 +15,7 @@ export function useRecovery() {
     queryKey: ['recovery', 'exports'],
     queryFn: ({ signal }) => fetchJson<RecoveryStatus>('/api/recovery/exports', signal),
     retry: false,
-    ...live('still'),
+    ...live({ follows: ['recovery'] }),
   });
 }
 

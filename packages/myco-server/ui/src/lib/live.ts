@@ -7,8 +7,9 @@
  *   whose rows-read ceilings are tested. It is read every `TICK_MS`, every `RUNNING_TICK_MS` while something runs,
  *   and never while the tab is hidden. `hooks/use-live.tsx` runs it.
  * - **`follows`**: a page's other reads re-read only when the heartbeat's marks they follow move — `runs` when a run
- *   starts, finishes, queues or fails, `sessions` when capture arrives, `knowledge` when a spore is written or a plan
- *   changes, `fleet` when a runner's state changes. A page never polls a window of history by the clock. `until`
+ *   starts, finishes, queues or fails, `sessions` when capture arrives, `knowledge` when a spore is written, edited,
+ *   retired or deleted or a plan changes, `recovery` when a backup attempt starts, advances or settles, `fleet` when a
+ *   runner's state changes. A page never polls a window of history by the clock. `until`
  *   adds the instant the answer goes stale by time alone (a live session falling quiet), so it is read again then
  *   even when nothing is stored.
  * - **`whileMoving`**: one small read of one thing in motion (a run that is running, a switch under way) is read every
@@ -38,8 +39,8 @@ export const CLOCK_MS = 30_000;
 const EXPIRY_FLOOR_MS = 1_000;
 
 /** What moves the heartbeat reports, and a read can follow. */
-export type Mark = 'runs' | 'sessions' | 'knowledge' | 'fleet';
-export const MARKS: readonly Mark[] = ['runs', 'sessions', 'knowledge', 'fleet'];
+export type Mark = 'runs' | 'sessions' | 'knowledge' | 'recovery' | 'fleet';
+export const MARKS: readonly Mark[] = ['runs', 'sessions', 'knowledge', 'recovery', 'fleet'];
 
 /** A query's freshness, as a page declares it. */
 export type Freshness<T> =

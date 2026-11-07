@@ -70,7 +70,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
   '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
-  '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', fleet: 'f' }, projects: { read: 1, total: 1 },
+  '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1 },
     running: [{ runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', what: 'Learn from sessions', machine: 'homelab-mini', harness: 'codex', model: null, startedAt: NOW - 60_000, step: { words: 'Read session cards', at: NOW - 5_000 } }],
     waiting: [{ key: 'budget', projectId: null, what: 'Automatic work', count: null, why: 'Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.', since: null, nextAt: null }],
     needsYou: [{ key: 'sign-in:rn_mini', projectId: null, what: 'homelab-mini can’t sign in to a coding agent', why: 'Sign in to a coding agent on this runner.', at: NOW, runId: null, retryAt: null }] }),

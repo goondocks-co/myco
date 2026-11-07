@@ -40,7 +40,7 @@ export interface WorkNowAnswer {
   running: NowRunning[];
   waiting: NowWaiting[];
   needsYou: NowNeed[];
-  marks: { runs: string; sessions: string; knowledge: string; fleet: string };
+  marks: { runs: string; sessions: string; knowledge: string; recovery: string; fleet: string };
   /** How many projects the answer read per-project work for, of how many it covers. */
   projects: { read: number; total: number };
   unavailable: WorkNowSection[];

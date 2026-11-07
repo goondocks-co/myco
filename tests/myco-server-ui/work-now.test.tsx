@@ -21,7 +21,7 @@ const NOW = Date.now();
 const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
 
 const ANSWER: WorkNowAnswer = {
-  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', fleet: 'f1' }, projects: { read: 1, total: 1 },
+  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', recovery: 'b1', fleet: 'f1' }, projects: { read: 1, total: 1 },
   running: [{ runId: 'run_live', projectId: MYCO, task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini',
     harness: 'claude-code', model: 'claude-sonnet-4-5', startedAt: NOW - 130_000, step: { words: 'Read a spore', at: NOW - 5_000 } }],
   waiting: [
