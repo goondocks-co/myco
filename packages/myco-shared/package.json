@@ -151,6 +151,10 @@
       "import": "./dist/execution-profile.js",
       "types": "./dist/execution-profile.d.ts"
     },
+    "./live-marks": {
+      "import": "./dist/live-marks.js",
+      "types": "./dist/live-marks.d.ts"
+    },
     "./step-words": {
       "import": "./dist/step-words.js",
       "types": "./dist/step-words.d.ts"

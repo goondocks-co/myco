@@ -24,6 +24,9 @@
  * using the Deployment; a person's presence is reported apart from it (`watchPresence`).
  */
 import type { Query } from '@tanstack/react-query';
+import { AUTOMATIC_HEADER, MARKS, PRESENCE_PATH, type Mark } from '@goondocks/myco-shared/live-marks';
+
+export { AUTOMATIC_HEADER, MARKS, PRESENCE_PATH, type Mark };
 
 /** How often the heartbeat reads while nothing runs. */
 export const TICK_MS = 30_000;
@@ -38,9 +41,6 @@ export const CLOCK_MS = 30_000;
 /** The least wait before a read that goes stale by time is read again. */
 const EXPIRY_FLOOR_MS = 1_000;
 
-/** What moves the heartbeat reports, and a read can follow. */
-export type Mark = 'runs' | 'sessions' | 'knowledge' | 'recovery' | 'fleet';
-export const MARKS: readonly Mark[] = ['runs', 'sessions', 'knowledge', 'recovery', 'fleet'];
 
 /** A query's freshness, as a page declares it. */
 export type Freshness<T> =
@@ -108,13 +108,9 @@ export function heartbeat<T>(running: (data: T | undefined) => boolean) {
 /** The marks a query follows, read off its declared freshness. */
 export function followedMarks(query: { meta?: Record<string, unknown> }): readonly Mark[] {
   const follows = query.meta?.follows;
-  return Array.isArray(follows) ? follows.filter((mark): mark is Mark => MARKS.includes(mark as Mark)) : [];
+  return Array.isArray(follows) ? follows.filter((mark): mark is Mark => (MARKS as readonly string[]).includes(mark)) : [];
 }
 
-/** The header every read the dashboard makes on its own carries. */
-export const AUTOMATIC_HEADER = 'x-myco-automatic';
-/** The request that says a person is using the dashboard. */
-export const PRESENCE_PATH = '/api/presence';
 /** A person's presence is reported at most this often. */
 export const PRESENCE_MS = 60_000;
 

@@ -1,7 +1,7 @@
 import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import type { FleetQueue, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import type { CaptureRow, MachineHarnessHealth } from '../features/today/wire';
-import { AUTOMATIC_HEADER, PRESENCE_PATH } from './live';
+import { AUTOMATIC_HEADER, PRESENCE_PATH } from '@goondocks/myco-shared/live-marks';
 
 /**
  * A refusal or failure answered by the server, carrying the status, the

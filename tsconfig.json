@@ -43,6 +43,7 @@
       "@goondocks/myco-shared/execution-profile": ["./packages/myco-shared/src/execution-profile.ts"],
       "@goondocks/myco-shared/call-words": ["./packages/myco-shared/src/call-words.ts"],
       "@goondocks/myco-shared/step-words": ["./packages/myco-shared/src/step-words.ts"],
+      "@goondocks/myco-shared/live-marks": ["./packages/myco-shared/src/live-marks.ts"],
       "@goondocks/myco-shared/settings-contract": ["./packages/myco-shared/src/settings-contract.ts"],
       "@goondocks/myco-shared/redact-secrets": ["./packages/myco-shared/src/redact-secrets.ts"],
       "@goondocks/myco-shared/canopy": ["./packages/myco-shared/src/canopy.ts"],

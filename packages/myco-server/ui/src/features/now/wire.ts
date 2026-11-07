@@ -1,4 +1,5 @@
 /** `GET /api/work/now`: what Myco is doing now, as `packages/myco-server/src/read/work-now.ts` answers it. */
+import type { Marks } from '@goondocks/myco-shared/live-marks';
 
 export interface NowRunning {
   runId: string;
@@ -40,7 +41,7 @@ export interface WorkNowAnswer {
   running: NowRunning[];
   waiting: NowWaiting[];
   needsYou: NowNeed[];
-  marks: { runs: string; sessions: string; knowledge: string; recovery: string; fleet: string };
+  marks: Marks;
   /** How many projects the answer read per-project work for, of how many it covers. */
   projects: { read: number; total: number };
   unavailable: WorkNowSection[];

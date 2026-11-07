@@ -12,16 +12,14 @@
  * invitations those joins are spending.
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
+import { AUTOMATIC_HEADER } from '@goondocks/myco-shared/live-marks';
 
 /**
- * The header every read the dashboard makes on its own carries: a page loading or refreshing its data is fetch
- * traffic, not a person, so it leaves no activity stamp. A person's presence arrives on its own request
- * (`GET /api/presence`), sent when someone actually uses the page. The header can only withhold a stamp, never grant
+ * Whether a request is the dashboard fetching on its own (`AUTOMATIC_HEADER`): a page loading or refreshing its data
+ * is fetch traffic, not a person, so it leaves no activity stamp. A person's presence arrives on its own request
+ * (`PRESENCE_PATH`), sent when someone actually uses the page. The header can only withhold a stamp, never grant
  * anything, so it is trusted as sent.
  */
-export const AUTOMATIC_HEADER = 'x-myco-automatic';
-
-/** Whether a request is the dashboard fetching on its own. */
 export function automaticRequest(request: Request): boolean {
   return request.headers.get(AUTOMATIC_HEADER) === '1';
 }

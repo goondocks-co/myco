@@ -22,6 +22,7 @@ import { holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds
 import { stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from '@goondocks/myco-shared/call-words';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
+import type { Marks } from '@goondocks/myco-shared/live-marks';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
 import { RUN_TOOL_EVENT } from '../core/runs.js';
@@ -126,7 +127,7 @@ export interface WorkNowAnswer {
    * settles; `fleet` when a runner comes, goes, pauses or takes a run. The dashboard re-reads a page's other reads only
    * when the mark they follow moves.
    */
-  marks: { runs: string; sessions: string; knowledge: string; recovery: string; fleet: string };
+  marks: Marks;
   /**
    * How many Projects this answer read per-Project work for, of how many it covers. A Deployment-wide answer reads
    * Projects with something running, queued or recently failed first, then the rest up to `NOW_PROJECTS_MAX`; when
