@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchJson } from '../lib/api';
+import { fetchJson, reportPresence } from '../lib/api';
 import { followedMarks, heartbeat, MARKS, watchPresence, type Mark } from '../lib/live';
 import type { WorkNowAnswer } from '../features/now/wire';
 
@@ -42,7 +42,7 @@ export function LiveRefresh({ projectId, enabled = true }: { projectId: string |
   const now = useWorkNow(projectId, { enabled });
   const seen = useRef<{ scope: string | null; marks: WorkNowAnswer['marks'] } | null>(null);
   const marks = now.data?.marks;
-  useEffect(() => watchPresence(), []);
+  useEffect(() => watchPresence(reportPresence), []);
   useEffect(() => {
     if (marks === undefined) return;
     const before = seen.current;
@@ -51,6 +51,6 @@ export function LiveRefresh({ projectId, enabled = true }: { projectId: string |
     const moved = movedMarks(before.marks, marks);
     if (moved.length === 0) return;
     void client.invalidateQueries({ predicate: (query) => followedMarks(query).some((mark) => moved.includes(mark)) });
-  }, [client, projectId, marks?.runs, marks?.sessions, marks?.fleet]);
+  }, [client, projectId, marks?.runs, marks?.sessions, marks?.knowledge, marks?.fleet]);
   return null;
 }

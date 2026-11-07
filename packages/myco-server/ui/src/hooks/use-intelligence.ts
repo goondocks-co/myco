@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { type UseQueryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { live } from '../lib/live';
 
 export interface SporeRow {
   id: string;
@@ -72,6 +73,7 @@ export function useSpores(projectId: string, filters: SporeFilters = {}, options
     queryKey: ['spores', projectId, query],
     queryFn: ({ signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${query}`, signal),
     ...options,
+    ...live({ follows: ['knowledge'] }),
   });
 }
 
@@ -87,6 +89,7 @@ export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'of
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${sporeQuery({ ...filters, limit, ...(pageParam === null ? {} : { cursor: pageParam }) })}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live({ follows: ['knowledge'] }),
   });
   const rows = useMemo(() => query.data?.pages.flatMap((page) => page.spores) ?? [], [query.data]);
   return {

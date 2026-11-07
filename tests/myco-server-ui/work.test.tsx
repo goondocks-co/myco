@@ -63,7 +63,7 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
   '/api/tasks/names': () => Response.json({ tasks: TASK_DESCRIPTIONS.map(({ task, name }) => ({ task, name })) }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
-  '/api/work/now': (url) => Response.json({ observedAt: NOW, scope: url.searchParams.has('project') ? 'project' : 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', fleet: 'f' },
+  '/api/work/now': (url) => Response.json({ observedAt: NOW, scope: url.searchParams.has('project') ? 'project' : 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', fleet: 'f' }, projects: { read: 1, total: 1 },
     running: [{ runId: 'run_live_now', projectId: P, task: 'canopy-map', what: 'Keep the code map', machine: 'homelab-mini', harness: 'claude-code', model: null, startedAt: NOW - 70_000, step: { words: 'Read the code map', at: NOW - 3_000 } }],
     waiting: [{ key: `map:${P}`, projectId: P, what: 'Code map', count: null, why: 'It refreshes every 6 hours. Only after new session material arrives.', since: null, nextAt: NOW + 2 * 3_600_000 }],
     needsYou: [] }),

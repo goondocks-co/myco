@@ -14,15 +14,16 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 
 /**
- * The header a dashboard read carries when no one has used the dashboard in the last minute: a page refreshing itself
- * in front of no one is not a person on the dashboard, so it leaves no activity stamp. It can only withhold a stamp,
- * never grant anything, so the header is trusted as sent.
+ * The header every read the dashboard makes on its own carries: a page loading or refreshing its data is fetch
+ * traffic, not a person, so it leaves no activity stamp. A person's presence arrives on its own request
+ * (`GET /api/presence`), sent when someone actually uses the page. The header can only withhold a stamp, never grant
+ * anything, so it is trusted as sent.
  */
-export const UNATTENDED_HEADER = 'x-myco-unattended';
+export const AUTOMATIC_HEADER = 'x-myco-automatic';
 
-/** Whether a request says no one is at the dashboard. */
-export function unattendedRequest(request: Request): boolean {
-  return request.headers.get(UNATTENDED_HEADER) === '1';
+/** Whether a request is the dashboard fetching on its own. */
+export function automaticRequest(request: Request): boolean {
+  return request.headers.get(AUTOMATIC_HEADER) === '1';
 }
 
 /** The key under which the Deployment records the last owner request it served. */

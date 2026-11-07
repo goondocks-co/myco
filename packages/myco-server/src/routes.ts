@@ -66,7 +66,7 @@ import { handleProjectPlan, handleProjectPlans } from './api/plans.js';
 import { handleKpis } from './api/kpis.js';
 import { handlePlansAcross, handleSessionsAcross, handleSporesAcross } from './api/lists-all.js';
 import { handleTaskDescriptions, handleTaskNames, handleTaskStartPreview } from './api/task-descriptions.js';
-import { handleWork, handleWorkNow } from './api/work.js';
+import { handlePresence, handleWork, handleWorkNow } from './api/work.js';
 import { handleAttention } from './api/attention.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
@@ -316,6 +316,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/setup', auth: 'session', authority: 'member', handler: handleSetup },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/work/now', auth: 'session', authority: 'member', handler: handleWorkNow },
+  { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/presence', auth: 'session', authority: 'member', handler: handlePresence },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },

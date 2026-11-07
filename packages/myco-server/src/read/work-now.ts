@@ -24,12 +24,13 @@ import { callWords } from '@goondocks/myco-shared/call-words';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
-import { RUN_TOOL_EVENT, RUN_CALL_FAILED } from '../core/runs.js';
+import { RUN_TOOL_EVENT } from '../core/runs.js';
+import { FAILED_CALL_INDEX, FAILED_CALL_SQL } from '../db/schema-v701.js';
 import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
 import { readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { applyFleetSignInAvailability, fleetSelectionContext, fleetWaits } from './fleet.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
-import { readBudgetStatus } from './budget.js';
+import { readBudgetHolds } from './budget.js';
 import { BUDGET_WINDOW_MS } from '../core/budget-policy.js';
 import { CURATION_DAILY_LIMIT_MAX, curationDailyLimitSql, enabledCapabilities, type ProjectCapability } from '../core/settings.js';
 import { CURATION_MAX_FAILURES } from '../core/spore-curation.js';
@@ -46,10 +47,22 @@ export const NOW_RUNNING_MAX = 20;
 export const NOW_QUEUED_MAX = 200;
 /** The most Projects whose per-Project work (curation, the code map, failures) one Deployment-wide answer reads. */
 export const NOW_PROJECTS_MAX = 25;
+/** How many of a Project's open curation groups, soonest due first, are read for the ones that failed. */
+export const NOW_OPEN_GROUPS = 50;
+/** The most failing curation groups one Project lists. */
+export const NOW_FAILING_GROUPS = 3;
+/** How many of the Deployment's latest finished runs are read to put the Projects with a recent failure first. */
+export const NOW_RECENT_FINISHED = 100;
 /** How many of a task's latest runs decide whether its failure still stands. */
 export const NOW_RECENT_RUNS = 5;
 /** How long a producer is given to say whether a backup is copying the database. */
 const BACKUP_STATUS_MS = 2_000;
+
+/** An open curation group that failed and will be tried again, in its Project. */
+interface FailingGroup { projectId: string; group: Record<string, unknown> }
+
+/** A curation group's decisions that settle it: a failure of the run that worked on it no longer needs anyone. */
+const SETTLED_DECISIONS: readonly string[] = ['keep', 'resolved', 'changed'];
 
 /** The tasks whose failure needs someone: what Myco learns, maps, seeds and curates. */
 export const NOW_WATCHED_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK, CURATION_TASK, SEEDING_TASK];
@@ -108,10 +121,16 @@ export interface WorkNowAnswer {
   needsYou: NowNeed[];
   /**
    * What moved between answers: `runs` changes when a run starts, finishes, queues or fails; `sessions` when
-   * any session receives capture; `fleet` when a runner comes, goes, pauses or takes a run. The dashboard re-reads a
-   * page's other reads only when the mark they follow moves.
+   * any session receives capture; `knowledge` when a spore is written or a plan changes; `fleet` when a runner comes,
+   * goes, pauses or takes a run. The dashboard re-reads a page's other reads only when the mark they follow moves.
    */
-  marks: { runs: string; sessions: string; fleet: string };
+  marks: { runs: string; sessions: string; knowledge: string; fleet: string };
+  /**
+   * How many Projects this answer read per-Project work for, of how many it covers. A Deployment-wide answer reads
+   * Projects with something running, queued or recently failed first, then the rest up to `NOW_PROJECTS_MAX`; when
+   * `read` is below `total` the page says so and offers each Project's own page.
+   */
+  projects: { read: number; total: number };
   unavailable: WorkNowSection[];
 }
 
@@ -123,12 +142,25 @@ const num = (value: unknown): number | null => (value === null || value === unde
 const str = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** The Projects the answer reads per-Project work for: the one named, or the visible ones up to the bound. */
-async function projectsOf(db: RelationalStore, scope: WorkNowScope): Promise<string[]> {
-  if ('projectId' in scope) return [scope.projectId];
-  const { results } = await db.prepare('SELECT project_id FROM projects WHERE archived_at IS NULL ORDER BY project_id LIMIT ?')
-    .bind(NOW_PROJECTS_MAX).all<{ project_id: string }>();
-  return results.map((row) => row.project_id);
+/**
+ * The Projects the answer reads per-Project work for: the one named, or up to `NOW_PROJECTS_MAX` visible ones, those
+ * with work in motion (`active`) or a failed watched run among the Deployment's latest finished runs first.
+ */
+async function projectsOf(db: RelationalStore, scope: WorkNowScope, active: readonly string[]): Promise<{ read: string[]; total: number }> {
+  if ('projectId' in scope) return { read: [scope.projectId], total: 1 };
+  const [visible, failed] = await db.batch([
+    db.prepare('SELECT project_id FROM projects WHERE archived_at IS NULL ORDER BY project_id'),
+    db.prepare(`SELECT project_id, task, status FROM agent_runs INDEXED BY idx_agent_runs_retention
+        WHERE status IN ('completed', 'failed', 'skipped') AND resumable = 0
+        ORDER BY COALESCE(completed_at, started_at) DESC, id DESC LIMIT ?`).bind(NOW_RECENT_FINISHED),
+  ]);
+  const all = (visible!.results as Array<{ project_id: string }>).map((row) => row.project_id);
+  const known = new Set(all);
+  const recentFailures = (failed!.results as Array<{ project_id: string; task: string | null; status: string }>)
+    .filter((row) => row.status === 'failed' && row.task !== null && NOW_WATCHED_TASKS.includes(row.task)).map((row) => row.project_id);
+  const first = [...active, ...recentFailures].filter((id) => known.has(id));
+  const read = [...new Set([...first, ...all])].slice(0, NOW_PROJECTS_MAX);
+  return { read, total: all.length };
 }
 
 const inScope = (scope: WorkNowScope, alias: string): { sql: string; params: string[] } => 'projectId' in scope
@@ -209,8 +241,8 @@ async function readQueued(env: ServerEnv, scope: WorkNowScope, fleet: readonly W
 }
 
 /** Per-Project schedules: an open curation group not yet running, and the code map's next refresh. */
-async function readScheduled(env: ServerEnv, projects: readonly string[], onePage: boolean, live: ReadonlySet<string>, now: number): Promise<{ waiting: NowWaiting[]; failingGroups: Map<string, Record<string, unknown>> }> {
-  const failingGroups = new Map<string, Record<string, unknown>>();
+async function readScheduled(env: ServerEnv, projects: readonly string[], onePage: boolean, live: ReadonlySet<string>, now: number): Promise<{ waiting: NowWaiting[]; failingGroups: FailingGroup[] }> {
+  const failingGroups: FailingGroup[] = [];
   if (projects.length === 0) return { waiting: [], failingGroups };
   const mapCapability = capabilityOf(MAP_TASK);
   const capabilities: ProjectCapability[] = ['spore_curation', ...(mapCapability === null ? [] : [mapCapability])];
@@ -221,10 +253,14 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
   const mapping = leaves.enabled && leaves.mapRefresh.enabled ? projects.filter((projectId) => mapCapability === null || has.has(`${projectId}\u0000${mapCapability}`)) : [];
   const statements = [
     ...curating.flatMap((projectId) => [
-      env.db.prepare(`SELECT cluster_key, due_at, failures, run_id FROM spore_curation_work INDEXED BY idx_curation_due
-          WHERE project_id = ? AND due_at IS NOT NULL ORDER BY due_at LIMIT 1`).bind(projectId),
-      env.db.prepare(`SELECT COUNT(*) AS runs, MIN(started_at) AS oldest, ${curationDailyLimitSql('?')} AS limit_value FROM (SELECT started_at FROM agent_runs INDEXED BY idx_curation_runs_day
-          WHERE project_id = ? AND task = ? AND started_at > ? LIMIT ${CURATION_DAILY_LIMIT_MAX})`).bind(projectId, projectId, CURATION_TASK, now - BUDGET_WINDOW_MS),
+      env.db.prepare(`SELECT cluster_key, due_at FROM spore_curation_work INDEXED BY idx_curation_due
+          WHERE project_id = ? AND due_at IS NOT NULL AND failures = 0 ORDER BY due_at LIMIT 1`).bind(projectId),
+      env.db.prepare(`SELECT cluster_key, due_at, failures, run_id, write_refusal FROM (SELECT * FROM spore_curation_work INDEXED BY idx_curation_due
+          WHERE project_id = ? AND due_at IS NOT NULL ORDER BY due_at LIMIT ${NOW_OPEN_GROUPS}) WHERE failures > 0 AND failures < ? LIMIT ${NOW_FAILING_GROUPS}`)
+        .bind(projectId, CURATION_MAX_FAILURES),
+      env.db.prepare(`SELECT COUNT(*) AS started, MIN(first_started_at) AS oldest, ${curationDailyLimitSql('?')} AS limit_value FROM (SELECT first_started_at
+          FROM spore_curation_work INDEXED BY idx_curation_first_started WHERE project_id = ? AND first_started_at IS NOT NULL AND first_started_at > ?
+          LIMIT ${CURATION_DAILY_LIMIT_MAX})`).bind(projectId, projectId, now - BUDGET_WINDOW_MS),
     ]),
     ...mapping.map((projectId) => env.db.prepare(`SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs INDEXED BY idx_agent_runs_entry
         WHERE project_id = ? AND task = ? AND status != 'skipped' ORDER BY COALESCE(queued_at, started_at) DESC LIMIT 1`).bind(projectId, MAP_TASK)),
@@ -232,21 +268,20 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
   const answers = statements.length === 0 ? [] : await env.db.batch(statements);
   const waiting: NowWaiting[] = [];
   curating.forEach((projectId, i) => {
-    const group = (answers[i * 2]!.results[0] as Record<string, unknown> | undefined) ?? null;
-    const day = answers[i * 2 + 1]!.results[0] as Record<string, unknown>;
-    if (group === null || live.has(`${projectId}\u0000${CURATION_TASK}`)) return;
-    const failures = Number(group.failures);
-    if (failures > 0 && failures < CURATION_MAX_FAILURES) { failingGroups.set(projectId, group); return; }
-    const runs = Number(day.runs);
+    const next = (answers[i * 3]!.results[0] as Record<string, unknown> | undefined) ?? null;
+    for (const group of answers[i * 3 + 1]!.results as Record<string, unknown>[]) failingGroups.push({ projectId, group });
+    const day = answers[i * 3 + 2]!.results[0] as Record<string, unknown>;
+    if (next === null || live.has(`${projectId}\u0000${CURATION_TASK}`)) return;
+    const started = Number(day.started);
     const limit = Number(day.limit_value);
-    const dueAt = Number(group.due_at);
+    const dueAt = Number(next.due_at);
     const oldest = num(day.oldest);
-    const why = runs >= limit
-      ? `Paused: ${runs} of ${limit} curation runs in the last 24 hours. The next starts as the earliest leaves that window.`
+    const why = started >= limit
+      ? `Paused: ${started} of ${limit} new curation groups started in the last 24 hours. The next starts as the earliest leaves that window; a group that failed retries meanwhile.`
       : dueAt > now ? 'Its next group of overlapping spores comes due at the time shown.'
         : 'A group of overlapping spores is due; it starts when the server next checks, inside the daily budget.';
     waiting.push({ key: `curation:${projectId}`, projectId, what: 'Curation', count: null, why, since: null,
-      nextAt: runs >= limit && oldest !== null ? oldest + BUDGET_WINDOW_MS : dueAt > now ? dueAt : null });
+      nextAt: started >= limit && oldest !== null ? oldest + BUDGET_WINDOW_MS : dueAt > now ? dueAt : null });
   });
   const mapSchedule = scheduleFor(MAP_TASK, TASK_SCHEDULE[MAP_TASK]!, leaves.overrides);
   const condition = mapSchedule.preCondition === undefined ? undefined : PRE_CONDITIONS[mapSchedule.preCondition];
@@ -255,7 +290,7 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
   const ready = await Promise.all(mapping.map((projectId) => condition === undefined ? true : condition({ db: env.db, projectId, now })));
   mapping.forEach((projectId, i) => {
     if (live.has(`${projectId}\u0000${MAP_TASK}`)) return;
-    const last = num((answers[curating.length * 2 + i]!.results[0] as Record<string, unknown> | undefined)?.at);
+    const last = num((answers[curating.length * 3 + i]!.results[0] as Record<string, unknown> | undefined)?.at);
     if (!ready[i]) {
       // A quiet project's map waits on nothing anyone can act on; only its own page says so.
       if (onePage) waiting.push({ key: `map:${projectId}`, projectId, what: 'Code map', count: null, since: last, nextAt: null,
@@ -272,21 +307,25 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
 /** Deployment-wide holds: the rolling budget spent, learning's backlog, and a backup that holds the database. */
 async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly WorkerFleetRow[], live: ReadonlySet<string>, now: number, includeSignIn: boolean): Promise<NowWaiting[]> {
   const waiting: NowWaiting[] = [];
-  const budget = await readBudgetStatus(env.db, now);
-  const spent = budget.automaticUsd === null ? null : budget.automaticUsd + (budget.manualUsd ?? 0);
-  if (budget.active && spent !== null && spent >= budget.dailyUsd) {
+  const holds = await readBudgetHolds(env.db);
+  const held = holds.heldHeads ?? [];
+  const tooSmall = held.find((head) => head.reason === 'budget_too_small');
+  if (held.length > 0) {
     waiting.push({ key: 'budget', projectId: null, what: 'Automatic work', count: null, since: null, nextAt: null,
-      why: `Paused until the rolling 24-hour budget has room: $${spent.toFixed(2)} of $${budget.dailyUsd.toFixed(2)} spent.` });
+      why: tooSmall !== undefined && tooSmall.requiredUsd !== null
+        ? `The next ${taskName(tooSmall.task).toLowerCase()} run needs about $${tooSmall.requiredUsd.toFixed(2)}, more than the whole daily budget of $${holds.dailyUsd.toFixed(2)}. Raise the daily budget in Settings.`
+        : 'Paused: the rolling 24-hour budget has no room for the next automatic run. It resumes as earlier spending leaves the window.' });
   }
-  if (!('projectId' in scope)) {
-    const learning = await readLearningStatus(env.db, now);
-    const learningLive = [...live].some((key) => key.endsWith(`\u0000${EXTRACTION_TASK}`) || key.endsWith(`\u0000${CARD_TASK}`));
-    if (!learningLive && (learning.dueSessions > 0 || learning.turnsAwaitingCards > 0)) {
-      const waits = await fleetWaits(env, [learning.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK], now, includeSignIn, fleet);
-      const reason = [...waits.values()][0]?.reason;
-      const line = learningStatusLine(learning, budget, now, reason === 'not_signed_in' || reason === 'credential_unavailable');
-      waiting.push({ key: 'learning', projectId: null, what: 'Learning from sessions', count: learning.dueSessions, why: line[0]!.toUpperCase() + line.slice(1), since: null, nextAt: null });
-    }
+  const projectId = 'projectId' in scope ? scope.projectId : null;
+  const learning = await readLearningStatus(env.db, now, projectId === null ? undefined : { projectId });
+  const learningLive = [...live].some((key) => key.endsWith(`\u0000${EXTRACTION_TASK}`) || key.endsWith(`\u0000${CARD_TASK}`));
+  if (!learningLive && (learning.dueSessions > 0 || learning.turnsAwaitingCards > 0)) {
+    const task = learning.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK;
+    const waits = await fleetWaits(env, [task], now, includeSignIn, fleet);
+    const reason = [...waits.values()][0]?.reason;
+    const line = learningStatusLine(learning, null, now, reason === 'not_signed_in' || reason === 'credential_unavailable',
+      held.some((head) => head.task === task));
+    waiting.push({ key: 'learning', projectId, what: 'Learning from sessions', count: learning.dueSessions, why: line[0]!.toUpperCase() + line.slice(1), since: null, nextAt: null });
   }
   const recovery = env.recovery;
   if (recovery !== undefined) {
@@ -304,8 +343,8 @@ async function failureReasons(db: RelationalStore, runs: ReadonlyArray<{ project
   const reasons = new Map<string, string>();
   if (runs.length === 0) return reasons;
   const answers = await db.batch(runs.flatMap(({ projectId, runId }) => [
-    db.prepare(`SELECT payload FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = ? AND outcome = ?
-        ORDER BY recorded_at DESC LIMIT 1`).bind(projectId, runId, RUN_TOOL_EVENT, RUN_CALL_FAILED),
+    db.prepare(`SELECT payload FROM agent_run_events INDEXED BY ${FAILED_CALL_INDEX} WHERE project_id = ? AND run_id = ?
+        AND ${FAILED_CALL_SQL} ORDER BY recorded_at DESC LIMIT 1`).bind(projectId, runId),
     db.prepare(`SELECT error, ${contextValue(FAILURE_REASON_KEY)} AS reason FROM agent_runs WHERE project_id = ? AND id = ?`).bind(projectId, runId),
   ]));
   runs.forEach(({ projectId, runId }, i) => {
@@ -322,7 +361,7 @@ async function failureReasons(db: RelationalStore, runs: ReadonlyArray<{ project
   return reasons;
 }
 
-async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: ReadonlyMap<string, Record<string, unknown>>, fleet: readonly WorkerFleetRow[], now: number): Promise<NowNeed[]> {
+async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: readonly FailingGroup[], fleet: readonly WorkerFleetRow[], now: number): Promise<NowNeed[]> {
   const pairs = projects.flatMap((projectId) => NOW_WATCHED_TASKS.map((task) => ({ projectId, task })));
   const answers = pairs.length === 0 ? [] : await env.db.batch(pairs.map(({ projectId, task }) => env.db.prepare(
     `SELECT id, status, COALESCE(completed_at, started_at, queued_at) AS at FROM agent_runs INDEXED BY idx_agent_runs_entry
@@ -330,7 +369,7 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
   ).bind(projectId, task, NOW_RECENT_RUNS)));
   const failing: Array<{ projectId: string; task: string; runId: string; failures: number; at: number }> = [];
   pairs.forEach(({ projectId, task }, i) => {
-    if (task === CURATION_TASK && failingGroups.has(projectId)) return;
+    if (task === CURATION_TASK && failingGroups.some((failing) => failing.projectId === projectId)) return;
     const finished = (answers[i]!.results as Record<string, unknown>[]).filter((row) => row.status === 'completed' || row.status === 'failed');
     const failures = finished.findIndex((row) => row.status !== 'failed');
     const count = failures === -1 ? finished.length : failures;
@@ -338,21 +377,36 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
     if (count === 0 || latest === undefined || Number(latest.at) < now - OUTCOME_LOOKBACK_MS) return;
     failing.push({ projectId, task, runId: String(latest.id), failures: count, at: Number(latest.at) });
   });
-  const groups = [...failingGroups.entries()].filter(([, group]) => group.run_id !== null);
-  const reasons = await failureReasons(env.db, [...failing, ...groups.map(([projectId, group]) => ({ projectId, runId: String(group.run_id) }))]);
+  const curation = failing.filter((f) => f.task === CURATION_TASK);
+  const dispositions = curation.length === 0 ? [] : await env.db.batch(curation.map((f) => env.db.prepare(
+    `SELECT decision, reason FROM spore_curation_work INDEXED BY idx_curation_evidence WHERE project_id = ? AND run_id = ? LIMIT 1`).bind(f.projectId, f.runId)));
+  const stopped = new Map<string, string>();
+  curation.forEach((f, i) => {
+    const group = dispositions[i]!.results[0] as { decision?: unknown; reason?: unknown } | undefined;
+    if (group?.decision === undefined || group.decision === null) return;
+    if (SETTLED_DECISIONS.includes(String(group.decision))) failing.splice(failing.indexOf(f), 1);
+    else stopped.set(f.runId, String(group.reason ?? ''));
+  });
+  const groups = failingGroups.filter(({ group }) => group.run_id !== null);
+  const reasons = await failureReasons(env.db, [...failing, ...groups.map(({ projectId, group }) => ({ projectId, runId: String(group.run_id) }))]);
+  const refusal = (raw: unknown): string | null => {
+    if (typeof raw !== 'string') return null;
+    try { const error = (JSON.parse(raw) as { error?: unknown }).error; return typeof error === 'string' && error.trim() !== '' ? error.trim() : null; } catch { return null; }
+  };
   const reason = (projectId: string, runId: string) => reasons.get(`${projectId}\u0000${runId}`) ?? 'Myco didn’t record why.';
   const atLeast = (n: number) => (n >= NOW_RECENT_RUNS ? `at least ${n} times` : n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
   return [
-    ...[...failingGroups.entries()].map(([projectId, group]): NowNeed => ({
+    ...failingGroups.map(({ projectId, group }): NowNeed => ({
       key: `curation-group:${projectId}:${String(group.cluster_key)}`, projectId,
       what: `A curation group failed ${atLeast(Number(group.failures))}`,
-      why: group.run_id === null ? 'Myco didn’t record why.' : reason(projectId, String(group.run_id)),
+      why: refusal(group.write_refusal) ?? (group.run_id === null ? 'Myco didn’t record why.' : reason(projectId, String(group.run_id))),
       at: now, runId: str(group.run_id), retryAt: num(group.due_at),
     })),
     ...failing.map((f): NowNeed => ({
       key: `failed:${f.projectId}:${f.task}`, projectId: f.projectId,
-      what: `${taskName(f.task)} failed ${f.failures === 1 ? 'on its latest run' : `${atLeast(f.failures)} in a row`}`,
-      why: reason(f.projectId, f.runId), at: f.at, runId: f.runId, retryAt: null,
+      what: stopped.has(f.runId) ? 'Curation stopped on a group without a decision'
+        : `${taskName(f.task)} failed ${f.failures === 1 ? 'on its latest run' : `${atLeast(f.failures)} in a row`}`,
+      why: stopped.get(f.runId) || reason(f.projectId, f.runId), at: f.at, runId: f.runId, retryAt: null,
     })),
     ...fleet.flatMap((row): NowNeed[] => {
       const runner = row.runnerDetails;
@@ -370,8 +424,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
   const settle = async <T>(section: WorkNowSection, read: () => Promise<T>, fallback: T): Promise<T> => {
     try { return await read(); } catch { if (!unavailable.includes(section)) unavailable.push(section); return fallback; }
   };
-  const [projects, fleet, marks] = await Promise.all([
-    settle('needsYou', () => projectsOf(env.db, scope), [] as string[]),
+  const [fleet, marks, running] = await Promise.all([
     settle('waiting', async () => {
       const rows = await readWorkerFleet(env.db, now, includeSignIn);
       if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true).available);
@@ -380,24 +433,30 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
     env.db.batch([
       env.db.prepare('SELECT MAX(started_at) AS at FROM agent_runs'),
       env.db.prepare('SELECT MAX(last_live_received_at) AS at FROM sessions WHERE last_live_received_at IS NOT NULL'),
-    ]).then((answers) => answers.map((answer) => String((answer.results[0] as { at?: unknown } | undefined)?.at ?? '')), () => ['', '']),
-  ]);
-  const [running, queued] = await Promise.all([
+      env.db.prepare('SELECT MAX(created_at) AS at FROM spores INDEXED BY idx_spores_created_deployment'),
+      env.db.prepare('SELECT MAX(updated_at) AS at FROM plans INDEXED BY idx_plans_updated_deployment'),
+    ]).then((answers) => answers.map((answer) => String((answer.results[0] as { at?: unknown } | undefined)?.at ?? '')),
+      // Marks that cannot be read move on every answer, so the reads that follow them refresh rather than freeze.
+      () => Array.from({ length: 4 }, () => `unread:${now}`)),
     settle('running', () => readRunning(env.db, scope), [] as NowRunning[]),
-    settle('waiting', () => readQueued(env, scope, fleet, now, includeSignIn), [] as NowWaiting[]),
   ]);
+  const queued = await settle('waiting', () => readQueued(env, scope, fleet, now, includeSignIn), [] as NowWaiting[]);
   const live = new Set([...running.map((r) => `${r.projectId}\u0000${r.task}`), ...queued.map((q) => q.key.slice('queued:'.length).split('\u0000').slice(0, 2).join('\u0000'))]);
+  const active = [...running.map((r) => r.projectId), ...queued.flatMap((q) => (q.projectId === null ? [] : [q.projectId]))];
+  const projects = await settle('needsYou', () => projectsOf(env.db, scope, active), { read: [] as string[], total: 0 });
   const [scheduled, holds] = await Promise.all([
-    settle('waiting', () => readScheduled(env, projects, 'projectId' in scope, live, now), { waiting: [], failingGroups: new Map<string, Record<string, unknown>>() }),
+    settle('waiting', () => readScheduled(env, projects.read, 'projectId' in scope, live, now), { waiting: [], failingGroups: [] as FailingGroup[] }),
     settle('waiting', () => readHolds(env, scope, fleet, live, now, includeSignIn), [] as NowWaiting[]),
   ]);
-  const needsYou = await settle('needsYou', () => readNeeds(env, projects, scheduled.failingGroups, fleet, now), [] as NowNeed[]);
+  const needsYou = await settle('needsYou', () => readNeeds(env, projects.read, scheduled.failingGroups, fleet, now), [] as NowNeed[]);
   const waiting = [...holds, ...queued, ...scheduled.waiting];
   return {
     observedAt: now, scope: 'projectId' in scope ? 'project' : 'deployment', running, waiting, needsYou, unavailable,
+    projects: { read: projects.read.length, total: projects.total },
     marks: {
       runs: [marks[0], ...running.map((r) => r.runId), ...waiting.map((w) => `${w.key}=${w.count ?? ''}`), ...needsYou.map((n) => n.key)].join('|'),
       sessions: marks[1]!,
+      knowledge: `${marks[2]}|${marks[3]}`,
       fleet: fleet.map((row) => `${row.runner?.id ?? row.credentialId}:${row.runnerDetails?.display ?? (row.recent ? 'recent' : 'quiet')}:${row.busy?.runId ?? ''}`).join('|'),
     },
   };

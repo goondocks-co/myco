@@ -36,11 +36,11 @@ export function useEmbeddingSwitch() {
 
 /** The sources search by meaning passes over, each named with why: `GET /api/embedding/passed-over`. */
 export function usePassedOver() {
-  return useQuery({ queryKey: ['embedding-passed-over'], queryFn: ({ signal }) => fetchJson<PassedOverList>('/api/embedding/passed-over', signal) });
+  return useQuery({ queryKey: ['embedding-passed-over'], queryFn: ({ signal }) => fetchJson<PassedOverList>('/api/embedding/passed-over', signal), ...live('still') });
 }
 
 export function useSecrets() {
-  return useQuery({ queryKey: ['secrets'], queryFn: ({ signal }) => fetchJson<SecretsAnswer>('/api/secrets', signal) });
+  return useQuery({ queryKey: ['secrets'], queryFn: ({ signal }) => fetchJson<SecretsAnswer>('/api/secrets', signal), ...live('still') });
 }
 
 export function useCapabilities(projectId: string, options: { enabled?: boolean } = {}) {
@@ -48,6 +48,7 @@ export function useCapabilities(projectId: string, options: { enabled?: boolean 
     enabled: options.enabled ?? true,
     queryKey: ['capabilities', projectId],
     queryFn: ({ signal }) => fetchJson<CapabilitiesAnswer>(`/api/projects/${encodeURIComponent(projectId)}/capabilities`, signal),
+    ...live('still'),
   });
 }
 
@@ -164,6 +165,7 @@ export function useRepository(projectId: string) {
   return useQuery({
     queryKey: ['repository', projectId],
     queryFn: ({ signal }) => fetchJson<RepositoryAnswer>(`/api/projects/${encodeURIComponent(projectId)}/repository`, signal),
+    ...live('still'),
   });
 }
 
@@ -192,7 +194,7 @@ const TITLING_KEY = ['titling-backfill'] as const;
 
 /** Where titling imported sessions stands, and its switch: `GET /api/titling-backfill`. */
 export function useTitlingBackfill() {
-  return useQuery({ queryKey: [...TITLING_KEY], queryFn: ({ signal }) => fetchJson<TitlingBackfillProgress>('/api/titling-backfill', signal) });
+  return useQuery({ queryKey: [...TITLING_KEY], queryFn: ({ signal }) => fetchJson<TitlingBackfillProgress>('/api/titling-backfill', signal), ...live({ follows: ['runs'] }) });
 }
 
 /**

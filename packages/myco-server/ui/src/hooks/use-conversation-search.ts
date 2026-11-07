@@ -2,6 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import type { SearchAnswer, SearchResult, SearchTurn } from '@goondocks/myco-shared/search-types';
 import { fetchJson } from '../lib/api';
 import { SEARCH_MIN_CHARS, searchPath } from './use-search';
+import { live } from '../lib/live';
 
 export interface ConversationHit {
   /** The turn's own id, unique among the hits, or the record's when no turn holds it. */
@@ -32,6 +33,7 @@ export function useConversationSearch(projectId: string, sessionId: string, quer
       signal,
     ),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live('still'),
   });
   const hits = [...new Map((read.data?.pages.flatMap((page) => page.results) ?? []).map(asHit).map((hit) => [hit.key, hit])).values()];
   return {

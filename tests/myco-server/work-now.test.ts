@@ -10,6 +10,8 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import worker from '@myco-server-worker/index.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
 
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
@@ -57,14 +59,14 @@ describe('Myco’s work now', () => {
     h.sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','spore_curation',1,1,'fixture'), ('proj_1','canopy',1,1,'fixture')");
     h.sqlite.run("INSERT INTO project_settings (project_id, leaf, value, updated_at, updated_by) VALUES ('proj_1', 'agent.spore_curation.daily_runs', '2', 1, 'owner')");
     h.sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, due_at, failures) VALUES ('proj_1', 'k1', '[]', ?, 0)`, [NOW - MINUTE]);
-    h.run('proj_1', 'cur_1', 'curate-spores', 'completed', NOW - 5 * HOUR);
-    h.run('proj_1', 'cur_2', 'curate-spores', 'completed', NOW - 3 * HOUR);
+    h.sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, failures, first_started_at, decision, reason, decided_at)
+      VALUES ('proj_1', 'd1', '[]', 1, ?, 'keep', 'kept apart', ?), ('proj_1', 'd2', '[]', 1, ?, 'resolved', 'merged', ?)`, [NOW - 5 * HOUR, NOW - 5 * HOUR, NOW - 3 * HOUR, NOW - 3 * HOUR]);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     h.run('proj_1', 'map_1', 'canopy-map', 'completed', NOW - 2 * HOUR);
     const byWhat = new Map((await h.read()).waiting.map((item) => [item.what, item]));
     expect(byWhat.get('Learn from sessions')).toMatchObject({ projectId: 'proj_1', count: 1, why: HELD_BY_WORDS.budget, since: NOW - HOUR });
     expect(byWhat.get('Title and summarize sessions')?.why).toBe('No recently seen runner can currently take this work.');
-    expect(byWhat.get('Curation')).toMatchObject({ why: 'Paused: 2 of 2 curation runs in the last 24 hours. The next starts as the earliest leaves that window.', nextAt: NOW - 5 * HOUR + 24 * HOUR });
+    expect(byWhat.get('Curation')).toMatchObject({ why: 'Paused: 2 of 2 new curation groups started in the last 24 hours. The next starts as the earliest leaves that window; a group that failed retries meanwhile.', nextAt: NOW - 5 * HOUR + 24 * HOUR });
     expect(byWhat.get('Code map')).toMatchObject({ why: 'It refreshes every 6 hours, and only after new session material arrives. None has arrived since the last refresh.', nextAt: null });
     expect((await h.read({ all: true })).waiting.filter((item) => item.what === 'Code map')).toEqual([]);
     h.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 's_new', 'm1', 'tok_1', ?, ?)`, [NOW - HOUR, NOW - HOUR]);
@@ -127,5 +129,72 @@ describe('Myco’s work now', () => {
     expect(await get('/api/work/now')).toMatchObject({ status: 200, body: { scope: 'deployment' } });
     expect((await get('/api/work/now?project=proj_1&project=proj_2')).status).toBe(400);
     expect((await get('/api/work/now?project=proj_missing')).status).toBe(404);
+
+    const stamp = () => h.sqlite.query(`SELECT value FROM schema_meta WHERE key = ?`).get(LAST_REQUEST_KEY);
+    const ask = async (path: string, headers: Record<string, string> = {}) => (await worker.fetch(new Request(`https://s${path}`, {
+      headers: { cookie: await ownerCookie(h.fixture.db, Date.now()), 'cf-connecting-ip': '1.2.3.4', ...headers } }), env)).status;
+    h.sqlite.run('DELETE FROM schema_meta WHERE key = ?', [LAST_REQUEST_KEY]);
+    expect(await ask('/api/work/now?project=proj_1', { 'x-myco-automatic': '1' })).toBe(200);
+    expect(stamp()).toBeNull();
+    expect(await ask('/api/presence')).toBe(200);
+    expect(stamp()).not.toBeNull();
+  });
+
+  it('says the budget holds automatic work from the governor’s own holds, and why a run can never fit', async () => {
+    const h = harness();
+    expect((await completeBudgetMigration(h.fixture.db, NOW)).active).toBe(true);
+    h.run('proj_1', 'run_held', 'extract-curate', 'queued', NOW - HOUR, { heldBy: 'budget' });
+    expect((await h.read()).waiting.find((item) => item.key === 'budget')).toMatchObject({ projectId: null, what: 'Automatic work',
+      why: 'Paused: the rolling 24-hour budget has no room for the next automatic run. It resumes as earlier spending leaves the window.' });
+    h.sqlite.run(`UPDATE agent_runs SET run_context = json_object('budgetEstimateUsd', 500) WHERE id = 'run_held'`);
+    expect((await h.read()).waiting.find((item) => item.key === 'budget')?.why).toMatch(/^The next learn from sessions run needs about \$500\.00, more than the whole daily budget of \$[0-9.]+\. Raise the daily budget in Settings\.$/);
+  });
+
+  it('shows a project’s due learning in its own scope, by the same status line as every project', async () => {
+    const h = harness();
+    h.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','waiting','m1','tok_1',?,?)", [NOW - 1000, NOW - 1000]);
+    h.sqlite.run("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('proj_1','waiting','ready',?,1)", [NOW - 1000]);
+    const project = (await h.read()).waiting.find((item) => item.key === 'learning');
+    const deployment = (await h.read({ all: true })).waiting.find((item) => item.key === 'learning');
+    expect(project).toMatchObject({ projectId: 'proj_1', what: 'Learning from sessions' });
+    expect(project?.why).toContain('1 turn waiting to be summarized');
+    expect(deployment?.why).toContain('1 turn waiting to be summarized');
+    expect((await h.read({ projectId: 'proj_2' })).waiting.find((item) => item.key === 'learning')).toBeUndefined();
+  });
+
+  it('names a failing curation group by its own outstanding refusal, beside the next group still due', async () => {
+    const h = harness();
+    h.sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','spore_curation',1,1,'fixture')");
+    h.run('proj_1', 'cur_fail', 'curate-spores', 'failed', NOW - HOUR, { error: 'the run ended without its decision' });
+    h.sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, due_at, failures, run_id, first_started_at, write_refusal)
+      VALUES ('proj_1', 'g', '[]', ?, 1, 'cur_fail', ?, ?), ('proj_1', 'n', '[]', ?, 0, NULL, NULL, NULL)`,
+      [NOW + HOUR, NOW - HOUR, JSON.stringify({ error: 'Not saved: agent_line is 171 characters; the limit is 158.' }), NOW - MINUTE]);
+    const answer = await h.read();
+    expect(answer.needsYou).toMatchObject([{ key: 'curation-group:proj_1:g', what: 'A curation group failed once',
+      why: 'Not saved: agent_line is 171 characters; the limit is 158.', retryAt: NOW + HOUR }]);
+    expect(answer.waiting.find((item) => item.what === 'Curation')?.why).toBe('A group of overlapping spores is due; it starts when the server next checks, inside the daily budget.');
+  });
+
+  it('settles a curation failure once its group is decided, and keeps a group curation gave up on', async () => {
+    const h = harness();
+    h.sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','spore_curation',1,1,'fixture')");
+    h.run('proj_1', 'cur_fail', 'curate-spores', 'failed', NOW - HOUR, { error: 'the run ended without its decision' });
+    h.sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, due_at, failures, run_id) VALUES ('proj_1', 'g', '[]', ?, 2, 'cur_fail')`, [NOW + HOUR]);
+    expect((await h.read()).needsYou.map((item) => item.key)).toEqual(['curation-group:proj_1:g']);
+    h.sqlite.run("UPDATE spore_curation_work SET due_at = NULL, decision = 'changed', reason = 'member revision changed', decided_at = ?", [NOW]);
+    expect((await h.read()).needsYou).toEqual([]);
+    h.sqlite.run("UPDATE spore_curation_work SET decision = 'failed', reason = 'Curation stopped after 3 attempts without a decision'");
+    expect((await h.read()).needsYou).toMatchObject([{ key: 'failed:proj_1:curate-spores', what: 'Curation stopped on a group without a decision',
+      why: 'Curation stopped after 3 attempts without a decision', runId: 'cur_fail' }]);
+  });
+
+  it('reads a failing project first however many projects sort before it, and says how many it read', async () => {
+    const h = harness();
+    for (let i = 0; i < 30; i += 1) h.sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 1)', [`a_project_${String(i).padStart(2, '0')}`, `Earlier ${i}`]);
+    h.run('proj_2', 'hidden_failure', 'extract-curate', 'failed', NOW - 1000, { error: 'the run ended without its artifact' });
+    const answer = await h.read({ all: true });
+    expect(answer.needsYou.map((item) => item.key)).toEqual(['failed:proj_2:extract-curate']);
+    expect(answer.projects).toEqual({ read: 25, total: 32 });
+    expect((await h.read()).projects).toEqual({ read: 1, total: 1 });
   });
 });

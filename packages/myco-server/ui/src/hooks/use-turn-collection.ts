@@ -4,6 +4,7 @@ import { retryCursorRead } from './cursor-retry';
 import { fetchJson } from '../lib/api';
 import type { Page } from './use-paged';
 import type { TurnCollection } from './use-sessions';
+import { live } from '../lib/live';
 
 interface CollectionPage<T> extends Page<T> { embedded: boolean }
 
@@ -26,6 +27,7 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
       embedded: false,
     }),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live('still'),
   });
   const parent = useRef({ initial, cursor });
   const parentChanged = useRef(false);

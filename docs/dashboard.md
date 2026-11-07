@@ -48,7 +48,7 @@ A session's page has the conversation turn by turn, with the tool calls inside e
 
 Below that, Myco's work shows what Myco's own work came to: what it learned, the sessions it titled, the code map updates and what it learned from the code. Open any run to see what it read, what it produced, and who started it.
 
-Open pages keep themselves up to date while they are in view, and update sooner while something is running. A page in a background tab stops checking until you come back to it.
+Open pages keep themselves up to date while they are in view, and update sooner while something is running. A page in a background tab stops checking until you come back to it. With many projects, Myco's work across every project checks the ones with something running, waiting or failing first and says when it did not check them all.
 
 **Run a task** starts work now instead of waiting for the schedule:
 

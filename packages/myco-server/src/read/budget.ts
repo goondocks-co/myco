@@ -8,16 +8,23 @@ import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile'
 import { BUDGET_WORKER_TASKS } from '../core/budget-policy.js';
 import { contextValue,BUDGET_QUOTE_USD_KEY,BUDGET_QUOTE_AT_KEY } from '../db/run-context.js';
 
-/** Deployment-wide totals share the exact attempt relation used by claim admission. */
-export async function readBudgetStatus(db: RelationalStore, now: number): Promise<BudgetStatus> {
+/** What the governor is holding now: each budgeted task's queue head it recorded as held by the budget, and why. */
+export interface BudgetHolds {
+  active: boolean;
+  reason: string | null;
+  dailyUsd: number;
+  heldHeads: NonNullable<BudgetStatus['heldHeads']> | null;
+}
+
+/**
+ * The holds the governor maintains on queue heads, read without the spend window: one queue-head seek per budgeted
+ * task. A live view reads this every tick; the totals stay in `readBudgetStatus`.
+ */
+export async function readBudgetHolds(db: RelationalStore): Promise<BudgetHolds> {
   const activation=await budgetActivation(db);
   const leaf=await db.prepare(`SELECT ${effectiveBudgetSql()} AS budget`).first<{budget:number}>();
   if (leaf===null) throw new Error('Budget setting unavailable');
-  if (!activation.active) return {...activation,dailyUsd:leaf.budget,automaticUsd:null,manualUsd:null,liveUsd:null,unconfirmed:null,pricedExposure:null,heldHeads:null};
-  const rows=await readSpendRows(db,now);
-  const sum=(predicate:(row:typeof rows[number])=>boolean)=>rows.filter(predicate).reduce((total,row)=>total+row.value,0);
-  const unconfirmed=rows.filter(row=>!row.live && !['actual','estimated'].includes(row.costSource ?? ''));
-  const detail=(origin:string)=>{const selected=unconfirmed.filter(row=>row.origin===origin);return {count:selected.length,estimatedUsd:selected.reduce((sum,row)=>sum+row.estimate,0)};};
+  if (!activation.active) return {...activation,dailyUsd:leaf.budget,heldHeads:null};
   const heldHeads:NonNullable<BudgetStatus['heldHeads']>=[];
   for(const task of BUDGET_WORKER_TASKS) {
     const head=await db.prepare(`SELECT project_id AS projectId,id AS runId,task,held_by AS holder,${contextValue(BUDGET_QUOTE_USD_KEY)} AS requiredUsd,${contextValue(BUDGET_QUOTE_AT_KEY)} AS quotedAt FROM agent_runs INDEXED BY idx_agent_runs_queue_head
@@ -29,6 +36,19 @@ export async function readBudgetStatus(db: RelationalStore, now: number): Promis
       heldHeads.push({projectId:head.projectId,runId:head.runId,task:head.task,reason:requiredUsd!==null&&requiredUsd>leaf.budget?'budget_too_small':'budget',requiredUsd,quotedAt});
     }
   }
+  return {...activation,dailyUsd:leaf.budget,heldHeads};
+}
+
+/** Deployment-wide totals share the exact attempt relation used by claim admission. */
+export async function readBudgetStatus(db: RelationalStore, now: number): Promise<BudgetStatus> {
+  const holds=await readBudgetHolds(db);
+  if (!holds.active) return {active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:null,manualUsd:null,liveUsd:null,unconfirmed:null,pricedExposure:null,heldHeads:null};
+  const rows=await readSpendRows(db,now);
+  const sum=(predicate:(row:typeof rows[number])=>boolean)=>rows.filter(predicate).reduce((total,row)=>total+row.value,0);
+  const unconfirmed=rows.filter(row=>!row.live && !['actual','estimated'].includes(row.costSource ?? ''));
+  const detail=(origin:string)=>{const selected=unconfirmed.filter(row=>row.origin===origin);return {count:selected.length,estimatedUsd:selected.reduce((sum,row)=>sum+row.estimate,0)};};
+  const heldHeads=holds.heldHeads!;
+  const leaf={budget:holds.dailyUsd};
   let exposure=0,sampleSize=0,missingSamples=0;
   const samples=new Map<string,EstimateSample|null>();
   for (const row of rows.filter(row=>row.live && row.origin==='automatic')) {
@@ -46,7 +66,7 @@ export async function readBudgetStatus(db: RelationalStore, now: number): Promis
     exposure+=row.estimate*(sample.ratioP95-1);
     if(first)sampleSize+=sample.ratioN;
   }
-  return {...activation,dailyUsd:leaf.budget,automaticUsd:sum(row=>row.origin==='automatic'),manualUsd:sum(row=>row.origin==='manual'),
+  return {active:holds.active,reason:holds.reason,dailyUsd:leaf.budget,automaticUsd:sum(row=>row.origin==='automatic'),manualUsd:sum(row=>row.origin==='manual'),
     liveUsd:sum(row=>!!row.live),unconfirmed:{count:unconfirmed.length,estimatedUsd:unconfirmed.reduce((total,row)=>total+row.estimate,0),manual:detail('manual'),automatic:detail('automatic')},heldHeads,
     pricedExposure:{usd:missingSamples>0?null:exposure,sampleSize,missingSamples,provenance:'empirical-p95'}};
 }

@@ -159,6 +159,7 @@
   "session:member GET /api/members",
   "session:member GET /api/ownership",
   "session:member GET /api/plans",
+  "session:member GET /api/presence",
   "session:member GET /api/projects",
   "session:member GET /api/projects/{projectId}/activity",
   "session:member GET /api/projects/{projectId}/blobs/{key}",

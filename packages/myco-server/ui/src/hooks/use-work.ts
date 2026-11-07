@@ -108,6 +108,7 @@ export function useWindowSpores(projectId: string | null, since: number, until: 
     queryKey: ['work-spores', projectId ?? 'all', since, until],
     enabled,
     queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${params}`, signal),
+    ...live({ follows: ['knowledge', 'runs'] }),
   });
 }
 
@@ -120,6 +121,7 @@ export function useSessionsById(sessions: ReadonlyArray<{ projectId: string; ses
     queries: sessions.map(({ projectId, sessionId }) => ({
       queryKey: ['session', projectId, sessionId],
       queryFn: ({ signal }: { signal: AbortSignal }) => fetchJson<SessionResponse>(`/api/projects/${seg(projectId)}/sessions/${seg(sessionId)}`, signal),
+      ...live({ follows: ['sessions', 'runs'] }),
     })),
   });
 }
@@ -146,6 +148,7 @@ export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswe
       pageParam === null ? path : `${path}&cursor=${encodeURIComponent(pageParam)}`, signal,
     ),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live('still'),
   });
   return {
     rows: first === undefined ? [] : [first.runs, ...(result.data?.pages.slice(1).map((page) => page.runs) ?? [])].flat(),
@@ -168,7 +171,7 @@ export const TASK_RUN_PAGE = 20;
 /** Every run of one task in a project, newest first, a page at a time on the server's cursor, read once it is wanted. */
 export function useAllTaskRuns(projectId: string, task: string, enabled: boolean) {
   const path = `/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUN_PAGE) })}`;
-  return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
+  return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { freshness: { follows: ['runs'] }, enabled, rowKey: (row) => row.id });
 }
 
 /** The most calls or steps one page reads: the server's page bound. */
@@ -217,6 +220,7 @@ export function useAllRunCalls(projectId: string, runId: string, first: { rows: 
     enabled: first.cursor !== null,
     queryFn: ({ signal }) => follow(first, MAX_CALL_PAGES, (cursor) => fetchJson<RunCallPage>(
       `/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(EVIDENCE_PAGE) })}`, signal)),
+    ...live('still'),
   });
   if (first.cursor === null) return { rows: first.rows, complete: true, pending: false, error: null };
   return { rows: query.data?.rows ?? first.rows, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error };
@@ -241,6 +245,7 @@ export function useAttemptSteps(
       );
       return follow(start ?? await page(null), MAX_STEP_PAGES, page);
     },
+    ...live('still'),
   });
   if (!has) return { rows: NO_ROWS, complete: true, pending: false, error: null, refetch: NOTHING };
   return { rows: query.data?.rows ?? NO_ROWS, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error, refetch: () => void query.refetch() };

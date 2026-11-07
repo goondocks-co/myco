@@ -855,7 +855,7 @@
     "tests/myco-server/learning-history.test.ts": 70000,
     "tests/meta/dashboard-live-refresh.test.ts": 500,
     "tests/myco-server/work-now.test.ts": 1500,
-    "tests/myco-server/work-now-read-ceilings.test.ts": 12000,
+    "tests/myco-server/work-now-read-ceilings.test.ts": 12500,
     "tests/myco-server-ui/work-now.test.tsx": 2500
   },
   "parity": {

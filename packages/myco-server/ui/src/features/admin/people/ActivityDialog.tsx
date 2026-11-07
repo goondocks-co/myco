@@ -7,6 +7,7 @@ import { projectPath } from '../../../routes/nav';
 import { ago } from '../../today/words';
 import type { ActivityPage, ActivityRow } from '../wire';
 import { kindWords } from './words';
+import { live } from '../../../lib/live';
 
 export interface ActivityTarget {
   /** The machine's name, for the title. */
@@ -36,6 +37,7 @@ export function useMachineActivity(machineId: string) {
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<ActivityPage>(`/api/machines/${encodeURIComponent(machineId)}/activity?limit=50${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live({ follows: ['sessions'] }),
   });
   const rows = useMemo(() => {
     const byId = new Map<string, ActivityRow>();

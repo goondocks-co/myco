@@ -1,7 +1,7 @@
 import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import type { FleetQueue, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import type { CaptureRow, MachineHarnessHealth } from '../features/today/wire';
-import { unattendedHeader } from './live';
+import { AUTOMATIC_HEADER, PRESENCE_PATH } from './live';
 
 /**
  * A refusal or failure answered by the server, carrying the status, the
@@ -46,8 +46,14 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** Tell the server a person is using the dashboard. Nothing waits on the answer, and a failure changes nothing. */
+export function reportPresence(): void {
+  void fetch(PRESENCE_PATH, { credentials: 'same-origin', headers: { accept: 'application/json' } }).catch(() => undefined);
+}
+
+/** A read the dashboard makes on its own: it never counts as someone using the server. */
 export function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  return request<T>(path, { method: 'GET', headers: { accept: 'application/json', ...unattendedHeader() }, signal });
+  return request<T>(path, { method: 'GET', headers: { accept: 'application/json', [AUTOMATIC_HEADER]: '1' }, signal });
 }
 
 /** A write with a JSON body. */

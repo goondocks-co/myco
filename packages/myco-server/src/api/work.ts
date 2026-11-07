@@ -46,6 +46,14 @@ export async function handleWork(env: ServerEnv, ctx: OwnerContext): Promise<Res
 }
 
 /**
+ * `GET /api/presence`: a person is using the dashboard. It answers nothing else; the request pipeline records the
+ * activity, as it does for every request that is not the dashboard fetching on its own.
+ */
+export async function handlePresence(_env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
+  return ok({ present: true });
+}
+
+/**
  * `GET /api/work/now`: what Myco is doing now — running, waiting and why, and what needs someone — over one Project
  * (`project`) or every visible Project. The dashboard's live refresh reads it every tick, so it is bounded on every
  * store; a runner's sign-in detail is an administrator's, as on Runners.

@@ -2,7 +2,8 @@
  * The dashboard's heartbeat (`readWorkNow`) is read every tick while a page is open, so every statement it runs must
  * be a bounded seek: its rows read stay inside a ceiling however much history the store holds. Measured on both
  * stores, without planner statistics, over a store with thousands of finished runs, queued runs in another project,
- * sessions and a long event log on the running run.
+ * sessions, a long event log on the running run, an active budget governor with a full spend window, and a failed run
+ * whose thousands of calls all succeeded.
  */
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
@@ -10,6 +11,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { readWorkNow, NOW_PROJECTS_MAX, NOW_QUEUED_MAX, NOW_RECENT_RUNS, NOW_RUNNING_MAX, NOW_WATCHED_TASKS } from '@myco-server-worker/read/work-now.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { sqliteBudgetMeter } from './helpers/budget-meter.js';
@@ -17,6 +19,8 @@ import { sqliteBudgetMeter } from './helpers/budget-meter.js';
 const NOW = 1_800_000_000_000;
 const SIZE = 5000;
 const RUNNING = 3;
+/** Settled attempts inside the rolling spend window. */
+const BUDGET_ATTEMPTS = 2000;
 /** Fixed reads every answer makes whatever the scope: settings, the fleet, the budget window and the marks. */
 const FIXED = 60;
 /** One project: its running runs with their latest step and call, its queued runs, its schedules and its failures. */
@@ -62,6 +66,17 @@ it('reads Myco’s work now in bounded seeks on both stores', async () => {
       await db.prepare(`INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at,failures,run_id) VALUES('project','k','[]',?,1,'curate-spores-3')`).bind(NOW + 60_000).run();
       await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
         SELECT 'project',printf('session-%05d',value),'machine','token',1,value,value FROM json_each(?)`).bind(ids).run();
+      // An active governor with a full spend window: the heartbeat reads its holds, never the window.
+      expect((await completeBudgetMigration(db, NOW)).active).toBe(true);
+      await db.prepare(`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source,profile_json)
+        SELECT 'project','title-summary-'||value,'a1','fixture',? - value * 1000,0.01,'actual','{"harness":"claude-code","profile":{"tier":"default","model":"sonnet","effort":null}}'
+        FROM json_each(?) WHERE value < ?`).bind(NOW, ids, BUDGET_ATTEMPTS).run();
+      // A fresh failure that ended after thousands of successful calls and refused none: its reason is one seek.
+      await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,started_at,completed_at,queued_at,error)
+        VALUES('project','post-fail','agent','extract-curate','failed','automatic',?,?,?,'the run ended without its artifact')`).bind(NOW - 2_000, NOW - 1_000, NOW - 2_000).run();
+      await db.prepare(`INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,outcome,payload,recorded_at)
+        SELECT 'project','post-fail','run_tool','myco_run_spores','success','{"op":"list"}',? + value FROM json_each(?)`)
+        .bind(NOW - SIZE, JSON.stringify(Array.from({ length: 2000 }, (_, i) => i))).run();
 
       const check = async (label: string, limit: number, action: (db: RelationalStore) => Promise<unknown>) => {
         const recorded = statementRecorder(db, { accounting: target === 'D1' ? 'd1' : 'native' });
@@ -86,6 +101,8 @@ it('reads Myco’s work now in bounded seeks on both stores', async () => {
         expect(answer.running.map((run) => run.runId).sort()).toEqual(['live-0', 'live-1', 'live-2']);
         expect(answer.running[0]!.step?.words).toMatch(/^(Saved a spore|Read src\/a\.ts)$/);
         expect(answer.needsYou.map((item) => item.key)).toContain('curation-group:project:k');
+        expect(answer.needsYou.find((item) => item.key === 'failed:project:extract-curate')?.why).toBe('the run ended without its artifact');
+        expect(answer.marks.sessions).toBe(String(SIZE - 1));
         expect(answer.unavailable).toEqual([]);
       });
       await check('every project', DEPLOYMENT_LIMIT, async (store) => {

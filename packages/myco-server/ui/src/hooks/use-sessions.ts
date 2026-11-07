@@ -365,19 +365,26 @@ export function sessionListPath(filters: SessionListFilters): string {
   return `/api/sessions?${params}`;
 }
 
-/** The sessions the table lists, newest start first, a page at a time. It is read again on focus and on a change, never on a timer. */
+/** The sessions the table lists, newest start first, a page at a time, read again whenever capture arrives or a run (a title) lands. */
 export function useSessionList(filters: SessionListFilters) {
   const path = sessionListPath(filters);
   // Sessions order by a date the parse revises, so one session can reach two pages.
   return usePaged<SessionListRow>(['sessions', filters.projectId ?? 'all', path], path, {
+    freshness: { follows: ['sessions', 'runs'] },
     rowKey: (row) => `${row.projectId}/${row.sessionId}`,
   });
 }
 
+/** When the first of the live group falls quiet past the live span, so the group is read again then, captured or not. */
+export function liveUntil(page: SessionListPage | undefined): number | null {
+  const ends = (page?.rows ?? []).map((row) => row.lastReceivedAt + LIVE_WITHIN_MS);
+  return ends.length === 0 ? null : Math.min(...ends);
+}
+
 /**
  * The sessions live now under the table's filters: open, and heard from within
- * the live span, read as one page, and read again whenever capture arrives;
- * the span is taken at each read.
+ * the live span, read as one page, and read again whenever capture arrives
+ * and when its first session falls quiet; the span is taken at each read.
  */
 export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'active'>, enabled: boolean) {
   const scope = sessionListPath({ ...filters, state: 'open' });
@@ -385,7 +392,7 @@ export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'act
     queryKey: ['sessions', 'live', filters.projectId ?? 'all', scope],
     enabled,
     queryFn: ({ signal }) => fetchJson<SessionListPage>(sessionListPath({ ...filters, state: 'open', active: { since: Date.now() - LIVE_WITHIN_MS } }), signal),
-    ...live<SessionListPage>({ follows: ['sessions'] }),
+    ...live<SessionListPage>({ follows: ['sessions'], until: liveUntil }),
   });
 }
 
@@ -395,6 +402,7 @@ export function useNamedTurn(projectId: string, sessionId: string, promptId: str
     queryKey: ['turns', projectId, sessionId, 'named', promptId],
     enabled: enabled && promptId !== null,
     queryFn: ({ signal }) => fetchJson<{ rows: TurnRow[]; cursor: string | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${PROMPT_ORIGINS.join(',')}&turn=${seg(promptId!)}`, signal),
+    ...live('still'),
   });
 }
 
@@ -404,7 +412,7 @@ export const TURN_PAGE = 200;
 /** A session's turns, newest first; the origins sit in the key so a toggle shows only that list's pages. */
 export function useTurns(projectId: string, sessionId: string, origins: readonly PromptOrigin[]) {
   const named = [...origins].sort().join(',');
-  return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=${TURN_PAGE}&order=desc`);
+  return usePaged<TurnRow>(['turns', projectId, sessionId, named], `${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${encodeURIComponent(named)}&limit=${TURN_PAGE}&order=desc`, { freshness: 'still' });
 }
 
 /** What the conversation's outline can list: a person's prompts, the key moments, the turns with failures or Myco calls, or every turn. */
@@ -419,7 +427,7 @@ const promptRowId = (row: TurnRow) => row.promptId;
 export function useTurnOutline(projectId: string, sessionId: string, filter: TurnFilter, opts: { order: TurnOrder; around: string | null; enabled?: boolean }) {
   const origins = filter === 'you' ? 'user' : [...PROMPT_ORIGINS].sort().join(',');
   const query = `origins=${encodeURIComponent(origins)}&limit=${TURN_PAGE}&order=${opts.order}${filter === 'you' || filter === 'all' ? '' : `&filter=${filter}`}${opts.around === null ? '' : `&around=${seg(opts.around)}`}`;
-  return usePaged<TurnRow>(['turns', projectId, sessionId, filter, opts.order, opts.around], `${project(projectId)}/sessions/${seg(sessionId)}/turns?${query}`, { enabled: opts.enabled ?? true, rowKey: promptRowId });
+  return usePaged<TurnRow>(['turns', projectId, sessionId, filter, opts.order, opts.around], `${project(projectId)}/sessions/${seg(sessionId)}/turns?${query}`, { freshness: 'still', enabled: opts.enabled ?? true, rowKey: promptRowId });
 }
 
 export type FileKind = 'edited' | 'read' | 'all';
@@ -446,6 +454,7 @@ export function useSessionFiles(projectId: string, sessionId: string, kind: File
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<SessionFilesPage>(`${project(projectId)}/sessions/${seg(sessionId)}/files?kind=${kind}${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    ...live('still'),
   });
   return {
     rows: query.data?.pages.flatMap((one) => one.files) ?? [],
@@ -465,12 +474,13 @@ export function useTurnDetail(projectId: string, sessionId: string, promptId: st
     queryKey: ['turn', projectId, sessionId, promptId],
     enabled,
     queryFn: ({ signal }) => fetchJson<TurnDetail>(`${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}`, signal),
+    ...live('still'),
   });
 }
 
 /** One turn's tool calls, read when the reader opens them. */
 export function useTurnToolCalls(projectId: string, sessionId: string, promptId: string, enabled: boolean) {
-  return usePaged<ToolCallRow>(['turn-tool-calls', projectId, sessionId, promptId], `${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}/tool-calls?limit=200`, { enabled });
+  return usePaged<ToolCallRow>(['turn-tool-calls', projectId, sessionId, promptId], `${project(projectId)}/sessions/${seg(sessionId)}/turns/${seg(promptId)}/tool-calls?limit=200`, { freshness: 'still', enabled });
 }
 
 /** What the server answers when asked to title a session now: a run was started, or why none was; each names an outcome in the reader's words. */
@@ -566,7 +576,7 @@ export function useSessionChildren<T>(projectId: string, sessionId: string, chil
   const params = new URLSearchParams({ limit: '100' });
   for (const [key, value] of Object.entries(filters)) if (value !== '') params.set(key, value);
   const query = params.toString();
-  return usePaged<T>(['session-children', projectId, sessionId, child, query], `${project(projectId)}/sessions/${seg(sessionId)}/${child}?${query}`);
+  return usePaged<T>(['session-children', projectId, sessionId, child, query], `${project(projectId)}/sessions/${seg(sessionId)}/${child}?${query}`, { freshness: 'still' });
 }
 
 /** Where in a session its member observed a commit. */
@@ -607,6 +617,7 @@ export function useSessionCommits(projectId: string, sessionId: string) {
   return useQuery({
     queryKey: ['session-commits', projectId, sessionId],
     queryFn: ({ signal }) => fetchJson<SessionCommits>(`${project(projectId)}/sessions/${seg(sessionId)}/commits`, signal),
+    ...live('still'),
   });
 }
 
@@ -627,7 +638,7 @@ export interface SessionArtifact {
 
 /** What the session reported it created, oldest first, a page at a time. */
 export function useSessionArtifacts(projectId: string, sessionId: string) {
-  return usePaged<SessionArtifact>(['session-artifacts', projectId, sessionId], `${project(projectId)}/sessions/${seg(sessionId)}/artifacts`, { rowKey: (row) => row.id });
+  return usePaged<SessionArtifact>(['session-artifacts', projectId, sessionId], `${project(projectId)}/sessions/${seg(sessionId)}/artifacts`, { freshness: 'still', rowKey: (row) => row.id });
 }
 
 /** Paged transcript files; a session with no visible files yields an empty list. */
@@ -648,6 +659,7 @@ export function useTranscript(projectId: string, sessionId: string, enabled = tr
         throw err;
       }
     },
+    ...live('still'),
   });
   return {
     ...query,
@@ -681,6 +693,7 @@ export function useTranscriptPieces(projectId: string, sessionId: string, initia
       if (transcript === undefined) throw new Error('Transcript is no longer available');
       return transcript;
     },
+    ...live('still'),
   });
   return { ...query, segments: query.data.pages.flatMap((page) => page.segments) };
 }
@@ -695,6 +708,7 @@ export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revis
       if (!res.ok) throw new ApiError(res.status, null);
       return res.text();
     },
+    ...live('still'),
   });
 }
 
@@ -739,6 +753,7 @@ export function useSessionActivity(projectId: string, sessionId: string, filters
   return usePaged<SessionActivityRow>(
     ['session-activity', projectId, sessionId, query],
     `${project(projectId)}/sessions/${seg(sessionId)}/activity?${query}`,
+    { freshness: 'still' },
   );
 }
 
@@ -779,5 +794,6 @@ export function useSessionLineage(projectId: string, sessionId: string) {
   return useQuery({
     queryKey: ['session-lineage', projectId, sessionId],
     queryFn: ({ signal }) => fetchJson<SessionLineage>(`${project(projectId)}/sessions/${seg(sessionId)}/lineage`, signal),
+    ...live('still'),
   });
 }

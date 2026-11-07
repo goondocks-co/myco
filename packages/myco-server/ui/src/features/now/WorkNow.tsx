@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
-import { Card, HealthDot, ListRow, ReadState, ReadUnavailable, StatusChip, TypeChip } from '../../design';
+import { Card, ChipGroup, HealthDot, Link, ListRow, ReadState, ReadUnavailable, StatusChip } from '../../design';
 import { formatElapsed, formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
-import { runPath } from '../../routes/nav';
+import { PROJECTS_PATH, runPath } from '../../routes/nav';
 import { displayModel } from '../work/ModelSummary';
 import { shortTime } from '../work/words';
 import type { NowNeed, NowRunning, NowWaiting, WorkNowAnswer, WorkNowSection } from './wire';
@@ -28,15 +28,21 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
       <ReadState data={answer} pending={pending} error={error} onRetry={onRetry} label="what Myco is doing now">
         {(data) => {
           const across = data.scope === 'deployment';
-          const where = (projectId: string | null): ReactNode => (across && projectId !== null ? <TypeChip>{projectName(projectId) ?? 'A project'}</TypeChip> : null);
+          const where = (projectId: string | null): ReactNode => (across && projectId !== null ? <ChipGroup items={[projectName(projectId) ?? 'A project']} /> : null);
           return (
             <div className="flex flex-col gap-s3">
+              {data.projects.read < data.projects.total && (
+                <p className="t-small text-muted" data-now-more="">
+                  Checked {data.projects.read} of {data.projects.total} projects: those with something running, waiting or failing first.
+                  {' '}<Link to={PROJECTS_PATH}>Open a project</Link> to see the rest.
+                </p>
+              )}
               <Part title="Running now" part="running" data={data} onRetry={onRetry} empty="Nothing is running right now." count={data.running.length}>
                 {data.running.map((run) => <RunningRow key={run.runId} run={run} now={now} kicker={where(run.projectId)} />)}
               </Part>
               <Part title="Waiting" part="waiting" data={data} onRetry={onRetry} empty="Nothing is waiting." count={data.waiting.length}>
                 {sameWaits(data.waiting).map((group) => <WaitingRow key={group[0]!.key} item={group[0]!} now={now}
-                  kicker={group.length === 1 ? where(group[0]!.projectId) : across ? <TypeChip>{group.map((item) => (item.projectId === null ? null : projectName(item.projectId)) ?? 'A project').join(', ')}</TypeChip> : null} />)}
+                  kicker={group.length === 1 ? where(group[0]!.projectId) : across ? <ChipGroup items={group.map((item) => (item.projectId === null ? null : projectName(item.projectId)) ?? 'A project')} /> : null} />)}
               </Part>
               <Part title="Needs you" part="needsYou" data={data} onRetry={onRetry} empty="Nothing needs you." count={data.needsYou.length} tone="warn">
                 {data.needsYou.map((item) => <NeedRow key={item.key} item={item} now={now} kicker={where(item.projectId)} />)}

@@ -1,7 +1,8 @@
 /**
  * Myco's work now on the dashboard: the three parts drawn from the server's answer by one component, and the one live
  * refresh every page shares — the heartbeat read by the clock while the tab is in view and never while it is hidden,
- * the reads that follow a mark re-read only when it moves, and an unattended page that says so.
+ * the reads that follow a mark re-read only when it moves or their answer goes stale by time, and fetch traffic
+ * kept apart from a person's presence.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { ReactNode } from 'react';
@@ -11,14 +12,16 @@ import { QueryClient, QueryClientProvider, focusManager, useQuery } from '@tanst
 import { WorkNow } from '../../packages/myco-server/ui/src/features/now/WorkNow';
 import type { WorkNowAnswer } from '../../packages/myco-server/ui/src/features/now/wire';
 import { LiveRefresh } from '../../packages/myco-server/ui/src/hooks/use-live';
-import { live, markPresence, PRESENCE_MS, RUNNING_TICK_MS, TICK_MS, UNATTENDED_HEADER, unattendedHeader } from '../../packages/myco-server/ui/src/lib/live';
+import { AUTOMATIC_HEADER, live, PRESENCE_MS, PRESENCE_PATH, RUNNING_TICK_MS, TICK_MS, watchPresence } from '../../packages/myco-server/ui/src/lib/live';
+import { liveUntil } from '../../packages/myco-server/ui/src/hooks/use-sessions';
+import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { fetchJson } from '../../packages/myco-server/ui/src/lib/api';
 
 const NOW = Date.now();
 const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
 
 const ANSWER: WorkNowAnswer = {
-  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', fleet: 'f1' },
+  observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', fleet: 'f1' }, projects: { read: 1, total: 1 },
   running: [{ runId: 'run_live', projectId: MYCO, task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini',
     harness: 'claude-code', model: 'claude-sonnet-4-5', startedAt: NOW - 130_000, step: { words: 'Read a spore', at: NOW - 5_000 } }],
   waiting: [
@@ -31,7 +34,7 @@ const ANSWER: WorkNowAnswer = {
 
 const originalFetch = globalThis.fetch;
 const originalSetInterval = globalThis.setInterval;
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; globalThis.setInterval = originalSetInterval; focusManager.setFocused(undefined); markPresence(); });
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; globalThis.setInterval = originalSetInterval; focusManager.setFocused(undefined); });
 
 function wrap(client: QueryClient) {
   return ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>;
@@ -60,7 +63,9 @@ describe('Myco’s work now', () => {
       projectName={(id) => ({ a: 'Atlas', b: 'Ledger', [MYCO]: 'Myco' } as Record<string, string>)[id] ?? null} />, { wrapper: wrap(new QueryClient()) });
     const waiting = document.querySelector('[data-now-part="waiting"]') as HTMLElement;
     expect(within(waiting).getAllByText('Code map')).toHaveLength(1);
-    expect(within(waiting).getByText('Atlas, Ledger')).toBeTruthy();
+    const names = waiting.querySelector('[data-chip-group]:has(> :nth-child(2))') as HTMLElement;
+    expect([...names.children].map((chip) => chip.textContent)).toEqual(['Atlas', 'Ledger']);
+    expect(names.className).toContain('flex-wrap');
     expect(within(waiting).getByText('Myco')).toBeTruthy();
   });
 
@@ -77,7 +82,10 @@ describe('the shared live refresh', () => {
     globalThis.setInterval = ((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
       originalSetInterval(handler, ms === TICK_MS || ms === RUNNING_TICK_MS ? 15 : ms, ...args)) as typeof setInterval;
     let beats = 0;
-    globalThis.fetch = (async () => { beats += 1; return Response.json({ ...ANSWER, running: [] }); }) as unknown as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (new URL(String(input), 'https://s').pathname === '/api/work/now') beats += 1;
+      return Response.json({ ...ANSWER, running: [] });
+    }) as unknown as typeof fetch;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<LiveRefresh projectId={MYCO} />, { wrapper: wrap(client) });
     await waitFor(() => expect(beats).toBeGreaterThanOrEqual(3));
@@ -102,23 +110,58 @@ describe('the shared live refresh', () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const path = new URL(String(input), 'https://s').pathname;
       asked[path] = (asked[path] ?? 0) + 1;
-      if (path === '/api/work/now') { beat += 1; return Response.json({ ...ANSWER, marks: { ...ANSWER.marks, runs: beat >= 2 ? 'r2' : 'r1' } }); }
+      if (path === '/api/work/now') { beat += 1; return Response.json({ ...ANSWER, marks: { ...ANSWER.marks, runs: beat >= 2 ? 'r2' : 'r1', knowledge: beat >= 3 ? 'k2' : 'k1' } }); }
       return Response.json({});
     }) as unknown as typeof fetch;
-    function Follower({ path, follows }: { path: string; follows: 'runs' | 'sessions' }) {
+    function Follower({ path, follows }: { path: string; follows: 'runs' | 'sessions' | 'knowledge' }) {
       useQuery({ queryKey: [path], queryFn: ({ signal }) => fetchJson(path, signal), ...live({ follows: [follows] }) });
       return null;
     }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    render(<><LiveRefresh projectId={MYCO} /><Follower path="/api/work" follows="runs" /><Follower path="/api/sessions" follows="sessions" /></>, { wrapper: wrap(client) });
+    render(<><LiveRefresh projectId={MYCO} /><Follower path="/api/work" follows="runs" /><Follower path="/api/sessions" follows="sessions" /><Follower path="/api/spores" follows="knowledge" /></>, { wrapper: wrap(client) });
     await waitFor(() => expect(beat).toBeGreaterThanOrEqual(4));
     expect(asked['/api/work']).toBe(2);
     expect(asked['/api/sessions']).toBe(1);
+    expect(asked['/api/spores']).toBe(2);
   });
 
-  it('marks a read made with no one at the dashboard, so it never counts as someone using the server', () => {
-    markPresence(NOW);
-    expect(unattendedHeader(NOW + PRESENCE_MS - 1)).toEqual({});
-    expect(unattendedHeader(NOW + PRESENCE_MS + 1)).toEqual({ [UNATTENDED_HEADER]: '1' });
+  it('reads a live group again when its first session falls quiet, though nothing was captured', () => {
+    const page = { rows: [{ lastReceivedAt: NOW - 60_000 }, { lastReceivedAt: NOW - 600_000 }], cursor: null } as unknown as Parameters<typeof liveUntil>[0];
+    expect(liveUntil(page)).toBe(NOW - 600_000 + LIVE_WITHIN_MS);
+    expect(liveUntil({ rows: [], cursor: null } as unknown as Parameters<typeof liveUntil>[0])).toBeNull();
+    const options = live<typeof page>({ follows: ['sessions'], until: liveUntil }) as { refetchInterval: (q: unknown) => number | false; refetchIntervalInBackground: boolean; meta: unknown };
+    const wait = options.refetchInterval({ state: { data: page } });
+    expect(typeof wait === 'number' && wait > 0 && wait <= LIVE_WITHIN_MS).toBe(true);
+    expect(options.refetchInterval({ state: { data: { rows: [], cursor: null } } })).toBe(false);
+    expect(options.refetchIntervalInBackground).toBe(false);
+    expect(options.meta).toEqual({ follows: ['sessions'] });
+  });
+
+  it('says how many projects it read when it could not read them all, and where the rest are', () => {
+    render(<WorkNow answer={{ ...ANSWER, scope: 'deployment', projects: { read: 25, total: 40 } }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
+    const more = document.querySelector('[data-now-more]') as HTMLElement;
+    expect(more.textContent).toBe('Checked 25 of 40 projects: those with something running, waiting or failing first. Open a project to see the rest.');
+    expect(within(more).getByRole('link', { name: 'Open a project' }).getAttribute('href')).toBe('/projects');
+  });
+
+  it('marks every read the dashboard makes as automatic, and reports a person only on their own use of the page', async () => {
+    const headers: Array<Record<string, string>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => { headers.push({ ...(init?.headers as Record<string, string>) }); return Response.json({}); }) as unknown as typeof fetch;
+    await fetchJson('/api/work/now');
+    expect(headers[0]).toMatchObject({ [AUTOMATIC_HEADER]: '1' });
+
+    let clock = NOW;
+    let reports = 0;
+    const stop = watchPresence(() => { reports += 1; }, window, () => clock);
+    expect(reports).toBe(1);
+    window.dispatchEvent(new Event('pointerdown'));
+    expect(reports).toBe(1);
+    clock += PRESENCE_MS;
+    window.dispatchEvent(new Event('keydown'));
+    expect(reports).toBe(2);
+    clock += PRESENCE_MS * 10;
+    expect(reports).toBe(2);
+    stop();
+    expect(PRESENCE_PATH).toBe('/api/presence');
   });
 });

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
 import type { ForgetAnswer, RecoveryStatus } from '../features/admin/health/wire';
+import { live } from '../lib/live';
 
 export type { LatestAttempt, RecoveryAvailability, RecoverySchedule, RecoveryStatus } from '../features/admin/health/wire';
 
@@ -14,6 +15,7 @@ export function useRecovery() {
     queryKey: ['recovery', 'exports'],
     queryFn: ({ signal }) => fetchJson<RecoveryStatus>('/api/recovery/exports', signal),
     retry: false,
+    ...live('still'),
   });
 }
 

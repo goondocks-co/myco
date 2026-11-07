@@ -295,7 +295,7 @@ describe('the sessions table', () => {
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
-  it('reads only the live group again when capture arrives, never by the clock, and never the pages below', async () => {
+  it('reads the live group again when capture arrives or its first session falls quiet, and the pages below when capture or a run moves', async () => {
     server(base({ '/api/sessions': () => page(ROWS), [livePath({ projectId: 'x' })]: () => page([LIVE]) }));
     const client = mount('/p/x/sessions');
     await waitFor(() => expect(document.querySelector('[data-live]')).not.toBeNull());
@@ -305,11 +305,13 @@ describe('the sessions table', () => {
       return typeof refetchInterval === 'function' ? refetchInterval(query) : refetchInterval ?? false;
     };
     const live = client.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!;
-    expect(interval(live)).toBe(false);
+    const quietIn = interval(live);
+    expect(typeof quietIn === 'number' && quietIn > 0 && quietIn <= 15 * 60_000).toBe(true);
+    expect((live.options as Polled).refetchIntervalInBackground).toBe(false);
     expect(live.meta?.follows).toEqual(['sessions']);
     const pages = client.getQueryCache().findAll({ queryKey: ['sessions', 'x'] })[0]!;
     expect(interval(pages)).toBe(false);
-    expect(pages.meta?.follows).toBeUndefined();
+    expect(pages.meta?.follows).toEqual(['sessions', 'runs']);
     cleanup();
 
     server(base({ '/api/sessions': () => page(ROWS.slice(1)), [livePath({ projectId: 'x' })]: () => page([]) }));

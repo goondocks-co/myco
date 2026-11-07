@@ -30,6 +30,7 @@ const LISTED: readonly Exception[] = [
   ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:697,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
   {step:697,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal map runs release unreferenced repository evidence.'},
   { step: 696, object: 'idx_agent_runs_task_started', table: 'agent_runs', reason: 'Claim admission seeks recent starts of one task across the Deployment.' },
+  { step: 701, object: 'idx_agent_run_events_failed', table: 'agent_run_events', reason: 'A failed run\'s own refusal is one seek, however many of its calls succeeded.' },
   { step: 695, object: 'idx_turn_cards_session_pending', table: 'turn_cards', reason: 'Pending recounts seek only the pending rows of one session.' },
   { step: 693, object: 'curation_capability_insert', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
   { step: 693, object: 'curation_capability_update', table: 'project_capabilities', reason: 'Curation source and vector changes advance the durable discovery frontier.' },
