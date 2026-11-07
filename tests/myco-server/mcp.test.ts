@@ -319,7 +319,7 @@ describe('POST /mcp', () => {
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');
     const refused = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' })).result;
-    expect(refused).toMatchObject({ ok: false, error: 'stale', spore_id: b.id, status: 'obsolete', repairCall: { tool: 'myco_spores', op: 'get' },
+    expect(refused).toMatchObject({ ok: false, error: 'stale', spore_id: b.id, status: 'obsolete', repairCall: { tool: 'myco_spores', op: 'get', id: b.id },
       reason: expect.stringContaining('Nothing was saved') });
     expect({
       sources: sqlite.query(`SELECT id, status FROM spores WHERE id IN (?, ?) ORDER BY id`).all(a.id, b.id),

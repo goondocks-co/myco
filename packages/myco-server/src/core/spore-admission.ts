@@ -22,7 +22,7 @@ export type SporePrincipal = { kind: 'member'; memberId: string; machineId: stri
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
 export interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
-type SporeWriteFailure = { ok: false; error: string; repairCall?: {tool:string;op:string;page?:number} };
+type SporeWriteFailure = { ok: false; error: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
 const failure = (error: string, repairCall?: SporeWriteFailure['repairCall']): SporeWriteFailure => ({ ok: false, error, ...(repairCall === undefined ? {} : {repairCall}) });
 const SESSION_NOT_FOUND = 'session_id not found';
 
@@ -138,6 +138,7 @@ export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext)
       const { repairCall, ...refused } = result as SporeWriteFailure;
       const stale = result.error === 'stale';
       const id =
+        (stale && 'spore_id' in result && typeof result.spore_id === 'string' ? result.spore_id : undefined) ??
         input.id ??
         input.old_spore_id ??
         (Array.isArray(input.source_spore_ids) ? (input.source_spore_ids[0]?.id ?? input.source_spore_ids[0]) : undefined);
@@ -147,13 +148,11 @@ export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext)
         ...(await refuse({
           what: `myco_spores op ${String(input.op)}${typeof id === 'string' ? ' for ' + JSON.stringify(id) : ''}`,
           actual: stale && 'reason' in result ? String(result.reason) : String(result.error),
-          next:
-            repairCall ??
-            (stale
-              ? curation
-                ? { tool: 'myco_run', op: 'report' }
-                : { tool: 'myco_run_spores', op: 'get', id }
-              : { tool: 'myco_spores', op: String(input.op) }),
+          next: stale
+            ? curation
+              ? { tool: 'myco_run', op: 'report' }
+              : { tool: 'myco_run_spores', op: 'get', id }
+            : (repairCall ?? { tool: 'myco_spores', op: String(input.op) }),
           repair: stale
             ? curation
               ? 'Assigned sources changed; report the failure.'
@@ -277,9 +276,9 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     if (stale !== undefined) {
       const held = stale.status === null ? 'not found' : `${stale.status} at revision ${stale.revision}`;
       const wanted = `active${stale.expected === null ? '' : ` at revision ${stale.expected}`}`;
-      return { ...failure('stale', { tool: 'myco_spores', op: 'get' }), spore_id: stale.id, status: stale.status, revision: stale.revision,
+      return { ...failure('stale', { tool: 'myco_spores', op: 'get', id: stale.id }), spore_id: stale.id, status: stale.status, revision: stale.revision,
         reason: `source ${stale.id} is ${held}; expected ${wanted}. Nothing was saved: no wisdom spore was stored and no source moved. `
-          + `Reread ${stale.id} with myco_spores op "get", then consolidate again with the sources that are still active at their current revisions.` };
+          + `Reread ${stale.id}, then consolidate again with the sources that are still active at their current revisions.` };
     }
     if (wisdom === null) return failure(ctx.principal.kind === 'grant' ? 'spore_id not found' : 'Consolidated spore was not recorded');
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };

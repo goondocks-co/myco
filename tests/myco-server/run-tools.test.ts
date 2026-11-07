@@ -663,7 +663,10 @@ describe('a sweep consolidates through the member op', () => {
       op: 'consolidate', source_spore_ids: [{ id: 'sp_gone', revision: 0 }], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
     expect(second).toMatchObject({ ok: false, spore_id: 'sp_gone', revision: 0,
-      error: expect.stringMatching(/^Not saved: .*source sp_gone is superseded at revision 0.*Next call: myco_spores \{"op":"get"\}/) });
+      error: expect.stringMatching(/^Not saved: .*source sp_gone is superseded at revision 0.*Next call: myco_run_spores \{"op":"get","id":"sp_gone"\}/) });
+    // The named next call is one this run can make, and it answers.
+    const reread = (await call(harness.token, 'myco_run_spores', { op: 'get', id: 'sp_gone' }) as any).result;
+    expect(reread).toMatchObject({ spore: { id: 'sp_gone', status: 'superseded' } });
     expect({
       gone: sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get(),
       wisdom: sqlite.query(`SELECT COUNT(*) AS n FROM spores WHERE content = 'again'`).get(),
