@@ -238,6 +238,17 @@ function assertRoutingSmoke(workflow: typeof ci): void {
   expect(workflow.jobs.tests.needs).toBe('build');
   expect(workflow.jobs.tests.steps.some((step: { uses?: string; with?: { name?: string } }) =>
     step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'rbac-routing-linux-x64')).toBe(true);
+  const library = 'ci-libsqlite3-linux-x64';
+  // The library and the amalgamation it was built from: budget-meter tests compile against the source.
+  const directory = 'packages/myco/vendor-src/libsqlite3';
+  expect(build).toContainEqual(expect.objectContaining({
+    uses: 'actions/upload-artifact@v7',
+    with: expect.objectContaining({ name: library, path: `${directory}/`, 'if-no-files-found': 'error' }),
+  }));
+  expect(workflow.jobs.tests.steps).toContainEqual(expect.objectContaining({
+    if: "matrix.kind == 'node'", uses: 'actions/download-artifact@v8',
+    with: { name: library, path: directory },
+  }));
 }
 
 test('routing runs with the built binary, and full node shards receive that binary', () => {
@@ -248,6 +259,10 @@ test('routing runs with the built binary, and full node shards receive that bina
   const missing = structuredClone(ci);
   missing.jobs.tests.steps = missing.jobs.tests.steps.filter((step: { uses?: string }) => !step.uses?.startsWith('actions/download-artifact@'));
   expect(() => assertRoutingSmoke(missing)).toThrow();
+  const missingLibrary = structuredClone(ci);
+  missingLibrary.jobs.build.steps = missingLibrary.jobs.build.steps.filter((step: { with?: { name?: string } }) =>
+    step.with?.name !== 'ci-libsqlite3-linux-x64');
+  expect(() => assertRoutingSmoke(missingLibrary)).toThrow();
 });
 
 test.skipIf(process.platform === 'win32')('the actual aggregate command refuses every unsuccessful dependency', () => {
