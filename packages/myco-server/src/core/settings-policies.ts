@@ -21,7 +21,7 @@ import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS } fr
 import type { ServerEnv } from './adapters.js';
 import {
   DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES, executionProfileLeafDefault, heldPartitions, leafRuleViolation,
-  leafResets, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesResolution, type LeafRecord,
+  settingsRevisions, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesResolution, type LeafRecord,
 } from './settings.js';
 import { scheduleLeaves, scheduleFor, memberRunsPerDay } from './scheduled-tasks.js';
 import { TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE } from './jobs.js';
@@ -366,15 +366,12 @@ export const SETTING_POLICIES: readonly SettingPolicy[] = [
 /** The live leaves: every Deployment leaf not retired. */
 export const LIVE_LEAVES: readonly string[] = DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf));
 
-/** One leaf's revision: the instant of its last write or reset, or `0` where neither happened. */
-const revisionOf = (held: LeafRecord | undefined, resetAt: number | undefined): string =>
-  held !== undefined ? `w${held.updatedAt}` : resetAt !== undefined ? `r${resetAt}` : '0';
-
 /** The effective answer for every live leaf, from the policy each is bound to. */
 export async function effectiveSettings(env: ServerEnv): Promise<Map<string, EffectiveSetting>> {
   const db = await settingsSnapshot(env.db);
   const read: ServerEnv = { ...env, db };
-  const [stored, resets] = await Promise.all([settingsWriter(db).leaves(), leafResets(db)]);
+  const stored = await settingsWriter(db).leaves();
+  const revisions = await settingsRevisions(db);
   const resolved = await Promise.all(SETTING_POLICIES.map(async (policy) => {
     try { return { policy, answers: await policy.resolve(read) }; }
     catch (error) { return { policy, error: error instanceof Error ? error.message : String(error) }; }
@@ -384,7 +381,7 @@ export async function effectiveSettings(env: ServerEnv): Promise<Map<string, Eff
     const { policy } = result;
     for (const leaf of policy.leaves) {
       const held = stored[leaf];
-      const revision = revisionOf(held, resets.get(leaf));
+      const revision = String(revisions[leaf] ?? 0);
       if ('error' in result) {
         out.set(leaf, { stored: held?.value ?? null, effective: null, source: 'unset', state: 'unknown', reason: `Myco could not tell what this setting does now: ${result.error}`, appliesTo: DEPLOYMENT_TARGETS, revision });
         continue;

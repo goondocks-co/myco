@@ -1,3 +1,4 @@
+import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
@@ -27,6 +28,9 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...['deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities'].flatMap(table =>
+    ['insert', 'update', 'delete'].map(operation => ({ step: 710, object: `${table}_revision_${operation}`, table,
+      reason: 'Setting mutations advance the persistent leaf revision in the same transaction.' }))),
   { step: 702, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
   { step: 703, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
   { step: 704, object: 'idx_transcripts_received', table: 'transcripts', reason: 'Prompt identity diagnostics seek transcript receipts in the selected time window.' },
@@ -196,6 +200,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
+    step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
+  })),
   ...V708_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 708, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
   })),

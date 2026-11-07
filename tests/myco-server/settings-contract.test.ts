@@ -462,18 +462,6 @@ describe('the settings contract', () => {
     const READERS = /\b(leafValues|settingTexts|storedSettings|storedEmbedding|leafOffChecks)\b/;
     const readers = filesUnder(SERVER_SRC).map((file) => {
       let source=readFileSync(file,'utf8');
-      if(path.relative(SERVER_SRC,file).split(path.sep).join('/')==='read/catalog/settings.ts') {
-        const parsed=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
-        const factories=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='prepareSwitchedSettings');
-        expect(factories).toHaveLength(1);
-        const factory=factories[0]!;
-        const body=factory.getText(parsed);
-        expect(body).not.toMatch(/\.(?:first|all|run|batch)\s*\(/);
-        expect(body.match(/db\.prepare\(/g)).toHaveLength(3);
-        const executors=filesUnder(SERVER_SRC).filter(other=>other!==file && /prepareSwitchedSettings\(db,/.test(readFileSync(other,'utf8')));
-        expect(executors.map(other=>path.relative(SERVER_SRC,other).split(path.sep).join('/'))).toEqual(['core/settings.ts']);
-        source=source.slice(0,factory.getStart(parsed))+source.slice(factory.end);
-      }
       return {file:path.relative(SERVER_SRC,file).split(path.sep).join('/'),code:codeOf(source,file)};
     })
       .filter(({ code }) => READERS.test(code) || /\bdeployment_settings\b/.test(code));
@@ -539,7 +527,7 @@ describe('the settings contract', () => {
         expect({ leaf, moved: JSON.stringify(after) !== JSON.stringify(before), before, after }).toMatchObject({ leaf, moved: true });
         const configured = await row(r, leaf);
         expect(configured).toMatchObject({ configured: true, stored: value, effective: value, storedApplies: true, source: expect.stringMatching(/^(configured|task-override)$/) });
-        expect(String(configured.revision)).toStartWith('w');
+        expect(Number(configured.revision)).toBeGreaterThan(Number(unset.revision));
 
         const refused = await put(r, leaf, behavior.invalid(target));
         expect({ leaf, status: refused.status, applied: (await json(refused)).applied }).toEqual({ leaf, status: 400, applied: false });
@@ -575,7 +563,7 @@ describe('the settings contract', () => {
         expect({ leaf, restored: await behavior.observe(r) }).toEqual({ leaf, restored: before });
         const restored = await row(r, leaf);
         expect(restored).toMatchObject({ configured: false, effective: unset.effective, source: unset.source });
-        expect(String(restored.revision)).toStartWith('r');
+        expect(Number(restored.revision)).toBeGreaterThan(Number(configured.revision));
       });
     }
   }

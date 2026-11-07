@@ -75,10 +75,10 @@ export function deleteJson<T>(path: string, headers: Record<string, string> = {}
   return request<T>(path, { method: 'DELETE', headers: { accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
 
-export function postJson<T>(path: string, body?: unknown): Promise<T> {
+export function postJson<T>(path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
   return request<T>(path, {
     method: 'POST',
-    headers: body === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
+    headers: body === undefined ? { accept: 'application/json', ...headers } : { accept: 'application/json', 'content-type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

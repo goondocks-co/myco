@@ -46,7 +46,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
     if (url.pathname.endsWith('/capabilities')) return Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } });
     if (url.pathname === '/auth/me') return Response.json(dashboardMe(options.member ? MEMBER : ADMIN));
     if (url.pathname === '/api/projects') return options.failProjects ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(options.projects ?? PROJECTS);
-    if (url.pathname === '/api/settings/agent.tasks') { tasks[0] = { ...tasks[0]!, tier: 'low', profiles: [{ harness: 'codex', model: 'changed-model', effort: 'low', note: null }] }; return Response.json({ applied: true }); }
+    if (url.pathname === '/api/settings/agent.tasks') { expect(new Headers(init?.headers).get('if-match')).toBe('5'); tasks[0] = { ...tasks[0]!, tier: 'low', profiles: [{ harness: 'codex', model: 'changed-model', effort: 'low', note: null }] }; return Response.json({ applied: true }); }
     if (url.pathname === '/api/tasks') return Response.json({ tasks });
     if (url.pathname === `/api/projects/${P}/runs`) return Response.json({ rows: [], cursor: null });
     return new Response(null, { status: 404 });
@@ -55,6 +55,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
 }
 function mount(path: string, settings = false) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (settings) client.setQueryData(['settings'], { leaves: [{ leaf: 'agent.tasks', revision: '5' }] });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App />{settings && <TaskTiers tiers={[{ task: 'title-summary', tier: 'high', source: 'task' }]} />}</MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 

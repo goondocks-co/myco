@@ -917,7 +917,7 @@ it('clearing Back up every stops an admitted hosted attempt before another conti
     await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
     fixture.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('backup.auto_interval_hours','168',1,'mem_machine_1')");
     const env = envOverProducer(producer);
-    const response = await handleResetSetting(env, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    const response = await handleResetSetting(env, { request: new Request('https://s/api/settings/backup.auto_interval_hours', { method: 'DELETE' }), params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
     expect(response.status).toBe(200);
     expect((await producer.status()).error).toBe('backup_disabled');
     expect(await producer.continue()).toMatchObject({ stage: 'idle', nextInMs: null, sourcePaused: false });
@@ -959,7 +959,7 @@ it('returns a saved backup setting after follow-up failures and reconciles the s
     let wakes = 0;
     const refused = { ...env, recovery: { ...env.recovery, stopAttempt: async () => { throw new Error('private-producer-refusal'); } },
       wake: async () => { wakes++; throw new Error('private-wake-refusal'); } };
-    const response = await handleResetSetting(refused, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
+    const response = await handleResetSetting(refused, { request: new Request('https://s/api/settings/backup.auto_interval_hours', { method: 'DELETE' }), params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: Date.now() } as never);
     expect(response.status).toBe(200);
     expect(await jsonBody(response)).toEqual({ applied: true });
     expect(fixture.sqlite.query("SELECT value FROM deployment_settings WHERE leaf='backup.auto_interval_hours'").get()).toBeNull();
@@ -990,7 +990,7 @@ it('bounds a blocked post-save stop and lets a later clock tick settle the sched
     const blocked = { ...env, recovery: { ...env.recovery, stopAttempt: () => new Promise<void>(() => {}) },
       wake: async () => { woke = true; } };
     const started = Date.now();
-    const response = await handleResetSetting(blocked, { params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: started } as never);
+    const response = await handleResetSetting(blocked, { request: new Request('https://s/api/settings/backup.auto_interval_hours', { method: 'DELETE' }), params: { leaf: 'backup.auto_interval_hours' }, member: { id: 'mem_machine_1' }, now: started } as never);
     expect(response.status).toBe(200);
     expect(Date.now() - started).toBeLessThan(8_000);
     expect(woke).toBe(true);

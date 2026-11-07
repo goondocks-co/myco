@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, X } from 'lucide-react';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { Button, IconButton, Input, Select, Switch, Textarea } from '../../../design';
 import { permissionOf, useMe } from '../../../hooks/use-me';
-import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
+import { isSettingsConflict, settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
 import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
@@ -100,6 +100,10 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
   const locked = field.readOnly === true || retired || !admin || row === undefined || row.state === 'unknown';
   const nameOf = useMemberNames();
   const [draft, setDraft] = useState<string | null>(null);
+  const [draftRevision, setDraftRevision] = useState<number | undefined>(undefined);
+  const edit = (value: string) => { if (draft === null) setDraftRevision(row === undefined ? undefined : Number(row.revision)); setDraft(value); };
+  const clearDraft = () => { setDraft(null); setDraftRevision(undefined); };
+  const refused = (err: unknown) => { if (isSettingsConflict(err)) clearDraft(); setError(settingsRefusalText(err)); };
   const [error, setError] = useState<string | null>(null);
   const value = row?.effective ?? null;
   const editable = row?.configured ? (row.editableValue ?? row.stored) : null;
@@ -110,17 +114,17 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
   const save = (next: unknown) => {
     setError(null);
     if (locked) return;
-    actions.setLeaf.mutate({ leaf: field.leaf, value: next }, {
-      onError: (err) => setError(settingsRefusalText(err)),
-      onSuccess: () => setDraft(null),
+    actions.setLeaf.mutate({ leaf: field.leaf, value: next, revision: draftRevision ?? (row === undefined ? undefined : Number(row.revision)) }, {
+      onError: refused,
+      onSuccess: clearDraft,
     });
   };
   const reset = () => {
     setError(null);
     if (locked) return;
-    actions.resetLeaf.mutate({ leaf: field.leaf }, {
-      onError: (err) => setError(settingsRefusalText(err)),
-      onSuccess: () => setDraft(null),
+    actions.resetLeaf.mutate({ leaf: field.leaf, revision: row === undefined ? undefined : Number(row.revision) }, {
+      onError: refused,
+      onSuccess: clearDraft,
     });
   };
   const commitText = () => {
@@ -175,7 +179,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
           value={shown}
           readOnly={locked}
           placeholder={placeholder}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
           onBlur={commitText}
           onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }}
         />
@@ -195,7 +199,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
           readOnly={locked}
           maxLength={field.maxLength}
           placeholder={placeholder}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => edit(e.target.value)}
         />
         {!locked && (
           <Button size="sm" className="self-end" disabled={draft === null} pending={pending && draft !== null} onClick={commitText}>Save</Button>
@@ -252,7 +256,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
         <div className="flex w-full min-w-0 items-center gap-s2">{control}</div>
         {!locked && row.repair === 'clean-document' && <Button size="sm" className="self-end" disabled={pending} onClick={() => {
           setError(null);
-          actions.repairDocument.mutate({ leaf: field.leaf }, { onError: (err) => setError(settingsRefusalText(err)), onSuccess: () => setDraft(null) });
+          actions.repairDocument.mutate({ leaf: field.leaf }, { onError: refused, onSuccess: clearDraft });
         }}>Remove entries that no longer apply</Button>}
         {!locked && <><Button size="sm" className="self-end" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button><p className="t-meta text-muted">{field.leaf === 'agent.tasks' ? 'Clearing resets every task override, including imported-session titling.' : 'Clearing restores the server’s default for this setting.'}</p></>}
       </div> : control}

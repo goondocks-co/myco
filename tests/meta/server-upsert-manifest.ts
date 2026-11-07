@@ -5,7 +5,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/spore-curation.ts#closeStatements': [{ tables: ['spore_curation_receipts'], order: 'unverified' }],
   'db/curation-changes.ts#curationChangeSql': [{ tables: ['spore_curation_changes'], order: 'unverified' }],
   'db/budget-activation.ts#indexWitness': [{ tables: ['schema_meta'], order: 'catalogue-snapshot' }],
-  'core/settings.ts#setProjectLeaf': [{ tables: ['project_settings'], order: 'unverified' }],
   'core/spore-curation.ts#discoverSporeClusters': [{ tables: ['spore_curation_cursor'], order: 'unverified' }],
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
@@ -89,28 +88,13 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/secrets.ts#put': [
     { tables: ['deployment_secrets'], order: 'unverified' },
   ],
-  'core/settings.ts#resetRecord': [
-    { tables: ['deployment_setting_resets'], order: 'unverified' },
-  ],
-  'core/settings.ts#setCapability': [
-    { tables: ['project_capabilities'], order: 'unverified' },
-  ],
-  'core/settings.ts#setLeaf': [
-    { tables: ['deployment_settings'], order: 'unverified' },
-    { tables: ['deployment_settings'], order: 'unverified' },
-  ],
-  'core/settings.ts#setTaskTier': [
-    { tables: ['deployment_settings'], order: 'unverified' },
-    { tables: ['deployment_settings'], order: 'unverified' },
-  ],
-  'core/settings.ts#writeEmbedding': [
+  'db/settings/leaves.ts#<module>': [
     { tables: ['deployment_settings'], order: 'writer-revision' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
+    { tables: ['project_settings'], order: 'unverified' },
+    { tables: ['project_capabilities'], order: 'unverified' },
   ],
-  'read/catalog/settings.ts#prepareSwitchedSettings': [
-    { tables: ['deployment_settings'], order: 'unverified' },
-    { tables: ['deployment_setting_resets'], order: 'unverified' },
-  ],
+  'db/schema-v710.ts#<module>': [{ tables: ['setting_revisions'], order: 'unverified' }],
   'core/storage-cleanup.ts#omissions': [
     { tables: ['storage_cleanup_omissions'], order: 'unverified' },
   ],

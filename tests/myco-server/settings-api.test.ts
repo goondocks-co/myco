@@ -383,14 +383,14 @@ describe('project capability admission through the surface', () => {
   it('reports capability defaults for a Project with no rows', async () => {
     const e = env();
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 } });
+      .toEqual({ capabilities: { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 }, revisions: {}, capabilityRevisions: {} });
   });
 
   it('switches one capability off, and leaves other Projects untouched', async () => {
     const e = env();
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 } });
+      .toEqual({ capabilities: { cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false }, retiredCapabilities: {}, settings: { 'agent.spore_curation.daily_runs': 5 }, revisions: {}, capabilityRevisions: { cortex: 1 } });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/capabilities'), e.all)))
       .toMatchObject({ capabilities: { cortex: true } });
   });
