@@ -67,11 +67,11 @@ it('seeds valid curation membership for first-attempt allowance migrations', asy
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
 
-it('upgrades populated Health read fixtures through schemas 701–707', async () => {
+it('upgrades populated Health read fixtures through schemas 702–708', async () => {
   const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-health-upgrade-'));
   try {
-    for (const migration of SCHEMA_STEPS.filter(step => step.version >= 701 && step.version <= 707)) {
+    for (const migration of SCHEMA_STEPS.filter(step => step.version >= 702 && step.version <= 708)) {
       const file = path.join(root, `previous-${migration.version}.sqlite`);
       const previous = new Database(file);
       try {
@@ -84,7 +84,7 @@ it('upgrades populated Health read fixtures through schemas 701–707', async ()
       try {
         for (const sql of migration.statements) db.exec(sql);
         expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
-        if (migration.version >= 706) {
+        if (migration.version >= 707) {
           expect(db.query('SELECT machine_id,agent_json,project_id,session_id FROM machine_capture_heads').all())
             .toContainEqual({ machine_id: 'upgrade_machine', agent_json: 'null', project_id: 'proj_parity', session_id: 'upgrade_session' });
         }
