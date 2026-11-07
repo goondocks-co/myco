@@ -64,5 +64,17 @@ export async function handleWorkNow(env: ServerEnv, ctx: OwnerContext): Promise<
   if (named.length > 1) return badRequest('name one project, or none for every project');
   const set = await resolveProjectSet(env.db, ctx.member, named);
   if (set === null) return notFound();
-  return ok(await readWorkNow(env, named.length === 1 ? { projectId: named[0]! } : { all: true }, ctx.now, isAdmin(ctx.member.role)));
+  let cursor: { priority: number; activity: number; projectId: string } | null = null;
+  const rawCursor = ctx.url.searchParams.get('cursor');
+  if (rawCursor !== null) {
+    try {
+      const value: unknown = JSON.parse(rawCursor);
+      if (typeof value !== 'object' || value === null || !('priority' in value) || (value.priority !== 0 && value.priority !== 1) || !('activity' in value) || !('projectId' in value)
+        || typeof value.activity !== 'number' || !Number.isFinite(value.activity) || typeof value.projectId !== 'string') {
+        return badRequest('cursor must be the continuation value returned by the previous Today page');
+      }
+      cursor = { priority: value.priority, activity: value.activity, projectId: value.projectId };
+    } catch { return badRequest('cursor must be the continuation value returned by the previous Today page'); }
+  }
+  return ok(await readWorkNow(env, named.length === 1 ? { projectId: named[0]! } : { all: true }, ctx.now, isAdmin(ctx.member.role), cursor));
 }

@@ -34,7 +34,7 @@ function SearchByMeaning({ now }: { now: number }) {
   const sw = switchRead.data;
   const passed = passedRead.data;
   const switching = sw !== undefined && sw !== null;
-  const leftOut = passed !== undefined && passed.count > 0;
+  const leftOut = passed !== undefined && (passed.state === 'building' || passed.count > 0);
   if (!switching && !leftOut && !switchRead.error && !passedRead.error && !switchRead.isPending && !passedRead.isPending) return null;
   return (
     <div className="flex flex-col gap-s2" data-health-search-rebuild="">
@@ -43,7 +43,7 @@ function SearchByMeaning({ now }: { now: number }) {
         {(value) => value === null ? null : <Card><EmbeddingSwitchPanel sw={value} now={now} /></Card>}
       </ReadState>
       <ReadState data={passed} pending={passedRead.isPending} error={passedRead.error} onRetry={() => void passedRead.refetch()} label="sources left out of search">
-        {(value) => value.count === 0 ? null : <Card data-health-passed-over="">
+        {(value) => value.state === 'building' ? <Card>Measuring passed-over sources…</Card> : value.count === 0 ? null : <Card data-health-passed-over="">
           <PassedOverSources list={value} lede={`Search by meaning leaves out ${formatCount(value.count, 'source')}. Search by words still finds ${value.count === 1 ? 'it' : 'them'}.`} />
         </Card>}
       </ReadState>

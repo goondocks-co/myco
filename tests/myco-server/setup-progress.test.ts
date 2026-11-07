@@ -3,7 +3,7 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { readSetupProgress } from '@myco-server-worker/read/setup.js';
+import { readSetupProgress } from '@myco-server-worker/db/identity/setup.js';
 import worker from '@myco-server-worker/index.js';
 import { seedMisleadingHistory } from '../setup/fixtures/misleading-history.js';
 
@@ -162,15 +162,41 @@ describe('observed setup progress', () => {
     expect((await read()).workProduced).toBe(false);
   });
 
-  it('requires published output inside the 31 day window; failed runs with output count', async () => {
+  it('recognizes published output from a failed run', async () => {
     const { read, output } = rig(); output(NOW - 1, 'failed');
     expect((await read()).workProduced).toBe(true);
   });
-  for (const [name, at, dry] of [['old output', NOW - 32 * DAY, 0], ['dry-run output', NOW - 1, 1], ['future output', NOW + DAY, 0]] as const)
+  for (const [name, at, dry] of [['dry-run output', NOW - 1, 1], ['future output', NOW + DAY, 0]] as const)
     it(`does not tick work from ${name}`, async () => {
       const { read, output } = rig(); output(at, 'completed', dry);
       expect((await read()).workProduced).toBe(false);
     });
+
+  for (const [task, tool] of [['title-summary', 'myco_run_sessions'], ['canopy-map', 'myco_run_map']] as const) {
+    it(`recognizes retained ${task} output and retracts removed evidence`, async () => {
+      const { read, output, sql } = rig();
+      output(NOW - 32 * DAY, 'failed');
+      sql("DELETE FROM spores WHERE id='sp_setup'");
+      sql("UPDATE agent_runs SET task=? WHERE id='run_setup'", task);
+      expect((await read()).workProduced).toBe(false);
+      sql(`INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,recorded_at)
+        VALUES ('proj_1','run_setup','run_write',?,?)`, tool, NOW - 32 * DAY);
+      expect((await read()).workProduced).toBe(true);
+      sql("UPDATE agent_runs SET dry_run=1 WHERE id='run_setup'");
+      expect((await read()).workProduced).toBe(false);
+      sql("UPDATE agent_runs SET dry_run=0 WHERE id='run_setup'");
+      sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_1'");
+      expect((await read()).workProduced).toBe(false);
+      sql("UPDATE projects SET archived_at=NULL WHERE project_id='proj_1'");
+      sql("DELETE FROM agent_run_events WHERE run_id='run_setup'");
+      expect((await read()).workProduced).toBe(false);
+    });
+  }
+
+  it('retains produced setup progress beyond the recent Work window', async () => {
+    const { read, output } = rig(); output(NOW - 32 * DAY);
+    expect((await read()).workProduced).toBe(true);
+  });
 
   it('reports a queued project without an enabled registered runner, excluding deleted and archived projects', async () => {
     const { read, sql, runner } = rig();

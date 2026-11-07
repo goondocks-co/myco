@@ -70,7 +70,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
   '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
-  '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1 },
+  '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1, hasMore: false, cursor: null }, runningTotal: 1, runningHasMore: false,
     running: [{ runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', what: 'Learn from sessions', machine: 'homelab-mini', harness: 'codex', model: null, startedAt: NOW - 60_000, step: { words: 'Read session cards', at: NOW - 5_000 } }],
     waiting: [{ key: 'budget', projectId: null, what: 'Automatic work', count: null, why: 'Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.', since: null, nextAt: null }],
     needsYou: [{ key: 'sign-in:rn_mini', projectId: null, what: 'homelab-mini can’t sign in to a coding agent', why: 'Sign in to a coding agent on this runner.', at: NOW, runId: null, retryAt: null }] }),
@@ -199,7 +199,7 @@ describe('Health', () => {
 
   it('names each source search by meaning passes over, with where it is and why, and shows nothing while there is none', async () => {
     server(routes({
-      '/api/embedding/passed-over': () => Response.json({ count: 2, sources: [
+      '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 2, sources: [
         { projectId: 'proj_x', projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true },
         { projectId: 'proj_x', projectName: 'Project X', type: 'session', title: 'A very long session', reason: 'the model refused its text with HTTP 400 (“input is too long”)', anyModel: false },
       ] }),
@@ -212,10 +212,17 @@ describe('Health', () => {
       'Session “A very long session” in Project X: the model refused its text with HTTP 400 (“input is too long”)',
     ]);
     cleanup();
-    server(routes({ '/api/embedding/passed-over': () => Response.json({ count: 0, sources: [] }) }));
+    server(routes({ '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }) }));
     mount();
     expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
     await waitFor(() => expect(document.querySelector('[data-health-schema]')).toBeTruthy());
+    expect(document.querySelector('[data-health-passed-over]')).toBeNull();
+  });
+
+  it('shows passed-over catch-up as measuring instead of an empty count', async () => {
+    server(routes({ '/api/embedding/passed-over': () => Response.json({ state: 'building' }) }));
+    mount();
+    expect(await screen.findByText('Measuring passed-over sources…')).toBeTruthy();
     expect(document.querySelector('[data-health-passed-over]')).toBeNull();
   });
 
@@ -492,7 +499,7 @@ describe('dashboard status honesty gates', () => {
     for (const endpoint of ['/api/embedding/switch', '/api/embedding/passed-over']) {
       const table = routes({
         '/api/embedding/switch': () => endpoint.endsWith('/switch') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ switch: null }),
-        '/api/embedding/passed-over': () => endpoint.endsWith('passed-over') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ count: 0, sources: [] }),
+        '/api/embedding/passed-over': () => endpoint.endsWith('passed-over') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ state: 'ready', count: 0, sources: [] }),
       });
       server(table); mount();
       await screen.findByRole('heading', { name: 'Search by meaning' });

@@ -1,5 +1,5 @@
 import worker, { DeploymentClock, RecoveryProducer } from '../../../packages/myco-server/src/index.ts';
-import { readSetupIdentity, readSetupProgress } from '../../../packages/myco-server/src/read/setup.ts';
+import { readSetupIdentity, readSetupProgress } from '../../../packages/myco-server/src/db/identity/setup.ts';
 import { projectRepositoryNeeded } from '../../../packages/myco-server/src/read/repository-requirements.ts';
 import { serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../../../packages/myco-server/src/platform/cloudflare/env.ts';
 import { measured } from '../fleet-budget/worker-entry.ts';

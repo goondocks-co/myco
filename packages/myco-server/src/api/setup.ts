@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { readSetupIdentity, readSetupProgress, type SetupIdentity, type SetupObservations } from '../read/setup.js';
+import { readSetupIdentity, readSetupProgress, type SetupIdentity, type SetupObservations } from '../db/identity/setup.js';
 import { machineScope } from './machines.js';
 import { ok } from './scope.js';
 

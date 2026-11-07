@@ -112,6 +112,8 @@ export interface PassedOverSourceView {
 }
 
 /** The sources search by meaning passes over, the newest first, and how many there are in all. */
+export type HealthPassedOverList = { state: 'building' } | ({ state: 'ready' } & PassedOverList);
+
 export interface PassedOverList { count: number; sources: PassedOverSourceView[] }
 
 /** A provider a target offers, with its models and endpoint. */

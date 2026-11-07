@@ -33,11 +33,12 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
             <div className="flex flex-col gap-s3">
               {data.projects.read < data.projects.total && (
                 <p className="t-small text-muted" data-now-more="">
-                  Checked {data.projects.read} of {data.projects.total} projects: those with something running, waiting or failing first.
+                  Checked {data.projects.read} of {data.projects.total} projects: those with unresolved failures or live work first, then most recently active.
                   {' '}<Link to={PROJECTS_PATH}>Open a project</Link> to see the rest.
                 </p>
               )}
-              <Part title="Running now" part="running" data={data} onRetry={onRetry} empty="Nothing is running right now." count={data.running.length}>
+              <Part title="Running now" part="running" data={data} onRetry={onRetry} empty="Nothing is running right now." count={data.runningTotal}>
+                {data.runningHasMore && <li className="t-small text-muted">Showing {data.running.length} of {data.runningTotal} running runs. Open a project to see its work.</li>}
                 {data.running.map((run) => <RunningRow key={run.runId} run={run} now={now} kicker={where(run.projectId)} />)}
               </Part>
               <Part title="Waiting" part="waiting" data={data} onRetry={onRetry} empty="Nothing is waiting." count={data.waiting.length}>

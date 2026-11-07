@@ -32,7 +32,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
-import { statementRecorder } from '../helpers/statement-recorder.js';
+import { todayMarks } from '@myco-server-worker/db/meta/marks.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const ORIGIN = 'https://s';
@@ -158,14 +158,9 @@ describe('a map run a worker claimed', () => {
     const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
     if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
     const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
-    const recorded = statementRecorder(r.e.serverEnv.db, { accounting: 'native' });
-    const claim = async (capabilities: readonly string[]) => {
-      recorded.reset();
-      await claimNextRun({ ...r.e.serverEnv, db: recorded.db }, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
-      const rewritten = recorded.statements.filter(entry => /^UPDATE agent_runs SET held_by/.test(entry.sql.trim()))
-        .reduce((sum, entry) => sum + (entry.changes ?? 0), 0);
-      return { holder: holder(), rewritten };
-    };
+    const changes = () => (r.e.sqlite.query('SELECT total_changes() AS n').get() as { n: number }).n;
+    const claim = (capabilities: readonly string[]) =>
+      claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
 
     // Two workers heard from lately: one checks source out but writes no listing, one checks nothing out.
     const older = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm2' }, r.clock());
@@ -173,12 +168,19 @@ describe('a map run a worker claimed', () => {
     await recordWorkerContact(r.e.db, { credentialId: older.tokenId, machineId: 'm2', offers: OFFERED, capabilities: [REPOSITORY_CHECKOUT_CAPABILITY], now: r.clock() });
     await recordWorkerContact(r.e.db, { credentialId: bare.tokenId, machineId: 'm3', offers: OFFERED, capabilities: [], now: r.clock() });
 
-    // Whichever of them asks, the run names the fleet's gap: no worker heard from lately writes the listing. The
-    // first poll moves the row off the ordinary wait; every poll after it finds it named and rewrites nothing.
-    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 1 });
-    expect(await claim([])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
-    expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
-    expect(await claim([])).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, rewritten: 0 });
+    const initialMarks = await todayMarks(r.e.db);
+    await claim([REPOSITORY_CHECKOUT_CAPABILITY]);
+    expect(holder()).toBe(REPOSITORY_DIGESTS_CAPABILITY);
+    const heldMarks = await todayMarks(r.e.db);
+    expect(heldMarks).not.toEqual(initialMarks);
+    const heldRun = await getRun(r.e.db, scope, dispatched.runId);
+    for (const capabilities of [[], [REPOSITORY_CHECKOUT_CAPABILITY], []]) {
+      const before = changes();
+      await claim(capabilities);
+      expect(changes() - before).toBe(0);
+      expect(await getRun(r.e.db, scope, dispatched.runId)).toEqual(heldRun);
+      expect(await todayMarks(r.e.db)).toEqual(heldMarks);
+    }
   });
 
   it('carries a Deployment-built prompt and a checkout, and pins its map input with its commit', async () => {

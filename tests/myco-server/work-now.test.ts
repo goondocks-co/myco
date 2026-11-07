@@ -210,13 +210,27 @@ describe('Myco’s work now', () => {
       why: 'Curation stopped after 3 attempts without a decision', runId: 'cur_fail' }]);
   });
 
-  it('reads a failing project first however many projects sort before it, and says how many it read', async () => {
+  it('pages Projects with unresolved work first and reports the exact coverage', async () => {
     const h = harness();
     for (let i = 0; i < 30; i += 1) h.sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 1)', [`a_project_${String(i).padStart(2, '0')}`, `Earlier ${i}`]);
     h.run('proj_2', 'hidden_failure', 'extract-curate', 'failed', NOW - 1000, { error: 'the run ended without its artifact' });
     const answer = await h.read({ all: true });
-    expect(answer.needsYou.map((item) => item.key)).toEqual(['failed:proj_2:extract-curate']);
-    expect(answer.projects).toEqual({ read: 25, total: 32 });
-    expect((await h.read()).projects).toEqual({ read: 1, total: 1 });
+    expect(answer.needsYou.map(item => item.key)).toEqual(['failed:proj_2:extract-curate']);
+    expect(answer.projects).toMatchObject({ read: 25, total: 32, hasMore: true });
+    const next = await readWorkNow(h.fixture.serverEnv as never, { all: true }, NOW, true, answer.projects.cursor);
+    expect(next.needsYou).toEqual([]);
+    expect(next.projects).toMatchObject({ read: 7, total: 32, hasMore: false });
+    expect((await h.read()).projects).toEqual({ read: 1, total: 1, hasMore: false, cursor: null });
   });
+  it('reads an archived Project on its own Today page and describes a coded failure in words', async () => {
+    const h = harness();
+    h.run('proj_1', 'failure', 'extract-curate', 'failed', NOW - HOUR);
+    h.sqlite.run("UPDATE agent_runs SET error_code='task_start_failed' WHERE id='failure'");
+    h.sqlite.run("UPDATE projects SET archived_at=? WHERE project_id='proj_1'", [NOW]);
+    const own = await h.read();
+    expect(own.projects).toEqual({ read: 1, total: 1, hasMore: false, cursor: null });
+    expect(own.needsYou).toMatchObject([{ runId: 'failure', why: 'The machine could not start the task.' }]);
+    expect((await h.read({ all: true })).needsYou).toEqual([]);
+  });
+
 });
