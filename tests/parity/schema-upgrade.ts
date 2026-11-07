@@ -23,6 +23,7 @@ const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
 };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
+  spore_curation_work: { members: '[]' },
   session_chunks: { kind: 'page', encoding: 'gzip-ndjson', state: 'live' },
   extraction_acks: { kind: 'record', record_id: 'upgrade_prompt' },
   prompt_context_answers: { outcome: 'served', prompt_id: 'upgrade_prompt' },

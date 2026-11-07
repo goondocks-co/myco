@@ -712,6 +712,8 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0696_v696.sql': '03a613592a9f5d5730047c3ea1c41cc3c7e958ecbb3406abcfe0620ecf710e65',
   '0697_v697.sql': 'f7f0121ef0fdd13579c395a061689425038900f9fc72feaf2b0819d2846af529',
   '0698_v698.sql': 'ccaaf3f081f8c4289053453767c65191ed72bce1d3ef261a5d3b89d87b072914',
+  '0699_v699.sql': '64be2f957e498a1f75ae13da0dcb0752db8ef287182a2ec789d9cb2c208b1b94',
+  '0700_v700.sql': 'eb856f610ce143f51bd1984cfb484a0845ef571fb32cdaa7137f52668e9a569c',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1587,4 +1589,26 @@ it('adds card fields without rewriting legacy cards or rebuilding their search i
     expect(sqlite.query("SELECT COUNT(*) n FROM turn_cards WHERE fields IS NULL AND card='Done: legacyneedle'").get()).toEqual({ n: 100 });
     expect(sqlite.query("SELECT COUNT(*) n FROM turn_cards_fts WHERE turn_cards_fts MATCH 'legacyneedle'").get()).toEqual({ n: 100 });
   } finally { sqlite.close(); }
+});
+
+
+it('retains each cluster first attempt from canonical run subjects across the daily-allowance upgrade', async () => {
+  const sqlite = fresh();
+  try {
+    await applySchemaSteps(sqliteD1(sqlite),SCHEMA_STEPS.filter(step=>step.version<700));
+    sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1),('proj_2','q',1);
+      INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1);
+      INSERT INTO spore_curation_work(project_id,cluster_key,members,failures) VALUES('proj_1','cluster','[]',2),('proj_2','cluster','[]',1),('proj_1','unclaimed','[]',0);
+      INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,subject) VALUES
+        ('proj_1','first','agent','curate-spores','failed',100,'curation:proj_1:cluster'),
+        ('proj_1','retry','agent','curate-spores','failed',200,'curation:proj_1:cluster'),
+        ('proj_2','other','agent','curate-spores','failed',50,'curation:proj_2:cluster');`);
+    await applySchemaSteps(sqliteD1(sqlite),SCHEMA_STEPS.filter(step=>step.version===700));
+    expect(sqlite.query('SELECT project_id,cluster_key,first_started_at FROM spore_curation_work ORDER BY project_id,cluster_key').all()).toEqual([
+      {project_id:'proj_1',cluster_key:'cluster',first_started_at:100},
+      {project_id:'proj_1',cluster_key:'unclaimed',first_started_at:null},
+      {project_id:'proj_2',cluster_key:'cluster',first_started_at:50},
+    ]);
+    expect(version(sqlite)).toBe('700');
+  } finally {sqlite.close();}
 });

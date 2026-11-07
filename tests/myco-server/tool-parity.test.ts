@@ -7,6 +7,8 @@ import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, 
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
+import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
+import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '@myco-server-worker/core/spore-curation-contract.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
 const EXCEPTED = PROJECT_PIVOT;
@@ -115,7 +117,7 @@ describe('tool parity', () => {
     expect([...ADDED_AFTER_FREEZE].filter((name) => member.has(name))).toEqual([]);
   });
 
-  it('preserves the frozen contract except for retired generated-intelligence discovery and the search order and cursor properties', () => {
+  it('preserves the frozen contract except for retired discovery, search pagination and curation write guidance', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name))) {
       const frozen = structuredClone(member.get(server.name)!);
@@ -137,6 +139,22 @@ describe('tool parity', () => {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }
+      }
+      if (server.name === 'myco_spores') {
+        expect(current.description.startsWith(frozen.description)).toBe(true);
+        expect(current.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
+        expect(current.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);
+        expect(current.inputRepair).toBe('Correct the named argument and call myco_spores again with the required fields for that op.');
+        delete current.inputRepair;
+        current.description = frozen.description;
+        const line = current.inputSchema.properties.agent_line;
+        expect({min:line.minLength,max:line.maxLength}).toEqual({min:1,max:AGENT_LINE_MAX_CHARS});
+        delete line.minLength; delete line.maxLength;
+        expect(line.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization`);
+        line.description = frozen.inputSchema.properties.agent_line!.description;
+        const sources = current.inputSchema.properties.source_spore_ids;
+        expect(sources.description).toContain(`${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources`);
+        sources.description = frozen.inputSchema.properties.source_spore_ids!.description;
       }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
       if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');

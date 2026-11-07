@@ -47,6 +47,26 @@ it('seeds a runner update audit with its admitted action and JSON detail',()=>{
   }finally{db.close();}
 });
 
+it('seeds valid curation membership for first-attempt allowance migrations', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const migration = SCHEMA_STEPS.find(step=>step.version===700)!;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(),'myco-curation-upgrade-'));
+  const file = path.join(root,'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const step of SCHEMA_STEPS.filter(step=>step.version<migration.version)) for (const sql of step.statements) previous.exec(sql);
+    } finally {previous.close();}
+    expect(seedPreviousSchema(file,migration.statements,migration.version)).toContain('spore_curation_work');
+    const db = new Database(file);
+    try {
+      expect(db.query('SELECT members FROM spore_curation_work').all()).toEqual([{members:'[]'}]);
+      for (const sql of migration.statements) db.exec(sql);
+      expect(db.query('SELECT members,first_started_at FROM spore_curation_work').all()).toEqual([{members:'[]',first_started_at:null}]);
+    } finally {db.close();}
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {
