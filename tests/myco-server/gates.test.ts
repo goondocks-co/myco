@@ -85,7 +85,7 @@ it('defines the extraction unread predicate once and never writes the historical
         || (token.kind === K.RegularExpressionLiteral && token.text.includes('\\/processed\\/')));
       const historical = relative === 'db/schema.ts' && historicalDdl.has(token.text);
       const triggerColumns = relative === 'db/read-budget-session-statements.ts' && token.text === '\`project_id,session_id,processed,origin${';
-      const classification = ['core/processed-resources.ts', 'db/schema.ts', 'db/schema-vNEXT.ts'].includes(relative)
+      const classification = ['core/processed-resources.ts', 'db/schema.ts', 'db/schema-v712.ts'].includes(relative)
         && !/\bprocessed\b/.test(token.text.replace(/(classification\s*(?:=|TEXT NOT NULL DEFAULT)\s*)'processed'/g, '$1')
           .replace('processed reference classification is immutable', 'reference classification is immutable'));
       if (!(namedDomainUse || moduleImport || policy || route || historical || triggerColumns || classification)) unexpected.push({ file: relative, token: token.text });

@@ -1,8 +1,6 @@
-import { NEXT as KPI_NEXT } from './schema-kpi-step.js';
+export const V712 = 712;
 
-export const NEXT = KPI_NEXT + 1;
-
-export const VNEXT_STATEMENTS: readonly string[] = [
+export const V712_STATEMENTS: readonly string[] = [
   "CREATE TABLE IF NOT EXISTS embedding_passed_over(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),type TEXT NOT NULL,record_id TEXT NOT NULL,model_key TEXT NOT NULL,revision TEXT NOT NULL,reason TEXT NOT NULL,recorded_at INTEGER NOT NULL,expires_at INTEGER,PRIMARY KEY(project_id,type,record_id,model_key)) WITHOUT ROWID",
   "CREATE INDEX IF NOT EXISTS idx_embedding_passed_over_model ON embedding_passed_over(model_key,recorded_at DESC,project_id,type,record_id)",
   "CREATE TABLE IF NOT EXISTS change_marks(kind TEXT PRIMARY KEY,revision INTEGER NOT NULL) WITHOUT ROWID",

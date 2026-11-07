@@ -1,6 +1,6 @@
-export const NEXT = 711;
+export const V711 = 711;
 
-export const VNEXT_STATEMENTS: readonly string[] = [
+export const V711_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS kpi_fact (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,grain TEXT NOT NULL CHECK(grain IN ('p','c','s','d','i','a','t','m')),key TEXT NOT NULL,day INTEGER NOT NULL,harness TEXT NOT NULL,prompts INTEGER NOT NULL DEFAULT 0,
   served INTEGER NOT NULL DEFAULT 0,
   with_spores INTEGER NOT NULL DEFAULT 0,

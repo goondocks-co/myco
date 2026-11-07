@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { commit } from '@myco-server-worker/db/index.js';
 import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/insights/kpi-reconcile.js';
 import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
-import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-kpi-step.js';
+import { V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
@@ -198,8 +198,8 @@ describe('KPI projection critical flow', () => {
   });
 
   it('pins frozen trigger SQL, derived backup exclusions and fresh-store readiness', async () => {
-    expect(VNEXT_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual(kpiTriggers().map(t => t.sql));
-    expect(VNEXT_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup'))).toEqual(kpiCatchupSeed());
+    expect(V711_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual(kpiTriggers().map(t => t.sql));
+    expect(V711_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup'))).toEqual(kpiCatchupSeed());
     for (const table of ['kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup']) expect(EXCLUDED_TABLES.has(table)).toBe(true);
     const r = rig();
     try { expect(await projectionReadiness(r.db, 'kpi')).toBe('ready'); } finally { r.sqlite.close(); }

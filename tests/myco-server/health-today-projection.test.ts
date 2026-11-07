@@ -7,7 +7,7 @@ import { todayMarks, changeMarkTriggers } from '@myco-server-worker/db/meta/mark
 import { catchUpKpiPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { todayQueued, todayRunning, todayProjects } from '@myco-server-worker/db/runs/now.js';
 import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-health.js';
-import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
+import { V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { recordDispatch, recordQueueHolder, failQueuedRun, commitRunChange } from '@myco-server-worker/core/runs.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -39,7 +39,7 @@ function captureSql(store: RelationalStore) {
 
 describe('maintained Health and Today contracts', () => {
   it('pins every frozen trigger to its generator', () => {
-    expect(VNEXT_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual([...passedOverTriggers(), ...changeMarkTriggers()].map(t => t.sql));
+    expect(V712_STATEMENTS.filter(sql => sql.startsWith('CREATE TRIGGER'))).toEqual([...passedOverTriggers(), ...changeMarkTriggers()].map(t => t.sql));
   });
 
   it('counts distinct current sources exactly across model switches, expiry, success, edits and deletion', async () => {
@@ -173,7 +173,7 @@ describe('maintained Health and Today contracts', () => {
       f.sqlite.run('DROP TABLE embedding_passed_over');
       f.sqlite.run('DROP TABLE change_marks');
       f.sqlite.run("DELETE FROM projection_catchup WHERE projection='passed_over'");
-      for (const sql of VNEXT_STATEMENTS) f.sqlite.run(sql);
+      for (const sql of V712_STATEMENTS) f.sqlite.run(sql);
       expect(snapshot()).toEqual(before);
       expect(await passedOverHealth(f.db, ['m'], NOW)).toEqual({ state: 'building' });
       await catchUpProjections(f.db, { budget: { calls: 200, wallMs: 10_000 } });

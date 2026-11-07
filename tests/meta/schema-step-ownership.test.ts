@@ -1,6 +1,6 @@
-import { NEXT, VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
+import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
-import { NEXT as KPI_NEXT, VNEXT_STATEMENTS as KPI_STATEMENTS } from '@myco-server-worker/db/schema-kpi-step.js';
+import { V711, V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
 import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
@@ -30,12 +30,12 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
-  { step: NEXT, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
-  ...['insert', 'update', 'delete'].map(action => ({ step: NEXT, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
-  ...['insert', 'update', 'delete'].map(action => ({ step: NEXT, object: `passed_over_version_${action}`, table: 'embedding_versions', reason: 'Version mutations retract stale passed-over membership.' })),
-  ...['insert','update','delete'].map(action => ({ step: NEXT, object: `passed_over_proof_${action}`, table: 'processed_resources', reason: 'Plan proof eligibility maintains only its source failure memberships.' })),
+  { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
+  ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_version_${action}`, table: 'embedding_versions', reason: 'Version mutations retract stale passed-over membership.' })),
+  ...['insert','update','delete'].map(action => ({ step: V712, object: `passed_over_proof_${action}`, table: 'processed_resources', reason: 'Plan proof eligibility maintains only its source failure memberships.' })),
   ...[['agent_runs','runs'],['plans','plans'],['spore_curation_changes','curation']].flatMap(([table,kind]) =>
-    ['insert','update','delete'].map(action => ({ step: NEXT, object: `change_mark_${kind}_${action}`, table: table!, reason: 'Source mutations advance the persistent Today mark.' }))),
+    ['insert','update','delete'].map(action => ({ step: V712, object: `change_mark_${kind}_${action}`, table: table!, reason: 'Source mutations advance the persistent Today mark.' }))),
   ...['deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities'].flatMap(table =>
     ['insert', 'update', 'delete'].map(operation => ({ step: 710, object: `${table}_revision_${operation}`, table,
       reason: 'Setting mutations advance the persistent leaf revision in the same transaction.' }))),
@@ -50,7 +50,7 @@ const LISTED: readonly Exception[] = [
     { table: 'prompt_identity_conflicts', actions: ['insert', 'delete'], reason: 'Identity-conflict retention maintains keyed diagnostics.' },
     { table: 'prompt_context_answers', actions: ['insert', 'delete', 'update'], reason: 'Answer retention and skip evidence maintain duplicate-prompt diagnostics.' },
     { table: 'member_credentials', actions: ['delete'], reason: 'Credential removal retracts its lineage sample evidence.' },
-  ].flatMap(({ table, actions, reason }) => actions.map(action => ({ step: KPI_NEXT, object: `kpi_${table}_${action}`, table, reason }))),
+  ].flatMap(({ table, actions, reason }) => actions.map(action => ({ step: V711, object: `kpi_${table}_${action}`, table, reason }))),
   { step: 702, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
   { step: 703, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
   { step: 704, object: 'idx_transcripts_received', table: 'transcripts', reason: 'Prompt identity diagnostics seek transcript receipts in the selected time window.' },
@@ -223,8 +223,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),
-  ...VNEXT_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO')).map(sql => ({ step: NEXT, sql, reason: 'Derived readiness and change revisions initialize without changing sources.' })),
-  ...KPI_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: KPI_NEXT, sql, reason: 'Projection phases record whether existing source history needs catch-up.' })),
+  ...V712_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO')).map(sql => ({ step: V712, sql, reason: 'Derived readiness and change revisions initialize without changing sources.' })),
+  ...V711_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V711, sql, reason: 'Projection phases record whether existing source history needs catch-up.' })),
   ...V708_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 708, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
   })),
