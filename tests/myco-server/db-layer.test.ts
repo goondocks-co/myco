@@ -110,7 +110,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['ingest/card-settle.ts', 6],
   ['ingest/document-admission.ts', 2],
   ['ingest/document-batch.ts', 66],
-  ['ingest/document-locators.ts', 11],
   ['ingest/document-read-failures.ts', 4],
   ['ingest/document-restore.ts', 23],
   ['ingest/document-summaries.ts', 38],
