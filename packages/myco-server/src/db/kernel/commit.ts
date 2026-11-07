@@ -17,10 +17,13 @@ export async function commit<const Statements extends readonly Bound[]>(
   if (statements.length === 0) return [] as CommitResults<Statements>;
   const results = await db.batch(statements.map(statement => prepareBound(db, statement)));
   if (results.length !== statements.length) throw new StorageContractError('batch result count differs from statement count');
-  for (const [index, result] of results.entries()) {
-    const meta = Object.fromEntries(Object.entries(result.meta).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)));
-    emit({ kind: 'db_statement', statement: statements[index]!.name, meta });
-  }
+  emit({
+    kind: 'db_batch',
+    statements: results.map((result, index) => ({
+      statement: statements[index]!.name,
+      meta: Object.fromEntries(Object.entries(result.meta).filter(([, value]) => typeof value === 'number' && Number.isFinite(value))),
+    })),
+  });
   return results as CommitResults<Statements>;
 }
 

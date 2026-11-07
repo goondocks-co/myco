@@ -140,10 +140,10 @@ it('emits fixed names and available numeric metadata, without SQL, bindings or e
       })),
     };
     await commit(d1Metadata, insert.bind('private-binding', 5));
-    expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ kind: 'db_statement', statement: 'kernelTest.insert', meta: { changes: 0, rows_read: 8, rows_written: 2, duration: 0.5 } });
+    expect(JSON.parse(log.mock.calls[0]![0] as string)).toEqual({ kind: 'db_batch', statements: [{ statement: 'kernelTest.insert', meta: { changes: 0, rows_read: 8, rows_written: 2, duration: 0.5 } }] });
     log.mockClear();
     await readSet(db, rows.bind());
-    expect(JSON.parse(log.mock.calls[0]![0] as string).meta).toEqual({ changes: 0 });
+    expect(JSON.parse(log.mock.calls[0]![0] as string).statements[0].meta).toEqual({ changes: 0 });
     log.mockClear();
     await expect(commit(db, insert.bind('a', 1))).rejects.toThrow();
     expect(log).not.toHaveBeenCalled();

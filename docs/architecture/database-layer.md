@@ -43,10 +43,11 @@ An upsert's DO UPDATE changes count does not distinguish insertion from update.
 
 ## Telemetry
 
-The single executor in `db/kernel/commit.ts` emits `db_statement` through the existing
-`telemetry.ts` emitter after a successful batch, once per supplied statement. Each event
-contains only its fixed `statement` name and finite numeric, top-level adapter `meta`
-fields. Bindings, SQL, error text and nonnumeric metadata are excluded. Failed batches
+The single executor in `db/kernel/commit.ts` emits one `db_batch` event through the
+existing `telemetry.ts` emitter after a successful batch. It lists each supplied
+statement in order with only its fixed `statement` name and finite numeric, top-level
+adapter `meta` fields. One line per batch keeps Workers Logs volume proportional to
+round trips, not statements. Bindings, SQL, error text and nonnumeric metadata are excluded. Failed batches
 emit no success events. Statements added internally by existing decorators are outside
 this named-definition telemetry.
 
