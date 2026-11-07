@@ -1,3 +1,4 @@
+import { saveReleaseSettings } from '../db/settings/release-connection.js';
 import { prepareReleasePaths, prepareReleaseCandidates, prepareReleaseClassification, prepareReleasePropagation } from '../read/catalog/release-provenance.js';
 /**
  * Release provenance for one Project: its configuration, its credential, and
@@ -300,27 +301,13 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
       // A token saved for one repository is never carried to another.
       const preserve = credential === undefined && previous?.githubRepo === settings.githubRepo;
       const secretSlot = credential == null ? (preserve ? previous?.secretSlot ?? null : null) : `release-provenance:${projectId}:${revision}`;
-      if (credential != null) await secrets.put(secretSlot!, credential.token, actor, now);
+      const sealed = credential == null ? null : await secrets.preparePut(secretSlot!, credential.token, actor, now);
       const values = [
         revision, settings.enabled ? 1 : 0, settings.githubRepo, JSON.stringify(settings.productionRefs),
         JSON.stringify(settings.integrationRefs), JSON.stringify(settings.packageMap), settings.includeUnknown ? 1 : 0,
         settings.maxLookups, secretSlot, now, actor,
       ];
-      const statement = previous === null
-        ? db.prepare(`INSERT OR IGNORE INTO project_release_provenance (revision, enabled, github_repo, production_refs, integration_refs,
-            package_map, include_unknown, max_lookups, secret_slot, updated_at, updated_by, check_requested_at, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(...values, now, projectId)
-        : db.prepare(`UPDATE project_release_provenance SET revision = ?, enabled = ?, github_repo = ?, production_refs = ?, integration_refs = ?,
-            package_map = ?, include_unknown = ?, max_lookups = ?, secret_slot = ?, updated_at = ?, updated_by = ?,
-            check_run_id = NULL, check_lease_until = NULL, check_requested_at = ?
-            WHERE project_id = ? AND revision = ?`).bind(...values, now, projectId, previous.revision);
-      const result = await statement.run();
-      if (result.meta.changes !== 1) {
-        if (credential != null) await secrets.delete(secretSlot!, actor, now);
-        throw new ReleaseProvenanceConflictError();
-      }
-      if (previous?.secretSlot != null && previous.secretSlot !== secretSlot) await secrets.delete(previous.secretSlot, actor, now);
+      if (!await saveReleaseSettings(db, projectId, previous, values, secretSlot, sealed, now, actor)) throw new ReleaseProvenanceConflictError();
       return describe(projectId);
     },
     /** Asks the next tick to check this Project now; answers false when tracking is off. */

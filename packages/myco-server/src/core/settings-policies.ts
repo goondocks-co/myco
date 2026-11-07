@@ -236,7 +236,7 @@ const maintenance: SettingPolicy = {
 
 const capture: SettingPolicy = {
   id: 'capture',
-  owners: ['core/project-creation.ts', 'core/import-policy.ts'],
+  owners: ['db/storage/projects.ts', 'core/import-policy.ts'],
   leaves: ['capture.auto_create_projects', 'import.enabled', 'import.window_days', 'import.max_sessions_per_harness'],
   async resolve(env) {
     const policy = await importPolicy(env.db);

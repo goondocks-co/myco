@@ -1,3 +1,4 @@
+import { repositoryConnection, saveRepository, removeRepository, type ConnectionRow } from '../db/storage/repository-connection.js';
 import { repositoryUrl, repositoryBranch, RepositoryInputError, type RepositoryAccess } from '@goondocks/myco-shared/repository';
 import type { RelationalStore } from './adapters.js';
 import type { SecretDescription, SecretStore } from './secrets.js';
@@ -12,16 +13,6 @@ export async function repositoryIdentity(db: RelationalStore, scope: ReadScope, 
 }
 
 const MAX_CREDENTIAL_CHARS = 4096;
-
-interface ConnectionRow {
-  revision: string;
-  url: string;
-  branch: string;
-  username: string | null;
-  secretSlot: string | null;
-  updatedAt: number;
-  updatedBy: string;
-}
 
 export interface RepositoryConnection extends Omit<ConnectionRow, 'secretSlot'> {
   credential: SecretDescription | null;
@@ -41,8 +32,7 @@ export class RepositoryConflictError extends Error {
 
 /** The single writer of project repository connections and their sealed credential references. */
 export function projectRepositories(db: RelationalStore, secrets: SecretStore) {
-  const row = (projectId: string) => db.prepare(`SELECT revision, url, branch, username, secret_slot AS secretSlot,
-    updated_at AS updatedAt, updated_by AS updatedBy FROM project_repositories WHERE project_id = ?`).bind(projectId).first<ConnectionRow>();
+  const row = (projectId: string) => repositoryConnection(db, projectId);
   const describe = async (projectId: string): Promise<RepositoryConnection | null> => {
     const current = await row(projectId);
     if (current === null) return null;
@@ -65,26 +55,16 @@ export function projectRepositories(db: RelationalStore, secrets: SecretStore) {
       const preserve = credential === undefined && previous?.url === url;
       const secretSlot = credential == null ? (preserve ? previous!.secretSlot : null) : `repository:${projectId}:${revision}`;
       const username = credential == null ? (preserve ? previous!.username : null) : credential.username;
-      if (credential != null) await secrets.put(secretSlot!, credential.token, actor, now);
-      const statement = previous === null
-        ? db.prepare(`INSERT OR IGNORE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(projectId, revision, url, branch, username, secretSlot, now, actor)
-        : db.prepare(`UPDATE project_repositories SET revision = ?, url = ?, branch = ?, username = ?, secret_slot = ?, updated_at = ?, updated_by = ?
-          WHERE project_id = ? AND revision = ?`).bind(revision, url, branch, username, secretSlot, now, actor, projectId, previous.revision);
-      const result = await statement.run();
-      if (result.meta.changes !== 1) {
-        if (credential != null) await secrets.delete(secretSlot!, actor, now);
+      const sealed = credential == null ? null : await secrets.preparePut(secretSlot!, credential.token, actor, now);
+      if (!await saveRepository(db, projectId, previous, { revision, url, branch, username, secretSlot, updatedAt: now, updatedBy: actor }, sealed)) {
         throw new RepositoryConflictError();
       }
-      if (previous?.secretSlot != null && previous.secretSlot !== secretSlot) await secrets.delete(previous.secretSlot, actor, now);
       return describe(projectId);
     },
     async remove(projectId: string, revision: string, actor: string, now: number): Promise<void> {
       const previous = await row(projectId);
       if (previous === null || previous.revision !== revision) throw new RepositoryConflictError();
-      const result = await db.prepare('DELETE FROM project_repositories WHERE project_id = ? AND revision = ?').bind(projectId, revision).run();
-      if (result.meta.changes !== 1) throw new RepositoryConflictError();
-      if (previous.secretSlot !== null) await secrets.delete(previous.secretSlot, actor, now);
+      if (!await removeRepository(db, projectId, previous, actor, now)) throw new RepositoryConflictError();
     },
     /** Open access only for a held code task; callers must apply the run admission guard first. */
     async access(projectId: string): Promise<RepositoryAccess | null> {

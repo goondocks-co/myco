@@ -1,3 +1,5 @@
+import { commit, type Bound } from '../db/index.js';
+import { putSecret, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import { emit } from '../telemetry.js';
@@ -88,6 +90,8 @@ export class SecretOpenError extends Error {
 }
 
 export interface SecretStore {
+  /** Seal a value without writing; compose the returned mutation into the owner's admitted commit. */
+  preparePut(name: string, value: string, actor: string, nowMs: number): Promise<Bound<never, 'write'>>;
   /** Seal `value` under the deployment's wrapping key and record who stored it, as `normalizeSecretValue` shapes it; throws `SecretValueError` for a value it refuses. */
   put(name: string, value: string, actor: string, nowMs: number): Promise<void>;
   /**
@@ -221,20 +225,16 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     return { name: r.name, configured: true, readable, maskedValue, updatedAt: r.updated_at, updatedBy: r.updated_by };
   };
 
+  const preparePut: SecretStore['preparePut'] = async (name, raw, actor, nowMs) => {
+    const checked = normalizeSecretValue(raw);
+    if (!checked.ok) throw new SecretValueError(checked.reason);
+    const { ciphertext, iv } = await seal(await key(), name, checked.value);
+    return putSecret.bind(name, ciphertext, iv, await wrappingKey.version(), nowMs, actor);
+  };
   return {
+    preparePut,
     async put(name, raw, actor, nowMs) {
-      const checked = normalizeSecretValue(raw);
-      if (!checked.ok) throw new SecretValueError(checked.reason);
-      const { ciphertext, iv } = await seal(await key(), name, checked.value);
-      await db
-        .prepare(`INSERT INTO deployment_secrets (name, ciphertext, iv, key_version, updated_at, updated_by)
-                  VALUES (?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(name) DO UPDATE SET
-                    ciphertext = excluded.ciphertext, iv = excluded.iv,
-                    key_version = excluded.key_version, updated_at = excluded.updated_at,
-                    updated_by = excluded.updated_by`)
-        .bind(name, ciphertext, iv, await wrappingKey.version(), nowMs, actor)
-        .run();
+      await commit(db, await preparePut(name, raw, actor, nowMs));
     },
 
     async get(name) {
@@ -257,12 +257,12 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     },
 
     async delete(name, actor, nowMs) {
-      const result = await db.prepare(`DELETE FROM deployment_secrets WHERE name = ? RETURNING name`).bind(name).first<{name:string}>();
-      const deleted = result !== null;
+      const [result] = await commit(db, removeSecret.bind(name));
+      const deleted = result.results.length === 1;
       // Every other mutation on this table records its actor on the row. Deletion
       // removes the row, making it the one destructive operation here whose trail
       // lives nowhere but this event.
-      emit({ kind: 'deployment_secret_deleted', name, actor, deleted, at: nowMs });
+      recordSecretDeletion(name, actor, nowMs, deleted);
       return { deleted };
     },
   };

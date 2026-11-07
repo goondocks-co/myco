@@ -3,7 +3,7 @@ import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-
 import { containsPattern, inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
-import { sessions_projectExists as projectExists, type sessions_ArchiveOutcome as ArchiveOutcome, type sessions_UnarchiveOutcome as UnarchiveOutcome } from './catalog/sessions.js';
+import { sessions_projectExists as projectExists, type sessions_ArchiveOutcome as ArchiveOutcome } from './catalog/sessions.js';
 export {
   type sessions_ProjectRow as ProjectRow,
   type sessions_SessionRow as SessionRow,
@@ -23,7 +23,6 @@ export {
   sessions_listProjectsSql as listProjectsSql,
   sessions_listProjects as listProjects,
   type sessions_ArchiveOutcome as ArchiveOutcome,
-  type sessions_UnarchiveOutcome as UnarchiveOutcome,
   type sessions_SessionFilters as SessionFilters,
   sessions_SESSION_OCCURRED_AT as SESSION_OCCURRED_AT,
   sessions_listSessions as listSessions,
@@ -64,16 +63,7 @@ export async function archiveProject(db: RelationalStore, projectId: string, by:
 }
 
 
-/** Restore capture for an archived project. */
-export async function unarchiveProject(db: RelationalStore, projectId: string): Promise<UnarchiveOutcome> {
-  const result = await db
-    .prepare(`UPDATE projects SET archived_at = NULL, archived_by = NULL WHERE project_id = ? AND archived_at IS NOT NULL`)
-    .bind(projectId)
-    .run();
-  if (result.meta.changes === 1) return 'restored';
-  return (await projectExists(db, projectId)) ? 'not_archived' : 'absent';
-}
-
+export { unarchiveProject, type UnarchiveOutcome } from '../db/storage/projects.js';
 
 export { claimTitling, claimRefreshTitling, claimOwnerTitling, restoreTitlingStamp, overwriteTitle, writeTitle } from '../db/session-titles.js';
 

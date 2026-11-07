@@ -239,14 +239,16 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
       }
     }
     expect(writes.sort()).toEqual([
-      'src/auth/identity-link.ts: github_id = ?', // the bind: only a NULL account, or the same one, and never to NULL
       'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
-      'src/auth/members-admin.ts: label = ?', // nameMemberFromLogin: a name, only where none is held
       'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
       'src/core/ownership.ts: role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL', // changeMemberRole: guarded below; clears only a foreign-restore hold
+      'src/db/identity/link.ts: github_id=?2',
+      'src/db/identity/member-naming.ts: label = ?',
     ]);
     const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');
-    expect(source).toMatch(/UPDATE members SET github_id = \?\s+WHERE id = \? AND revoked_at IS NULL AND \(github_id IS NULL OR github_id = \?\)/);
+    const bind = readFileSync(join(ROOT, 'src', 'db', 'identity', 'link.ts'), 'utf8');
+    expect(bind).toContain("m.revoked_at IS NOT NULL");
+    expect(bind).toContain("m.github_id IS NOT NULL AND m.github_id<>?2");
     expect(source).toMatch(/if \(!IDENTITY_LINK_KEY_PATTERN\.test\(presentedKey\) \|\| !GITHUB_ACCOUNT_ID\.test\(githubId\)\)/);
     expect(readFileSync(join(ROOT, 'scripts', 'link-github.ts'), 'utf8')).toMatch(/!GITHUB_ACCOUNT_ID\.test\(githubId\)/);
   });
@@ -265,10 +267,10 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     expect(writers.sort()).toEqual([
       'src/auth/enrollment.ts: INSERT OR IGNORE INTO',
       'src/auth/identity-link.ts: UPDATE',
-      'src/auth/identity-link.ts: UPDATE',
-      'src/auth/members-admin.ts: UPDATE',
       'src/auth/members-admin.ts: UPDATE',
       'src/core/ownership.ts: UPDATE',
+      'src/db/identity/link.ts: UPDATE',
+      'src/db/identity/member-naming.ts: UPDATE',
       'src/db/schema.ts: INSERT OR IGNORE INTO',
     ]);
   });

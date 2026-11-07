@@ -27,6 +27,7 @@ const REFUSALS: Record<string, string> = {
   bad_request: 'The server could not accept that.',
   already_archived: 'Already archived.',
   not_archived: 'Not archived.',
+  project_limit: 'This project was not restored because active project capacity is full. Archive another project, then restore this one again.',
 };
 
 /** What to tell the person when the server refused, in their words. */
