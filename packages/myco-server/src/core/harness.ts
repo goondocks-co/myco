@@ -16,7 +16,7 @@ import { heldPartition } from './embedding/policy.js';
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
-import { REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec, type RepositoryFailure } from '@goondocks/myco-shared/repository';
+import { REQUIRED_REPOSITORY_TASKS, REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec, type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
@@ -517,7 +517,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
   // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
-  if (REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
+  if (REQUIRED_REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
     return { ok: false, refusal: 'repository_missing' };
   }
 
@@ -1157,7 +1157,8 @@ async function pullAtClaim(
     return {
       claimed: true,
       run: {
-        ...claimed.row, instruction: input.instruction, instructions: input.instructions ?? null, harness: chosen.harness, profile,
+        ...claimed.row, instruction: input.instruction, instructions: input.instructions ?? null,
+        ...(input.repository === undefined ? {} : { repository: input.repository }), harness: chosen.harness, profile,
         runToken: claimed.issued.token, attemptId: claimed.issued.tokenId, credentialEnv: chosen.credentialEnv,
         leaseExpiresAt: worker.now + WORKER_LEASE_MS, timeoutSeconds: runTimeoutForTask(stage.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
       },

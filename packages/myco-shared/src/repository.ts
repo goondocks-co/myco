@@ -1,28 +1,16 @@
 import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
-export const MAX_REPOSITORY_INVENTORY_BYTES = 512_000;
-/** Worker/run identity and the repository pin share the inventory request body. */
-export const MAX_REPOSITORY_REQUEST_BYTES = MAX_REPOSITORY_INVENTORY_BYTES + 16_384;
-
-/** A complete committed inventory; oversized inventories are refused, never truncated. */
-export function repositoryFiles(value: unknown): string[] {
-  if (!Array.isArray(value) || value.some(path => typeof path !== 'string' || !path || path.startsWith('/')
-    || path.includes('\0') || path.split('/').some(part => !part || part === '.' || part === '..'))
-    || new Set(value).size !== value.length
-    || new TextEncoder().encode(JSON.stringify(value)).length > MAX_REPOSITORY_INVENTORY_BYTES) {
-    throw new RepositoryInputError('Repository files must be a complete bounded list of distinct relative paths.');
-  }
-  return [...value].sort();
-}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
-export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
+export const MAX_REPOSITORY_REQUEST_BYTES = 16_384;
+/** Tasks that require a connection rather than optionally validate knowledge against source. */
+export const REQUIRED_REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
+/** Knowledge runs may inspect files, without shell or edit tools. */
+export const KNOWLEDGE_REPOSITORY_TASKS: readonly string[] = ['curate-spores', 'extract-curate'];
+export const REPOSITORY_TASKS: readonly string[] = [...REQUIRED_REPOSITORY_TASKS, ...KNOWLEDGE_REPOSITORY_TASKS];
 
-/** Whether a run of this task reads a checkout of its repository. A run that does not works through its server's tools alone. */
-export const taskReadsRepository = (task: string | null): boolean => task !== null && REPOSITORY_TASKS.includes(task);
-
-/** A capability requires source only when all of its tasks read the repository. */
-export const allTasksReadRepository = (tasks: readonly string[]): boolean =>
-  tasks.length > 0 && tasks.every(task => REPOSITORY_TASKS.includes(task));
+/** A capability needs a connection only when every task requires one. */
+export const allTasksRequireRepository = (tasks: readonly string[]): boolean =>
+  tasks.length > 0 && tasks.every(task => REQUIRED_REPOSITORY_TASKS.includes(task));
 
 /** HTTPS source with credentials supplied independently of the remote URL. */
 export function repositoryUrl(raw: string): string {

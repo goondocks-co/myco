@@ -372,3 +372,6 @@ export const OFFERABLE_PROFILE_HARNESSES = Object.keys(HARNESS_ASKING).filter((i
 /** A source harness must bound native reads independently of its ordinary auto-approval policy. */
 export const canReadSource = (asking: Asking | undefined): boolean => asking?.kind === 'native' || asking?.kind === 'sandbox'
   || asking?.kind === 'run-agent' && ['read', 'glob', 'grep', 'list', 'external_directory'].every((tool) => asking.sourceReads?.[tool] === 'ask');
+
+/** Sandboxed command-only harnesses have no dedicated file tools to grant without a shell. */
+export const canReadSourceFiles = (asking: Asking | undefined): boolean => canReadSource(asking) && asking?.kind !== 'sandbox';

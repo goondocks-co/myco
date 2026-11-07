@@ -159,14 +159,14 @@ describe('worker repository checkout over the Deployment wire', () => {
     }, 30_000);
   }
 
-  for(const inventoryAnswer of ['stored','body_cap','parse','no-match'] as const) it(`completes a map run with inventory upload ${inventoryAnswer}`, async () => {
+  it('completes a map run with its digest listing and no inventory upload', async () => {
     const source = await gitRepositoryFixture('public');
     const e = sqliteEnv({ workerLogin: true });
     e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
     const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
-      if(new URL(request.url).pathname==='/worker/repository' && (await request.clone().json() as Record<string,unknown>).files!==undefined && inventoryAnswer!=='stored') {
-        return Response.json(inventoryAnswer==='no-match'?{persisted:true,held:true,filesStored:false}:{persisted:false,code:inventoryAnswer},{status:inventoryAnswer==='body_cap'?400:200});
+      if (new URL(request.url).pathname === '/worker/repository') {
+        expect(await request.clone().json()).not.toHaveProperty('files');
       }
       return pipeline.handleRequest(request,e.serverEnv);
     } });
@@ -196,8 +196,6 @@ describe('worker repository checkout over the Deployment wire', () => {
       // The listing names every committed file by the digest of its committed bytes.
       const digest = createHash('sha256').update(observed.source).digest('hex');
       expect(observed.listing).toBe(`${digest}  AGENTS.md\n`);
-      const inventory=e.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='run_map'").get() as {repository_files:string|null};
-      expect(inventory.repository_files!==null).toBe(inventoryAnswer==='stored');
       const map = e.sqlite.query(`SELECT source_run_id AS runId, repository_commit AS commitId, artifact FROM canopy_maps WHERE project_id='proj_1'`).get() as { runId: string; commitId: string; artifact: string };
       expect({ runId: map.runId, commitId: map.commitId, grounded: JSON.parse(map.artifact).domains[0].files[0].groundedIn })
         .toEqual({ runId: 'run_map', commitId: source.second, grounded: [{ path: 'AGENTS.md', sha256: digest }] });

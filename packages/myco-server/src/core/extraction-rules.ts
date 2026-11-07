@@ -1,7 +1,7 @@
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
 
 /** The example agent line the rules give, which obeys the bound it illustrates. */
-export const AGENT_LINE_EXAMPLE = 'Adding a run tool op that writes: declare it in WRITE_OPS; dry runs read that list (packages/myco-server/src/core/tool-catalogue.ts).';
+export const AGENT_LINE_EXAMPLE = 'Adding a run tool that writes: declare its write operation so dry runs use the same policy.';
 
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [
@@ -11,15 +11,17 @@ export const EXTRACTION_RULES = [
   '',
   '## What a spore is',
   '',
-  'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds (packages/myco/src/runner/loop.ts)" is.',
+  'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds" is.',
   '',
-  `Give every spore an \`agent_line\`: one line, at most ${AGENT_LINE_MAX_CHARS} characters, that an agent can act on — the situation that triggers it, then the guidance, with the file or symbol it anchors to. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. Example: "${AGENT_LINE_EXAMPLE}" Open the \`content\` with the same line, then the detail.`,
+  `Give every spore an \`agent_line\`: one line, at most ${AGENT_LINE_MAX_CHARS} characters, that an agent can act on — the situation that triggers it, then the guidance, at most naming the component or concept, never a file or symbol as its anchor. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. Example: "${AGENT_LINE_EXAMPLE}" Open the \`content\` with the same line, then the detail.`,
   '',
   'Types: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture. Tags: two to four, naming the subsystem and the theme.',
   '',
   'Every spore you save or consolidate must cite the supporting whole session with `session_id` from the material you read. Each served item carries a `served_id` recording the material served to this run. The server admits only sessions served to this run.',
   '',
   'Keep durable guidance separate from dated observations. Use the source session\'s capture date when describing behavior observed then; do not present an old observation as current policy. Example: "When extraction appears stalled, inspect Deployment power and ended-session eligibility separately. In the September 11 source session, an oldest-first backlog delayed fresh prompts; treat that as a historical observation, not the current scheduling policy."',
+  '',
+  'When a pinned read-only checkout is provided, validate new guidance against the code now with file read, grep and glob tools before saving. Obsolete an existing spore the code contradicts, citing what you checked. No edit or shell tools. A missing file alone never invalidates knowledge; a lesson can outlive its implementation. Without a connected repository, judge on knowledge alone. When in doubt, keep it.',
   '',
   '## Curate, not only add',
   '',
@@ -33,7 +35,7 @@ export const EXTRACTION_RULES = [
   '- Genuinely distinct, sharing only words: keep both.',
   '- A spore the prompts show to be false, with nothing replacing it: `myco_spores` op "obsolete" with `id`, `expect_revision` and a `reason` saying what invalidated it.',
   '',
-  'Keep every concrete detail in the replacement: a command, path, flag, error text or number the old spore holds must survive in what replaces it. When a line does not show what a spore holds, `myco_run_spores` op "get" reads its body. Full reads are counted against this run, so read only what you mean to act on. When an old spore holds a detail the new one lacks, consolidate the two rather than supersede.',
+  'Preserve useful commands, flags, error text, numbers and applicability in replacements. Existing file paths are hints at most; rewrite merged lessons without stale paths. When a line does not show what a spore holds, `myco_run_spores` op "get" reads its body. Full reads are counted against this run, so read only what you mean to act on. When an old spore holds a detail the new one lacks, consolidate the two rather than supersede.',
   '',
   'Only active sources may move. A `stale` refusal carries the current status and revision: reassess the source before deciding again.',
   '',

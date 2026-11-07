@@ -65,8 +65,8 @@ Plans are the same shape — `myco_plans` with `op: "save"` — and are for work
 
 Context served to you can include a spore that is wrong, or that describes code that no longer exists. You are the reader best placed to notice, so retire it on the spot. A spore that is merely off-topic for your task is left alone: it may be right, just not relevant now.
 
-- **Check before you retire.** Open the file the spore names and search the code for what it describes. Do not retire on a hunch.
-- **Give a reason** that says what you checked, for example "`src/outbox.ts` no longer has a lease; searched for `lease`, no matches".
+- **Check before you retire.** Read newer spores, sessions and recorded decisions about the concept. When code is available, read and search it to check the claim. A missing file alone never invalidates knowledge. When in doubt, keep it.
+- **Give a reason** citing the later knowledge, dropped-feature decision or contradictory code you checked. Keep lessons that outlive their implementation; a merge may remove a stale path.
 - **Prefer superseding** when you can write the correct version: save it, then `supersede` the old spore with the new id, as above. Use `obsolete` when nothing replaces it.
 
 ```

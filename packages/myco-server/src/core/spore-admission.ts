@@ -172,7 +172,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     if (!session.ok) return session;
     const spore = await insertSpore(session.db, scope, {
       id: ctx.saveId ?? mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, observationType: type,
-      content, context: str(input.context) ?? null, filePath: str(input.file_path) ?? null, tags: sporeTags(input.tags), contentHash: str(input.content_hash) ?? null, properties: str(input.properties) ?? null, importance: int(input.importance),
+      content, context: str(input.context) ?? null, filePath: null, tags: sporeTags(input.tags), contentHash: str(input.content_hash) ?? null, properties: str(input.properties) ?? null, importance: int(input.importance),
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
     if (spore === null) return ctx.saveId === undefined ? failure('Spore was not recorded') : { id: ctx.saveId, duplicate: true };

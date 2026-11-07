@@ -46,7 +46,7 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, taskReadsRepository, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
@@ -567,7 +567,6 @@ async function drive(
       preparing = true;
       checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
         const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
-        if (input.files !== undefined) return answer.kind === 'answered' ? answer.body : {filesStored:false};
         if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
         if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
@@ -589,7 +588,8 @@ async function drive(
         prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
         profile: run.profile,
         sourceReadOnly: checkout !== undefined,
-        serverToolsOnly: !taskReadsRepository(run.task),
+        sourceFilesOnly: KNOWLEDGE_REPOSITORY_TASKS.includes(run.task),
+        serverToolsOnly: checkout === undefined,
       }, stopping.signal)[Symbol.asyncIterator]();
     };
     stream = start();

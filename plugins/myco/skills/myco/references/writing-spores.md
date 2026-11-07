@@ -29,6 +29,6 @@ If a spore already covers the ground, supersede it. Two near-duplicates are wors
 
 ## Shape
 
-Write for a reader who has the codebase open and no memory of the work. Name files, functions and errors so they can navigate. Say what is true now, not the story of how it was discovered — the reasoning belongs in the observation, the narrative does not.
+Write for a reader with no memory of the work. Name the situation and the guidance, at most the component or concept. Spores are knowledge drawn from sessions and evolved over time; a file or symbol is never their anchor. Existing paths are hints at most. Say what is true now, not the story of how it was discovered — the reasoning belongs in the observation, the narrative does not.
 
 Keep one idea per spore. A spore that carries three findings is one nobody can supersede without losing the other two.

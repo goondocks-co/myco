@@ -1,3 +1,4 @@
+import { knowledgeRepositoryInput } from './knowledge-repository.js';
 /**
  * The two learning stages as work a claim takes: turn cards on the cheap tier, and session learning on the default
  * tier. Each stage answers its due test, its per-Project head and the input a run of it is built from; both are
@@ -61,8 +62,10 @@ export async function buildLearningInput(db: RelationalStore, projectId: string,
   if (quiet === null) return null;
   const assignment = await buildLearningAssignment(db, projectId, sessionId);
   if (assignment === null) return null;
+  const source = await knowledgeRepositoryInput(db, projectId);
   return {
-    instruction: learningPrompt(sessionId, { cards: String(assignment.turns.length), more: assignment.more, handoff: assignment.handoff }), instructions: EXTRACTION_RULES,
+    repository: source.repository,
+    instruction: learningPrompt(sessionId, { cards: String(assignment.turns.length), more: assignment.more, handoff: assignment.handoff }) + source.instruction, instructions: EXTRACTION_RULES,
     inputHash: await inputHashOf([sessionId, assignment]),
     counts: { cards: assignment.turns.length, more: assignment.more },
     context: { session_id: sessionId, assignment },

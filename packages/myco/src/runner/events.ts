@@ -58,6 +58,8 @@ export interface RunSpec {
   profile?: ExecutionProfile;
   /** The run has prepared source for file and Git inspection, without repository writes. */
   sourceReadOnly?: boolean;
+  /** Knowledge validation has file tools only, with no shell or edit tools. */
+  sourceFilesOnly?: boolean;
   /** The run's work is its server's tools alone, so its harness offers its model no tool of its own. */
   serverToolsOnly?: boolean;
 }
@@ -86,7 +88,7 @@ export interface Driver {
  * harness signs in with the machine's own login. A run also names its server's configuration, its profile and
  * whether it reads source; a listing of models names none of them.
  */
-export type LaunchSpec = Pick<RunSpec, 'scratchDir' | 'credentialEnv'> & Partial<Pick<RunSpec, 'mcpConfigPath' | 'profile' | 'sourceReadOnly'>>;
+export type LaunchSpec = Pick<RunSpec, 'scratchDir' | 'credentialEnv'> & Partial<Pick<RunSpec, 'mcpConfigPath' | 'profile' | 'sourceReadOnly' | 'sourceFilesOnly'>>;
 
 /** The variables a harness is started with over the worker's own, and those of the worker's own it never inherits. */
 export interface Launch {
