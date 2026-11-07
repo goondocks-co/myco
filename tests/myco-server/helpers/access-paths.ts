@@ -7,6 +7,12 @@
  * with the Deployment-wide read it serves; one set, so a new exception is
  * declared once and judged the same way by both.
  */
+export const DEPLOYMENT_PROJECTION_TABLES: ReadonlyMap<string, string> = new Map([
+  ['kpi_daily', 'Deployment-wide KPI projection'],
+  ['kpi_lineage', 'Deployment-wide KPI projection'],
+  ['projection_catchup', 'projection bookkeeping'],
+]);
+
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
   ['idx_curation_changes_due', 'curation discovery seeks changed Projects across the Deployment'],
   ['idx_curation_projects', 'curation discovery seeks one opted-in Project after its saved cursor across the Deployment'],
@@ -88,5 +94,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
 /** True when `statement` creates one of the indexes above. */
 export function isDeploymentAccessPath(statement: string): boolean {
   const name = /CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/.exec(statement)?.[1];
-  return name !== undefined && DEPLOYMENT_ACCESS_PATH_INDEXES.has(name);
+  const table = /CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON (\w+)/.exec(statement)?.[1];
+  return (name !== undefined && DEPLOYMENT_ACCESS_PATH_INDEXES.has(name))
+    || (table !== undefined && DEPLOYMENT_PROJECTION_TABLES.has(table));
 }

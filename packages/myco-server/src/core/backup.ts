@@ -1,3 +1,4 @@
+import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { clearArchivedTranscriptRanges, restoreTranscriptSegmentStatement } from './transcript-ranges.js';
 import { excludeDeletedRestoreRows, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
@@ -110,7 +111,9 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  'setting_revisions', 'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
+  'setting_revisions',
+  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup',
+  'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
@@ -688,6 +691,7 @@ export async function restoreArtifact(
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
     ...(documents === undefined ? {} : { documents: documents.summary }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
+  await resetProjectionCatchup(db);
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
