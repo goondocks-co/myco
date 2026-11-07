@@ -13,6 +13,7 @@ import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
 import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
+import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { memberSubject } from '../auth/authorization.js';
 import { credentialListScope } from '../auth/http-authorization.js';
 
@@ -133,6 +134,7 @@ export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext):
 export async function handleCredentialActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
+  if (page.cursor !== undefined && decodeProjectCursor(page.cursor) === null) return badRequest(PROJECT_CURSOR_REFUSAL);
   if (!isAdmin(ctx.member.role) && (await credentialMember(env.db, ctx.params.id)) !== ctx.member.id) return notFound();
   return ok(await credentialActivity(env.db, ctx.params.id, page));
 }

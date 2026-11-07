@@ -1,6 +1,7 @@
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { V711, V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
+import { NEXT as CURSOR_INDEX_STEP, VNEXT_STATEMENTS as CURSOR_INDEX_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
 import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
@@ -52,6 +53,9 @@ const LISTED: readonly Exception[] = [
     { table: 'prompt_context_answers', actions: ['insert', 'delete', 'update'], reason: 'Answer retention and skip evidence maintain duplicate-prompt diagnostics.' },
     { table: 'member_credentials', actions: ['delete'], reason: 'Credential removal retracts its lineage sample evidence.' },
   ].flatMap(({ table, actions, reason }) => actions.map(action => ({ step: V711, object: `kpi_${table}_${action}`, table, reason }))),
+  ...[['idx_sessions_occurred_deployment', 'sessions'], ['idx_plans_updated_deployment', 'plans'], ['idx_events_token_only', 'events']].map(([object, table]) => ({
+    step: CURSOR_INDEX_STEP, object: object!, table: table!, reason: 'Lists across Projects order by the instant, the Project and the id, and walk this index with no sort.',
+  })),
   { step: 702, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
   { step: 703, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
   { step: 704, object: 'idx_transcripts_received', table: 'transcripts', reason: 'Prompt identity diagnostics seek transcript receipts in the selected time window.' },
@@ -287,6 +291,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...RETIREMENT_SCHEMA_STEPS.flatMap(({version:step,statements})=>statements.filter(sql=>!/^CREATE (?:TABLE|INDEX)/.test(sql)).map(sql=>({step,sql,reason:'Retained documents and raw blob holders are required until relational content storage is retired.'}))),
   ...V255_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE') || sql.startsWith('UPDATE session_documents')).map(sql => ({
     step:255,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
+  })),
+  ...CURSOR_INDEX_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
+    step: CURSOR_INDEX_STEP, sql, reason: 'Each Deployment-wide list index is replaced under its own name with the Project before the id.',
   })),
   ...UX_SCHEMA_STEPS.flatMap(step => step.statements.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
     step: step.version, sql, reason: 'The ordered turn index is replaced in its own transaction.',

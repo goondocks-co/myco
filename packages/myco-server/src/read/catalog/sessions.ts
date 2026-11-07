@@ -9,6 +9,7 @@ import { containsPattern as sessions_import_containsPattern } from "../scope.js"
 import { inListChunks as sessions_import_inListChunks } from "../scope.js";
 import { keyset as sessions_import_keyset } from "../scope.js";
 import { page as sessions_import_page } from "../scope.js";
+import { projectKeyset as sessions_import_projectKeyset, projectPage as sessions_import_projectPage } from "../project-cursor.js";
 import { projectsFiltering as sessions_import_projectsFiltering } from "../scope.js";
 import type { Page as sessions_import_Page } from "../scope.js";
 import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
@@ -327,11 +328,11 @@ async function sessions_listSessions(db: sessions_import_RelationalStore, scope:
  * `idx_sessions_occurred_deployment`, which indexes the same expression the per-Project read orders by, and stops at
  * its page rather than sorting every session the set holds. The index is named in the
  * statement: with a filter the planner takes to be selective, such as an agent, it reads every session and sorts
- * them instead. A session is keyed by its Project and its id, and the cursor carries the id alone: two sessions of
- * different Projects sharing an id and an instant are the one case a page boundary may skip.
+ * them instead. A session is keyed by its Project and its id, so the page orders by the instant, the Project and the id,
+ * and the cursor carries all three: sessions of different Projects sharing an instant and an id each keep their place.
  */
 async function sessions_listSessionsAcross(db: sessions_import_RelationalStore, set: sessions_import_ProjectSet, opts: { limit?: number; cursor?: string } & sessions_SessionFilters = {}): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
-  return sessions_selectSessions(db, sessions_import_projectsFiltering(set, 's'), opts, sessions_activityWindow(opts) ? sessions_SESSIONS_ACTIVE_INDEX : sessions_SESSIONS_ACROSS_INDEX);
+  return sessions_selectSessions(db, sessions_import_projectsFiltering(set, 's'), opts, sessions_activityWindow(opts) ? sessions_SESSIONS_ACTIVE_INDEX : sessions_SESSIONS_ACROSS_INDEX, true);
 }
 
 /** Whether the read bounds sessions by the span they were active. An activity window with no start instant bounds nothing it can seek. */
@@ -353,10 +354,12 @@ async function sessions_selectSessions(
   projects: { sql: string; params: readonly unknown[] },
   opts: { limit?: number; cursor?: string } & sessions_SessionFilters,
   walks: string = '',
+  across = false,
 ): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
-  const sourceRead = undefined;
   const active = sessions_activityWindow(opts);
-  const k = sessions_import_keyset(opts, { order: sessions_SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
+  const k = across
+    ? sessions_import_projectKeyset(opts, { order: sessions_SESSION_OCCURRED_AT, project: 's.project_id', id: 's.session_id' })
+    : sessions_import_keyset(opts, { order: sessions_SESSION_OCCURRED_AT, id: 's.session_id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const read = (window: 'receipt' | 'working', through: string): Promise<Record<string, unknown>[]> => (async()=>{
     const bounded = through === sessions_SESSIONS_ACROSS_INDEX;
@@ -400,7 +403,7 @@ async function sessions_selectSessions(
       if (bounded) { conditions.push(`${sessions_SESSION_OCCURRED_AT} <= ?`); params.push(k.params[0]); }
       conditions.push(k.where); params.push(...k.params);
     }
-    const { results } = await db.prepare(`SELECT s.project_id, ${sessions_SESSION_COLUMNS} ${sessions_sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${sessions_SESSION_OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`).bind(...[...params,k.limit+1])
+    const { results } = await db.prepare(`SELECT s.project_id, ${sessions_SESSION_COLUMNS} ${sessions_sessionFrom(through)} WHERE ${conditions.join(' AND ')} ORDER BY ${sessions_SESSION_OCCURRED_AT} DESC,${across ? ' s.project_id DESC,' : ''} s.session_id DESC LIMIT ?`).bind(...[...params,k.limit+1])
       .all<Record<string, unknown>>();
     return results;
   })();
@@ -412,17 +415,21 @@ async function sessions_selectSessions(
   // The cursor carries the same value the sort ordered by. Both columns are
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
-  return sessions_import_page(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
+  return across
+    ? sessions_import_projectPage(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, projectId: r.projectId, id: r.sessionId }))
+    : sessions_import_page(rows, k.limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
 }
 
-/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then id. */
+/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then Project, then id. */
+const descending = (x: string, y: string): number => (x < y ? 1 : x === y ? 0 : -1);
+
 function sessions_mergeSessionPages(a: Record<string, unknown>[], b: Record<string, unknown>[]): Record<string, unknown>[] {
   if (b.length === 0) return a;
   const key = (row: Record<string, unknown>) => `${row.project_id as string}\u0000${row.session_id as string}`;
   const occurred = (row: Record<string, unknown>) => (row.started_at as number | null) ?? (row.first_received_at as number);
   const seen = new Set(a.map(key));
   return [...a, ...b.filter((row) => !seen.has(key(row)))].sort((x, y) =>
-    occurred(y) - occurred(x) || (x.session_id as string < (y.session_id as string) ? 1 : x.session_id === y.session_id ? 0 : -1));
+    occurred(y) - occurred(x) || descending(x.project_id as string, y.project_id as string) || descending(x.session_id as string, y.session_id as string));
 }
 
 /** Elapsed source time, or observed time when a recorded endpoint anchors it. Synthetic transcript bounds establish neither. */

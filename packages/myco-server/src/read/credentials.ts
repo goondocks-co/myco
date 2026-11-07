@@ -1,7 +1,9 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
-import { keyset, page, type Page } from './scope.js';
+import { credentialEvents } from '../db/credentials/activity.js';
+import { decodeProjectCursor, projectPage } from './project-cursor.js';
+import { clampLimit, keyset, page, type Page } from './scope.js';
 
 /** Whether the credential belongs to an agent run or a member runtime. */
 export type CredentialPurpose = 'run' | 'member';
@@ -93,24 +95,22 @@ export async function credentialMember(db: RelationalStore, tokenId: string): Pr
   return row?.member_id ?? null;
 }
 
-/** What one credential wrote across every Project, newest first, over `idx_events_token_only (token_id, created_at, event_id)`. */
+/**
+ * What one credential wrote across every Project, newest first, over `idx_events_token_only (token_id, created_at,
+ * project_id, event_id)`. An event is keyed by its Project and its id, so the cursor carries both; a cursor this list
+ * did not issue reads nothing, and the route refuses it first.
+ */
 export async function credentialActivity(db: RelationalStore, tokenId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<ActivityRow>> {
-  const k = keyset(opts, { order: 'created_at', id: 'event_id', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const limit = k.limit;
-  const { results } = await db
-    .prepare(`SELECT event_id, project_id, session_id, kind, created_at, received_at FROM events
-                WHERE token_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
-                ORDER BY created_at DESC, event_id DESC LIMIT ?`)
-    .bind(tokenId, ...k.params, limit + 1)
-    .all<Record<string, unknown>>();
-  const rows = results.map((r) => ({
-    eventId: r.event_id as string,
-    projectId: r.project_id as string,
-    sessionId: r.session_id as string,
-    kind: r.kind as string,
-    createdAt: r.created_at as number,
-    receivedAt: r.received_at as number,
+  const limit = clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : decodeProjectCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const rows = (await credentialEvents(db, tokenId, after, limit + 1)).map((r) => ({
+    eventId: r.event_id,
+    projectId: r.project_id,
+    sessionId: r.session_id,
+    kind: r.kind,
+    createdAt: r.created_at,
+    receivedAt: r.received_at,
   }));
-  return page(rows, limit, (r) => ({ createdAt: r.createdAt, id: r.eventId }));
+  return projectPage(rows, limit, (r) => ({ createdAt: r.createdAt, projectId: r.projectId, id: r.eventId }));
 }

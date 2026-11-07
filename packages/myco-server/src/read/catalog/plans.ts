@@ -7,6 +7,7 @@ import { containsPattern as plans_import_containsPattern } from "../scope.js";
 import { encodeCursor as plans_import_encodeCursor } from "../scope.js";
 import { inListChunks as plans_import_inListChunks } from "../scope.js";
 import { keyset as plans_import_keyset } from "../scope.js";
+import { encodeProjectCursor as plans_import_encodeProjectCursor, projectKeyset as plans_import_projectKeyset } from "../project-cursor.js";
 import { projectsDriving as plans_import_projectsDriving } from "../scope.js";
 import { projectsFiltering as plans_import_projectsFiltering } from "../scope.js";
 import type { Page as plans_import_Page } from "../scope.js";
@@ -139,7 +140,11 @@ async function plans_pageProjectPlans(
 /** A plan of a read across Projects, with the Project it belongs to. */
 type plans_PlanAcrossRow = plans_ProjectPlanRow & { projectId: string };
 
-/** One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a start instant. */
+/**
+ * One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a
+ * start instant. A plan is keyed by its Project and its key, so the page orders by the update, the Project and the key,
+ * and its cursor carries all three.
+ */
 async function plans_pagePlansAcross(
   db: plans_import_RelationalStore,
   set: plans_import_ProjectSet,
@@ -187,7 +192,11 @@ async function plans_selectPlans(
   opts: { status?: string; sessionId?: string; since?: number; q?: string; limit?: number; cursor?: string },
   walks = '',
 ): Promise<plans_import_Page<plans_PlanAcrossRow>> {
-  const k = plans_import_keyset({ limit: plans_import_clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
+  const across = walks !== '';
+  const paging = { limit: plans_import_clampLimit(opts.limit), cursor: opts.cursor };
+  const k = across
+    ? plans_import_projectKeyset(paging, { order: 'updated_at', project: 'project_id', id: 'plan_key' })
+    : plans_import_keyset(paging, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
   const conditions = [projects.sql];
   const params: unknown[] = [...projects.params];
@@ -197,10 +206,10 @@ async function plans_selectPlans(
   const text = plans_planText(opts.q);
   if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
   if (k.where !== '') {
-    if (walks !== '') { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
+    if (across) { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
     conditions.push(k.where); params.push(...k.params);
   }
-  const { results } = await db.prepare(`SELECT project_id, ${plans_COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
+  const { results } = await db.prepare(`SELECT project_id, ${plans_COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC,${across ? ' project_id DESC,' : ''} plan_key DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   const shown = results.slice(0, k.limit);
@@ -210,7 +219,10 @@ async function plans_selectPlans(
   const tags = await plans_tagsAcross(db, keysByProject);
   const rows = shown.map((r) => ({ ...plans_toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
   const last = rows[rows.length - 1];
-  return { rows, cursor: results.length > k.limit && last !== undefined ? plans_import_encodeCursor(last.updatedAt, last.planKey) : null };
+  const more = results.length > k.limit && last !== undefined;
+  return { rows, cursor: !more ? null : across
+    ? plans_import_encodeProjectCursor({ createdAt: last.updatedAt, projectId: last.projectId, id: last.planKey })
+    : plans_import_encodeCursor(last.updatedAt, last.planKey) };
 }
 
 /** A plan's bounded metadata, including the content revision and source session. */
