@@ -269,11 +269,18 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     if (!lined.ok) return lined;
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
-    const { wisdom, consolidated } = await consolidateSpores(session.db, scope, {
+    const { wisdom, consolidated, stale } = await consolidateSpores(session.db, scope, {
       id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, observationType: plan.observationType,
       content: plan.content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     }, plan.sources, { agentId: by.agentId, author: by.author, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, createdAt: ctx.now }, ctx.now, ctx.principal);
+    if (stale !== undefined) {
+      const held = stale.status === null ? 'not found' : `${stale.status} at revision ${stale.revision}`;
+      const wanted = `active${stale.expected === null ? '' : ` at revision ${stale.expected}`}`;
+      return { ...failure('stale', { tool: 'myco_spores', op: 'get' }), spore_id: stale.id, status: stale.status, revision: stale.revision,
+        reason: `source ${stale.id} is ${held}; expected ${wanted}. Nothing was saved: no wisdom spore was stored and no source moved. `
+          + `Reread ${stale.id} with myco_spores op "get", then consolidate again with the sources that are still active at their current revisions.` };
+    }
     if (wisdom === null) return failure(ctx.principal.kind === 'grant' ? 'spore_id not found' : 'Consolidated spore was not recorded');
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };
   }

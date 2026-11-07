@@ -312,16 +312,27 @@ describe('POST /mcp', () => {
     expect({ code: refused.error?.data?.code, names: String(refused.error?.message).includes("'purge'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
-  it('caps a spore body, and consolidates in one write counting only the sources it moved', async () => {
+  it('caps a spore body, and consolidates all sources or none: a source retired meanwhile refuses the call by name and saves nothing', async () => {
     const { call, sqlite, t1 } = await setup();
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) });
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');
-    const merged = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' })).result;
-    expect({ sources: merged.sources_consolidated, status: merged.status }).toEqual({ sources: 1, status: 'consolidated' });
-    expect(sqlite.query(`SELECT id, status FROM spores WHERE id IN (?, ?) ORDER BY id`).all(a.id, b.id)).toEqual([{ id: a.id, status: 'consolidated' }, { id: b.id, status: 'obsolete' }].sort((x, y) => x.id.localeCompare(y.id)));
-    expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE new_spore_id = ?`).get(merged.new_spore_id) as any).c).toBe(1);
+    const refused = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' })).result;
+    expect(refused).toMatchObject({ ok: false, error: 'stale', spore_id: b.id, status: 'obsolete', repairCall: { tool: 'myco_spores', op: 'get' },
+      reason: expect.stringContaining('Nothing was saved') });
+    expect({
+      sources: sqlite.query(`SELECT id, status FROM spores WHERE id IN (?, ?) ORDER BY id`).all(a.id, b.id),
+      wisdom: sqlite.query(`SELECT COUNT(*) c FROM spores WHERE observation_type = 'wisdom'`).get(),
+      lineage: sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE action = 'consolidate'`).get(),
+    }).toEqual({
+      sources: [{ id: a.id, status: 'active' }, { id: b.id, status: 'obsolete' }].sort((x, y) => x.id.localeCompare(y.id)),
+      wisdom: { c: 0 }, lineage: { c: 0 },
+    });
+    const c = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'c' })).result;
+    const merged = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, c.id], consolidated_content: 'ac', observation_type: 'wisdom' })).result;
+    expect({ sources: merged.sources_consolidated, status: merged.status }).toEqual({ sources: 2, status: 'consolidated' });
+    expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE new_spore_id = ?`).get(merged.new_spore_id) as any).c).toBe(2);
   });
 
   it('saves a plan the size the payload cap admits, and saves another past the retired 1 GiB ceiling (#1416)', async () => {
