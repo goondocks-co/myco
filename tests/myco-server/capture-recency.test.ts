@@ -12,7 +12,7 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { Database } from 'bun:sqlite';
-import { unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v707.js';
+import { unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
@@ -74,17 +74,38 @@ describe('capture recency', () => {
       .toEqual({ status: 200, matches: true, projects: 2, workers: true, capture: [], unavailable: ['capture'] });
   });
 
+  it('keeps session upserts writable after each Health schema step', () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('PRAGMA foreign_keys=ON');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version <= 700)) {
+        for (const sql of step.statements) sqlite.exec(sql);
+      }
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('step-project','Steps',1)");
+      sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        VALUES('step-project','step-session','step-machine','token',0,0)`);
+      for (const step of SCHEMA_STEPS.filter(step => step.version > 700)) {
+        for (const sql of step.statements) sqlite.exec(sql);
+        expect(() => sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+          VALUES('step-project','step-session','step-machine','token',0,?)
+          ON CONFLICT(project_id,session_id) DO UPDATE SET last_received_at=excluded.last_received_at`, [step.version])).not.toThrow();
+        expect(sqlite.query("SELECT last_received_at FROM sessions WHERE project_id='step-project' AND session_id='step-session'").get())
+          .toEqual({ last_received_at: step.version });
+      }
+    } finally { sqlite.close(); }
+  });
+
   it('maintains the unrestricted receipt contract through upgrade, reclassification and head removal', async () => {
     const sqlite = new Database(':memory:');
     sqlite.exec('PRAGMA foreign_keys=ON');
     try {
-      for (const step of SCHEMA_STEPS.filter(step => step.version < 707)) for (const sql of step.statements) sqlite.exec(sql);
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 708)) for (const sql of step.statements) sqlite.exec(sql);
       sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('first','First',1),('second','Second',1)");
       sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
         VALUES ('first','old','new-machine','token',1,10,NULL),('first','imported','new-machine','token',2,20,NULL),
           ('first','custom','new-machine','token',3,30,'unreported'),('first','named-null','new-machine','token',4,35,'null'),
           ('second','other-project','new-machine','token',5,40,NULL)`);
-      for (const step of SCHEMA_STEPS.filter(step => step.version >= 707)) for (const sql of step.statements) sqlite.exec(sql);
+      for (const step of SCHEMA_STEPS.filter(step => step.version >= 708)) for (const sql of step.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
       const plan = sqlite.query(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine') as { detail: string }[];
       expect(plan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_unnamed_machine (machine_id=?)');

@@ -84,7 +84,7 @@ it('upgrades populated Health read fixtures through schemas 702–708', async ()
       try {
         for (const sql of migration.statements) db.exec(sql);
         expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
-        if (migration.version >= 707) {
+        if (migration.version >= 708) {
           expect(db.query('SELECT machine_id,agent_json,project_id,session_id FROM machine_capture_heads').all())
             .toContainEqual({ machine_id: 'upgrade_machine', agent_json: 'null', project_id: 'proj_parity', session_id: 'upgrade_session' });
         }

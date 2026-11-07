@@ -1,4 +1,4 @@
-import { V707_STATEMENTS } from '@myco-server-worker/db/schema-v707.js';
+import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';
 import { LEARNING_SOURCE_STEPS } from '@myco-server-worker/db/schema-v546.js';
@@ -33,10 +33,10 @@ const LISTED: readonly Exception[] = [
   { step: 705, object: 'idx_spore_injections_delivery', table: 'spore_injections', reason: 'Delivery counts seek delivered injections in the selected time window.' },
   { step: 706, object: 'idx_agent_runs_worker_started', table: 'agent_runs', reason: 'Machine reads seek the latest run for each worker credential.' },
   ...['insert', 'update', 'reclassify', 'delete'].map(action => ({
-    step: 707, object: `sessions_capture_head_${action}`, table: 'sessions',
+    step: 708, object: `sessions_capture_head_${action}`, table: 'sessions',
     reason: 'Session mutations maintain the canonical machine and agent receipt head.',
   })),
-  { step: 708, object: 'idx_sessions_unnamed_machine', table: 'sessions', reason: 'Unnamed-head classification seeks only the machine’s unnamed sessions.' },
+  { step: 707, object: 'idx_sessions_unnamed_machine', table: 'sessions', reason: 'Unnamed-head classification seeks only the machine’s unnamed sessions.' },
   { step: 700, object: 'idx_curation_first_started', table: 'spore_curation_work', reason: 'Daily admission counts a bounded indexed window of first cluster attempts.' },
   ...['curation_inventory_map_move','curation_inventory_map_delete'].map(object=>({step:697,object,table:'canopy_maps',reason:'The map owns release of its previous committed inventory.'})),
   {step:697,object:'curation_inventory_run_end',table:'agent_runs',reason:'Terminal map runs release unreferenced repository evidence.'},
@@ -196,8 +196,8 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
-  ...V707_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
-    step: 707, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
+  ...V708_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
+    step: 708, sql, reason: 'Receipt heads initialize once from each machine and agent’s latest canonical session.',
   })),
   {
     step: 698,
