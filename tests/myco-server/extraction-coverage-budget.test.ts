@@ -13,7 +13,7 @@ import { fixtureBatchStore } from './helpers/extraction-budget.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { uuid } from './helpers/fixtures.js';
 
-import { PROMPTS, ACKS, PAGE, scope, runId, RECORD_ACK_SEEK, fill, acknowledgeHistory, restoreCapturedHistory } from './helpers/extraction-coverage.js';
+import { PROMPTS, ACKS, scope, runId, RECORD_ACK_SEEK, fill, seedAcknowledgedHistory, seedCapturedHistory } from './helpers/extraction-coverage.js';
 
 async function verify(db: RelationalStore, target: string) {
   const probes = [
@@ -43,18 +43,15 @@ it('native equality seeks and counters at 26k captured prompts and 7k production
 it('D1 equality seeks and constant-cost ack writes at 26k captured prompts and 7k acknowledgements', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
     compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
-  const planning = new Database(':memory:');
   try {
     const d1 = await mf.getD1Database('DB');
-    const source = sqliteRelationalStore(planning);
-    await fill(fixtureBatchStore(source), PROMPTS, 0);
     for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('coverage-budget','Coverage',1)").run();
     await ensureAgent(d1, { id: 'coverage', name: 'Coverage', provider: null, model: null, enabled: true }, 1);
     await recordDispatch(d1, scope, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,
       runContext: null, dispatchedBy: null, startedAt: Date.now() });
-    await restoreCapturedHistory(source, d1);
-    await acknowledgeHistory(fixtureBatchStore(d1));
+    await seedCapturedHistory(d1, 0, PROMPTS, PROMPTS);
+    await seedAcknowledgedHistory(d1);
     await verify(d1, 'D1');
     const measured = measuredStore(d1);
     measured.reset();
@@ -74,5 +71,5 @@ it('D1 equality seeks and constant-cost ack writes at 26k captured prompts and 7
       priorCoverage: 1, ackProjectForeignKey: 1, completionGuard: 1, cardGuard: 1 };
     expect(acknowledgement.rowsRead!).toBeLessThanOrEqual(Object.values(ackReads).reduce((sum, reads) => sum + reads, 0));
     expect(acknowledgement.rowsWritten!).toBeLessThanOrEqual(12);
-  } finally { planning.close(); await mf.dispose(); }
+  } finally { await mf.dispose(); }
 }, 300_000);
