@@ -1,9 +1,25 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, commit, write } from '../index.js';
+import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { processedResourceProofSql } from '../../core/processed-resources.js';
+import { assertion, commit, read, readSet, write } from '../index.js';
 
 const CLAIM_LOST = 'search_index_claim_lost';
 
 export interface QueuedBlob { project_id: string; blob_key: string; next_offset: number; attempted_at: number }
+
+/** Only currently referenced text blobs contribute to the search backlog. */
+export const SEARCH_BLOB_REFERENCED = `EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'plan', 'p.plan_key', 'p.blob_key')})`;
+
+/** The longest-waiting referenced text blob the full-text index has not finished, with its stamp, cursor and object key. */
+const next = read<[], QueuedBlob & { object_key: string | null }>({ name: 'searchIndex.next', sql:
+  `SELECT q.project_id, q.blob_key, q.next_offset, q.attempted_at, ${registeredObjectKeySql('q.project_id', 'q.blob_key')} AS object_key
+    FROM search_blob_queue q
+    WHERE q.complete = 0 AND (${SEARCH_BLOB_REFERENCED}) ORDER BY q.attempted_at, q.project_id, q.blob_key LIMIT 1` });
+
+export async function nextSearchBlob(db: RelationalStore): Promise<(QueuedBlob & { object_key: string | null }) | null> {
+  const [rows] = await readSet(db, next.bind());
+  return rows[0] ?? null;
+}
 export interface IndexedChunk { offset: number; text: string }
 
 /**

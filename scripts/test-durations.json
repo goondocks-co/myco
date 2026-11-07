@@ -482,6 +482,7 @@
     "tests/myco-server/lineage-replay.test.ts": 205,
     "tests/myco-server/lineage-restore.test.ts": 36548,
     "tests/myco-server/lineage-schema.test.ts": 117542,
+    "tests/myco-server/list-text-limit.test.ts": 6000,
     "tests/myco-server/lists-all.test.ts": 333,
     "tests/myco-server/live-actor-writes.test.ts": 2423,
     "tests/myco-server/live-worker-writes.test.ts": 184,

@@ -1,6 +1,5 @@
-import { prepareNextSearchBlob } from '../read/catalog/search-index.js';
 export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/catalog/search-index.js";
-import { claimSearchBlob, commitSearchChunks, type QueuedBlob } from '../db/search/index-queue.js';
+import { claimSearchBlob, commitSearchChunks, nextSearchBlob } from '../db/search/index-queue.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
 
@@ -55,8 +54,7 @@ async function* chunks(body: ReadableStream, start: number): AsyncGenerator<Text
  * stores nothing.
  */
 export async function reconcileSearchIndex(db: RelationalStore, blobs: BlobStore, now: number): Promise<number> {
-  const row = await prepareNextSearchBlob(db)
-    .first<QueuedBlob & { object_key: string | null }>();
+  const row = await nextSearchBlob(db);
   if (row === null) return 0;
   const generation = await claimSearchBlob(db, row, now);
   if (generation === null) return 0;
