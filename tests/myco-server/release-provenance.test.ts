@@ -16,7 +16,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberHeaders } from './helpers/fixtures.js';
-import { A, B, C, D, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
+import { A, B, C, D, M, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
 import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
 
 const TOKEN = 'fixture-release-token-with-no-real-permissions';
@@ -371,6 +371,18 @@ describe('one check at a time, for the settings it read', () => {
     const seen: string[] = [];
     await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 151 * MIN);
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', finishedAt: 151 * MIN });
+  });
+
+  it('stops a check at its first fenced-out write, even when the check that took over wrote that session at the same instant', async () => {
+    const { r, github, running } = await heldCheck();
+    r.sqlite.query('UPDATE project_release_provenance SET check_lease_until = 0').run();
+    const unmerged: Repo = { ...REPO, contains: { ...REPO.contains, main: [A, M] } };
+    await checkProject(r.db, r.secrets, fakeGithub(unmerged), P, 100 * MIN);
+    const after = rows(r);
+    github.release();
+    // The held check is mid-way through s_merged (commit B); having lost its claim it reads nothing for s_released (commit A).
+    expect({ changed: await running, rows: rows(r), readsForA: github.calls.filter(call => call.includes(A)) })
+      .toEqual({ changed: 0, rows: after, readsForA: [] });
   });
 
   it('lets a lapsed lease be taken over, and fences the check that lost it', async () => {
