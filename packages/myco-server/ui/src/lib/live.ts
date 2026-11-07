@@ -12,10 +12,10 @@
  *   runner's state changes. A page never polls a window of history by the clock. `until`
  *   adds the instant the answer goes stale by time alone (a live session falling quiet), so it is read again then
  *   even when nothing is stored.
- * - **`whileMoving`**: one small read of one thing in motion (a run that is running, a switch under way) is read every
+ * - **`whileMoving`**: one read of work in motion (a running run, a switch, KPI historical measurement) is read every
  *   `MOVING_MS` while its own answer says it moves, and stops when it settles; `quick` reads a check a person just
  *   asked for every `QUICK_MS`.
- * - **`heavy`**: a measure over long windows is read once when shown and again only when a person asks; no clock,
+ * - **`heavy`**: an aggregate is read once when shown and again only when a person asks; no clock,
  *   tab return or heartbeat re-reads it.
  * - **`still`**: a read that changes only when a person changes it here (settings, members), or one a parent read
  *   that itself follows a mark re-reads when its revision moves (a session's turns, files and commits).

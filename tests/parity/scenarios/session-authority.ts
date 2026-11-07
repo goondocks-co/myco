@@ -57,7 +57,7 @@ export const sessionAuthority: ParityScenario = {
       expect(answered).toEqual(expected);
 
       // The read views answer the member.
-      const reads = ['/api/status', '/api/projects', '/api/kpis?window=7d', `/api/projects/${target.projectId}/sessions`, `/api/projects/${target.projectId}/spores`,
+      const reads = ['/api/status', '/api/projects', '/api/kpis?window=7', `/api/projects/${target.projectId}/sessions`, `/api/projects/${target.projectId}/spores`,
         `/api/projects/${target.projectId}/plans`, `/api/projects/${target.projectId}/runs`];
       const statuses = Object.fromEntries(await Promise.all(reads.map(async (p) => [p, (await call(member, 'GET', p)).status] as const)));
       expect(statuses).toEqual(Object.fromEntries(reads.map((p) => [p, 200])));

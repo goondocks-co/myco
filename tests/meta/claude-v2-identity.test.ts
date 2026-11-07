@@ -332,7 +332,8 @@ describe('claude-v2 through the Deployment', () => {
   it('counts on Health what the parse kept without naming it the usual way, per agent, and names no line', async () => {
     const r = await stored(jsonl([...WINDOW, user('k1', 'K', 'no opener fields'), user('k2', 'K', 'contradiction', { origin: { kind: 'human' }, turnOrigin: 'peer' })]));
     await r.parse();
-    const report = await readKpis(r.rig.env.serverEnv.db, { windowDays: null, now: Date.now() });
+    const report = await readKpis(r.rig.env.serverEnv.db, { window: null, now: Date.now() });
+    if (report.state !== 'ready') throw new Error('KPI projection is building');
     expect(report.promptIdentity).toEqual([{
       harness: 'claude-code', sampleSize: 12, unrecognized: 0, unmarked: 1, openerConflict: 1, contractViolation: 0, reused: 9,
       identityConflicts: 0, schemeConflicts: 0, mixedSchemeSessions: 0, duplicatePromptSkips: 0,
@@ -365,7 +366,8 @@ describe('claude-v2 through the Deployment', () => {
       r.rig.env.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
         VALUES ('proj_1', ?, 'sess-codex', 'machine_1', 'codex', 0, 0, ?, ?, ?, 'primary', ?)`, [id, Date.now(), Date.now(), r.rig.tokenId, pin]);
     }
-    const report = await readKpis(r.rig.env.serverEnv.db, { windowDays: null, now: Date.now() });
+    const report = await readKpis(r.rig.env.serverEnv.db, { window: null, now: Date.now() });
+    if (report.state !== 'ready') throw new Error('KPI projection is building');
     expect(report.promptIdentity.find((row) => row.harness === 'codex')).toMatchObject({ mixedSchemeSessions: 1, schemeConflicts: 0 });
   });
 

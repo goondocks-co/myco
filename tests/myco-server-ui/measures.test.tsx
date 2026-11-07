@@ -14,6 +14,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
+import { MOVING_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
@@ -21,7 +22,7 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 
 /** Every measure a served report carries, each overridable by name. */
 const report = (over: Record<string, unknown> = {}) => ({
-  windowDays: 30,
+  state: 'ready', windowStart: 1697328000000, windowEnd: 1700006399999, asOf: 1700000000000, metricVersion: 711, windowDays: 30,
   since: 0,
   promptsServed: 0,
   deliveries: { placed: 0, unplaced: 0 },
@@ -70,8 +71,7 @@ async function pick(label: string, option: string) {
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }
 
-function mount(path: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount(path: string, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
@@ -133,6 +133,54 @@ async function tiles(): Promise<Array<{ label: string; value: string | null; sam
 }
 
 describe('the measures on Health', () => {
+  it('shows catch-up progress and the observation window without partial figures', async () => {
+    server(base({
+      '/api/kpis?window=30': () => Response.json({
+        state: 'building', windowDays: 7, since: 1699315200000,
+        windowStart: 1699315200000, windowEnd: 1700006399999,
+        asOf: 1700000000000, metricVersion: 711, progress: { completed: 3, total: 7 },
+      }),
+    }));
+    mount('/status/health');
+    expect(await screen.findByText('Measuring history (3 of 7)')).toBeTruthy();
+    expect(screen.getByText('Last 7 days (UTC), through today · 2023-11-07 – 2023-11-14')).toBeTruthy();
+    expect(screen.getByText('11/14/2023, 10:13:20 PM UTC').getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
+    expect(screen.queryAllByTestId('measure-tile')).toHaveLength(0);
+    expect(screen.queryByText('Prompts served')).toBeNull();
+    expect(screen.queryByText('Deliveries')).toBeNull();
+  });
+
+  it('refreshes a building answer into ready measures and stops refreshing when ready', async () => {
+    let reads = 0;
+    server(base({
+      '/api/kpis?window=30': () => Response.json(++reads === 1 ? {
+        state: 'building', windowDays: 30, since: 1697328000000,
+        windowStart: 1697328000000, windowEnd: 1700006399999,
+        asOf: 1700000000000, metricVersion: 711, progress: { completed: 3, total: 7 },
+      } : report({ promptsServed: 8 })),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/status/health', client);
+    expect(await screen.findByText('Measuring history (3 of 7)')).toBeTruthy();
+    expect(await screen.findByText('8', {}, { timeout: MOVING_MS + 2_000 })).toBeTruthy();
+    expect(screen.queryByText('Measuring history (3 of 7)')).toBeNull();
+    expect(reads).toBe(2);
+    const query = client.getQueryCache().find({ queryKey: ['kpis', '30'] })!;
+    const options = query.observers[0]!.options as {
+      refetchInterval: (query: unknown) => number | false;
+      refetchIntervalInBackground: boolean;
+    };
+    expect(options.refetchInterval(query)).toBe(false);
+    expect(options.refetchIntervalInBackground).toBe(false);
+  }, MOVING_MS + 5_000);
+
+  it('labels an all-time answer with its UTC window and observation time', async () => {
+    server(base({ '/api/kpis?window=all': () => Response.json(report({ windowDays: null, windowStart: null, since: null })) }));
+    mount('/status/health?window=all');
+    expect(await screen.findByText('All time (UTC), through today')).toBeTruthy();
+    expect(screen.getByText('11/14/2023, 10:13:20 PM UTC')).toBeTruthy();
+  });
+
   it('renders no measure without its sample, whatever the report holds', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json(report({

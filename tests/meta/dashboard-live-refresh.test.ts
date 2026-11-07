@@ -88,10 +88,10 @@ describe('dashboard live refresh', () => {
     expect(fs.readFileSync(path.join(UI_SRC, 'hooks', 'use-sessions.ts'), 'utf8')).toMatch(/freshness: \{ follows: \['sessions', 'runs'\] \},\n\s+rowKey/);
   });
 
-  it('reads the measures as a heavy read, never by the clock or a mark', () => {
+  it('refreshes measures while historical measurement is building', () => {
     const kpis = fs.readFileSync(path.join(UI_SRC, 'hooks', 'use-kpis.ts'), 'utf8');
-    expect(kpis).toContain("live<KpiReport>('heavy')");
-    expect(kpis).not.toMatch(/follows|whileMoving/);
+    expect(kpis).toContain("live<KpiAnswer>({ whileMoving: data => data?.state === 'building' })");
+    expect(kpis).not.toMatch(/follows/);
   });
 
   it('mounts the heartbeat once, in the shell', () => {
