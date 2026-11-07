@@ -16,7 +16,7 @@ export {
   type plans_ProjectPlanSummary as ProjectPlanSummary,
   plans_getPlan as getPlan,
   plans_planInSession as planInSession,
-} from './catalog-store.js';
+} from './catalog/plans.js';
 
 
 

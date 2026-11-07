@@ -15,7 +15,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { commitAttributedWrite } from './runs.js';
-import { prepareRecordAcknowledgement } from '../read/catalog-store.js';
+import { prepareRecordAcknowledgement } from '../read/catalog/learning-sessions.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
 import { FRESH_LEARNING_MS, freshRetrySql, learningRangeSql, learningRecencySql } from './learning-recency.js';

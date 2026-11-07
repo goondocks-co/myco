@@ -1,4 +1,4 @@
-import { currentSporeVectorIds } from '../../../packages/myco-server/src/read/catalog-store.js';
+import { currentSporeVectorIds } from '../../../packages/myco-server/src/read/catalog/embedding-hubness.js';
 /**
  * Runtime proof for spore calibration (#1429), on a local D1 in real workerd.
  *

@@ -6,4 +6,4 @@ export {
   type embedding_SemanticHitCounts as SemanticHitCounts,
   embedding_semanticHits as semanticHits,
   embedding_semanticSearch as semanticSearch,
-} from './catalog-store.js';
+} from './catalog/embedding.js';

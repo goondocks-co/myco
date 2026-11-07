@@ -1,5 +1,5 @@
-import { processed_processedField as processedField, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './catalog-store.js';
-export { processed_isProcessedBodyKind as isProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './catalog-store.js';
+import { processed_processedField as processedField, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './catalog/processed.js';
+export { processed_isProcessedBodyKind as isProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './catalog/processed.js';
 import type { ServerEnv, StoredObjectBody } from '../core/adapters.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { sha256HexOf, utf8 } from '../hash.js';

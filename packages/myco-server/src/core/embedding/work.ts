@@ -1,5 +1,5 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { prepareEmbeddingUnwritten } from '../../read/catalog-store.js';
+import { prepareEmbeddingUnwritten } from '../../read/catalog/embedding-selection.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';

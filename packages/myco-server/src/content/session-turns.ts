@@ -12,7 +12,7 @@ import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
 import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
-import { receiptPlans } from '../read/catalog-store.js';
+import { receiptPlans } from '../read/catalog/injection-served-items.js';
 import { promptPlace, promptTurn } from '../read/document-catalog.js';
 import { SESSION_OWNER, type DocRecord } from './document.js';
 import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
