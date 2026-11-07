@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectRunRefusal, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /** Body serving, session citation authority and old dispatches through each front door. */
 export const sessionCitation: ParityScenario = {
@@ -37,7 +37,8 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,run_context)
       VALUES(${lit(project)},${lit(run)},'myco-agent','extract-curate','running',${now},${lit(tokenId)},${lit(JSON.stringify({ session_id: session, timeoutSeconds: 300 }))})`);
     const save = { op: 'save', type: 'gotcha', content: 'A whole-session finding', session_id: session };
-    expect((await call('myco_spores', save)).result).toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call('myco_spores', save)).result,
+      'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     expect((await call('myco_run_prompts',{op:'unprocessed'})).error?.data.code).toBe('unknown_tool');
     expect(await target.sql('SELECT * FROM run_served_material')).toEqual([]);
     await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at)
@@ -52,8 +53,8 @@ export const sessionCitation: ParityScenario = {
     const consolidation = {
       op: 'consolidate', source_spore_ids: [saved.id], consolidated_content: 'Session wisdom', observation_type: 'wisdom', session_id: session,
     };
-    expect((await call('myco_spores', consolidation)).result)
-      .toEqual({ ok: false, error: 'revision is required for every source_spore_ids item' });
+    expectRunRefusal((await call('myco_spores', consolidation)).result,
+      ['source_spore_ids[0]', 'is missing revision'], { tool: 'myco_spores', op: 'consolidate' });
     const consolidated = (await call('myco_spores', {
       ...consolidation, source_spore_ids: [{ id: saved.id, revision: read.spore.revision }],
     })).result;
@@ -74,8 +75,8 @@ export const sessionCitation: ParityScenario = {
       op: 'consolidate', source_spore_ids: [{ id: second.id, revision: secondRead.spore.revision }], consolidated_content: 'Second session wisdom',
       observation_type: 'wisdom', session_id: 'second-session',
     })).result.new_spore_id).toEqual(expect.any(String));
-    expect((await call('myco_spores', { ...save, session_id: 'unserved-session' })).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call('myco_spores', { ...save, session_id: 'unserved-session' })).result,
+      'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
 
     await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES('citation-foreign','Foreign citation',1)`);
     await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
@@ -84,22 +85,22 @@ export const sessionCitation: ParityScenario = {
       VALUES('citation-foreign',${lit(run)},'myco-agent','completed',1)`);
     await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at)
       VALUES('citation-foreign','foreign-served',${lit(run)},'unserved-session','foreign-prompt',1)`);
-    expect((await call('myco_spores', { ...save, session_id: 'unserved-session' })).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call('myco_spores', { ...save, session_id: 'unserved-session' })).result,
+      'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
 
     await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES(${lit(project)},'other-session','machine',${lit(tokenId)},1,1)`);
     await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,status,started_at) VALUES(${lit(project)},'other-run','myco-agent','completed',1)`);
     await target.sql(`INSERT INTO run_served_material(project_id,served_id,run_id,session_id,record_id,served_at)
       VALUES(${lit(project)},'other-served','other-run','other-session','other-prompt',1)`);
-    expect((await call('myco_spores', { ...save, session_id: 'other-session' })).result)
-      .toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call('myco_spores', { ...save, session_id: 'other-session' })).result,
+      'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
     expect((await call('myco_spores', { ...save, project: 'another-project' })).error?.data.code).toBe('unknown_tool');
 
     const boundary = Number((await target.sql("SELECT value FROM schema_meta WHERE key='ledger_enabled_at'"))[0]!.value);
     await target.sql(`UPDATE agent_runs SET started_at=${boundary} WHERE project_id=${lit(project)} AND id=${lit(run)}`);
-    expect((await call('myco_spores', { ...save, session_id: undefined, prompt_id: prompts[0]!.id })).result)
-      .toEqual({ ok: false, error: 'session_id is required for extraction spore writes' });
+    expectRunRefusal((await call('myco_spores', { ...save, session_id: undefined, prompt_id: prompts[0]!.id })).result,
+      'session_id is missing', { tool: 'myco_run_learning', op: 'material', page: 1 });
     await target.sql(`UPDATE agent_runs SET started_at=${boundary - 1} WHERE project_id=${lit(project)} AND id=${lit(run)}`);
     const old = (await call('myco_spores', { ...save, session_id: undefined, prompt_id: prompts[0]!.id })).result;
     expect(old.id).toEqual(expect.any(String));
@@ -115,6 +116,7 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET queued_at=NULL WHERE project_id=${lit(project)} AND id=${lit(run)}`);
     await target.sql(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by)
       VALUES(${lit(project)},${lit(session)},'deleted',${now},'parity')`);
-    expect((await call('myco_spores', save)).result).toEqual({ ok: false, error: 'session_id not served to this run' });
+    expectRunRefusal((await call('myco_spores', save)).result,
+      'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
   },
 };
