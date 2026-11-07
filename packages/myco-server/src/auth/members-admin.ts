@@ -14,7 +14,7 @@ import { isSystemMember, personMemberSql } from './member-kind.js';
  * member row having changed in this very transaction. Machine claims are
  * permanent and untouched: a departed member's history stays theirs.
  */
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
+import type { ErrorClassifier, PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { emit, failureTelemetry } from '../telemetry.js';
 import { nameFromLogin, GITHUB_LOGIN_KEY_PREFIX } from '../db/identity/member-naming.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -83,11 +83,11 @@ export async function nameMemberFromLogin(db: RelationalStore, memberId: string,
 }
 
 /** Naming is a courtesy of sign-in; a storage failure leaves authentication and approval intact. */
-export async function tryNameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string): Promise<string | null> {
+export async function tryNameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string, classifyError: ErrorClassifier): Promise<string | null> {
   try {
     return await nameMemberFromLogin(db, memberId, githubId, login);
   } catch (error) {
-    emit({ kind: 'member_naming_failed', memberId, ...failureTelemetry(error) });
+    emit({ kind: 'member_naming_failed', memberId, ...failureTelemetry(error, classifyError) });
     return null;
   }
 }

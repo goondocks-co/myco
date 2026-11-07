@@ -23,7 +23,14 @@ export async function handleArchiveProject(env: ServerEnv, ctx: OwnerContext): P
 export async function handleUnarchiveProject(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const outcome = await unarchiveProject(env.db, ctx.params.projectId);
   if (outcome === 'absent') return notFound();
-  if (outcome === 'project_limit') return Response.json({ error: outcome, reason: 'Project was not restored: active Project capacity is full. Archive a Project, then retry this unarchive request.' }, { status: 409 });
+  if (typeof outcome !== 'string') {
+    const nextCall = `POST /api/projects/${ctx.params.projectId}/unarchive`;
+    return Response.json({
+      error: outcome.reason, active: outcome.active, limit: outcome.limit,
+      reason: `Project was not restored: ${outcome.active} of ${outcome.limit} active Projects. Archive a Project, then call ${nextCall} again.`,
+      nextCall,
+    }, { status: 409 });
+  }
   if (outcome === 'not_archived') return Response.json({ error: outcome }, { status: 409 });
   emit({ kind: 'project_unarchived', projectId: ctx.params.projectId, actor: ctx.member.id });
   return ok({ archived: false });

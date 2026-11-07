@@ -8,6 +8,9 @@ import { handleUnarchiveProject } from '@myco-server-worker/api/projects.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { saveReleaseSettings } from '@myco-server-worker/db/settings/release-connection.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import type { OwnerContext } from '@myco-server-worker/context.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -53,7 +56,11 @@ describe('identity and Project atomic writes', () => {
       now: NOW,
     } as OwnerContext);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: 'project_limit' });
+    expect(await response.json()).toEqual({
+      error: 'project_limit', active: MAX_PROJECTS, limit: MAX_PROJECTS,
+      reason: `Project was not restored: ${MAX_PROJECTS} of ${MAX_PROJECTS} active Projects. Archive a Project, then call POST /api/projects/proj_1/unarchive again.`,
+      nextCall: 'POST /api/projects/proj_1/unarchive',
+    });
     expect(r.sqlite.query("SELECT archived_at,archived_by FROM projects WHERE project_id='proj_1'").get()).toEqual({
       archived_at: 1,
       archived_by: 'fixture',
@@ -63,29 +70,67 @@ describe('identity and Project atomic writes', () => {
     expect(await createProject(r.db, 'over_capacity', 'Over capacity', NOW)).toBe(false);
   });
 
-  it('preserves the stored name and emits a bounded operator diagnostic when naming fails', async () => {
-    const r = sqliteEnv();
-    r.sqlite.run("UPDATE members SET label=NULL WHERE id='mem_machine_1'");
-    r.sqlite.run(
-      "CREATE TRIGGER fail_login BEFORE INSERT ON schema_meta WHEN NEW.key LIKE 'github_login:%' BEGIN SELECT RAISE(ABORT,'private-storage-detail'); END",
-    );
-    const output: string[] = [];
-    const log = spyOn(console, 'log').mockImplementation(line => {
-      output.push(String(line));
-    });
-    try {
-      expect(await tryNameMemberFromLogin(r.db, 'mem_machine_1', '583231', 'octocat')).toBeNull();
-      const events = output.map(line => JSON.parse(line)).filter((event) => event.kind === 'member_naming_failed');
-      expect(events).toEqual([
-        { kind: 'member_naming_failed', memberId: 'mem_machine_1', error_class: 'unknown', error_reason: 'Unknown:unknown' },
-      ]);
-      expect(JSON.stringify(events)).not.toContain('private-storage-detail');
-      expect(r.sqlite.query("SELECT label FROM members WHERE id='mem_machine_1'").get()).toEqual({ label: null });
-      r.sqlite.run('DROP TRIGGER fail_login');
-      expect(await tryNameMemberFromLogin(r.db, 'mem_machine_1', '583231', 'octocat')).toBe('octocat');
-    } finally {
-      log.mockRestore();
+  it('preserves naming and authentication outcomes while classifying the bounded diagnostic on every sign-in surface', async () => {
+    for (const operation of ['direct', 'me', 'link', 'approve'] as const) {
+      const r = sqliteEnv();
+      const now = Date.now();
+      const memberId = operation === 'link' ? 'mem_machine_2' : 'mem_machine_1';
+      const githubId = operation === 'link' ? '770001' : '583231';
+      r.sqlite.query('UPDATE members SET label=NULL WHERE id=?').run(memberId);
+      r.sqlite.run("CREATE TRIGGER fail_login BEFORE INSERT ON schema_meta WHEN NEW.key LIKE 'github_login:%' BEGIN SELECT RAISE(ABORT,'D1_ERROR: private-storage-detail'); END");
+      const output: string[] = [];
+      const log = spyOn(console, 'log').mockImplementation(line => { output.push(String(line)); });
+      try {
+        const server = createServer({ now: () => now, sourceOf: () => '192.0.2.5', fetchImpl: () => { throw new Error('no OAuth'); } });
+        const env = { ...r.serverEnv, secrets: OWNER_ENV };
+        const request = async (path: string, body?: unknown) => server.handleRequest(new Request('https://s'+path, {
+          method: body === undefined ? 'GET' : 'POST',
+          headers: { cookie: await ownerCookie(r.db, now, githubId), origin: 'https://s' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }), env);
+        if (operation === 'direct') {
+          expect(await tryNameMemberFromLogin(r.db, memberId, githubId, 'octocat', env.platform.classifyError)).toBeNull();
+        } else if (operation === 'me') {
+          const response = await request('/auth/me');
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ member: { id: memberId, label: null } });
+        } else if (operation === 'link') {
+          const key = (await issueIdentityLinkAuthority(r.db, memberId, now, { issuedBy: 'mem_machine_1' }))!;
+          const response = await request('/auth/link', { key: key.key, confirm: true });
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ linked: true, member: { id: memberId, label: null } });
+        } else {
+          const start = await request('/auth/device/start', { machineId: 'courtesy', machineName: 'Laptop', os: 'linux' });
+          const grant = await start.json() as { user_code: string; device_code: string };
+          expect((await request('/api/device/approve', { user_code: grant.user_code })).status).toBe(200);
+          expect(await (await request('/auth/device/poll', { device_code: grant.device_code })).json()).toMatchObject({ joined: true, memberId });
+        }
+        const events = output.map(line => JSON.parse(line)).filter(event => event.kind === 'member_naming_failed');
+        expect(events).toEqual([{ kind: 'member_naming_failed', memberId, error_class: 'db', error_reason: 'Unknown:db' }]);
+        expect(JSON.stringify(events)).not.toContain('private-storage-detail');
+        expect(r.sqlite.query('SELECT label FROM members WHERE id=?').get(memberId)).toEqual({ label: null });
+        r.sqlite.run('DROP TRIGGER fail_login');
+        expect(await tryNameMemberFromLogin(r.db, memberId, githubId, 'octocat', env.platform.classifyError)).toBe('octocat');
+      } finally { log.mockRestore(); r.sqlite.close(); }
     }
+  });
+
+  it('rejects a release constraint violation without committing an orphan secret', async () => {
+    const r = sqliteEnv();
+    r.env.SECRET_WRAP_KEY = { get: async () => btoa('a'.repeat(32)) };
+    const secrets = deploymentSecretStore(r.db, r.serverEnv.wrappingKey);
+    const revision = 'fixture-release-revision';
+    const slot = `release-provenance:proj_1:${revision}`;
+    const values = [revision, 2, 'example/project', '[]', '[]', '[]', 1, 10, slot, NOW, 'mem_machine_1'];
+    const sealed = await secrets.preparePut(slot, 'fixture-release-token', 'mem_machine_1', NOW);
+    await expect(saveReleaseSettings(r.db, 'proj_1', null, values, slot, sealed, NOW, 'mem_machine_1')).rejects.toThrow();
+    expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").all()).toEqual([]);
+    expect(await secrets.list()).toEqual([]);
+    values[1] = 1;
+    expect(await saveReleaseSettings(r.db, 'proj_1', null, values, slot, sealed, NOW, 'mem_machine_1')).toBe(true);
+    expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").get())
+      .toEqual({ revision, secret_slot: slot });
+    expect(await secrets.get(slot)).toBe('fixture-release-token');
   });
 
   it('retains the old ciphertext and reference when either secret replacement fails at retirement', async () => {

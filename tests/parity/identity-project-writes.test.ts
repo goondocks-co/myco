@@ -36,7 +36,11 @@ if (!process.env.MYCO_PARITY) {
         await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<${MAX_PROJECTS - count})
           INSERT INTO projects(project_id,name,created_at) SELECT 'capacity_parity_'||i,'Capacity',1 FROM n`);
         try {
-          expect(await request(base + '/unarchive', 'POST')).toMatchObject({ status: 409, body: { error: 'project_limit' } });
+          expect(await request(base + '/unarchive', 'POST')).toMatchObject({ status: 409, body: {
+            error: 'project_limit', active: MAX_PROJECTS, limit: MAX_PROJECTS,
+            reason: `Project was not restored: ${MAX_PROJECTS} of ${MAX_PROJECTS} active Projects. Archive a Project, then call POST ${base}/unarchive again.`,
+            nextCall: `POST ${base}/unarchive`,
+          } });
           expect(
             (await target.sql(`SELECT archived_at FROM projects WHERE project_id=${lit(target.projectId)}`))[0]!.archived_at,
           ).not.toBeNull();

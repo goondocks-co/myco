@@ -15,7 +15,8 @@ export type ProjectAdmission =
 const autoCreate = leafOffChecks(AUTO_CREATE_LEAF, JSON.stringify(false)).admission;
 const POLICY = `(? IS NULL OR EXISTS (SELECT 1 FROM members creator WHERE creator.id=? AND creator.revoked_at IS NULL
   AND (creator.role='admin' OR (creator.role='member' AND ${autoCreate.sql}))))`;
-const CAPACITY = `(SELECT COUNT(*) FROM projects WHERE archived_at IS NULL) < ${MAX_PROJECTS}`;
+const ACTIVE_PROJECTS = '(SELECT COUNT(*) FROM projects WHERE archived_at IS NULL)';
+const CAPACITY = `${ACTIVE_PROJECTS} < ${MAX_PROJECTS}`;
 const allowed = read<Array<string | null>, { allowed: number }>({
   name: 'storage.projectCreationAllowed',
   sql: `SELECT ${POLICY} AS allowed`,
@@ -43,7 +44,7 @@ const restoreCapacity = assertion<[string]>({
   name: 'storage.projectRestoreCapacity',
   sql: `
   SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NOT NULL)
-    OR ${CAPACITY} THEN 1 ELSE json_extract('[]','$[project_limit]') END`,
+    OR ${CAPACITY} THEN 1 ELSE json_extract('[]','$[project_limit:' || ${ACTIVE_PROJECTS} || ']') END`,
 });
 const restore = write<[string], { project_id: string }>({
   name: 'storage.unarchiveProject',
@@ -54,18 +55,22 @@ const exists = read<[string], { project_id: string }>({
   name: 'storage.projectExistsForRestore',
   sql: 'SELECT project_id FROM projects WHERE project_id=?',
 });
-export type UnarchiveOutcome = 'restored' | 'absent' | 'not_archived' | 'project_limit';
+export type UnarchiveOutcome = 'restored' | 'absent' | 'not_archived'
+  | { reason: 'project_limit'; active: number; limit: number };
 export async function unarchiveProject(db: RelationalStore, projectId: string): Promise<UnarchiveOutcome> {
   try {
     const [, restored, present] = await commit(db, restoreCapacity.bind(projectId), restore.bind(projectId), exists.bind(projectId));
     return restored.results.length === 1 ? 'restored' : present.results.length === 1 ? 'not_archived' : 'absent';
   } catch (error) {
-    if (capacityFailure(error)) return 'project_limit';
+    const active = capacityFailure(error);
+    if (active !== null) return { reason: 'project_limit', active, limit: MAX_PROJECTS };
     throw error;
   }
 }
-function capacityFailure(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes('project_limit') || capacityFailure(error.cause));
+function capacityFailure(error: unknown): number | null {
+  if (!(error instanceof Error)) return null;
+  const match = /project_limit:(\d+)/.exec(error.message);
+  return match === null ? capacityFailure(error.cause) : Number(match[1]);
 }
 
 export async function autoCreateProjects(db: RelationalStore): Promise<boolean> {

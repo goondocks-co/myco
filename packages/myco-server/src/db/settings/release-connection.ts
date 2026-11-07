@@ -9,7 +9,7 @@ const unchanged = assertion<[string, string | null]>({
 });
 const insert = write<BindValue[], { revision: string }>({
   name: 'settings.insertReleaseSettings',
-  sql: `INSERT OR IGNORE INTO project_release_provenance (revision, enabled, github_repo, production_refs, integration_refs,
+  sql: `INSERT INTO project_release_provenance (revision, enabled, github_repo, production_refs, integration_refs,
             package_map, include_unknown, max_lookups, secret_slot, updated_at, updated_by, check_requested_at, project_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING revision`,
 });

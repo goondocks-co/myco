@@ -27,13 +27,16 @@ const REFUSALS: Record<string, string> = {
   bad_request: 'The server could not accept that.',
   already_archived: 'Already archived.',
   not_archived: 'Not archived.',
-  project_limit: 'This project was not restored because active project capacity is full. Archive another project, then restore this one again.',
 };
 
 /** What to tell the person when the server refused, in their words. */
 export function refusalText(err: unknown): string {
   if (err instanceof ApiError) {
     const code = err.code;
+    if (code === 'project_limit' && typeof err.body === 'object' && err.body !== null) {
+      const reason = Reflect.get(err.body, 'reason');
+      if (typeof reason === 'string') return reason;
+    }
     if (code !== undefined && REFUSALS[code]) return REFUSALS[code];
     if (err.status === 404) return 'That is no longer here.';
     return `The server refused (${err.status}).`;

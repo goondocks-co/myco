@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority, linkStatement, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
@@ -264,22 +265,60 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     }
   });
 
-  it('confines membership writes to their identity, administration and migration owners', () => {
-    const writers = new Set<string>();
-    for (const dir of [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')]) {
-      for (const file of files(dir)) {
-        if (memberWrites(readFileSync(file, 'utf8')).length > 0) writers.add(relative(ROOT, file));
+  it('confines membership update columns to their admitted owners', () => {
+    const writes: string[] = [];
+    for (const file of [...files(join(ROOT, 'src')), ...files(join(ROOT, 'scripts'))]) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/UPDATE members SET ([^`]*)`/g)) {
+        writes.push(`${relative(ROOT, file)}: ${match[1]!.split(/\bWHERE\b/)[0]!.replace(/\s+/g, ' ').trim()}`);
       }
     }
-    expect([...writers].sort()).toEqual([
-      'src/auth/enrollment.ts',
-      'src/auth/identity-link.ts',
-      'src/auth/members-admin.ts',
-      'src/core/ownership.ts',
-      'src/db/identity/link.ts',
-      'src/db/identity/member-naming.ts',
-      'src/db/schema.ts',
+    expect(writes.sort()).toEqual([
+      'src/auth/identity-link.ts: github_id = ?',
+      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
+      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL',
+      'src/db/identity/link.ts: github_id=?2',
+      'src/db/identity/member-naming.ts: label = ?',
     ]);
+  });
+
+  it('confines membership write operations to their admitted owners', () => {
+    const writers: string[] = [];
+    for (const dir of [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')]) {
+      for (const file of files(dir)) {
+        for (const sql of memberWrites(readFileSync(file, 'utf8'))) {
+          const op = /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+members\b/i.exec(sql)![1]!.toUpperCase();
+          const conflict = /\bON\s+CONFLICT[\s\S]*\bDO\s+UPDATE\b/i.test(sql) ? ' ON CONFLICT DO UPDATE' : '';
+          writers.push(`${relative(ROOT, file)}: ${op}${conflict}`);
+        }
+      }
+    }
+    expect(writers.sort()).toEqual([
+      'src/auth/enrollment.ts: INSERT OR IGNORE INTO',
+      'src/auth/identity-link.ts: UPDATE',
+      'src/auth/members-admin.ts: UPDATE',
+      'src/core/ownership.ts: UPDATE',
+      'src/db/identity/link.ts: UPDATE',
+      'src/db/identity/member-naming.ts: UPDATE',
+      'src/db/schema.ts: INSERT OR IGNORE INTO',
+    ]);
+  });
+
+  it('the operator link script refuses a non-numeric account and binds a numeric account when its output is applied', () => {
+    const run = (account: string) => Bun.spawnSync([
+      process.execPath, '--no-env-file', join(ROOT, 'scripts', 'link-github.ts'), 'mem_machine_1', account,
+    ], { cwd: tmpdir(), env: process.env, stdout: 'pipe', stderr: 'pipe' });
+    const refused = run('octocat');
+    expect(refused.exitCode).toBe(2);
+    expect(refused.stdout.toString()).toBe('');
+    expect(refused.stderr.toString()).toContain('<github_account_id>');
+    const admitted = run('9001');
+    expect(admitted.exitCode).toBe(0);
+    const e = sqliteEnv();
+    try {
+      e.sqlite.exec(admitted.stdout.toString());
+      expect(e.sqlite.query("SELECT github_id,role,revoked_at FROM members WHERE id='mem_machine_1'").get())
+        .toEqual({ github_id: '9001', role: 'admin', revoked_at: null });
+    } finally { e.sqlite.close(); }
   });
 
   it('changes the last admin\'s account through the break-glass statement and leaves the Deployment with a linked admin', async () => {
