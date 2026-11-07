@@ -21,7 +21,7 @@ const operations: Operation[] = [
   { name: 'setting', method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: true }, sql: /INSERT INTO deployment_settings/ },
   { name: 'setting reset', method: 'DELETE', path: '/api/settings/agent.scheduled_tasks_enabled', sql: /DELETE FROM deployment_settings/, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', 1, 'seed')` },
   { name: 'task tier', method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: TASK, tier: 'high' }, sql: /INSERT INTO deployment_settings/ },
-  { name: 'task repair', method: 'POST', path: '/api/settings/agent.tasks/repair', body: {}, sql: /UPDATE deployment_settings/, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', '{"retired-task":{"enabled":true}}', 1, 'seed')` },
+  { name: 'task repair', method: 'POST', path: '/api/settings/agent.tasks/repair', body: {}, sql: /INSERT INTO deployment_settings/, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', '{"retired-task":{"enabled":true}}', 1, 'seed')` },
   { name: 'capability', method: 'PUT', path: '/api/projects/proj_1/capabilities/cortex', body: { enabled: true }, sql: /INSERT INTO project_capabilities/ },
   { name: 'titling switch', method: 'PUT', path: '/api/titling-backfill', body: { enabled: true }, sql: /INSERT INTO deployment_settings/ },
   { name: 'project create', method: 'POST', path: '/api/projects', body: { name: 'new project', projectId: 'proj_new' }, sql: /INSERT.*INTO projects/ },

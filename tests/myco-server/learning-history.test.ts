@@ -416,7 +416,7 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
   await withDocumentStores(async db => {
     const MINUTE = 60_000;
     const leaf = 'agent.titling_idle_close_minutes';
-    await settingsWriter(db).setLeaf(leaf, 30, 'owner', NOW);
+    await db.prepare('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,?,?,?)').bind(leaf, '30', NOW, 'owner').run();
     const expected = new Map<string, number>();
     for (const project of ['project', 'other']) for (let n = 0; n < 100; n++) {
       const session = `quiet-${n}`;
@@ -440,7 +440,7 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
     await settingsWriter(db).setLeaf(leaf, 60, 'owner', NOW + 1);
     expect(await quiet()).toEqual({ quiet_at: NOW + 60 * MINUTE });
     const same = await db.prepare('UPDATE deployment_settings SET value=value WHERE leaf=?').bind(leaf).run();
-    expect(same.meta.changes).toBe(1);
+    expect(same.meta.changes).toBe(2);
     await settingsWriter(db).resetLeaf(leaf, 'owner', NOW + 2);
     expect(await quiet()).toEqual({ quiet_at: NOW + 120 * MINUTE });
     await db.prepare("UPDATE learning_sessions SET source_activity_at=? WHERE project_id='project' AND session_id='quiet-1'").bind(NOW - DAY + 10 * MINUTE).run();
@@ -453,7 +453,8 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
 
 it('replaces quiet insert and receipt triggers without relying on a later source update', async () => {
   await withDocumentStores(async db => {
-    await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', 1440, 'owner', NOW);
+    await db.prepare('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,?,?,?)')
+      .bind('agent.titling_idle_close_minutes', '1440', NOW, 'owner').run();
     const source = NOW;
     const receipt = NOW + 22 * HOUR;
     const session = 'insert-receipt-quiet';

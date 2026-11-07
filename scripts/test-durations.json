@@ -613,6 +613,7 @@
     "tests/myco-server/settings-effective.test.ts": 448,
     "tests/myco-server/settings-leaves-round-trip.test.ts": 190,
     "tests/myco-server/settings-retirement-migration.test.ts": 556,
+    "tests/myco-server/settings-revision.test.ts": 4968,
     "tests/myco-server/settings-robustness.test.ts": 137,
     "tests/myco-server/settings-wire.test.ts": 5,
     "tests/myco-server/settings.test.ts": 16911,

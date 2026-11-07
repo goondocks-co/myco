@@ -247,33 +247,36 @@ export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: C
 });
 
 /** The revision the editor read, supplied as an If-Match header. */
-function expectedSettingRevision(request: Request): number | null {
+function expectedSettingRevision(request: Request): number | undefined | null {
   const text = request.headers.get('if-match');
-  if (text === null || !/^(0|[1-9][0-9]*)$/.test(text)) return null;
+  if (text === null) return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(text)) return null;
   const value = Number(text);
   return Number.isSafeInteger(value) ? value : null;
 }
 
-const missingRevision = (leaf: string) => malformed(leaf, 'Read the current settings, then send its revision in the If-Match header; nothing was saved');
+const invalidRevision = (leaf: string) => malformed(leaf, 'Invalid If-Match; omit the header or use the current revision from GET /api/settings; nothing was saved');
 
-type RevisionHandler<Revision> = (env: ServerEnv, ctx: OwnerContext, revision: Revision) => Promise<Response>;
+type RevisionHandler<Revision> = (env: ServerEnv, ctx: OwnerContext, revision: Revision | undefined) => Promise<Response>;
 
-function withRevision<Revision>(leaf: string | ((ctx: OwnerContext) => string), read: (request: Request) => Revision | null,
+function withRevision<Revision>(leaf: string | ((ctx: OwnerContext) => string), read: (request: Request) => Revision | undefined | null,
   handler: RevisionHandler<Revision>): (env: ServerEnv, ctx: OwnerContext) => Promise<Response> {
   return async (env, ctx) => {
     const revision = read(ctx.request);
-    if (revision === null) return missingRevision(typeof leaf === 'string' ? leaf : leaf(ctx));
+    if (revision === null) return invalidRevision(typeof leaf === 'string' ? leaf : leaf(ctx));
     return handler(env, ctx, revision);
   };
 }
 
-/** Settings mutation routes require the revision carried by their editor. */
+/** Settings mutation routes enforce the editor revision when If-Match is supplied. */
 export const settingRevisionRoute = (leaf: string | ((ctx: OwnerContext) => string), handler: RevisionHandler<number>) =>
   withRevision(leaf, expectedSettingRevision, handler);
 
-function expectedEmbeddingRevisions(request: Request): Record<string, number> | null {
+function expectedEmbeddingRevisions(request: Request): Record<string, number> | undefined | null {
+  const text = request.headers.get('if-match');
+  if (text === null) return undefined;
   let revisions: unknown;
-  try { revisions = JSON.parse(request.headers.get('if-match') ?? 'null'); } catch { return null; }
+  try { revisions = JSON.parse(text); } catch { return null; }
   const expected = record(revisions);
   return expected === null || EMBEDDING_SELECTION_LEAVES.some(leaf => !Number.isSafeInteger(expected[leaf]) || Number(expected[leaf]) < 0)
     ? null : expected as Record<string, number>;

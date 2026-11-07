@@ -8,7 +8,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { migrateAndSeed } from './helpers/d1.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { asOwner, asOwnerPatch, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
+import { asOwner, asOwnerPatch, asOwnerPost, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
 
 const handles: Database[] = [];
 afterEach(() => { for (const handle of handles.splice(0)) handle.close(); });
@@ -68,7 +68,7 @@ it('refuses stale client revisions on both task patch routes and rereads the cur
       const stale = route === 'tier'
         ? await asOwnerPatch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' })
         : await asOwnerPut(e.db, '/api/titling-backfill', { enabled: true });
-      expect(stale.headers.get('if-match')).toBe('0');
+      stale.headers.set('if-match', '0');
       const current = { 'title-summary': { reasoningLevel: 'low', schedule: { enabled: false } } };
       expect(await settingsWriter(e.db).setLeaf('agent.tasks', current, 'other', 1)).toEqual({ applied: true });
       const refused = await worker.fetch(stale, env);
@@ -80,6 +80,73 @@ it('refuses stale client revisions on both task patch routes and rereads the cur
       expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual(current);
     } finally { e.sqlite.close(); }
   }
+});
+
+it('admits every settings route without If-Match while preserving other leaves and task fields', async () => {
+  const e = sqliteEnv();
+  try {
+    const env = { ...e.env, ...OWNER_ENV };
+    const send = async (method: string, path: string, body?: unknown) => {
+      const request = await asOwnerPost(e.db, path, body);
+      expect(request.headers.has('if-match')).toBe(false);
+      return worker.fetch(new Request(request, { method }), env);
+    };
+    const tasks = { 'title-summary': { reasoningLevel: 'low' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } };
+    expect((await send('PUT', '/api/settings/agent.tasks', { value: tasks })).status).toBe(200);
+    for (const value of ['first', 'last']) expect((await send('PUT', '/api/settings/instructions.template', { value })).status).toBe(200);
+    expect((await settingsWriter(e.db).leaves())['instructions.template']?.value).toBe('last');
+    expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual(tasks);
+    const patches = await Promise.all([
+      send('PATCH', '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }),
+      send('PUT', '/api/titling-backfill', { enabled: true }),
+    ]);
+    expect(patches.map(response => response.status)).toEqual([200, 200]);
+    expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual({
+      ...tasks, 'title-summary': { reasoningLevel: 'high', schedule: { enabled: true } },
+    });
+    for (const [method, path, body] of [
+      ['PUT', '/api/settings/agent.spore_curation.daily_runs', { project_id: 'proj_1', value: 7 }],
+      ['PUT', '/api/projects/proj_1/capabilities/canopy', { enabled: false }],
+      ['PUT', '/api/embedding', { provider: 'workers-ai' }],
+      ['POST', '/api/settings/agent.tasks/repair', {}],
+      ['DELETE', '/api/settings/instructions.template', undefined],
+    ] as const) expect({ path, response: (await send(method, path, body)).status }).toEqual({ path, response: 200 });
+    expect((await settingsWriter(e.db).leaves())['instructions.template']).toBeUndefined();
+    expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toMatchObject({
+      'title-summary': { reasoningLevel: 'high', schedule: { enabled: true } },
+    });
+  } finally { e.sqlite.close(); }
+});
+
+it('refuses malformed supplied If-Match on scalar and embedding settings without writing', async () => {
+  const e = sqliteEnv();
+  try {
+    const env = { ...e.env, ...OWNER_ENV };
+    for (const [path, body, revision] of [
+      ['/api/settings/instructions.template', { value: 'refused' }, '-1'],
+      ['/api/embedding', { provider: 'workers-ai' }, '{}'],
+    ] as const) {
+      const request = await asOwnerPut(e.db, path, body);
+      request.headers.set('if-match', revision);
+      const response = await worker.fetch(request, env);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ applied: false, reason: 'malformed', detail: expect.stringContaining('Invalid If-Match') });
+    }
+    expect(await settingsWriter(e.db).leaves()).toEqual({});
+  } finally { e.sqlite.close(); }
+});
+
+it('keeps a supplied embedding revision map as a precondition', async () => {
+  const e = sqliteEnv();
+  try {
+    const request = await asOwnerPut(e.db, '/api/embedding', { provider: 'workers-ai' });
+    request.headers.set('if-match', JSON.stringify({ 'embedding.provider': 0, 'embedding.model': 0, 'embedding.base_url': 0 }));
+    await settingsWriter(e.db, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai' }, 'other', 1);
+    const response = await worker.fetch(request, { ...e.env, ...OWNER_ENV });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'embedding.provider', revision: 1 });
+    expect((await settingsWriter(e.db).leaves())['embedding.provider']?.updatedBy).toBe('other');
+  } finally { e.sqlite.close(); }
 });
 
 it('resets only configured embedding parts during selection writes and switch completion', async () => {
@@ -218,6 +285,7 @@ it('answers a stale API edit with 409, its current revision, and the current rea
   const env = { ...e.env, ...OWNER_ENV };
   const path = '/api/settings/instructions.template';
   const stale = await asOwnerPut(e.db, path, { value: 'loser' });
+  stale.headers.set('if-match', '0');
   expect((await worker.fetch(await asOwnerPut(e.db, path, { value: 'winner' }), env)).status).toBe(200);
   const refused = await worker.fetch(stale, env);
   expect(refused.status).toBe(409);
