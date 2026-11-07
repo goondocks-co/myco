@@ -263,10 +263,14 @@ describe('source containment corrections', () => {
   });
 });
 
-it('knowledge tasks refuse command-only harnesses before opening a login', async () => {
-  for (const task of ['curate-spores','extract-curate']) {
-    const result = await selectExecution(task,[{id:'codex',authenticated:true,profile:{model:'flag',efforts:['low']}}],new Map(),
-      async () => { throw new Error('command-only harness must not open a login'); });
-    expect(result.selected).toBeNull();
+
+it('knowledge tasks select command-only harnesses without requiring source access', async () => {
+  for (const task of ['extract-curate']) {
+    let opened=false;
+    const result = await selectExecution(task,[{id:'codex',authenticated:true,profile:harnessById('codex')!.profile}],new Map([
+      ['agent.tasks',JSON.stringify({[task]:{harness:'codex',model:'gpt-6',reasoningLevel:'default'}})],
+    ]),async () => { opened=true; return {login:true}; });
+    expect(result.selected?.harness).toBe('codex');
+    expect(opened).toBe(true);
   }
 });

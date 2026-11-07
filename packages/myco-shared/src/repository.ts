@@ -2,6 +2,8 @@ import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const MAX_REPOSITORY_REQUEST_BYTES = 16_384;
+/** Optional source preparation has its own allowance beside the harness budget. */
+export const REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
 /** Tasks that require a connection rather than optionally validate knowledge against source. */
 export const REQUIRED_REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 /** Knowledge runs may inspect files, without shell or edit tools. */
@@ -50,14 +52,9 @@ export const WORKER_CAPABILITIES: readonly string[] = [REPOSITORY_CHECKOUT_CAPAB
 /** The tasks whose instructions read the digest listing: a worker writes it for these, and only one that reports it can take them. */
 export const REPOSITORY_DIGEST_TASKS: readonly string[] = [MAP_TASK];
 
-/**
- * What a worker must report to take a task. A source-reading task needs its
- * source checked out; one whose instructions read the digest listing needs the
- * listing too, since a worker built before the listing checks the source out
- * without it, and the run then reports the file absent and writes nothing.
- */
-export function capabilitiesRequiredBy(task: string): readonly string[] {
-  if (!REPOSITORY_TASKS.includes(task)) return [];
+/** Required-source tasks need checkout support; knowledge runs request it only when carrying a checkout. */
+export function capabilitiesRequiredBy(task: string, carriesCheckout = REQUIRED_REPOSITORY_TASKS.includes(task)): readonly string[] {
+  if (!carriesCheckout || !REPOSITORY_TASKS.includes(task)) return [];
   return REPOSITORY_DIGEST_TASKS.includes(task) ? [REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY] : [REPOSITORY_CHECKOUT_CAPABILITY];
 }
 /** Whether a reported capability is one this Deployment knows. */
@@ -103,3 +100,18 @@ export const REPOSITORY_FAILURE_CODES = ['fetch_failed', 'submodules', 'lfs', 't
 export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
 export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
 export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;
+
+const KNOWLEDGE_REPOSITORY_SECTION = '\n\n## Repository validation\n';
+export const KNOWLEDGE_ONLY_INSTRUCTION = 'No usable repository checkout is available. Judge on the served knowledge alone. When in doubt, keep it.';
+
+/** Replace only the builder's final source instruction, preserving every served knowledge item. */
+export function knowledgeOnlyInstruction(instruction: string): string {
+  const offset = instruction.lastIndexOf(KNOWLEDGE_REPOSITORY_SECTION);
+  return (offset < 0 ? instruction : instruction.slice(0, offset)) + KNOWLEDGE_REPOSITORY_SECTION + KNOWLEDGE_ONLY_INSTRUCTION;
+}
+
+/** The server and runner share the exact knowledge-only instruction. */
+export function knowledgeRepositoryInstruction(repository: RepositoryIdentity | null): string {
+  return KNOWLEDGE_REPOSITORY_SECTION + (repository === null ? KNOWLEDGE_ONLY_INSTRUCTION
+    : `The connected repository ${repository.url} (branch ${repository.branch}) is pinned at its current commit in the ${RUN_REPOSITORY_DIR} checkout beside the run instructions. Your working directory is the checkout; read and search paths relative to it. Check claims against this code before saving, merging or retiring knowledge. Use only the harness file read, grep and glob tools inside the checkout; no edit or shell tools. A missing file alone never invalidates knowledge. Historical paths are hints at most. When in doubt, keep it.`);
+}

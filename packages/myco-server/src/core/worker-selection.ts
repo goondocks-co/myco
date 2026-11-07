@@ -12,10 +12,10 @@ import type { ServerEnv } from './adapters.js';
  * usable one is stored. Nothing this module imports reaches the secret store,
  * which `tests/meta/read-layer-credential-blind.test.ts` holds for every read.
  */
-import { KNOWLEDGE_REPOSITORY_TASKS, capabilitiesRequiredBy, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { capabilitiesRequiredBy, REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { CAPABILITY_HOLDS, credentialUnavailable, profileUnsupported, sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, canReadSourceFiles, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { runnerAgentLoginReady, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
 import { fixedTaskHarness, PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -140,7 +140,7 @@ export async function selectExecution<L>(task: string, offers: readonly OfferedH
   for (;;) {
     const harness = chooseHarness(preference.preferred, preference.fallback, preference.override, remaining.map(offer => ({ ...offer, authenticated: runnerAgentLoginReady(offer, choices) })));
     if (harness === null) return { selected: null, reason: reason ?? (preference.override !== null && !Object.hasOwn(PROFILE_HARNESSES, preference.override) ? profileUnsupported(preference.override) : null) };
-    if (REPOSITORY_TASKS.includes(task) && !(KNOWLEDGE_REPOSITORY_TASKS.includes(task) ? canReadSourceFiles : canReadSource)(HARNESS_ASKING[harness])) {
+    if (REQUIRED_REPOSITORY_TASKS.includes(task) && !canReadSource(HARNESS_ASKING[harness])) {
       reason ??= sourceReadUnavailable(harness);
       remaining = remaining.filter((entry) => entry.id !== harness);
       continue;

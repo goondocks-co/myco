@@ -34,7 +34,7 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
  */
 import nodeFs from 'node:fs';
 const { mkdirSync, realpathSync } = nodeFs;
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, WITHHELD_REASON, type DetectionMode } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
@@ -46,7 +46,7 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { KNOWLEDGE_REPOSITORY_TASKS, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
@@ -81,6 +81,8 @@ export interface WorkerOptions {
   reportHome?: string;
   /** Git executable override for a controlled checkout environment. */
   repositoryGitPath?: string;
+  /** Private persistent mirrors shared by this runner's attempts. */
+  repositoryCacheRoot?: string;
   serverUrl: string;
   /**
    * The member credential, or where to read it. A reader is asked before every
@@ -535,7 +537,8 @@ async function drive(
   if (options.signal.aborted) onAbort();
   let lost = false;
   let overran = false;
-  const cleanupDeadline = clock() + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
+  const preparationAllowance = run.repository === undefined ? 0 : REPOSITORY_PREPARATION_TIMEOUT_MS;
+  const cleanupDeadline = clock() + preparationAllowance + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
   /**
    * The budget, settled by the timer rather than by the harness.
    *
@@ -553,7 +556,7 @@ async function drive(
     options.log(`run ${run.id} outlived its budget of ${run.timeoutSeconds}s; stopping the harness`);
     stopping.abort();
     budgetReached();
-  }, run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS);
+  }, preparationAllowance + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS);
   const events: RunEvent[] = [];
   const accounting = new ExecutionAccounting(named?.accounting.primarySources);
   // A Deployment that stores step logs is sent this attempt's; the log is kept from the harness's own events.
@@ -562,17 +565,31 @@ async function drive(
   let checkout: RepositoryCheckout | undefined;
   let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | null = null;
   let preparing = false;
+  let repositoryUnavailable = false;
+  const originalInstruction=run.instruction;
+  let prompt = originalInstruction;
   const prepare = async (): Promise<void> => {
-    if (run.repository !== undefined) {
+    if (run.repository !== undefined && !repositoryUnavailable) {
       preparing = true;
-      checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
-        const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
-        if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
-        if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
-        if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
-        return answer.body;
-      }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task) });
-      stepLog?.within(checkout.root, resolvedPath(checkout.root));
+      try {
+        checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
+          const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
+          if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
+          if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
+          if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
+          return answer.body;
+        }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories') });
+      } catch (error) {
+        if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
+        const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};
+        const recorded = await post(options,'/worker/repository',{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
+        if (recorded.kind !== 'answered') throw new Error('Could not record unavailable repository preparation.');
+        if (recorded.body.held !== true) { lost=true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
+        repositoryUnavailable = true;
+        prompt = knowledgeOnlyInstruction(originalInstruction);
+        options.log(`run ${run.id} continues on knowledge alone: repository ${unavailable.code}`);
+      }
+      if (checkout !== undefined) stepLog?.within(checkout.root, resolvedPath(checkout.root));
       preparing = false;
     }
   };
@@ -580,7 +597,6 @@ async function drive(
     await prepare();
     stopping.signal.throwIfAborted();
     const toolUse = runToolUse(named.steps, checkout !== undefined);
-    const prompt = run.instruction;
     const start = () => {
       if (clock() >= lease.deadline) { lost = true; stopping.abort(); }
       stopping.signal.throwIfAborted();

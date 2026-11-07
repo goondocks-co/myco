@@ -519,7 +519,11 @@ describe('retired settings dispositions', () => {
 });
 
 it('ships every recorded DROP row as current server knowledge', () => {
-  expect(DROPPED_FEATURES.map(({section,row}): {section:string;row:string} => ({section,row}))).toEqual(LEDGER.filter(row => row.disposition === 'DROP').map(row => ({ section: row.section, row: row.raw })));
+  expect(DROPPED_FEATURES.map(({feature,section,reason,issue}): {feature:string;section:string;reason:string;issue:string} => ({feature,section,reason,issue})))
+    .toEqual(LEDGER.filter(row => row.disposition === 'DROP').map(row => {
+      const cells=row.raw.split('|').slice(1,-1).map(cell=>cell.trim());
+      return {feature:row.token,section:row.section,reason:cells.at(-2)!.replace(/\*\*|`/g,'').split(/(?<=\.)\s+/)[0]!,issue:cells.at(-1)!};
+    }));
   expect(fs.readFileSync(path.join(REPO_ROOT, 'packages/myco-server/src/core/dropped-features.generated.ts'), 'utf8'))
     .toBe(renderDroppedFeatures(fs.readFileSync(path.join(REPO_ROOT, 'docs/architecture/myco-2.0.md'), 'utf8')));
 });

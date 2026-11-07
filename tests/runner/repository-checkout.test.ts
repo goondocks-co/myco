@@ -256,3 +256,55 @@ it('continues mapping without posting an oversized committed inventory',async()=
     await checkout.dispose();
   }finally{prepare.mockRestore();}
 });
+
+it('refreshes one private bare mirror and creates independent pinned reference checkouts for concurrent runs', async () => {
+  const cacheRoot=join(home,'runner-cache');
+  const counter=join(home,'cache-commands.json');
+  const executable=join(home,'git-cache-fixture');
+  await writeFile(counter,JSON.stringify({init:0,clone:0,remoteFetch:0}));
+  await writeFile(executable,'#!/usr/bin/env node\n'+`
+const fs=require('node:fs'),cp=require('node:child_process');
+const args=process.argv.slice(2);
+const counter=${JSON.stringify(counter)};
+const counts=JSON.parse(fs.readFileSync(counter,'utf8'));
+if(args.includes('init'))counts.init++;
+if(args.includes('clone'))counts.clone++;
+if(args.includes('fetch')&&args.some(arg=>arg.startsWith('https://')))counts.remoteFetch++;
+fs.writeFileSync(counter,JSON.stringify(counts));
+const child=cp.spawnSync(${JSON.stringify(gitPath)},args,{stdio:'inherit'});
+process.exit(child.status??1);
+`,{mode:0o700});
+  const checkouts: Awaited<ReturnType<typeof prepareRepositoryCheckout>>[]=[];
+  try {
+    const a=await prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,pin:async commit=>commit});
+    checkouts.push(a);
+    await writeFile(join(repo,'AGENTS.md'),'Third committed rules.');
+    git('commit','--quiet','-am','third');
+    const third=git('rev-parse','HEAD');
+    const [b,c]=await Promise.all([
+      prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,pin:async commit=>commit}),
+      prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,commit:first,pin:async commit=>commit}),
+    ]);
+    checkouts.push(b,c);
+    expect([a.commit,b.commit,c.commit]).toEqual([second,third,first]);
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+    expect(await readFile(join(c.root,'AGENTS.md'),'utf8')).toBe('First committed rules.');
+    await writeFile(join(a.root,'AGENTS.md'),'local change');
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+    const alternate=await readFile(join(a.root,'.git/objects/info/alternates'),'utf8');
+    expect(alternate).toContain('mirror.git/objects');
+    expect(await readFile(join(b.root,'.git/objects/info/alternates'),'utf8')).toBe(alternate);
+    expect(JSON.parse(await readFile(counter,'utf8'))).toEqual({init:1,clone:3,remoteFetch:3});
+    const resumed=await prepareRepositoryCheckout({...request(),cacheRoot:join(home,'new-runner-cache'),commit:first,pin:async commit=>commit});
+    checkouts.push(resumed);
+    expect(resumed.commit).toBe(first);
+    expect(await readFile(join(resumed.root,'AGENTS.md'),'utf8')).toBe('First committed rules.');
+    expect(await readFile(join(a.root,'.git/config'),'utf8')).not.toContain(token);
+    const denied=prepareRepositoryCheckout({...request(),cacheRoot,credential:{username:'reader',token:'revoked-fixture-token'},pin:async commit=>commit});
+    await expect(denied).rejects.toMatchObject({failure:{code:'fetch_failed'}});
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+  } finally {
+    await Promise.all(checkouts.map(checkout=>checkout.dispose()));
+    git('reset','--hard',second);
+  }
+});

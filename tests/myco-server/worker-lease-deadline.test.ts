@@ -1,3 +1,4 @@
+import { REPOSITORY_PREPARATION_TIMEOUT_MS } from '@goondocks/myco-shared/repository';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
@@ -131,4 +132,15 @@ describe('a worker lease is bounded by its run deadline', () => {
       expect(outcome.expiresAt).not.toBe(r.expiry());
     } finally { r.e.sqlite.close(); }
   });
+});
+
+it('keeps the independent repository preparation allowance in canonical and SQL lease deadlines', async () => {
+  const base=await rig(JSON.stringify({timeoutSeconds:60}));
+  const prepared=await rig(JSON.stringify({timeoutSeconds:60,preparationTimeoutMs:REPOSITORY_PREPARATION_TIMEOUT_MS}));
+  try {
+    expect(prepared.deadline-base.deadline).toBe(REPOSITORY_PREPARATION_TIMEOUT_MS);
+    expect(await prepared.renew(prepared.deadline-1,prepared.deadline+1)).toBe(true);
+    expect(prepared.expiry()).toBe(prepared.deadline);
+    expect(await prepared.renew(prepared.deadline,prepared.deadline+1)).toBe(false);
+  } finally {base.e.sqlite.close();prepared.e.sqlite.close();}
 });

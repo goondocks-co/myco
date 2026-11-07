@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { deploymentSecretStore, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
+import { deploymentSecretStore, secretReadable, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText, WRAPPING_KEY_BYTES, WrappingKeyUnavailableError } from '@myco-server-worker/platform/wrapping-key.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { migrateAndSeed } from './helpers/d1.js';
@@ -202,4 +202,15 @@ describe('the wrapping key', () => {
     const r = rig('not-valid-base64!!!');
     await expect(r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000)).rejects.toThrow(/not base64/);
   });
+});
+
+it('answers secret usability without returning a credential or a preview', async () => {
+  const r=rig();
+  const key=wrappingKeyFromText(async()=>KEY,'TEST_KEY'),wrong=wrappingKeyFromText(async()=>OTHER_KEY,'TEST_KEY');
+  try {
+    expect(await secretReadable(r.db,key,'repository')).toBe(false);
+    await r.store.put('repository','synthetic-repository-token','owner',1);
+    expect(await secretReadable(r.db,key,'repository')).toBe(true);
+    expect(await secretReadable(r.db,wrong,'repository')).toBe(false);
+  } finally {r.sqlite.close();}
 });

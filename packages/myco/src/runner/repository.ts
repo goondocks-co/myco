@@ -10,7 +10,7 @@ export function digestListing(digests: readonly CheckoutFileDigest[]): string {
 }
 
 /** What a worker checkout does beyond the source: the Git executable, and whether the run reads a digest listing. */
-export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean }
+export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string }
 
 /** Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside it. */
 export async function prepareWorkerCheckout(
@@ -28,7 +28,7 @@ export async function prepareWorkerCheckout(
   checkoutSignal.throwIfAborted();
   const checkout = await prepareRepositoryCheckout({
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
-    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests,
+    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.cacheRoot,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
     removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
     pin: async (commit) => {

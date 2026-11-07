@@ -1,9 +1,10 @@
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, RepositoryInputError } from '@goondocks/myco-shared/repository';
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import type { ServerEnv } from './adapters.js';
 import { pinMapRepositoryAtCommit } from './canopy.js';
 import { prepareRunRepository } from './run-repository.js';
-import { repositoryCheckoutOfRun, repositoryPinOfRun, type RunRow } from './runs.js';
+import { recordKnowledgeRepositoryUnavailable, repositoryCheckoutOfRun, repositoryPinOfRun, type RunRow } from './runs.js';
 import { withLeasedRunCommit, withLeasedRunSecret, type WorkerLeaseOwner, type WorkerRunIdentity } from './worker-run.js';
 
 /**
@@ -12,6 +13,12 @@ import { withLeasedRunCommit, withLeasedRunSecret, type WorkerLeaseOwner, type W
  * source it read are one pin.
  */
 const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRunIdentity & { body: Record<string, unknown> }, row: RunRow & { dispatchedBy: string }) => {
+  if (input.body.unavailable !== undefined) {
+    const failure = parseRepositoryFailure(input.body.unavailable);
+    if (failure === null || !KNOWLEDGE_REPOSITORY_TASKS.includes(row.task ?? '')) throw new RepositoryInputError('Only a knowledge run may report a closed repository preparation failure.');
+    const held = await recordKnowledgeRepositoryUnavailable(env.db,{projectId:input.projectId},row,failure,{worker:worker.worker,now:worker.clock()});
+    return {persisted:true,held};
+  }
   const expected = repositoryCheckoutOfRun(row);
   if (row.task === null || !REPOSITORY_TASKS.includes(row.task) || expected === null) {
     return { persisted: true, held: false, reason: 'the run holds no repository checkout' };
@@ -31,4 +38,4 @@ const prepareRead = withLeasedRunSecret(prepare);
 const preparePin = withLeasedRunCommit(prepare);
 
 export const prepareWorkerRepository = (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRunIdentity & { body: Record<string, unknown> }) =>
-  input.body.commit === undefined ? prepareRead(env, worker, input) : preparePin(env, worker, input);
+  input.body.commit === undefined && input.body.unavailable === undefined ? prepareRead(env, worker, input) : preparePin(env, worker, input);

@@ -1,3 +1,4 @@
+import { withRepositoryMirror, type RepositoryMirror } from './repository-cache.js';
 import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -5,13 +6,13 @@ import fs from 'node:fs';
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
+import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_PREPARATION_TIMEOUT_MS, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
 
 export { repositoryUrl } from '@goondocks/myco-shared/repository';
 
 const MAX_GIT_OUTPUT_BYTES = 1_000_000;
 export const MAX_REPOSITORY_BYTES = 256 * 1024 * 1024;
-export const CHECKOUT_TIMEOUT_MS = 120_000;
+export const CHECKOUT_TIMEOUT_MS = REPOSITORY_PREPARATION_TIMEOUT_MS;
 const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 
 /** A checkout refusal carries only a closed reason and a sanitized Git summary. */
@@ -42,6 +43,8 @@ export interface RepositoryCheckoutRequest {
   removeDestination?: () => void | Promise<void>;
   /** Git fetch depth, bounded by the source-reading policy. */
   historyDepth?: number;
+  /** Runner-owned persistent mirrors; standalone checkouts have no cache. */
+  cacheRoot?: string;
   /** Hash every committed regular file into `digests`. */
   digests?: boolean;
 }
@@ -173,51 +176,70 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
         MYCO_GIT_TOKEN: request.credential.token,
       }),
     };
-    const run = (...args: string[]) => git(request.gitPath ?? 'git', [
+    const runAt = (cwd: string, args: string[]) => git(request.gitPath ?? 'git', [
       '-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null',
       '-c', 'http.followRedirects=false', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
       ...args,
-    ], root, env, signal, args[0] === 'fetch' ? 'fetch_failed' : 'checkout_failed');
-    await run('check-ref-format', `refs/heads/${request.branch}`);
-    await run('init', '--quiet', '--template=');
-    await run('remote', 'add', 'origin', url);
-    await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
-    const resolved = (await run('rev-parse', '--verify', 'FETCH_HEAD^{commit}')).trim();
-    if (!SHA_PATTERN.test(resolved)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository returned an invalid commit.');
-    const pinned = await request.pin(resolved);
-    if (!SHA_PATTERN.test(pinned)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository pin returned an invalid commit.');
-    if (pinned !== resolved) await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', pinned);
-    let changedPaths: string[] | undefined;
-    if (request.compareCommit !== undefined) {
-      if (request.compareCommit !== pinned) await run('fetch', '--quiet', '--depth=1', '--no-tags', 'origin', request.compareCommit);
-      changedPaths = (await run('diff-tree', '--no-commit-id', '--name-only', '-r', '-z', request.compareCommit, pinned)).split('\0').filter(Boolean);
-    }
-    const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
-      const tab = entry.indexOf('\t');
-      const [mode, , , size] = entry.slice(0, tab).trim().split(/\s+/);
-      if (mode === '160000') throw new RepositoryCheckoutError('submodules', 'Repository contains submodules; submodule source is not supported yet.');
-      return { mode, size: Number(size), path: entry.slice(tab + 1) };
-    });
-    const bytes = files.reduce((total, file) => total + file.size, 0);
-    if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new RepositoryCheckoutError('too_large', 'Repository committed files exceed the 256 MiB checkout limit.');
-    await run('checkout', '--quiet', '--detach', pinned);
-    const actual = (await run('rev-parse', 'HEAD')).trim();
-    if (actual !== pinned) throw new RepositoryCheckoutError('commit_mismatch', 'Repository checkout does not match its pinned commit.');
-    const regular = files.filter((entry) => entry.mode === '100644' || entry.mode === '100755').map((entry) => entry.path);
-    for (const path of regular) {
-      signal.throwIfAborted();
-      const file = await open(join(root, path), 'r');
-      try {
-        const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
-        await file.read(bytes, 0, bytes.length, 0);
-        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new RepositoryCheckoutError('lfs', 'Repository contains Git LFS pointers; LFS source is not supported yet.');
-      } finally { await file.close(); }
-    }
-    const digests = request.digests === true ? await hashCommittedFiles(root, regular, signal) : undefined;
-    await rm(askpass);
-    delete env.MYCO_GIT_USERNAME;
-    delete env.MYCO_GIT_TOKEN;
-    return { root, commit: pinned, files: files.map(file => file.path), changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
+    ], cwd, env, signal, args.includes('fetch') ? 'fetch_failed' : 'checkout_failed');
+    const run = (...args: string[]) => runAt(root,args);
+    const prepare = async (mirror?: RepositoryMirror): Promise<RepositoryCheckout> => {
+      await run('check-ref-format', `refs/heads/${request.branch}`);
+      let resolved: string;
+      if (mirror === undefined) {
+        await run('init', '--quiet', '--template=');
+        await run('remote', 'add', 'origin', url);
+        await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
+        resolved=(await run('rev-parse','--verify','FETCH_HEAD^{commit}')).trim();
+      } else {
+        resolved=await mirror.fetch(request.commit);
+        await run('-c','protocol.file.allow=always','clone','--quiet','--shared','--reference',mirror.root,'--no-checkout','--no-hardlinks','--template=',mirror.root,'.');
+        await run('remote','set-url','origin',url);
+        await run('-c','protocol.file.allow=always','fetch','--quiet',`--depth=${depth}`,'--no-tags',mirror.root,resolved);
+      }
+      if (!SHA_PATTERN.test(resolved)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository returned an invalid commit.');
+      const pinned = await request.pin(resolved);
+      if (!SHA_PATTERN.test(pinned)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository pin returned an invalid commit.');
+      const fetchCommit = async (commit: string, history: number) => {
+        if (mirror === undefined) await run('fetch','--quiet',`--depth=${history}`,'--no-tags','origin',commit);
+        else {
+          await mirror.fetch(commit);
+          await run('-c','protocol.file.allow=always','fetch','--quiet',`--depth=${history}`,'--no-tags',mirror.root,commit);
+        }
+      };
+      if (pinned !== resolved) await fetchCommit(pinned,depth);
+      let changedPaths: string[] | undefined;
+      if (request.compareCommit !== undefined) {
+        if (request.compareCommit !== pinned) await fetchCommit(request.compareCommit,1);
+        changedPaths = (await run('diff-tree', '--no-commit-id', '--name-only', '-r', '-z', request.compareCommit, pinned)).split('\0').filter(Boolean);
+      }
+      const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
+        const tab = entry.indexOf('\t');
+        const [mode, , , size] = entry.slice(0, tab).trim().split(/\s+/);
+        if (mode === '160000') throw new RepositoryCheckoutError('submodules', 'Repository contains submodules; submodule source is not supported yet.');
+        return { mode, size: Number(size), path: entry.slice(tab + 1) };
+      });
+      const bytes = files.reduce((total, file) => total + file.size, 0);
+      if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new RepositoryCheckoutError('too_large', 'Repository committed files exceed the 256 MiB checkout limit.');
+      await run('checkout', '--quiet', '--detach', pinned);
+      const actual = (await run('rev-parse', 'HEAD')).trim();
+      if (actual !== pinned) throw new RepositoryCheckoutError('commit_mismatch', 'Repository checkout does not match its pinned commit.');
+      const regular = files.filter((entry) => entry.mode === '100644' || entry.mode === '100755').map((entry) => entry.path);
+      for (const path of regular) {
+        signal.throwIfAborted();
+        const file = await open(join(root, path), 'r');
+        try {
+          const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
+          await file.read(bytes, 0, bytes.length, 0);
+          if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new RepositoryCheckoutError('lfs', 'Repository contains Git LFS pointers; LFS source is not supported yet.');
+        } finally { await file.close(); }
+      }
+      const digests = request.digests === true ? await hashCommittedFiles(root, regular, signal) : undefined;
+      await rm(askpass);
+      delete env.MYCO_GIT_USERNAME;
+      delete env.MYCO_GIT_TOKEN;
+      return { root, commit: pinned, files: files.map(file => file.path), changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
+    };
+    return await (request.cacheRoot === undefined ? prepare() : withRepositoryMirror(request.cacheRoot,{url,branch:request.branch},signal,runAt,prepare));
   } catch (error) {
     await dispose();
     throw error;

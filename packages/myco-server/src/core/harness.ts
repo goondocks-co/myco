@@ -83,7 +83,7 @@ export const REPLACED_REQUEUES_PER_DAY = 2;
 /** The window the per-day caps are counted over. */
 const DAY_MS = 86_400_000;
 /** The keys of a run's context the dispatcher writes itself; a re-queue rebuilds them rather than carrying them. */
-const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts', 'fresh', 'replaced', 'replaces']);
+const DISPATCHER_CONTEXT_KEYS = new Set(['preparationTimeoutMs', 'timeoutSeconds', 'input_hash', 'counts', 'fresh', 'replaced', 'replaces']);
 
 /**
  * Why a dispatch is refused before anything is launched. Each is a settled
@@ -1052,7 +1052,7 @@ export async function claimNextRun(
   const limits = await readDispatchLimits(env);
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
-    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now, capabilities:worker.capabilities,
     settingsGuard:{sql:policy.sql,params:policy.params},
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   });
@@ -1072,15 +1072,15 @@ export async function claimNextRun(
     return { claimed: false, reason: 'at_limit' };
   }
 
-  if(minted===undefined) throw new Error('A claimed run requires its issued credential');
+  if(claimed===null || minted===undefined) throw new Error('A claimed run requires its issued credential');
   emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, ...workerTelemetry(worker.principal) });
   return {
     claimed: true,
     run: {
       ...row,
-      instruction,
+      instruction: claimed.input?.instruction ?? instruction,
       instructions: instructionsFileFor(built),
-      ...(built !== null && !built.unchanged && built.input.repository !== undefined ? { repository: built.input.repository } : {}),
+      ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository }),
       harness,
       profile,
       runToken: minted.token,
@@ -1101,7 +1101,7 @@ export async function claimNextRun(
  */
 async function pullAtClaim(
   env: ServerEnv,
-  worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; now: number },
+  worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
   excluded: readonly string[],
   select: Awaited<ReturnType<typeof workerSelector>>,
   read: { policy: Awaited<ReturnType<typeof observedSettingsGuard>>; settings: ReadonlyMap<string, string>; limits: DispatchLimits; activation: Awaited<ReturnType<typeof budgetActivation>> },
@@ -1145,7 +1145,7 @@ async function pullAtClaim(
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
       reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params },
       ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
-      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now,
+      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now, capabilities:worker.capabilities,
       settingsGuard: { sql: policy.sql, params: policy.params },
     });
     if (claimed === null) {
@@ -1157,8 +1157,8 @@ async function pullAtClaim(
     return {
       claimed: true,
       run: {
-        ...claimed.row, instruction: input.instruction, instructions: input.instructions ?? null,
-        ...(input.repository === undefined ? {} : { repository: input.repository }), harness: chosen.harness, profile,
+        ...claimed.row, instruction: claimed.input?.instruction ?? input.instruction, instructions: input.instructions ?? null,
+        ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository }), harness: chosen.harness, profile,
         runToken: claimed.issued.token, attemptId: claimed.issued.tokenId, credentialEnv: chosen.credentialEnv,
         leaseExpiresAt: worker.now + WORKER_LEASE_MS, timeoutSeconds: runTimeoutForTask(stage.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
       },

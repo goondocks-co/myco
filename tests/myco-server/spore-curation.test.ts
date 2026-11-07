@@ -764,8 +764,8 @@ test('knowledge curation retires a dropped feature citing its decision and merge
       const claim = await f.poll();
       expect(claim.claimed).toBe(true); if (!claim.claimed) throw new Error('curation not claimed');
       const prompt = claim.run.instruction!;
-      const ledgerRow = prompt.split('\n').find(line => line.includes('|`skill-evolve`') || line.includes('| `skill-evolve`'));
-      expect(ledgerRow).toContain('DROP');
+      const ledgerRow = prompt.split('\n').find(line => line.startsWith('skill-evolve |'));
+      expect(prompt).toContain('DROP decisions');
       expect(ledgerRow).toContain('#1152');
       expect(prompt).toContain('later spore or session');
       expect(prompt).toContain('A missing file alone is never a reason to retire');
@@ -781,10 +781,10 @@ test('knowledge curation retires a dropped feature citing its decision and merge
         expect(pin).toMatchObject({held:true,pin:{commit:'a'.repeat(40)}});
       } else {
         expect(claim.run).not.toHaveProperty('repository');
-        expect(prompt).toContain('No repository is connected');
+        expect(prompt).toContain('No usable repository checkout is available');
       }
       // The stand-in model chooses by the supplied knowledge and DROP decision, then calls the real run tools.
-      const reason = `skill-evolve is retired by ${ledgerRow}`;
+      const reason = `skill-evolve is retired by docs/architecture/myco-2.0.md ${ledgerRow}`;
       expect(await f.call(claim.run.runToken,'myco_spores',{op:'obsolete',id:'retired',expect_revision:0,expect_status:'active',reason}))
         .toMatchObject({status:'obsolete'});
       const source_spore_ids = ['a','b','c'].map(id=>({id,revision:0}));
@@ -802,4 +802,15 @@ test('knowledge curation retires a dropped feature citing its decision and merge
       expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
     } finally { f.sqlite.close(); }
   }
+});
+
+test('DROP facts are absent for an existing Project not bound to the Myco remote', async () => {
+  const f=await fixture();
+  try {
+    f.sqlite.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_other','Other',1)");
+    await recordProjectRemote(f.db,'proj_other','github.com/example/other',f.now);
+    f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+      VALUES('proj_other','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
+    expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
+  } finally { f.sqlite.close(); }
 });
