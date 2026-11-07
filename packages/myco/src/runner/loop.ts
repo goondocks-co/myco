@@ -578,7 +578,7 @@ async function drive(
           if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
           if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
           return answer.body;
-        }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories') });
+        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories') });
       } catch (error) {
         if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
         const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};

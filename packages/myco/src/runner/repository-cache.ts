@@ -6,6 +6,8 @@ import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { repositoryBranch, repositoryUrl, REPOSITORY_COMMIT_PATTERN } from '@goondocks/myco-shared/repository';
 
 const CACHE_LOCK_RETRY_MS = 25;
+const KNOWLEDGE_MIRROR_DEPTH = 1;
+const PIN_REF_PREFIX = 'refs/myco/pins/';
 type Git = (cwd: string, args: string[]) => Promise<string>;
 
 export interface RepositoryMirror {
@@ -20,7 +22,7 @@ async function privateDirectory(path: string): Promise<void> {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Repository cache directory must be physical.');
 }
 
-/** One URL-keyed mirror writer holds its lease across refresh and creation of the run's reference checkout. */
+/** One URL-keyed mirror writer holds its lease across refresh and creation of the run's isolated checkout. */
 export async function withRepositoryMirror<T>(
   cacheRoot: string, identity: {url:string;branch:string}, signal: AbortSignal, git: Git,
   use: (mirror: RepositoryMirror) => Promise<T>,
@@ -57,11 +59,17 @@ export async function withRepositoryMirror<T>(
       root,
       async fetch(commit) {
         if (commit !== undefined && !REPOSITORY_COMMIT_PATTERN.test(commit)) throw new Error('Invalid repository cache commit.');
-        // Persistent object references require an additive mirror with no shallow boundary or automatic pruning.
-        await git(root,['-c','gc.auto=0','-c','maintenance.auto=false','fetch','--quiet','--no-tags',url,
-          commit === undefined ? `+refs/heads/${branch}:refs/heads/${branch}` : `+${commit}:refs/myco/pins/${commit}`]);
-        const resolved=(await git(root,['rev-parse','--verify','FETCH_HEAD^{commit}'])).trim();
+        await git(root,['-c','gc.auto=0','-c','maintenance.auto=false','fetch','--quiet','--no-tags',
+          `--depth=${KNOWLEDGE_MIRROR_DEPTH}`,url,`+refs/heads/${branch}:refs/heads/${branch}`]);
+        const resolved=(await git(root,['rev-parse','--verify',`${commit ?? 'FETCH_HEAD'}^{commit}`])).trim();
         if (!REPOSITORY_COMMIT_PATTERN.test(resolved)) throw new Error('Repository mirror returned an invalid commit.');
+        const pin=PIN_REF_PREFIX+resolved;
+        await git(root,['update-ref',pin,resolved]);
+        const pins=(await git(root,['for-each-ref','--format=%(refname)',PIN_REF_PREFIX])).split('\n').filter(Boolean);
+        for (const previous of pins) {
+          if (!previous.startsWith(PIN_REF_PREFIX) || !REPOSITORY_COMMIT_PATTERN.test(previous.slice(PIN_REF_PREFIX.length))) throw new Error('Repository mirror contains an invalid pin reference.');
+          if (previous !== pin) await git(root,['update-ref','-d',previous]);
+        }
         return resolved;
       },
     };

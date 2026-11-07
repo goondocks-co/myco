@@ -192,7 +192,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
         resolved=(await run('rev-parse','--verify','FETCH_HEAD^{commit}')).trim();
       } else {
         resolved=await mirror.fetch(request.commit);
-        await run('-c','protocol.file.allow=always','clone','--quiet','--shared','--reference',mirror.root,'--no-checkout','--no-hardlinks','--template=',mirror.root,'.');
+        await run('-c','protocol.file.allow=always','clone','--quiet','--no-local',`--depth=${depth}`,'--single-branch','--branch',request.branch,'--no-checkout','--no-hardlinks','--template=',mirror.root,'.');
         await run('remote','set-url','origin',url);
         await run('-c','protocol.file.allow=always','fetch','--quiet',`--depth=${depth}`,'--no-tags',mirror.root,resolved);
       }
