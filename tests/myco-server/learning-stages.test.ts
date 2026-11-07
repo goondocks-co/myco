@@ -18,6 +18,8 @@ import {
 } from '@myco-server-worker/core/learning-sessions.js';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import type { BlobStore } from '@myco-server-worker/core/adapters.js';
+import { knowledgeInputForExecution } from '@myco-server-worker/core/knowledge-execution.js';
+import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
 import { withDocumentStores } from './helpers/document-stores.js';
@@ -486,7 +488,7 @@ const heavyCard = (text: string, chars: number): string => text.repeat(Math.floo
 interface LearningPage { session_id: string; handoff?: string | null; more_slices?: boolean; changed_since_assignment?: number; revision: string; page: number; next_page?: number; cards: { turn_key: string; signal: string; card: string; continues?: true }[] }
 
 /** A claimed learning run over these turns, each carded by its own card run as `cardOf` says, called through the real `/mcp` route. */
-async function learningRun(db: RelationalStore, turns: readonly Turn[], signal: 'low' | 'high', cardTextOf?: (key: string) => string, handoff: string | null = null) {
+async function learningRun(db: RelationalStore, turns: readonly Turn[], signal: 'low' | 'high', cardTextOf?: (key: string) => string, handoff: string | null = null, connected = false, execution: {harness?:string;capabilities?:readonly string[];unreadable?:boolean;queued?:boolean} = {}) {
   const carding = await cardRun(db, turns);
   const { inputs } = await carding.readAll();
   const { bindings, env, principal } = carding;
@@ -500,7 +502,13 @@ async function learningRun(db: RelationalStore, turns: readonly Turn[], signal: 
   await callAs(carding.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
   await endLeasedRun(env, { principal, now: NOW + DAY + 1 }, { projectId: 'project', runId: carding.claimed.run.id, attemptId: carding.claimed.run.attemptId, status: 'completed' });
   if (handoff !== null) await db.prepare(`UPDATE learning_sessions SET handoff = ?`).bind(handoff).run();
-  const learn = await claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + DAY + 2 });
+  if (connected) await db.prepare(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES('project','connection','https://example.test/team/repo','main',1,'test')`).run();
+  const harness=execution.harness ?? 'claude-code';
+  if (harness === 'codex') await settingsWriter(db).setLeaf('agent.tasks',{'extract-curate':{harness,model:'gpt-6',reasoningLevel:'default'}},'member',NOW+DAY+2);
+  if (execution.unreadable) await db.prepare("UPDATE project_repositories SET username='reader',secret_slot='missing' WHERE project_id='project'").run();
+  if (execution.queued) expect(await dispatchTask(env,'extract-curate','project',{serverUrl:'https://myco.test',actor:'member',params:{session_id:'long'}},NOW+DAY+2)).toMatchObject({dispatched:true});
+  const learn = await claimNextRun(env, { principal, harnesses: [offeredHarness(harness)], capabilities: execution.capabilities ?? WORKER_CAPABILITIES, now: NOW + DAY + 2 });
   if (!learn.claimed) throw new Error(`no learning run: ${learn.reason}`);
   expect(learn.run.task).toBe('extract-curate');
   const raw = (name: string, input: Record<string, unknown>) => callAs(learn.run.runToken, name, input);
@@ -512,7 +520,7 @@ async function learningRun(db: RelationalStore, turns: readonly Turn[], signal: 
     return pages;
   };
   const save = (agentLine: string, content = agentLine) => call('myco_spores', { op: 'save', type: 'gotcha', session_id: 'long', agent_line: agentLine, content });
-  return { bindings, raw, call, material, readAll, save, complete: (text: string) => call('myco_run_learning', { op: 'complete', handoff: text }) };
+  return { bindings, env, principal, claimed:learn.run, raw, call, material, readAll, save, complete: (text: string) => call('myco_run_learning', { op: 'complete', handoff: text }) };
 }
 
 const plainTurns = (count: number, base = 500): Turn[] => Array.from({ length: count }, (_, at) => ({ id: uuid(base + at), text: `Work on the part ${at}`, at: 10 + at, replies: ['Done.'] }));
@@ -666,7 +674,8 @@ it('answers a spore get whatever its fields hold, cut to fit, and to less when a
   await withDocumentStores(async (db) => {
     const run = await learningRun(db, plainTurns(1), 'low');
     await run.readAll();
-    const saved = await run.save('A spore with a long context.', 'the body') as { id: string };
+    const saved = await run.call('myco_spores', { op:'save', type:'gotcha', session_id:'long', agent_line:'A spore with a long context.', content:'the body' }) as { id:string };
+    expect(await db.prepare('SELECT file_path FROM spores WHERE id=?').bind(saved.id).first()).toEqual({file_path:null});
     await db.prepare(`UPDATE spores SET context = ?, properties = ? WHERE id = ?`).bind('c'.repeat(41_000), '\u0001'.repeat(20_000), saved.id).run();
     const held = await run.raw('myco_run_spores', { op: 'get', id: saved.id });
     expect(new TextEncoder().encode(JSON.stringify(held.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
@@ -709,8 +718,8 @@ it('states the agent line\'s bound in the rules, by an example inside it, and ru
   expect(AGENT_LINE_EXAMPLE.length).toBeLessThanOrEqual(AGENT_LINE_MAX_CHARS);
   expect(EXTRACTION_RULES).toContain(AGENT_LINE_EXAMPLE);
   expect(EXTRACTION_RULES).toContain(`one line, at most ${AGENT_LINE_MAX_CHARS} characters`);
-  expect(EXTRACTION_RULES).not.toContain('When in doubt');
-  expect(EXTRACTION_RULES).toContain('Keep every concrete detail in the replacement');
+  expect(EXTRACTION_RULES).toContain('When in doubt, keep it');
+  expect(EXTRACTION_RULES).toContain('Preserve useful commands');
 });
 
 it('keeps the prior handoff and failure count when every assigned card changes mid-run', async () => {
@@ -1294,5 +1303,67 @@ it('retains earlier card failure backoff after a runner sign-in failure', async 
       error: 'the harness stopped: error (login_missing)',
     });
     expect(await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='prior-backoff'").first()).toEqual(before);
+  });
+});
+
+it('learning receives and pins the optional repository before validating new knowledge against code', async () => {
+  await withDocumentStores(async db => {
+    const run = await learningRun(db, plainTurns(1), 'low', undefined, null, true);
+    expect(run.claimed.repository).toEqual({url:'https://example.test/team/repo',branch:'main',historyDepth:1});
+    expect(run.claimed.instruction).toContain('Check claims against this code before saving');
+    expect(run.claimed.instructions).toContain('validate new guidance against the code now');
+    expect(run.claimed.instructions).toContain('Obsolete an existing spore the code contradicts');
+    const cursor=await knowledgeInputForExecution(run.env,'project','extract-curate',{
+      instruction:run.claimed.instruction!,repository:run.claimed.repository,inputHash:'fixture',counts:{},
+    },'cursor',WORKER_CAPABILITIES);
+    expect(cursor.repository).toBeUndefined();
+    expect(cursor.instruction).toContain('No usable repository checkout is available');
+    expect(await prepareWorkerRepository(run.env,{worker:run.principal,clock:()=>NOW+DAY+2},{
+      projectId:'project',runId:run.claimed.id,attemptId:run.claimed.attemptId,
+      body:{url:'https://example.test/team/repo',branch:'main',commit:'b'.repeat(40)},
+    })).toMatchObject({held:true,pin:{commit:'b'.repeat(40)}});
+    await run.readAll();
+    const saved=await run.save('Shared counters: increment atomically.') as {id:string};
+    expect(await db.prepare('SELECT file_path FROM spores WHERE id=?').bind(saved.id).first()).toEqual({file_path:null});
+  });
+});
+
+it('claims learning without code on Codex, missing checkout capability, disconnected or unreadable repositories', async () => {
+  for (const scenario of [
+    {connected:false,harness:'codex',capabilities:[],queued:false},
+    {connected:true,harness:'codex',capabilities:[],queued:true},
+    {connected:true,harness:'claude-code',capabilities:[],queued:false},
+    {connected:true,harness:'claude-code',capabilities:WORKER_CAPABILITIES,unreadable:true,queued:false},
+  ]) await withDocumentStores(async db => {
+    const run=await learningRun(db,plainTurns(1),'low',undefined,null,scenario.connected,scenario);
+    expect(run.claimed.harness).toBe(scenario.harness);
+    expect(run.claimed).not.toHaveProperty('repository');
+    expect(run.claimed.instruction).toContain('No usable repository checkout is available');
+    expect(run.claimed.instruction).not.toContain('is pinned at its current commit');
+    await run.readAll();
+    expect(await run.save('Shared counters: increment atomically.')).toHaveProperty('id');
+  });
+});
+
+it('continues a learning attempt after unavailable source, preserving material and recording the reason once', async () => {
+  await withDocumentStores(async db => {
+    const run=await learningRun(db,plainTurns(1),'low',undefined,null,true);
+    const report=()=>prepareWorkerRepository(run.env,{worker:run.principal,clock:()=>NOW+DAY+2},{
+      projectId:'project',runId:run.claimed.id,attemptId:run.claimed.attemptId,body:{unavailable:{code:'submodules'}},
+    });
+    expect(await report()).toMatchObject({held:true});
+    expect(await report()).toMatchObject({held:true});
+    const source=await db.prepare('SELECT instruction,run_context FROM agent_runs WHERE id=?').bind(run.claimed.id).first<{instruction:string;run_context:string}>();
+    expect(source!.instruction).toContain('No usable repository checkout is available');
+    expect(JSON.parse(source!.run_context)).not.toHaveProperty('checkout');
+    expect((await db.prepare("SELECT payload FROM agent_run_events WHERE run_id=? AND tool_name='worker_repository'").bind(run.claimed.id).all()).results)
+      .toEqual([{payload:JSON.stringify({op:'unavailable',code:'submodules'})}]);
+    await run.readAll();
+    expect(await run.save('Shared counters: increment atomically.')).toHaveProperty('id');
+    expect(await run.complete('')).toMatchObject({completed:true});
+    expect(await run.call('myco_run',{op:'report',action:'extract',summary:'Learned from the session.',audit:RUN_AUDIT})).toMatchObject({recorded:true});
+    expect(await endLeasedRun(run.env,{principal:run.principal,now:NOW+DAY+3},{
+      projectId:'project',runId:run.claimed.id,attemptId:run.claimed.attemptId,status:'completed',
+    })).toMatchObject({status:'completed'});
   });
 });

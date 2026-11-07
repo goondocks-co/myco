@@ -1,3 +1,5 @@
+import { DROPPED_FEATURE_FACTS } from '@myco-server-worker/core/dropped-features.generated.js';
+import { renderDroppedFeatures } from '../../packages/myco/scripts/gen-dropped-features.ts';
 import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
  * Every frozen 1.4 registry token and live 2.0 capability has an explicit
@@ -514,4 +516,15 @@ describe('retired settings dispositions', () => {
       expect({ leaf, dropped: row?.includes(' | DROP | — | — |') }).toEqual({ leaf, dropped: true });
     }
   });
+});
+
+it('ships every recorded DROP row as current server knowledge', () => {
+  const rows = LEDGER.filter(row => row.disposition === 'DROP').map(row => {
+    const cells = row.raw.split('|').slice(1,-1).map(cell => cell.trim());
+    const reason = cells.at(-2)!.replace(/\*\*|`/g,'').split(/(?<=\.)\s+/)[0]!;
+    return `${row.token} | §${row.section} | ${reason} | ${cells.at(-1)!}`;
+  });
+  expect(DROPPED_FEATURE_FACTS).toBe('docs/architecture/myco-2.0.md — DROP decisions (feature | section | reason | issue):\n' + rows.join('\n'));
+  expect(fs.readFileSync(path.join(REPO_ROOT, 'packages/myco-server/src/core/dropped-features.generated.ts'), 'utf8'))
+    .toBe(renderDroppedFeatures(fs.readFileSync(path.join(REPO_ROOT, 'docs/architecture/myco-2.0.md'), 'utf8')));
 });

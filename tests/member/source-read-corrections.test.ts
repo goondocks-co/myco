@@ -262,3 +262,15 @@ describe('source containment corrections', () => {
     }
   });
 });
+
+
+it('knowledge tasks select command-only harnesses without requiring source access', async () => {
+  for (const task of ['extract-curate']) {
+    let opened=false;
+    const result = await selectExecution(task,[{id:'codex',authenticated:true,profile:harnessById('codex')!.profile}],new Map([
+      ['agent.tasks',JSON.stringify({[task]:{harness:'codex',model:'gpt-6',reasoningLevel:'default'}})],
+    ]),async () => { opened=true; return {login:true}; });
+    expect(result.selected?.harness).toBe('codex');
+    expect(opened).toBe(true);
+  }
+});

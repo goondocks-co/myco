@@ -1,3 +1,4 @@
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { INPUT_UNCHANGED,SCHEDULE_ACTOR_SQL,SCHEDULE_ENTRY_SQL } from '../db/schedule-entry.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
 export { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
@@ -52,7 +53,7 @@ import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL, BUDGET_QUOTE_USD_KEY, BUDGET_QUOTE_AT_KEY } from '../db/run-context.js';
 import { leaseOwnerColumns, renewingLeaseAuthority, workerLeaseAuthority, type WorkerPrincipal } from './worker-lease.js';
 import { runParentLive } from '../auth/runners.js';
-import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
+import { runDeadlineSql, preparationAllowanceSql, SQL_NOW_MS } from './run-deadline.js';
 
 /** An object context with any non-object source retained verbatim. */
 /** Where a run's context keeps how far its attempt has read its paged material. */
@@ -1107,7 +1108,7 @@ export async function pruneRevokedCredentials(db: RelationalStore, memberId: str
 /** A run inside its bound, anywhere on the Deployment: one exists or none does. The bound is the run's own, from its context, or the dispatcher's default. */
 const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
   WHERE ${LIVE_RUN_STATUSES} AND started_at IS NOT NULL
-    AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ?
+    AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ${preparationAllowanceSql()} + ?
   LIMIT 1`;
 
 export async function hasRunInsideBound(db: RelationalStore, now: number, defaultTimeoutSeconds: number, marginMs: number): Promise<boolean> {
@@ -1475,7 +1476,7 @@ export function claimedInputStatement(
 ): PreparedStatement {
   return db.prepare(
     `UPDATE agent_runs SET instruction = ?, run_context = json_patch(COALESCE(run_context, '{}'), ?) WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?`,
-  ).bind(input.instruction, JSON.stringify({ ...input.context, input_hash: input.inputHash, counts: input.counts, checkout: input.repository ?? null }), scope.projectId, runId, dispatchedBy);
+  ).bind(input.instruction, JSON.stringify({ ...input.context, input_hash: input.inputHash, counts: input.counts, checkout: input.repository ?? null, preparationTimeoutMs: input.repository === undefined ? 0 : REPOSITORY_PREPARATION_TIMEOUT_MS }), scope.projectId, runId, dispatchedBy);
 }
 
 /** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */
@@ -1976,4 +1977,20 @@ async function pinRunPreparation(db: RelationalStore, scope: ReadScope, run: Run
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
   return { committed: false, row: fresh };
+}
+
+/** A held knowledge attempt records unavailable code access and continues with its original knowledge material. */
+export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, scope: ReadScope, run: RunRow,
+  failure: RepositoryFailure, lease: RunLease): Promise<boolean> {
+  if (run.dispatchedBy === null || !KNOWLEDGE_REPOSITORY_TASKS.includes(run.task ?? '')) return false;
+  const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
+  const prompt=await db.prepare('SELECT instruction FROM agent_runs WHERE project_id=? AND id=?').bind(scope.projectId,run.id).first<{instruction:string|null}>();
+  const mutation = db.prepare(`UPDATE agent_runs SET instruction=?,run_context=json_remove(run_context,'$.checkout')
+    WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql}`)
+    .bind(knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,...authority.params);
+  const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
+    detail:{code:failure.code},recordedAt:lease.now});
+  if (result.meta.changes > 0) return true;
+  return await db.prepare(`SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout') IS NULL AND ${authority.sql}`)
+    .bind(scope.projectId,run.id,...authority.params).first() !== null;
 }

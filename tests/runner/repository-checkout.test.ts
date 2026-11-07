@@ -1,9 +1,9 @@
 import * as checkoutModule from '@myco/runner/repository-checkout.js';
 import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hashCommittedFiles, prepareRepositoryCheckout, RepositoryCheckoutError, repositoryUrl } from '@myco/runner/repository-checkout.js';
@@ -255,4 +255,96 @@ it('continues mapping without posting an oversized committed inventory',async()=
     expect(calls).toEqual([{}]);
     await checkout.dispose();
   }finally{prepare.mockRestore();}
+});
+
+it('refreshes only the connected branch and prunes old pins while preparing independent knowledge checkouts', async () => {
+  const cacheRoot=join(home,'runner-cache');
+  const counter=join(home,'cache-commands.json');
+  const executable=join(home,'git-cache-fixture');
+  await writeFile(counter,JSON.stringify({init:0,clone:0,remoteFetch:0,refspecs:[]}));
+  await writeFile(executable,'#!/usr/bin/env node\n'+`
+const fs=require('node:fs'),cp=require('node:child_process');
+const args=process.argv.slice(2);
+const counter=${JSON.stringify(counter)};
+const counts=JSON.parse(fs.readFileSync(counter,'utf8'));
+if(args.includes('init'))counts.init++;
+if(args.includes('clone'))counts.clone++;
+if(args.includes('fetch')&&args.some(arg=>arg.startsWith('https://'))){counts.remoteFetch++;counts.refspecs.push(args[args.length-1]);}
+fs.writeFileSync(counter,JSON.stringify(counts));
+const child=cp.spawnSync(${JSON.stringify(gitPath)},args,{stdio:'inherit'});
+process.exit(child.status??1);
+`,{mode:0o700});
+  const checkouts: Awaited<ReturnType<typeof prepareRepositoryCheckout>>[]=[];
+  git('branch','unconnected',first);
+  try {
+    const a=await prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,pin:async commit=>commit});
+    checkouts.push(a);
+    await writeFile(join(repo,'AGENTS.md'),'Third committed rules.');
+    git('commit','--quiet','-am','third');
+    const third=git('rev-parse','HEAD');
+    const [b,c]=await Promise.all([
+      prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,pin:async commit=>commit}),
+      prepareRepositoryCheckout({...request(),gitPath:executable,cacheRoot,commit:second,pin:async commit=>commit}),
+    ]);
+    checkouts.push(b,c);
+    expect([a.commit,b.commit,c.commit]).toEqual([second,third,second]);
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+    expect(await readFile(join(c.root,'AGENTS.md'),'utf8')).toBe('Second committed rules.');
+    await writeFile(join(a.root,'AGENTS.md'),'local change');
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+    for(const checkout of checkouts) expect(existsSync(join(checkout.root,'.git/objects/info/alternates'))).toBe(false);
+    const mirror=join(cacheRoot,createHash('sha256').update(url).digest('hex'),'mirror.git');
+    expect(execFileSync('git',['-C',mirror,'rev-parse','--is-shallow-repository'],{encoding:'utf8'}).trim()).toBe('true');
+    expect(execFileSync('git',['-C',mirror,'for-each-ref','--format=%(refname)','refs/heads/'],{encoding:'utf8'}).trim()).toBe('refs/heads/main');
+    const pins=execFileSync('git',['-C',mirror,'for-each-ref','--format=%(refname)','refs/myco/pins/'],{encoding:'utf8'}).trim().split('\n');
+    expect(pins).toHaveLength(1);
+    expect([second,third]).toContain(pins[0]!.split('/').at(-1)!);
+    expect(JSON.parse(await readFile(counter,'utf8'))).toEqual({init:1,clone:3,remoteFetch:3,refspecs:Array(3).fill('+refs/heads/main:refs/heads/main')});
+    await expect(prepareRepositoryCheckout({...request(),cacheRoot:join(home,'new-runner-cache'),commit:first,pin:async commit=>commit}))
+      .rejects.toMatchObject({failure:{code:'checkout_failed'}});
+    expect(await readFile(join(a.root,'.git/config'),'utf8')).not.toContain(token);
+    const denied=prepareRepositoryCheckout({...request(),cacheRoot,credential:{username:'reader',token:'revoked-fixture-token'},pin:async commit=>commit});
+    await expect(denied).rejects.toMatchObject({failure:{code:'fetch_failed'}});
+    expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
+  } finally {
+    await Promise.all(checkouts.map(checkout=>checkout.dispose()));
+    git('reset','--hard',second);
+    git('branch','-D','unconnected');
+  }
+});
+
+it('map and seed history reads need no repository access outside the run directory', async () => {
+  const cacheRoot=join(home,'required-task-cache');
+  await mkdir(join(home,'history-runs'),{recursive:true});
+  for(const task of ['canopy-map','vault-seed']) {
+    const allocation=writeRunDir(join(home,'history-runs'),'run_'+task,{serverUrl:'https://fixture.test',projectId:'project',runToken:'synthetic-token'});
+    const checkout=await prepareWorkerCheckout({url,branch:'main',historyDepth:200},allocation.scratchDir,AbortSignal.timeout(15_000),async input=>
+      input.commit === undefined ? {repository:{url,branch:'main',credential:GIT_READ_CREDENTIAL}}
+        : {pin:{url,branch:'main',commit:input.commit}},
+    {task,cacheRoot,gitPath,digests:task==='canopy-map'});
+    try {
+      const usedCache=existsSync(cacheRoot);
+      const detachedRoot=await mkdtemp(join(tmpdir(),'myco-contained-history-'));
+      const detached=join(detachedRoot,'run'),hiddenHome=home+'-history-hidden';
+      let movedRun=false,movedHome=false;
+      try {
+        await rename(allocation.scratchDir,detached);movedRun=true;
+        await rename(home,hiddenHome);movedHome=true;
+        expect(existsSync(home)).toBe(false);
+        const env={...process.env,HOME:detached,CODEX_HOME:detached,CLAUDE_CONFIG_DIR:detached,
+          XDG_CONFIG_HOME:detached,MYCO_HOME:detached,TMPDIR:detached,
+          GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'};
+        const result=spawnSync('git',['-C',join(detached,'repo'),'log','--format=%H','HEAD'],{cwd:detached,env,encoding:'utf8'});
+        expect({code:result.status,stderr:result.stderr,commits:result.stdout.trim().split('\n')}).toEqual({code:0,stderr:'',commits:[second,first]});
+        expect(usedCache).toBe(false);
+      } finally {
+        if(movedHome)await rename(hiddenHome,home);
+        if(movedRun)await rename(detached,allocation.scratchDir);
+        await rm(detachedRoot,{recursive:true,force:true});
+      }
+      expect(existsSync(join(checkout.root,'.git/objects/info/alternates'))).toBe(false);
+      expect(existsSync(join(checkout.root,'.git/commondir'))).toBe(false);
+      expect(existsSync(cacheRoot)).toBe(false);
+    } finally {await checkout.dispose();discardRunDir(allocation.scratchDir);}
+  }
 });

@@ -1,6 +1,6 @@
 import { CURATION_DAILY_LIMIT_SETTING as CURATION_LIMIT } from '@goondocks/myco-shared/settings-contract';
 import { useState } from 'react';
-import { allTasksReadRepository, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { allTasksRequireRepository, REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { useProjects } from '../../../hooks/use-projects';
 import { useTaskDescriptions } from '../../../hooks/use-tasks';
 import { ActionLink, Button, Input, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
@@ -36,10 +36,10 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   const id = `capability-${capability}`;
   // The tasks a person can run under this capability; a stage another task pulls, like turn cards for learning, is part of it.
   const capabilityTasks = tasks?.filter((task) => task.capability === capability && task.startable) ?? [];
-  const repositoryTasks = capabilityTasks.filter((task) => REPOSITORY_TASKS.includes(task.task));
-  const independentTasks = capabilityTasks.filter((task) => !REPOSITORY_TASKS.includes(task.task));
+  const repositoryTasks = capabilityTasks.filter((task) => REQUIRED_REPOSITORY_TASKS.includes(task.task));
+  const independentTasks = capabilityTasks.filter((task) => !REQUIRED_REPOSITORY_TASKS.includes(task.task));
   const readsRepository = repositoryTasks.length > 0;
-  const allNeedRepository = allTasksReadRepository(capabilityTasks.map((task) => task.task));
+  const allNeedRepository = allTasksRequireRepository(capabilityTasks.map((task) => task.task));
   const missingNote = allNeedRepository ? 'Needs this project’s repository to read its code.'
     : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
   const missingStatus = allNeedRepository ? 'On · Code tasks cannot run until a repository is connected'

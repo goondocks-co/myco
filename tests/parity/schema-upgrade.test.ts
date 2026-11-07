@@ -95,6 +95,29 @@ it('upgrades populated Health read fixtures through schemas 702–708', async ()
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+it('seeds populated schema 708 for the knowledge-only curation upgrade', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const migration = SCHEMA_STEPS.find(step => step.version === 709)!;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-knowledge-upgrade-'));
+  const file = path.join(root, 'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < migration.version)) {
+        for (const sql of step.statements) previous.exec(sql);
+      }
+    } finally { previous.close(); }
+    expect(seedPreviousSchema(file, migration.statements, migration.version)).toContain('spore_curation_candidates');
+    const db = new Database(file);
+    try {
+      for (const sql of migration.statements) db.exec(sql);
+      expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '709' });
+      expect(db.query('SELECT COUNT(*) AS n FROM spore_curation_candidates').get()).toEqual({ n: 1 });
+      expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally { db.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {
@@ -157,6 +180,21 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such column: [new column]'), 'ALTER TABLE "upgrade parent" ADD COLUMN [new column] TEXT')).toBe(true);
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such index: next index'), 'CREATE INDEX [next index] ON "upgrade parent"(id)')).toBe(true);
   } finally { db.close(); }
+});
+
+it('detects an omitted trigger drop only after observing the failed upgrade state', async () => {
+  const omitted = 'DROP TRIGGER IF EXISTS curation_inventory_map_move';
+  const refusal = new Error('wrangler d1 migrations apply exited 1: error in trigger curation_inventory_map_move after drop column: no such column: repository_files: SQLITE_ERROR');
+  expect(isLocalMigrationSqlFailure(refusal, omitted)).toBe(true);
+  expect(isLocalMigrationSqlFailure(refusal, 'DROP TRIGGER IF EXISTS curation_inventory_map_delete')).toBe(false);
+  expect(isLocalMigrationSqlFailure(refusal, 'CREATE TRIGGER curation_inventory_map_move AFTER DELETE ON source BEGIN SELECT 1; END')).toBe(false);
+  expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'), omitted)).toBe(false);
+  await assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => {
+    throw new UpgradeStateMismatchError('trigger and version still belong to the previous schema');
+  });
+  await expect(assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => {})).rejects.toBe(refusal);
+  const unrelated = new Error('unrelated database read failure');
+  await expect(assertMigrationMutationDetected(omitted, async () => { throw refusal; }, () => { throw unrelated; })).rejects.toBe(unrelated);
 });
 
 it('recognizes schema-qualified D1 missing objects while refusing a different object', () => {

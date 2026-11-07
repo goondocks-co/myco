@@ -221,6 +221,12 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     sql: "DELETE FROM deployment_settings WHERE leaf='cortex.canopy.refresh.background_enabled'",
     reason: 'The archived map refresh switch has no active consumer.',
   },
+  ...['curation_inventory_map_move','curation_inventory_map_delete','curation_inventory_run_end'].map(name => ({
+    step: 709, sql: `DROP TRIGGER IF EXISTS ${name}`, reason: 'Curation retains no file-inventory evidence.',
+  })),
+  ...['agent_runs DROP COLUMN repository_files','spore_curation_candidates DROP COLUMN currency'].map(target => ({
+    step: 709, sql: `ALTER TABLE ${target}`, reason: 'Knowledge validity has no stored file-existence facts.',
+  })),
   { step: 700, sql: 'ALTER TABLE spore_curation_work ADD COLUMN first_started_at INTEGER', reason: 'A cluster retains the time of its first admitted attempt across retries.' },
   { step: 700, sql: `UPDATE spore_curation_work AS w SET first_started_at=firsts.started_at FROM
     (SELECT project_id,subject,MIN(started_at) AS started_at FROM agent_runs WHERE task='curate-spores' AND started_at IS NOT NULL GROUP BY project_id,subject) AS firsts

@@ -1,3 +1,5 @@
+import { budgetFixture } from '../myco-server/helpers/budget-fixture.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { describe, expect, it } from 'bun:test';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -159,14 +161,14 @@ describe('worker repository checkout over the Deployment wire', () => {
     }, 30_000);
   }
 
-  for(const inventoryAnswer of ['stored','body_cap','parse','no-match'] as const) it(`completes a map run with inventory upload ${inventoryAnswer}`, async () => {
+  it('completes a map run with its digest listing and no inventory upload', async () => {
     const source = await gitRepositoryFixture('public');
     const e = sqliteEnv({ workerLogin: true });
     e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
     const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
-      if(new URL(request.url).pathname==='/worker/repository' && (await request.clone().json() as Record<string,unknown>).files!==undefined && inventoryAnswer!=='stored') {
-        return Response.json(inventoryAnswer==='no-match'?{persisted:true,held:true,filesStored:false}:{persisted:false,code:inventoryAnswer},{status:inventoryAnswer==='body_cap'?400:200});
+      if (new URL(request.url).pathname === '/worker/repository') {
+        expect(await request.clone().json()).not.toHaveProperty('files');
       }
       return pipeline.handleRequest(request,e.serverEnv);
     } });
@@ -196,8 +198,6 @@ describe('worker repository checkout over the Deployment wire', () => {
       // The listing names every committed file by the digest of its committed bytes.
       const digest = createHash('sha256').update(observed.source).digest('hex');
       expect(observed.listing).toBe(`${digest}  AGENTS.md\n`);
-      const inventory=e.sqlite.query("SELECT repository_files FROM agent_runs WHERE id='run_map'").get() as {repository_files:string|null};
-      expect(inventory.repository_files!==null).toBe(inventoryAnswer==='stored');
       const map = e.sqlite.query(`SELECT source_run_id AS runId, repository_commit AS commitId, artifact FROM canopy_maps WHERE project_id='proj_1'`).get() as { runId: string; commitId: string; artifact: string };
       expect({ runId: map.runId, commitId: map.commitId, grounded: JSON.parse(map.artifact).domains[0].files[0].groundedIn })
         .toEqual({ runId: 'run_map', commitId: source.second, grounded: [{ path: 'AGENTS.md', sha256: digest }] });
@@ -212,3 +212,66 @@ describe('worker repository checkout over the Deployment wire', () => {
     }
   }, 30_000);
 });
+
+for (const failure of ['lfs','fetch_failed'] as const) it(`continues curation on knowledge after ${failure}, recording one event and one curation attempt`, async () => {
+  const source=await gitRepositoryFixture(failure==='fetch_failed'?'private':'public');
+  const e=await budgetFixture();
+  e.env.SECRET_WRAP_KEY={get:async()=>btoa('r'.repeat(32))};
+  const pipeline=createServer({now:()=>Date.now(),sourceOf:()=>'127.0.0.1',fetchImpl:fetch});
+  const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:request=>pipeline.handleRequest(request,e.serverEnv)});
+  const origin=`http://127.0.0.1:${server.port}`;
+  const previousPath=process.env.PATH;
+  try {
+    if(failure==='lfs') {
+      await writeFile(join(source.repo,'large.bin'),'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 3\n');
+      source.git('add','large.bin');source.git('commit','--quiet','-m','LFS source');
+    }
+    await projectRepositories(e.db,deploymentSecretStore(e.db,e.serverEnv.wrappingKey)).save('proj_1',{
+      url:source.url,branch:'main',revision:null,credential:failure==='fetch_failed'?{username:'reader',token:'expired-fixture-token'}:null,
+    },'mem_worker',e.now);
+    await settingsWriter(e.db).setCapability('proj_1','spore_curation',true,'mem_worker',e.now);
+    const members=['a','b','c'].map(id=>({id,revision:0,closeness:6}));
+    for(const member of members)e.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at) VALUES('proj_1',?,'myco-agent','Distinct guidance','decision','Keep the guidance.',?)",[member.id,e.now]);
+    e.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','fixture',?,?)",[JSON.stringify(members),e.now]);
+    const owner=await issueMemberToken(e.db,{memberId:'mem_worker',machineId:'m1'},e.now);
+    const bin=join(source.home,'bin'),evidence=join(source.home,'knowledge.json');
+    await mkdir(bin);
+    await writeFile(join(bin,'claude'),`#!/usr/bin/env node
+const fs=require('node:fs');
+if(process.argv.includes('status'))process.exit(0);
+(async()=>{
+ const args=process.argv.slice(2),flag=name=>{const at=args.indexOf(name);return at<0?undefined:args[at+1]};
+ const prompt=flag('-p');
+ fs.writeFileSync(${JSON.stringify(evidence)},JSON.stringify({prompt,tools:flag('--tools'),cwd:process.cwd(),hasCheckout:fs.existsSync('repo')}));
+ const config=JSON.parse(fs.readFileSync(flag('--mcp-config'),'utf8')).mcpServers.myco;
+ const call=async(name,input)=>{
+  console.log(JSON.stringify({type:'assistant',message:{content:[{type:'tool_use',id:name,name:'mcp__myco__'+name,input}]}}));
+  const response=await fetch(config.url,{method:'POST',headers:{...config.headers,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:input}})});
+  const body=await response.json(),result=JSON.parse(body.result.content[0].text);
+  if(result.ok===false)throw new Error(JSON.stringify(result));
+  return result;
+ };
+ await call('myco_run_curation',{op:'complete',decision:'keep',members:[{id:'a',revision:0},{id:'b',revision:0},{id:'c',revision:0}],reason:'Distinct knowledge; source unavailable.'});
+ await call('myco_run',{op:'report',action:'curated',summary:'Kept knowledge apart.'});
+ console.log(JSON.stringify({type:'result',stop_reason:'end_turn',is_error:false,modelUsage:{sonnet:{inputTokens:10,outputTokens:3}}}));
+})().catch(error=>{console.error(error.message);process.exitCode=1});
+`,{mode:0o700});
+    process.env.PATH=`${bin}:${previousPath}`;
+    const lines:string[]=[];
+    expect(await runWorker({serverUrl:origin,token:owner.token,lockDir:null,runRoot:join(source.home,'runs'),only:['claude-code'],once:true,
+      repositoryGitPath:source.gitPath,pollIdleMs:10,signal:AbortSignal.timeout(20_000),log:line=>lines.push(line)})).toEqual({driven:1,refused:null});
+    const run=e.sqlite.query("SELECT id,status,error,instruction,run_context FROM agent_runs WHERE task='curate-spores'").get() as {id:string;status:string;error:string|null;instruction:string;run_context:string};
+    if(run.status!=='completed')throw new Error(JSON.stringify({run,lines}));
+    const observed=JSON.parse(await readFile(evidence,'utf8'));
+    expect(observed.prompt).toContain('No usable repository checkout is available');
+    expect(observed.prompt).not.toContain('is pinned at its current commit');
+    expect(observed.hasCheckout).toBe(false);
+    expect(observed.tools).toBe('');
+    expect(run.instruction).toBe(observed.prompt);
+    expect(JSON.parse(run.run_context)).not.toHaveProperty('checkout');
+    expect(e.sqlite.query("SELECT payload FROM agent_run_events WHERE run_id=? AND tool_name='worker_repository'").all(run.id))
+      .toEqual([{payload:JSON.stringify({op:'unavailable',code:failure})}]);
+    expect(e.sqlite.query("SELECT failures,decision FROM spore_curation_work WHERE cluster_key='fixture'").get()).toEqual({failures:1,decision:'keep'});
+    expect(e.sqlite.query('SELECT COUNT(*) n FROM agent_run_attempts WHERE run_id=?').get(run.id)).toEqual({n:1});
+  } finally {process.env.PATH=previousPath;server.stop(true);e.sqlite.close();await source.dispose();}
+},30_000);

@@ -38,7 +38,7 @@ import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
 import { taskWorkEnabled } from '../core/settings.js';
 import { ALWAYS_ALLOWED, isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
-import { taskReadsRepository } from '@goondocks/myco-shared/repository';
+import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { RUN_ANSWER_BYTES } from '../core/read-window.js';
 import { answerBytes } from '../core/material-pages.js';
 import { runDefinitionOf } from './run-definitions.js';
@@ -217,7 +217,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
         return (name, op) => enabled || (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op);
       },
       entryFor: runEntryFor,
-      answer: taskReadsRepository(p.task) ? (result) => result : answerHeldWhole,
+      answer: p.task !== null && REQUIRED_REPOSITORY_TASKS.includes(p.task) ? (result) => result : answerHeldWhole,
     };
   }
   return {

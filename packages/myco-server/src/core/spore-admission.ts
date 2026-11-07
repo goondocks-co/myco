@@ -111,10 +111,11 @@ async function resolve(
 
 const OPTIONAL_TEXT_BOUNDS: Readonly<Record<string, number>> = {
   id: MAX_SPORE_ID_CHARS, old_spore_id: MAX_SPORE_ID_CHARS, new_spore_id: MAX_SPORE_ID_CHARS, event_id: MAX_SPORE_ID_CHARS, session_id: MAX_SESSION_ID_CHARS, prompt_id: MAX_SPORE_ID_CHARS,
-  context: MAX_SPORE_CONTENT_BYTES, file_path: MAX_FILE_PATH_CHARS, content_hash: MAX_SPORE_ID_CHARS, properties: MAX_SPORE_CONTENT_BYTES, reason: MAX_SPORE_CONTENT_BYTES,
+  context: MAX_SPORE_CONTENT_BYTES, content_hash: MAX_SPORE_ID_CHARS, properties: MAX_SPORE_CONTENT_BYTES, reason: MAX_SPORE_CONTENT_BYTES,
 };
 
 function sporeMetadataError(input: SporeWriteInput): string | null {
+  if (input.channel === 'import' && input.file_path != null && (typeof input.file_path !== 'string' || !input.file_path || input.file_path.length > MAX_FILE_PATH_CHARS)) return `file_path must be nonempty text of at most ${MAX_FILE_PATH_CHARS} characters`;
   for (const [field, max] of Object.entries(OPTIONAL_TEXT_BOUNDS)) {
     const value = input[field];
     if (value !== undefined && value !== null && (typeof value !== 'string' || value.length === 0 || value.length > max)) return `${field} must be nonempty text of at most ${max} characters`;
@@ -172,7 +173,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     if (!session.ok) return session;
     const spore = await insertSpore(session.db, scope, {
       id: ctx.saveId ?? mintSporeId(type), agentId: by.agentId, sessionId: session.sessionId, observationType: type,
-      content, context: str(input.context) ?? null, filePath: str(input.file_path) ?? null, tags: sporeTags(input.tags), contentHash: str(input.content_hash) ?? null, properties: str(input.properties) ?? null, importance: int(input.importance),
+      content, context: str(input.context) ?? null, filePath: null, tags: sporeTags(input.tags), contentHash: str(input.content_hash) ?? null, properties: str(input.properties) ?? null, importance: int(input.importance),
       author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
     });
     if (spore === null) return ctx.saveId === undefined ? failure('Spore was not recorded') : { id: ctx.saveId, duplicate: true };

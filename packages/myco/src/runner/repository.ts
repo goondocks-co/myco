@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { repositoryFiles, RepositoryInputError, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
@@ -9,8 +9,8 @@ export function digestListing(digests: readonly CheckoutFileDigest[]): string {
   return digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
 }
 
-/** What a worker checkout does beyond the source: the Git executable, and whether the run reads a digest listing. */
-export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean }
+/** Worker checkout task, Git executable, digest listing and optional knowledge cache. */
+export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string }
 
 /** Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside it. */
 export async function prepareWorkerCheckout(
@@ -28,7 +28,7 @@ export async function prepareWorkerCheckout(
   checkoutSignal.throwIfAborted();
   const checkout = await prepareRepositoryCheckout({
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
-    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests,
+    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
     removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
     pin: async (commit) => {
@@ -41,12 +41,6 @@ export async function prepareWorkerCheckout(
     },
   });
   try {
-    if (options.digests) {
-      let files: string[] | undefined;
-      try { files = repositoryFiles(checkout.files); }
-      catch (error) { if (!(error instanceof RepositoryInputError)) throw error; }
-      if (files !== undefined) await request({ url: spec.url, branch: spec.branch, commit: checkout.commit, files }, checkoutSignal);
-    }
     if (checkout.digests !== undefined) await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
   } catch (error) {
     await checkout.dispose();

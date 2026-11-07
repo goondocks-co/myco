@@ -1,3 +1,4 @@
+import { knowledgeInputForExecution } from './knowledge-execution.js';
 import { reserveForStage } from './budget-policy.js';
 import { quietSessionClaim } from './learning-sessions.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
@@ -20,15 +21,15 @@ import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 
 /** What a claim takes: a queued row it moves to `running`, or a pulled item it creates the running row for. */
 export type ClaimForm = { kind: 'queued'; candidate: ClaimCandidate } | { kind: 'pulled'; pull: PulledCandidate };
-type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput; settingsGuard?: {sql:string;params:unknown[]} };
-type ClaimResult = {row:ClaimedRunRow;issued:Awaited<ReturnType<typeof mintInsert>>['issued']} | null;
+type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; capabilities?: readonly string[]; input?: ClaimedInput; settingsGuard?: {sql:string;params:unknown[]} };
+type ClaimResult = {row:ClaimedRunRow;issued:Awaited<ReturnType<typeof mintInsert>>['issued'];input?:ClaimedInput} | null;
 
 /** Move one queued row to `running` through the claim capability. */
-export const claimQueuedRun = (env: Pick<ServerEnv,'db'|'fleet'>, candidate: ClaimCandidate, claim: WorkerClaim): Promise<ClaimResult> =>
+export const claimQueuedRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, candidate: ClaimCandidate, claim: WorkerClaim): Promise<ClaimResult> =>
   claimWorkerRun(env, { kind: 'queued', candidate }, claim);
 
 /** Create one pulled run, already `running`, through the claim capability. */
-export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'>, pull: PulledCandidate, claim: Omit<WorkerClaim,'input'>): Promise<ClaimResult> =>
+export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, pull: PulledCandidate, claim: Omit<WorkerClaim,'input'>): Promise<ClaimResult> =>
   claimWorkerRun(env, { kind: 'pulled', pull }, { ...claim, input: pull.input });
 
 /**
@@ -37,11 +38,14 @@ export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'>, pull: PulledCa
  * statement differs. Every statement after it is conditioned on the run row this batch wrote, so a refused claim
  * leaves no usable credential, attempt or lease.
  */
-export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
+export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
   const {db}=env;
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
   const candidate: ClaimCandidate = form.kind === 'queued' ? form.candidate
     : { projectId: form.pull.projectId, id: form.pull.id, task: form.pull.task, instruction: form.pull.input.instruction, dispatchSpec: null };
+  const selectedInput = claim.input === undefined ? undefined : await knowledgeInputForExecution(env, candidate.projectId, candidate.task,
+    claim.input, claim.harness, claim.capabilities ?? []);
+  claim = {...claim, input:selectedInput};
   const price = await estimateForClaim(db,candidate.projectId,candidate.task,claim.harness,claim.profile);
   const capability=capabilityOf(candidate.task);
   const admission: WriteAdmission = {limits:await readDispatchLimits(env),now:claim.now,...(capability===null?{}:{capability}),
@@ -95,5 +99,5 @@ export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'>, form: Cl
   ]);
   const row=results[setup.length]?.results[0] as ClaimedRunRow|undefined;
   if(row===undefined) { await revokeCredentialOfMember(db,HARNESS_MEMBER_ID,dispatchedBy,claim.now);return null; }
-  return {row,issued:mint.issued};
+  return {row,issued:mint.issued,input:selectedInput};
 }

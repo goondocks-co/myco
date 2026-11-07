@@ -276,6 +276,7 @@ function installationReads(installed: string | null, run: string, home: string):
  */
 
 export function runFilesystem(spec: LaunchSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
+  if (spec.sourceReadOnly === true && spec.sourceFilesOnly === true) throw new Error('Codex has no dedicated file tools for shell-free knowledge validation.');
   const source = spec.sourceReadOnly === true;
   const inputs = source ? sourceAccess(spec.scratchDir) : null;
   return {

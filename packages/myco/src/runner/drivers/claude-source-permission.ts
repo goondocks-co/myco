@@ -2,6 +2,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { RUN_INSTRUCTIONS_FILES } from '../mcp-config.js';
+import { harnessById } from '../harnesses.js';
 import type { RunSpec } from '../events.js';
 import { spawnOwnedGroup, type OwnedProcess } from '../process-group.js';
 import { locate } from '../detect.js';
@@ -10,7 +11,9 @@ import { sourceToolAllows } from './source-access.js';
 import { heldStderr, recordOf, type Started } from './stream.js';
 
 /** Native tools that require a fresh permission answer on every call. */
-const SOURCE_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
+const SOURCE_TOOLS = harnessById('claude-code')!.steps
+  .filter(step => ['Read', 'Glob', 'Grep', 'Bash'].includes(step.tool ?? ''))
+  .map(step => step.tool!);
 
 /** Source instructions carry literal references; native file mentions cannot expand them. */
 function literalSourceInstructions(text: string): string {
@@ -22,6 +25,7 @@ export async function startClaudeSource(spec: RunSpec, grant: RunGrant, env: Nod
   const executable = locate('claude');
   if (executable === null || grant.source === null) throw new Error('Source permission enforcement is unavailable');
   const source = grant.source;
+  const sourceTools = SOURCE_TOOLS.filter(tool => tool !== 'Bash' || spec.sourceFilesOnly !== true);
   const instructions = source.files.find((file) => RUN_INSTRUCTIONS_FILES.includes(basename(file)));
   const append = instructions === undefined ? '' : readFileSync(instructions, 'utf8');
   const approved = new Map<string, string>();
@@ -67,7 +71,7 @@ export async function startClaudeSource(spec: RunSpec, grant: RunGrant, env: Nod
         persistSession: false,
         systemPrompt: { type: 'preset', preset: 'claude_code', append },
         allowedTools: [...grant.rules],
-        tools: SOURCE_TOOLS,
+        tools: sourceTools,
         spawnClaudeCodeProcess: (options) => {
           if (disposed || signal.aborted) throw new Error('Source run has been disposed');
           owner = spawnOwnedGroup(options.command, options.args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] }, signal, spec.scratchDir);
@@ -80,7 +84,7 @@ export async function startClaudeSource(spec: RunSpec, grant: RunGrant, env: Nod
           return Object.assign(child, { stdin: child.stdin, stdout: child.stdout });
         },
         ...(spec.profile === undefined ? {} : { model: spec.profile.model }),
-        extraArgs: { 'permission-mode': 'manual', 'strict-mcp-config': null, 'mcp-config': spec.mcpConfigPath, 'setting-sources': '', settings: JSON.stringify({ permissions: { ask: SOURCE_TOOLS } }), ...(spec.profile?.effort == null ? {} : { effort: spec.profile.effort }) },
+        extraArgs: { 'permission-mode': 'manual', 'strict-mcp-config': null, 'mcp-config': spec.mcpConfigPath, 'setting-sources': '', settings: JSON.stringify({ permissions: { ask: sourceTools } }), ...(spec.profile?.effort == null ? {} : { effort: spec.profile.effort }) },
         canUseTool: async (tool, input, options) => {
           const decision = approved.get(options.toolUseID);
           approved.delete(options.toolUseID);

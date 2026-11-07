@@ -158,7 +158,7 @@ describe('the four run outcomes', () => {
 describe('the tasks a run checks a repository out for', () => {
   it('contains only live catalogue tasks that read repository source', () => {
     // The server holds a run of one of these until the project has a repository, and checks it out for the worker.
-    expect([...REPOSITORY_TASKS].sort()).toEqual(['canopy-map', 'vault-seed']);
+    expect([...REPOSITORY_TASKS].sort()).toEqual(['canopy-map', 'curate-spores', 'extract-curate', 'vault-seed']);
     expect(REPOSITORY_TASKS.filter((task) => !(RETAINED_TASKS as readonly string[]).includes(task))).toEqual([]);
     expect(REPOSITORY_TASKS).toContain(MAP_TASK);
     expect(REPOSITORY_TASKS).toContain(SEEDING_TASK);
