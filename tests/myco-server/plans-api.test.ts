@@ -9,6 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
+import { catchUpProjections, resetProjectionCatchup } from '@myco-server-worker/db/projections/catchup.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -108,10 +109,12 @@ describe('the measures route', () => {
     const { status, body } = await get('/api/kpis?window=7');
     expect(status).toBe(200);
     expect(Object.keys(body).sort()).toEqual([
-      'callsPerPrompt', 'callsPerPromptByHarness', 'deliveries',
-      'firstInjectionMs', 'planReadsPerSession', 'promptIdentity', 'promptsServed', 'recallQuality', 'servedShare', 'sessionStartPresent', 'since', 'sporeServeRate', 'windowDays',
+      'asOf', 'callsPerPrompt', 'callsPerPromptByHarness', 'deliveries',
+      'firstInjectionMs', 'metricVersion', 'planReadsPerSession', 'promptIdentity', 'promptsServed', 'recallQuality', 'servedShare', 'sessionStartPresent', 'since', 'sporeServeRate', 'state', 'windowDays', 'windowEnd', 'windowStart',
     ]);
     expect(body.windowDays).toBe(7);
+    expect(body.state).toBe('ready');
+    expect(body.windowEnd).toBe(Math.floor(Number(body.asOf) / 86_400_000) * 86_400_000 + 86_400_000 - 1);
     expect(body.promptsServed).toBe(0);
     expect(body.deliveries).toEqual({ placed: 0, unplaced: 0 });
     // Rates carry their sample; placement counts remain counts.
@@ -120,10 +123,35 @@ describe('the measures route', () => {
     }
   });
 
-  it('reads a window it does not offer as every row the Deployment holds', async () => {
+  it('refuses every invalid window with the offered values', async () => {
     const { get } = await harness();
-    const { body } = await get('/api/kpis?window=4000');
-    expect({ windowDays: body.windowDays, since: body.since }).toEqual({ windowDays: null, since: null });
+    for (const window of ['4000', 'nonsense', '', '07', '7.0', '-7']) {
+      const { status, body } = await get(`/api/kpis?window=${window}`);
+      expect(status).toBe(400);
+      expect(body).toEqual({ error: 'bad_request', reasonCode: 'invalid_request', reason: 'window must be one of all, 7, 30, 90' });
+    }
+    for (const query of ['', '?window=all', '?window=30', '?window=90']) expect((await get('/api/kpis' + query)).status).toBe(200);
+  });
+
+  it('withholds figures until catch-up is complete and reports phase progress', async () => {
+    const { get, db, sqlite } = await harness();
+    try {
+      await resetProjectionCatchup(db);
+      sqlite.exec("UPDATE projection_catchup SET done=1 WHERE projection='kpi' AND phase='sessions'");
+      const { status, body } = await get('/api/kpis?window=7');
+      expect(status).toBe(200);
+      expect(Object.keys(body).sort()).toEqual(['asOf', 'metricVersion', 'progress', 'since', 'state', 'windowDays', 'windowEnd', 'windowStart']);
+      expect(body.state).toBe('building');
+      expect(body.progress).toEqual({ completed: 1, total: 7 });
+      await catchUpProjections(db);
+      const ready = await get('/api/kpis?window=7');
+      expect(ready.body.state).toBe('ready');
+      expect(ready.body.promptsServed).toBe(0);
+      sqlite.exec("DELETE FROM projection_catchup WHERE projection='kpi' AND phase='sessions'");
+      const missing = await get('/api/kpis?window=7');
+      expect(missing.body.state).toBe('building');
+      expect(missing.body.progress).toEqual({ completed: 6, total: 7 });
+    } finally { sqlite.close(); }
   });
 });
 

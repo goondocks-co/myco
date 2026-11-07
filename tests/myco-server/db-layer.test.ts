@@ -147,7 +147,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/catalog/hook-placement.ts', 10],
   ['read/catalog/injection-served-items.ts', 2],
   ['read/catalog/injection.ts', 4],
-  ['read/catalog/kpis.ts', 29],
   ['read/catalog/learning-sessions.ts', 3],
   ['read/catalog/lineage.ts', 4],
   ['read/catalog/plans.ts', 13],

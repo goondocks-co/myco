@@ -13,7 +13,7 @@ describe('health route', () => {
 
   it('keeps the other Health reads available when the KPI query fails', async () => {
     const e = sqliteEnv({ onSql: sql => {
-      if (sql.includes('AS first_served')) throw new Error('D1_ERROR: fixture query failure');
+      if (sql.includes('FROM kpi_lineage')) throw new Error('D1_ERROR: fixture query failure');
     } });
     try {
       const cookie = await ownerCookie(e.db);

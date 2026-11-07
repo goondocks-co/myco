@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { commit } from '@myco-server-worker/db/index.js';
-import { KPI_MEASURES, kpiTriggers, reconcileKpi, type KpiMeasure } from '@myco-server-worker/db/insights/kpi-reconcile.js';
+import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/insights/kpi-reconcile.js';
 import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
 import { VNEXT_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { median, readKpis, type KpiReport } from '@myco-server-worker/read/kpis.js';
-import { recallQuality, caseCount } from '@myco-server-worker/evals/recall-baseline.js';
+import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
+import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
 import { BACKUP_FORMAT, deploymentId, EXCLUDED_TABLES, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
@@ -15,38 +14,14 @@ import { rig, NOW, DAY, PROJECT, OTHER } from './helpers/kpi-fixture.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 type Fixture = ReturnType<typeof rig>;
-type Daily = Record<KpiMeasure, number> & { harness: string };
 const TODAY = Math.floor(NOW / DAY);
 const rate = (n: number, d: number) => ({ value: d === 0 ? null : n / d, sampleSize: d });
 
-/** Test-only formatting exposes every projected measure against the serving reader. */
-function projected(r: Fixture, windowDays: number | null, today = TODAY): KpiReport {
-  const rows = r.sqlite.query<Daily, [number, number]>(`SELECT harness,${KPI_MEASURES.map(c => `SUM(${c}) AS ${c}`).join(',')}
-    FROM kpi_daily WHERE day BETWEEN ? AND ? GROUP BY harness`).all(windowDays === null ? -Number.MAX_SAFE_INTEGER : today - windowDays, today);
-  const total = (c: KpiMeasure) => rows.reduce((n, row) => n + row[c], 0);
-  const samples = r.sqlite.query<{ ms: number }, [number, number]>(`SELECT first_served_at-started_at AS ms FROM kpi_lineage
-    WHERE started_at BETWEEN ? AND ? AND first_served_at>=started_at ORDER BY ms`)
-    .all(windowDays === null ? -Number.MAX_SAFE_INTEGER : (today - windowDays) * DAY, (today + 1) * DAY - 1).map(row => row.ms);
-  const declared = new Set<string>(CAPTURE_RULE_BUNDLES.map(bundle => bundle.name));
-  return {
-    windowDays, since: windowDays === null ? null : (today - windowDays) * DAY,
-    promptsServed: total('served'), deliveries: { placed: total('placed'), unplaced: total('deliveries') - total('placed') },
-    servedShare: rate(total('served'), total('prompts')), sporeServeRate: rate(total('with_spores'), total('prompts')),
-    sessionStartPresent: rate(total('started_with_block'), total('sessions')), callsPerPrompt: rate(total('calls'), total('prompts')),
-    planReadsPerSession: rate(total('plan_reads'), total('sessions')),
-    callsPerPromptByHarness: rows.filter(row => row.prompts > 0 || row.calls > 0)
-      .map(row => ({ harness: row.harness, calls: row.calls, ...rate(row.calls, row.prompts) }))
-      .sort((a, b) => b.sampleSize - a.sampleSize || b.calls - a.calls || a.harness.localeCompare(b.harness)),
-    firstInjectionMs: { value: median(samples), sampleSize: samples.length }, recallQuality: { value: recallQuality, sampleSize: caseCount },
-    promptIdentity: rows.map(row => ({
-      harness: row.harness, sampleSize: row.claimed, unrecognized: row.unrecognized, unmarked: row.unmarked,
-      openerConflict: row.opener_conflict, contractViolation: row.contract_violation, reused: row.reused,
-      identityConflicts: row.identity_conflicts, duplicatePromptSkips: row.duplicate_skips,
-      schemeConflicts: declared.has(row.harness) ? row.scheme_conflicts : 0,
-      mixedSchemeSessions: declared.has(row.harness) ? row.mixed_sessions : 0,
-    })).filter(row => Object.entries(row).some(([key, value]) => key !== 'harness' && typeof value === 'number' && value > 0))
-      .sort((a, b) => b.sampleSize - a.sampleSize || a.harness.localeCompare(b.harness)),
-  };
+async function measured(r: Fixture, window: KpiWindow, today = TODAY) {
+  const answer = await readKpis(r.db, { window, now: today * DAY });
+  expect(answer.state).toBe('ready');
+  if (answer.state !== 'ready') throw new Error('KPI projection is building');
+  return answer;
 }
 
 function transcript(r: Fixture, session: string, id: string, agent: string, scheme: string | null, at: number, primary = false, project = PROJECT) {
@@ -76,11 +51,14 @@ function snapshot(r: Fixture) {
   };
 }
 
-async function oracle(r: Fixture, windowDays: number | null, today = TODAY) {
+async function oracle(r: Fixture, windowDays: KpiWindow, today = TODAY) {
   const copy = Database.deserialize(r.sqlite.serialize());
   try {
-    copy.query('DELETE FROM session_prompts WHERE created_at>=?').run((today + 1) * DAY);
-    return await readKpis(sqliteRelationalStore(copy), { windowDays, now: today * DAY });
+    const report = await sourceKpis(sqliteRelationalStore(copy), { windowDays, now: today * DAY });
+    return {
+      ...report, state: 'ready' as const, windowStart: report.since,
+      windowEnd: (today + 1) * DAY - 1, asOf: today * DAY, metricVersion: KPI_METRIC_VERSION,
+    };
   } finally { copy.close(); }
 }
 
@@ -137,10 +115,10 @@ describe('KPI projection critical flow', () => {
     try {
       for (const [state, generation] of [['live', 1], ['live', 2], ['convert', 1]] as const) {
         r.sqlite.query("DELETE FROM session_documents WHERE project_id=? AND session_id='a'").run(PROJECT);
-        expect(projected(r, null)).toEqual(await oracle(r, null));
+        expect(await measured(r, null)).toEqual(await oracle(r, null));
         r.sqlite.query("INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
           .run(PROJECT, state, generation, NOW);
-        expect(projected(r, null)).toEqual(await oracle(r, null));
+        expect(await measured(r, null)).toEqual(await oracle(r, null));
         const writes = r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
         r.sqlite.query("INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,'a',?,?,?)")
           .run(PROJECT, state, generation, NOW);
@@ -153,7 +131,7 @@ describe('KPI projection critical flow', () => {
     const r = seed();
     try {
       expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
-      for (const window of [null, 7]) expect(projected(r, window)).toEqual(await oracle(r, window));
+      for (const window of [null, 7] as const) expect(await measured(r, window)).toEqual(await oracle(r, window));
       clearProjection(r); await resetProjectionCatchup(r.db);
       expect(await catchUpKpiPhase(r.db, 'sessions')).toBe(PROJECTION_PAGE_SIZE);
       expect(await projectionReadiness(r.db, 'kpi')).toBe('building');
@@ -194,8 +172,8 @@ describe('KPI projection critical flow', () => {
       } };
       await catchUpKpiPhase(racing, 'documents');
       await drain(r);
-      for (const window of [null, 7]) expect(projected(r, window)).toEqual(await oracle(r, window));
-      const report = projected(r, null);
+      for (const window of [null, 7] as const) expect(await measured(r, window)).toEqual(await oracle(r, window));
+      const report = await measured(r, null);
       expect(report.promptsServed).toBe(4);
       expect(report.deliveries).toEqual({ placed: 3, unplaced: 0 });
       expect(report.servedShare).toEqual(rate(4, 9));
@@ -204,8 +182,8 @@ describe('KPI projection critical flow', () => {
       expect(report.planReadsPerSession).toEqual(rate(2, 58));
       expect(report.sessionStartPresent).toEqual(rate(1, 58));
       expect(report.firstInjectionMs).toEqual({ value: 10 * DAY, sampleSize: 1 });
-      expect(projected(r, null, TODAY + 1).servedShare.sampleSize).toBe(10);
-      expect(projected(r, 7).servedShare).toEqual(rate(3, 8));
+      expect((await measured(r, null, TODAY + 1)).servedShare.sampleSize).toBe(10);
+      expect((await measured(r, 7)).servedShare).toEqual(rate(3, 8));
       expect(report.promptIdentity.find(row => row.harness === 'cursor')).toEqual({ harness: 'cursor', sampleSize: 4, unrecognized: 1, unmarked: 1, openerConflict: 1, contractViolation: 1, reused: 1, identityConflicts: 1, duplicatePromptSkips: 1, schemeConflicts: 0, mixedSchemeSessions: 0 });
       const settled = snapshot(r);
       const writes = r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
@@ -227,7 +205,7 @@ describe('KPI projection critical flow', () => {
     try { expect(await projectionReadiness(r.db, 'kpi')).toBe('ready'); } finally { r.sqlite.close(); }
   });
 
-  it('preserves malformed skipped text on answer insert and update without counting it', () => {
+  it('preserves malformed skipped text on answer insert and update without counting it', async () => {
     const r = rig();
     try {
       r.session('a');
@@ -241,7 +219,7 @@ describe('KPI projection critical flow', () => {
       r.sqlite.query("UPDATE prompt_context_answers SET skipped=? WHERE id='malformed'").run('x');
       expect(source()).toEqual({ skipped: 'x' });
       expect(count()).toBe(0);
-      expect(projected(r, null).promptIdentity).toEqual([]);
+      expect((await measured(r, null)).promptIdentity).toEqual([]);
     } finally { r.sqlite.close(); }
   });
 
@@ -263,7 +241,7 @@ describe('KPI projection critical flow', () => {
       expect(await catchUpProjections(r.db, { budget: { calls: 10, wallMs: 100 }, clock: () => 0 })).toEqual({ changed: 1, more: false });
       expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
       expect(await catchUpProjections(r.db)).toEqual({ changed: 0, more: false });
-      expect(projected(r, null)).toEqual(await oracle(r, null));
+      expect(await measured(r, null)).toEqual(await oracle(r, null));
     } finally { r.sqlite.close(); }
   });
 
@@ -338,7 +316,7 @@ describe('KPI projection critical flow', () => {
       r.session('a', { agent: null }); r.session('b', { tokenId: 'rotated', agent: null });
       r.sporeInjection('a', 'p1', [], { deliveredTo: null, at: NOW - 10 });
       r.sessionInjection('b', 'cortex', { at: NOW - 20 });
-      const compare = async () => expect(projected(r, null)).toEqual(await oracle(r, null));
+      const compare = async () => expect(await measured(r, null)).toEqual(await oracle(r, null));
       await compare();
       r.sqlite.query("UPDATE session_injections SET created_at=? WHERE project_id=? AND session_id='b'").run(NOW, PROJECT);
       await compare();
@@ -358,7 +336,7 @@ describe('KPI projection critical flow', () => {
       r.sporeInjection('restored-session', 'receipt-before-session', [], { deliveredTo: null });
       r.session('restored-session', { tokenId: 'restore', agent: null });
       await compare();
-      expect(projected(r, null).firstInjectionMs).toEqual({ value: DAY, sampleSize: 1 });
+      expect((await measured(r, null)).firstInjectionMs).toEqual({ value: DAY, sampleSize: 1 });
     } finally { r.sqlite.close(); }
   });
 
@@ -371,12 +349,12 @@ describe('KPI projection critical flow', () => {
       r.prompt('outside', 'a', { at: (TODAY - 7) * DAY - 1 });
       transcript(r, 'a', 'z', 'claude-code', 'one', NOW, true);
       transcript(r, 'a', 'a', 'codex', 'two', NOW, true);
-      expect(projected(r, 7).callsPerPromptByHarness).toEqual([{ harness: 'codex', calls: 0, value: 0, sampleSize: 2 }]);
+      expect((await measured(r, 7)).callsPerPromptByHarness).toEqual([{ harness: 'codex', calls: 0, value: 0, sampleSize: 2 }]);
       r.sqlite.query("DELETE FROM transcripts WHERE project_id=? AND transcript_id='a'").run(PROJECT);
-      expect(projected(r, 7).callsPerPromptByHarness[0]!.harness).toBe('claude-code');
-      expect(projected(r, 7)).toEqual(await oracle(r, 7));
+      expect((await measured(r, 7)).callsPerPromptByHarness[0]!.harness).toBe('claude-code');
+      expect(await measured(r, 7)).toEqual(await oracle(r, 7));
       r.sqlite.query("DELETE FROM transcripts WHERE project_id=? AND transcript_id='z'").run(PROJECT);
-      expect(projected(r, 7).callsPerPromptByHarness[0]!.harness).toBe('unrecorded');
+      expect((await measured(r, 7)).callsPerPromptByHarness[0]!.harness).toBe('unrecorded');
     } finally { r.sqlite.close(); }
   });
 });
