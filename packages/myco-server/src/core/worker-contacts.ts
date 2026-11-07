@@ -525,14 +525,14 @@ export interface MachineContact {
  * credential leased, sought down the lease index by that one credential; the index is named, as statistics that see
  * every run unleased would walk the runs instead.
  */
-export function machineContactsStatement(db: RelationalStore, order: 'contact' | 'offers' = 'contact'): PreparedStatement {
+export function machineContactsStatement(db: RelationalStore, order: 'contact' | 'offers' = 'contact', machineIds?: readonly string[]): PreparedStatement {
   return db.prepare(
     `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.credential_id, w.offers, w.updated_at AS offer_revision, w.last_seen_at,
-            (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_lease WHERE r.leased_by = w.credential_id) AS last_run_at
-       FROM worker_contacts w
-      CROSS JOIN member_credentials c ON c.id = w.credential_id
-      ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
-  );
+            (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_worker_started WHERE r.leased_by = w.credential_id) AS last_run_at
+       FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id
+       ${machineIds === undefined ? '' : 'WHERE COALESCE(w.machine_id, c.machine_id) IN (SELECT value FROM json_each(?))'}
+       ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
+  ).bind(...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
 }
 
 interface MachineOfferObservation {

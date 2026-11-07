@@ -8,6 +8,7 @@
  * measure with no rows answers a null value and a zero sample, which is what lets
  * the surface say there is no sample instead of printing a figure.
  */
+import { statementRecorder } from '../helpers/statement-recorder.js';
 import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -290,10 +291,23 @@ describe('the measures', () => {
     r.sessionInjection('s1', 'cortex', { at: NOW - 10 * DAY + 60_000 });
     r.sporeInjection('s1b', 'pX', ['sp1'], { at: NOW - DAY });
     r.sessionInjection('s2', 'cortex', { at: NOW - 5 * DAY + 20_000 });
-    const report = await all(r.db);
-    // lin_1 waited 60s from its lineage start; lin_2 waited 20s; lin_3 has been
-    // served nothing and contributes no sample.
+    const recorded = statementRecorder(r.db, { accounting: 'native' });
+    const report = await readKpis(recorded.db, { windowDays: 30, now: NOW });
     expect(report.firstInjectionMs).toEqual({ value: 40_000, sampleSize: 2 });
+    expect((await all(r.db)).firstInjectionMs).toEqual(report.firstInjectionMs);
+    const firstContext = recorded.statements.find(statement => statement.sql.includes('AS first_served'))!;
+    const plans = r.sqlite.query(`EXPLAIN QUERY PLAN ${firstContext.sql}`).all(...firstContext.binds as never[]) as { detail: string }[];
+    const details = plans.map(row => row.detail).join('\n');
+    expect(details).toContain('SEARCH c USING INDEX idx_member_credentials_started (lineage_started_at>?)');
+    expect(details).toContain('SEARCH sess USING COVERING INDEX idx_sessions_credential (created_by_token_id=?)');
+    expect(details).toContain('SEARCH i USING COVERING INDEX idx_spore_injections_session (project_id=? AND session_id=?)');
+    expect(details).toMatch(/SEARCH s USING INDEX \S+ \(project_id=\? AND session_id=\?\)/);
+    expect(details).not.toMatch(/SCAN (sess|i|s)\b/);
+    const harness = recorded.statements.find(statement => statement.sql.includes('SELECT t.agent FROM transcripts t'))!;
+    const harnessPlans = r.sqlite.query(`EXPLAIN QUERY PLAN ${harness.sql}`).all(...harness.binds as never[]) as { detail: string }[];
+    expect(harnessPlans.map(row => row.detail).join('\n'))
+      .toContain('SEARCH t USING INDEX idx_transcripts_session (project_id=? AND session_id=?)');
+    r.sqlite.close();
   });
 
   it('counts only rows inside the window a caller asked for', async () => {

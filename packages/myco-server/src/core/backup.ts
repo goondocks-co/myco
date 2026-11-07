@@ -114,7 +114,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
-  'session_read_facts', 'project_session_counts',
+  'session_read_facts', 'project_session_counts', 'machine_capture_heads',
   'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_hubness_population','embedding_provider_holds',
   'document_due','document_status_totals','document_difference_totals','document_publication_facts','document_due_totals',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',

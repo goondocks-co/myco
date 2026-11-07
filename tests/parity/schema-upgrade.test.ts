@@ -67,6 +67,34 @@ it('seeds valid curation membership for first-attempt allowance migrations', asy
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
 
+it('upgrades populated Health read fixtures through schemas 702–708', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const migrations = SCHEMA_STEPS.filter(step => step.version >= 702 && step.version <= 708);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-health-upgrade-'));
+  const file = path.join(root, 'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < migrations[0]!.version)) {
+        for (const sql of step.statements) previous.exec(sql);
+      }
+    } finally { previous.close(); }
+    expect(seedPreviousSchema(file, migrations.flatMap(step => step.statements), migrations[0]!.version)).toContain('sessions');
+    const db = new Database(file);
+    try {
+      for (const migration of migrations) {
+        for (const sql of migration.statements) db.exec(sql);
+        expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: String(migration.version) });
+        expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+        if (migration.version >= 708) {
+          expect(db.query('SELECT machine_id,agent_json,project_id,session_id FROM machine_capture_heads').all())
+            .toContainEqual({ machine_id: 'upgrade_machine', agent_json: 'null', project_id: 'proj_parity', session_id: 'upgrade_session' });
+        }
+      }
+    } finally { db.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 it('resolves quoted trigger and dropped index owners, seeds FK children, and detects either missing statement', () => {
   const databases = [previousSchema(), previousSchema(), previousSchema()];
   try {

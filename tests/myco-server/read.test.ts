@@ -287,13 +287,16 @@ const A4_SESSION_LIST = (keyset: boolean): string =>
    ORDER BY ${OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`;
 
 describe('schema v34', () => {
-  it('carries the occurred-at index in place of the receipt index', () => {
+  it('keeps occurrence ordering for session lists and receipt ordering for KPI denominators', () => {
     const v34 = SCHEMA_STEPS.find((s) => s.version === 34);
     expect(v34?.statements.some((s) => s.includes('CREATE INDEX IF NOT EXISTS idx_sessions_occurred'))).toBe(true);
     expect(v34?.statements).toContain('DROP INDEX IF EXISTS idx_sessions_recent');
     const sqlite = planDb();
-    expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
-      .toEqual(['idx_sessions_capture', 'idx_sessions_harness_live', 'idx_sessions_launch_parent', 'idx_sessions_machine_live', 'idx_sessions_occurred', 'idx_sessions_occurred_deployment', 'idx_sessions_parent', 'idx_sessions_pending_title', 'idx_sessions_titled', 'idx_sessions_titled_recent', 'idx_sessions_untitled_ended', 'idx_sessions_untitled_open', 'idx_sessions_working', 'sqlite_autoindex_sessions_1']);
+    try {
+      const indexes = sqlite.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all().map(row => row.name);
+      expect(indexes).toEqual(expect.arrayContaining(['idx_sessions_occurred', 'idx_sessions_received']));
+      expect(indexes).not.toContain('idx_sessions_recent');
+    } finally { sqlite.close(); }
   });
 
   it('serves a session list ordered by when the session happened from one index, first page and keyset page alike, with no sort step', () => {
