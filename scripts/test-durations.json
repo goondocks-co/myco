@@ -860,7 +860,9 @@
     "tests/myco-server-ui/work-now.test.tsx": 2500,
     "tests/meta/run-tool-contract.test.ts": 1500,
     "tests/myco-server/kpi-projection.test.ts": 2000,
-    "tests/myco-server/health-today-projection.test.ts": 2000
+    "tests/myco-server/health-today-projection.test.ts": 2000,
+    "tests/myco-server/identity-project-atomic.test.ts": 10000,
+    "tests/parity/identity-project-writes.test.ts": 1000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
