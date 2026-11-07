@@ -395,7 +395,8 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   expect((await producer.settleHold('token-stall')).state).toBe('open');
   sql.run("UPDATE attempts SET last_progress_at = ?, upload_id = 'upload-in-flight' WHERE id = ?", [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
   const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
-  checkpoint.update(first.attempt!, { inFlight: { name: 'upload part 7', startedAt: Date.now() } });
+  const stalledOperation = { name: 'upload part 7' as const, startedAt: Date.now() };
+  checkpoint.update(first.attempt!, { inFlight: stalledOperation });
   expect((await producer.status()).inFlight?.name).toBe('upload part 7');
   const logged: string[] = [];
   const log = console.log;
@@ -406,6 +407,7 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   // The stalled attempt is failed through the one failure path: terminal first, its upload and signed download cleared,
   // and the refusal announced with what its clean-up reached.
   expect(sql.query('SELECT stage, error, upload_id FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
+  expect((await producer.status()).inFlight).toEqual(stalledOperation);
   const announced = logged.map((line) => JSON.parse(line) as Record<string, unknown>).find((event) => event.kind === 'recovery_attempt_failed');
   expect(announced).toMatchObject({ refusal: 'producer_stalled', attempt: first.attempt, stage: 'copy', signedUrlCleared: true, operation: 'upload part 7', operationStartedAt: expect.any(Number) });
   expect(typeof announced?.uploadAborted).toBe('boolean');
@@ -419,6 +421,7 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   // Across a restart the terminal attempt stays terminal, and a continuation finds nothing to advance.
   const restarted = producerOver(sql, []);
   expect((await restarted.continue()).attempt).toBeNull();
+  expect((await restarted.status()).inFlight).toEqual(stalledOperation);
   expect((await restarted.admit(admission('token-stall'))).stage).toBe('failed');
   sql.close();
 });
@@ -881,15 +884,16 @@ it('stops scheduled hosted attempts with backups off, releases their hold and re
       const token = 'disabled-' + stage;
       await acquireRecoveryHold(fixture.db, token, Date.now());
       const admitted = await producer.admit({ ...admission(token), startedBy: SCHEDULED_BY });
+      const operation = stage === 'failed' ? null : { name: 'source read', startedAt: Date.now() };
       sql.run("UPDATE attempts SET stage=?, bookmark='held', export_requested_at=?, upload_id=?, in_flight=? WHERE id=?",
-        [stage, Date.now(), stage === 'failed' ? null : 'upload', stage === 'failed' ? null : JSON.stringify({ name: 'source read', startedAt: Date.now() }), admitted.attempt]);
+        [stage, Date.now(), stage === 'failed' ? null : 'upload', operation === null ? null : JSON.stringify(operation), admitted.attempt]);
       const env = envOverProducer(producer);
       await stampRequest(fixture.db, Date.now());
       const report = await runTick(env, Date.now(), { wake: 'clock' });
       expect(report.jobs.find(job => job.name === 'recovery-export-schedule')?.failed ?? null).toBeNull();
       expect((await producer.status()).stage).toBe('failed');
       expect(aborted).toBe(stage === 'failed' ? 0 : 1);
-      expect(sql.query('SELECT upload_id, in_flight FROM attempts').get()).toEqual({ upload_id: null, in_flight: null });
+      expect(sql.query('SELECT upload_id, in_flight FROM attempts').get()).toEqual({ upload_id: null, in_flight: operation === null ? null : JSON.stringify(operation) });
       expect(await settleOpenHold(env, Date.now())).toBeNull();
       expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
       for (let wake = 0; wake < 3; wake++) {
