@@ -151,10 +151,10 @@ describe('tool parity', () => {
         expect({min:line.minLength,max:line.maxLength}).toEqual({min:1,max:AGENT_LINE_MAX_CHARS});
         delete line.minLength; delete line.maxLength;
         expect(line.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization`);
-        line.description = frozen.inputSchema.properties.agent_line.description;
+        line.description = frozen.inputSchema.properties.agent_line!.description;
         const sources = current.inputSchema.properties.source_spore_ids;
         expect(sources.description).toContain(`${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources`);
-        sources.description = frozen.inputSchema.properties.source_spore_ids.description;
+        sources.description = frozen.inputSchema.properties.source_spore_ids!.description;
       }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
       if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');
