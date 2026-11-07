@@ -1,5 +1,3 @@
-import type { RelationalStore as sessions_import_RelationalStore } from "../../core/adapters.js";
-import type { PreparedStatement as core_embedding_switch_store_import_PreparedStatement } from "../../core/adapters.js";
 import type { RelationalStore as core_embedding_switch_store_import_RelationalStore } from "../../core/adapters.js";
 import { RECEIPT as core_embedding_switch_store_import_RECEIPT } from "../../core/embedding/reconcile.js";
 import type { EmbeddingSwitch } from '../../core/embedding/switch-store.js';
@@ -24,14 +22,10 @@ const core_embedding_switch_store_unbuiltBinds = (modelKey: string, now: number)
  * The condition every statement of a switch's completion carries: it is still building, and no counted source is left
  * unbuilt as of `now`. Binds: the switch id, then `unbuiltBinds`.
  */
-const core_embedding_switch_store_completionCondition = (sw: EmbeddingSwitch, now: number): { sql: string; params: Array<string | number> } =>
-  ({ sql: `${core_embedding_switch_store_BUILDING_SQL} AND NOT EXISTS (${core_embedding_switch_store_UNBUILT_SOURCES})`, params: [sw.id, ...core_embedding_switch_store_unbuiltBinds(sw.modelKey, now)] });
+export const SETTINGS_COMPLETION_SQL = `${core_embedding_switch_store_BUILDING_SQL} AND NOT EXISTS (${core_embedding_switch_store_UNBUILT_SOURCES})`;
 
-/** The statement that ends a completed switch, carrying `completionCondition`. The sources it passed over stay recorded. */
-const core_embedding_switch_store_completionStatements = (db: core_embedding_switch_store_import_RelationalStore, sw: EmbeddingSwitch, now: number): core_embedding_switch_store_import_PreparedStatement[] => {
-  const condition = core_embedding_switch_store_completionCondition(sw, now);
-  return [db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND ${condition.sql} RETURNING id`).bind(...condition.params)];
-};
+const core_embedding_switch_store_completionCondition = (sw: EmbeddingSwitch, now: number): { sql: string; params: Array<string | number> } =>
+  ({ sql: SETTINGS_COMPLETION_SQL, params: [sw.id, ...core_embedding_switch_store_unbuiltBinds(sw.modelKey, now)] });
 
 /** The counted sources, and those holding an indexed vector under the switch's model. */
 async function core_embedding_switch_store_switchProgress(db: core_embedding_switch_store_import_RelationalStore, modelKey: string): Promise<{ built: number; total: number }> {
@@ -51,10 +45,6 @@ async function core_embedding_switch_store_sourceTotals(db: core_embedding_switc
 async function core_embedding_switch_store_switchComplete(db: core_embedding_switch_store_import_RelationalStore, modelKey: string, now: number): Promise<boolean> {
   const row = await db.prepare(`SELECT NOT EXISTS (${core_embedding_switch_store_UNBUILT_SOURCES}) AS complete`).bind(...core_embedding_switch_store_unbuiltBinds(modelKey, now)).first<{ complete: number }>();
   return row?.complete === 1;
-}
-
-export function prepareSwitchEnd(db: sessions_import_RelationalStore, sw: EmbeddingSwitch, now: number) {
-  return core_embedding_switch_store_completionStatements(db, sw, now);
 }
 
 export { core_embedding_switch_store_switchProgress, core_embedding_switch_store_sourceTotals, core_embedding_switch_store_switchComplete, core_embedding_switch_store_completionCondition };

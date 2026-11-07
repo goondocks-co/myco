@@ -28,7 +28,7 @@ describe('the settings answer', () => {
     const bindings = { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP } };
     e.executed.length = 0;
     expect((await worker.fetch(await asOwner(e.db, '/api/settings'), bindings)).status).toBe(200);
-    expect(e.executed.filter((sql) => /\bFROM deployment_settings\b/.test(sql))).toHaveLength(1);
+    expect(e.executed.filter((sql) => /\b(?:FROM|JOIN) deployment_settings\b/.test(sql))).toHaveLength(1);
   });
 
   it('reports a policy that cannot resolve as unknown, and still answers a machine its own settings', async () => {
@@ -54,7 +54,7 @@ describe('an embedding write that loses a race', () => {
     const racing: RelationalStore = {
       prepare: (sql) => e.db.prepare(sql),
       batch: async (statements) => {
-        if (!raced) {
+        if (!raced && statements.some(statement => String(Reflect.get(statement, 'sql')).includes('$[settings_revision_conflict]'))) {
           raced = true;
           e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.provider', '"openrouter"', 7, 'mem_other')`);
         }
@@ -62,7 +62,7 @@ describe('an embedding write that loses a race', () => {
       },
     };
     const result = await settingsWriter(racing, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai', model: '@cf/baai/bge-large-en-v1.5' }, 'mem_machine_1', NOW);
-    expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider' } });
+    expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider', revision: 1 } });
     expect(e.sqlite.query(`SELECT leaf, value, updated_by FROM deployment_settings WHERE leaf LIKE 'embedding.%' ORDER BY leaf`).all())
       .toEqual([{ leaf: 'embedding.provider', value: '"openrouter"', updated_by: 'mem_other' }]);
   });

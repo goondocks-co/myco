@@ -1,3 +1,4 @@
+import { runtimeImportNames, moduleKey } from '../helpers/import-closure.js';
 import routeLedger from '../fixtures/server/route-ledger.json';
 import { sourceCalls } from './helpers/source-calls.js';
 import { UNRELATED_PROCESSED_LINES } from './helpers/processed-token-allowlist.js';
@@ -891,6 +892,19 @@ describe('gates', () => {
     }
   });
 
+  it('keeps db/settings persistence private to the admitted writer', () => {
+    const family = `${moduleKey(join(SRC, 'db', 'settings'))}/`;
+    const writer = moduleKey(join(SRC, 'core', 'settings.ts'));
+    const offenders: string[] = [];
+    for (const file of files(SRC)) {
+      const from = moduleKey(file);
+      for (const target of runtimeImportNames(readFileSync(file, 'utf8'), file).keys()) {
+        if (target.startsWith(family) && from !== writer && !from.startsWith(family)) offenders.push(`${from} imports ${target}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {
     // Keying this on MODULE PATHS alone would not hold: the read-layer allowlist
     // already permits every file under `ingest/` and `db/` to issue SQL, so a
@@ -902,6 +916,7 @@ describe('gates', () => {
     // actor, re-arm. A second writer is how one of those five goes missing on one
     // path, and the one that goes missing silently is the actor.
     const OWNED: Record<string, string> = {
+      setting_revisions: join('core', 'settings.ts'),
       deployment_settings: join('core', 'settings.ts'),
       deployment_setting_resets: join('core', 'settings.ts'),
       project_capabilities: join('core', 'settings.ts'),
@@ -914,7 +929,16 @@ describe('gates', () => {
     const offenders: string[] = [];
     for (const file of files(SRC)) {
       const rel = file.slice(SRC.length + 1);
-      if (rel.startsWith(`db${sep}`)) continue; // migrations create them
+      if (rel.startsWith(`db${sep}`) && !rel.startsWith(`db${sep}settings${sep}`)) {
+        if (!rel.startsWith(`db${sep}schema`)) {
+          const source = stripComments(readFileSync(file, 'utf8'));
+          for (const table of ['setting_revisions', 'deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities']) {
+            if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
+          }
+        }
+        continue;
+      }
+      if (rel.startsWith(`db${sep}settings${sep}`)) continue;
       // Comments are stripped first: the property is about a second WRITER, and a
       // docstring that names a table in prose is not one. Scanning raw source made
       // the gate fire on its own explanation of what it protects.
@@ -922,9 +946,7 @@ describe('gates', () => {
       const catalogOwners: Record<string, readonly string[]> = {
         [join('read', 'catalog', 'embedding-reconcile.ts')]: ['core_embedding_reconcile_PASSED_OVER',
           'core_embedding_reconcile_passedOverSources', 'core_embedding_reconcile_embeddingFailureWakeAt'],
-        [join('read', 'catalog', 'embedding-switch-store.ts')]: ['core_embedding_switch_store_BUILDING_SQL',
-          'core_embedding_switch_store_completionStatements'],
-        [join('read', 'catalog', 'settings.ts')]: ['prepareSwitchedSettings'],
+        [join('read', 'catalog', 'embedding-switch-store.ts')]: ['core_embedding_switch_store_BUILDING_SQL'],
       };
       if (rel in catalogOwners) {
         const permitted = new Set(catalogOwners[rel]);

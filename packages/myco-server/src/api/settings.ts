@@ -10,8 +10,9 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { curationDailyLimit, CURATION_DAILY_LIMIT_LEAF, cleanTaskDocument, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { projectSettingsEditor, cleanTaskDocument, settingsRevisions, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
+import { EMBEDDING_SELECTION_LEAVES } from '../core/embedding/policy.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
@@ -129,6 +130,7 @@ export type SettingsLeafRow = {
 async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: SettingsLeafRow[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices | null }> {
   const read: ServerEnv = { ...env, db: await settingsSnapshot(env.db) };
   const stored = await settingsWriter(read.db).leaves();
+  const revisions = await settingsRevisions(read.db);
   const effective = await effectiveSettings(read);
   const leaves = DEPLOYMENT_LEAVES.map((leaf): SettingsLeafRow => {
     const held = stored[leaf];
@@ -145,6 +147,7 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       updatedBy: held?.updatedBy ?? null,
       retired,
       ...answer,
+      revision: String(revisions[leaf] ?? 0),
       effectiveValue: answer.effective,
       ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
       ...(invalid ? { error: 'invalid_value' as const, remedy: answer.reason ?? 'Correct this setting or reset it.' } : {}),
@@ -243,30 +246,66 @@ export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: C
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
 });
 
+/** The revision the editor read, supplied as an If-Match header. */
+function expectedSettingRevision(request: Request): number | undefined | null {
+  const text = request.headers.get('if-match');
+  if (text === null) return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+const invalidRevision = (leaf: string) => malformed(leaf, 'Invalid If-Match; omit the header or use the current revision from GET /api/settings; nothing was saved');
+
+type RevisionHandler<Revision> = (env: ServerEnv, ctx: OwnerContext, revision: Revision | undefined) => Promise<Response>;
+
+function withRevision<Revision>(leaf: string | ((ctx: OwnerContext) => string), read: (request: Request) => Revision | undefined | null,
+  handler: RevisionHandler<Revision>): (env: ServerEnv, ctx: OwnerContext) => Promise<Response> {
+  return async (env, ctx) => {
+    const revision = read(ctx.request);
+    if (revision === null) return invalidRevision(typeof leaf === 'string' ? leaf : leaf(ctx));
+    return handler(env, ctx, revision);
+  };
+}
+
+/** Settings mutation routes enforce the editor revision when If-Match is supplied. */
+export const settingRevisionRoute = (leaf: string | ((ctx: OwnerContext) => string), handler: RevisionHandler<number>) =>
+  withRevision(leaf, expectedSettingRevision, handler);
+
+function expectedEmbeddingRevisions(request: Request): Record<string, number> | undefined | null {
+  const text = request.headers.get('if-match');
+  if (text === null) return undefined;
+  let revisions: unknown;
+  try { revisions = JSON.parse(text); } catch { return null; }
+  const expected = record(revisions);
+  return expected === null || EMBEDDING_SELECTION_LEAVES.some(leaf => !Number.isSafeInteger(expected[leaf]) || Number(expected[leaf]) < 0)
+    ? null : expected as Record<string, number>;
+}
+
 /** Set one Deployment leaf. */
-export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleSetSetting = settingRevisionRoute(ctx => ctx.params.leaf, async (env, ctx, revision) => {
   const body = await readJsonObject(ctx.request);
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
   const writer = writerFor(env);
   const result = typeof body.project_id === 'string'
-    ? await writer.setProjectLeaf(body.project_id, ctx.params.leaf, body.value, ctx.member.id, ctx.now)
-    : await writer.setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
+    ? await writer.setProjectLeaf(body.project_id, ctx.params.leaf, body.value, ctx.member.id, ctx.now, revision)
+    : await writer.setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /** The embedding choice a request body names: a provider, and its model and endpoint where the body carries them. */
 const choiceOf = (body: Record<string, unknown>) =>
   ({ provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) });
 
 /** `PUT /api/embedding`: set the embedding provider, and its model and endpoint, in one write. */
-export async function handleSetEmbedding(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleSetEmbedding = withRevision('embedding.provider', expectedEmbeddingRevisions, async (env, ctx, revisions) => {
   const body = await readJsonObject(ctx.request);
   if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
   const choice = choiceOf(body);
-  const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now);
+  const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now, revisions);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /** A switch operation's answer: the switch as it now stands, or the refusal in this surface's shape. */
 const switchAnswer = (answer: SwitchAnswer): Response => answer.applied
@@ -318,48 +357,47 @@ export async function handleResumeEmbeddingSwitch(env: ServerEnv, ctx: OwnerCont
 }
 
 /** Clear one configured leaf so its built-in value applies. */
-export async function handleResetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now);
+export const handleResetSetting = settingRevisionRoute(ctx => ctx.params.leaf, async (env, ctx, revision) => {
+  const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /** Remove task override entries and fields that no longer have a Deployment consumer. */
-export async function handleRepairTaskDocument(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleRepairTaskDocument = settingRevisionRoute('agent.tasks', async (env, ctx, revision) => {
   const body = await readJsonObject(ctx.request);
   if (body === null || Object.keys(body).length !== 0) return malformed('agent.tasks', 'body must be an empty JSON object');
-  const result = await writerFor(env).repairTaskDocument(ctx.member.id, ctx.now);
+  const result = await writerFor(env).repairTaskDocument(ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /** Change one task tier while preserving the live task overrides document. */
-export async function handleSetTaskTier(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleSetTaskTier = settingRevisionRoute('agent.tasks', async (env, ctx, revision) => {
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.task !== 'string' || !('tier' in body) || !(body.tier === null || typeof body.tier === 'string')) {
     return malformed('agent.tasks', 'body must carry a task and a tier or null');
   }
-  const result = await writerFor(env).setTaskTier(body.task, body.tier as ReasoningTier | null, ctx.member.id, ctx.now);
+  const result = await writerFor(env).setTaskTier(body.task, body.tier as ReasoningTier | null, ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /** Every capability's effective admission for this Project, including defaults. */
 export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const writer = settingsWriter(env.db);
-  return ok({ capabilities: await writer.capabilities(ctx.params.projectId), retiredCapabilities: await writer.retiredCapabilities(ctx.params.projectId), settings: { [CURATION_DAILY_LIMIT_LEAF]: await curationDailyLimit(env.db, ctx.params.projectId) } });
+  return ok(await projectSettingsEditor(env.db, ctx.params.projectId));
 }
 
 /** Admit or withdraw one capability for one Project. */
-export async function handleSetProjectCapability(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleSetProjectCapability = settingRevisionRoute(ctx => `project.${ctx.params.capability}`, async (env, ctx, revision) => {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.enabled !== 'boolean') return malformed(`project.${ctx.params.capability}`, 'body must carry a boolean `enabled`');
 
   const result = await writerFor(env)
-    .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.member.id, ctx.now);
+    .setCapability(ctx.params.projectId, ctx.params.capability, body.enabled, ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-}
+});
 
 /**
  * What is configured, never what it is.

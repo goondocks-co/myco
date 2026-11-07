@@ -110,7 +110,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
-  'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
+  'setting_revisions', 'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',

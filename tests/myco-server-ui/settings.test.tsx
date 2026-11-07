@@ -93,13 +93,13 @@ const UNBUILT_CHOICES = {
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
-const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
+const leaves = (over: Record<string, Partial<{ value: unknown; revision: string; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
   embedding: HOSTED_CHOICES,
   taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
     const o = over[f.leaf];
-    return { ...rowFor(f.leaf), ...(o?.value !== undefined ? { stored: o.value, effective: o.value, effectiveValue: o.value, source: 'configured' } : {}), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
+    return { ...rowFor(f.leaf), revision: o?.revision ?? '0', ...(o?.value !== undefined ? { stored: o.value, effective: o.value, effectiveValue: o.value, source: 'configured' } : {}), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
@@ -585,6 +585,31 @@ describe('Settings, in five sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Embedding model' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/embedding.model' });
+  });
+
+  it('sends the read revision, reloads after conflict and displays the current saved value', async () => {
+    let current = 'first';
+    let revision = '7';
+    let reads = 0;
+    const { sent } = server(base({
+      '/api/settings': () => { reads++; return Response.json(leaves({ 'instructions.template': { value: current, revision } })); },
+      '/api/settings/instructions.template': () => {
+        current = 'saved by another editor'; revision = '8';
+        return Response.json({ applied: false, reason: 'conflict', leaf: 'instructions.template', revision: 8 }, { status: 409 });
+      },
+    }));
+    mount('/settings');
+    await section('Myco’s work');
+    const field = await screen.findByLabelText('Session-start instructions');
+    const row = field.closest('[data-setting]') as HTMLElement;
+    fireEvent.change(field, { target: { value: 'my stale draft' } });
+    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.headers['if-match']).toBe('7');
+    await waitFor(() => expect((screen.getByLabelText('Session-start instructions') as HTMLTextAreaElement).value).toBe(current));
+    expect(reads).toBeGreaterThan(1);
+    expect(statusOf('instructions.template')).toContain('Review the current value');
+    expect(within(row).getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('says the refusal in the person\'s words: a foreign leaf is named as not held, any other refusal carries its status, and a bad number never leaves', async () => {
