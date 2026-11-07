@@ -1,23 +1,35 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
+const CAPTURE_HEAD_REFRESH_MS = 60_000;
+
 const groupOf = (row: string) => `machine_id=${row}.machine_id AND agent_json=json_quote(${row}.agent)`;
 const columns = 'project_id,machine_id,agent_json,session_id,last_received_at';
 const valuesOf = (row: string) => `${row}.project_id,${row}.machine_id,json_quote(${row}.agent),${row}.session_id,${row}.last_received_at`;
 
-/** Receipt time and canonical session identity order each pair's head, independent of arrival order. */
+/** Same-session receipt stamps advance at most once per minute; newer source identities and canonical ties advance immediately. */
 function captureHeadInsert(select: string): string {
   return `INSERT INTO machine_capture_heads(${columns}) ${select}
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+${CAPTURE_HEAD_REFRESH_MS}
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));`;
 }
 
-/** Only removal or reclassification of the current head requires reading its remaining source sessions. */
+/** The unnamed candidates for one machine, independent of its named session history. */
+export function unnamedCaptureHeadSelect(machine: string): string {
+  return `SELECT ${valuesOf('s')} FROM sessions s INDEXED BY idx_sessions_unnamed_machine
+    WHERE s.machine_id=${machine} AND s.agent IS NULL
+    ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1`;
+}
+
+/** Named-agent deletion and renaming require an equivalent machine-leading seek. */
 function rebuildCaptureHead(): string {
   return `DELETE FROM machine_capture_heads WHERE ${groupOf('OLD')};
+    ${captureHeadInsert(`SELECT * FROM (${unnamedCaptureHeadSelect('OLD.machine_id')}) WHERE OLD.agent IS NULL`)}
     ${captureHeadInsert(`SELECT ${valuesOf('s')} FROM sessions s
-      WHERE s.machine_id=OLD.machine_id AND s.agent IS OLD.agent
+      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
       ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1`)}`;
 }
 
@@ -43,5 +55,8 @@ export const V707_STATEMENTS: readonly string[] = [
     BEGIN ${rebuildCaptureHead()} END`,
   `CREATE TRIGGER IF NOT EXISTS sessions_capture_head_delete AFTER DELETE ON sessions
     WHEN ${headOfOld} BEGIN ${rebuildCaptureHead()} END`,
-  captureHeadInsert(`SELECT ${valuesOf('s')} FROM sessions s WHERE s.machine_id IS NOT NULL`),
+  captureHeadInsert(`SELECT ${valuesOf('s')} FROM (
+    SELECT project_id,machine_id,agent,session_id,last_received_at,
+      ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at DESC,project_id,session_id) AS head_rank
+    FROM sessions WHERE machine_id IS NOT NULL) s WHERE s.head_rank=1`),
 ];

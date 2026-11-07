@@ -4,6 +4,7 @@
  * Capture recency is the newest receipt per machine and agent across every Project, including imported sessions,
  * unnamed agents and machines with no harness report. Session triggers maintain one head per machine/agent
  * across Projects.
+ * Same-session receipt stamps refresh at most once per minute; newer session heads appear immediately.
  * A tombstoned session still counts: capture recency records receipt, independent of content visibility.
  *
  * A machine's name is its claim's label, or, for a machine claimed before names lived there, the label its newest live

@@ -58,6 +58,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_spores_created_deployment', 'the spores list spans every Project, newest first'],
   ['idx_plans_updated_deployment', 'the plans list spans every Project, most recently updated first'],
   ['idx_view_plans_updated_deployment', 'the visible parser plans list spans every Project, most recently updated first'],
+  ['idx_sessions_unnamed_machine', 'capture-head classification seeks a machine\'s unnamed sessions before assigning the harness'],
   ['idx_sessions_credential', 'Health seeks the sessions created by each credential to measure its first context'],
   ['idx_sessions_capture', 'capture recency is read per machine and agent across every Project, over a recent window of receipts'],
   ['idx_sessions_harness_live', 'Health seeks the latest live capture of a provisioned machine and harness across every Project'],

@@ -12,6 +12,7 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { Database } from 'bun:sqlite';
+import { unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v707.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
@@ -83,8 +84,10 @@ describe('capture recency', () => {
         VALUES ('first','old','new-machine','token',1,10,NULL),('first','imported','new-machine','token',2,20,NULL),
           ('first','custom','new-machine','token',3,30,'unreported'),('first','named-null','new-machine','token',4,35,'null'),
           ('second','other-project','new-machine','token',5,40,NULL)`);
-      for (const sql of SCHEMA_STEPS.find(step => step.version === 707)!.statements) sqlite.exec(sql);
+      for (const step of SCHEMA_STEPS.filter(step => step.version >= 707)) for (const sql of step.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
+      const plan = sqlite.query(`EXPLAIN QUERY PLAN ${unnamedCaptureHeadSelect('?')}`).all('new-machine') as { detail: string }[];
+      expect(plan.map(row => row.detail).join('\n')).toContain('SEARCH s USING INDEX idx_sessions_unnamed_machine (machine_id=?)');
       const matches = async () => {
         const expected = sqlite.query(`SELECT machine_id,agent,MAX(last_received_at) AS last_event_at,project_id FROM sessions
           WHERE machine_id IS NOT NULL GROUP BY machine_id,agent ORDER BY last_event_at DESC,machine_id,agent`).all();
@@ -104,5 +107,23 @@ describe('capture recency', () => {
         "DELETE FROM projects WHERE project_id='second'",
       ]) { sqlite.run(sql); await matches(); }
     } finally { sqlite.close(); }
+  });
+
+  it('refreshes a continuing head at one minute and advances newer identities and canonical ties immediately', () => {
+    const f = sqliteEnv();
+    try {
+      const head = () => f.sqlite.query("SELECT project_id,session_id,last_received_at FROM machine_capture_heads WHERE machine_id='minute-machine'").get();
+      f.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
+        VALUES('proj_1','continuing','minute-machine','token',0,0,'codex')`);
+      f.sqlite.run("UPDATE sessions SET last_received_at=59999 WHERE project_id='proj_1' AND session_id='continuing'");
+      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'continuing', last_received_at: 0 });
+      f.sqlite.run("UPDATE sessions SET last_received_at=60000 WHERE project_id='proj_1' AND session_id='continuing'");
+      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'continuing', last_received_at: 60000 });
+      f.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
+        VALUES('proj_1','next','minute-machine','token',60001,60001,'codex'),('proj_2','next','minute-machine','token',60002,60002,'codex')`);
+      expect(head()).toEqual({ project_id: 'proj_2', session_id: 'next', last_received_at: 60002 });
+      f.sqlite.run("UPDATE sessions SET last_received_at=60002 WHERE project_id='proj_1' AND session_id='next'");
+      expect(head()).toEqual({ project_id: 'proj_1', session_id: 'next', last_received_at: 60002 });
+    } finally { f.sqlite.close(); }
   });
 });

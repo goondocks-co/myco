@@ -11,7 +11,9 @@ CREATE TRIGGER IF NOT EXISTS sessions_capture_head_insert AFTER INSERT ON sessio
       INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT NEW.project_id,NEW.machine_id,json_quote(NEW.agent),NEW.session_id,NEW.last_received_at WHERE NEW.machine_id IS NOT NULL
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id))); END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_capture_head_update AFTER UPDATE OF project_id,machine_id,agent,session_id,last_received_at ON sessions
@@ -19,35 +21,64 @@ CREATE TRIGGER IF NOT EXISTS sessions_capture_head_update AFTER UPDATE OF projec
       INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT NEW.project_id,NEW.machine_id,json_quote(NEW.agent),NEW.session_id,NEW.last_received_at WHERE NEW.machine_id IS NOT NULL
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id))); END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_capture_head_reclassify AFTER UPDATE OF project_id,machine_id,agent,session_id,last_received_at ON sessions
     WHEN (OLD.project_id IS NOT NEW.project_id OR OLD.machine_id IS NOT NEW.machine_id OR OLD.agent IS NOT NEW.agent
       OR OLD.session_id IS NOT NEW.session_id OR OLD.last_received_at>NEW.last_received_at) AND EXISTS (SELECT 1 FROM machine_capture_heads WHERE machine_id=OLD.machine_id AND agent_json=json_quote(OLD.agent) AND project_id=OLD.project_id AND session_id=OLD.session_id)
     BEGIN DELETE FROM machine_capture_heads WHERE machine_id=OLD.machine_id AND agent_json=json_quote(OLD.agent);
+    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT * FROM (SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM sessions s INDEXED BY idx_sessions_unnamed_machine
+    WHERE s.machine_id=OLD.machine_id AND s.agent IS NULL
+    ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1) WHERE OLD.agent IS NULL
+    ON CONFLICT(machine_id,agent_json) DO UPDATE SET
+      project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
+      OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));
     INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM sessions s
-      WHERE s.machine_id=OLD.machine_id AND s.agent IS OLD.agent
+      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
       ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id))); END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_capture_head_delete AFTER DELETE ON sessions
     WHEN EXISTS (SELECT 1 FROM machine_capture_heads WHERE machine_id=OLD.machine_id AND agent_json=json_quote(OLD.agent) AND project_id=OLD.project_id AND session_id=OLD.session_id) BEGIN DELETE FROM machine_capture_heads WHERE machine_id=OLD.machine_id AND agent_json=json_quote(OLD.agent);
+    INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT * FROM (SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM sessions s INDEXED BY idx_sessions_unnamed_machine
+    WHERE s.machine_id=OLD.machine_id AND s.agent IS NULL
+    ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1) WHERE OLD.agent IS NULL
+    ON CONFLICT(machine_id,agent_json) DO UPDATE SET
+      project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
+      OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));
     INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM sessions s
-      WHERE s.machine_id=OLD.machine_id AND s.agent IS OLD.agent
+      WHERE OLD.agent IS NOT NULL AND s.machine_id=OLD.machine_id AND s.agent=OLD.agent
       ORDER BY s.last_received_at DESC,s.project_id,s.session_id LIMIT 1
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id))); END;
 
-INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM sessions s WHERE s.machine_id IS NOT NULL
+INSERT INTO machine_capture_heads(project_id,machine_id,agent_json,session_id,last_received_at) SELECT s.project_id,s.machine_id,json_quote(s.agent),s.session_id,s.last_received_at FROM (
+    SELECT project_id,machine_id,agent,session_id,last_received_at,
+      ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at DESC,project_id,session_id) AS head_rank
+    FROM sessions WHERE machine_id IS NOT NULL) s WHERE s.head_rank=1
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
       project_id=excluded.project_id,session_id=excluded.session_id,last_received_at=excluded.last_received_at
-    WHERE excluded.last_received_at>machine_capture_heads.last_received_at
+    WHERE excluded.last_received_at>=machine_capture_heads.last_received_at+60000
+      OR (excluded.last_received_at>machine_capture_heads.last_received_at AND
+        (excluded.project_id<>machine_capture_heads.project_id OR excluded.session_id<>machine_capture_heads.session_id))
       OR (excluded.last_received_at=machine_capture_heads.last_received_at AND (excluded.project_id<machine_capture_heads.project_id OR (excluded.project_id=machine_capture_heads.project_id AND excluded.session_id<machine_capture_heads.session_id)));;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '707');
