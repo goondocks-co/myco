@@ -13,6 +13,7 @@
  * A dispatch limit and a per-day ceiling answer differently, and the difference
  * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
+import { RUN_ID_PREFIX } from '../constants.js';
 import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { projectRepositories } from './repositories.js';
 import { deploymentSecretStore } from './secrets.js';
@@ -74,7 +75,7 @@ async function emitScheduleSkip(env: ServerEnv, projectId: string, task: string,
  */
 const NO_ENTRY = 0;
 const ceilingSkipId = (projectId: string, task: string, filledAt: number | null): string =>
-  `run_ceiling_${projectId}_${task}_${filledAt ?? NO_ENTRY}`;
+  `${RUN_ID_PREFIX}ceiling_${projectId}_${task}_${filledAt ?? NO_ENTRY}`;
 
 /**
  * A skip the clock records, carrying the harness identity its row points at.
@@ -245,7 +246,7 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         // that, and no model is called.
         const built = await buildTaskInput(env, task, project.projectId, now);
         if (built !== null && built.unchanged) {
-          await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `run_${crypto.randomUUID()}`, now);
+          await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `${RUN_ID_PREFIX}${crypto.randomUUID()}`, now);
           emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });
           report.skipped += 1;
           continue;

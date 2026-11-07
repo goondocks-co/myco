@@ -1,3 +1,4 @@
+import { RUN_ID_PREFIX } from '../../constants.js';
 import { SETUP_OUTPUT_EVENT_INDEX, SETUP_OUTPUT_EVENT_WHERE } from '../schema-v712.js';
 import { producedSql } from '../../read/run-outcome.js';
 import { read, readSet } from '../index.js';
@@ -13,6 +14,7 @@ import type { MachineScope } from '../../read/machines.js';
 import { projectsFiltering } from '../../read/scope.js';
 
 const SETUP_CAPTURE_CANDIDATES_PER_HARNESS = 8;
+const RUN_ID_PREFIX_END = RUN_ID_PREFIX.slice(0, -1) + String.fromCharCode(RUN_ID_PREFIX.charCodeAt(RUN_ID_PREFIX.length - 1) + 1);
 const SETUP_CAPTURE_HARNESS_IDS = JSON.stringify(CAPTURE_RULE_BUNDLES.map(bundle => bundle.name));
 
 export interface SetupObservations {
@@ -32,7 +34,7 @@ export interface SetupObservations {
 export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now: number): Promise<SetupObservations> {
   const statements = scope.all ? adminSetup.bind(now, now, SETUP_CAPTURE_HARNESS_IDS)
     : memberSetup.bind(scope.memberId, now, scope.memberId, now, SETUP_CAPTURE_HARNESS_IDS);
-  const [observations, outputs] = await readSet(env.db, statements, ...(scope.all ? [producedRead.bind(now)] : []));
+  const [observations, outputs] = await readSet(env.db, statements, ...(scope.all ? [producedRead.bind(now, RUN_ID_PREFIX, RUN_ID_PREFIX_END)] : []));
   const row = observations[0];
   if (row === undefined) throw new Error('Setup observations unavailable');
   // Members receive only the queue boolean, with no runner inventory or outcome history.
@@ -93,9 +95,9 @@ const outputRun = (source: string, key: string, predicate: string) => `EXISTS (
   SELECT 1 FROM ${source} CROSS JOIN agent_runs a ON a.project_id=p.project_id AND a.id=${key}
   WHERE ${predicate} AND a.status IN ('completed','failed')
     AND COALESCE(a.completed_at,a.started_at)<=?1 AND ${producedSql('a')})`;
-const producedRead = read<[number], { produced: number }>({ name: 'identity.setupProduced', sql: `SELECT EXISTS(
+const producedRead = read<[number, string, string], { produced: number }>({ name: 'identity.setupProduced', sql: `SELECT EXISTS(
   SELECT 1 FROM projects p WHERE p.archived_at IS NULL AND (
-    ${outputRun('spores sp INDEXED BY idx_spores_author', 'sp.author', 'sp.project_id=p.project_id')}
+    ${outputRun('spores sp INDEXED BY idx_spores_author', 'sp.author', 'sp.project_id=p.project_id AND sp.author >= ?2 AND sp.author < ?3')}
     OR ${outputRun(`agent_run_events e INDEXED BY ${SETUP_OUTPUT_EVENT_INDEX}`, 'e.run_id',
       `e.project_id=p.project_id AND ${SETUP_OUTPUT_EVENT_WHERE}`)})) AS produced` });
 
