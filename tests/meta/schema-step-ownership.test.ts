@@ -1,7 +1,7 @@
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { V711, V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
-import { NEXT as CURSOR_INDEX_STEP, VNEXT_STATEMENTS as CURSOR_INDEX_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT.js';
+import { V713 as CURSOR_INDEX_STEP, V713_STATEMENTS as CURSOR_INDEX_STATEMENTS } from '@myco-server-worker/db/schema-v713.js';
 import { V708_STATEMENTS } from '@myco-server-worker/db/schema-v708.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from '@myco-server-worker/db/schema-v659.js';
 import { LEARNING_QUIET_STEPS } from '@myco-server-worker/db/schema-v619.js';

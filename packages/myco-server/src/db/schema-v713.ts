@@ -4,9 +4,9 @@
  * index is replaced under its own name with the Project between the instant and the id, so a page still walks it with
  * no sort.
  */
-export const NEXT = 713;
+export const V713 = 713;
 
-export const VNEXT_STATEMENTS: readonly string[] = [
+export const V713_STATEMENTS: readonly string[] = [
   'DROP INDEX IF EXISTS idx_sessions_occurred_deployment',
   'CREATE INDEX IF NOT EXISTS idx_sessions_occurred_deployment ON sessions (COALESCE(occurred_started_at, started_at, first_received_at), project_id, session_id)',
   'DROP INDEX IF EXISTS idx_plans_updated_deployment',
