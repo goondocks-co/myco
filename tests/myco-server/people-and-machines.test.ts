@@ -52,14 +52,10 @@ async function seeded() {
   sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, leased_by, lease_expires_at) VALUES ('proj_1', 'run_1', 'agent_1', 'digest', 'completed', ?, ?, ?, ?)`,
     [now - 30 * 60_000, now - 20 * 60_000, adminCredential, now - 25 * 60_000]);
   const session = (id: string, machine: string, agent: string, project: string, at: number) =>
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, last_live_received_at, agent) VALUES (?, ?, ?, 'tok', ?, ?, ?, ?)`, [project, id, machine, at, at, at, agent]);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES (?, ?, ?, 'tok', ?, ?, ?)`, [project, id, machine, at, at, agent]);
   session('s1', 'm_admin', 'claude-code', 'proj_1', now - 10 * 60_000);
   session('s2', 'm_admin', 'codex', 'proj_2', now - 40 * 60_000);
   session('s3', 'm_member', 'claude-code', 'proj_2', now - 50 * 60_000);
-  for (const [machine, agents] of [['m_admin', ['claude-code', 'codex']], ['m_member', ['claude-code']]] as const) {
-    sqlite.run('INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at) VALUES(?,?,?)',
-      [machine, JSON.stringify(agents.map(id => ({ id, provisioned: true, state: 'ready', sinceAt: 0 }))), now]);
-  }
   return r;
 }
 

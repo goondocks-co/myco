@@ -1,5 +1,5 @@
 /**
- * Capture recency on `/api/status`: when each provisioned harness last sent live capture, across every Project.
+ * Capture recency on `/api/status`: when each machine's agents last sent anything, across every Project.
  *
  * One row per machine and agent, its latest receipt and the Project that receipt landed in, over the last thirty
  * days, most recent first. A machine is named to the member it belongs to alone, by its claim's label or else the label
@@ -11,7 +11,10 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
-import { CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
+import { Database } from 'bun:sqlite';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
 
 /** The member-role account the tests act as, as the capture rows name it. */
 const LAPTOP_MEMBER = { id: 'mem_machine_2', label: 'machine_2' };
@@ -23,21 +26,15 @@ describe('capture recency', () => {
     const env = { ...fixture.env, ...OWNER_ENV };
     const { sqlite } = fixture;
     seedMemberRoleAccount(sqlite);
-    const session = (project: string, id: string, machine: string, agent: string | null, at: number, liveAt: number | null = at) =>
-      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, last_live_received_at, agent)
-                  VALUES (?, ?, ?, 'tok_1', ?, ?, ?, ?)`, [project, id, machine, at - 1000, at, liveAt, agent]);
+    const session = (project: string, id: string, machine: string, agent: string | null, at: number) =>
+      sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
+                  VALUES (?, ?, ?, 'tok_1', ?, ?, ?)`, [project, id, machine, at - 1000, at, agent]);
     session('proj_1', 's1', 'laptop', 'claude-code', now - 60_000);
     session('proj_2', 's2', 'laptop', 'claude-code', now - 10_000);
     session('proj_1', 's3', 'laptop', 'codex', now - 3_600_000);
     session('proj_2', 's4', 'desktop', 'cursor', now - 7_200_000);
     session('proj_1', 's5', 'desktop', 'pi', now - CAPTURE_WINDOW_MS - 1);
     session('proj_1', 's6', 'admin-box', 'codex', now - 5_000);
-    session('proj_1', 'import-only', 'laptop', 'claude-code', now, null);
-    session('proj_1', 'imported-later', 'laptop', 'claude-code', now, now - 120_000);
-    for (const [machine, agents] of [['laptop', ['claude-code', 'codex']], ['desktop', ['cursor', 'pi']], ['admin-box', ['codex']]] as const) {
-      sqlite.run('INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at) VALUES(?,?,?)',
-        [machine, JSON.stringify(agents.map(id => ({ id, provisioned: true, state: 'ready', sinceAt: 0 }))), now]);
-    }
     sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('laptop', 'mem_machine_2', 0), ('desktop', 'mem_machine_2', 0), ('admin-box', 'mem_machine_1', 0)`);
     seedCredential(sqlite, { id: 'mt_old', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 1, expiresAt: now + 60_000 });
     seedCredential(sqlite, { id: 'mt_new', machineId: 'laptop', memberId: 'mem_machine_2', issuedAt: 2, expiresAt: now + 60_000 });
@@ -69,10 +66,43 @@ describe('capture recency', () => {
   it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {
     const fixture = sqliteEnv();
     const inner = fixture.env.MYCO_DB;
-    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (sql.includes('AS last_event_at')) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
+    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (/MAX\(last_received_at\)/.test(sql)) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
     const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db), 'cf-connecting-ip': '1.2.3.4' } }), env);
     const body = await res.json() as { schema: { matches: boolean }; projects: unknown[]; workers: { available: boolean }; capture: unknown[]; unavailable: string[] };
     expect({ status: res.status, matches: body.schema.matches, projects: body.projects.length, workers: body.workers.available, capture: body.capture, unavailable: body.unavailable })
       .toEqual({ status: 200, matches: true, projects: 2, workers: true, capture: [], unavailable: ['capture'] });
+  });
+
+  it('maintains the unrestricted receipt contract through upgrade, reclassification and head removal', async () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('PRAGMA foreign_keys=ON');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 707)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('first','First',1),('second','Second',1)");
+      sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent)
+        VALUES ('first','old','new-machine','token',1,10,NULL),('first','imported','new-machine','token',2,20,NULL),
+          ('first','custom','new-machine','token',3,30,'unreported'),('first','named-null','new-machine','token',4,35,'null'),
+          ('second','other-project','new-machine','token',5,40,NULL)`);
+      for (const sql of SCHEMA_STEPS.find(step => step.version === 707)!.statements) sqlite.exec(sql);
+      const db = sqliteRelationalStore(sqlite);
+      const matches = async () => {
+        const expected = sqlite.query(`SELECT machine_id,agent,MAX(last_received_at) AS last_event_at,project_id FROM sessions
+          WHERE machine_id IS NOT NULL GROUP BY machine_id,agent ORDER BY last_event_at DESC,machine_id,agent`).all();
+        expect((await captureRecencyStatement(db, 100).all()).results).toEqual(expected);
+        expect(sqlite.query(`SELECT COUNT(*) AS n FROM machine_capture_heads h WHERE NOT EXISTS (
+          SELECT 1 FROM sessions s WHERE s.project_id=h.project_id AND s.session_id=h.session_id
+            AND s.machine_id=h.machine_id AND json_quote(s.agent)=h.agent_json AND s.last_received_at=h.last_received_at)`).get()).toEqual({ n: 0 });
+      };
+      await matches();
+      for (const sql of [
+        "UPDATE sessions SET last_received_at=50 WHERE project_id='first' AND session_id='old'",
+        "UPDATE sessions SET last_received_at=5 WHERE project_id='first' AND session_id='old'",
+        "UPDATE sessions SET machine_id='other-machine',agent='custom' WHERE project_id='first' AND session_id='imported'",
+        "DELETE FROM sessions WHERE project_id='first' AND session_id='custom'",
+        "DELETE FROM sessions WHERE project_id='first' AND session_id='old'",
+        "UPDATE sessions SET project_id='second',session_id='renamed' WHERE project_id='first' AND session_id='named-null'",
+        "DELETE FROM projects WHERE project_id='second'",
+      ]) { sqlite.run(sql); await matches(); }
+    } finally { sqlite.close(); }
   });
 });

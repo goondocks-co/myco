@@ -246,10 +246,10 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('seeks each provisioned harness\'s newest live receipt through the harness index', async () => {
+  it('reads newest receipts from the maintained machine and agent heads', async () => {
     const read = await plans((db) => captureRecency(db, 1_790_000_000_000, 'mem_1'));
-    for (const { store, plan } of reading(read, 'sessions')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH newest USING COVERING INDEX idx_sessions_harness_live \(machine_id=\? AND agent=\? AND last_live_received_at>\?\)/) });
+    for (const { store, plan } of reading(read, 'machine_capture_heads')) {
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/(?:SCAN machine_capture_heads|SEARCH machine_capture_heads USING PRIMARY KEY \(machine_id=\?\))/) });
     }
     // Machine names come from live credentials alone, read off the partial index that holds only them.
     for (const { store, plan } of reading(read, 'member_credentials')) {
@@ -263,11 +263,11 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       for (const { store, sql, plan } of read) {
         const walks = /^SCAN (?:mc(?: USING INDEX idx_machine_claims_claimed)?|machine_claims|w USING INDEX idx_worker_contacts_seen|json_each VIRTUAL TABLE INDEX 1:)$/;
         const boundedWindow = sql.includes('ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root');
-        const allowed = (step: string) => walks.test(step) || (sql.includes('AS last_event_at') && /^SCAN (?:r|h VIRTUAL TABLE INDEX 1:)$/.test(step)) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
+        const allowed = (step: string) => walks.test(step) || (sql.includes('AS last_event_at') && /^SCAN machine_capture_heads$/.test(step)) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
         expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter(allowed) });
       }
-      for (const { store, plan } of reading(read, 'sessions')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH newest USING COVERING INDEX idx_sessions_harness_live \(machine_id=\? AND agent=\? AND last_live_received_at>\?\)/) });
+      for (const { store, plan } of reading(read, 'machine_capture_heads')) {
+        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/(?:SCAN machine_capture_heads|SEARCH machine_capture_heads USING PRIMARY KEY \(machine_id=\?\))/) });
       }
       for (const { store, plan } of reading(read, 'member_credentials')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });

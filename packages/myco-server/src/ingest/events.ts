@@ -375,8 +375,8 @@ export async function planEventWrite(
     ? db
         .prepare(
           `INSERT INTO sessions
-          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-        SELECT ?, ?, ?, ?, ?, ?
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
+        SELECT ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
         ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`,
         )
@@ -387,6 +387,7 @@ export async function planEventWrite(
           ctx.tokenId,
           ctx.now,
           ctx.now,
+          e.kind === 'session.start' ? p.agent : null,
           ctx.projectId,
           e.eventId,
           write.nonce,
@@ -394,8 +395,8 @@ export async function planEventWrite(
     : db
         .prepare(
           `INSERT INTO sessions
-          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-        SELECT ?, ?, ?, ?, ?, ?
+          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
+        SELECT ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
         ON CONFLICT (project_id, session_id) DO NOTHING`,
         )
@@ -406,6 +407,7 @@ export async function planEventWrite(
           ctx.tokenId,
           e.createdAt,
           e.createdAt,
+          e.kind === 'session.start' ? p.agent : null,
           ctx.projectId,
           e.eventId,
           write.nonce,

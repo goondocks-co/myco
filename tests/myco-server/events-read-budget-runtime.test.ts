@@ -40,12 +40,14 @@ const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
 const SESSION_HEALTH_INDEX_WRITES = 2;
 /** Health's receipt-time index adds one transcript insert entry. */
 const TRANSCRIPT_HEALTH_INDEX_WRITES = 1;
+/** An advancing session receipt updates one capture head without changing its key. */
+const CAPTURE_HEAD_WRITES = 1;
 /** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
 const LEARNING_SLICE_COMPLETION_WRITES = 20;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
+  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES,
-  'publication-progress UPDATE': 3, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  'publication-progress UPDATE': 3, 'session.end': 26 + CAPTURE_HEAD_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
