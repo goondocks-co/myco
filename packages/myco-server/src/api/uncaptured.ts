@@ -55,7 +55,7 @@ export interface UncapturedAnswer {
  */
 export async function handleListUncaptured(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const rows = await listUncaptured(env.db, isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id });
-  const names = await ownMachineNames(env.db, ctx.member.id, ctx.now);
+  const names = await ownMachineNames(env.db, ctx.member.id, ctx.now, [...new Set(rows.map(row => row.machineId))]);
   const items = rows.map((row): UncapturedRootItem => ({
     machineId: row.machineId, machineName: names.get(row.machineId) ?? null, member: row.member, rootKey: row.rootKey, label: row.label,
     remote: row.remote, reason: isUncapturedReason(row.reason) ? row.reason : 'refused', misses: row.misses, held: isHeldState(row.held) ? row.held : 'held', firstSeenAt: row.firstSeenAt, lastSeenAt: row.lastSeenAt,

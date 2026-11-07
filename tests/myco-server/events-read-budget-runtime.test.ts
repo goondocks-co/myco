@@ -36,11 +36,17 @@ const DOCUMENT_QUEUE_WRITES = 5;
 const DOCUMENT_DUE_WRITES = 2;
 /** A transcript header's session page index stores one entry. */
 const TRANSCRIPT_PAGE_INDEX_WRITES = 1;
+/** Health's credential and receipt-time indexes each add one session insert entry. */
+const SESSION_HEALTH_INDEX_WRITES = 2;
+/** Health's receipt-time index adds one transcript insert entry. */
+const TRANSCRIPT_HEALTH_INDEX_WRITES = 1;
+/** Heads write on receipt-minute advances and canonical identity changes. */
+const CAPTURE_HEAD_INSERT_WRITES = 1;
 /** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
 const LEARNING_SLICE_COMPLETION_WRITES = 20;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES,
+  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES,
   'publication-progress UPDATE': 3, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;

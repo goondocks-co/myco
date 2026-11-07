@@ -306,7 +306,7 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
   try {
     db.exec('PRAGMA foreign_keys = ON');
     db.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_parity', 'upgrade project', 1);
-      INSERT INTO sessions (project_id, session_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_parity', 'upgrade_session', 'upgrade_token', 1, 1);
+      INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_parity', 'upgrade_session', 'upgrade_machine', 'upgrade_token', 1, 1);
       INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter) VALUES ('proj_parity', 'upgrade_event', 'upgrade_session', 'upgrade_token', 'prompt', 'import', '{}', 'upgrade_hash', 1, 1, 'claude');
       INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('upgrade_agent', 'upgrade', 'built-in', 1, 1);
       INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_agent', 'completed', 1);

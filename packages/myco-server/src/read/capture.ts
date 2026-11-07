@@ -1,11 +1,11 @@
 /**
  * Capture recency, and how every read names a machine.
  *
- * Capture recency is when each machine's agents last sent anything, across every Project. It is read off the sessions
- * a capture keeps current (`last_received_at` moves with every event a session receives), per machine and agent, over
- * a recent window. `idx_sessions_capture` leads with that receipt, so the read covers the window's sessions alone and
- * never a session row. A deleted session still counts: what this answers is whether a machine's capture reaches the
- * Deployment, and deleting a session afterwards does not change that it did.
+ * Capture recency is the newest receipt per machine and agent across every Project, including imported sessions,
+ * unnamed agents and machines with no harness report. Session triggers maintain one head per machine/agent
+ * across Projects.
+ * Same-session receipt stamps refresh at most once per minute; newer session heads appear immediately.
+ * A tombstoned session still counts: capture recency records receipt, independent of content visibility.
  *
  * A machine's name is its claim's label, or, for a machine claimed before names lived there, the label its newest live
  * credential carries. A read shows a viewer the name of the viewer's own machines alone: anyone else's machine is
@@ -63,28 +63,20 @@ export function shownMachineName(owner: MachineOwner | undefined, viewerId: stri
 }
 
 /**
- * The names of `viewerId`'s own machines: each claim's label, else the label its newest live credential carries. Both
- * reads seek the viewer's rows alone.
+ * The names of `viewerId`'s own machines: each claim's label, else the label its newest live credential carries. Each
+ * claim seeks its newest live credential only when its label is absent.
  */
-export async function ownMachineNames(db: RelationalStore, viewerId: string, nowMs: number): Promise<Map<string, string>> {
-  const [claims, credentials] = await db.batch([
-    db.prepare(`SELECT machine_id, label FROM machine_claims WHERE member_id = ?`).bind(viewerId),
-    db.prepare(
-      `SELECT machine_id, runtime_label FROM member_credentials
-        WHERE member_id = ? AND revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
-        ORDER BY issued_at DESC, id DESC`,
-    ).bind(viewerId, nowMs),
-  ]);
-  const carried = new Map<string, string>();
-  for (const row of credentials!.results as { machine_id: string; runtime_label: string }[]) {
-    if (!carried.has(row.machine_id)) carried.set(row.machine_id, row.runtime_label);
-  }
-  const names = new Map<string, string>();
-  for (const row of claims!.results as { machine_id: string; label: string | null }[]) {
-    const name = row.label ?? carried.get(row.machine_id);
-    if (name !== undefined) names.set(row.machine_id, name);
-  }
-  return names;
+export async function ownMachineNames(db: RelationalStore, viewerId: string, nowMs: number, machineIds?: readonly string[]): Promise<Map<string, string>> {
+  if (machineIds?.length === 0) return new Map();
+  const { results } = await db.prepare(`SELECT mc.machine_id, COALESCE(mc.label, (
+      SELECT c.runtime_label FROM member_credentials c
+        WHERE c.machine_id = mc.machine_id AND c.member_id = mc.member_id AND c.revoked_at IS NULL
+          AND c.expires_at > ? AND c.runtime_label IS NOT NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1)) AS name
+    FROM machine_claims mc WHERE mc.member_id = ?
+      ${machineIds === undefined ? '' : 'AND mc.machine_id IN (SELECT value FROM json_each(?))'}`)
+    .bind(nowMs, viewerId, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]))
+    .all<{ machine_id: string; name: string | null }>();
+  return new Map(results.flatMap(row => row.name === null ? [] : [[row.machine_id, row.name] as const]));
 }
 
 /** `rows` with the viewer's own machines named from `names`, and every other machine left unnamed. */
@@ -108,15 +100,16 @@ export interface CaptureRow {
   projectId: string;
 }
 
-/** The latest receipt per machine and agent over the window, most recent first. */
-export function captureRecencyStatement(db: RelationalStore, nowMs: number): PreparedStatement {
-  // `project_id` is a bare column beside MAX(): SQLite takes it from the row that holds the maximum.
-  return db.prepare(
-    `SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
-      WHERE last_received_at >= ? AND machine_id IS NOT NULL
-      GROUP BY machine_id, agent
-      ORDER BY last_event_at DESC, machine_id, agent`,
-  ).bind(nowMs - CAPTURE_WINDOW_MS);
+/** Canonical receipt-minute heads resolve their exact session receipt by primary key. */
+export function captureRecencyStatement(db: RelationalStore, nowMs: number, machineIds?: readonly string[]): PreparedStatement {
+  return db.prepare(`SELECT machine_id,json_extract(agent_json,'$') AS agent,MAX(last_received_at) AS last_event_at,project_id
+    FROM (
+      SELECT h.machine_id,h.agent_json,h.project_id,s.last_received_at
+      FROM machine_capture_heads h CROSS JOIN sessions s ON s.project_id=h.project_id AND s.session_id=h.session_id
+    ) WHERE last_received_at >= ?
+      ${machineIds === undefined ? '' : 'AND machine_id IN (SELECT value FROM json_each(?))'}
+    GROUP BY machine_id,agent_json ORDER BY last_event_at DESC,machine_id,agent`)
+    .bind(nowMs - CAPTURE_WINDOW_MS, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
 }
 
 /** The rows `captureRecencyStatement` answers, as `viewerId` is shown them. */
@@ -134,7 +127,7 @@ export function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<stri
   });
 }
 
-/** The latest receipt per machine and agent over the window, most recent first, as `viewerId` is shown it. */
+/** Receipt-minute heads with their source receipts, most recent first, as `viewerId` is shown them. */
 export async function captureRecency(db: RelationalStore, nowMs: number, viewerId: string): Promise<CaptureRow[]> {
   const [recent, claims, credentials] = await db.batch([captureRecencyStatement(db, nowMs), ...machineOwnerStatements(db, nowMs)]);
   return captureRowsOf(recent!.results, machineOwnersOf(claims!.results, credentials!.results), viewerId);

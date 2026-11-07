@@ -715,6 +715,13 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0699_v699.sql': '64be2f957e498a1f75ae13da0dcb0752db8ef287182a2ec789d9cb2c208b1b94',
   '0700_v700.sql': 'eb856f610ce143f51bd1984cfb484a0845ef571fb32cdaa7137f52668e9a569c',
   '0701_v701.sql': '4582a00267626ceb315e7bf887732e144a51445c36453fee52dffe5046a2bb86',
+  '0702_v702.sql': '2fbf1fb5eee45ea24f46490e9d553193bbf6168bad587ea607f144017a0953d3',
+  '0703_v703.sql': '014fbb8cbc49a0bc6831e7b64ee925377b3e51df474feca01598c61bb9b11f74',
+  '0704_v704.sql': 'b1a0603cd53c0edef855c5f07073a4608e1e02abafdc941e105f315880546fce',
+  '0705_v705.sql': '1ad0f5648e6e3e4db1428ef48a0d61b49fb2ad3b8987184497e759ef918c99d2',
+  '0706_v706.sql': '2363b7ecd3679925da6283eb421eec1f076323d8fc00066e2ef6ccde24a14134',
+  '0707_v707.sql': 'c6271d046acd451688c983c0185fe9027457b2c891c9e326feb89f0b8f62e06b',
+  '0708_v708.sql': '4d2b61672de11bd28ccb6e32fca7ebd459ef4f192438550c6a6904f33d99fcbe',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1333,6 +1340,7 @@ describe('versioned schema steps', () => {
         producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId, text: 'Grammar fixture', origin: 'user' },
       })).toMatchObject({ persisted: true, projected: true });
       writerRows.set('publish_queue', source.sqlite.query('SELECT * FROM publish_queue LIMIT 1').get() as Record<string, unknown>);
+      writerRows.set('machine_capture_heads', source.sqlite.query('SELECT * FROM machine_capture_heads LIMIT 1').get() as Record<string, unknown>);
       await publishFixture(source);
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('learning_sessions', source.sqlite.query('SELECT * FROM learning_sessions').get() as Record<string, unknown>);
@@ -1401,7 +1409,7 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
-      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
+      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
