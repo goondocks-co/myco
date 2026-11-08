@@ -827,6 +827,9 @@ Disposition here is about the **data class**, and separately about **migration**
 | `embedding_provider_holds` | NEW | Core | Blk | Provider retry deadlines and configuration-dependent holds shared by current and building models. Derived; excluded from portable backups. | #2039 |
 | `document_status_totals` | NEW | Core | Blk | Publication session, byte-lag, queue and retirement totals maintained atomically with the catalog. Derived; excluded from portable backups. | #2009 |
 | `document_difference_totals` | NEW | Core | Blk | Maintained totals and membership counts for conversion difference classes. Derived; excluded from portable backups. | #2009 |
+| `document_publication_contributions` | NEW | Core | Blk | Keyed transcript source and per-generation frontier contributions. Derived; excluded from portable backups. | #2101 |
+| `document_publication_totals` | NEW | Core | Blk | Source and generation totals maintained by contribution deltas; generation changes use named-key reads. Derived; excluded from portable backups. | #2101 |
+| `document_publication_ready` | NEW | Core | Blk | Per-session numeric activation after bounded source catch-up; lifecycle facts and due membership stay live during initialization. Derived; excluded from portable backups. | #2101 |
 | `document_publication_facts` | NEW | Core | Blk | Per-session publication lag, transcript and import facts maintained with catalog mutations. Derived; excluded from portable backups. | #2009 |
 | `document_due` | NEW | Core | Blk | Ordered due session identities, maintained with publication facts; backlog telemetry reads a bounded page and marks lower bounds. Derived; excluded from portable backups. | #2009 |
 | `document_due_totals` | NEW | Core | Blk | Inert deadline totals retained after the bounded due queue replaces their writers. Derived; excluded from portable backups. | #2009 |

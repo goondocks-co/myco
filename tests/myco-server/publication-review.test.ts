@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -206,13 +206,10 @@ test('undecodable bytes with the wrong registered digest remain retryable and pu
 test('a failed publication deferral surfaces its persistence error and preserves captured records', async () => {
   await withDocumentStores(async (db, target) => {
     const { now, env, blobs } = await queuedTurn(db);
-    const fail = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
-      bind: (...params) => fail(statement.bind(...params)), run: async () => { throw new Error('deferral persistence unavailable'); },
-    });
-    const faulty: RelationalStore = { prepare: sql => sql.startsWith('UPDATE session_documents SET due_at=') ? fail(db.prepare(sql)) : db.prepare(sql),
-      batch: statements => db.batch(statements) };
+    await db.prepare(`CREATE TRIGGER reject_deferral BEFORE UPDATE OF due_at ON session_documents
+      WHEN NEW.due_at>0 BEGIN SELECT RAISE(ABORT,'deferral persistence unavailable'); END`).run();
     blobs.failNextPut = 'chunk commit unavailable';
-    await expect(publishDocuments({ ...env, db: faulty }, now, limits())).rejects.toThrow('deferral persistence unavailable');
+    await expect(publishDocuments(env, now, limits())).rejects.toThrow('deferral persistence unavailable');
     expect(await db.prepare(`SELECT COUNT(*) n FROM publish_queue`).first(), target).toEqual({ n: 3 });
     expect(await db.prepare(`SELECT COUNT(*) n FROM session_chunks`).first(), target).toEqual({ n: 0 });
   });

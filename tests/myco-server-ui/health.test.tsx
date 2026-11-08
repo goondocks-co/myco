@@ -1,3 +1,4 @@
+import { backlogWords } from '../../packages/myco-server/ui/src/features/admin/health/words.js';
 /**
  * Health as one page: its parts in order at their anchors, the addresses it
  * replaced leading to the right part with their query kept, what needs an
@@ -593,4 +594,8 @@ it('shows actual table progress for a running database check', async () => {
   }] }) }));
   mount();
   expect(await screen.findByText(/Checked 16 of 400 tables/)).toBeTruthy();
+});
+
+it('reports publication counts as building without showing a zero backlog', () => {
+  expect(backlogWords({ state: 'building' })).toBe('Transcript backlog counts are being prepared.');
 });

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { commit } from '@myco-server-worker/db/index.js';
 import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/insights/kpi-reconcile.js';
-import { catchUpKpiPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
+import { catchUpPhase, catchUpProjections, kpiCatchupSeed, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
@@ -133,7 +133,7 @@ describe('KPI projection critical flow', () => {
       expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
       for (const window of [null, 7] as const) expect(await measured(r, window)).toEqual(await oracle(r, window));
       clearProjection(r); await resetProjectionCatchup(r.db);
-      expect(await catchUpKpiPhase(r.db, 'sessions')).toBe(PROJECTION_PAGE_SIZE);
+      expect(await catchUpPhase(r.db, 'sessions')).toBe(PROJECTION_PAGE_SIZE);
       expect(await projectionReadiness(r.db, 'kpi')).toBe('building');
 
       r.prompt('p2', 'a');
@@ -156,7 +156,7 @@ describe('KPI projection critical flow', () => {
       const failDb: RelationalStore = { ...r.db, prepare: sql => sql.startsWith('UPDATE projection_catchup SET after_key=')
         ? r.db.prepare('UPDATE projection_catchup SET done=2 WHERE ?1 IS NOT NULL AND ?2 IS NOT NULL AND ?3 IS NOT NULL AND ?4 IS NOT NULL AND ?5 IS NOT NULL')
         : r.db.prepare(sql) };
-      await expect(catchUpKpiPhase(failDb, 'documents')).rejects.toThrow();
+      await expect(catchUpPhase(failDb, 'documents')).rejects.toThrow();
       expect(snapshot(r)).toEqual(before);
       expect(r.sqlite.query("SELECT after_key,done FROM projection_catchup WHERE phase='documents'").get()).toEqual({ after_key: '[]', done: 0 });
 
@@ -170,7 +170,7 @@ describe('KPI projection critical flow', () => {
         }
         return result;
       } };
-      await catchUpKpiPhase(racing, 'documents');
+      await catchUpPhase(racing, 'documents');
       await drain(r);
       for (const window of [null, 7] as const) expect(await measured(r, window)).toEqual(await oracle(r, window));
       const report = await measured(r, null);

@@ -1,4 +1,4 @@
-import { readDocumentStatus } from '../read/document-status.js';
+import { readDocumentStatus } from '../db/documents/status.js';
 import { readBudgetStatus } from '../read/budget.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';

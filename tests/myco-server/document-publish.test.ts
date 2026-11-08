@@ -1,3 +1,5 @@
+import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
+import { readDocumentStatus as publicationStatus } from '@myco-server-worker/db/documents/status.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
@@ -530,7 +532,9 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     expect(await db.prepare("SELECT state,restore_hold FROM session_documents WHERE session_id='restored'").first(),name).toEqual({state:'live',restore_hold:null});
     const recovered=await readFixtureRecords({db,blobs},'project','restored');
     expect(recovered.filter(record=>[uuid(981),uuid(982)].includes(record.id)).map(record=>record.text),name).toEqual(['retained preview','retained preview']);
-    expect((await readDocumentStatus(db)).differences,name).toEqual({body_missing:1,body_unreadable:1});
+    expect(await publicationStatus(db),name).toEqual({state:'building'});
+    for (let page=0;page<20 && await projectionReadiness(db,'publication')==='building';page++) await catchUpProjections(db);
+    expect(await readDocumentStatus(db),name).toHaveProperty('differences',{body_missing:1,body_unreadable:1});
     const plans=await documentTurnCollection({db,blobs},{projectId:'project'},'restored',prompt.prompt_id,'plans',undefined);
     expect(plans,name).toMatchObject({rows:[{planKey:'plan-one'}]});
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE project_id='project' AND session_id='restored'`).first(),name)

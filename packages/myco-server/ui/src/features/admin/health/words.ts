@@ -43,6 +43,7 @@ export function reportWords(report: TickReport): string {
 /** The transcripts waiting to be read, in the reader's words; null when there are none or the count is not known. */
 export function backlogWords(backlog: StatusResponse['transcriptBacklog']): string | null {
   if (backlog === undefined || backlog === null) return null;
+  if (backlog.state === 'building') return 'Transcript backlog counts are being prepared.';
   if (backlog.transcripts === 0) return backlog.limited ? 'Additional sessions may have transcripts waiting to be read.' : null;
   return `${backlog.limited ? 'At least ' : ''}${formatCount(backlog.transcripts, 'transcript')} (${formatBytes(backlog.bytes)}) waiting to be read into sessions.`;
 }

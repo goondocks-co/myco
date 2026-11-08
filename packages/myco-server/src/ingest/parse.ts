@@ -621,21 +621,16 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
 }
 
 /** The transcripts that still owe a pass, and the bytes they have left to read; the half an import sent, apart. */
-export interface TranscriptBacklog {
-  /** True when a due class extends past the observed page; counts and bytes are lower bounds. */
-  limited?: true;
-    transcripts: number;
-    bytes: number;
-    imported: {
-        transcripts: number;
-        bytes: number;
-    };
-}
+export type TranscriptBacklog = { state: 'building' } | {
+  state?: 'ready'; limited?: true; transcripts: number; bytes: number;
+  imported: { transcripts: number; bytes: number };
+};
 
 /** The document publisher's pending transcript counts. */
 export async function pendingTranscripts(db: RelationalStore, now=Date.now()): Promise<TranscriptBacklog> {
- const {pendingPublication}=await import('../read/document-status.js');
+ const {pendingPublication}=await import('../db/documents/status.js');
  const held=await pendingPublication(db,now);
+ if (held.state === 'building') return {state:'building'};
  return {transcripts:held.transcripts,bytes:held.bytes,imported:{transcripts:held.imported.transcripts,bytes:held.imported.bytes},...(held.limited ? {limited:true as const} : {})};
 }
 
