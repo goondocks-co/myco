@@ -36,7 +36,7 @@ import { reconcileReleaseProvenance, releaseProvenance } from '@myco-server-work
 import { agentRunRetention, JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
 import { STAGING_RETENTION_JOB } from '@myco-server-worker/core/staging-retention.js';
-import { backupRetentionPolicy, currentRetentionVictims } from '@myco-server-worker/core/backup-retention.js';
+import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { maintenanceDue } from '@myco-server-worker/core/store-maintenance.js';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { handleMemberStatus } from '@myco-server-worker/api/status.js';
@@ -349,10 +349,10 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     observe: stagingPrunes,
   },
   'backup.retention.keep_daily': {
-    consumer: at('core/backup-retention.ts', currentRetentionVictims), value: () => 3, invalid: () => 3.5, invalidMeans: { observed: 0 }, observe: backupVictims,
+    consumer: at('core/backup-retention.ts', retentionDecision), value: () => 3, invalid: () => 3.5, invalidMeans: { observed: 0 }, observe: backupVictims,
   },
   'backup.retention.keep_weekly': {
-    consumer: at('core/backup-retention.ts', currentRetentionVictims), setup: () => [['backup.retention.keep_daily', 1]], value: () => 0, invalid: () => 2.5,
+    consumer: at('core/backup-retention.ts', retentionDecision), setup: () => [['backup.retention.keep_daily', 1]], value: () => 0, invalid: () => 2.5,
     invalidMeans: { observed: 0 }, observe: backupVictims,
   },
   ...Object.fromEntries((['optimize', 'integrity'] as const).flatMap((check) => {
@@ -425,7 +425,7 @@ async function backupVictims(r: Rig): Promise<number> {
   for (let i = 0; i < 20; i++) {
     r.sqlite.run(`INSERT OR REPLACE INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned) VALUES (?, ?, ?, 1, '{}', 1, 'test', 0)`, [`b${i}`, `k${i}`, NOW - i * DAY]);
   }
-  return (await currentRetentionVictims(r.env.db, await backupRetentionPolicy(r.env.db))).size;
+  return (await retentionDecision(r.env.db)).victims.size;
 }
 
 async function providerKey(r: Rig): Promise<string | null> {

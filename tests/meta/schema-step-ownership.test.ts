@@ -1,3 +1,4 @@
+import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
@@ -35,6 +36,8 @@ const LISTED: readonly Exception[] = [
   ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
   { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
+  { step: STORAGE_NEXT, object: 'idx_backups_key', table: 'backups', reason: 'Object settlement seeks the backup that registers a physical key.' },
+  { step: STORAGE_NEXT, object: 'idx_object_releases_retry', table: 'object_releases', reason: 'Each release has an independent indexed retry deadline.' },
   { step: V712, object: 'idx_agent_run_events_setup_output', table: 'agent_run_events', reason: 'Setup seeks recorded title and map output without scanning empty run history.' },
   { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
@@ -229,6 +232,7 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),

@@ -1,3 +1,5 @@
+import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
+import type { Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
 import { persistSettings, readSettingStates, readProjectEditor, projectCurationLimitSql, readCurationLimit, settingRevisions, observedRevisionPredicate, type SettingState } from '../db/settings/leaves.js';
@@ -556,9 +558,11 @@ export async function settingsSnapshot(db: RelationalStore): Promise<RelationalS
   return view;
 }
 
-/** A fresh policy view and its value/version predicate for an atomic consumer mutation. */
+const revisionUnchanged = observedSettingsAssertion(observedRevisionPredicate({},true).sql);
+
+/** A fresh policy view and its revision assertion for an atomic consumer mutation. */
 export async function observedSettingsGuard(db:RelationalStore,leaves:readonly string[],compact=false):Promise<{
-  view:RelationalStore;sql:string;params:unknown[];
+  view:RelationalStore;sql:string;params:unknown[];revisions:Record<string,number>;assertion:Bound;
 }> {
   const states = await readSettingStates(db, leaves);
   const view = new Proxy(db, { get: (target, key) => {
@@ -568,7 +572,7 @@ export async function observedSettingsGuard(db:RelationalStore,leaves:readonly s
   SNAPSHOTS.set(view, snapshotRows(states));
   const expected = Object.fromEntries([...states].map(([leaf, row]) => [leaf, row.revision]));
   SNAPSHOT_REVISIONS.set(view, expected);
-  return { view, ...observedRevisionPredicate(expected, compact) };
+  return { view, revisions:expected, assertion:revisionUnchanged.bind(JSON.stringify(expected)), ...observedRevisionPredicate(expected, compact) };
 }
 
 /** One stored leaf as a policy that judges its own stored values reads it: the value, and what its rule says of it. */

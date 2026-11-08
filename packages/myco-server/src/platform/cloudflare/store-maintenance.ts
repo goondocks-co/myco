@@ -13,10 +13,10 @@
  * `classifyD1Error` names.
  *
  * A D1 statement cannot be cancelled once sent, so the check sets no timer of its own. D1 ends every query
- * within 30 seconds (https://developers.cloudflare.com/d1/platform/limits/), and a check sends a fixed number of
- * statements one after another, so its work is over by that many limits after its claim; that is its bound.
+ * within 30 seconds (https://developers.cloudflare.com/d1/platform/limits/). Discovery counts every table check;
+ * each bounded batch reports progress and renews the claim before sending the next batch.
  *
- * `quick_check` runs one table at a time, the checks of every ordinary table sent together as one batch: a single
+ * `quick_check` runs one table at a time, the checks of ordinary tables sent in bounded batches: a single
  * whole-database `quick_check` compiles every table's constraints into one program, which D1 refuses with
  * `SQLITE_NOMEM` once the schema's constraints outgrow its program limit. Each table reports at most 100 problems by
  * SQLite's own default. `foreign_key_check` has no documented
@@ -25,24 +25,20 @@
  */
 import type { MaintenanceCheck, PortResult, StoreMaintenancePort, StoreMeasurement } from '../../core/store-maintenance.js';
 
-/** The D1 binding as the product types it; D1 attaches `meta.size_after` to every result it returns. */
-interface D1Statement { all<T>(): Promise<{ results: T[]; meta?: { size_after?: number } }> }
-interface D1Like {
-  prepare(sql: string): D1Statement;
-  batch(statements: D1Statement[]): Promise<{ results: unknown[] }[]>;
-}
-
 /** D1's maximum SQL query duration. */
 export const D1_QUERY_LIMIT_MS = 30_000;
-/** The statements each check sends, in sequence. */
-export const D1_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 3 };
+const TABLE_DISCOVERY_STATEMENTS = 1;
+const FOREIGN_KEY_STATEMENTS = 1;
+/** Initial statements before the check discovers and records its full work budget. */
+export const D1_INITIAL_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: TABLE_DISCOVERY_STATEMENTS + MAINTENANCE_PROGRESS_STATEMENTS };
 
-/** The tables a quick check covers: every ordinary table, without SQLite's and D1's own. */
-export const CHECKED_TABLES_SQL = `SELECT name FROM sqlite_schema WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'
-  AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' ORDER BY name`;
-/** One table's quick check. */
-export const quickCheckSql = (table: string): string => `PRAGMA quick_check('${table.replaceAll("'", "''")}')`;
+export { CHECKED_TABLES_SQL, quickCheckSql } from '../../db/meta/store-checks.js';
+import { checkStoreTables, optimizeStore, checkedTables, checkForeignKeys } from '../../db/meta/store-checks.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { MAINTENANCE_PROGRESS_STATEMENTS } from '../../core/store-maintenance.js';
+import type { MaintenanceProgress } from '../../core/store-maintenance.js';
 
+export const QUICK_CHECK_BATCH = 16;
 export const SIZE_LIMIT_UNAVAILABLE =
   'the plan\'s database size limit is not readable from the Worker (500 MB on Workers Free, 10 GB on Workers Paid)';
 export const DAILY_QUOTA_UNAVAILABLE =
@@ -58,29 +54,38 @@ function measurements(sizeAfter: number | undefined): StoreMeasurement[] {
   ];
 }
 
-interface ForeignKeyRow { table: string; rowid: number | null; parent: string }
 
-export function d1StoreMaintenance(db: D1Like): StoreMaintenancePort {
-  const run = async (check: MaintenanceCheck): Promise<PortResult> => {
+export function d1StoreMaintenance(db: RelationalStore): StoreMaintenancePort {
+  const run = async (check: MaintenanceCheck, progress?: (value: MaintenanceProgress) => Promise<void>): Promise<PortResult> => {
     if (check === 'optimize') {
-      const optimized = await db.prepare('PRAGMA optimize').all();
-      return { findings: [], measurements: measurements(optimized.meta?.size_after) };
+      const optimized = await optimizeStore(db);
+      return { findings: [], measurements: measurements(optimized) };
     }
-    const tables = await db.prepare(CHECKED_TABLES_SQL).all<{ name: string }>();
-    const quick = await db.batch(tables.results.map((table) => db.prepare(quickCheckSql(table.name))));
-    const keys = await db.prepare('PRAGMA foreign_key_check').all<ForeignKeyRow>();
-    const findings = [
-      ...quick.flatMap((answer) => (answer.results as { quick_check: string }[]).map((r) => r.quick_check)).filter((text) => text !== 'ok'),
-      ...keys.results.map((r) => `foreign key: ${r.table} row ${r.rowid} names a missing ${r.parent}`),
-    ];
-    return { findings, measurements: measurements(keys.meta?.size_after ?? tables.meta?.size_after) };
+    const tables = await checkedTables(db);
+    const total = tables.length + TABLE_DISCOVERY_STATEMENTS + FOREIGN_KEY_STATEMENTS;
+    const report = (completedStatements: number) => progress?.({
+      completedStatements, totalStatements: total,
+      completedTables: Math.min(tables.length,completedStatements-TABLE_DISCOVERY_STATEMENTS), totalTables: tables.length,
+      remainingBatches: Math.ceil(Math.max(0,tables.length-(completedStatements-TABLE_DISCOVERY_STATEMENTS))/QUICK_CHECK_BATCH),
+    });
+    await report(TABLE_DISCOVERY_STATEMENTS);
+    const findings: string[] = [];
+    for (let at=0; at<tables.length; at+=QUICK_CHECK_BATCH) {
+      const page = tables.slice(at,at+QUICK_CHECK_BATCH);
+      findings.push(...await checkStoreTables(db,page));
+      await report(TABLE_DISCOVERY_STATEMENTS+at+page.length);
+    }
+    const keys = await checkForeignKeys(db);
+    findings.push(...keys.findings);
+    await report(total);
+    return { findings, measurements: measurements(keys.size) };
   };
   return {
     support: {
       optimize: { supported: true, label: 'Refreshes the statistics queries are planned from' },
       integrity: { supported: true, label: 'A quick check of every table and index, and of every link between records' },
     },
-    exclusivity: { kind: 'platform-limit', statementLimitMs: D1_QUERY_LIMIT_MS, statements: D1_STATEMENTS },
+    exclusivity: { kind: 'platform-limit', statementLimitMs: D1_QUERY_LIMIT_MS, statements: D1_INITIAL_STATEMENTS },
     run,
   };
 }

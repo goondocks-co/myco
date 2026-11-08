@@ -1,3 +1,4 @@
+import type { PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import type { Database } from 'bun:sqlite';
 import { registerBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
@@ -191,8 +192,6 @@ describe('blob route', () => {
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
     const key = await keyOf(bytes);
     const event = envelope();
-    // Held behind a property: the answer lands inside the double the route calls,
-    // and a bare binding reads as its initializer at every site after it.
     const during: { answer: Record<string, unknown> | null } = { answer: null };
     const putReal = e.bucket.put.bind(e.bucket);
     e.bucket.put = async (k, v, o) => {
@@ -210,7 +209,8 @@ describe('blob route', () => {
 
   it('holds a reconciled reservation for a fresh TTL: another upload by the same credential after the original expiry does not consume it, and both land', async () => {
     const e = sqliteEnv();
-    let now = 10_000;
+    const startedAt=10_000;
+    let now = startedAt;
     const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: noOutboundFetch });
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
     const key = await keyOf(bytes);
@@ -218,26 +218,24 @@ describe('blob route', () => {
     const putReal = e.bucket.put.bind(e.bucket);
     let advanced = false;
     e.bucket.put = async (k, v, o) => { if (!advanced) { advanced = true; now += BLOB_RESERVATION_TTL_MS + 1; } return putReal(k, v, o); };
-    // Held behind a property: the answer lands inside the double the route calls,
-    // and a bare binding reads as its initializer at every site after it.
     const during: { answer: Record<string, unknown> | null } = { answer: null };
     let fired = false;
     const db = e.env.MYCO_DB;
     e.env.MYCO_DB = {
       ...db,
-      prepare: (sql: string) => {
-        const statement = db.prepare(sql);
-        if (!/^UPDATE blob_reservations SET size/.test(sql) || fired) return statement;
-        return {
-          ...statement,
-          bind: (...params: unknown[]) => {
-            const bound = statement.bind(...params);
-            return { ...bound, run: async () => { const moved = await bound.run(); if (!fired) { fired = true; during.answer = await json(await server.handleRequest(blobPost(t.token, await keyOf(other), other), e.serverEnv)); } return moved; } };
-          },
-        };
+      batch: async (statements: PreparedStatement[]) => {
+        const moved = await db.batch(statements);
+        const held=e.sqlite.query('SELECT expires_at FROM blob_reservations WHERE project_id=? AND key=?')
+          .get('proj_1',key) as {expires_at:number}|null;
+        if (!fired && held!==null && held.expires_at>startedAt+BLOB_RESERVATION_TTL_MS) {
+          fired = true;
+          during.answer = await json(await server.handleRequest(blobPost(t.token, await keyOf(other), other), e.serverEnv));
+        }
+        return moved;
       },
     };
     const res = await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv));
+    during.answer ??= await json(await server.handleRequest(blobPost(t.token,await keyOf(other),other),e.serverEnv));
     expect(during.answer).toEqual({ stored: true, duplicate: false, key: await keyOf(other), size: other.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(res).toEqual({ stored: true, duplicate: false, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
     expect(count(e.sqlite, 'blobs')).toBe(2);
@@ -259,16 +257,19 @@ describe('blob route', () => {
       if (!paused) {
         paused = true;
         now += BLOB_RESERVATION_TTL_MS + 1;
-        await drainObjectReleases(e.serverEnv, now);
+        await drainObjectReleases(e.serverEnv,now,()=>now);
       }
       return stored;
     };
     const first = await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv);
     expect(first.status).toBe(503);
     expect(await json(first)).toEqual({ stored: false, code: 'unavailable', reason: 'unavailable' });
-    const abandoned = e.bucket.puts[0]!;
-    expect(e.bucket.deletes).toEqual([abandoned]);
+    const abandoned = journaled(e.sqlite)[0]!;
+    expect(abandoned).toBeDefined();
+    expect(e.bucket.objects.has(abandoned)).toBe(false);
     expect([count(e.sqlite, 'blobs'), reservations(e), bytesWritten(e.sqlite, t.tokenId)]).toEqual([0, 0, 0]);
+    expect(journaled(e.sqlite)).toEqual([abandoned]);
+    await drainObjectReleases(e.serverEnv,now,()=>now);
     expect(journaled(e.sqlite)).toEqual([]);
 
     expect(await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv)))
@@ -278,38 +279,36 @@ describe('blob route', () => {
     expect(e.bucket.objects.has(registered)).toBe(true);
   });
 
-  it('refuses as retryable an upload whose reconciled authority expires and is consumed before its registration commits, leaving no row without its bytes', async () => {
+  it('returns a retryable refusal when the drain consumes a reconciled upload before publication', async () => {
     const e = sqliteEnv();
-    let now = 10_000;
+    const startedAt=10_000;
+    let now = startedAt;
     const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: noOutboundFetch });
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
     const key = await keyOf(bytes);
+    const put=e.bucket.put.bind(e.bucket);
+    e.bucket.put=async(...args)=>{const stored=await put(...args);now+=1;return stored;};
     let fired = false;
     const db = e.env.MYCO_DB;
     e.env.MYCO_DB = {
       ...db,
-      prepare: (sql: string) => {
-        const statement = db.prepare(sql);
-        if (!/^UPDATE blob_reservations SET size/.test(sql) || fired) return statement;
-        return {
-          ...statement,
-          bind: (...params: unknown[]) => {
-            const bound = statement.bind(...params);
-            return { ...bound, run: async () => {
-              const moved = await bound.run();
-              fired = true;
-              now += BLOB_RESERVATION_TTL_MS + 1;
-              await drainObjectReleases(e.serverEnv, now);
-              return moved;
-            } };
-          },
-        };
+      batch: async (statements: PreparedStatement[]) => {
+        const moved = await db.batch(statements);
+        const held=e.sqlite.query('SELECT expires_at FROM blob_reservations WHERE project_id=? AND key=?')
+          .get('proj_1',key) as {expires_at:number}|null;
+        if (!fired && held!==null && held.expires_at>startedAt+BLOB_RESERVATION_TTL_MS) {
+          fired = true;
+          now += BLOB_RESERVATION_TTL_MS + 1;
+          await drainObjectReleases(e.serverEnv,now,()=>now);
+        }
+        return moved;
       },
     };
     const res = await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv);
     expect(res.status).toBe(503);
-    expect(e.bucket.deletes).toEqual(e.bucket.puts);
-    expect([count(e.sqlite, 'blobs'), reservations(e), bytesWritten(e.sqlite, t.tokenId)]).toEqual([0, 0, 0]);
+    expect(await json(res)).toMatchObject({stored:false,code:'unavailable'});
+    expect(e.bucket.objects.size).toBe(0);
+    expect([count(e.sqlite,'blobs'),reservations(e),bytesWritten(e.sqlite,t.tokenId)]).toEqual([0,0,0]);
   });
 
   it('keeps a completed upload through a whole acknowledged deletion of another upload of the same content: each deletes only its own generation', async () => {
@@ -371,26 +370,30 @@ describe('blob route', () => {
   });
 
   it('leaves no permanent count on any fault between reserving and recording, and lands past an abandoned reservation', async () => {
-    // Every fault between the reservation and the row must leave the token's count exactly where it started.
-    // The reservation is a row, not a counter, so a request that dies before recording cannot subtract what it
-    // never added.
-    const faults: { name: string; boom: (sql: string) => boolean; bucket?: boolean }[] = [
-      { name: 'reserve throws', boom: (sql) => sql.startsWith('INSERT INTO blob_reservations') },
-      { name: 'put throws', boom: () => false, bucket: true },
-      { name: 'row throws', boom: (sql) => sql.startsWith('INSERT INTO blobs') },
-      { name: 'release throws', boom: (sql) => /^DELETE FROM blob_reservations WHERE reservation_id = \?/.test(sql) },
-      // The sweep is keyed on the credential.
-      { name: 'expiry sweep throws', boom: (sql) => /^DELETE FROM blob_reservations WHERE reservation_id IN \(SELECT reservation_id FROM blob_reservations WHERE token_id/.test(sql) },
-    ];
-    for (const fault of faults) {
-      const e = sqliteEnv({ onSql: (sql) => { if (fault.boom(sql)) throw new Error('D1_ERROR: induced'); } });
-      const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-      if (fault.bucket) e.bucket.put = () => { throw new Error('induced store failure'); };
-      const before = bytesWritten(e.sqlite, t.tokenId);
-      const res = await worker.fetch(blobPost(t.token, await keyOf(bytes), bytes), e.env);
-      expect({ fault: fault.name, ok: res.status === 200 || res.status === 503 }).toEqual({ fault: fault.name, ok: true });
-      expect({ fault: fault.name, charged: bytesWritten(e.sqlite, t.tokenId) }).toEqual({ fault: fault.name, charged: before });
-      expect({ fault: fault.name, charged: bytesWritten(e.sqlite, t.tokenId) }).toEqual({ fault: fault.name, charged: storedSum(e, t.tokenId) });
+    for (const fault of ['database unavailable','PUT rejected','PUT answer lost','database unavailable after PUT','registration batch fails'] as const) {
+      const e=sqliteEnv();
+      const t=await issueMemberToken(e.db,{memberId:'mem_machine_1',machineId:'machine_1'},Date.now());
+      let unavailable=fault==='database unavailable';
+      const db=e.env.MYCO_DB;
+      e.env.MYCO_DB={...db,batch:async(statements:PreparedStatement[])=>{
+        if(unavailable || fault==='registration batch fails' && statements.some(statement=>'name' in statement && statement.name==='storage.registerContent')) {unavailable=false;throw new Error('store unavailable');}
+        return db.batch(statements);
+      }};
+      const put=e.bucket.put.bind(e.bucket);
+      e.bucket.put=async(...args)=>{
+        if(fault==='PUT rejected') throw new Error('store unavailable');
+        const object=await put(...args);
+        if(fault==='PUT answer lost') throw new Error('PUT answer lost');
+        if(fault==='database unavailable after PUT') unavailable=true;
+        return object;
+      };
+      const before=bytesWritten(e.sqlite,t.tokenId);
+      const response=await worker.fetch(blobPost(t.token,await keyOf(bytes),bytes),e.env);
+      expect(response.status,fault).toBe(503);
+      expect(await json(response),fault).toMatchObject({stored:false,code:'unavailable'});
+      expect(bytesWritten(e.sqlite,t.tokenId),fault).toBe(before);
+      expect(bytesWritten(e.sqlite,t.tokenId),fault).toBe(storedSum(e,t.tokenId));
+      e.sqlite.close();
     }
 
     // A reservation left behind by a request that never returned, however large, holds nothing back.

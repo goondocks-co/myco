@@ -50,6 +50,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_agent_runs_lease', 'the lease foreign key is checked by credential alone, and worker liveness reads leases by the credential that holds them'],
   ['idx_backup_publications_expiry', 'the object-release drain consumes expired backup publication authorities across the Deployment, oldest expiry first'],
   ['idx_blob_reservations_expiry', 'the object-release drain consumes expired upload authorities across the Deployment, oldest expiry first'],
+  ['idx_backups_key', 'object settlement seeks the backup that registers a physical key'],
+  ['idx_object_releases_retry', 'the object-release drain seeks due journal keys across the Deployment by retry deadline'],
   ['idx_object_releases_created', 'the object-release drain deletes journaled objects across the Deployment, oldest first'],
   ['idx_recovery_holds_open', 'at most one recovery hold was open in a Deployment, before step 43 gave a hold its holder'],
   ['idx_recovery_holds_open_holder', "at most one recovery hold of each holder is open in a Deployment: its own export producer's, and an operator backup's"],

@@ -79,7 +79,7 @@ test('a backup whose index write fails retains durable release ownership for the
     };
     await db.prepare("CREATE TRIGGER reject_backup BEFORE INSERT ON backups BEGIN SELECT RAISE(ABORT,'index unavailable'); END").run();
     await expect(createBackup(db, blobs, { producer: 'test', now: Date.now() })).rejects.toThrow('index unavailable');
-    expect(blobs.objects.size, target).toBe(0);
+    expect(blobs.objects.size, target).toBe(1);
     expect(await db.prepare('SELECT COUNT(*) n FROM object_releases').first(), target).toEqual({ n: 1 });
     await drainObjectReleases({ db, blobs }, Date.now());
     expect(blobs.objects.size, target).toBe(0);

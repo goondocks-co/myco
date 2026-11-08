@@ -443,16 +443,20 @@ describe('retention', () => {
 
   it('prunes through the release owner: the victim\'s object is journaled with its row removed, and the drain deletes it only once the store acknowledges', async () => {
     const { db, bucket, sqlite, now } = seeded();
+    await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by)
+      VALUES('backup.retention.keep_daily','1',0,'test'),('backup.retention.keep_weekly','1',0,'test')`).run();
     const old = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
     const fresh = await createBackup(db, bucket, { producer: 'test', now });
-    const pruned = await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now);
+    const pruned = await pruneBackups(db, now);
+    expect(pruned.state).toBe('pruned');
+    if (pruned.state !== 'pruned') throw new Error('backup retention failed');
     expect({ pruned: pruned.pruned, journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ pruned: 1, journal: [old.key], deleted: [] });
     expect((await listBackups(db, bucket)).map((l) => l.id)).toEqual([fresh.id]);
     expect((await drainObjectReleases({ db, blobs: bucket }, now)).deleted).toBe(1);
     expect({ journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ journal: [], deleted: [old.key] });
 
     const again = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
-    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(1);
+    expect(await pruneBackups(db, now)).toMatchObject({state:'pruned',pruned:1});
     const failing = { ...bucket, delete: async () => { throw new Error('store outage'); } };
     expect(await drainObjectReleases({ db, blobs: failing }, now)).toEqual({ expired: 0, deleted: 0, decided: 0, unacknowledged: 1 });
     expect({ journal: journaled(sqlite), stored: bucket.objects.has(again.key) }).toEqual({ journal: [again.key], stored: true });
@@ -460,12 +464,14 @@ describe('retention', () => {
 
   it('pin exempts a row from retention until unpinned', async () => {
     const { db, bucket, now } = seeded();
+    await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by)
+      VALUES('backup.retention.keep_daily','1',0,'test'),('backup.retention.keep_weekly','1',0,'test')`).run();
     const old = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
     await createBackup(db, bucket, { producer: 'test', now });
     expect(await setBackupPinned(db, old.id, true)).toBe(true);
-    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(0);
+    expect(await pruneBackups(db, now)).toMatchObject({state:'pruned',pruned:0});
     expect(await setBackupPinned(db, old.id, false)).toBe(true);
-    expect((await pruneBackups(db, { keepDaily: 1, keepWeekly: 1 }, now)).pruned).toBe(1);
+    expect(await pruneBackups(db, now)).toMatchObject({state:'pruned',pruned:1});
   });
 });
 

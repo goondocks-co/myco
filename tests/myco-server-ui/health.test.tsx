@@ -565,3 +565,32 @@ it('keeps a readable database distinct from failed worker, learning and backup s
     cleanup();
   }
 });
+
+it('shows a persisted backup retention failure with a retry action on Health', async () => {
+  server(routes({
+    '/api/backups': () => Response.json({ backups: [BACKUP], retention: { at: NOW,
+      outcome: { state: 'failed', errorClass: 'db' } } }),
+  }));
+  mount();
+  expect(await screen.findByText(/Backup retention failed/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Create backup' })).toBeTruthy();
+});
+
+it('names a changed retention decision on Health',async()=>{
+  server(routes({'/api/backups':()=>Response.json({backups:[BACKUP],retention:{at:NOW,
+    outcome:{state:'changed',reason:'retention_changed'}}})}));
+  mount();
+  expect(await screen.findByText('Retention changed while pruning; the next backup decides again.')).toBeTruthy();
+});
+
+it('shows actual table progress for a running database check', async () => {
+  server(routes({ '/api/maintenance': () => Response.json({ checks: [{
+    check: 'integrity', support: { supported: true, label: 'Checks stored records' },
+    cadence: { state: 'off' }, dueAt: null, running: true,
+    latest: { runId: 'check1', trigger: 'owner', state: 'running', startedAt: NOW, finishedAt: null,
+      errorClass: null, findings: [], findingsOmitted: 0, measurements: [],
+      progress: { completedTables: 16, totalTables: 400 } },
+  }] }) }));
+  mount();
+  expect(await screen.findByText(/Checked 16 of 400 tables/)).toBeTruthy();
+});

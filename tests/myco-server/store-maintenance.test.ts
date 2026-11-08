@@ -17,7 +17,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
-  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, runMaintenance,
+  boundFindings, cadenceOf, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, runMaintenance,
   type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort, type StoreMeasurement,
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -221,7 +221,9 @@ it('on a platform-limited store, a run inside its bound refuses another, and pas
   const t0 = 1_000 * HOUR;
   const stale = runMaintenance(env, 'optimize', 'owner', t0, { clock: () => t0 });
   await Bun.sleep(5);
-  const bound = (1 + 1 + CLAIM_STATEMENTS) * 30_000;
+  const held=await latestOutcome(env,'optimize');
+  expect(held?.claimExpiresAt).toBeGreaterThan(t0);
+  const bound=held!.claimExpiresAt!-t0;
   expect(await runMaintenance(env, 'optimize', 'owner', t0 + bound - 1, { clock: () => t0 + bound - 1 })).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
   const fresh = await runMaintenance({ ...env, storeMaintenance: releasedPort(D1_LIKE) }, 'optimize', 'owner', t0 + bound, { clock: () => t0 + bound });
   expect(fresh).toMatchObject({ outcome: 'ran', recorded: true, record: { state: 'healthy' } });

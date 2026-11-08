@@ -51,8 +51,10 @@ describe('the backup routes', () => {
     const { env, db } = setup();
     await bootstrapOwnership(db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
     const created = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
-    const createdBody = await created.json() as { backup: { id: string }; pruned: number };
-    expect({ status: created.status, pruned: createdBody.pruned }).toEqual({ status: 200, pruned: 0 });
+    const createdBody = await created.json() as { backup: { id: string }; retention: { state: string; pruned: number; deferred: number } };
+    expect({ status: created.status, retention: createdBody.retention }).toEqual({
+      status: 200, retention: { state: 'pruned', pruned: 0, deferred: 0 },
+    });
     const id = createdBody.backup.id;
 
     const listed = await worker.fetch(await asOwner(db, '/api/backups'), env);
