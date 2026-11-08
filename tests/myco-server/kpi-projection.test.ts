@@ -277,7 +277,8 @@ describe('KPI projection critical flow', () => {
       const { sqliteEnv } = await import('./helpers/fixtures.js');
       const runtime = sqliteEnv();
       try {
-        await JOB_IMPLEMENTATIONS['projection-catch-up']!({ ...runtime.serverEnv, db: r.db }, NOW, 'sleep');
+        let wakes = 0;
+        while ((await JOB_IMPLEMENTATIONS['projection-catch-up']!({ ...runtime.serverEnv, db: r.db }, NOW, 'sleep') as { more: boolean }).more) expect(++wakes).toBeLessThan(50);
       } finally { runtime.sqlite.close(); }
       expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
       expect(snapshot(r)).toEqual(before);

@@ -881,8 +881,7 @@
     "tests/myco-server/publication-ownership.test.ts": 46000,
     "tests/myco-server/publication-rebuild.test.ts": 16000,
     "tests/myco-server/publication-failures.test.ts": 9300,
-    "tests/myco-server/publication-initialization.test.ts": 65000,
-    "tests/myco-server/publication-replay-budget.test.ts": 45000
+    "tests/myco-server/publication-initialization.test.ts": 65000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
