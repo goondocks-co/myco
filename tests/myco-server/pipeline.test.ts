@@ -1,5 +1,5 @@
 import { jsonBody } from '../helpers/json-body.js';
-import { describe, it, expect } from 'bun:test';
+import { afterEach, describe, it, expect } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -7,8 +7,9 @@ import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { createIngestThrottle } from './helpers/throttle.js';
-import { authRow, noMemberRow } from './helpers/rows.js';
-import { PROTOCOL, blobPost, envelope, memoryBlobStore, noOutboundFetch } from './helpers/fixtures.js';
+import { seedCredential } from './helpers/d1.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { PROTOCOL, blobPost, envelope, sqliteEnv, noOutboundFetch } from './helpers/fixtures.js';
 
 interface EnvOpts {
   sourceLimit?: number;
@@ -22,58 +23,44 @@ interface EnvOpts {
   schemaVersion?: string | null;
 }
 
+const fixtures: ReturnType<typeof sqliteEnv>[] = [];
+afterEach(() => {
+  for (const fixture of fixtures.splice(0)) fixture.sqlite.close();
+});
+const PROJECT = 'proj_pipeline';
+
 async function envFor(token: string, opts: EnvOpts = {}) {
-  const tokenHash = await sha256Hex(token);
-  const version = opts.schemaVersion === undefined ? undefined : { schema_version: opts.schemaVersion };
-  const member = authRow({
-    expires_at: opts.expiresAt ?? Date.now() + 1_000_000,
-    revoked_at: opts.revokedAt ?? null,
-    member_live: 'mem_1',
-    ...version,
+  const fixture = sqliteEnv();
+  fixtures.push(fixture);
+  seedCredential(fixture.sqlite, {
+    id: 'mt_1', memberId: 'mem_1', machineId: 'machine_1', hash: await sha256Hex(token),
+    expiresAt: opts.expiresAt ?? Date.now() + 1_000_000, revokedAt: opts.revokedAt ?? null,
   });
-  const nobody = noMemberRow({ member_live: null, ...version });
-  const statement = (sql: string, values: unknown[] = []) => ({
-    sql,
-    bind: (...bound: unknown[]) => statement(sql, bound),
-    first: async () => {
-      if (opts.authThrows) throw new Error('D1_ERROR: boom');
-      if (sql.includes("s.key = 'version'")) {
-        if (opts.schemaVersion === null) return null;
-        return values[0] === tokenHash ? member : nobody;
-      }
-      if (sql.includes("key = 'deployment_id'")) return { value: 'dep_pipeline_fixture' };
-      if (sql === 'SELECT member_id FROM member_credentials WHERE id = ?') return values[0] === member.id ? { member_id: 'mem_1' } : null;
-      if (sql.includes('FROM members m') && sql.includes('deployment_ownership')) {
-        return values[0] === 'mem_1' ? { role: 'member', revoked_at: null, owner: null } : null;
-      }
-      if (sql.includes('SELECT 1 AS present FROM projects')) return values[0] === 'proj_1' ? { present: 1 } : null;
-      return null;
-    },
-    run: async () => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return { results: [], meta: { changes: 1 } }; },
+  fixture.sqlite.run("UPDATE members SET role='member' WHERE id='mem_1'");
+  if (opts.schemaVersion === null) fixture.sqlite.run("DELETE FROM schema_meta WHERE key='version'");
+  else if (opts.schemaVersion !== undefined) fixture.sqlite.query("UPDATE schema_meta SET value=? WHERE key='version'").run(opts.schemaVersion);
+  const failure = () => { throw new Error('D1_ERROR: boom'); };
+  const observe = (statement: PreparedStatement): PreparedStatement => ({
+    ...statement,
+    bind: (...values) => observe(statement.bind(...values)),
+    run: async () => opts.writeThrows ? failure() : statement.run(),
   });
+  const db: RelationalStore = {
+    prepare: sql => opts.authThrows ? failure() : observe(fixture.db.prepare(sql)),
+    batch: statements => opts.writeThrows ? failure() : fixture.db.batch(statements),
+  };
   return {
-    MYCO_DB: {
-      prepare: (sql: string) => statement(sql),
-      batch: async (stmts: { sql?: string }[]) => {
-        if (opts.writeThrows) throw new Error('D1_ERROR: boom');
-        return stmts.map(({ sql }) => ({
-          results: sql?.includes(' AS live') ? [{ live: 1 }]
-            : sql?.startsWith('SELECT p.project_id AS projectId') ? [{ projectId: 'proj_1', name: 'Fixture', archivedAt: null }]
-              : sql?.endsWith(' AS allowed') ? [{ allowed: 1 }] : [],
-          meta: { changes: 1 },
-        }));
-      },
-    },
-    BUCKET: memoryBlobStore(),
+    ...fixture.env,
+    MYCO_DB: db,
     SOURCE_LIMIT: opts.sourceLimitThrows ? { limit: async () => { throw new Error('limiter down'); } } : createIngestThrottle(opts.sourceLimit ?? 100, 60_000, 100, () => 0),
     TOKEN_LIMIT: opts.tokenLimitThrows ? { limit: async () => { throw new Error('limiter down'); } } : createIngestThrottle(opts.tokenLimit ?? 100, 60_000, 100, () => 0),
-  } as any;
+  };
 }
 
 const good = envelope();
 
 const post = (token?: string, opts: { source?: string | null; body?: string; protocol?: string | null } = {}) => {
-  const headers: Record<string, string> = { [PROJECT_HEADER]: 'proj_1' };
+  const headers: Record<string, string> = { [PROJECT_HEADER]: PROJECT };
   if (token) headers.authorization = `Bearer ${token}`;
   if (opts.source !== null) headers['cf-connecting-ip'] = opts.source ?? '1.2.3.4';
   if (opts.protocol !== null) headers[PROTOCOL_HEADER] = opts.protocol ?? String(SERVER_PROTOCOL);
@@ -98,7 +85,7 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const env = await envFor(token, { sourceLimit: 1 });
     for (let i = 0; i < 3; i++) {
-      const res = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } }), env);
+      const res = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, ...PROTOCOL } }), env);
       expect(res.status).toBe(401);
     }
     expect((await worker.fetch(post(), env)).status).toBe(401);
@@ -111,16 +98,13 @@ describe('pipeline (via the deployed entry)', () => {
     expect((await worker.fetch(post(mintMemberToken()), env)).status).toBe(401);
   });
 
-  it('answers 401 for a malformed credential without a token lookup', async () => {
+  it('refuses malformed credentials even when authentication storage is unavailable', async () => {
     const token = mintMemberToken();
-    const env = await envFor(token);
-    let prepares = 0;
-    const db = env.MYCO_DB;
-    env.MYCO_DB = { ...db, prepare: (sql: string) => { prepares += 1; return db.prepare(sql); } };
+    const env = await envFor(token, { authThrows: true });
     for (const bad of [`${token}x`, token.slice(0, 42), 'not a token', `${token.slice(0, 42)}!`]) {
       expect((await worker.fetch(post(bad), env)).status).toBe(401);
     }
-    expect(prepares).toBe(0);
+    expect((await worker.fetch(post(token), env)).status).toBe(503);
   });
 
   it('answers 401 for an expired and for a revoked token', async () => {
@@ -163,10 +147,10 @@ describe('pipeline (via the deployed entry)', () => {
     const events = await worker.fetch(post(token), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: events.status, body: await events.json(), protocol: events.headers.get(PROTOCOL_HEADER), retry: events.headers.get('retry-after') })
       .toEqual({ status: 503, body: { persisted: false, code: 'unavailable', reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL), retry: String(RETRY_AFTER_SECONDS) });
-    const blobs = await worker.fetch(blobPost(token, 'b'.repeat(64), new Uint8Array([1])), await envFor(token, { tokenLimitThrows: true }));
+    const blobs = await worker.fetch(blobPost(token, 'b'.repeat(64), new Uint8Array([1]), 'text/plain', { [PROJECT_HEADER]: PROJECT }), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: blobs.status, body: await blobs.json(), protocol: blobs.headers.get(PROTOCOL_HEADER) })
       .toEqual({ status: 503, body: { stored: false, code: 'unavailable', reason: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
-    const unmatched = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } }), await envFor(token, { tokenLimitThrows: true }));
+    const unmatched = await worker.fetch(new Request('https://s/nope', { method: 'POST', body: '{}', headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, ...PROTOCOL } }), await envFor(token, { tokenLimitThrows: true }));
     expect({ status: unmatched.status, body: await unmatched.json(), protocol: unmatched.headers.get(PROTOCOL_HEADER) }).toEqual({ status: 503, body: { error: 'unavailable' }, protocol: String(SERVER_PROTOCOL) });
   });
 
@@ -219,7 +203,7 @@ describe('pipeline (via the deployed entry)', () => {
   it('turns a post-auth body stream failure into a retryable 503 with a reason', async () => {
     const token = mintMemberToken();
     const body = new ReadableStream({ pull() { throw new Error('client went away'); } });
-    const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, duplex: 'half' } as any);
+    const req = new Request('https://s/events', { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(req, await envFor(token));
     expect(res.status).toBe(503);
     expect(await jsonBody(res)).toEqual({ persisted: false, code: 'unavailable', reason: 'unavailable' });
@@ -255,7 +239,7 @@ describe('pipeline (via the deployed entry)', () => {
       env.MYCO_DB = { ...db, batch: async () => { throw new Error('D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT_CHECK'); } };
       return env;
     };
-    const blob = () => blobPost(token, 'b'.repeat(64), new Uint8Array([1, 2]));
+    const blob = () => blobPost(token, 'b'.repeat(64), new Uint8Array([1, 2]), 'text/plain', { [PROJECT_HEADER]: PROJECT });
     for (const [route, request, shape] of [['events', post, 'persisted'], ['blobs', blob, 'stored']] as const) {
       const res = await worker.fetch(request(token), await constraintEnv());
       expect({ route, status: res.status, body: await res.json() }).toEqual({ route, status: 503, body: { [shape]: false, code: 'unavailable', reason: 'unavailable' } });
@@ -266,9 +250,25 @@ describe('pipeline (via the deployed entry)', () => {
     const token = mintMemberToken();
     const env = await envFor(token);
     for (const scheme of ['bearer', 'BEARER', 'Bearer']) {
-      const req = new Request('https://s/events', { method: 'POST', body: JSON.stringify(good), headers: { authorization: `${scheme} ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL } });
+      const req = new Request('https://s/events', { method: 'POST', body: JSON.stringify(good), headers: { authorization: `${scheme} ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, ...PROTOCOL } });
       expect((await worker.fetch(req, env)).status).toBe(200);
     }
+  });
+
+  it('admits an authenticated member into an unseen Project and persists its uploaded blob', async () => {
+    const token = mintMemberToken();
+    const env = await envFor(token);
+    const text = 'pipeline fixture upload';
+    const key = await sha256Hex(text);
+    const response = await worker.fetch(blobPost(token, key, new TextEncoder().encode(text), 'text/plain', {
+      [PROJECT_HEADER]: PROJECT,
+    }), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ stored: true });
+    expect(await env.MYCO_DB.prepare('SELECT project_id,name,archived_at FROM projects WHERE project_id=?').bind(PROJECT).first())
+      .toEqual({ project_id: PROJECT, name: PROJECT, archived_at: null });
+    expect(await env.MYCO_DB.prepare('SELECT project_id,key,token_id FROM blobs WHERE project_id=? AND key=?').bind(PROJECT,key).first())
+      .toEqual({ project_id: PROJECT, key, token_id: 'mt_1' });
   });
 
   it('stamps security headers on 200, 401, 429, and 503', async () => {
@@ -323,15 +323,15 @@ describe('pipeline (via the deployed entry)', () => {
     const env = await envFor(token);
     const key = 'b'.repeat(64);
     const body = new ReadableStream({ pull(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
-    const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
+    const noLength = new Request(`https://s/blobs/${key}`, { method: 'POST', body, headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, 'content-type': 'text/plain', ...PROTOCOL }, duplex: 'half' } as any);
     const res = await worker.fetch(noLength, env);
     expect(await jsonBody(res)).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     expect({ used: noLength.bodyUsed, locked: noLength.body?.locked }).toEqual({ used: false, locked: false });
-    const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
+    const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
     expect(await jsonBody((await worker.fetch(big, env)))).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
     for (const bad of ['-1', '1.5', 'x']) {
-      const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: 'proj_1', 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
+      const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
       expect(await jsonBody((await worker.fetch(req, env)))).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });
     }
   });

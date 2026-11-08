@@ -87,6 +87,16 @@ describe('Projects', () => {
     expect(posts).toEqual(['/api/projects/live/archive']);
   });
 
+  it('explains the project capacity refusal and leaves the archived project available to retry', async () => {
+    const reason = 'Project was not restored: 1000 of 1000 active Projects. Archive a Project, then call POST /api/projects/arch/unarchive again.';
+    server(base([LIVE, ARCH], { '/api/projects/arch/unarchive': () => Response.json({ error: 'project_limit', active: 1000, limit: 1000, reason }, { status: 409 }) }));
+    mount('/projects');
+    fireEvent.click(await screen.findByRole('button', { name: 'Archived (1)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Unarchive' }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Unarchive' })).toBeTruthy();
+  });
+
   it('says the refusal in the person\'s words', async () => {
     server(base([LIVE, ARCH], { '/api/projects/arch/unarchive': () => Response.json({ error: 'not_archived' }, { status: 409 }) }));
     mount('/projects');

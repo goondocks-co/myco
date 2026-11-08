@@ -98,18 +98,6 @@ export async function changeMemberRole(db: RelationalStore, actor: string, membe
   return { memberId, ...current };
 }
 
-/** Only a schema-proven fresh Deployment chooses its first owner during the authenticated link batch. */
-function freshOwnershipStatements(db: RelationalStore, memberId: string, githubId: string, now: number): PreparedStatement[] {
-  return [
-    db.prepare(`UPDATE deployment_ownership SET member_id = ?, revision = revision + 1, bootstrap_mode = 'selection'
-      WHERE id = 1 AND member_id IS NULL AND bootstrap_mode = 'fresh' AND changes() = 1
-        AND EXISTS (SELECT 1 FROM members m WHERE m.id = ? AND m.github_id = ? AND ${linkedHumanAdminSql('m')})`)
-      .bind(memberId, memberId, githubId),
-    db.prepare(`INSERT INTO deployment_ownership_audit (revision,member_id,actor_id,created_at)
-      SELECT revision,member_id,member_id,? FROM deployment_ownership WHERE id = 1 AND member_id = ? AND changes() = 1`).bind(now, memberId),
-  ];
-}
-
 /** Initial owner selection is explicit; the guarded write cannot replace an established owner. */
 export async function bootstrapOwnership(db: RelationalStore, actor: string, candidate: string, revision: string, now: number): Promise<DeploymentOwnershipPreview> {
   const admin = await db.prepare("SELECT 1 AS admitted FROM members WHERE id = ? AND role = 'admin' AND revoked_at IS NULL").bind(actor).first();
@@ -147,12 +135,6 @@ export async function restoreOwnership(db: RelationalStore, row: { member_id: st
   ]);
   const restored = await ownershipPreview(db);
   if (restored.ownerMemberId === null) throw new Error('Restored owner is not a live linked administrator');
-}
-
-/** The authenticated bind and initial ownership share one transaction and cannot commit separately. */
-export async function completeIdentityLink(db: RelationalStore, bind: PreparedStatement, memberId: string, githubId: string, now: number): Promise<number> {
-  const results = await db.batch([bind, ...freshOwnershipStatements(db, memberId, githubId, now)]);
-  return results[0]!.meta.changes;
 }
 
 /** Every restored human membership commits the explicit-selection marker with its rows. */

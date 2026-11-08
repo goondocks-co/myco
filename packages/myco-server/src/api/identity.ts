@@ -16,7 +16,7 @@ import { dashboardPermissions } from '../auth/dashboard-permissions.js';
 export async function handleMe(env: ServerEnv, ctx: SessionContext): Promise<Response> {
   let member = ctx.member;
   if (member !== null) {
-    const named = await tryNameMemberFromLogin(env.db, member.id, ctx.session.sub, ctx.session.login);
+    const named = await tryNameMemberFromLogin(env.db, member.id, ctx.session.sub, ctx.session.login, env.platform.classifyError);
     if (named !== null) member = { ...member, label: named };
   }
   const subject = member === null
@@ -46,7 +46,7 @@ export async function handleLink(env: ServerEnv, ctx: SessionContext): Promise<R
   const result = await spendIdentityLinkAuthority(env.db, body.key, ctx.session.sub, ctx.now);
   if (result.ok) {
     // Record the linked GitHub login and fill an unnamed member's display name.
-    const named = await tryNameMemberFromLogin(env.db, result.member.id, ctx.session.sub, ctx.session.login);
+    const named = await tryNameMemberFromLogin(env.db, result.member.id, ctx.session.sub, ctx.session.login, env.platform.classifyError);
     return ok({ linked: true, member: named === null ? result.member : { ...result.member, label: named } });
   }
   return linkRefusal(env, result.reason);
