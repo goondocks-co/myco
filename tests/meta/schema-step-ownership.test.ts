@@ -1,6 +1,7 @@
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
+import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { V711, V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
 import { V713 as CURSOR_INDEX_STEP, V713_STATEMENTS as CURSOR_INDEX_STATEMENTS } from '@myco-server-worker/db/schema-v713.js';
@@ -38,6 +39,10 @@ const LISTED: readonly Exception[] = [
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
   { step: STORAGE_NEXT, object: 'idx_backups_key', table: 'backups', reason: 'Object settlement seeks the backup that registers a physical key.' },
   { step: STORAGE_NEXT, object: 'idx_object_releases_retry', table: 'object_releases', reason: 'Each release has an independent indexed retry deadline.' },
+  ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_state_version_${action}`, table: 'embedding_versions', reason: 'Version mutations reconcile the one source key they name under every active model.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_state_receipt_${action}`, table: 'embedding_receipts', reason: 'Receipt mutations move their source between unwritten, journaled, rewriting, ready and unavailable.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_state_proof_${action}`, table: 'processed_resources', reason: 'Plan proof eligibility reconciles only that plan’s source state.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_model_totals_${action}`, table: 'embedding_source_state', reason: 'Each source state row moves its model total by its old and new state.' })),
   { step: V712, object: 'idx_agent_run_events_setup_output', table: 'agent_run_events', reason: 'Setup seeks recorded title and map output without scanning empty run history.' },
   { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
@@ -233,6 +238,13 @@ interface StatementException {
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
+  ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
+    reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'
+      : sql.includes('projection_catchup') ? 'Each catch-up phase carries the generation a restart advances, which fences page settlement.'
+      : 'Receipts, failures and provider holds record the attempt that wrote them, which fences their settlement.' })),
+  ...V716_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO')).map(sql => ({ step: V716, sql,
+    reason: sql.includes('embedding_attempt_clock') ? 'The attempt clock starts once, before any attempt.'
+      : sql.includes('embedding_reset') ? 'Reset retirement phases start finished, with no reset admitted.' : 'Source state records whether existing versions need catch-up.' })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),

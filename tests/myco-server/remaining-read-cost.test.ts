@@ -1,10 +1,9 @@
 import { vectorId } from '@myco-server-worker/core/embedding/vectors.js';
-import { embeddingSweep } from '@myco-server-worker/core/embedding/work-sweep.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS, SOURCE_SWEEP_PAGE, WORK_SWEEP_PAGE } from '@myco-server-worker/core/embedding/work-state.js';
+import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -409,41 +408,6 @@ test('file continuation seeks each role before joining metadata and hides other 
   }
 });
 
-test('receipt safety pages discover missed retirement work without admitting maintenance', async () => {
-  const sources = 600;
-  await project('safety');
-  await measured.db
-    .prepare(
-      `${seq} INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,content_hash,status,created_at,updated_at,token_id,received_at)
-    SELECT 'safety',printf('p-%06d',x),'s','e','machine','body','h','active',1,1,'token',1 FROM n`,
-    )
-    .bind(sources)
-    .run();
-  await measured.db
-    .prepare(
-      `INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
-    SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE project_id='safety'`,
-    )
-    .run();
-  expect(await hasEmbeddingWork(measured.db, 'safety', 'm', 100)).toBe(false);
-  await measured.db
-    .prepare(
-      "INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) VALUES('safety','m','zz-legacy','plan','p-000600','legacy',1,1)",
-    )
-    .run();
-  await measured.db.prepare("DELETE FROM embedding_retirement_queue WHERE project_id='safety'").run();
-  await measured.db
-    .prepare("UPDATE embedding_work_state SET checked_revision=revision,pending=0,sweep_at=?,sweep_cursor=NULL WHERE project_id='safety'")
-    .bind(100 + WORK_SWEEP_MIN_MS)
-    .run();
-  let admitted = false;
-  const sweepPages = Math.floor(sources / SOURCE_SWEEP_PAGE) + 1 + Math.floor((sources + 1) / WORK_SWEEP_PAGE) + 1;
-  for (let step = 0; step < sweepPages && !admitted; step++)
-    admitted = await hasEmbeddingWork(measured.db, 'safety', 'm', 100 + WORK_SWEEP_MIN_MS + step * WORK_SWEEP_CONTINUE_MS);
-  expect(admitted).toBe(true);
-  expect((await retiringReceipt(measured.db, 'safety', ['m'], 100 + WORK_SWEEP_MIN_MS))?.id).toBe('zz-legacy');
-});
-
 test('processed body proof changes queue the affected receipt before the next safety deadline', async () => {
   await project('proof');
   await measured.db
@@ -461,6 +425,7 @@ test('processed body proof changes queue the affected receipt before the next sa
       "INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE project_id='proof'",
     )
     .run();
+  while ((await prepareEmbeddingDue(measured.db, 'proof', 'm')).more);
   expect(await hasEmbeddingWork(measured.db, 'proof', 'm', 100)).toBe(false);
   await measured.db.prepare("DELETE FROM processed_resources WHERE project_id='proof' AND resource_id='p'").run();
   expect(await hasEmbeddingWork(measured.db, 'proof', 'm', 101)).toBe(true);
@@ -496,8 +461,6 @@ test('removed models retire through their receipt range without copying their hi
     )
     .bind(JSON.stringify(receipts))
     .run();
-  const page = await embeddingSweep(measured.db, 'removed', [], ['new'], 100, null);
-  await embeddingSweep(measured.db, 'removed', [], ['new'], 100, page.cursor);
   expect(await measured.db.prepare("SELECT COUNT(*) AS n FROM embedding_retirement_queue WHERE project_id='removed'").first()).toEqual({
     n: 0,
   });

@@ -2,6 +2,21 @@ import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
+  'db/embeddings/state.ts#reconcileSourceState': [{ tables: ['embedding_source_state'], order: 'unverified' }],
+  'db/embeddings/state.ts#total': [{ tables: ['embedding_model_totals'], order: 'unverified' }],
+  'db/schema-v716.ts#<module>': [
+    ...Array.from({ length: 12 }, () => ({ tables: ['embedding_source_state'], order: 'unverified' as const })),
+    ...Array.from({ length: 4 }, () => ({ tables: ['embedding_model_totals'], order: 'unverified' as const })),
+  ],
+  'db/embeddings/work.ts#<module>': [
+    { tables: ['embedding_work_state'], order: 'unverified' },
+    { tables: ['embedding_provider_holds'], order: 'unverified' },
+    { tables: ['embedding_cursors'], order: 'unverified' },
+    { tables: ['embedding_receipts'], order: 'unverified' },
+    { tables: ['embedding_source_failures'], order: 'unverified' },
+    { tables: ['embedding_receipts'], order: 'unverified' },
+    { tables: ['embedding_resets'], order: 'unverified' },
+  ],
   'db/schema-v712.ts#<module>': Array.from({ length: 7 }, () => ({ tables: ['embedding_passed_over'], order: 'unverified' as const })),
   'db/runs/admission.ts#reconcileSpend': [{ tables: ['attempt_spend'], order: 'unverified' }],
   'db/runs/admission.ts#rollup': [{ tables: ['budget_totals'], order: 'unverified' }],
@@ -37,7 +52,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/document-facts-v467.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
   'db/document-facts-v467.ts#documentFactDelta': [{tables:['document_difference_totals'],order:'unverified'}],
   'db/document-facts-v467.ts#documentDueDelta': [{tables:['document_due_totals'],order:'unverified'}],
-  'core/embedding/provider-state.ts#recordEmbeddingProviderFailure': [{tables:['embedding_provider_holds'],order:'unverified'}],
   'db/event-references.ts#eventReferenceStatement': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#captureReferences': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#fillReferences': [{tables:['event_refs'],order:'unverified'}],
@@ -70,16 +84,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'core/canopy.ts#writeCanopyMap': [
     { tables: ['canopy_maps'], order: 'unverified' },
-  ],
-  'core/embedding/reconcile.ts#passOver': [
-    { tables: ['embedding_source_failures'], order: 'unverified' },
-  ],
-  'core/embedding/reconcile.ts#writeSource': [
-    { tables: ['embedding_cursors'], order: 'unverified' },
-    { tables: ['embedding_receipts'], order: 'unverified' },
-  ],
-  'core/embedding/work-state.ts#recordedWork': [
-    { tables: ['embedding_work_state'], order: 'unverified' },
   ],
   'core/harness-health.ts#recordProvisionedHarnessReport': [
     { tables: ['machine_harness_reports'], order: 'unverified' },
