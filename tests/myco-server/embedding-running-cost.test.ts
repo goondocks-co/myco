@@ -236,19 +236,24 @@ test('current provider quota holds admission and calls until its persisted deadl
   });
 });
 
-test('expired work deadlines are acknowledged once while a positive backlog stays cached', async () => {
+test('an expired work deadline is probed once, a positive backlog is probed until it clears, and a clean row then rests', async () => {
   const f = sqliteEnv();
   try {
     const db = f.db;
     let probes = 0;
     const check = (at:number) => recordedWork(db,'proj_1',MODEL,'embedding','expiry',at,async()=>{
       probes++;
-      return probes===1 ? {pending:false,wakeAt:NOW+1} : {pending:true};
-    },async()=>{throw new Error('unexpected safety sweep');});
+      return probes===1 ? {pending:false,wakeAt:NOW+1} : {pending:probes<5};
+    });
     expect(await check(NOW)).toBe(false);
+    expect(await check(NOW)).toBe(false);
+    expect(probes).toBe(1);
     expect(await check(NOW+2)).toBe(true);
-    for(let i=3;i<10;i++) expect(await check(NOW+i)).toBe(true);
-    expect(probes).toBe(2);
+    expect(await check(NOW+3)).toBe(true);
+    expect(await check(NOW+4)).toBe(true);
+    expect(await check(NOW+5)).toBe(false);
+    for(let i=6;i<10;i++) expect(await check(NOW+i)).toBe(false);
+    expect(probes).toBe(5);
   } finally {f.sqlite.close();}
 });
 

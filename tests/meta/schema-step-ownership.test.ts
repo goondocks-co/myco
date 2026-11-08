@@ -1,5 +1,6 @@
 import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
 import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
+import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
@@ -49,6 +50,14 @@ const LISTED: readonly Exception[] = [
   { step: V719, object: 'idx_agent_runs_admission_catchup', table: 'agent_runs', reason: 'Admission catch-up seeks only in-flight source rows in Project/run order.' },
   { step: V719, object: 'run_admission_ready_mark', table: 'projection_catchup', reason: 'Admission readiness changes refresh the runs section.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V719, object: `run_live_${action}`, table: 'agent_runs', reason: 'Named run identities maintain admission contributions and queue heads.' })),
+  ...V720_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: V720, object: match[1]!, table: match[2]!, reason: match[1] === 'idx_embedding_passed_over_current'
+      ? 'Switch completion seeks a Project\'s current passed-over membership by model and expiry, never reading expired refusals.'
+      : sql.startsWith('CREATE INDEX') ? 'Scheduling seeks the work rows whose wake time has come without reading every Project.'
+      : match[2] === 'embedding_models' ? 'A model\'s registration, activation, initialization or epoch change re-arms its Project\'s work.'
+      : 'A work mutation marks its Project for scheduling attention in the statement that dirties its work rows.' }];
+  }),
   ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
   { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
@@ -265,6 +274,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     step: V718, sql, reason: 'Publication records its directory cursor and committed revision without backfilling history.'
   })),
 
+  ...V720_STATEMENTS.filter(sql => sql.startsWith('DROP TRIGGER')).map(sql => ({ step: V720, sql,
+    reason: 'Each work trigger is replaced by the same body plus the attention mark.' })),
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'

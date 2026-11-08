@@ -9,6 +9,7 @@
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
   ['idx_embedding_passed_over_model', 'Health reads current passed-over memberships under its model keys across the Deployment'],
+  ['idx_embedding_work_wake', 'embedding scheduling seeks the work rows whose wake time has come under its models across the Deployment'],
   ['idx_attempt_spend_window', 'budget admission reads the rolling window and its due expiry across the Deployment by claim time'],
   ['idx_attempt_spend_live', 'budget status reads live attempt reservations across the Deployment by origin'],
   ['idx_kpi_lineage_started', 'KPI lineage samples seek lineages started inside the window (S3a.2 reader)'],

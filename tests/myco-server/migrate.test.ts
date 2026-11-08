@@ -1,3 +1,4 @@
+import { V720 } from '@myco-server-worker/db/schema-v720.js';
 import { V717 } from '@myco-server-worker/db/schema-v717.js';
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
 import { DROP_CONTENT_SCHEMA_STEPS, DROPPED_CONTENT_TABLES, DROP_RANGES_TABLE } from '@myco-server-worker/db/schema-v265.js';
@@ -734,6 +735,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0717_v717.sql': 'e5275151d6651579a13d034f8ff139d3b6812c6d19b99c14395062e7b6a693a0',
   '0718_v718.sql': '373c210b675c2014779a67cd17543f528b6c774d658d2ae1a68edbb4c7789f3b',
   '0719_v719.sql': 'a0ac5d2ce881b26e33b0de2efa865761c9acb1a6eb92635090e5332baf4dee3c',
+  '0720_v720.sql': 'aed5578c08344369a27aefe7c505081e21d752c219831471ec528f2fef3b273f',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -807,7 +809,7 @@ function triggerShape(sql: string): { timing: string; event: string; table: stri
  * the same step: for a trigger, on the same table and event, matching its
  * admitted writer table set.
  */
-function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false, publicationReplacement=false): boolean {
+function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false, publicationReplacement=false, attentionReplacement=false): boolean {
   const create = new RegExp(`^\\s*CREATE ${kind} (?:IF NOT EXISTS )?${name}\\b`, 'i');
   const later = statements.slice(index + 1).filter((x) => create.test(x));
   if (later.length === 0) return false;
@@ -821,6 +823,10 @@ function recreatedAfterDrop(statements: readonly string[], index: number, kind: 
   if (publicationReplacement) {
     if (JSON.stringify(before.writes) !== JSON.stringify(['document_publication_facts'])) return false;
     before.writes = ['document_publication_contributions','document_publication_facts'];
+  }
+  if (attentionReplacement) {
+    if (JSON.stringify(before.writes) !== JSON.stringify(['embedding_work_state'])) return false;
+    before.writes = ['embedding_work_attention','embedding_work_state'];
   }
   return later.every((x) => JSON.stringify(triggerShape(x)) === JSON.stringify(before));
 }
@@ -1263,7 +1269,8 @@ describe('versioned schema steps', () => {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
           const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, (SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger))
             , (SCHEMA_STEPS[n]!.version===V717 && ['transcripts','transcript_publication'].some(table =>
-              ['insert','update','delete'].some(action => droppedTrigger === `${table}_facts_${action}`))));
+              ['insert','update','delete'].some(action => droppedTrigger === `${table}_facts_${action}`)))
+            , SCHEMA_STEPS[n]!.version===V720 && /_work_(insert|update|delete)$/.test(droppedTrigger));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
             || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
@@ -1448,7 +1455,7 @@ describe('versioned schema steps', () => {
       'document_publication_contributions','document_publication_totals','document_publication_ready',
       'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'task_runtime', 'task_due',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',

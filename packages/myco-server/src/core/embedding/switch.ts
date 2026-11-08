@@ -21,15 +21,14 @@ import { resolveSemanticSearch } from '../search.js';
 import { deploymentLatestTaskRun } from '../runs.js';
 import { listProjects } from '../../read/sessions.js';
 import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, embeddingDiagnostic, inputRefusal, type EmbeddingProvider } from './provider.js';
-import { ANY_MODEL, passedOverSources, type PassedOverSource } from './reconcile.js';
+import { ANY_MODEL, type PassedOverSource } from './reconcile.js';
+import { modelProgress } from '../../db/embeddings/status.js';
+import { switchComplete, switchEstimate, switchPassedOver } from '../../db/embeddings/switch.js';
 import { SWITCH_REFUSAL, heldPartition, resolveEmbedding, selectionChangeRefusal, type EmbeddingSelection, type StoredEmbedding } from './policy.js';
 import { calibrationPending } from './hubness.js';
 import { VECTOR_DIMENSIONS } from './vectors.js';
 import { EMBEDDING_TASK } from './task.js';
-import {
-  deleteSwitch, insertSwitch, pauseSwitch, readSwitch, resumeSwitch,
-  sourceTotals, switchComplete, switchProgress, waitSwitch, type EmbeddingSwitch,
-} from './switch-store.js';
+import { deleteSwitch, insertSwitch, pauseSwitch, readSwitch, resumeSwitch, waitSwitch, type EmbeddingSwitch } from './switch-store.js';
 
 /** A rough count of the characters one token of embedding input carries, for the estimate shown before and during a switch. */
 const CHARS_PER_TOKEN = 4;
@@ -80,24 +79,29 @@ async function stallReason(env: ServerEnv, sw: EmbeddingSwitch, lastMoved: numbe
   return `Rebuilding search has not moved for ${minutes} minutes, though embedding runs keep starting.`;
 }
 
-/** The most sources a list of passed-over sources names; the count says how many there are in all. */
-const PASSED_OVER_SHOWN = 20;
-
 /** A list of passed-over sources as a reader sees it. */
-const passedOverView = (listed: { sources: PassedOverSource[]; count: number }): PassedOverList => ({
+const passedOverView = (listed: { sources: ReadonlyArray<Pick<PassedOverSource, 'projectId' | 'projectName' | 'type' | 'title' | 'reason' | 'modelKey'>>; count: number }): PassedOverList => ({
   count: listed.count,
   sources: listed.sources.map((s) => ({ projectId: s.projectId, projectName: s.projectName, type: s.type, title: s.title, reason: s.reason, anyModel: s.modelKey === ANY_MODEL })),
 });
 
-/** The switch under way, as Settings and Health show it, or null. */
+/**
+ * The switch under way, as Settings and Health show it, or null. Its progress is read from each Project's maintained
+ * model totals and the passed-over membership, never from the sources: `progress` is `building` while the passed-over
+ * membership is still catching up, or a Project's
+ * model is still initializing or source state is catching up, and its counts are then partial, never a final zero.
+ */
 export async function embeddingSwitchStatus(env: ServerEnv, now: number): Promise<EmbeddingSwitchStatus | null> {
   const sw = await readSwitch(env.db);
   if (sw === null) return null;
-  const [{ built, total }, passed] = await Promise.all([
-    switchProgress(env.db, sw.modelKey),
-    passedOverSources(env.db, [sw.modelKey], now, { limit: PASSED_OVER_SHOWN, notArchived: true, unbuiltUnder: sw.modelKey }),
-  ]);
-  const done = built + passed.count;
+  const [built, passed] = await Promise.all([modelProgress(env.db, sw.modelKey, now), switchPassedOver(env.db, sw.modelKey, now, sw.modelKey)]);
+  // Sources are the same under every model: while the new model initializes, the model search uses counts them. A
+  // Project not yet initialized under the new model holds no vector under it, so what it has built stays exact.
+  const counted = built.state === 'ready' || sw.fromModelKey === null ? built : await modelProgress(env.db, sw.fromModelKey, now);
+  const counting = passed.state === 'building' || (built.state !== 'ready' && counted.state !== 'ready');
+  const progress = { state: counting ? 'building' as const : 'ready' as const, asOf: built.asOf };
+  const total = counted.state === 'ready' ? counted.total : built.total;
+  const done = Math.min(built.ready + passed.count, total);
   // The estimate grows with the sources, from the tokens each one read on average when the switch started.
   const estimatedTokens = sw.estimatedSources === 0 ? sw.estimatedTokens : Math.ceil(sw.estimatedTokens * Math.max(total, sw.estimatedSources) / sw.estimatedSources);
   const price = embeddingPrice(sw.provider, sw.model);
@@ -115,6 +119,8 @@ export async function embeddingSwitchStatus(env: ServerEnv, now: number): Promis
     stalled: await stallReason(env, sw, sw.progressedAt, now),
     done,
     total,
+    progress: progress.state,
+    asOf: progress.asOf,
     passedOver: passedOverView(passed),
     startedAt: sw.startedAt,
     estimatedTokens,
@@ -150,13 +156,13 @@ async function judgeSwitch(env: ServerEnv, choice: EmbeddingChoice): Promise<{ r
  * known now to be passed over under it, which will have no search by meaning.
  */
 async function estimateFor(env: ServerEnv, selection: Pick<EmbeddingSelection, 'provider' | 'model' | 'modelKey'>, now: number): Promise<SwitchEstimate> {
-  const { sources, characters } = await sourceTotals(env.db, EMBEDDING_TEXT_CHARS);
+  const { sources, characters } = await switchEstimate(env.db, EMBEDDING_TEXT_CHARS);
   const estimatedTokens = Math.ceil(characters / CHARS_PER_TOKEN);
   const price = embeddingPrice(selection.provider, selection.model);
-  const passed = await passedOverSources(env.db, [selection.modelKey], now, { limit: PASSED_OVER_SHOWN, notArchived: true });
+  const passed = await switchPassedOver(env.db, selection.modelKey, now, null);
   return {
     provider: selection.provider, model: selection.model, sources, estimatedTokens,
-    estimatedUsd: price === null ? null : estimatedTokens / 1_000_000 * price, passedOver: passedOverView(passed),
+    estimatedUsd: price === null ? null : estimatedTokens / 1_000_000 * price, passedOver: passedOverView(passed), progress: passed.state,
   };
 }
 
@@ -219,7 +225,7 @@ export async function resumeEmbeddingSwitch(env: ServerEnv, id: string, now: num
  */
 export async function completeEmbeddingSwitch(env: ServerEnv, now: number): Promise<boolean> {
   const sw = await readSwitch(env.db);
-  if (sw === null || sw.state !== 'building' || !(await switchComplete(env.db, sw.modelKey, now))) return false;
+  if (sw === null || sw.state !== 'building' || !(await switchComplete(env.db, sw, now))) return false;
   for (const { projectId } of await listProjects(env.db)) if (await calibrationPending(env.db, projectId, sw.modelKey, now)) return false;
   const choice = switchChoice(sw);
   if (resolveEmbedding(choice, env.platform.name).selection?.modelKey !== sw.modelKey) {

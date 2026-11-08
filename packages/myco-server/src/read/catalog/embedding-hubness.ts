@@ -5,9 +5,7 @@ import { VECTOR_REWRITE_LIMIT as core_embedding_hubness_import_VECTOR_REWRITE_LI
 import { HUBNESS_MEMBER as core_embedding_hubness_import_MEMBER } from "../../core/embedding/receipt-state.js";
 import { recordedWork as core_embedding_hubness_import_recordedWork } from "../../core/embedding/work-state.js";
 import { WORK_PREDICATE_VERSION as core_embedding_hubness_import_WORK_PREDICATE_VERSION } from "../../core/embedding/work-state.js";
-import { core_embedding_source_state_currentHubnessMember, core_embedding_source_state_currentSource } from './embedding-source-state.js';
-import { type core_embedding_selection_EmbeddingQuery } from './embedding-selection.js';
-import { core_embedding_work_sweep_hubnessSweep } from './embedding-work-sweep.js';
+import { core_embedding_source_state_currentHubnessMember, core_embedding_source_state_currentSource, type core_embedding_selection_EmbeddingQuery } from './embedding-source-state.js';
 
 /** Indexed spore receipts under the model whose source revision is current. Binds: project id, model key. */
 const core_embedding_hubness_sporeVectors = (columns: string) => `SELECT ${columns} FROM embedding_receipts r INDEXED BY idx_embedding_receipts_spore
@@ -72,7 +70,7 @@ function core_embedding_hubness_hubnessQueries(projectId: string, model: string,
   ];
 }
 
-async function core_embedding_hubness_recordedHubness(db: core_embedding_hubness_import_RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
+async function core_embedding_hubness_recordedHubness(db: core_embedding_hubness_import_RelationalStore, projectId: string, model: string, now: number, fresh = false): Promise<boolean> {
   const hasPair = async () => {
     const population = await db.prepare(`SELECT total FROM embedding_hubness_population p WHERE p.project_id=? AND p.model_key=?
       AND p.revision=COALESCE((SELECT revision FROM embedding_hubness_revision WHERE project_id=?),0)`)
@@ -91,12 +89,12 @@ async function core_embedding_hubness_recordedHubness(db: core_embedding_hubness
       return { pending:true,wakeAt:retry?.at ?? null };
     }
     return { pending: false };
-  }, (cursor) => core_embedding_work_sweep_hubnessSweep(db, projectId, model, now, cursor, true));
+  }, { fresh });
 }
 
-/** Calibration has work only with at least two current spore vectors. */
-async function core_embedding_hubness_calibrationPending(db: core_embedding_hubness_import_RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
-  return core_embedding_hubness_recordedHubness(db, projectId, model, now);
+/** Calibration has work only with at least two current spore vectors. With `fresh`, a row that rests clean is probed again. */
+async function core_embedding_hubness_calibrationPending(db: core_embedding_hubness_import_RelationalStore, projectId: string, model: string, now: number, fresh = false): Promise<boolean> {
+  return core_embedding_hubness_recordedHubness(db, projectId, model, now, fresh);
 }
 
 export function prepareLeavingHubness(db: sessions_import_RelationalStore, projectId: string, model: string, limit: number) {

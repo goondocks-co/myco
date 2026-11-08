@@ -347,6 +347,38 @@ describe('a provider that turns the key down', () => {
   });
 });
 
+describe('switch progress and completion from maintained state', () => {
+  it('says progress is still counting while source state catches up, and never completes meanwhile', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost(t.env().db, '/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    expect(await status(t)).toMatchObject({ progress: 'ready', done: 0, total: 3 });
+    t.sqlite.run("UPDATE projection_catchup SET done=0 WHERE projection='embedding_state'");
+    expect(await status(t)).toMatchObject({ progress: 'building' });
+    for (let i = 0; i < 20; i++) await t.step(2_000 + i);
+    expect(await status(t)).toMatchObject({ state: 'building', progress: 'building' });
+    expect(JSON.parse(storedModel(t)!)).toBe(t.start.model);
+    t.sqlite.run("UPDATE projection_catchup SET done=1 WHERE projection='embedding_state'");
+    expect(await status(t)).toMatchObject({ progress: 'ready', done: 3, total: 3 });
+    for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(3_000 + i);
+    expect(await status(t)).toBeNull();
+    expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
+  });
+
+  it('does not complete while a Project that is not archived holds a source its model has not initialized there', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost(t.env().db, '/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    for (let i = 0; i < 20; i++) await reconcileEmbedding({ db: t.env().db, blobs: t.env().blobs, vectors: t.env().vectors!, provider: (await t.env().embeddingProvider!())!,
+      building: (await t.env().embeddingProviderFor!({ 'embedding.provider': t.otherSize.provider, 'embedding.model': t.otherSize.model, 'embedding.base_url': t.otherSize.endpoint })).provider!,
+      retain: [t.currentKey], calibrate: (await embeddingWorkPlan(t.env(), 3_000))!.switching! }, PROJECT, 3_000 + i);
+    t.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_2', 'elsewhere', 'agent', 'architecture elsewhere', 'decision', 1)`);
+    expect(await completeEmbeddingSwitch(t.env(), 4_000)).toBe(false);
+    expect(await status(t)).toMatchObject({ state: 'building' });
+    for (let i = 0; i < 20; i++) await advanceEmbedding(t.env(), 'proj_2', 5_000 + i);
+    for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(6_000 + i);
+    expect(await status(t)).toBeNull();
+  });
+});
+
 describe('what never holds a switch back', () => {
   it('builds and counts only Projects that are not archived, and retires an archived Project\'s old vectors once search moves', async () => {
     const t = await built(selfHosted);
@@ -501,10 +533,10 @@ describe('what never holds a switch back', () => {
 });
 
 describe('guards the completion and the settings writer carry', () => {
-  /** The store, with `before` run once just ahead of its next batch: a write that lands between a check and the batch. */
+  /** The store, with `before` run once just ahead of its next multi-statement commit: a write that lands between a check and the batch. */
   const racing = (db: RelationalStore, before: () => void): RelationalStore => {
     let armed = true;
-    return { ...db, prepare: db.prepare.bind(db), batch: async (statements) => { if (armed) { armed = false; before(); } return db.batch(statements); } } as RelationalStore;
+    return { ...db, prepare: db.prepare.bind(db), batch: async (statements) => { if (armed && statements.length > 1) { armed = false; before(); } return db.batch(statements); } } as RelationalStore;
   };
 
   it('moves search and ends the switch together when a passed-over source is what completes it, and keeps the source recorded', async () => {

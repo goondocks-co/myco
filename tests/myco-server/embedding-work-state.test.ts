@@ -6,7 +6,8 @@ import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.j
 import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
 import { INPUT_REFUSAL_RETRY_MS, embeddingFailureWakeAt, reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { VECTOR_DELETE_CONFIRM_MS, VECTOR_DELETE_RETRY_MS } from '@myco-server-worker/core/embedding/provider.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
+/** Wakes well apart, as an idle Deployment's clock spaces them. */
+const WAKE_GAP_MS = 5 * 60_000;
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
 import { memoryBlobStore, sqliteEnv } from './helpers/fixtures.js';
@@ -54,14 +55,14 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
           },
         };
         const pacer = tickPacer();
-        for (const at of [NOW, NOW + WORK_SWEEP_MIN_MS, NOW + WORK_SWEEP_MIN_MS * 7]) {
+        for (const at of [NOW, NOW + WAKE_GAP_MS, NOW + WAKE_GAP_MS * 7]) {
           const report = await runTick(env, at, { wake: 'clock', pacer });
           expect(report.heldBy).not.toBe('embedding:sweep');
           expect(report.jobs.filter((job) => job.name === 'embedding-reconcile').every((job) => job.more === false && job.failed === null)).toBe(true);
         }
         await plan(db, 'new-pending').run();
         allowDispatch = true;
-        const promoted = await runTick(env, NOW + WORK_SWEEP_MIN_MS * 8, { wake: 'clock', pacer });
+        const promoted = await runTick(env, NOW + WAKE_GAP_MS * 8, { wake: 'clock', pacer });
         expect(promoted.jobs.find((job) => job.name === 'embedding-reconcile')).toMatchObject({ changed: 1, failed: null });
         expect(launched).toBe(1);
       } finally { fixture.sqlite.close(); }
@@ -137,21 +138,6 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
       expect(await hasEmbeddingWork(db, 'p', MODEL, NOW)).toBe(false);
       await db.prepare("UPDATE plans SET content='changed' WHERE project_id='p' AND plan_key='committed'").run();
       expect(await hasEmbeddingWork(db, 'p', MODEL, NOW)).toBe(true);
-    });
-  }, 30_000);
-
-  test('hubness membership drift is repaired by the safety sweep', async () => {
-    await withEmbeddingStore(target, async (db) => {
-      await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','agent','built-in',1,1)").run();
-      for (const id of ['one', 'two']) await db.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('p',?,'agent','body','decision',1)").bind(id).run();
-      await receipts(db).run();
-      await db.prepare("INSERT INTO embedding_hubness_members(project_id,model_key,id,n,vector) SELECT project_id,model_key,id,1,'AACAPw==' FROM embedding_receipts WHERE project_id='p'").run();
-      expect(await calibrationPending(db, 'p', MODEL, NOW)).toBe(false);
-      await db.prepare("UPDATE embedding_hubness_members SET n=9 WHERE project_id='p' AND id='two'").run();
-      await db.prepare("UPDATE embedding_work_state SET checked_revision=revision,pending=0 WHERE project_id='p'").run();
-      expect(await calibrationPending(db, 'p', MODEL, NOW)).toBe(false);
-      expect(await calibrationPending(db, 'p', MODEL, NOW + WORK_SWEEP_MIN_MS)).toBe(false);
-      expect(await calibrationPending(db, 'p', MODEL, NOW + WORK_SWEEP_MIN_MS + WORK_SWEEP_CONTINUE_MS)).toBe(true);
     });
   }, 30_000);
 

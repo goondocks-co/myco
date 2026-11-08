@@ -4,7 +4,10 @@ import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from '.
 import { EmbeddingSwitchFailure, calibrationModel, completeEmbeddingSwitch, embeddingStepProviders, settleSwitchFailure } from './switch.js';
 import { projectArchived, recordSwitchProgress } from './switch-store.js';
 
-export type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingStep & { missing: MissingSporeVectors });
+export type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingStep & { missing?: MissingSporeVectors });
+
+/** The steps after which a run may stop, or whose work changes what calibration leaves out: the only ones that report it. */
+const REPORTS_MISSING: ReadonlySet<EmbeddingStep['phase']> = new Set(['hubness', 'visibility', 'settled']);
 
 /**
  * Advance one Project's embedding by one bounded step: a source written under search's model, then under a switch's
@@ -12,6 +15,9 @@ export type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingSte
  *
  * While a switch stands, a failure of its model holds the model off or pauses the switch, and the step serves search's
  * own model alone. After a step of a standing switch, search moves to the switch's model once it is complete.
+ *
+ * Spore vectors left out of calibration are counted only after a step that ends a run or works on calibration: a run
+ * reports the last count it read, and a source write never changes it.
  */
 export async function advanceEmbedding(env: ServerEnv, projectId: string, now: number, options: { retireOnly?: boolean } = {}): Promise<EmbeddingStepAnswer> {
   const providers = env.vectors === undefined ? null : await embeddingStepProviders(env, now);
@@ -36,5 +42,6 @@ export async function advanceEmbedding(env: ServerEnv, projectId: string, now: n
     if (built) await recordSwitchProgress(env.db, switchId, now);
     await completeEmbeddingSwitch(env, now);
   }
-  return { ...step, missing: await missingSporeVectors(env.db, projectId, providers.provider.modelKey, now) };
+  return step.processed === 0 || REPORTS_MISSING.has(step.phase)
+    ? { ...step, missing: await missingSporeVectors(env.db, projectId, providers.provider.modelKey, now) } : step;
 }

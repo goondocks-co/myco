@@ -3,7 +3,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { AdmittedSettingsChange } from '../../core/settings.js';
 import type { EmbeddingSwitch } from '../../core/embedding/switch-store.js';
 import { SWITCH_STANDS_SQL } from '../../core/embedding/switch-store.js';
-import { SETTINGS_COMPLETION_SQL, core_embedding_switch_store_completionCondition } from '../../read/catalog/embedding-switch-store.js';
+import { SWITCH_COMPLETION_SQL, switchCompletionParams } from '../embeddings/switch.js';
 import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
 
 export interface SettingState {
@@ -52,12 +52,12 @@ const capabilityPut = write<[project: string, capability: string, enabled: numbe
   INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES(?,?,?,?,?)
   ON CONFLICT(project_id,capability) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at,updated_by=excluded.updated_by` });
 const completion = assertion<Array<string | number>>({ name: 'settings.embeddingComplete', sql:
-  `SELECT CASE WHEN ${SETTINGS_COMPLETION_SQL} THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
+  `SELECT CASE WHEN ${SWITCH_COMPLETION_SQL} THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
 const ended = assertion<[id: string]>({ name: 'settings.embeddingEnded', sql:
   `SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM embedding_switches WHERE slot='deployment' AND id=?)
     THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
 const endSwitch = write<Array<string | number>>({ name: 'settings.endEmbeddingSwitch', sql:
-  `DELETE FROM embedding_switches WHERE slot='deployment' AND ${SETTINGS_COMPLETION_SQL}` });
+  `DELETE FROM embedding_switches WHERE slot='deployment' AND ${SWITCH_COMPLETION_SQL}` });
 
 export async function readSettingStates(db: RelationalStore, leaves: readonly string[], scope = ''): Promise<Map<string, SettingState>> {
   const [rows] = await readSet(db, states.bind(scope, JSON.stringify(leaves)));
@@ -83,15 +83,15 @@ export async function persistSettings(db: RelationalStore, change: AdmittedSetti
   const statements: Bound[] = [unchanged.bind(scope, JSON.stringify(change.expected))];
   if (change.project !== undefined && !change.capability) statements.push(active.bind(change.project));
   if (change.embeddingEmpty !== undefined) statements.push(embedding.bind(change.embeddingEmpty ? 1 : 0));
-  const end = switchCompletion === undefined ? null : core_embedding_switch_store_completionCondition(switchCompletion.sw, switchCompletion.now);
-  if (end !== null) statements.push(completion.bind(...end.params));
+  const end = switchCompletion === undefined ? null : switchCompletionParams(switchCompletion.sw, switchCompletion.now);
+  if (end !== null) statements.push(completion.bind(...end));
   for (const part of change.parts) {
     if (change.capability) statements.push(capabilityPut.bind(change.project!, part.leaf, part.value === true ? 1 : 0, change.now, change.actor));
     else if (change.project !== undefined) statements.push(projectPut.bind(change.project, part.leaf, JSON.stringify(part.value), change.now, change.actor));
     else if (part.value === undefined) statements.push(remove.bind(part.leaf), reset.bind(part.leaf, change.now, change.actor));
     else statements.push(put.bind(part.leaf, JSON.stringify(part.value), change.now, change.actor, crypto.randomUUID()));
   }
-  if (end !== null) statements.push(endSwitch.bind(...end.params), ended.bind(switchCompletion!.sw.id));
+  if (end !== null) statements.push(endSwitch.bind(...end), ended.bind(switchCompletion!.sw.id));
   try { await commit(db, ...statements); return 'applied'; }
   catch (error) {
     const refusal = assertionFailure(error);

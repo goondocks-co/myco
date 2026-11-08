@@ -951,27 +951,7 @@ describe('gates', () => {
       // Comments are stripped first: the property is about a second WRITER, and a
       // docstring that names a table in prose is not one. Scanning raw source made
       // the gate fire on its own explanation of what it protects.
-      let source = stripComments(readFileSync(file, 'utf8'));
-      const catalogOwners: Record<string, readonly string[]> = {
-        [join('read', 'catalog', 'embedding-reconcile.ts')]: ['core_embedding_reconcile_PASSED_OVER',
-          'core_embedding_reconcile_passedOverSources', 'core_embedding_reconcile_embeddingFailureWakeAt'],
-        [join('read', 'catalog', 'embedding-switch-store.ts')]: ['core_embedding_switch_store_BUILDING_SQL'],
-      };
-      if (rel in catalogOwners) {
-        const permitted = new Set(catalogOwners[rel]);
-        const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-        const ranges = parsed.statements.filter(node => {
-          const name = ts.isFunctionDeclaration(node) ? node.name : ts.isVariableStatement(node) ? node.declarationList.declarations[0]?.name : undefined;
-          return name !== undefined && ts.isIdentifier(name) && permitted.has(name.text);
-        });
-        expect(ranges.length).toBe(permitted.size);
-        for (const node of ranges) {
-          if (ts.isFunctionDeclaration(node) && /\b(?:INSERT|DELETE|UPDATE)\b/.test(node.getText(parsed))) {
-            expect(node.getText(parsed)).not.toMatch(/\.(?:first|all|run|batch)\s*\(/);
-          }
-        }
-        for (const node of [...ranges].reverse()) source = source.slice(0, node.getStart(parsed)) + source.slice(node.end);
-      }
+      const source = stripComments(readFileSync(file, 'utf8'));
       for (const [table, owner] of Object.entries(OWNED)) {
         if (rel === owner) continue;
         // The backup engine's exclusion ledger names these tables to keep them out

@@ -1,19 +1,19 @@
 import { embeddingProviderReady, recordEmbeddingProviderFailure, clearEmbeddingProviderHold } from './provider-state.js';
 import {
-  claimReceiptDeletion, journalSourceAttempt, nextDueSource, nextWriteType, passOverSource, prepareEmbeddingDue, rejournalSourceAttempt, retainEmbeddingModels,
+  claimReceiptDeletion, embeddingSource, journalSourceAttempt, nextDueSource, nextWriteType, passOverSource, prepareEmbeddingDue, rejournalSourceAttempt, retainEmbeddingModels,
   settleReceiptDeletion, settleSourceWrite,
 } from '../../db/embeddings/work.js';
-export { resetEmbeddingIndex } from '../../db/embeddings/work.js';
-import { core_embedding_reconcile_ANY_MODEL as ANY_MODEL } from '../../read/catalog/embedding-reconcile.js';
-export { core_embedding_reconcile_ANY_MODEL as ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS as INPUT_REFUSAL_RETRY_MS } from '../../read/catalog/embedding-reconcile.js';
-import { prepareEmbeddingSource } from '../../read/catalog/embedding-reconcile.js';
-export { type core_embedding_reconcile_PassedOverSource as PassedOverSource, core_embedding_reconcile_passedOverSources as passedOverSources, core_embedding_reconcile_embeddingFailureWakeAt as embeddingFailureWakeAt } from "../../read/catalog/embedding-reconcile.js";
+export { resetEmbeddingIndex, embeddingFailureWakeAt } from '../../db/embeddings/work.js';
+export { INPUT_REFUSAL_RETRY_MS } from '../../db/embedding-due.js';
+export type { PassedOverSource } from '../../db/embeddings/switch.js';
+
+/** The `model_key` of a passed-over source no model can read. */
+export const ANY_MODEL = '';
 import type { BlobStore, RelationalStore } from '../adapters.js';
 import { EMBEDDING_TEXT_CHARS, VECTOR_WRITE_TIMEOUT_MS, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { VECTOR_TYPES, vectorId, type VectorMetadata, type VectorStore, type VectorType } from './vectors.js';
 import type { EmbeddingSource } from '../../read/embedding.js';
 import { reconcileHubness } from './hubness.js';
-import { registeredObjectKeySql } from '../blob-objects.js';
 import { retiringReceipt } from './selection.js';
 import { RECEIPT } from './receipt-state.js';
 export { RECEIPT } from './receipt-state.js';
@@ -151,7 +151,7 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
     const selected = await nextDueSource(db, projectId, provider.modelKey, type!, now);
     if (selected === null) continue;
     const stale = selected.stale;
-    const source = await prepareEmbeddingSource(db, projectId, type!, selected.record_id, selected.revision).first<EmbeddingSource & { object_key: string | null }>();
+    const source = await embeddingSource(db, projectId, type!, selected.record_id, selected.revision);
     if (source === null) continue;
     const id = await vectorId(scope, source.type, source.record_id, source.revision);
     const attempt = await journalSourceAttempt(db, { projectId, model: provider.modelKey, id, type: type!, recordId: source.record_id, revision: source.revision, at: now },

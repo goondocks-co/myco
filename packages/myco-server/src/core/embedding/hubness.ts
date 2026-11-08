@@ -5,7 +5,6 @@ import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from './provider.js';
 import { HUBNESS_MEMBER as MEMBER } from './receipt-state.js';
 import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
-import { hubnessSweep } from './work-sweep.js';
 
 
 /** Settled members one step reads. */
