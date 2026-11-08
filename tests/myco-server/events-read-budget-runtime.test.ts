@@ -50,10 +50,15 @@ const KPI_PROMPT_PROJECTION_WRITES = 2;
 const KPI_TRANSCRIPT_PROJECTION_WRITES = 2;
 /** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
 const LEARNING_SLICE_COMPLETION_WRITES = 20;
+/** A transcript or frontier mutation writes its contribution, session total and input revision. */
+const PUBLICATION_CONTRIBUTION_WRITES = 3;
+/** Growth past a complete frontier changes its pending contribution and generation total too. */
+const PUBLICATION_FRONTIER_REOPEN_WRITES = 2;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES,
-  'publication-progress UPDATE': 3, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
+  'transcript grows after full publish': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES,
+  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -331,6 +336,12 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       await db.prepare("INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,record_scheme,parser_version,updated_at) VALUES(?,?,1,?,0,'source-record-v1',1,1)").bind(PROJECT,sessionId,sessionId).run();
       for (let i = 1; i <= 5; i++) await capture('publication-progress UPDATE', () => measured.db.prepare(
         'UPDATE transcript_publication SET published_offset=? WHERE project_id=? AND transcript_id=?').bind(i * 10, PROJECT, sessionId).run());
+      for (let i=1;i<=5;i++) {
+        await db.prepare('UPDATE transcript_publication SET published_offset=? WHERE project_id=? AND transcript_id=? AND generation=1')
+          .bind(100+(i-1)*10,PROJECT,sessionId).run();
+        await capture('transcript grows after full publish', () => measured.db.prepare('UPDATE transcripts SET size=? WHERE project_id=? AND transcript_id=?')
+          .bind(100+i*10,PROJECT,sessionId).run());
+      }
       await event('session.end', { endedAt: now });
       const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:memoryBlobStore(),SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
       await publishDocuments({...configured,blobs:memoryBlobStore()},now,{calls:500,deadline:Infinity,clock:()=>now});

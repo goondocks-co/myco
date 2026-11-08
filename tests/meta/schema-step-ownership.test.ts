@@ -1,4 +1,5 @@
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
+import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
@@ -43,6 +44,15 @@ const LISTED: readonly Exception[] = [
   ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_state_receipt_${action}`, table: 'embedding_receipts', reason: 'Receipt mutations move their source between unwritten, journaled, rewriting, ready and unavailable.' })),
   ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_state_proof_${action}`, table: 'processed_resources', reason: 'Plan proof eligibility reconciles only that plan’s source state.' })),
   ...['insert', 'update', 'delete'].map(action => ({ step: V716, object: `embedding_model_totals_${action}`, table: 'embedding_source_state', reason: 'Each source state row moves its model total by its old and new state.' })),
+  ...['transcripts','transcript_publication','session_documents'].flatMap(table => ['insert','update','delete'].map(action => ({
+    step: V717, object: `${table}_facts_${action}`, table, reason: 'Publication facts reconcile named source keys and generation totals.'
+  }))),
+  ...['transcripts','transcript_publication','publish_queue','session_tombstones'].flatMap(table => ['insert','update','delete'].map(action => ({
+    step: V717, object: `publication_input_${table}_${action}`, table, reason: 'Publication input mutations advance the session concurrency revision.'
+  }))),
+  ...['publication_input_document_update','publication_ready_insert','publication_ready_update','publication_ready_delete'].map(object => ({
+    step: V717, object, table: 'session_documents', reason: 'Document lifecycle maintains publication revision and contribution activation.'
+  })),
   { step: V712, object: 'idx_agent_run_events_setup_output', table: 'agent_run_events', reason: 'Setup seeks recorded title and map output without scanning empty run history.' },
   { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
@@ -245,6 +255,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V716_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO')).map(sql => ({ step: V716, sql,
     reason: sql.includes('embedding_attempt_clock') ? 'The attempt clock starts once, before any attempt.'
       : sql.includes('embedding_reset') ? 'Reset retirement phases start finished, with no reset admitted.' : 'Source state records whether existing versions need catch-up.' })),
+  ...V717_STATEMENTS.filter(sql => /^(ALTER TABLE|DROP TRIGGER|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
+    step: V717, sql, reason: 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'
+  })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),

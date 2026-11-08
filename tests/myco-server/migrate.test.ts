@@ -1,3 +1,4 @@
+import { V717 } from '@myco-server-worker/db/schema-v717.js';
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
 import { DROP_CONTENT_SCHEMA_STEPS, DROPPED_CONTENT_TABLES, DROP_RANGES_TABLE } from '@myco-server-worker/db/schema-v265.js';
 import { V110_LEGACY_TRIGGERS } from '@myco-server-worker/db/schema-v115.js';
@@ -730,6 +731,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0714_v714.sql': '329c71897353497427cde9a9f542b75dd9a47cccb2492a459c1b7ab16c8e6659',
   '0715_v715.sql': 'f22102e6e6b8f4ac05cd46e5602ecabcf94eb2a488715b733f9a1e78ee6eb641',
   '0716_v716.sql': '5ad5637c11454247176aa4adf258921ca92bd0d7877b6b54222b309686305d65',
+  '0717_v717.sql': '60eb95403fa1bf54f80f315ab69f2c052379003efaa79ac15058012dce522588',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -803,7 +805,7 @@ function triggerShape(sql: string): { timing: string; event: string; table: stri
  * the same step: for a trigger, on the same table and event, matching its
  * admitted writer table set.
  */
-function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false): boolean {
+function recreatedAfterDrop(statements: readonly string[], index: number, kind: 'VIEW' | 'TRIGGER', name: string, prior: string | null, queueReplacement=false, publicationReplacement=false): boolean {
   const create = new RegExp(`^\\s*CREATE ${kind} (?:IF NOT EXISTS )?${name}\\b`, 'i');
   const later = statements.slice(index + 1).filter((x) => create.test(x));
   if (later.length === 0) return false;
@@ -813,6 +815,10 @@ function recreatedAfterDrop(statements: readonly string[], index: number, kind: 
   if(queueReplacement) {
     if(!before.writes.includes('document_due_totals')) return false;
     before.writes=before.writes.map(table=>table==='document_due_totals' ? 'document_due' : table).sort();
+  }
+  if (publicationReplacement) {
+    if (JSON.stringify(before.writes) !== JSON.stringify(['document_publication_facts'])) return false;
+    before.writes = ['document_publication_contributions','document_publication_facts'];
   }
   return later.every((x) => JSON.stringify(triggerShape(x)) === JSON.stringify(before));
 }
@@ -1253,7 +1259,9 @@ describe('versioned schema steps', () => {
         const droppedTrigger = /^DROP TRIGGER (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (droppedTrigger !== undefined) {
           const prior = declaredTriggers(SCHEMA_STEPS.slice(0, n)).get(droppedTrigger) ?? null;
-          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger));
+          const replaced = recreatedAfterDrop(SCHEMA_STEPS[n].statements, index, 'TRIGGER', droppedTrigger, prior, (SCHEMA_STEPS[n]!.version===501 && ['document_publication_facts_insert','document_publication_facts_update','document_publication_facts_delete'].includes(droppedTrigger))
+            , (SCHEMA_STEPS[n]!.version===V717 && ['transcripts','transcript_publication'].some(table =>
+              ['insert','update','delete'].some(action => droppedTrigger === `${table}_facts_${action}`))));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
             || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
@@ -1396,6 +1404,7 @@ describe('versioned schema steps', () => {
         // A blob row registers a generation: a UUID.
         // A step row names a kind and an outcome from its own vocabulary.
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
+          : ['document_publication_contributions','document_publication_totals'].includes(t) && c.name === 'kind' ? "'source'"
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'embedding_work_state' && c.name === 'kind' ? `'embedding'`
           : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
@@ -1431,6 +1440,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
+      'document_publication_contributions','document_publication_totals','document_publication_ready',
       'object_settlement_intents', 'attempt_spend', 'budget_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',

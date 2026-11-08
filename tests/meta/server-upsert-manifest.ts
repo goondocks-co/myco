@@ -1,6 +1,45 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  "db/schema-v717.ts#<module>": [
+    { tables: ["document_publication_totals"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_ready"], order: 'unverified' },
+    { tables: ["document_publication_facts"], order: 'unverified' },
+    { tables: ["document_publication_totals"], order: 'unverified' },
+    { tables: ["document_publication_totals"], order: 'unverified' },
+    { tables: ["document_publication_totals"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_ready"], order: 'unverified' },
+    { tables: ["document_publication_facts"], order: 'unverified' },
+    { tables: ["document_publication_facts"], order: 'unverified' },
+    { tables: ["document_publication_totals"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+    { tables: ["document_publication_facts"], order: 'unverified' },
+  ],
+  "db/documents/contributions.ts#reconcilePublicationContributions": [
+    { tables: ["document_publication_contributions"], order: 'unverified' },
+  ],
+  "db/documents/contributions.ts#reconcilePublicationFacts": [
+    { tables: ["document_publication_facts"], order: 'unverified' },
+  ],
+  "db/documents/contributions.ts#delta": [
+    { tables: ["document_publication_totals"], order: 'unverified' },
+  ],
+  "db/documents/contributions.ts#publicationContributionSchema": [
+    { tables: ["document_publication_totals"], order: 'unverified' },
+  ],
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
   'db/embeddings/state.ts#reconcileSourceState': [{ tables: ['embedding_source_state'], order: 'unverified' }],
   'db/embeddings/state.ts#total': [{ tables: ['embedding_model_totals'], order: 'unverified' }],

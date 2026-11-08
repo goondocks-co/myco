@@ -3,12 +3,12 @@ import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import type { ChunkRow } from '../../content/document-reader.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
 
-export interface UnlocatedDocument { project_id: string; session_id: string; generation: number; locate_after: number | null }
+export interface UnlocatedDocument { project_id: string; session_id: string; generation: number; publication_input_revision: number; locate_after: number | null }
 
 const CHUNKS_CHANGED = 'locator_chunks_changed';
 
 const unlocated = read<[due: number], UnlocatedDocument>({ name: 'documentLocator.unlocated', sql: `
-  SELECT p.project_id,p.session_id,p.generation,d.locate_after
+  SELECT p.project_id,p.session_id,p.generation,d.publication_input_revision,d.locate_after
   FROM session_prompts p INDEXED BY idx_session_prompts_unlocated
   JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
   WHERE p.page IS NULL AND d.rollup_due<=? LIMIT 1` });

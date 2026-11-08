@@ -526,6 +526,7 @@
     "tests/myco-server/prompt-identity.test.ts": 824,
     "tests/myco-server/prompt-scheme.test.ts": 551,
     "tests/myco-server/provenance.test.ts": 2832,
+    "tests/myco-server/publication-contributions.test.ts": 15000,
     "tests/myco-server/publication-ci-contracts.test.ts": 34000,
     "tests/myco-server/publication-data.test.ts": 3000,
     "tests/myco-server/publication-review.test.ts": 60000,

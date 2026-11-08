@@ -1,3 +1,4 @@
+import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { insertSwitch,pauseSwitch,resumeSwitch,deleteSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { recordedWork } from '@myco-server-worker/core/embedding/work-state.js';
@@ -22,6 +23,15 @@ import { readDocumentStatus, pendingPublication } from '@myco-server-worker/read
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
+const REREAD_CATALOG_WRITES = 8;
+/** A reset changes its contribution and total, retires the empty total, and advances the input revision. */
+const REREAD_CONTRIBUTION_WRITES = 4;
+
+async function readyDocumentStatus(db: RelationalStore) {
+  const status = await readDocumentStatus(db);
+  if ('state' in status) throw new Error('publication_status_building');
+  return status;
+}
 
 async function world(run: (measured: ReturnType<typeof measuredStore>) => Promise<void>, beforeFacts?: (db: RelationalStore) => Promise<void>) {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
@@ -145,12 +155,14 @@ test('hubness pages retain population evidence and invalidate it on a source cha
 
 test('document facts and drain telemetry stay bounded and reflect committed catalog changes', async () => {
   await world(async (m) => {
+    expect(await readDocumentStatus(m.db)).toEqual({state:'building'});
+    for (const phase of ['publicationInputs','publicationSessions'] as const) while (await catchUpPhase(m.db,phase)>0) {}
     for (const size of [1_000,4_000]) {
       await m.db.prepare('DELETE FROM transcript_publication').run();
       await documents(m.db,size);
       await m.db.prepare("UPDATE session_documents SET due_at=0,generation=1,build='{\"report\":{\"classes\":{\"body_missing\":1}}}'").run();
       m.reset();
-      const status = await readDocumentStatus(m.db);
+      const status = await readyDocumentStatus(m.db);
       expect(status.sessions.live).toBe(size);
       expect(status.lagBytes).toBe(size*100);
       expect(status.differences).toEqual({body_missing:size});
@@ -164,21 +176,21 @@ test('document facts and drain telemetry stay bounded and reflect committed cata
       await m.db.prepare("UPDATE session_documents SET due_at=?,build=NULL WHERE project_id='p' AND session_id='s-000001'").bind(NOW+1).run();
       expect((await pendingPublication(m.db,NOW)).sessions).toBe(128);
       expect((await pendingPublication(m.db,NOW+1)).sessions).toBe(128);
-      expect((await readDocumentStatus(m.db)).differences).toEqual({body_missing:size-1});
+      expect((await readyDocumentStatus(m.db)).differences).toEqual({body_missing:size-1});
       await m.db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,session_id,generation,published_offset,record_scheme,parser_version,updated_at)
         VALUES('p','t-000001','s-000001',1,40,'scheme',1,1)`).run();
-      expect((await readDocumentStatus(m.db)).lagBytes).toBe(size*100-40);
+      expect((await readyDocumentStatus(m.db)).lagBytes).toBe(size*100-40);
       expect((await pendingPublication(m.db,NOW+1)).bytes).toBe(12_800);
       await m.db.prepare("UPDATE session_documents SET generation=2 WHERE project_id='p' AND session_id='s-000001'").run();
-      expect((await readDocumentStatus(m.db)).lagBytes).toBe(size*100);
-      const before = await readDocumentStatus(m.db);
+      expect((await readyDocumentStatus(m.db)).lagBytes).toBe(size*100);
+      const before = await readyDocumentStatus(m.db);
       await expect(m.db.batch([
         m.db.prepare("DELETE FROM session_documents WHERE project_id='p' AND session_id='s-000001'"),
         m.db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('p','duplicate',1)"),
       ])).rejects.toThrow();
-      expect(await readDocumentStatus(m.db)).toEqual(before);
+      expect(await readyDocumentStatus(m.db)).toEqual(before);
       await m.db.prepare("DELETE FROM session_documents WHERE session_id='s-000002'").run();
-      expect((await readDocumentStatus(m.db)).sessions.live).toBe(size-1);
+      expect((await readyDocumentStatus(m.db)).sessions.live).toBe(size-1);
       await m.db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,due_at,updated_at,build)
         VALUES('p','s-000002','live',1,0,1,'{"report":{"classes":{"body_missing":1}}}')`).run();
     }
@@ -348,21 +360,13 @@ test('calibration publication pages seek after a validated population snapshot',
   });
 });
 
-test('publication capture writes net changed facts and keep telemetry bounded during a bulk reread', async () => {
+test('bulk reread makes fully published sessions due and restores their byte lag', async () => {
   await world(async m=>{
     await documents(m.db,4_000);
     await m.db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,session_id,generation,published_offset,record_scheme,parser_version,updated_at)
       SELECT project_id,transcript_id,session_id,1,0,'scheme',1,1 FROM transcripts`).run();
     await m.db.prepare(`UPDATE session_documents SET build='{"report":{"classes":{"body_missing":1,"other":2}}}'`).run();
-    for(const [label,sql,maximum] of [
-      ['append',"UPDATE transcripts SET size=size+100 WHERE project_id='p' AND transcript_id='t-000001'",8],
-      ['offset',"UPDATE transcript_publication SET published_offset=50 WHERE project_id='p' AND transcript_id='t-000001'",3],
-      ['clear',"UPDATE session_documents SET due_at=NULL WHERE project_id='p' AND session_id='s-000001'",5],
-    ] as const) {
-      m.reset();await m.db.prepare(sql).run();
-      console.info(`capture ${label}: ${m.reads()} read / ${m.writes()} written`);
-      expect(m.writes()).toBeLessThanOrEqual(maximum);
-    }
+    await m.db.prepare("UPDATE transcripts SET size=size+100 WHERE project_id='p' AND transcript_id='t-000001'").run();
     await m.db.prepare("UPDATE transcripts SET agent='test'").run();
     await m.db.prepare(`UPDATE transcript_publication AS p SET published_offset=(SELECT size FROM transcripts t
       WHERE t.project_id=p.project_id AND t.transcript_id=p.transcript_id)`).run();
@@ -370,8 +374,8 @@ test('publication capture writes net changed facts and keep telemetry bounded du
     m.reset();
     expect(await rereadTranscripts(m.db,{agent:'test'})).toBe(4_000);
     console.info(`reread 4000: ${m.reads()} read / ${m.writes()} written`);
-    expect(m.writes()).toBeLessThanOrEqual(8*4_000);
-    expect((await readDocumentStatus(m.db)).lagBytes).toBe(400_100);
+    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES)*4_000);
+    expect((await readyDocumentStatus(m.db)).lagBytes).toBe(400_100);
     expect((await pendingPublication(m.db,NOW)).limited).toBe(true);
   });
 });

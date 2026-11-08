@@ -166,8 +166,8 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
   const backlog = await pendingPublication(env.db, now);
-  if (backlog.sessions - backlog.imported.sessions > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
-  if (backlog.imported.sessions > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
+  if (backlog.sessions > 0 && (backlog.state === 'building' || backlog.sessions > backlog.imported.sessions)) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
+  if (backlog.sessions > 0 && (backlog.state === 'building' || backlog.imported.sessions > 0)) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
   else if (await embeddingSweepPending(env, now)) assertions.push({ name: EMBEDDING_SWEEP_ASSERTION, maxDepth: 'sleep' });
   // Requested work that waits keeps the Deployment awake until it runs.

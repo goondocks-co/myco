@@ -4,7 +4,7 @@ import { describe, expect, it } from 'bun:test';
 import { passedOverHealth } from '@myco-server-worker/db/embeddings/health.js';
 import { passedOverTriggers } from '@myco-server-worker/db/embeddings/passed-over.js';
 import { todayMarks, changeMarkTriggers } from '@myco-server-worker/db/meta/marks.js';
-import { catchUpKpiPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
+import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { todayQueued, todayRunning, todayProjects } from '@myco-server-worker/db/runs/now.js';
 import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-health.js';
 import { V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
@@ -79,7 +79,7 @@ describe('maintained Health and Today contracts', () => {
       f.sqlite.run('DELETE FROM embedding_passed_over');
       f.sqlite.run("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='passed_over'");
       expect(await passedOverHealth(f.db, ['m'], NOW)).toEqual({ state: 'building' });
-      expect(await catchUpKpiPhase(f.db, 'failures')).toBe(50);
+      expect(await catchUpPhase(f.db, 'failures')).toBe(50);
       f.sqlite.run("UPDATE sessions SET summary='edited' WHERE session_id='s00'");
       f.sqlite.run("DELETE FROM sessions WHERE session_id='s54'");
       f.fail('s53', 'm', NOW + 1, 'new failure');

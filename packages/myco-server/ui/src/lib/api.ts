@@ -96,7 +96,7 @@ export interface StatusResponse {
   capabilities: Capability[];
   workers: WorkerStatus;
   /** Transcripts stored and not yet read into sessions, or null where the store could not be read. */
-  transcriptBacklog?: { limited?: true; transcripts: number; bytes: number; imported: { transcripts: number; bytes: number } } | null;
+  transcriptBacklog?: { state: 'building' } | { state?: 'ready'; limited?: true; transcripts: number; bytes: number; imported: { transcripts: number; bytes: number } } | null;
   projects: ProjectReceipt[];
   /** When each machine's agents last sent anything, most recent first. */
   capture?: CaptureRow[];

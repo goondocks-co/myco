@@ -178,6 +178,6 @@ test('retained invalid text is held per event while transient reads retry and la
       .toEqual({ replies: 1, tool_calls: 1, plans: 1, due_at: null });
     expect(await blobs.get(blobObjectKey('project', key, registered.generation)), target).not.toBeNull();
     await assertSessionMaterialReady(db, 'project', 'session');
-    expect((await readDocumentStatus(db)).queued, target).toBe(0);
+    expect(await readDocumentStatus(db), target).toHaveProperty('queued', 0);
   });
 });

@@ -1,6 +1,7 @@
 import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
 import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
 import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
+import { PUBLICATION_DOCUMENT_RECONCILE, PUBLICATION_INPUTS_READY, PUBLICATION_SOURCE_RECONCILE } from '../documents/contributions.js';
 import type { JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
@@ -50,6 +51,8 @@ const tuple = (columns: readonly string[]) => columns.length === 1 ? columns[0]!
 const jsonTuple = (columns: readonly string[], json: string) => tuple(columns.map((_, i) => `json_extract(${json},'$[${i}]')`));
 const PHASE_SOURCES = {
   ...KPI_PHASE_SOURCES,
+  publicationInputs: { table: 'transcripts', columns: ['project_id', 'transcript_id'] },
+  publicationSessions: { table: 'session_documents', columns: ['project_id', 'session_id'] },
   failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
   versions: { table: 'embedding_versions', columns: ['project_id', 'type', 'record_id'] },
   attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
@@ -57,7 +60,9 @@ const PHASE_SOURCES = {
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
 const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
-  : phase === 'attempts' ? BUDGET_PROJECTION : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase.startsWith('publication') ? 'publication'
+  : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
+const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec]) => {
   const source: Source = spec;
@@ -90,6 +95,7 @@ const transcriptReconcile = [
 ].map((sql, i) => write<[string]>({ name: `kpi.transcriptPage${i}`, sql }));
 
 const reconciles = {
+  publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
@@ -101,11 +107,12 @@ export function kpiPageStatements(phase: ProjectionPhase, keys: string, now = Da
 }
 
 /** A page's contributions and cursor share one atomic commit. */
-export async function catchUpKpiPhase(db: RelationalStore, phase: ProjectionPhase, now = Date.now()): Promise<number> {
+export async function catchUpPhase(db: RelationalStore, phase: ProjectionPhase, now = Date.now()): Promise<number> {
   const page = pages[phase];
-  const [, state, selected] = await commit(db, page.frontier.bind(), page.state.bind(), page.keys.bind());
+  const [, state, selected] = await commit(db, page.frontier.bind(), page.state.bind(), page.keys.bind(),
+    ...frontierAssertions(phase));
   const held = state.results[0];
-  if (!held) throw new Error(`Missing kpi projection phase: ${phase}`);
+  if (!held) throw new Error(`Missing projection phase: ${phase}`);
   if (held.done === 1) return 0;
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
   await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys), now),
@@ -123,10 +130,14 @@ export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
   return { state, progress } as const;
 }
 
+export const publicationReady = (phases: readonly Pick<Phase, 'phase' | 'done'>[]) =>
+  ['publicationInputs','publicationSessions'].every(phase => phases.some(row => row.phase === phase && row.done === 1));
+
 const SINGLE_PHASE = { passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts' } as const;
-export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
+export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'publication' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
   if (projection === 'kpi') return kpiReadiness(rows).state;
+  if (projection === 'publication') return publicationReady(rows) ? 'ready' : 'building';
   const phase = SINGLE_PHASE[projection];
   return rows.length === 1 && rows[0]!.phase === phase && rows[0]!.done === 1 ? 'ready' : 'building';
 }
@@ -150,10 +161,10 @@ export async function catchUpProjections(
     if (!Object.hasOwn(PHASE_SOURCES, row.phase) || row.projection !== projectionOf(row.phase as ProjectionPhase)) throw new Error(`Unknown projection phase: ${row.projection}/${row.phase}`);
     const phase = row.phase as ProjectionPhase;
     // Three frontier/key statements, reconciliation, the cursor write and one fresh pending read.
-    const pageCalls = 3 + (phase === 'attempts' ? SPEND_CATCHUP.length : reconciles[phase].length) + 2;
+    const pageCalls = 3 + frontierAssertions(phase).length + (phase === 'attempts' ? SPEND_CATCHUP.length : reconciles[phase].length) + 2;
     const start = clock();
     if (calls + pageCalls > budget.calls || start + longestPageMs >= deadline) break;
-    changed += await catchUpKpiPhase(db, phase, start);
+    changed += await catchUpPhase(db, phase, start);
     [rows] = await readSet(db, pending.bind());
     calls += pageCalls;
     longestPageMs = Math.max(longestPageMs, clock() - start);
