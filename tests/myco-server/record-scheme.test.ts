@@ -125,9 +125,10 @@ describe('whole-artifact record pin admission', () => {
       expect(e.sqlite.query('SELECT transcript_id, record_identity_scheme FROM transcripts ORDER BY transcript_id').all()).toEqual([
         { transcript_id: 'legacy', record_identity_scheme: LEGACY }, { transcript_id: 'new', record_identity_scheme: SOURCE }, { transcript_id: 'old', record_identity_scheme: LEGACY },
       ]);
-      const before = snapshot(e.sqlite);
+      const before = snapshot(e.sqlite).filter(([name])=>name!=='projection_catchup');
       await restoreArtifact(e.db, { text, authorization: { kind: 'recovery' } });
-      expect(snapshot(e.sqlite)).toEqual(before);
+      expect(snapshot(e.sqlite).filter(([name])=>name!=='projection_catchup')).toEqual(before);
+      expect(e.sqlite.query("SELECT done,after_key,frontier FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinGroups'").get()).toEqual({done:0,after_key:'[]',frontier:null});
     } finally { e.sqlite.close(); }
   });
 
@@ -143,6 +144,7 @@ describe('whole-artifact record pin admission', () => {
       try {
         if (held) insert(e.sqlite, 'transcripts', held);
         const text = await artifact(e.db, [...rows], [{ t: 'projects', r: { project_id: 'proj_other', name: 'must not land', created_at: 1 } }]);
+        e.sqlite.exec("UPDATE projection_catchup SET done=0 WHERE projection='publication_pins'");
         const before = snapshot(e.sqlite);
         await expect(restoreArtifact(e.db, { text, authorization: { kind: 'recovery' } })).rejects.toMatchObject({ code });
         expect(snapshot(e.sqlite)).toEqual(before);

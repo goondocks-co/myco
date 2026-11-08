@@ -1,3 +1,9 @@
+import { VERSION_PHASE_SOURCES, VERSION_RECONCILE, rebuildForVersion, type VersionPhase } from '../documents/rebuild.js';
+import { PIN_SOURCE, PIN_ADMISSION_SOURCE, PIN_RECONCILE, PIN_ADMISSION_RECONCILE, PIN_GROUPS_READY } from '../documents/pin-schema.js';
+import { metadataCursorHeld, metadataFailure, metadataPage } from '../documents/metadata-catchup.js';
+import { emit } from '../../telemetry.js';
+import { METADATA_PHASE_SOURCE, OWNERSHIP_READY_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE } from '../documents/ownership.js';
+import { FAILURE_PHASE_SOURCE, FAILURE_RECONCILE, FAILURE_RECORD_SOURCE, FAILURE_RECORD_RECONCILE } from '../documents/failure-head.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { RUN_ADMISSION_PROJECTION, LIVE_CATCHUP } from '../runs/live.js';
 import { CALIBRATION_PHASE_SOURCES, CALIBRATION_RECONCILE } from '../embeddings/calibration.js';
@@ -5,7 +11,7 @@ import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
 import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
 import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
 import { PUBLICATION_DOCUMENT_RECONCILE, PUBLICATION_INPUTS_READY, PUBLICATION_SOURCE_RECONCILE } from '../documents/contributions.js';
-import type { JobBudget, RelationalStore } from '../../core/adapters.js';
+import type { BlobStore, JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
@@ -29,6 +35,7 @@ interface Source {
   columns: readonly string[];
   where?: string;
   pageSize?: number;
+  startKey?: readonly (string|number)[];
 }
 export const KPI_PHASE_SOURCES = {
   sessions: { table: 'sessions', columns: ['project_id', 'session_id'] },
@@ -42,7 +49,7 @@ export const KPI_PHASE_SOURCES = {
 export type KpiPhase = keyof typeof KPI_PHASE_SOURCES;
 
 export const projectionPhases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
-const pending = read<[], Phase>({ name: 'projection.pending', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY CASE WHEN projection=\'run_admission\' THEN 0 ELSE 1 END,projection,phase' });
+const pending = read<[], Phase>({ name: 'projection.pending', sql: "SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY CASE projection WHEN 'run_admission' THEN 0 WHEN 'publication_pins' THEN 1 ELSE 2 END,projection,phase" });
 /**
  * Restart every phase. Only a phase that has progressed takes a new generation: a page sets its frontier in the same
  * commit as its state read, so a phase still at its start has no page in flight, and restarting it twice is a no-op.
@@ -56,6 +63,12 @@ const tuple = (columns: readonly string[]) => columns.length === 1 ? columns[0]!
 const jsonTuple = (columns: readonly string[], json: string) => tuple(columns.map((_, i) => `json_extract(${json},'$[${i}]')`));
 const PHASE_SOURCES = {
   ...KPI_PHASE_SOURCES,
+  ...VERSION_PHASE_SOURCES,
+  publicationPinGroups: PIN_SOURCE, publicationPinsReady: PIN_ADMISSION_SOURCE,
+  publicationMetadata: METADATA_PHASE_SOURCE,
+  publicationOwnershipReady: OWNERSHIP_READY_SOURCE,
+  publicationFailures: FAILURE_PHASE_SOURCE,
+  publicationFailureRecord: FAILURE_RECORD_SOURCE,
   publicationInputs: { table: 'transcripts', columns: ['project_id', 'transcript_id'] },
   publicationSessions: { table: 'session_documents', columns: ['project_id', 'session_id'] },
   runs: { table: 'agent_runs INDEXED BY idx_agent_runs_admission_catchup', columns: ['project_id', 'id'], where: IN_FLIGHT_RUN_STATUSES },
@@ -69,10 +82,12 @@ const PHASE_SOURCES = {
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
 const projectionOf = (phase: ProjectionPhase) => phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
-  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION
-  : phase.startsWith('publication') ? 'publication'
+  : phase in VERSION_PHASE_SOURCES ? 'publication_version'
+  : (phase === 'publicationPinGroups' || phase === 'publicationPinsReady') ? 'publication_pins'
+  : (phase === 'publicationMetadata' || phase === 'publicationOwnershipReady') ? 'publication_ownership'
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION : (phase === 'publicationFailures' || phase === 'publicationFailureRecord') ? 'publication_failures' : phase.startsWith('publication') ? 'publication'
   : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : phase in CALIBRATION_PHASE_SOURCES ? 'embedding_calibration' : 'kpi';
-const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : [];
+const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : phase === 'publicationOwnershipReady' ? [OWNERSHIP_INPUTS_READY.bind()] : phase === 'publicationPinsReady' ? [PIN_GROUPS_READY.bind()] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec]) => {
   const source: Source = spec;
@@ -83,7 +98,7 @@ const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec
     frontier: write<[]>({ name: `projection.${phase}Frontier`, sql: `UPDATE projection_catchup SET frontier=COALESCE((SELECT ${key} FROM ${source.table} WHERE ${source.where ?? '1'} ORDER BY ${source.columns.map(c => `${c} DESC`).join(',')} LIMIT 1),'[]') WHERE ${state} AND frontier IS NULL AND done=0` }),
     state: read<[], Phase>({ name: `projection.${phase}State`, sql: `SELECT projection,phase,after_key,frontier,done,generation FROM projection_catchup WHERE ${state}` }),
     keys: read<[], { key: string }>({ name: `projection.${phase}Keys`, sql: `SELECT DISTINCT ${key} AS key FROM ${source.table}
-      WHERE ${source.where ?? '1'} AND ${tuple(source.columns)} > ${jsonTuple(source.columns, `COALESCE(NULLIF((SELECT after_key FROM projection_catchup WHERE ${state}),'[]'),'${JSON.stringify(source.columns.map(() => ''))}')`)}
+      WHERE ${source.where ?? '1'} AND ${tuple(source.columns)} > ${jsonTuple(source.columns, `COALESCE(NULLIF((SELECT after_key FROM projection_catchup WHERE ${state}),'[]'),'${JSON.stringify(source.startKey ?? source.columns.map(() => ''))}')`)}
       AND ${tuple(source.columns)} <= ${jsonTuple(source.columns, `(SELECT frontier FROM projection_catchup WHERE ${state})`)}
       ORDER BY ${order} LIMIT ${source.pageSize ?? PROJECTION_PAGE_SIZE}` }),
   }];
@@ -105,6 +120,11 @@ const transcriptReconcile = [
 ].map((sql, i) => write<[string]>({ name: `kpi.transcriptPage${i}`, sql }));
 
 const reconciles = {
+  ...VERSION_RECONCILE,
+  publicationPinGroups: PIN_RECONCILE, publicationPinsReady: PIN_ADMISSION_RECONCILE,
+  publicationMetadata: [], publicationOwnershipReady: OWNERSHIP_READY_RECONCILE,
+  publicationFailures: FAILURE_RECONCILE,
+  publicationFailureRecord: FAILURE_RECORD_RECONCILE,
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
   runs: LIVE_CATCHUP,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
@@ -113,21 +133,34 @@ const reconciles = {
 
 /** Replaying keys reads current source values inside the caller's commit; spend facts settle against the page's own window floor. */
 export function kpiPageStatements(phase: ProjectionPhase, keys: string, now = Date.now()): Bound[] {
-  return phase === 'attempts' ? SPEND_CATCHUP.map(statement => statement.bind(keys, now - BUDGET_WINDOW_MS))
+  return phase in VERSION_PHASE_SOURCES ? rebuildForVersion(phase as VersionPhase, keys) : phase === 'attempts' ? SPEND_CATCHUP.map(statement => statement.bind(keys, now - BUDGET_WINDOW_MS))
     : reconciles[phase].map(statement => statement.bind(keys));
 }
 
 /** A page's contributions and cursor share one atomic commit. */
-export async function catchUpPhase(db: RelationalStore, phase: ProjectionPhase, now = Date.now()): Promise<number> {
+export async function catchUpPhase(db: RelationalStore, phase: ProjectionPhase, now = Date.now(), blobs?: BlobStore, charge: (calls: number) => void = () => {}): Promise<number> {
   const page = pages[phase];
+  charge(3 + frontierAssertions(phase).length);
   const [, state, selected] = await commit(db, page.frontier.bind(), page.state.bind(), page.keys.bind(),
     ...frontierAssertions(phase));
   const held = state.results[0];
   if (!held) throw new Error(`Missing projection phase: ${phase}`);
   if (held.done === 1) return 0;
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
-  await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys), now),
-    advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key, held.generation));
+  if (phase === 'publicationMetadata' && keys.length > 0 && blobs === undefined) throw new Error('publication_metadata_blob_store_required');
+  const metadata = phase === 'publicationMetadata' ? await metadataPage(db, blobs!, keys, charge,held.generation,now) : {statements:[],guards:[],complete:true};
+  const guards = phase === 'publicationMetadata' ? [metadataCursorHeld.bind(held.after_key,held.generation)] : [];
+  const statements = [...guards, ...metadata.statements, ...kpiPageStatements(phase, JSON.stringify(keys), now)];
+  charge(statements.length + 1);
+  try {
+    await commit(db, ...statements,
+      advance.bind(metadata.complete ? selected.results.at(-1)?.key ?? held.after_key : held.after_key, metadata.complete && keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key, held.generation));
+  } catch(error) {
+    if(phase!=='publicationMetadata'||!(error instanceof Error)||!error.message.includes('document_ownership_conflict'))throw error;
+    const failure=metadataFailure(keys,held.generation,now,'document_ownership_conflict');
+    charge(guards.length+metadata.guards.length+failure.length+1);
+    await commit(db,...guards,...metadata.guards,...failure,advance.bind(selected.results.at(-1)?.key??held.after_key,0,projectionOf(phase),phase,held.after_key,held.generation));
+  }
   return keys.length;
 }
 
@@ -161,27 +194,38 @@ export async function resetProjectionCatchup(db: RelationalStore): Promise<void>
 /** Drains atomic pages within a statement and elapsed-time allowance; unfinished phases request another wake. */
 export async function catchUpProjections(
   db: RelationalStore,
-  { budget = PROJECTION_CATCHUP_BUDGET, clock = Date.now }: { budget?: Readonly<JobBudget>; clock?: () => number } = {},
-): Promise<{ changed: number; more: boolean }> {
+  { budget = PROJECTION_CATCHUP_BUDGET, clock = Date.now, blobs }: { budget?: Readonly<JobBudget>; clock?: () => number; blobs?: BlobStore } = {},
+): Promise<{ changed: number; more: boolean; failures?:readonly {projection:string;phase:string}[] }> {
   const deadline = clock() + budget.wallMs;
   let [rows] = await readSet(db, pending.bind());
   let changed = 0;
   let calls = 1;
   let longestPageMs = 0;
+  const deferred = Symbol('projection_page_deferred');
+  const skipped=new Set<string>();
+  const failures:{projection:string;phase:string}[]=[];
+  const charge = (count: number) => { if (calls + count + 1 > budget.calls) throw deferred; calls += count; };
   while (rows.length > 0) {
-    const row = rows[0]!;
+    const row = rows.find(row=>!skipped.has(row.projection));
+    if(row===undefined)break;
     if (!Object.hasOwn(PHASE_SOURCES, row.phase) || row.projection !== projectionOf(row.phase as ProjectionPhase)) throw new Error(`Unknown projection phase: ${row.projection}/${row.phase}`);
     const phase = row.phase as ProjectionPhase;
     // Three frontier/key statements, reconciliation, the cursor write and one fresh pending read.
     const pageCalls = 3 + frontierAssertions(phase).length + (phase === 'attempts' ? SPEND_CATCHUP.length : reconciles[phase].length) + 2;
     const start = clock();
     if (calls + pageCalls > budget.calls || start + longestPageMs >= deadline) break;
-    changed += await catchUpPhase(db, phase, start);
+    try { changed += await catchUpPhase(db, phase, start, blobs, charge); }
+    catch (error) {
+      if (error === deferred) break;
+      skipped.add(row.projection);
+      failures.push({projection:row.projection,phase:row.phase});
+      emit({kind:'projection_catchup_failed',projection:row.projection,phase:row.phase});
+    }
     [rows] = await readSet(db, pending.bind());
-    calls += pageCalls;
+    calls += 1;
     longestPageMs = Math.max(longestPageMs, clock() - start);
   }
-  return { changed, more: rows.length > 0 };
+  return { changed, more: rows.some(row=>!skipped.has(row.projection)),...(failures.length===0?{}:{failures}) };
 }
 
 export function kpiCatchupSeed(): string[] {

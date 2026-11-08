@@ -205,7 +205,7 @@ describe('a session working now', () => {
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = 'sess_1' AND kind='response'`).get()).toEqual({ n: 0 });
     const transcript = r.e.sqlite.query<{transcript_id:string},[]>('SELECT transcript_id FROM transcripts').get()!;
     const directory = (await readDirectory(r.e.db,'proj_1','sess_1'))!;
-    const chunks = await Promise.all([...directory.chunks.values()].filter(row=>row.kind==='page').map(row=>readPageChunk(r.e.serverEnv,row)));
+    const chunks = await Promise.all([...directory.chunks.values()].filter(row=>row.kind==='page'||row.metadata===1).map(row=>readPageChunk(r.e.serverEnv,row)));
     const checkpoint = chunks.flatMap(chunk=>[...chunk.states]).find(([id])=>id===transcript.transcript_id)![1];
     expect((checkpoint.mycoParserState as {reply:{parts:{text:string}[]}}).reply.parts[0]!.text).toBe('Running the loop now.');
     expect(r.workingSince('sess_1')).toBe(at);

@@ -7,6 +7,9 @@ export const SESSION_PATHS_LIMIT = 500;
 export const DOCUMENT_SESSION_TABLES = [
   'session_documents', 'session_chunks', 'retired_objects', 'session_pages', 'session_sealed_records', 'session_prompts',
   'transcript_publication', 'publish_queue', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls',
+  'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
+  'document_transcript_pins', 'document_group_pins', 'document_pin_totals', 'document_failure_contributions',
+  'document_rebuild_receipts',
 ] as const;
 
 /** Immutable document directories and publisher frontiers carried by portable backups. */

@@ -342,16 +342,19 @@ test('a line part placed keeps its count while the transcript grows, when its re
       JSON.stringify({ type: 'assistant', uuid: uuid(60300), message: { role: 'assistant', content: ids.map((id) => ({ type: 'tool_use', id, name: 'shell', input: { command: 'run' } })) } }) + '\n'
       + results(60201, 'after', ids));
     const end = first.length + line.length;
-    let size = end, placed = 0, parts = 0;
+    let size = end, offset = first.length, placed = 0, parts = 0;
     for (let round = 0; Number((await frontier())!.o) < end; round += 1) {
       expect(round, name).toBeLessThan(30);
       await pass();
-      const now = Number((await frontier())!.n);
+      const held = (await frontier())!;
+      const nextOffset = Number(held.o), now = Number(held.n);
+      expect(nextOffset, `${name} pass ${round}`).toBeGreaterThanOrEqual(offset);
       if (now > 0) {
-        expect(now, `${name} pass ${round}`).toBeGreaterThan(placed);
-        placed = now;
+        expect(now, `${name} pass ${round}`).toBeGreaterThan(nextOffset === offset ? placed : 0);
         parts += 1;
       }
+      offset = nextOffset;
+      placed = now;
       const grown = results(61000 + round, 'after', [`grown-${round}`]);
       await captureDocumentTranscript(db, blobs, 'growing', tx, grown, t0 + 2 * MIN + round + 1, size, 'claude-code');
       size += grown.length;

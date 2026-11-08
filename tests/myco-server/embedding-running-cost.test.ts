@@ -24,6 +24,7 @@ import { readDocumentStatus, pendingPublication } from '@myco-server-worker/read
 const NOW = 10 ** 12;
 const MODEL = 'm';
 const REREAD_CATALOG_WRITES = 8;
+const REREAD_VERSION_INDEX_WRITES = 1;
 /** A reset changes its contribution and total, retires the empty total, and advances the input revision. */
 const REREAD_CONTRIBUTION_WRITES = 4;
 
@@ -375,7 +376,7 @@ test('bulk reread makes fully published sessions due and restores their byte lag
     m.reset();
     expect(await rereadTranscripts(m.db,{agent:'test'})).toBe(4_000);
     console.info(`reread 4000: ${m.reads()} read / ${m.writes()} written`);
-    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES)*4_000);
+    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES + REREAD_VERSION_INDEX_WRITES)*4_000);
     expect((await readyDocumentStatus(m.db)).lagBytes).toBe(400_100);
     expect((await pendingPublication(m.db,NOW)).limited).toBe(true);
   });

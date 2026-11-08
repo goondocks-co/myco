@@ -1,8 +1,9 @@
+import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 /**
  * The session document publisher.
  *
  * It keeps its own progress and shares none with the other transcript writers: a `transcript_publication` row per
- * transcript holds its offset and identity policy, the session's last page chunk holds each transcript's parser
+ * transcript holds its offset and identity policy, keyed metadata shards hold each transcript's parser
  * continuation, and `publish_queue` holds the member events not yet published. A due session is read from those
  * frontiers, parsed with the common parser under the recorded policy, merged with its queued events, and written as
  * new chunk versions that one guarded batch makes live together with the catalog rows that describe them.
@@ -39,6 +40,7 @@ import {
   commitAdmitted, DocumentBatch, DocumentPassFull, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement,
   releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
+import { repairPublicationMetadata } from '../db/documents/metadata-catchup.js';
 import { dueSessions, deferFailedPublication, settlePublication, publicationGuard, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS, type DueSession } from '../db/documents/publication.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { settleCards } from './card-settle.js';
@@ -131,6 +133,15 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       more ||= report.more;
       if (report.failure?.propagate) failure ??= report.failure.error;
     } catch (error) {
+      if (error instanceof PublicationOwnershipBuilding) {
+        emit({kind:'document_publication_building',projectId:ref.project_id,sessionId:ref.session_id});
+        const repaired=error.failure!==null&&await repairPublicationMetadata(env.db,env.blobs,ref.project_id,ref.session_id,now).catch(()=>{
+          emit({kind:'document_metadata_repair_failed',projectId:ref.project_id,sessionId:ref.session_id});
+          return false;
+        });
+        if(error.failure!==null&&!repaired)await deferFailedPublication(env.db,ref,now);
+        more=true; continue;
+      }
       const outcome = publicationOutcome(error);
       emit({ kind: 'document_publish_failed', projectId: ref.project_id, sessionId: ref.session_id, error: outcome.failure });
       try { await deferFailedSession(env.db, ref, outcome.failure, now); }
@@ -335,13 +346,17 @@ class SessionPublication {
   private async publishTranscript(publication: Publication): Promise<void> {
     const t = publication.transcript;
     if (publication.state === 'failed' || (publication.state === 'awaiting' && t.size <= (publication.awaitedSize ?? -1))) return;
+    await this.batch.writer.readState(t.transcript_id);
     if (publication.offset === 0 || t.publication_parser_version === 0) this.batch.writer.states.delete(t.transcript_id);
     const receipts = new Map<number, number>();
     const claims = new Map<string, { thread: string; record: string }>();
     const persistence: ParsePersistence = {
       sourceTimes: (offsets) => sourceReceipts(this.db, this.projectId, t.transcript_id, offsets, receipts),
       checkpoint: async () => { throw new Error('document_continuation_chunked'); },
-      owners: async () => promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]),
+      owners: async (keys) => {
+        await this.batch.writer.readOwners([...keys.keys()]);
+        return promptOwners([...this.batch.writer.owners, ...[...claims].filter(([key]) => !this.batch.writer.owners.has(key))]);
+      },
       claim: async (incoming) => { for (const claim of incoming) claims.set(claim.key, { thread: claim.thread, record: claim.record }); },
       stop: async (failure, _now, diagnostic) => {
         if (CLEARABLE_FAILURES.has(failure)) this.recordFault(publication, failure);

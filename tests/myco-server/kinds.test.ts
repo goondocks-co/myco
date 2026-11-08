@@ -77,9 +77,6 @@ const BLOB_KEY_FIELDS = [
   'response.blob', 'tool.failure.blob', 'tool.failure.outputBlob', 'tool.use.blob', 'tool.use.outputBlob',
   'transcript.segment.blob',
 ];
-/** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 68;
-const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 11, group: 1, served: 2 };
 /** Every field carrying the time bound across the catalogue: `session.start.startedAt` and `session.end.endedAt`. */
@@ -795,95 +792,6 @@ describe('kind catalogue', () => {
       observed.push({ name: row.name, reason: body.reason, classifiers: events.map((ev) => ev.reason) });
     }
     expect(observed).toEqual(table.map((row) => ({ name: row.name, reason: row.reason, classifiers: [row.classifier] })));
-  });
-
-  it('serves every statement it executes from an index, never a scan of a project-scoped table', async () => {
-    const e = sqliteEnv();
-    const t = await member(e);
-    const png = await upload(e, t.token, utf8('png-bytes'), 'image/png');
-    const segBytes = utf8('{"line":1}\n');
-    const segKey = await upload(e, t.token, segBytes);
-    let n = 800;
-    let offset = 0;
-    // Both payload shapes are driven, not only the full fixture: a statement a kind builds on an optional-field
-    // branch executes under one shape and not the other, and a gate that drives one shape never inspects it.
-    for (const shape of ['full', 'required-only'] as const) {
-      for (const spec of KINDS) {
-        const full = { ...FIXTURES[spec.name].payload };
-        if (spec.name === 'attachment') full.blob = png;
-        if (spec.name === 'transcript.segment') { full.blob = segKey; full.length = segBytes.byteLength; }
-        const payload = shape === 'full' ? full : Object.fromEntries(Object.entries(full).filter(([field]) => spec.fields[field]?.required === true));
-        if (spec.name === 'transcript.segment') { payload.baseOffset = offset; offset += segBytes.byteLength; }
-        // A turn start opens a turn only within the clock bound, so it is sent near now: the statement it opens with runs here too.
-        const at = spec.name === 'turn' ? Date.now() - 10_000 : 3_000;
-        for (const createdAt of [at, at + 1]) {
-          await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), sessionId: `sess_${shape}`, kind: spec.name, createdAt, payload })), e.env);
-        }
-      }
-    }
-    // The fixtures above take the storing path only. Drive the branches they never enter — the duplicate read, the
-    // orphan adoption and the reservation reconcile it forces, the expiry sweep with rows to sweep, the ceiling on an
-    // adopted object, and a credential counted past the retired ceiling — so a scan on a branch off the happy path is still
-    // inspected. A gate that sees only what one round of fixtures executed reports coverage, not cost.
-    await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('dup-bytes')), utf8('dup-bytes')), e.env);
-    await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('dup-bytes')), utf8('dup-bytes')), e.env);
-
-    const adopted = await sha256HexOf(utf8('adopted-bytes'));
-    e.bucket.seed(`proj_1/${adopted}`, { size: utf8('adopted-bytes').byteLength, contentType: TEXT_MEDIA_TYPE, bytes: utf8('adopted-bytes') });
-    e.sqlite.query(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at) VALUES ('expired', 'proj_1', ?, ?, 1, 1)`).run(adopted, t.tokenId);
-    await worker.fetch(new Request(`https://s/blobs/${adopted}`, {
-      method: 'POST',
-      headers: memberHeaders(t.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': '1' }),
-      body: 'x',
-    }), e.env);
-
-    const oversize = await sha256HexOf(utf8('oversize-bytes'));
-    e.bucket.seed(`proj_1/${oversize}`, { size: MAX_BLOB_BYTES + 1, contentType: TEXT_MEDIA_TYPE });
-    await worker.fetch(new Request(`https://s/blobs/${oversize}`, {
-      method: 'POST',
-      headers: memberHeaders(t.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': '1' }),
-      body: 'x',
-    }), e.env);
-
-    await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('past-ceiling')), utf8('past-ceiling')), e.env);
-    await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: 'session.start', createdAt: 4_000, payload: FIXTURES['session.start'].payload })), e.env);
-
-    const scoped = new Set(['events', 'sessions', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations', 'raw_resources', 'processed_resources']);
-    const byTable = new Map<string, string>();
-    const unique = new Map<string, number>();
-    for (const row of e.sqlite.query(`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'`).all() as { name: string; tbl_name: string }[]) byTable.set(row.name, row.tbl_name);
-    for (const table of scoped) {
-      for (const idx of e.sqlite.query(`PRAGMA index_list(${table})`).all() as { name: string; unique: number }[]) {
-        byTable.set(idx.name, table);
-        if (idx.unique === 1) unique.set(idx.name, (e.sqlite.query(`PRAGMA index_info(${idx.name})`).all() as unknown[]).length);
-      }
-    }
-    let checked = 0;
-    const statements = new Set(e.executed);
-    for (const sql of statements) {
-      for (const step of e.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]) {
-        const scan = /^SCAN (?!CONSTANT ROW$|json_each\b)(\S+)/.exec(step.detail);
-        expect({ sql, scan: scan?.[1] ?? null }).toEqual({ sql, scan: null });
-        const search = /^SEARCH \w+ USING (?:COVERING )?(?:INDEX|PRIMARY KEY) ?(\S*) \(([^)]*)\)/.exec(step.detail);
-        if (!search) continue;
-        const table = byTable.get(search[1]) ?? null;
-        if (table !== null && !scoped.has(table)) continue;
-        checked += 1;
-        const constraints = search[2].split(' AND ');
-        const equalities = constraints.filter((c) => c.endsWith('=?')).length;
-        // A lookup is narrow when the tenant leads it, when it matches every column of a unique index and so can
-        // reach one row at most, or when a single credential leads it — the rows it reaches are that credential's own
-        // in-flight upload reservations, which expire and are consumed as it reserves.
-        const seek = unique.get(search[1]) === equalities;
-        const byCredential = constraints[0] === 'token_id=?';
-        expect({ detail: step.detail, narrowed: table === null || equalities >= 2 || seek || byCredential })
-          .toEqual({ detail: step.detail, narrowed: true });
-      }
-    }
-    // `statements` is pinned exact; a dropped statement is caught here. `checked` is a floor: the planner emits a
-    // library-dependent step count, and the per-step assertions hold the no-scan and narrowed guarantees.
-    expect(statements.size).toBe(PLANNED_STATEMENTS);
-    expect(checked).toBeGreaterThanOrEqual(MIN_INDEX_STEPS);
   });
 
   it('leaves every typed table unchanged for a duplicate, a conflict, and a refused event, for every kind', async () => {

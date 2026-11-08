@@ -739,6 +739,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0720_v720.sql': 'aed5578c08344369a27aefe7c505081e21d752c219831471ec528f2fef3b273f',
   '0721_v721.sql': 'fe0cbc931866915c6323fa4488bd27f4af0a60d603be9038e2421c2129b92ff5',
   '0722_v722.sql': '0514b90cb6f4c38189b29a2bf1cfe72cc89a70bef270da935c13783af308f150',
+  '0723_v723.sql': '8be637aa4656be1d17072ade8267298d3c0328827e4804af99e0ac0942c036d0',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1460,6 +1461,8 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
+      'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
+      'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',
       'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'task_runtime', 'task_due',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',

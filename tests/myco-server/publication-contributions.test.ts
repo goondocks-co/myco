@@ -157,7 +157,9 @@ it('keeps due sessions and both power assertions live while publication measures
   expect((await pendingPublication(r.db, 100)).sessions).toBe(0);
   expect((await engineAssertions(env, 100)).filter(row => ['transcript:pending','import:pending'].includes(row.name))).toEqual([]);
   r.sqlite.exec("UPDATE session_documents SET state='live',due_at=0 WHERE session_id IN ('new','import')");
-  for (let i=0;i<20 && await projectionReadiness(r.db,'publication')==='building';i++) await catchUpProjections(r.db);
+  for (let i=0;i<20 && await projectionReadiness(r.db,'publication')==='building';i++) {
+    await catchUpPhase(r.db,'publicationInputs'); await catchUpPhase(r.db,'publicationSessions');
+  }
   expect(await pendingPublication(r.db, 100)).toEqual({ sessions: 2, transcripts: 2, bytes: 200, imported: { sessions: 1, transcripts: 1, bytes: 100 } });
 });
 

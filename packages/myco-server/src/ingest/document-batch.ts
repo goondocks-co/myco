@@ -18,7 +18,7 @@ import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tabl
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
-import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { sessionEditStatements } from './session-edits.js';
@@ -45,10 +45,10 @@ export function reserveReached(db: RelationalStore, statements: number, blobCall
 
 /**
  * Whether the invocation can still commit `versions` chunk versions after spending `statements` and `blobCalls` more.
- * A commit's only blob calls are its versions' registrations.
+ * Closing metadata and the current chunk versions each reserve their registration calls.
  */
 export function commitAdmitted(db: RelationalStore, versions: number, statements = 0, blobCalls = 0): boolean {
-  return !reserveReached(db, PASS_CLOSING_STATEMENTS + versions * VERSION_STATEMENTS + statements, versions * VERSION_BLOB_CALLS + blobCalls);
+  return !reserveReached(db, PASS_CLOSING_STATEMENTS + versions * VERSION_STATEMENTS + statements, PASS_CLOSING_BLOB_CALLS + versions * VERSION_BLOB_CALLS + blobCalls);
 }
 
 /** A placement the batch refused: its commit could no longer be paid, and the batch holds what it held before it. */
@@ -92,7 +92,7 @@ export interface BatchDocument {
 export interface Commit { before: PreparedStatement[]; after: PreparedStatement[] }
 
 /** One chunk version a batch writes, with its source and the directory row it supersedes. */
-export interface ChunkVersion { chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
+export interface ChunkVersion { metadata?: number; chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
 
 export const preview = (text: unknown): string | null =>
   typeof text === 'string' ? text.replace(/\s+/g, ' ').trim().slice(0, DOCUMENT_PREVIEW_CHARS) : null;
@@ -327,7 +327,7 @@ export class DocumentBatch {
     const bytes = this.toolChanges.reduce((sum, change) => sum + 500 + new TextEncoder().encode(JSON.stringify({
       name: change.record.tool_name, myco: change.record.myco_tool, op: change.record.myco_op, files: change.record.files_affected,
     })).length * 8, 0) + this.writer.touched.size * 1_000;
-    return DOCUMENT_COMMIT_FIXED_STATEMENTS + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
+    return DOCUMENT_COMMIT_FIXED_STATEMENTS + this.writer.metadataStatementCount + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
   }
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
@@ -406,6 +406,7 @@ export class DocumentBatch {
     }
     await this.resolve(records);
     this.assignPrompts(records);
+    await this.writer.readPlanKeys(records.filter(record => record.k === 'plan').map(planKeyOf));
     await this.locateSealed(records);
     const reads = this.writer.reads;
     const out: (DocRecord | null)[] = [];
@@ -560,20 +561,21 @@ export class DocumentBatch {
   /** Every chunk version's stored bytes, bodies first so each page records its bodies' digests. */
   private async encode(layout: DocumentLayout): Promise<{ version: ChunkVersion; bytes: Uint8Array<ArrayBuffer> }[]> {
     const encoded: { version: ChunkVersion; bytes: Uint8Array<ArrayBuffer> }[] = [];
-    const add = async (chunkNo: number, bytes: Uint8Array<ArrayBuffer>, kind: 'page' | 'body', encoding: string, previous?: ChunkRow) => {
+    const add = async (chunkNo: number, bytes: Uint8Array<ArrayBuffer>, kind: 'page' | 'body', encoding: string, previous?: ChunkRow, metadata = 0) => {
       const key = await sha256HexOf(bytes);
       const sourceId = `doc:${this.sessionId}:${this.doc.generation}:${chunkNo}:${this.passId}`;
-      encoded.push({ version: { chunkNo, key, bytes: bytes.byteLength, kind, encoding, sourceId, ...(previous ? { previous } : {}) }, bytes });
+      encoded.push({ version: { chunkNo, key, bytes: bytes.byteLength, kind, encoding, sourceId, metadata, ...(previous ? { previous } : {}) }, bytes });
       return key;
     };
     for (const body of layout.bodyChunks) body.ref.digest = await add(body.chunkNo, utf8(body.text), 'body', BODY_ENCODING);
-    for (const write of layout.pageChunks) await add(write.chunkNo, await encodePageChunk(write.chunk) as Uint8Array<ArrayBuffer>, 'page', PAGE_ENCODING, write.previous);
+    for (const write of layout.pageChunks) await add(write.chunkNo, await encodePageChunk(write.chunk) as Uint8Array<ArrayBuffer>, write.metadata === 1 ? 'body' : 'page', PAGE_ENCODING, write.previous, write.metadata);
     return encoded;
   }
 
   /** The chunk keys a commit expects to replace, for its guard: the previous key, or null for a new chunk. */
   expectedChunks(registered: readonly ChunkVersion[]): string {
     return JSON.stringify([
+      ...this.writer.metadataSource,
       ...registered.map((row) => ({ n: row.chunkNo, k: row.previous?.blob_key ?? null })),
       ...[...new Set(this.sealed.map((held) => held.chunk))].map((n) => ({ n, k: this.writer.directory.chunks.get(n)?.blob_key ?? null })),
     ]);
@@ -625,7 +627,7 @@ export class DocumentBatch {
     const p = this.projectId, s = this.sessionId, g = this.doc.generation;
     const settled = allSettled.map(({ statistics: _statistics, ...turn }) => turn);
     const statistics = allSettled.flatMap(turn => turn.statistics === undefined ? [] : [turn.statistics as StatisticsChange]);
-    const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId })));
+    const rows = JSON.stringify(registered.map((row) => ({ n: row.chunkNo, k: row.key, b: row.bytes, d: row.kind, e: row.encoding, i: row.sourceId, m: row.metadata ?? 0 })));
     const statements: PreparedStatement[] = [
       ...contentAssertion(db, `(SELECT COUNT(*) FROM json_each(?) j JOIN retired_objects r ON r.project_id=? AND r.session_id=?
         AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i'))=?`, [rows, p, s, registered.length]),
@@ -643,11 +645,11 @@ export class DocumentBatch {
           SELECT c.project_id,c.session_id,c.blob_key,c.source_id,? FROM json_each(?) j JOIN session_chunks c
             ON c.project_id=? AND c.session_id=? AND c.generation=? AND c.chunk_no=json_extract(j.value,'$.n')`)
           .bind(now, rows, p, s, g),
-        db.prepare(`INSERT INTO session_chunks (project_id,session_id,generation,chunk_no,blob_key,kind,encoding,bytes,source_id,state)
+        db.prepare(`INSERT INTO session_chunks (project_id,session_id,generation,chunk_no,blob_key,kind,encoding,bytes,source_id,state,metadata)
           SELECT ?,?,?,json_extract(value,'$.n'),json_extract(value,'$.k'),json_extract(value,'$.d'),json_extract(value,'$.e'),
-            json_extract(value,'$.b'),json_extract(value,'$.i'),? FROM json_each(?) WHERE true
+            json_extract(value,'$.b'),json_extract(value,'$.i'),?,json_extract(value,'$.m') FROM json_each(?) WHERE true
           ON CONFLICT (project_id,session_id,generation,chunk_no) DO UPDATE SET blob_key=excluded.blob_key,kind=excluded.kind,
-            encoding=excluded.encoding,bytes=excluded.bytes,source_id=excluded.source_id,state=excluded.state`)
+            encoding=excluded.encoding,bytes=excluded.bytes,source_id=excluded.source_id,state=excluded.state,metadata=excluded.metadata`)
           .bind(p, s, g, chunkState, rows),
       );
     }
@@ -689,7 +691,7 @@ export class DocumentBatch {
         .bind(JSON.stringify(page), p, s, g));
     }
     statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));
-    if (chunkState === 'live') statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
+    if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(...sessionEditStatements(db, p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
       for (const page of jsonPages([...this.paths].filter(([, held]) => held.n <= 0).map(([path, held]) => ({ path, ...held })))) {
@@ -716,6 +718,7 @@ export class DocumentBatch {
         ON CONFLICT (project_id,session_id,generation,tool_call_id) DO UPDATE SET myco_op=excluded.myco_op,success=excluded.success`)
         .bind(p, s, g, JSON.stringify(page)));
     }
+    statements.push(...this.writer.metadataStatements(layout));
     statements.push(...this.sealStatements());
     return statements;
   }
@@ -780,7 +783,7 @@ export class DocumentBatch {
     statements: (versions: readonly ChunkVersion[]) => Commit | Promise<Commit>): Promise<number> {
     this.sealed = this.pagesToSeal();
     const layout = write ? this.writer.layout() : null;
-    const rewrites = layout?.pageChunks.filter(write => write.previous !== undefined).map(write => write.chunkNo) ?? [];
+    const rewrites = layout?.pageChunks.filter(write => write.previous !== undefined && write.metadata !== 1).map(write => write.chunkNo) ?? [];
     this.rewrittenBefore = rewrites.length === 0 ? null : Math.min(...rewrites);
     const settled = write ? await this.settledTurns() : [];
     const encoded = layout === null ? [] : await this.encode(layout);
@@ -812,18 +815,4 @@ export class DocumentBatch {
   }
 }
 
-/** Upserts publisher frontiers, one JSON object per transcript. */
-export function publicationStatement(db: RelationalStore, projectId: string, sessionId: string, generation: number, now: number,
-  rows: readonly Record<string, unknown>[]): PreparedStatement {
-  return db.prepare(`INSERT INTO transcript_publication (project_id,transcript_id,generation,session_id,published_offset,segment_lines,
-      open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,parser_version,state,failure,awaited_size,updated_at,
-      placed_records,placed_digest,diagnostic)
-    SELECT ?,json_extract(value,'$.t'),?,?,json_extract(value,'$.o'),json_extract(value,'$.l'),json_extract(value,'$.p'),json_extract(value,'$.u'),
-      json_extract(value,'$.r'),json_extract(value,'$.a'),json_extract(value,'$.ps'),json_extract(value,'$.rs'),?,json_extract(value,'$.s'),
-      json_extract(value,'$.f'),json_extract(value,'$.w'),?,json_extract(value,'$.n'),json_extract(value,'$.d'),json_extract(value,'$.diag') FROM json_each(?) WHERE true
-    ON CONFLICT (project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,segment_lines=excluded.segment_lines,
-      open_prompt_id=excluded.open_prompt_id,unfinished=excluded.unfinished,reply_unfinished=excluded.reply_unfinished,
-      reply_latest_at=excluded.reply_latest_at,parser_version=excluded.parser_version,state=excluded.state,failure=excluded.failure,
-      awaited_size=excluded.awaited_size,updated_at=excluded.updated_at,placed_records=excluded.placed_records,placed_digest=excluded.placed_digest,diagnostic=excluded.diagnostic`)
-    .bind(projectId, generation, sessionId, PARSER_VERSION, now, JSON.stringify(rows));
-}
+export { publicationStatement } from '../db/documents/frontiers.js';
