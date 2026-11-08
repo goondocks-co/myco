@@ -9,6 +9,7 @@ import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.j
 import { calibrationPopulation } from '@myco-server-worker/db/embeddings/calibration.js';
 import { WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
 import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
+import { VECTOR_PAGE } from '@myco-server-worker/db/embeddings/vector-pages.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
@@ -34,9 +35,12 @@ async function seedCaughtUp(d1: RelationalStore, size: number) {
     SELECT 'p',printf('session-%06d',x),'machine','token',1,1 FROM n`).bind(size).run();
   await d1.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
     SELECT project_id,?,record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE project_id = 'p' AND type <> 'session'`).bind(MODEL).run();
-  await d1.prepare(`INSERT INTO embedding_hubness_members(project_id,model_key,id,n,vector)
-    SELECT project_id,model_key,id,?-1,'AACAPw==' FROM embedding_receipts WHERE project_id='p' AND model_key=? AND type='spore'
+  await d1.prepare(`INSERT OR IGNORE INTO embedding_vector_pages(page_id,project_id,model_key,object_key,size,state,live,created_at)
+    VALUES(1,'p',?,'seeded-page',1,?,0,1)`).bind(MODEL, VECTOR_PAGE.sealed).run();
+  await d1.prepare(`INSERT INTO embedding_hubness_members(project_id,model_key,id,n,vector,page_id,page_offset,page_length)
+    SELECT project_id,model_key,id,?-1,'',1,0,1 FROM embedding_receipts WHERE project_id='p' AND model_key=? AND type='spore'
     ON CONFLICT(project_id,model_key,id) DO UPDATE SET n=excluded.n`).bind(size, MODEL).run();
+  await d1.prepare(`UPDATE embedding_vector_pages SET live=(SELECT COUNT(*) FROM embedding_hubness_members WHERE project_id='p' AND page_id=1) WHERE page_id=1`).run();
 }
 
 test('caught-up D1 embedding wake reads stay constant as the corpus grows, with no recurring source sweep', async () => {
@@ -121,10 +125,10 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
       console.info(`embedding idle wake budget: ${size * 2} sources, ${size} historical runs, ${idle.at(-1)} rows/tick`);
 
       await d1.prepare("UPDATE embedding_receipts SET revision='stale' WHERE project_id='p' AND type='spore'").run();
-      expect(await calibrationPending(measured.db, 'p', MODEL, NOW)).toBe(false);
+      expect(await calibrationPending(measured.db, 'p', MODEL, NOW)).toBe(true);
       measured.reset();
       for (let tick = 0; tick < 4; tick++) {
-        expect(await calibrationPending(measured.db, 'p', MODEL, NOW + LATER_MS + tick * WORK_SWEEP_CONTINUE_MS)).toBe(false);
+        expect(await calibrationPending(measured.db, 'p', MODEL, NOW + LATER_MS + tick * WORK_SWEEP_CONTINUE_MS)).toBe(true);
       }
       stale.push(measured.reads() / 4);
       console.info(`hubness stale-receipt safety budget: ${size} stale receipts, ${stale.at(-1)} rows/safety tick`);

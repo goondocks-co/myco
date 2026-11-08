@@ -1,8 +1,10 @@
 import type { RelationalStore } from '../../core/adapters.js';
+import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '../../core/embedding/provider.js';
 import { HUBNESS_MEMBER as MEMBER, RECEIPT } from '../../core/embedding/receipt-state.js';
 import { CURRENT_EMBEDDING_SOURCES } from '../embedding-sources.js';
 import { commit, read, readSet, write, type BindValue, type Bound } from '../index.js';
+import { VECTOR_PAGE, reclaimDue, sealDue } from './vector-pages.js';
 
 /** The source type whose vectors calibration covers. */
 const SOURCE_TYPE = 'spore';
@@ -208,20 +210,46 @@ const exhaustedDue = read<[string, string, number, number], { found: number }>({
   sql: `SELECT 1 AS found FROM embedding_calibration_state INDEXED BY idx_embedding_calibration_exhausted
     WHERE project_id=?1 AND model_key=?2 AND epoch=?3 AND kind='${KIND}' AND status='exhausted' AND updated_at>?4 LIMIT 1` });
 
+/** Too few current vectors to calibrate, with memberships left that no longer count: they retire without any distance being computed. */
+export const outlivesPopulation = (population: CalibrationPopulation): boolean =>
+  population.total < 2 && (population.operating > 0 || population.departing > 0 || population.miscounted);
+
+const foreignBetween = read<[string, string, string], { model_key: string }>({ name: 'calibration.foreignBetween',
+  sql: 'SELECT model_key FROM embedding_hubness_members WHERE project_id=?1 AND model_key>?2 AND model_key<?3 ORDER BY model_key LIMIT 1' });
+const ABOVE_EVERY_MODEL = '\u{10FFFF}';
+/**
+ * Another model whose memberships leave under calibration of `model`, or null. Below two current vectors a membership
+ * under a kept model stays: one seek into each gap between `model` and the kept models finds any other, however many
+ * members a kept model holds.
+ */
+export async function foreignModelToRetire(db: RelationalStore, projectId: string, model: string, population: CalibrationPopulation, kept: readonly string[]): Promise<string | null> {
+  if (population.total >= 2) return foreignMemberModel(db, projectId, model);
+  const edges = ['', ...[...new Set([model, ...kept])].sort(), ABOVE_EVERY_MODEL];
+  const gaps = await Promise.all(edges.slice(1).map(async (to, i) => (await readSet(db, foreignBetween.bind(projectId, edges[i]!, to)))[0]));
+  return gaps.find(rows => rows.length > 0)?.[0]!.model_key ?? null;
+}
+
 /**
  * Calibration has work under `model` for a Project: a member of another model, an operation in progress, a settled member
  * whose vector is no longer current, a current vector no member covers, a left-out vector still looked for or due to be
- * written again, statistics still to publish, or settled moments that do not count the other members. It only ever reads
- * maintained state: the population row, the queue heads and the cursor, a fixed handful of keyed rows however many spores
- * the Project holds. While the population is `building` there is no proof of rest, so the answer is yes.
+ * written again, statistics still to publish, settled moments that do not count the other members, a full page of vectors
+ * still held in the database, or a stored page no member names. With fewer than two current vectors only the retirement
+ * of memberships, those under `kept` models aside, and of pages remains. It only ever reads maintained state: the population row, the queue heads and the
+ * cursor, a fixed handful of keyed rows however many spores the Project holds. While the population is `building` there
+ * is no proof of rest, so the answer is yes.
  */
-export async function calibrationHasWork(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
+export async function calibrationHasWork(db: RelationalStore, projectId: string, model: string, now: number, kept: readonly string[] = []): Promise<boolean> {
   const population = await calibrationPopulation(db, projectId, model);
   if (population.state === 'building') return true;
-  if (population.total < 2) return false;
+  const unreferenced = reclaimDue(projectId, now - OBJECT_PUT_IN_FLIGHT_MS);
+  if (outlivesPopulation(population)) return true;
+  if (population.total < 2) {
+    if (await foreignModelToRetire(db, projectId, model, population, kept) !== null) return true;
+    return (await readSet(db, unreferenced))[0].length > 0;
+  }
   if (population.operating > 0 || population.uncovered > 0 || population.departing > 0 || population.miscounted) return true;
   const heads = await readSet(db, foreignBelow.bind(projectId, model), foreignAbove.bind(projectId, model), publishing.bind(projectId),
-    queueHead.bind(projectId, model, population.epoch, 'missing'), exhaustedDue.bind(projectId, model, population.epoch, now - VECTOR_LOST_MS));
+    queueHead.bind(projectId, model, population.epoch, 'missing'), exhaustedDue.bind(projectId, model, population.epoch, now - VECTOR_LOST_MS), sealDue(projectId, model), unreferenced);
   return heads.some(found => found.length > 0);
 }
 
@@ -271,14 +299,14 @@ export async function leftOutVectors(db: RelationalStore, projectId: string, mod
 
 /** A calibration member's moments. */
 export interface MemberMoments { id: string; state: number; n: number; mean: number; m2: number }
-/** A member with its stored vector copy, base64 float32. */
-export interface MemberVector extends MemberMoments { vector: string }
+/** A member with where its vector is held: `vector` is base64 float32 until a stored page, named by `page_id`, holds it. */
+export interface MemberVector extends MemberMoments { vector: string; page_id: number | null; page_offset: number | null; page_length: number | null }
 
 const operatingPage = read<[string, string, number], MemberVector>({ name: 'calibration.operatingMembers',
-  sql: `SELECT id,state,n,mean,m2,vector FROM embedding_hubness_members INDEXED BY idx_embedding_hubness_members_state
+  sql: `SELECT id,state,n,mean,m2,vector,page_id,page_offset,page_length FROM embedding_hubness_members INDEXED BY idx_embedding_hubness_members_state
     WHERE project_id=?1 AND model_key=?2 AND state IN (${MEMBER.joining},${MEMBER.leaving}) ORDER BY id LIMIT ?3` });
 const settledPage = read<[string, string, string, number], MemberVector>({ name: 'calibration.settledMembers',
-  sql: `SELECT id,state,n,mean,m2,vector FROM embedding_hubness_members INDEXED BY idx_embedding_hubness_members_state
+  sql: `SELECT id,state,n,mean,m2,vector,page_id,page_offset,page_length FROM embedding_hubness_members INDEXED BY idx_embedding_hubness_members_state
     WHERE project_id=?1 AND model_key=?2 AND state=${MEMBER.settled} AND id>?3 ORDER BY id LIMIT ?4` });
 const settledMomentsPage = read<[string, string, string, number], MemberMoments>({ name: 'calibration.settledMoments',
   sql: `SELECT id,state,n,mean,m2 FROM embedding_hubness_members INDEXED BY idx_embedding_hubness_members_state
@@ -335,9 +363,9 @@ async function readCalibrationView(db: RelationalStore, projectId: string, model
  * The population and the commit token read together in one consistent read, so a step can only commit what it decided
  * from the state that token names. A Project with something to calibrate and no token gets one first, and is read again.
  */
-export async function calibrationView(db: RelationalStore, projectId: string, model: string): Promise<CalibrationView> {
+export async function calibrationView(db: RelationalStore, projectId: string, model: string, retiring = false): Promise<CalibrationView> {
   const first = await readCalibrationView(db, projectId, model);
-  if (first.token !== '' || first.population.state === 'building' || first.population.total < 2) return first;
+  if (first.token !== '' || first.population.state === 'building' || (first.population.total < 2 && !retiring)) return first;
   await commit(db, openCursor.bind(projectId), mintToken.bind(projectId));
   return readCalibrationView(db, projectId, model);
 }
@@ -384,6 +412,20 @@ export async function commitCalibration(db: RelationalStore, projectId: string, 
   return results[results.length - 2]!.results.length === 1;
 }
 
+/**
+ * Let a written and verified page's members stop holding the bytes it now holds, and seal it, in one transaction under
+ * the step's fence. Every statement applies only while that exact page is still being written, so a page already sealed,
+ * replaced or gone leaves every row holding its bytes and the cursor as it was. Answers whether that page sealed.
+ */
+export async function commitVectorPageSeal(db: RelationalStore, projectId: string, model: string, token: string, revision: number, page: { id: number; objectKey: string },
+  slots: ReadonlyArray<readonly [id: string, offset: number, length: number]>): Promise<boolean> {
+  const results = await commit(db, clearFence.bind(projectId), openFence.bind(projectId, token, revision),
+    retireInline.bind(JSON.stringify(slots), projectId, model, page.id, token, page.objectKey),
+    moveSealing.bind(projectId, token, page.id, model, page.objectKey),
+    sealPage.bind(page.id, projectId, model, page.objectKey, token), clearFence.bind(projectId));
+  return results[3].results.length === 1 && results[4].results.length === 1;
+}
+
 const addJoiner = write<[string, string, string, string, string]>({ name: 'calibration.addJoiner',
   sql: `INSERT INTO embedding_hubness_members(project_id,model_key,id,state,vector) SELECT ?1,?2,?3,${MEMBER.joining},?4 WHERE ${holds('?1', '?5')}` });
 const clearRewrites = write<[string, string, string, string]>({ name: 'calibration.clearRewrites',
@@ -404,6 +446,23 @@ const dropModelPage = write<[string, string, number, string]>({ name: 'calibrati
 const carry = write<[string, string, string, string]>({ name: 'calibration.carryMoments',
   sql: `WITH ${CARRIED} UPDATE embedding_hubness_members SET n=v.n,mean=v.mean,m2=v.m2 FROM v
     WHERE embedding_hubness_members.project_id=?2 AND embedding_hubness_members.model_key=?3 AND embedding_hubness_members.id=v.id AND ${holds('?2', '?4')}` });
+/** This write's own page, by id, Project, model and object name, while it is still being written. */
+const writingPage = (id: string, project: string, model: string, key: string) =>
+  `EXISTS (SELECT 1 FROM embedding_vector_pages p WHERE p.page_id=${id} AND p.project_id=${project} AND p.model_key=${model} AND p.object_key=${key} AND p.state=${VECTOR_PAGE.writing})`;
+/** Members give up their bytes only to the page this transaction goes on to seal; the fence holds their state and bytes as read. */
+const retireInline = write<[string, string, string, number, string, string]>({ name: 'calibration.retireInline',
+  sql: `WITH v AS MATERIALIZED (SELECT json_extract(j.value,'$[0]') AS id,json_extract(j.value,'$[1]') AS at,json_extract(j.value,'$[2]') AS bytes FROM json_each(?1) j)
+    UPDATE embedding_hubness_members SET page_id=?4,page_offset=v.at,page_length=v.bytes,vector='' FROM v
+    WHERE embedding_hubness_members.project_id=?2 AND embedding_hubness_members.model_key=?3 AND embedding_hubness_members.id=v.id
+      AND embedding_hubness_members.state=${MEMBER.settled} AND embedding_hubness_members.page_id IS NULL
+      AND ${writingPage('?4', '?2', '?3', '?6')} AND ${holds('?2', '?5')}` });
+/** Advances the token for a seal this transaction is making, ahead of the seal itself. */
+const moveSealing = write<[string, string, number, string, string], { project_id: string }>({ name: 'calibration.moveSealing',
+  sql: `UPDATE embedding_cursors SET hubness_token=lower(hex(randomblob(8))) WHERE project_id=?1 AND ${writingPage('?3', '?1', '?4', '?5')} AND ${holds('?1', '?2')} RETURNING project_id` });
+/** Seals the page last: the fence row opened for this token stands, while the cursor has already moved on from it. */
+const sealPage = write<[number, string, string, string, string], { page_id: number }>({ name: 'calibration.sealPage',
+  sql: `UPDATE embedding_vector_pages SET state=${VECTOR_PAGE.sealed} WHERE page_id=?1 AND project_id=?2 AND model_key=?3 AND object_key=?4 AND state=${VECTOR_PAGE.writing}
+    AND EXISTS (SELECT 1 FROM embedding_hubness_commits c WHERE c.project_id=?2 AND c.token IS ?5) RETURNING page_id` });
 const publishStatistics = write<[string, string, string, string]>({ name: 'calibration.publishStatistics',
   sql: `WITH ${CARRIED} UPDATE embedding_receipts SET neighbor_mean=v.neighbor_mean,neighbor_std=v.neighbor_std FROM v
     WHERE embedding_receipts.project_id=?2 AND embedding_receipts.model_key=?3 AND embedding_receipts.id=v.id

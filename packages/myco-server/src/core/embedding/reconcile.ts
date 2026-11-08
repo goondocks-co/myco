@@ -4,6 +4,7 @@ import {
   settleReceiptDeletion, settleSourceWrite,
 } from '../../db/embeddings/work.js';
 export { resetEmbeddingIndex, embeddingFailureWakeAt } from '../../db/embeddings/work.js';
+export { discardRecoveredVectorPages } from '../../db/embeddings/vector-pages.js';
 export { INPUT_REFUSAL_RETRY_MS } from '../../db/embedding-due.js';
 export type { PassedOverSource } from '../../db/embeddings/switch.js';
 
@@ -36,7 +37,7 @@ export interface EmbeddingContext {
   retireOnly?: boolean;
   vectorWriteTimeoutMs?: number;
 }
-export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled' | 'scan'; processed: number }
+export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'vector-page' | 'visibility' | 'settled' | 'scan'; processed: number }
 
 /** A source whose stored text cannot be read: its body is not stored, or is not text. */
 class EmbeddingSourceUnreadable extends Error {
@@ -128,7 +129,7 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
     return { phase: 'orphans', processed: 1 };
   }
   if (context.retireOnly === true) return { phase: 'settled', processed: 0 };
-  return reconcileHubness(context.calibrate === undefined ? context : { ...context, provider: { ...context.provider, modelKey: context.calibrate } }, projectId, now);
+  return reconcileHubness(context.calibrate === undefined ? context : { ...context, retain: retainedModels(context), provider: { ...context.provider, modelKey: context.calibrate } }, projectId, now);
 }
 
 /**

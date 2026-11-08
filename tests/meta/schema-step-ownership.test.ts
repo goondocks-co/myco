@@ -9,6 +9,7 @@ import { publicationDirectorySchema } from '@myco-server-worker/db/documents/sch
 import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
 import { V721, V721_STATEMENTS } from '@myco-server-worker/db/schema-v721.js';
 import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
+import { V725, V725_STATEMENTS } from '@myco-server-worker/db/schema-v725.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
@@ -64,6 +65,12 @@ const LISTED: readonly Exception[] = [
   { step: V719, object: 'idx_agent_runs_admission_catchup', table: 'agent_runs', reason: 'Admission catch-up seeks only in-flight source rows in Project/run order.' },
   { step: V719, object: 'run_admission_ready_mark', table: 'projection_catchup', reason: 'Admission readiness changes refresh the runs section.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V719, object: `run_live_${action}`, table: 'agent_runs', reason: 'Named run identities maintain admission contributions and queue heads.' })),
+  ...V725_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: V725, object: match[1]!, table: match[2]!, reason: match[1]!.startsWith('idx_')
+      ? 'Sealing seeks settled members still holding their vectors; releasing seeks stored pages no member names.'
+      : 'A member moving on or off a stored page moves the live count that decides when the page is released.' }];
+  }),
   ...V722_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: V722, object: match[1]!, table: match[2]!, reason: match[1]!.includes('_hubness_source_')
@@ -318,6 +325,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V718_STATEMENTS.filter(sql => /^ALTER TABLE/.test(sql)).map(sql => ({
     step: V718, sql, reason: 'Publication records its directory cursor and committed revision without backfilling history.'
   })),
+
+  ...V725_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V725, sql,
+    reason: 'A member names the stored page and frame holding its vector; a row with none still holds its own bytes.' })),
 
   ...V722_STATEMENTS.filter(sql => sql.startsWith('DROP ') || sql.startsWith('ALTER TABLE') || sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V722, sql,
     reason: sql.startsWith('ALTER') ? 'The lost-vector probe retains the last write of the vector it stopped at, the order abandoned vectors are walked in.'
