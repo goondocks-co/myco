@@ -1,4 +1,6 @@
 import { eventReferenceStatement } from '../db/event-references.js';
+import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
+import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
 import { materialRecord } from '../content/document-records.js';
 import { isTombstoned, sessionPresent } from '../core/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
@@ -29,7 +31,7 @@ type ContentKind = (typeof CONTENT)[number]['kind'];
 type Row = Record<string, unknown>;
 
 export interface SessionRef { projectId: string; sessionId: string }
-interface ArtifactDocument { records:DocRecord[]; states:Map<string,Row>; owners:DecodedChunk['owners']; frontiers:readonly Row[]; chunks:readonly Row[] }
+interface ArtifactDocument { records:DocRecord[]; states:Map<string,Row>; owners:DecodedChunk['owners']; plans:Set<string>; frontiers:readonly Row[]; chunks:readonly Row[] }
 type HeldRows = SessionRef & { snapshot?:ArtifactDocument; rows: { kind: ContentKind; row: Row }[]; transcripts?: readonly Row[]; checkpoints?: readonly Row[]; owners?: readonly Row[] };
 export interface DocumentRestorePlan {
   convert: HeldRows[];
@@ -79,13 +81,23 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
     if(object.kind!=='read'||await sha256HexOf(object.bytes)!==row.blob_key)throw new Error('artifact_document_digest');
     return object.bytes;
   };
-  const snapshot:ArtifactDocument={records:[],states:new Map(),owners:null,frontiers:(tables.get('transcript_publication')??[]).filter(same),chunks};
+  const snapshot:ArtifactDocument={records:[],states:new Map(),owners:null,plans:new Set(),frontiers:(tables.get('transcript_publication')??[]).filter(same),chunks};
   for(const row of chunks){
-    if(row.kind==='body')continue;
-    if(row.kind!=='page')throw new Error('artifact_document_chunk_kind');
+    if(row.kind==='body'&&row.metadata!==1)continue;
+    if(row.kind!=='page'&&row.metadata!==1)throw new Error('artifact_document_chunk_kind');
     const chunk=await decodePageChunk(new Blob([await read(row)]).stream());
     for(const [key,state]of chunk.states)snapshot.states.set(key,state);
-    if(chunk.owners!==null)snapshot.owners=chunk.owners;
+    if(chunk.owners!==null){
+      const owners=new Map(snapshot.owners??[]);
+      for(const [key,owner]of chunk.owners){
+        const held=owners.get(key);
+        if(held!==undefined&&(held.thread!==owner.thread||held.record!==owner.record))throw new Error('artifact_document_owner_conflict');
+        owners.set(key,owner);
+      }
+      snapshot.owners=[...owners];
+    }
+    for(const key of chunk.plans??[])snapshot.plans.add(key);
+    if(row.metadata===1)continue;
     for(const page of chunk.pages)for(const original of page.records){
       const record={...original};
       for(const [field,ref]of Object.entries(record.bodies??{})){
@@ -152,7 +164,7 @@ async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promi
     for(const [key,state]of session.snapshot.states)batch.writer.states.set(key,state);
     for(const [key,owner]of session.snapshot.owners??[])batch.writer.owners.set(key,owner);
     return session.snapshot.frontiers.map(row=>({t:row.transcript_id,o:row.published_offset,l:row.segment_lines,p:row.open_prompt_id,
-      u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
+      u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,v:row.parser_version,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
   }
   for(const row of session.transcripts ?? []){
     let context = typeof row.parser_context==='string' ? JSON.parse(row.parser_context) as Row : null;
@@ -177,7 +189,7 @@ async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promi
 }
 
 /** The catalog tables a conversion fills before its flip. */
-const BUILT = ['session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls', 'transcript_publication'] as const;
+const BUILT = ['document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress','session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls', 'transcript_publication'] as const;
 
 /** Publishes each restored document atomically against its current catalog and frontier. */
 export async function applyDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, plan: DocumentRestorePlan, now: number): Promise<void> {
@@ -211,7 +223,8 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const doc = { ...held, generation: converting ? (generation ?? 0) + 1 : generation!,
     ...(converting ? { next_chunk: 0, prompts: 0, first_prompt: null, open_turn_key: null, build: null } : {}) };
   const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc);
-  await batch.open();
+  try { await batch.open(); }
+  catch(error) { if(error instanceof PublicationOwnershipBuilding)throw new PublicationRestoreBuilding('ownership',error.failure); throw error; }
   const frontiers = !plannedConversion&&session.snapshot!==undefined?[]:await artifactFrontiers(batch, session);
   const order = new Map(CONTENT.map(({ kind }, index) => [kind, index]));
   const rows = [...session.rows].sort((a, b) => order.get(a.kind)! - order.get(b.kind)! || Number(a.row.created_at) - Number(b.row.created_at));
@@ -225,6 +238,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   }
   const diagnostics = Object.keys(classes).length === 0 ? doc.build : JSON.stringify({ ...build, report: { ...build.report, classes } });
   await batch.place(records, doc.agent);
+  for(const key of session.snapshot?.plans??[])batch.writer.plans.add(key);
   await batch.commit(batch.writer.changed, 'live', now, (version) => ({
     sql: `${selected}
       AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,

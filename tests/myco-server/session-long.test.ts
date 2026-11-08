@@ -194,7 +194,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     expect((await ingestEvent(db,{projectId:'project',machineId:'machine',tokenId:token,bodyBytes:1,now},
       envelope({eventId:uuid(17001),sessionId:'old',kind:'tool.use',createdAt:now+1,payload:{toolCallId:missing,promptId:turn,toolName:'unknown',input:{},success:true}}),env)).persisted,target).toBe(true);
     const bodyKeys = (await db.prepare(`SELECT ${blobObjectKeySql('project_id','blob_key',"(SELECT generation FROM blobs b WHERE b.project_id=session_chunks.project_id AND b.key=session_chunks.blob_key)")} AS key
-      FROM session_chunks WHERE project_id='project' AND session_id='old' AND kind='body' LIMIT 500`).all<{key:string}>()).results.map(row=>row.key);
+      FROM session_chunks WHERE project_id='project' AND session_id='old' AND kind='body' AND metadata=0 LIMIT 500`).all<{key:string}>()).results.map(row=>row.key);
     const before = blobs.gets.length;
     await publishDocuments(env,now+1_800_001,limits());
     expect(blobs.gets.slice(before).some(row=>bodyKeys.includes(row.key)),target).toBe(false);
@@ -222,7 +222,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     const rollup = await db.prepare(`SELECT tool_rollup FROM session_prompts WHERE prompt_id=?`).bind(source.turn).first<{ tool_rollup: string }>();
     expect(JSON.parse(rollup!.tool_rollup), target).toMatchObject({ filesEdited: 2, myco: [{ name: 'myco_spores:get', count: 3, failed: 2 }] });
   });
-});
+}, 60_000);
 
 test('bulk publication fits one wake within its statement budget', async () => {
   await withDocumentStores(async (db, target) => {

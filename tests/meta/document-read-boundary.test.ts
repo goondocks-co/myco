@@ -5,8 +5,9 @@
  * (`api/worker.ts` short of the run tool surface it also serves, and `core/harness.ts`), every pulled stage's due, head, build and claim statements (the registry
  * `core/pulled-stages.ts` and each module whose source declares a `PulledStage`), card and learning state
  * (`core/turn-cards.ts`, `core/learning-sessions.ts`) and titling's eligibility and dispatch (`core/titling.ts`) must
- * reach neither `content/` nor the publisher. The wake tick may reach `content/` only through `ingest/publish.ts`, which
- * only the job table imports. Edges come from the runtime's own import scanner. A dynamic `import()` or `require()` in a
+ * reach neither `content/` nor the publisher. The wake tick may reach `content/` through the publisher
+ * or the bounded metadata catch-up page. Only the job table imports the publisher; only projection catch-up imports
+ * the metadata page. Edges come from the runtime's own import scanner. A dynamic `import()` or `require()` in a
  * walked module must take one plain string literal; any other argument, an interpolated template included, names no
  * module the gate can follow and fails it.
  */
@@ -18,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco-server', 'src');
 const PUBLISHER = 'ingest/publish.ts';
 const PUBLISHER_IMPORTERS = ['core/jobs-run.ts'];
+const METADATA_PAGE = 'db/documents/metadata-catchup.ts';
 /** The admitted run's tool surface, which `api/worker.ts` serves beside the claim: run material endpoints may read pages. */
 const RUN_SURFACE = 'mcp/run-surface.ts';
 const CATALOG_ONLY = ['api/worker.ts', 'core/harness.ts', 'core/pulled-stages.ts', 'core/turn-cards.ts', 'core/learning-sessions.ts', 'core/titling.ts'];
@@ -72,8 +74,8 @@ describe('session documents are read by no clock and no claim', () => {
       expect(offending(closure(entry, entry === 'api/worker.ts' ? [RUN_SURFACE] : []), (file) => isContent(file) || file === PUBLISHER)).toEqual([]);
   });
 
-  it('the tick reaches document code only through the publisher', () => {
-    expect(offending(closure('core/tick.ts', [PUBLISHER]), isContent)).toEqual([]);
+  it('the tick reaches document code only through publication or its bounded metadata catch-up page', () => {
+    expect(offending(closure('core/tick.ts', [PUBLISHER, METADATA_PAGE]), isContent)).toEqual([]);
     expect(closure('core/tick.ts').has(PUBLISHER)).toBe(true);
   });
 
@@ -81,6 +83,12 @@ describe('session documents are read by no clock and no claim', () => {
     const load = (argument: string) => `export async function load(name: string) { return import(${argument}); }`;
     expect(['`../content/${name}.js`', "'../content/' + name", 'name'].filter((argument) => !unknownDynamicImport(load(argument)))).toEqual([]);
     expect(unknownDynamicImport(load("'../content/document-reader.js'")) || unknownDynamicImport(load('`../content/document-reader.js`'))).toBe(false);
+  });
+
+  it('only projection catch-up and the publisher, repairing a session it holds, import the metadata page', () => {
+    const importers=sources().filter(file=>transpiler.scanImports(fs.readFileSync(path.join(SRC,file),'utf8'))
+      .some(({path:specifier})=>specifier.startsWith('.') && relative(path.resolve(SRC,path.dirname(file),specifier.replace(/\.js$/,'.ts')))===METADATA_PAGE));
+    expect(importers.sort()).toEqual(['db/projections/catchup.ts', 'ingest/publish.ts']);
   });
 
   it('only the job table imports the publisher', () => {

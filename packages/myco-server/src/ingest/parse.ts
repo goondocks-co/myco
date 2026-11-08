@@ -1,9 +1,10 @@
+import { publicationFailureTotals } from '../db/documents/failure-head.js';
+import { publicationPinsReady } from '../db/documents/pins.js';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { PublicationRefusal } from './document-admission.js';
 
 import { emit, type Classifier } from '../telemetry.js';
 
-import { publicationPolicy } from './publication-policy.js';
 import { parserFor } from './parsers/registry.js';
 
 import { declaredScheme } from './prompt-scheme.js';
@@ -386,10 +387,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     // stops where it stands rather than naming its prompts another way. A declared agent's transcript with no pin is one
     // its session's group of transcripts could not be admitted to a single scheme for (`prompt-scheme.ts`).
     const scheme = target.scheme;
+    if (scheme === null && !await publicationPinsReady(env.db)) return { derived: 0, calls: 1, nextOffset: null, failure: null };
     if (scheme === null || !parser.schemes.includes(scheme)) {
         const branch = scheme === null && declaredScheme(target.agent) !== null ? 'scheme_conflict' : 'scheme_unread';
         await stop(env.db, target, 'parse', now, undefined, { branch, offset: target.parsedOffset, lineKind: 'unknown' });
-        return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
+        return { derived: 0, calls: scheme === null ? 2 : 1, nextOffset: null, failure: 'parse' };
     }
     const recordScheme = target.recordScheme;
     if (!isRecordIdScheme(recordScheme)) {
@@ -593,35 +595,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
 }
 
-/** Which stored transcripts to read again: every one an agent's parser reads, or one session's. */
-export type RereadSelector = {
-    agent: string;
-} | {
-    projectId: string;
-    sessionId: string;
-};
-
-/** Replays the retained transcript bytes into the current document generation. */
-export async function rereadTranscripts(db: RelationalStore, selector: RereadSelector): Promise<number> {
- const where = 'agent' in selector ? {sql:'t.agent=?',params:[selector.agent]}
-  : {sql:'t.project_id=? AND t.session_id=?',params:[selector.projectId,selector.sessionId]};
- const policy = publicationPolicy('t.prompt_identity_scheme');
- const rows = await db.batch([
-  db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,prompt_scheme,record_scheme,parser_version,updated_at)
-    SELECT t.project_id,t.transcript_id,d.generation,t.session_id,COALESCE((SELECT MIN(base_offset) FROM (
-      SELECT base_offset FROM transcript_segments WHERE project_id=t.project_id AND transcript_id=t.transcript_id
-      UNION ALL SELECT base_offset FROM raw_archive_refs WHERE project_id=t.project_id AND transcript_id=t.transcript_id AND source_kind='transcript' AND disposition='archived')),0),
-      ${policy.prompt},${policy.record},0,0 FROM transcripts t JOIN session_documents d
-      ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live' WHERE ${where.sql}
-    ON CONFLICT(project_id,transcript_id,generation) DO UPDATE SET published_offset=excluded.published_offset,segment_lines=0,open_prompt_id=NULL,
-      prompt_scheme=COALESCE(transcript_publication.prompt_scheme,excluded.prompt_scheme),
-      unfinished=0,reply_unfinished=0,reply_latest_at=NULL,state='active',failure=NULL,diagnostic=NULL,awaited_size=NULL,placed_records=NULL,placed_digest=NULL,parser_version=0
-    RETURNING transcript_id`).bind(...where.params),
-  db.prepare(`UPDATE session_documents AS d SET due_at=0 WHERE d.state='live' AND EXISTS (
-    SELECT 1 FROM transcripts t WHERE t.project_id=d.project_id AND t.session_id=d.session_id AND ${where.sql})`).bind(...where.params),
- ]);
- return rows[0]!.results.length;
-}
+export { rereadTranscripts, type RereadSelector } from '../db/documents/rebuild.js';
 
 /** The transcripts that still owe a pass, and the bytes they have left to read; the half an import sent, apart. */
 export type TranscriptBacklog = { state: 'building' } | {
@@ -649,11 +623,9 @@ export interface StoppedTranscripts {
 
 /** Failed current document publications, grouped by their authenticated Project. */
 export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTranscripts[]> {
- const rows=(await db.prepare(`SELECT p.project_id,p.failure,p.diagnostic,COUNT(*) n,MAX(p.updated_at) latest
-  FROM transcript_publication p INDEXED BY idx_transcript_publication_failed JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id
-    AND d.generation=p.generation AND d.state='live' JOIN projects pr ON pr.project_id=p.project_id AND pr.archived_at IS NULL
-  WHERE p.state='failed' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=p.project_id AND t.session_id=p.session_id)
-  GROUP BY p.project_id,p.failure`).all<{project_id:string;failure:string;diagnostic:string|null;n:number;latest:number}>()).results;
+ const projection=await publicationFailureTotals(db);
+ if(projection.state==='building')throw new Error('publication_failures_building');
+ const rows=projection.rows.map(row=>({...row,n:row.transcripts,latest:row.latest_at}));
  const projects=new Map<string,StoppedTranscripts>();
  for(const row of rows){const held=projects.get(row.project_id)??{projectId:row.project_id,transcripts:0,latestAt:null,reasons:{}};
   held.transcripts+=Number(row.n);held.latestAt=Math.max(held.latestAt??0,row.latest);held.reasons[row.failure]=Number(row.n);

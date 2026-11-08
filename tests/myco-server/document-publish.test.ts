@@ -12,7 +12,7 @@ import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
-import { readPage } from '@myco-server-worker/content/document-reader.js';
+import { readPage, readDirectory, readPageChunk } from '@myco-server-worker/content/document-reader.js';
 import { encodePageChunk, SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -358,7 +358,7 @@ test('turns packed in one chunk whose pages each grow past it commit progress on
     const opened = new Map(transcripts.map((t, i) => [t, user(`turn-${i}`, `small task ${i}`)]));
     for (const [t, text] of opened) env = await captureDocumentTranscript(db, blobs, 'packed', t, text, t0, 0, 'codex');
     for (let more = true; more;) more = (await publishDocuments(env, t0 + MIN, limits())).more;
-    expect(await one(db, `SELECT prompts,next_chunk FROM session_documents WHERE session_id='packed'`), name).toEqual({ prompts: 60, next_chunk: 1 });
+    expect(await one(db, `SELECT prompts,(SELECT COUNT(*) FROM session_chunks WHERE session_id='packed' AND kind='page') page_chunks FROM session_documents WHERE session_id='packed'`), name).toEqual({ prompts: 60, page_chunks: 1 });
 
     // Each turn gains one call too large to share a chunk with many others, so rewriting the one chunk spills into many.
     for (const [i, t] of transcripts.entries()) {
@@ -533,7 +533,7 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
     const recovered=await readFixtureRecords({db,blobs},'project','restored');
     expect(recovered.filter(record=>[uuid(981),uuid(982)].includes(record.id)).map(record=>record.text),name).toEqual(['retained preview','retained preview']);
     expect(await publicationStatus(db),name).toEqual({state:'building'});
-    for (let page=0;page<20 && await projectionReadiness(db,'publication')==='building';page++) await catchUpProjections(db);
+    for (let page=0;page<20 && await projectionReadiness(db,'publication')==='building';page++) await catchUpProjections(db,{blobs});
     expect(await readDocumentStatus(db),name).toHaveProperty('differences',{body_missing:1,body_unreadable:1});
     const plans=await documentTurnCollection({db,blobs},{projectId:'project'},'restored',prompt.prompt_id,'plans',undefined);
     expect(plans,name).toMatchObject({rows:[{planKey:'plan-one'}]});
@@ -549,7 +549,7 @@ test('restores legacy artifact rows directly into documents and keeps a repeated
 });
 
 test('portable backups restore published document bodies and frontiers into destination blob generations', async () => {
-  const artifacts=new Map<string,{text:string;blobs:ReturnType<typeof memoryBlobStore>;rows:Record<string,unknown>[];prompt:string;reference:Record<string,unknown>}>();
+  const artifacts=new Map<string,{text:string;blobs:ReturnType<typeof memoryBlobStore>;rows:Record<string,unknown>[];prompt:string;reference:Record<string,unknown>;continuation:Record<string,unknown>|undefined}>();
   const body='retained document body '.repeat(16000);
   await withDocumentStores(async(db,name)=>{
     const blobs=memoryBlobStore();
@@ -566,9 +566,17 @@ test('portable backups restore published document bodies and frontiers into dest
       .bind(JSON.stringify({toolCallId:uuid(99200),toolName:'Read',input:{}})).run();
     const reference=(await db.prepare(`UPDATE event_refs SET output_blob=(SELECT blob_key FROM session_chunks WHERE kind='body' LIMIT 1)
       WHERE event_id='portable-output' RETURNING event_id,output_blob`).first<Record<string,unknown>>())!;
+    const metadataId='tx_00000000000000000000000000000999';
+    await captureDocumentTranscript(db,blobs,'metadata-only',metadataId,item('session_meta',{id:uuid(999),timestamp:new Date().toISOString(),cwd:'/fixture'}),Date.now(),0,'codex');
+    await publishDocuments(env,Date.now()+TRANSCRIPT_IDLE_MS*2,limits());
+    const metadataDirectory=(await readDirectory(db,'project','metadata-only'))!;
+    const metadataChunk=[...metadataDirectory.chunks.values()].find(row=>row.metadata===1)!;
+    const continuation=(await readPageChunk({blobs},metadataChunk)).states.get(metadataId);
+    expect(continuation,name).toBeDefined();
+    await db.prepare("UPDATE transcript_publication SET parser_version=? WHERE session_id='metadata-only'").bind(PARSER_VERSION-1).run();
     const backup=await createBackup(db,blobs,{producer:'test',now:Date.now()});
     artifacts.set(name,{text:(await backupArtifact(db,blobs,backup.id))!.text,blobs,
-      rows:(await db.prepare('SELECT * FROM blobs').all<Record<string,unknown>>()).results,prompt:prompt!.prompt_id,reference});
+      rows:(await db.prepare('SELECT * FROM blobs').all<Record<string,unknown>>()).results,prompt:prompt!.prompt_id,reference,continuation});
   });
   await withDocumentStores(async(db,name)=>{
     const source=artifacts.get(name)!,blobs=memoryBlobStore();
@@ -580,6 +588,11 @@ test('portable backups restore published document bodies and frontiers into dest
     }
     await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT event_id,output_blob FROM event_refs WHERE event_id=?').bind(source.reference.event_id).first(),name).toEqual(source.reference);
+    const metadataDirectory=(await readDirectory(db,'project','metadata-only'))!;
+    const metadataChunk=[...metadataDirectory.chunks.values()].find(row=>row.metadata===1)!;
+    expect((await readPageChunk({blobs},metadataChunk)).states.get('tx_00000000000000000000000000000999'),name).toEqual(source.continuation);
+    expect(await one(db,"SELECT prompts,parser_version FROM session_documents JOIN transcript_publication USING(project_id,session_id,generation) WHERE session_id='metadata-only'"),name)
+      .toEqual({prompts:0,parser_version:PARSER_VERSION-1});
     await db.prepare('DELETE FROM events').run();
     await db.prepare('DELETE FROM transcript_segments').run();
     const locator=(await db.prepare(`SELECT generation,turn_key AS owner,page FROM session_prompts WHERE session_id='portable' AND prompt_id=?`).bind(source.prompt).first<{generation:number;owner:string;page:number}>())!;

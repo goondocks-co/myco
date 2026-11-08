@@ -840,6 +840,19 @@ Disposition here is about the **data class**, and separately about **migration**
 | `embedding_provider_holds` | NEW | Core | Blk | Provider retry deadlines and configuration-dependent holds shared by current and building models. Derived; excluded from portable backups. | #2039 |
 | `document_status_totals` | NEW | Core | Blk | Publication session, byte-lag, queue and retirement totals maintained atomically with the catalog. Derived; excluded from portable backups. | #2009 |
 | `document_difference_totals` | NEW | Core | Blk | Maintained totals and membership counts for conversion difference classes. Derived; excluded from portable backups. | #2009 |
+| `document_owners` | NEW | Core | Blk | Immutable canonical key ownership, read by source key. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_continuations` | NEW | Core | Blk | Per-transcript metadata chunk locations. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_plan_keys` | NEW | Core | Blk | Canonical plan membership for a document generation. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_metadata_progress` | NEW | Core | Blk | Bounded source-blob metadata cursor; committed with the shared projection cursor. Derived and excluded from backups. | #2101 |
+| `document_metadata_ready` | NEW | Core | Blk | Each generation becomes publishable when its own metadata finishes. Unreadable or conflicting metadata records a named session failure while unrelated catch-up continues. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_transcript_pins` | NEW | Core | Blk | Absolute transcript pin contributions. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_group_pins` | NEW | Core | Blk | Pinned identity scheme and conflict evidence per session and agent. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_pin_totals` | NEW | Core | Blk | Scheme membership counts for session identity admission. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_failure_contributions` | NEW | Core | Blk | Current live-generation failed transcript membership. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_failure_totals` | NEW | Core | Blk | Failure counts and newest diagnostic per Project and failure class. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_failure_head` | NEW | Core | Blk | Deployment failure counts, newest failure, and the last publication-pass diagnostic. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_rebuild_receipts` | NEW | Core | Blk | Version rebuild generation and settlement receipts per session. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
+| `document_rebuild_totals` | NEW | Core | Blk | Maintained rebuilt and total session counts per parser version. Derived; excluded from portable backups and rebuilt through projection catch-up. | #2101 |
 | `document_publication_contributions` | NEW | Core | Blk | Keyed transcript source and per-generation frontier contributions. Derived; excluded from portable backups. | #2101 |
 | `document_publication_totals` | NEW | Core | Blk | Source and generation totals maintained by contribution deltas; generation changes use named-key reads. Derived; excluded from portable backups. | #2101 |
 | `document_publication_ready` | NEW | Core | Blk | Per-session numeric activation after bounded source catch-up; lifecycle facts and due membership stay live during initialization. Derived; excluded from portable backups. | #2101 |

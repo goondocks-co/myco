@@ -1,5 +1,5 @@
 import type { ErrorClassifier, RelationalStore } from '../core/adapters.js';
-import { DOCUMENT_PUBLISH_FAILURE_KEY } from '../core/attention-state.js';
+export { statusMetadata, type StatusMetadata } from '../db/documents/failure-head.js';
 import { within } from '../core/recovery-inventory.js';
 import { readFailureTelemetry, StorageContractError } from '../telemetry.js';
 
@@ -14,20 +14,6 @@ export async function databaseReadStatus(db: RelationalStore, classifier?: Error
   } catch (error) {
     return { readable: false as const, ...readFailureTelemetry(error, classifier) };
   }
-}
-
-export interface StatusMetadata { version: number | null; documentPublishFailure: string | null }
-
-/** Schema health and the optional bounded refusal and publish failure records, each by its exact key. */
-export async function statusMetadata(db: RelationalStore): Promise<StatusMetadata> {
-  const row = await db.prepare(`SELECT value,
-    (SELECT value FROM schema_meta WHERE key = '${DOCUMENT_PUBLISH_FAILURE_KEY}') AS __myco_status_publish_failure
-    FROM schema_meta WHERE key = 'version'`)
-    .first<{ value: string; __myco_status_publish_failure: string | null }>();
-  return {
-    version: row === null ? null : Number(row.value),
-    documentPublishFailure: row?.__myco_status_publish_failure ?? null,
-  };
 }
 
 /** The schema version the bound database carries, or null when it carries none. */

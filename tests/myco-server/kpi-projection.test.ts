@@ -218,7 +218,7 @@ describe('KPI projection critical flow', () => {
       const saved = await createBackup(r.db, blobs, { producer: 'test', now: NOW });
       const artifact = (await backupArtifact(r.db, blobs, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
-      await catchUpProjections(target.db, { budget: { calls: 2000, wallMs: 10000 } });
+      await catchUpProjections(target.db, { blobs, budget: { calls: 2000, wallMs: 10000 } });
       expect(target.sqlite.query("SELECT session_id FROM sessions WHERE session_id='generated'").all()).toEqual([{ session_id: 'generated' }]);
       expect(await measured(target, null)).toEqual(await oracle(target, null));
       expect((await measured(target, null)).servedShare.sampleSize).toBe(0);
@@ -277,7 +277,8 @@ describe('KPI projection critical flow', () => {
       const { sqliteEnv } = await import('./helpers/fixtures.js');
       const runtime = sqliteEnv();
       try {
-        await JOB_IMPLEMENTATIONS['projection-catch-up']!({ ...runtime.serverEnv, db: r.db }, NOW, 'sleep');
+        let wakes = 0;
+        while ((await JOB_IMPLEMENTATIONS['projection-catch-up']!({ ...runtime.serverEnv, db: r.db }, NOW, 'sleep') as { more: boolean }).more) expect(++wakes).toBeLessThan(50);
       } finally { runtime.sqlite.close(); }
       expect(await projectionReadiness(r.db, 'kpi')).toBe('ready');
       expect(snapshot(r)).toEqual(before);

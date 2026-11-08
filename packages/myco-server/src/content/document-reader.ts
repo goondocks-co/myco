@@ -8,6 +8,7 @@ import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from './document.js';
 
 export interface ChunkRow {
+  metadata?: number;
   chunk_no: number;
   blob_key: string;
   kind: 'page' | 'body';
@@ -19,7 +20,7 @@ export interface PageRow { owner: string; page: number; chunk_no: number; record
 export interface Directory { generation: number; chunks: Map<number, ChunkRow>; pages: PageRow[] }
 
 /** Chunk rows of one generation with the stored object each names; binds `?1` project and `?2` session. */
-export const chunkRowsSql = (generation = '?3'): string => `SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
+export const chunkRowsSql = (generation = '?3'): string => `SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,
   ${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key
   FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=${generation} ORDER BY c.chunk_no`;
 /** Page rows of one generation; binds `?1` project and `?2` session. */
@@ -51,8 +52,9 @@ async function opened(env: Pick<ContentStore, 'blobs'>, row: ChunkRow) {
 
 /** A page chunk's pages and continuation. */
 export async function readPageChunk(env: Pick<ContentStore, 'blobs'>, row: ChunkRow): Promise<DecodedChunk> {
-  if (row.kind !== 'page') throw new Error('document_chunk_kind');
-  return decodePageChunk((await opened(env, row)).body);
+  if (row.kind !== 'page' && row.metadata !== 1) throw new Error('document_chunk_kind');
+  const chunk = await decodePageChunk((await opened(env, row)).body);
+  return row.metadata === 1 ? { ...chunk, pages: [] } : chunk;
 }
 
 /** A body chunk's complete text. */
@@ -63,7 +65,7 @@ export async function readBodyChunk(env: Pick<ContentStore, 'blobs'>, row: Chunk
 
 /** One page's records from the live generation, or null when the session has no such page. */
 export async function readPage(env: ContentStore, projectId: string, sessionId: string, owner: string, page: number): Promise<DocRecord[] | null> {
-  const row = await env.db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
+  const row = await env.db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,
       ${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key
     FROM session_documents d JOIN session_pages p ON p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation
     JOIN session_chunks c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.generation=p.generation AND c.chunk_no=p.chunk_no

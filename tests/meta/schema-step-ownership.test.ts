@@ -1,4 +1,9 @@
 import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
+import { V723, V723_STATEMENTS } from '@myco-server-worker/db/schema-v723.js';
+import { publicationOwnershipSchema } from '@myco-server-worker/db/documents/ownership.js';
+import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
+import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
+import { publicationRebuildSchema } from '@myco-server-worker/db/documents/rebuild.js';
 import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
 import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
 import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
@@ -42,6 +47,11 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...V723_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{step:V723,object:match[1]!,table:match[2]!,
+      reason:'Publication maintains keyed pin and failure contributions; generation and version seeks bound catch-up and metadata reads.'}];
+  }),
   ...[
     ['idx_publication_owner_pages', 'session_pages'], ['idx_publication_transcripts', 'transcripts'],
     ['idx_publication_reopen', 'transcript_publication'], ['idx_publish_ready', 'publish_queue'], ['idx_publish_sleeping', 'publish_queue'],
@@ -295,6 +305,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V723_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
+    step: V723, sql, reason: 'Document metadata remains in source blobs with a keyed directory and an explicit chunk class.'
+  })),
   ...V718_STATEMENTS.filter(sql => /^ALTER TABLE/.test(sql)).map(sql => ({
     step: V718, sql, reason: 'Publication records its directory cursor and committed revision without backfilling history.'
   })),
@@ -801,4 +814,8 @@ it('schema steps are contiguous from one through the server version and migratio
 
 it('pins the frozen publication directory step to its generator', () => {
   expect(V718_STATEMENTS).toEqual(publicationDirectorySchema());
+});
+
+it('pins the frozen publication ownership step to its generators', () => {
+  expect(V723_STATEMENTS).toEqual([...publicationOwnershipSchema(),...publicationPinSchema(),...publicationFailureSchema(),...publicationRebuildSchema()]);
 });

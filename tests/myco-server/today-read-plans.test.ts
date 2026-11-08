@@ -20,7 +20,6 @@ import { captureRecency } from '@myco-server-worker/read/capture.js';
 import { listMachines, machinesOf } from '@myco-server-worker/read/machines.js';
 import { renameMachine } from '@myco-server-worker/auth/enrollment.js';
 import { ownMachineNames } from '@myco-server-worker/read/capture.js';
-import { stoppedTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { grantsExpiringBy } from '@myco-server-worker/auth/grants.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 import { withDocumentStores } from './helpers/document-stores.js';
@@ -245,20 +244,16 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('reads what Needs you composes through existing indexes, scanning only failed document publications', async () => {
+  it('reads Needs you run and grant inputs through existing indexes', async () => {
     const read = await plans(async (db) => {
       await failingOutcomes(db, ['extract-curate', 'canopy-map'], 0);
       await capabilityHolds(db, ['repository-checkout'], 0);
       await runsAwaitingWorker(db, ['embedding-reconcile']);
-      await stoppedTranscripts(db);
       await grantsExpiringBy(db, 0, 1);
     });
-    expect(read).toHaveLength(5 * 3);
-    for (const { store, plan } of reading(read, 'transcript_publication')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SCAN p USING INDEX idx_transcript_publication_failed/) });
-    }
+    expect(read).toHaveLength(4 * 3);
     for (const { store, sql, plan } of read) {
-      const scans=tableScans(plan).filter(scan=>!/SCAN p USING INDEX idx_transcript_publication_failed/.test(scan));
+      const scans=tableScans(plan);
       expect({ store, sql, scans, plan }).toEqual({ store, sql, scans: [], plan });
     }
   });
