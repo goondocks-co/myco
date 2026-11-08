@@ -3,10 +3,13 @@ export const UNRELATED_PROCESSED_LINES = {
   "embeddingWorkCounts": {
     "core/embedding/hubness.ts": [
       "if (!started) return { phase: 'hubness', processed: 0 };",
-      "if (view.cursor === null) return { phase: waiting ? 'visibility' : 'settled', processed: 0 };",
+      "return { phase: waiting ? 'visibility' : 'settled', processed: 0 };",
+      "return { phase: 'vector-page', processed: 0 };",
+      "if (sealing !== null) return { phase: 'hubness', processed: sealing ? 1 : 0 };",
+      "if (await reclaimVectorPages(db, projectId, now - OBJECT_PUT_IN_FLIGHT_MS, now) > 0) return { phase: 'hubness', processed: 1 };",
       "if (joining.length > 0) return { phase: 'visibility', processed: 0 };",
       "if (view.population.state === 'building') return { phase: 'visibility', processed: 0 };",
-      "if (view.population.total < 2) return { phase: 'settled', processed: 0 };",
+      "if (view.population.total < 2) return { phase: 'settled', processed: await reclaimVectorPages(db, projectId, now - OBJECT_PUT_IN_FLIGHT_MS, now) > 0 ? 1 : 0 };",
       "if (subjects.length === 0) return { phase: 'hubness', processed: 1 };",
       "if (visible.length === 0) return { phase: 'visibility', processed: 1 };",
       "return { phase: 'hubness', processed: done ? 1 : 0 };",
@@ -19,7 +22,7 @@ export const UNRELATED_PROCESSED_LINES = {
     "core/embedding/reconcile.ts": [
       "if (!due.ready) return {phase:'scan',processed:1};",
       "return scanning ? { phase: 'scan', processed: 1 } : null;",
-      "export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled' | 'scan'; processed: number }",
+      "export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'vector-page' | 'visibility' | 'settled' | 'scan'; processed: number }",
       "if (claim === null) return { phase: 'orphans', processed: 0 };",
       "return { phase: 'orphans', processed: 1 };",
       "if (context.retireOnly === true) return { phase: 'settled', processed: 0 };",

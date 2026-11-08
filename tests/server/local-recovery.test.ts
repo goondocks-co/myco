@@ -19,7 +19,10 @@ import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/v
 import { diskBlobStore } from '../../packages/myco-server/src/platform/bun/blobs.js';
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
-import { reconcileEmbedding } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { reconcileEmbedding, type EmbeddingContext } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { reconcileHubness } from '../../packages/myco-server/src/core/embedding/hubness.js';
+import { calibrationHasWork } from '../../packages/myco-server/src/db/embeddings/calibration.js';
+import { prepareEmbeddingDue } from '../../packages/myco-server/src/db/embeddings/work.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { searchProject } from '../../packages/myco-server/src/read/search.js';
@@ -104,9 +107,26 @@ async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
 const RECOVERED_TOOL_ID = uuid(9002);
 const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/repo/recovered.ts' };
 
+/** Spores embedded into the native store through the write path, and calibrated until a stored page holds members' vectors. */
+async function seedSealedCalibration(source: ReturnType<typeof sqliteEnv>, modelKey: string) {
+  for (let i = 0; i < 60; i++) {
+    source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1',?,'user','fixture','decision',1)", [`seed-${String(i).padStart(3, '0')}`]);
+  }
+  while ((await catchUpProjections(source.db, { budget: { calls: 200, wallMs: 10_000 } })).more);
+  while ((await prepareEmbeddingDue(source.db, 'proj_1', modelKey)).more);
+  let call = 0;
+  const provider = { modelKey, embed: async () => { call += 1; return [Math.cos(call * 0.1), Math.sin(call * 0.1)]; } };
+  const context = { db: source.db, blobs: source.bucket, provider, vectors: sqliteVectorStore(source.sqlite) };
+  for (let i = 0; i < 400; i++) {
+    const step = await reconcileEmbedding(context, 'proj_1', 1000);
+    if (step.processed === 0 && step.phase === 'settled') return;
+  }
+  throw new Error('fixture calibration did not settle');
+}
+
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false,
-    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null, thinRun = false } = {}) {
+    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null, thinRun = false, sealedCalibration = false } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -146,6 +166,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     if(learningSource==='paused') await source.db.batch(V102_STATEMENTS.map(sql=>source.db.prepare(sql)));
   }
   if(budgetSource) seedRecoveryBudget(source.sqlite,true,Date.now());
+  if (sealedCalibration) await seedSealedCalibration(source, provider.modelKey);
   if (thinRun) {
     source.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('thin','Thin','built-in',1,1)");
     source.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('proj_1','thin-held','thin','extract-curate','running',1)");
@@ -243,6 +264,36 @@ it('recovers hosted data, independently wrapped credentials and pinned artifacts
     await expect(f.restore()).rejects.toThrow('fresh local Deployment directory');
   } finally { f.cleanup(); }
 });
+
+it('a native recovery drops members naming stored pages it did not carry and calibrates again from the carried vectors', async () => {
+  const f = await fixture('local', { sealedCalibration: true });
+  try {
+    const memberRows = (sqlite: Database) => sqlite.query('SELECT id,n,mean,m2 FROM embedding_hubness_members ORDER BY id').all();
+    const before = memberRows(f.source.sqlite);
+    expect(before).toHaveLength(61);
+    expect(f.source.sqlite.query("SELECT COUNT(*) AS n FROM embedding_hubness_members WHERE page_id IS NOT NULL AND vector=''").get()).toEqual({ n: 50 });
+    const carried = (f.source.sqlite.query('SELECT COUNT(*) AS n FROM local_vectors').get() as { n: number }).n;
+    expect(await f.restore()).toMatchObject({ rebuildEmbeddings: false });
+    const db = new Database(f.paths.databasePath);
+    try {
+      expect(db.query('SELECT COUNT(*) AS n FROM embedding_vector_pages').get()).toEqual({ n: 0 });
+      expect(db.query('SELECT COUNT(*) AS n FROM embedding_hubness_members').get()).toEqual({ n: 0 });
+      expect(db.query('SELECT COUNT(*) AS n FROM local_vectors').get()).toEqual({ n: carried });
+      const store = sqliteRelationalStore(db);
+      const context = { db: store, blobs: diskBlobStore(f.paths.blobDir), provider: f.provider, vectors: sqliteVectorStore(db) } as unknown as EmbeddingContext;
+      expect(await calibrationHasWork(store, 'proj_1', f.provider.modelKey, 1000)).toBe(true);
+      let phases = new Set<string>();
+      for (let i = 0; i < 40; i++) {
+        const step = await reconcileHubness(context, 'proj_1', 1000);
+        phases = phases.add(step.phase);
+        if (step.processed === 0) break;
+      }
+      expect(phases.has('vector-page')).toBe(false);
+      expect(await calibrationHasWork(store, 'proj_1', f.provider.modelKey, 1000)).toBe(false);
+      expect(memberRows(db)).toEqual(before);
+    } finally { db.close(); }
+  } finally { f.cleanup(); }
+}, 120_000);
 
 it('preserves a native snapshot and its vectors without resetting their ready receipts', async () => {
   const f = await fixture('local');

@@ -1,14 +1,18 @@
 import type { Bound } from '../../db/index.js';
 import {
-  calibrationHasWork, calibrationView, calibrationWrites, commitCalibration, departingVectors,
-  foreignMemberModel, leftOutVectors, moveCalibrationProbe, operatingMembers, settledMembers, settledMoments, uncoveredVectors,
+  calibrationHasWork, calibrationView, calibrationWrites, commitCalibration, commitVectorPageSeal, departingVectors,
+  foreignModelToRetire, leftOutVectors, moveCalibrationProbe, operatingMembers, outlivesPopulation, settledMembers, settledMoments, uncoveredVectors,
   type CalibrationPopulation, type CalibrationProbe, type MemberMoments, type MemberVector, type QueuedVector,
 } from '../../db/embeddings/calibration.js';
 export { MISSING_REPORT_LIMIT, type MissingSporeVectors, missingSporeVectors } from '../../db/embeddings/calibration.js';
+import { beginVectorPage, inlineVectors, noteVectorPageMissing, reclaimVectorPages, releaseUnsealedObject, vectorPageRows, VECTOR_PAGE_MEMBERS } from '../../db/embeddings/vector-pages.js';
+import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
+import { emit } from '../../telemetry.js';
 import type { RelationalStore } from '../adapters.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from './provider.js';
 import { HUBNESS_MEMBER as MEMBER } from './receipt-state.js';
+import { encodeVectorPage, readSealedVectors, storeVectorPage, vectorPageKey, VectorPageUnavailable, type SealedMember } from './vector-pages.js';
 import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
 
 /** Settled members one step reads. */
@@ -69,11 +73,11 @@ function encodeVector(values: ArrayLike<number>): string {
   return btoa(binary);
 }
 
-function decodeVector(encoded: string): Float32Array {
+function vectorBytes(encoded: string): Uint8Array<ArrayBuffer> {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Float32Array(bytes.buffer);
+  return bytes;
 }
 
 /**
@@ -91,15 +95,53 @@ function decodeVector(encoded: string): Float32Array {
  * write, joins once the store returns it, and is written again at most `VECTOR_REWRITE_LIMIT` times.
  *
  * What is left to do is read from the maintained population and queues; nothing recounts the corpus. Members of another
- * model and miscounted moments are removed a page per step. A step reads the population and the commit token together,
+ * model, miscounted moments, and every member once fewer than two current vectors remain are removed a page per step,
+ * with no distance computed. A step reads the population and the commit token together,
  * and every commit is fenced by that token and that revision: a step commits only against the population it read.
+ *
+ * At rest, every full page of settled members holding their bytes is written to a stored page, verified, and only then
+ * do those rows give their bytes up, and pages no member names are released. A stored page that cannot be read ends the
+ * step with the retryable `vector-page` phase and nothing computed from it; a page still gone `VECTOR_LOST_MS` after it
+ * first went missing is taken as lost, and the model's members are rebuilt from the vector store.
  */
 export async function reconcileHubness(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
-  const { db, vectors, provider } = context;
+  try {
+    return await calibrationStep(context, projectId, now);
+  } catch (error) {
+    if (!(error instanceof VectorPageUnavailable)) throw error;
+    emit({ kind: 'hubness_vector_page_unavailable', fault: error.fault });
+    const { page, fault } = error;
+    if (page !== null && fault !== 'store') {
+      if (page.missing_at === null) await noteVectorPageMissing(context.db, page.page_id, now);
+      else if (now - page.missing_at >= VECTOR_LOST_MS) return rebuildMembers(context, projectId);
+    }
+    return { phase: 'vector-page', processed: 0 };
+  }
+}
+
+/** A stored page is lost: every member of the model leaves, a page per step, and calibration runs again from the vector store. */
+async function rebuildMembers(context: EmbeddingContext, projectId: string): Promise<EmbeddingStep> {
+  const model = context.provider.modelKey;
+  return dropMembers(context.db, projectId, model, model, ['clearCount']);
+}
+
+/** One page of `members`' memberships goes under calibration of `model`, a model's own by clearing its count too. */
+async function dropMembers(db: RelationalStore, projectId: string, model: string, members: string, move: Parameters<typeof commitCalibration>[5]): Promise<EmbeddingStep> {
+  const { token, population } = await calibrationView(db, projectId, model, true);
+  const done = await commitCalibration(db, projectId, token, population.revision, [calibrationWrites.dropModelPage(projectId, members, HUBNESS_REPAIR_PAGE, token)], move);
+  return { phase: 'hubness', processed: done ? 1 : 0 };
+}
+
+async function calibrationStep(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
+  const { db, vectors, provider, blobs } = context;
   const model = provider.modelKey;
+  const loaded = async (rows: Promise<MemberVector[]>): Promise<Loaded[]> => hydrated(context, await rows);
   let view = await calibrationView(db, projectId, model);
   if (view.population.state === 'building') return { phase: 'visibility', processed: 0 };
-  if (view.population.total < 2) return { phase: 'settled', processed: 0 };
+  const foreign = await foreignModelToRetire(db, projectId, model, view.population, context.retain ?? []);
+  if (foreign !== null) return dropMembers(db, projectId, model, foreign, ['clear']);
+  if (outlivesPopulation(view.population)) return dropMembers(db, projectId, model, model, ['clearCount']);
+  if (view.population.total < 2) return { phase: 'settled', processed: await reclaimVectorPages(db, projectId, now - OBJECT_PUT_IN_FLIGHT_MS, now) > 0 ? 1 : 0 };
   let { population, token } = view;
   const commit = (statements: readonly Bound[], move: Parameters<typeof commitCalibration>[5]) => commitCalibration(db, projectId, token, population.revision, statements, move);
   const publishNext = async (after: string): Promise<EmbeddingStep> => {
@@ -110,12 +152,6 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
       last ? ['published', population.revision] : ['publish', targets.at(-1)!.id, population.revision]);
     return {phase:'hubness',processed:done ? 1 : 0};
   };
-  const foreign = await foreignMemberModel(db, projectId, model);
-  if (foreign !== null) {
-    const done = await commit([calibrationWrites.dropModelPage(projectId, foreign, HUBNESS_REPAIR_PAGE, token)], ['clear']);
-    return { phase: 'hubness', processed: done ? 1 : 0 };
-  }
-
   let subjects = await loaded(operatingMembers(db, projectId, model, HUBNESS_SUBJECTS));
   let started = false;
   if (subjects.length === 0) {
@@ -151,8 +187,11 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
       }
     }
     if (!started) {
-      if (view.cursor === null) return { phase: waiting ? 'visibility' : 'settled', processed: 0 };
-      return publishNext(view.cursor);
+      if (view.cursor !== null) return publishNext(view.cursor);
+      if (await reclaimVectorPages(db, projectId, now - OBJECT_PUT_IN_FLIGHT_MS, now) > 0) return { phase: 'hubness', processed: 1 };
+      const sealing = await sealVectors({ db, blobs }, projectId, model, now, token, population.revision);
+      if (sealing !== null) return { phase: 'hubness', processed: sealing ? 1 : 0 };
+      return { phase: waiting ? 'visibility' : 'settled', processed: 0 };
     }
     view = await calibrationView(db, projectId, model);
     ({ population, token } = view);
@@ -162,9 +201,9 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
 
   const joins = subjects[0]!.state === MEMBER.joining;
   const after = view.cursor ?? '';
-  const page = await loaded(settledMembers(db, projectId, model, after, HUBNESS_PAGE + 1));
+  const page = await settledMembers(db, projectId, model, after, HUBNESS_PAGE + 1);
   const last = page.length <= HUBNESS_PAGE;
-  const targets = page.slice(0, HUBNESS_PAGE);
+  const targets = await hydrated(context, page.slice(0, HUBNESS_PAGE));
   for (const target of targets) {
     for (const subject of subjects) {
       const d = distance(subject.values, target.values);
@@ -198,8 +237,34 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
 /** Every current spore vector is a member and no member is stale: statistics may be published. */
 const complete = (population: CalibrationPopulation): boolean => population.uncovered === 0 && population.stale === 0;
 
-async function loaded(rows: Promise<MemberVector[]>): Promise<Loaded[]> {
-  return (await rows).map((r) => ({ ...r, values: decodeVector(r.vector) }));
+/** Members with their vectors: from the row until a stored page holds it, then from that page. */
+async function hydrated({ db, blobs }: Pick<EmbeddingContext, 'db' | 'blobs'>, rows: readonly MemberVector[]): Promise<Loaded[]> {
+  const sealed = rows.filter((r): r is MemberVector & SealedMember => r.page_id !== null);
+  const pages = sealed.length === 0 ? [] : await vectorPageRows(db, [...new Set(sealed.map((r) => r.page_id))]);
+  const held = await readSealedVectors(blobs, pages, sealed);
+  return rows.map((r) => ({ ...r, values: r.page_id === null ? new Float32Array(vectorBytes(r.vector).buffer) : held.get(r.id)! }));
+}
+
+/**
+ * Moves one full page of settled members' vectors to a stored page, or answers null with fewer than a page held in the
+ * database. The object is written and verified before the commit that lets a row give up its bytes. Any exit without a
+ * seal, a failed verification included, leaves every row holding its bytes and hands an object whose page row is gone to
+ * the release owner.
+ */
+async function sealVectors({ db, blobs }: Pick<EmbeddingContext, 'db' | 'blobs'>, projectId: string, model: string, now: number, token: string, revision: number): Promise<boolean | null> {
+  const members = await inlineVectors(db, projectId, model, VECTOR_PAGE_MEMBERS);
+  if (members.length < VECTOR_PAGE_MEMBERS) return null;
+  const page = await encodeVectorPage(members.map((m) => ({ id: m.id, bytes: vectorBytes(m.vector) })));
+  const key = vectorPageKey(projectId);
+  const pageId = await beginVectorPage(db, projectId, model, key, page.bytes.byteLength, now);
+  let sealed = false;
+  try {
+    await storeVectorPage(blobs, key, page);
+    sealed = await commitVectorPageSeal(db, projectId, model, token, revision, { id: pageId, objectKey: key }, page.slots.map((s) => [s.id, s.offset, s.length] as const));
+    return sealed;
+  } finally {
+    if (!sealed) await releaseUnsealedObject(db, key, now);
+  }
 }
 
 /**
@@ -225,7 +290,7 @@ function publish(projectId: string, model: string, token: string, rows: readonly
 }
 
 /** Calibration has work only with at least two current spore vectors. With `fresh`, a row that rests clean is probed again. */
-export async function calibrationPending(db: RelationalStore, projectId: string, model: string, now: number, fresh = false): Promise<boolean> {
-  return recordedWork(db, projectId, model, 'hubness', JSON.stringify({ predicate: WORK_PREDICATE_VERSION }), now,
-    async () => ({ pending: await calibrationHasWork(db, projectId, model, now) }), { fresh });
+export async function calibrationPending(db: RelationalStore, projectId: string, model: string, now: number, fresh = false, kept: readonly string[] = []): Promise<boolean> {
+  return recordedWork(db, projectId, model, 'hubness', JSON.stringify({ predicate: WORK_PREDICATE_VERSION, kept: [...kept].sort() }), now,
+    async () => ({ pending: await calibrationHasWork(db, projectId, model, now, kept) }), { fresh });
 }

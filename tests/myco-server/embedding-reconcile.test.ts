@@ -163,6 +163,9 @@ test('calibrates in bounded operations, waits for vector visibility, and takes a
   expect(f.sqlite.query('SELECT state, COUNT(*) AS n FROM embedding_hubness_members GROUP BY state').all()).toEqual([{ state: 0, n: 20 }]);
   expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
   expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  // At rest, a full page of the settled members moves to storage and the rest stay inline.
+  expect(await f.step()).toEqual({ phase: 'hubness', processed: 1 });
+  expect(f.sqlite.query("SELECT COUNT(*) AS n FROM embedding_hubness_members WHERE page_id IS NOT NULL AND vector = ''").get()).toEqual({ n: 50 });
   expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
   const stats = () => f.sqlite.query(`SELECT r.neighbor_mean, r.neighbor_std, s.content FROM embedding_receipts r
     JOIN spores s ON s.project_id = r.project_id AND s.id = r.record_id WHERE r.ready = 1`).all() as Array<{ neighbor_mean: number; neighbor_std: number; content: string }>;

@@ -44,5 +44,5 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
   if (pending) return true;
   if (scope.retireOnly === true) return false;
   const calibrate = calibrationModel(model, scope.switching ?? null);
-  return calibrationPending(db, projectId, calibrate, now, scope.fresh === true);
+  return calibrationPending(db, projectId, calibrate, now, scope.fresh === true, retained);
 }
