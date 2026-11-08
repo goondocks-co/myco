@@ -9,7 +9,8 @@ import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
-import { estimateInvalidationStatements } from './budget-estimates.js';
+import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';
+import { storedDeploymentId, storedSchemaVersion } from '../db/meta/deployment.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
@@ -118,7 +119,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
   'document_failure_contributions', 'document_failure_totals', 'document_failure_head',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
-  'setting_revisions', 'embedding_passed_over', 'change_marks', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
+  'setting_revisions', 'embedding_passed_over', 'change_marks', 'member_naming_failures', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
   'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
@@ -235,14 +236,9 @@ export class BackupSchemaError extends Error {
   }
 }
 
-const metaValue = async (db: RelationalStore, key: string): Promise<string | null> => {
-  const row = await db.prepare(`SELECT value FROM schema_meta WHERE key = ?`).bind(key).first<{ value: string }>();
-  return row?.value ?? null;
-};
-
 /** The lineage id the v13 migration seeded. A store this reads on predates nothing: the migration runs first on both targets. */
 export async function deploymentId(db: RelationalStore): Promise<string> {
-  const value = await metaValue(db, 'deployment_id');
+  const value = await storedDeploymentId(db);
   if (value === null) throw new Error('this store carries no deployment_id; its migrations have not run');
   return value;
 }
@@ -616,7 +612,7 @@ export async function restoreArtifact(
 
   const live = await deploymentId(db);
   if (header.deploymentId !== live && opts.allowForeignLineage !== true) throw new BackupLineageError(header.deploymentId, live);
-  const stamped = Number(await metaValue(db, 'version'));
+  const stamped = (await storedSchemaVersion(db)) ?? 0;
   if (header.schemaVersion > stamped) throw new BackupSchemaError(header.schemaVersion, stamped);
 
   const restoredAt = opts.now ?? Date.now();

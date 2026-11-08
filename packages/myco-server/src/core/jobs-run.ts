@@ -3,7 +3,7 @@ import { expireSpend } from '../db/runs/admission.js';
 import { discoverSporeClusters } from './spore-curation.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
-import { budgetActivation, budgetQueueOpenedAt } from '../db/budget-activation.js';
+import { budgetActivation, budgetQueueOpenedAt } from '../db/meta/budget-activation.js';
 import { dailyBudget } from './settings.js';
 import { runPublishWake } from '../ingest/publish.js';
 import { storageCleanup } from './storage-cleanup.js';

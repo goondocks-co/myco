@@ -130,7 +130,7 @@ it('rolls back admission counts and queue consumption when a companion write fai
 it('settles one same-run claim and preserves every admission fact on refusal on SQLite and D1', async () => {
   const { Miniflare, convertV4MiniflareOptions } = await import('miniflare');
   const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
-  const { completeBudgetMigration } = await import('@myco-server-worker/db/budget-activation.js');
+  const { completeBudgetMigration } = await import('@myco-server-worker/db/meta/budget-activation.js');
   const { claimQueuedRun } = await import('@myco-server-worker/core/worker-claim.js');
   const { PROFILE } = await import('./helpers/budget-fixture.js');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}',

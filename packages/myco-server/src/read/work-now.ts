@@ -312,7 +312,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
       if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true).available);
       return rows;
     }, [] as WorkerFleetRow[]),
-    todayMarks(env.db).catch(() => Array.from({ length: 4 }, () => `unread:${now}`)),
+    todayMarks(env.db).catch(() => Array.from({ length: 5 }, () => `unread:${now}`)),
     settle('running', () => readRunning(env.db, scope), { rows: [] as NowRunning[], total: 0, hasMore: false }),
     producer === undefined ? null : within(() => producer.status(), BACKUP_STATUS_MS, Date.now).catch(() => null),
   ]);
@@ -334,6 +334,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
       runs: [marks[0], ...running.map((r) => r.runId), ...waiting.map((w) => `${w.key}=${w.count ?? ''}`), ...needsYou.map((n) => n.key)].join('|'),
       sessions: marks[1]!,
       knowledge: `${marks[2]}|${marks[3]}`,
+      attention: marks[4]!,
       recovery: recovery === null ? '' : `${recovery.attempt ?? ''}:${recovery.stage}:${recovery.staged?.parts ?? ''}:${recovery.staged?.downloadedBytes ?? ''}`,
       fleet: fleet.map((row) => `${row.runner?.id ?? row.credentialId}:${row.runnerDetails?.display ?? (row.recent ? 'recent' : 'quiet')}:${row.busy?.runId ?? ''}`).join('|'),
     },

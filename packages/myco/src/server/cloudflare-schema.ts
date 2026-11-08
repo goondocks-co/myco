@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { THIN_LEARNING_REMOVAL_VERSION, THIN_LEARNING_PAUSE_VERSION, thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learning-admission.js';
-import { budgetMigration,budgetCompletionMessage } from '@myco-server-worker/db/budget-activation.js';
+import { budgetMigration,budgetCompletionMessage } from '@myco-server-worker/db/meta/budget-activation.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, queryCloudflareDatabase, runCloudflareStatement, D1_STATEMENT_TIMEOUT_MS, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
 import { cloudflareOperation } from './cloudflare-operation.js';

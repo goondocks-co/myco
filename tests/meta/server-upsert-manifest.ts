@@ -331,14 +331,15 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema-v708.ts#captureHeadInsert': [{ tables: ['machine_capture_heads'], order: 'unverified' }],
   'core/spore-curation.ts#closeStatements': [{ tables: ['spore_curation_receipts'], order: 'unverified' }],
   'db/curation-changes.ts#curationChangeSql': [{ tables: ['spore_curation_changes'], order: 'unverified' }],
-  'db/budget-activation.ts#indexWitness': [{ tables: ['schema_meta'], order: 'catalogue-snapshot' }],
+  'db/meta/budget-activation.ts#indexWitness': [{ tables: ['schema_meta'], order: 'catalogue-snapshot' }],
   'core/spore-curation.ts#discoverSporeClusters': [{ tables: ['spore_curation_cursor'], order: 'unverified' }],
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
-  'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'db/maintenance/outcomes.ts#<module>': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'db/meta/member-naming-failure.ts#<module>': [{ tables: ['member_naming_failures'], order: 'unverified' }],
   'core/learning-sessions.ts#repairLearningSources': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/schema.ts#withStamp': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/embedding-due.ts#embeddingDueInsert': [{ tables: ['embedding_due'], order: 'arrival-order' }],
-  'db/budget-activation.ts#budgetMigration': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],
+  'db/meta/budget-activation.ts#budgetMigration': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],
   'db/schema-v466.ts#<module>': [{tables:['embedding_hubness_revision'],order:'unverified'}],
   'db/document-facts.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
   'db/document-facts.ts#differenceDelta': [{tables:['document_difference_totals'],order:'unverified'}],
@@ -355,10 +356,11 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/attempt-accounting.ts#restoreAttemptStatement': [
     { tables: ['agent_run_attempts'], order: 'unverified' },
   ],
-  'core/budget-estimates.ts#refreshEstimates': [
+  'db/meta/budget-estimates.ts#<module>': [
+    { tables: ['schema_meta'], order: 'unverified' },
     { tables: ['schema_meta'], order: 'unverified' },
   ],
-  'core/budget-estimates.ts#estimateInvalidationStatements': [
+  'db/meta/budget-estimates.ts#estimateInvalidationStatements': [
     { tables: ['schema_meta'], order: 'arrival-order' },
     { tables: ['schema_meta'], order: 'unverified' },
   ],

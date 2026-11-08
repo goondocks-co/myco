@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../budget-activation.js';
+import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../meta/budget-activation.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { spentUsdSql as spentSql, spendReadySql } from './admission.js';
 

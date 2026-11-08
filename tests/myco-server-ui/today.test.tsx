@@ -1006,3 +1006,13 @@ it('names code work without claiming a code map for a non-map repository require
   expect(words.title).toBe('Connect Myco’s repository so Myco can run its code tasks');
   expect(words.detail).toBe('Code tasks are turned on, but they cannot run until a repository is connected.');
 });
+
+it('tells an administrator which sign-ins could not save a name without inventing a total', () => {
+  const failed = (failures: number) => ({ memberId: `mem_${failures}`, errorClass: 'db', failures, lastFailedAt: NOW - HOUR });
+  const one = attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(3)], hasMore: false }, NOW, () => null);
+  expect(one.title).toBe('A member’s name couldn’t be saved');
+  expect(one.detail).toContain('3 times');
+  expect(one.detail).toContain('sign-in still worked');
+  expect(attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(1), failed(2)], hasMore: false }, NOW, () => null).title).toBe('2 members’ names couldn’t be saved');
+  expect(attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(1), failed(2)], hasMore: true }, NOW, () => null).title).toBe('More than 2 members’ names couldn’t be saved');
+});

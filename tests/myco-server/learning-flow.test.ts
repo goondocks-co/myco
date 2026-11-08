@@ -4,7 +4,7 @@ import { runLearningFlow } from '../parity/scenarios/learning-flow.ts';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { memberHeaders, memoryBlobStore, noOutboundFetch, recordingLimiter } from './helpers/fixtures.js';

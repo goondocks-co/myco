@@ -1,4 +1,4 @@
-import { budgetCompletionMessage, budgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { budgetCompletionMessage, budgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { sqliteEnv } from './fixtures.js';
 
 /** A running Deployment fixture includes the operator's validated budget preparation. */

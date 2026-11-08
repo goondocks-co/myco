@@ -27,7 +27,7 @@ import {
 } from '../server/local.js';
 import { withLocalDiagnosticStore,withCloudflareDiagnosticStore,localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
 import { keptArtifacts } from '../server/local-artifacts.js';
-import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
+import { volumeMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
 import { setupLocalOwner } from '../server/local-owner.js';
 import { setupCloudflareOwner } from '../server/cloudflare-owner.js';
@@ -388,7 +388,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         const removed = uninstallService(localSpec());
         // Read while the volume is still there: what names these artifacts is the Deployment they were taken from.
         const kept = removeData
-          ? keptArtifacts(paths, schemaMetaValue(paths.databasePath, 'deployment_id', carriedNative()))
+          ? keptArtifacts(paths, volumeMetaValue(paths.databasePath, 'deployment_id', carriedNative()))
           : null;
         if (removeData) removeLocalDeployment(paths);
         // The service is what this stops. A Deployment someone started in a

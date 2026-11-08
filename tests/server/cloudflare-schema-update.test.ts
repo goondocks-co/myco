@@ -5,7 +5,7 @@ import path from 'node:path';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { createCloudflareDeployment, updateCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord, queryCloudflareDatabase } from '@myco/server/cloudflare.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';

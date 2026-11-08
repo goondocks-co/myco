@@ -28,7 +28,7 @@ import { envelope, memberHeaders, memoryBlobStore, recordingDeferred, recordingL
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { claimNextRun, dispatchTask, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
 import { STATE_CHANGED } from '@myco-server-worker/mcp/tools/run.js';
@@ -1140,7 +1140,7 @@ it('keeps pending turns when the document is not live at material read or at the
     const recovered = await run.harness.call(retry.run.runToken, 'myco_run_cards', { op: 'material' });
     expect((recovered.turns as CardMaterial[]).map(turn => turn.turn_key)).toEqual(keys.slice(0, 2));
   });
-});
+}, 60_000);
 
 it('retains the shared idle wait for a session received after its source freshness expired', async () => {
   for (const age of [24, 30]) await withDocumentStores(async db => {

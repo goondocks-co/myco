@@ -14,6 +14,6 @@ export function useAttention({ enabled, projectId }: { enabled: boolean; project
     queryKey: projectId === undefined ? ['attention'] : ['attention', projectId],
     queryFn: ({ signal }) => fetchJson<AttentionAnswer>(projectId === undefined ? '/api/attention' : `/api/attention?project=${encodeURIComponent(projectId)}`, signal),
     enabled,
-    ...live<AttentionAnswer>({ follows: ['runs', 'sessions', 'fleet'] }),
+    ...live<AttentionAnswer>({ follows: ['runs', 'sessions', 'fleet', 'attention'] }),
   });
 }

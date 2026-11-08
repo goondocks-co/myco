@@ -5,7 +5,7 @@
  */
 
 /** What moves the heartbeat reports, and a read can follow. */
-export const MARKS = ['runs', 'sessions', 'knowledge', 'recovery', 'fleet'] as const;
+export const MARKS = ['runs', 'sessions', 'knowledge', 'recovery', 'fleet', 'attention'] as const;
 export type Mark = (typeof MARKS)[number];
 
 /** The heartbeat's marks: each moves when what it names changes. */

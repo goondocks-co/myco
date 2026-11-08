@@ -2,7 +2,7 @@ import { readAttemptSpendOracle as readSpendRows } from './helpers/attempt-spend
 import {expect,it} from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
-import { completeBudgetMigration,budgetActivation,budgetCompletionMessage,BUDGET_INDEX_ROW_LIMIT } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration,budgetActivation,budgetCompletionMessage,BUDGET_INDEX_ROW_LIMIT } from '@myco-server-worker/db/meta/budget-activation.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
@@ -13,7 +13,7 @@ import { refreshEstimates,estimateForClaim,estimateRefreshDue } from '@myco-serv
 import { ESTIMATE_PUBLISH_PAGE } from '@myco-server-worker/core/budget-estimates.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { engineAssertions,runTick } from '@myco-server-worker/core/tick.js';
-import { invalidateEstimates } from '@myco-server-worker/core/budget-estimates.js';
+import { invalidateEstimates } from '@myco-server-worker/db/meta/budget-estimates.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
 import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
@@ -239,7 +239,7 @@ it('fences an initial estimator reader across a portable restore',async()=>{
     if(artifact===null)throw new Error('No race artifact');
     let reached!:()=>void;
     const paused=new Promise<void>(resolve=>{reached=resolve;});
-    const db={...target.db,batch:async(statements:Parameters<typeof target.db.batch>[0])=>{reached();await resume;return target.db.batch(statements);}};
+    const db={...target.db,batch:async(statements:Parameters<typeof target.db.batch>[0])=>{if(statements.length>1){reached();await resume;}return target.db.batch(statements);}};
     const refresh=refreshEstimates(db,target.now);
     await paused;
     await restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true});
@@ -394,15 +394,11 @@ it('leaves settlements after a cycle snapshot for the next incremental cycle',as
   try {
     f.history('snapshot-first',0.1);
     let inserted=false;
-    const wrap=(statement:ReturnType<typeof f.db.prepare>,sql:string):ReturnType<typeof f.db.prepare>=>({...statement,
-      bind:(...values)=>wrap(statement.bind(...values),sql),
-      first:async<T,>()=>{
-        const value=await statement.first<T>();
-        if(!inserted&&sql.startsWith('SELECT (SELECT value')){inserted=true;f.history('snapshot-later',0.3);}
-        return value;
-      },
-    });
-    const db={...f.db,prepare:(sql:string)=>wrap(f.db.prepare(sql),sql)};
+    const db={...f.db,batch:async(statements:Parameters<typeof f.db.batch>[0])=>{
+      const results=await f.db.batch(statements);
+      if(!inserted&&statements.length===1&&Object.hasOwn(results[0]?.results?.[0] as object??{},'latest')){inserted=true;f.history('snapshot-later',0.3);}
+      return results;
+    }};
     expect(await refreshEstimates(db,f.now)).toMatchObject({more:false});
     expect(inserted).toBe(true);
     expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(0.1);

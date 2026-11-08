@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
+import type { VolumeMetaKey } from '@myco-server-worker/platform/bun/server-main.js';
 import type { LocalDeploymentPaths } from './local.js';
 
 /**
@@ -28,7 +29,7 @@ export interface VolumeIdentity {
 }
 
 /** The identity of the volume `databasePath` holds, read without changing it. An unreadable volume answers what it can. */
-export function volumeIdentity(databasePath: string, read: (key: string) => string | null): VolumeIdentity {
+export function volumeIdentity(databasePath: string, read: (key: VolumeMetaKey) => string | null): VolumeIdentity {
   const stat = fs.statSync(databasePath, { throwIfNoEntry: false });
   return { deploymentId: read('deployment_id'), schemaVersion: read('version'), device: stat?.dev ?? -1, inode: stat?.ino ?? -1 };
 }

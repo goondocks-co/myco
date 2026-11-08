@@ -17,6 +17,7 @@ import { isSystemMember, personMemberSql } from './member-kind.js';
 import type { ErrorClassifier, PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { emit, failureTelemetry } from '../telemetry.js';
 import { nameFromLogin, GITHUB_LOGIN_KEY_PREFIX } from '../db/identity/member-naming.js';
+import { recordMemberNamingFailure } from '../db/meta/member-naming-failure.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential, MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
@@ -82,12 +83,15 @@ export async function nameMemberFromLogin(db: RelationalStore, memberId: string,
   return nameFromLogin(db, memberId, githubId, login);
 }
 
-/** Naming is a courtesy of sign-in; a storage failure leaves authentication and approval intact. */
+/** Naming is a courtesy of sign-in: a storage failure leaves authentication and approval intact, and is recorded for Attention. */
 export async function tryNameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string, classifyError: ErrorClassifier): Promise<string | null> {
   try {
     return await nameMemberFromLogin(db, memberId, githubId, login);
   } catch (error) {
-    emit({ kind: 'member_naming_failed', memberId, ...failureTelemetry(error, classifyError) });
+    const failure = failureTelemetry(error, classifyError);
+    emit({ kind: 'member_naming_failed', memberId, ...failure });
+    try { await recordMemberNamingFailure(db, memberId, failure.error_class, Date.now()); }
+    catch (recording) { emit({ kind: 'member_naming_record_failed', memberId, ...failureTelemetry(recording, classifyError) }); }
     return null;
   }
 }
@@ -143,7 +147,8 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
                    AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
                    AND ${removableAdministratorSql('members')}
                    AND (role <> 'admin' OR ${deploymentOwnerSql('?')})
-                   AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.role = 'admin' AND actor.revoked_at IS NULL)`)
+                   AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.role = 'admin' AND actor.revoked_at IS NULL)
+                 RETURNING id`)
       .bind(nowMs, actor, memberId, memberId, actor, actor),
     revokeCredentialsOfMember(db, memberId, actor, nowMs),
     revokeInvitationsOfMember(db, memberId, actor, nowMs),
@@ -153,7 +158,7 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
       SELECT ? || github_id FROM members WHERE id = ?) AND ${MEMBER_REVOKED_BY}`)
       .bind(GITHUB_LOGIN_KEY_PREFIX, memberId, ...memberRevokedByParams(memberId, nowMs, actor)),
   ]));
-  if (outcome.admitted && outcome.value[0]?.meta.changes === 1) {
+  if (outcome.admitted && outcome.value[0]?.results.length === 1) {
     emit({ kind: 'member_revoked', memberId, actor });
     return { ok: true };
   }
