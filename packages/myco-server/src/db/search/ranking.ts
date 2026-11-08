@@ -7,8 +7,21 @@ import { read, readSet } from '../index.js';
  * joined session's end, agent and branch, and its tombstone; a spilled plan's processed proof and indexed chunks; a
  * record's release classification; a Project's visibility. Writing or removing a row an FTS index mirrors also changes
  * that index. `search-revision-coverage` derives what the ranked statements read and holds every piece of it here.
+ *
+ * A session moves its revision only when a ranked page can see the change: while it has a title or a summary a text
+ * match can list it, and while a spore, plan or turn card names it a joined agent or branch filter can. Capturing a
+ * session nothing yet matches or names writes no revision.
  */
-interface Watched { table: string; columns: readonly string[]; rows?: boolean; when?: (row: 'NEW' | 'OLD') => string }
+interface Watched {
+  table: string; columns: readonly string[]; rows?: boolean; when?: (row: 'NEW' | 'OLD') => string;
+  /** Those of `columns` that move a ranked page only for a row meeting this narrower test; the others use `when`. */
+  narrow?: { columns: readonly string[]; when: (row: 'NEW' | 'OLD') => string };
+}
+/** Whether a text match can list this session. */
+const sessionMatches = (row: 'NEW' | 'OLD') => `${row}.title IS NOT NULL OR ${row}.summary IS NOT NULL`;
+/** Whether a spore, plan or turn card names this session, which a joined agent or branch filter reads. */
+const sessionNamed = (row: 'NEW' | 'OLD') => ['spores', 'plans', 'turn_cards']
+  .map(table => `EXISTS (SELECT 1 FROM ${table} c WHERE c.project_id = ${row}.project_id AND c.session_id = ${row}.session_id)`).join(' OR ');
 export const REVISION_KINDS: Readonly<Record<string, readonly Watched[]>> = {
   spore: [{ table: 'spores', columns: ['id', 'created_at', 'status', 'observation_type', 'project_id', 'session_id'] }],
   plan: [
@@ -17,7 +30,9 @@ export const REVISION_KINDS: Readonly<Record<string, readonly Watched[]>> = {
     { table: 'search_blob_chunks', columns: ['project_id', 'blob_key'] },
   ],
   session: [
-    { table: 'sessions', columns: ['session_id', 'occurred_started_at', 'started_at', 'first_received_at', 'occurred_ended_at', 'ended_at', 'agent', 'branch', 'project_id'], rows: true },
+    { table: 'sessions', columns: ['session_id', 'occurred_started_at', 'started_at', 'first_received_at', 'occurred_ended_at', 'ended_at', 'agent', 'branch', 'project_id'], rows: true,
+      when: (row) => `${sessionMatches(row)} OR ${sessionNamed(row)}`,
+      narrow: { columns: ['occurred_started_at', 'started_at', 'first_received_at', 'occurred_ended_at', 'ended_at'], when: sessionMatches } },
     { table: 'session_tombstones', columns: ['project_id', 'session_id'], rows: true },
   ],
   turn: [{ table: 'turn_cards', columns: ['turn_key', 'created_at', 'project_id', 'session_id'] }],
@@ -32,12 +47,16 @@ export function searchRevisionStatements(): string[] {
   return [
     'CREATE TABLE IF NOT EXISTS search_revisions(kind TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID',
     `INSERT OR IGNORE INTO search_revisions(kind, revision) VALUES ${Object.keys(REVISION_KINDS).map(kind => `('${kind}', 0)`).join(', ')}`,
-    ...Object.entries(REVISION_KINDS).flatMap(([kind, watched]) => watched.flatMap(({ table, columns, rows, when }) => {
-      const changed = `(${columns.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ')})`;
-      const scoped = (condition: string) => when === undefined ? condition : `${condition} AND (${when('OLD')} OR ${when('NEW')})`;
+    ...Object.entries(REVISION_KINDS).flatMap(([kind, watched]) => watched.flatMap(({ table, columns, rows, when, narrow }) => {
+      const scoped = (watching: readonly string[], test: Watched['when']) => {
+        const changed = `(${watching.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ')})`;
+        return test === undefined ? changed : `(${changed} AND (${test('OLD')} OR ${test('NEW')}))`;
+      };
+      const moved = narrow === undefined ? scoped(columns, when)
+        : `${scoped(columns.filter(c => !narrow.columns.includes(c)), when)} OR ${scoped(narrow.columns, narrow.when)}`;
       return [
         `CREATE TRIGGER IF NOT EXISTS search_revision_${kind}_${table}_update AFTER UPDATE OF ${columns.join(', ')} ON ${table}
-      WHEN ${scoped(changed)} BEGIN ${bump(kind)}; END`,
+      WHEN ${moved} BEGIN ${bump(kind)}; END`,
         ...(rows ? (['INSERT', 'DELETE'] as const).map(event => `CREATE TRIGGER IF NOT EXISTS search_revision_${kind}_${table}_${event.toLowerCase()} AFTER ${event} ON ${table}
       ${when === undefined ? '' : `WHEN ${when(event === 'INSERT' ? 'NEW' : 'OLD')} `}BEGIN ${bump(kind)}; END`) : []),
       ];

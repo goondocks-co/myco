@@ -29,13 +29,13 @@ function migrated(): Database {
   db.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('p', 'p', 1), ('q', 'q', 1);
     INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 0);
     INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, title)
-      VALUES ('p', 's1', 'm', 't', 1, 1, 'codex', 'fix', 'cobalt one'), ('p', 's2', 'm', 't', 2, 2, 'codex', 'fix', 'cobalt two'), ('p', 's3', 'm', 't', 3, 3, 'codex', 'fix', 'cobalt three'), ('p', 's4', 'm', 't', 4, 4, 'codex', 'fix', 'cobalt four');
+      VALUES ('p', 's1', 'm', 't', 1, 1, 'codex', 'fix', NULL), ('p', 's2', 'm', 't', 2, 2, 'codex', 'fix', 'cobalt two'), ('p', 's3', 'm', 't', 3, 3, 'codex', 'fix', 'cobalt three'), ('p', 's4', 'm', 't', 4, 4, 'codex', 'fix', 'cobalt four'), ('p', 's5', 'm', 't', 5, 5, 'codex', 'fix', NULL), ('p', 's6', 'm', 't', 6, 6, 'codex', 'fix', NULL);
     INSERT INTO spores (project_id, id, agent_id, session_id, observation_type, status, content, created_at)
       VALUES ('p', 'sp1', 'a', 's1', 'decision', 'active', 'cobalt one', 1), ('p', 'sp2', 'a', 's2', 'decision', 'active', 'cobalt two', 2), ('p', 'sp3', 'a', 's2', 'decision', 'active', 'cobalt three', 3), ('p', 'sp4', 'a', 's2', 'decision', 'active', 'cobalt four', 4);
     INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
-      VALUES ('p', 'k1', 's1', 'e1', 'm', 'cobalt one', 'x', 'h', 'active', 1, 1, 't', 1), ('p', 'k2', 's2', 'e2', 'm', 'cobalt two', 'x', 'h', 'active', 2, 2, 't', 1), ('p', 'k3', 's2', 'e3', 'm', 'cobalt three', 'x', 'h', 'active', 3, 3, 't', 1), ('p', 'k4', 's2', 'e4', 'm', 'cobalt four', 'x', 'h', 'active', 4, 4, 't', 1);
+      VALUES ('p', 'k1', 's5', 'e1', 'm', 'cobalt one', 'x', 'h', 'active', 1, 1, 't', 1), ('p', 'k2', 's2', 'e2', 'm', 'cobalt two', 'x', 'h', 'active', 2, 2, 't', 1), ('p', 'k3', 's2', 'e3', 'm', 'cobalt three', 'x', 'h', 'active', 3, 3, 't', 1), ('p', 'k4', 's2', 'e4', 'm', 'cobalt four', 'x', 'h', 'active', 4, 4, 't', 1);
     INSERT INTO turn_cards (project_id, session_id, turn_key, state, card, created_at)
-      VALUES ('p', 's1', 't1', 'carded', 'cobalt one', 1), ('p', 's2', 't2', 'carded', 'cobalt two', 2), ('p', 's2', 't3', 'carded', 'cobalt three', 3), ('p', 's2', 't4', 'carded', 'cobalt four', 4);
+      VALUES ('p', 's6', 't1', 'carded', 'cobalt one', 1), ('p', 's2', 't2', 'carded', 'cobalt two', 2), ('p', 's2', 't3', 'carded', 'cobalt three', 3), ('p', 's2', 't4', 'carded', 'cobalt four', 4);
     INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES ('q', 'gone', 'x', 1, 'm');
     INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id) VALUES ('p', 'plan', 'k1', 'blob1', 't', 'e1');
     INSERT INTO search_blob_chunks (project_id, blob_key, offset, text) VALUES ('p', 'blob1', 0, 'unrelated chunk');`);
@@ -151,14 +151,17 @@ function another(table: string, column: string, value: unknown, declared: string
 }
 
 /** The row of a table each change targets: one whose loss leaves the seeded search a next page and no other row removed. */
-const ROW_OF: Readonly<Record<string, string>> = { processed_resources: "kind = 'plan'", projects: "project_id = 'q'", plans: "plan_key = 'k4'", sessions: "session_id = 's4'" };
+const ROW_OF: Readonly<Record<string, string>> = { processed_resources: "kind = 'plan'", projects: "project_id = 'q'", plans: "plan_key = 'k4'" };
+/** A session a text match can list, for a search of sessions, and an untitled one only this type's records name for a joined filter. */
+const SESSION_ROW_OF: Readonly<Record<string, string>> = { session: 's4', all: 's4', spore: 's1', plan: 's5', prompt: 's6', response: 's6' };
+const sessionRowFor = (type: string | undefined) => `session_id = '${SESSION_ROW_OF[type ?? 'all']}'`;
 
 /** Every way a dependency can change, each paired with the change that undoes it. */
-function changes(db: Database, table: string, columns: ReadonlySet<string>): { name: string; apply: () => void; undo: () => void }[] {
+function changes(db: Database, table: string, columns: ReadonlySet<string>, sessionRow: string): { name: string; apply: () => void; undo: () => void }[] {
   const info = db.query(`PRAGMA table_info("${table}")`).all() as { name: string; type: string; pk: number }[];
   const withoutRowid = /WITHOUT ROWID/i.test((db.query('SELECT sql FROM sqlite_master WHERE name = ?').get(table) as { sql: string }).sql);
   const keyColumns = withoutRowid ? info.filter((c) => c.pk > 0).map((c) => c.name) : ['rowid'];
-  const row = db.query(`SELECT ${withoutRowid ? '' : 'rowid AS rowid, '}* FROM "${table}" WHERE ${ROW_OF[table] ?? '1'} LIMIT 1`).get() as Record<string, unknown> | null;
+  const row = db.query(`SELECT ${withoutRowid ? '' : 'rowid AS rowid, '}* FROM "${table}" WHERE ${table === 'sessions' ? sessionRow : ROW_OF[table] ?? '1'} LIMIT 1`).get() as Record<string, unknown> | null;
   if (row === null) throw new Error(`the gate seeds no row of ${table}, which a ranked search reads`);
   const where = (values: Record<string, unknown>) => ({ sql: keyColumns.map((k) => `"${k}" IS ?`).join(' AND '), params: keyColumns.map((k) => values[k]) });
   const set = (column: string, from: unknown, to: unknown) => {
@@ -203,7 +206,7 @@ async function unfencedSearchDependencies(db: Database): Promise<string[]> {
         throw error;
       });
     };
-    for (const [table, columns] of [...derived].sort()) for (const { name, apply, undo } of changes(db, table, columns)) {
+    for (const [table, columns] of [...derived].sort()) for (const { name, apply, undo } of changes(db, table, columns, sessionRowFor(shape.options.type))) {
       // A column the schema's own guard refuses to change cannot move a search.
       try { apply(); undo(); } catch (error) {
         if (error instanceof Error && /is immutable/.test(error.message)) continue;

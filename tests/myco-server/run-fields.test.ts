@@ -144,7 +144,7 @@ describe('the fields a run carries beyond its status', () => {
 });
 
 describe('the spores one run wrote', () => {
-  it('lists and counts a Project\'s spores by author, and nothing of another Project', async () => {
+  it('lists a Project\'s spores by author, with no total, and nothing of another Project', async () => {
     const h = harness();
     h.spore('proj_1', 'sp_a', 'run_1', null);
     h.spore('proj_1', 'sp_b', 'run_1', null);
@@ -152,7 +152,8 @@ describe('the spores one run wrote', () => {
     h.spore('proj_2', 'sp_d', 'run_1', null);
     const { status, body } = await h.get('/api/projects/proj_1/spores?author=run_1', MEMBER_SUB);
     expect(status).toBe(200);
-    expect({ ids: body.spores.map((s: any) => s.id).sort(), total: body.total }).toEqual({ ids: ['sp_a', 'sp_b'], total: 2 });
-    expect((await h.get('/api/projects/proj_1/spores?author=nobody')).body.total).toBe(0);
+    expect(body.spores.map((s: any) => s.id).sort()).toEqual(['sp_a', 'sp_b']);
+    expect(body).not.toHaveProperty('total');
+    expect((await h.get('/api/projects/proj_1/spores?author=nobody')).body.spores).toEqual([]);
   });
 });

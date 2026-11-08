@@ -83,10 +83,13 @@ export const searchPaging: ParityScenario = {
     expect(byPage.pages[1]![0]!.id).toBe(everyCard[PAGE]);
     // A card answers for its turn's replies too: a reply search lists the same cards in the same order.
     expect((await owner({ type: 'response', limit: String(PAGE) })).body.results.map((r) => r.id)).toEqual(everyCard.slice(0, PAGE));
-    // Relevance order stays one bounded page with no cursor, and refuses one.
+    // Relevance order is keyset paged too: its cursor continues past the page it answered, repeating no match.
     const relevant = await owner({ order: 'relevance', limit: '5' });
     expect(relevant.body.results).toHaveLength(5);
-    expect(relevant.body.cursor).toBeNull();
+    expect(relevant.body.cursor).not.toBeNull();
+    const relevantNext = await owner({ order: 'relevance', limit: '5', cursor: relevant.body.cursor! });
+    expect(relevantNext.body.results).toHaveLength(5);
+    expect(new Set([...relevant.body.results, ...relevantNext.body.results].map((r) => r.id)).size).toBe(10);
 
     // The MCP tool lists the same matches by the same cursor.
     const first = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE });
@@ -94,13 +97,13 @@ export const searchPaging: ParityScenario = {
     expect(first.cursor).not.toBeNull();
     const second = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE, cursor: first.cursor });
     expect(second.results.map((r) => r.id)).toEqual(everyCard.slice(PAGE, 2 * PAGE));
-    expect((await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE })).cursor).toBeNull();
+    expect((await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE })).cursor).not.toBeNull();
 
-    // A cursor the search did not issue is refused, as is one on relevance order, and a search of several types lists by no time.
+    // A cursor the search did not issue is refused, as is a time cursor on relevance order or on another search; a search of several types ranks and continues by its own cursor.
     expect((await owner({ cursor: 'nonsense' })).status).toBe(400);
     expect((await owner({ order: 'relevance', cursor: first.cursor! })).status).toBe(400);
     expect((await owner({ type: 'all', cursor: first.cursor! })).status).toBe(400);
     expect((await owner({ type: 'response', cursor: first.cursor! })).status).toBe(400);
-    expect((await owner({ type: 'all', order: 'relevance', limit: '1' })).body.cursor).toBeNull();
+    expect((await owner({ type: 'all', order: 'relevance', limit: '1' })).body.cursor).not.toBeNull();
   },
 };
