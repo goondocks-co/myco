@@ -17,7 +17,8 @@ import {
   type BodyRef, type DecodedChunk, type DocRecord, type Page,
 } from './document.js';
 import { mergeRecord } from './document-records.js';
-import type { ChunkRow, Directory } from './document-reader.js';
+import type { ChunkRow } from './document-reader.js';
+import type { PublicationDirectory } from '../db/documents/directory.js';
 import { TURN_PAGES } from './session-pages.js';
 
 export interface PageChunkWrite { chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
@@ -66,7 +67,9 @@ export class DocumentWriter {
   private readonly dirty = new Set<number>();
   private readonly fresh: Page[] = [];
   private readonly bodies: BodyChunkWrite[] = [];
-  private lastPageChunk: number | null;
+  private lastPageChunk: number | null = null;
+  private readonly initialized = new Set<string>();
+  private readonly sealedOwners = new Set<string>();
   private marked: WriterMark | null = null;
   /** Every change to what `layout()` writes, which `versions` is held against. */
   private revision = 0;
@@ -74,22 +77,38 @@ export class DocumentWriter {
   private readonly sizes = new WeakMap<DocRecord, number>();
 
   constructor(
-    readonly directory: Directory,
+    readonly directory: PublicationDirectory,
     public nextChunk: number,
     private readonly load: (row: ChunkRow) => Promise<DecodedChunk>,
-  ) {
-    for (const row of directory.pages) {
-      const pages = this.rows.get(row.owner) ?? [];
-      pages[row.page] = row.chunk_no;
-      this.rows.set(row.owner, pages);
-      if (row.sealed === 1) this.sealedPages.set(row.owner, (this.sealedPages.get(row.owner) ?? new Set()).add(row.page));
-    }
-    const pageChunks = [...directory.chunks.values()].filter((row) => row.kind === 'page').map((row) => row.chunk_no);
-    this.lastPageChunk = pageChunks.length === 0 ? null : Math.max(...pageChunks);
+  ) {}
+
+  async prepareOwners(owners: readonly string[]): Promise<void> {
+    const missing = [...new Set(owners)].filter(owner => !this.initialized.has(owner));
+    if (missing.length === 0) return;
+    const held = await this.directory.owners(missing);
+    for (const owner of missing) this.rows.set(owner, []);
+    for (const row of held.pages) this.rows.get(row.owner)![row.page] = row.chunk_no;
+    for (const owner of held.sealed) this.sealedOwners.add(owner);
+    for (const owner of missing) this.initialized.add(owner);
+  }
+
+  private async owner(owner: string): Promise<void> { await this.prepareOwners([owner]); }
+
+  private async page(owner: string, number: number): Promise<number | undefined> {
+    await this.owner(owner);
+    const rows = this.rows.get(owner)!;
+    if (rows[number] !== undefined) return rows[number];
+    if (number >= rows.length) return undefined;
+    const row = await this.directory.page(owner, number);
+    if (row === undefined) return undefined;
+    rows[number] = row.chunk_no;
+    if (row.sealed === 1) this.sealedPages.set(owner, (this.sealedPages.get(owner) ?? new Set()).add(number));
+    return row.chunk_no;
   }
 
   /** Reads the last page chunk and its continuation. */
   async open(): Promise<void> {
+    this.lastPageChunk = await this.directory.tail();
     if (this.lastPageChunk === null) return;
     const last = await this.chunk(this.lastPageChunk);
     this.states = new Map(last.states);
@@ -100,7 +119,7 @@ export class DocumentWriter {
   private async chunk(chunkNo: number): Promise<DecodedChunk> {
     const held = this.loaded.get(chunkNo);
     if (held !== undefined) return held;
-    const row = this.directory.chunks.get(chunkNo);
+    const row = await this.directory.chunk(chunkNo);
     if (row === undefined) throw new Error('document_chunk_missing');
     const decoded = await this.load(row);
     this.reads += 1;
@@ -125,13 +144,15 @@ export class DocumentWriter {
 
   /** An owner's open pages, and any other of its pages read so far, in order. */
   async pagesOf(owner: string): Promise<Page[]> {
+    await this.owner(owner);
     for (const chunk of this.openChunks(owner)) await this.chunk(chunk);
     return this.heldPages(owner);
   }
 
   /** Whether any page of this owner is sealed, so a search for one of its records asks the catalog. */
-  hasSealed(owner: string): boolean {
-    return this.sealedPages.has(owner);
+  async hasSealed(owner: string): Promise<boolean> {
+    await this.owner(owner);
+    return this.sealedOwners.has(owner);
   }
 
   /** Records the sealed page the catalog names for a record of this owner. */
@@ -146,8 +167,11 @@ export class DocumentWriter {
 
   /** Reads what settling a turn needs beyond its open pages: its leading pages. */
   async readTurnHead(owner: string): Promise<void> {
-    const rows = this.rows.get(owner) ?? [];
-    for (let page = 0; page < TURN_HEAD_PAGES && page < rows.length; page += 1) if (rows[page] !== undefined) await this.chunk(rows[page]!);
+    for (let page = 0; page < TURN_HEAD_PAGES; page += 1) {
+      const chunk = await this.page(owner, page);
+      if (chunk === undefined) break;
+      await this.chunk(chunk);
+    }
   }
 
   /** The pages a turn settles from: every page once all are held, else its leading pages and its last, and which of the two. */
@@ -155,7 +179,7 @@ export class DocumentWriter {
     await this.readTurnHead(owner);
     const pages = await this.pagesOf(owner);
     const rows = this.rows.get(owner) ?? [];
-    if (rows.every((chunk) => this.loaded.has(chunk))) return { pages, complete: true };
+    if (Array.from({ length: rows.length }, (_, page) => rows[page]).every((chunk) => chunk !== undefined && this.loaded.has(chunk))) return { pages, complete: true };
     const last = pages.at(-1);
     return { pages: pages.filter((page) => page.page < TURN_HEAD_PAGES || page === last), complete: false };
   }
@@ -248,7 +272,7 @@ export class DocumentWriter {
     const searched = record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner];
     for (const candidate of searched) {
       const named = this.sealedRecords.get(sealedKey(candidate, record.k, record.id));
-      const namedChunk = named === undefined ? undefined : this.rows.get(candidate)?.[named];
+      const namedChunk = named === undefined ? undefined : await this.page(candidate, named);
       if (namedChunk !== undefined) await this.chunk(namedChunk);
       const pages = await this.pagesOf(candidate);
       for (const page of pages) {

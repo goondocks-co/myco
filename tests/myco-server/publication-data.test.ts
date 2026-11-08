@@ -56,7 +56,7 @@ test('plan publication byte-pages bindings and retains inline and externalized b
     } });
     const db: RelationalStore = { prepare: sql => observe(sql, f.db.prepare(sql)), batch: statements => f.db.batch(statements) };
     const doc = await f.db.prepare(`SELECT generation,next_chunk,prompts,first_prompt,open_turn_key,? token_id FROM session_documents WHERE project_id='proj_1' AND session_id='session'`).bind(f.ctx.tokenId).first<BatchDocument>();
-    const batch = new DocumentBatch({ db, blobs: f.bucket }, 'proj_1', 'session', doc!, [], []);
+    const batch = new DocumentBatch({ db, blobs: f.bucket }, 'proj_1', 'session', doc!);
     const bodies = [...Array.from({ length: 12 }, (_, i) => `${i}:` + '計画'.repeat(30_000)), 'large:' + 'full body'.repeat(100_000)];
     await batch.open();
     batch.admitted = true;
@@ -114,12 +114,12 @@ test('plan projection pages participate in placement admission before any commit
   try {
     const records = Array.from({ length: 12 }, (_, i) => ({ k: 'plan' as const, id: uuid(100 + i), prompt_id: null, created_at: NOW, content: `${i}:` + '計画'.repeat(30_000) }));
     const doc: BatchDocument = { generation: 1, next_chunk: 0, prompts: 0, first_prompt: null, open_turn_key: null, token_id: f.ctx.tokenId };
-    const probe = new DocumentBatch(f.serverEnv, 'proj_1', 'session', doc, [], []);
+    const probe = new DocumentBatch(f.serverEnv, 'proj_1', 'session', doc);
     await probe.open();
     await probe.place(records, null);
     const closingWithoutPlans = 9;
     const bounded = measuredContentEnv(f.serverEnv, { statements: CONTENT_WAKE_JOB_RESERVE + PASS_CLOSING_STATEMENTS + probe.writer.versions * VERSION_STATEMENTS + closingWithoutPlans + 1, blobCalls: 60 });
-    const batch = new DocumentBatch(bounded.env, 'proj_1', 'session', doc, [], []);
+    const batch = new DocumentBatch(bounded.env, 'proj_1', 'session', doc);
     await batch.open();
     batch.admitted = true;
     await expect(batch.place(records, null)).rejects.toBeInstanceOf(DocumentPassFull);

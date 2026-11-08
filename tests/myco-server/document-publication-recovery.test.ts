@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import type { ContentStore } from '@myco-server-worker/core/adapters.js';
-import { DocumentBatch, directoryStatements, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
+import { DocumentBatch, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
 import { publishDocuments, PUBLISH_BACKOFF_MIN_MS } from '@myco-server-worker/ingest/publish.js';
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -10,7 +10,7 @@ import { assertSessionMaterialReady } from '@myco-server-worker/read/material-re
 import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
-import { readPage, type ChunkRow, type PageRow } from '@myco-server-worker/content/document-reader.js';
+import { readPage } from '@myco-server-worker/content/document-reader.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { prepareDerivedStream } from '@myco-server-worker/core/registered-content.js';
@@ -27,13 +27,12 @@ const codex = JSON.stringify({ type: 'turn_context', payload: { turn_id: 'turn' 
 
 async function place(env: ContentStore, records: DocRecord[]) {
   const { db } = env;
-  const [docs, chunks, pages] = await db.batch([
+  const [docs] = await db.batch([
     db.prepare(`SELECT d.generation,d.next_chunk,d.prompts,d.first_prompt,d.open_turn_key,s.created_by_token_id token_id
       FROM session_documents d JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
       WHERE d.project_id='project' AND d.session_id='session'`),
-    ...directoryStatements(db, 'project', 'session'),
   ]);
-  const batch = new DocumentBatch(env, 'project', 'session', docs!.results[0] as BatchDocument, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
+  const batch = new DocumentBatch(env, 'project', 'session', docs!.results[0] as BatchDocument);
   await batch.open();
   await batch.place(records, null);
   await batch.commit(true, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {

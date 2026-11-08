@@ -1,7 +1,6 @@
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
-import type { ChunkRow, PageRow } from '@myco-server-worker/content/document-reader.js';
-import { DocumentBatch, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
+import { DocumentBatch } from '@myco-server-worker/ingest/document-batch.js';
 
 export const MIN = 60_000;
 export const tx = 'tx_0123456789abcdef0123456789abcdef';
@@ -24,8 +23,7 @@ export const ran = (id: string) => item('response_item', { type: 'function_call'
 export async function seedRecords(env: Pick<ServerEnv, 'db' | 'blobs'>, session: string, records: readonly DocRecord[], at: number) {
   const db = env.db;
   const doc = await one(db, `SELECT d.*,s.created_by_token_id token_id FROM session_documents d JOIN sessions s USING(project_id,session_id) WHERE d.session_id=?`, session);
-  const [chunks, pages] = await db.batch(directoryStatements(db, 'project', session));
-  const seed = new DocumentBatch(env, 'project', session, doc as never, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
+  const seed = new DocumentBatch(env, 'project', session, doc as never);
   await seed.open();
   await seed.place(records, null);
   await seed.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => {
