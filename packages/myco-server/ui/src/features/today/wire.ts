@@ -42,13 +42,12 @@ export interface WorkOutcome {
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;
-  failure: { runs: number; since: number; latestAt: number; latestRunId: string; producedSince: number } | null;
+  failure: { runs: number; latestAt: number; latestRunId: string; unresolved: boolean } | null;
   latestAt: number | null;
   tokens: number;
   costUsd: number;
   runsWithoutCost: number;
   spend: { tokens: Range; costUsd: Range; durationMs: Range };
-  map: { branch: string; commit: string; generatedAt: number; sourceRunId: string } | null;
 }
 
 /** How a listed run ended, by what it produced. */
@@ -90,12 +89,19 @@ export interface Upkeep {
 }
 
 /** `GET /api/work`. */
+export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
+
 export interface WorkAnswer {
   window: { since: number; until: number };
-  outcomes: WorkOutcome[];
-  runs: WorkRun[];
-  truncated: boolean;
+  /** `building` while the rollups first cover history: totals are not known yet, never a partial total. */
+  state: 'ready' | 'building';
+  /** Full-window counts on a supported UTC window; null on any other range and while building. */
+  summary: WorkOutcome[] | null;
+  timeline: WorkRun[];
+  hasMore: boolean;
   cursor: string | null;
+  /** Each Project's current code map, whatever the window. */
+  maps: WorkMap[];
   upkeep: Upkeep;
 }
 

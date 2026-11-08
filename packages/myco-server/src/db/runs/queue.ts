@@ -65,7 +65,7 @@ const waits = read<[string, string], QueuedWait & { runKey: string }>({ name: 'r
   CASE WHEN ${RUN_ADMISSION_READY_SQL} THEN ${taskHoldSql('h.hold_reason', runOriginSql('r'))} ELSE 'queue_building' END AS reason,
   h.hold_since AS since,COALESCE(r.task,'') AS task,
   CASE WHEN ${RUN_ADMISSION_READY_SQL} THEN (SELECT SUM(t.queued_count) FROM task_runtime t WHERE t.project_id=r.project_id AND t.task=COALESCE(r.task,'')) ELSE NULL END AS taskQueued
-  FROM json_each(?2) keys JOIN agent_runs r ON r.project_id=?1 AND r.id=keys.value AND r.status='queued'
+  FROM json_each(?2) keys CROSS JOIN agent_runs r ON r.project_id=?1 AND r.id=keys.value AND r.status='queued'
   LEFT JOIN task_runtime h ON h.project_id=r.project_id AND h.task=COALESCE(r.task,'') AND h.origin=${runOriginSql('r')}` });
 /** One Project-scoped statement over all requested canonical run keys. */
 export async function queuedWaits(db: RelationalStore, scope: ReadScope, runKeys: readonly string[]): Promise<Map<string, QueuedWait>> {

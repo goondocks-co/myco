@@ -740,6 +740,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0721_v721.sql': 'fe0cbc931866915c6323fa4488bd27f4af0a60d603be9038e2421c2129b92ff5',
   '0722_v722.sql': '0514b90cb6f4c38189b29a2bf1cfe72cc89a70bef270da935c13783af308f150',
   '0723_v723.sql': '8be637aa4656be1d17072ade8267298d3c0328827e4804af99e0ac0942c036d0',
+  '0724_v724.sql': 'df75761ecfb6d467f8924d1da9620e58b20e9d54006351dc4226b321619bc3f1',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1464,7 +1465,7 @@ describe('versioned schema steps', () => {
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',
-      'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'task_runtime', 'task_due',
+      'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'run_output_membership', 'task_runtime', 'task_due', 'work_daily', 'work_run_contribution', 'work_window_sessions', 'work_window_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',

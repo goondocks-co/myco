@@ -1,16 +1,17 @@
 /**
  * `GET /api/work`: Myco's work over a window of instants, across Projects, optionally only the Projects named.
  *
- * Today lists the first page of runs beside the day's sessions and heads the page with full-window counts. Myco's work
- * groups the same counts by outcome, retrieves later evidence pages by cursor, and adds upkeep and cost. Each response
- * reads its counts and evidence from one snapshot.
+ * Today lists the first page of runs beside the day's sessions. Myco's work groups the same counts by outcome,
+ * retrieves later evidence pages by cursor, and adds upkeep and cost. Named windows answer full-window counts from
+ * maintained rollups when the range is a supported UTC window, one UTC day or seven; any other range answers its
+ * paged evidence with no totals. A read naming no window covers the last seven UTC days through today.
  *
  * A member reads all of it, cost included: what the Deployment's own work produced and spent is not an admin's alone.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, projectSetParam, resolveProjectSet } from './scope.js';
-import { DEFAULT_WORK_WINDOW_MS, MAX_WORK_WINDOW_MS, readWork } from '../read/work.js';
+import { DEFAULT_WORK_WINDOW_DAYS, defaultWorkWindow, MAX_WORK_WINDOW_MS, readWork } from '../read/work.js';
 import { readWorkNow } from '../read/work-now.js';
 import { isAdmin } from '../auth/roles.js';
 
@@ -34,15 +35,16 @@ export async function handleWork(env: ServerEnv, ctx: OwnerContext): Promise<Res
   if (since instanceof Response) return since;
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
-  const end = until ?? ctx.now;
-  const start = since ?? end - DEFAULT_WORK_WINDOW_MS;
+  const fallback = since === undefined && until === undefined ? defaultWorkWindow(ctx.now) : null;
+  const end = until ?? fallback?.until ?? ctx.now;
+  const start = since ?? fallback?.since ?? end - DEFAULT_WORK_WINDOW_DAYS * 86_400_000;
   if (start >= end) return badRequest('since must be before until');
   if (end - start > MAX_WORK_WINDOW_MS) return badRequest(`a window spans at most ${MAX_WORK_WINDOW_MS / 86_400_000} days`);
   const cursor = workCursor(ctx.url.searchParams.get('cursor'));
   if (cursor instanceof Response) return cursor;
   const set = await resolveProjectSet(env.db, ctx.member, named);
   if (set === null) return notFound();
-  return ok(await readWork(env.db, set, start, end, cursor));
+  return ok(await readWork(env.db, set, start, end, cursor, ctx.now));
 }
 
 /**

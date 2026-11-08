@@ -46,7 +46,7 @@ export const dispatchQueue: ParityScenario = {
     const listed = async (status: string) => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/runs?status=${status}`, { headers: target.ownerHeaders() });
       expect(res.status).toBe(200);
-      return ((await res.json()) as { rows: Array<{ id: string; status: string; heldBy: string | null; position: number | null }> }).rows;
+      return ((await res.json()) as { rows: Array<{ id: string; status: string; heldBy: string | null; waitReason: string | null; taskQueued: number | null; queuedAt: number | null }> }).rows;
     };
     const waiting = (id: string, heldBy: string) => ({ id, status: 'queued', heldBy, harness: null, credentialed: 0 });
 
@@ -62,9 +62,9 @@ export const dispatchQueue: ParityScenario = {
     expect(b).toMatchObject({ queued: true, heldBy: 'worker' });
     expect(await rows([a.runId, b.runId].sort()))
       .toEqual([a.runId, b.runId].sort().map((id) => waiting(id, id === a.runId ? 'concurrent_runs' : 'worker')));
-    const queued = (await listed('queued')).sort((x, y) => (x.position ?? 0) - (y.position ?? 0));
-    expect(queued.map((r) => r.id)).toEqual([a.runId, b.runId]);
-    expect(queued.map((r) => r.position)).toEqual([0, 1]);
+    const queued = (await listed('queued')).sort((x, y) => (x.queuedAt ?? 0) - (y.queuedAt ?? 0) || x.id.localeCompare(y.id));
+    expect(queued.map((r) => r.id).sort()).toEqual([a.runId, b.runId].sort());
+    expect(queued.map((r) => [r.waitReason, r.taskQueued])).toEqual([['concurrent_runs', 2], ['concurrent_runs', 2]]);
 
     // No limit, and still nothing launches: neither front door runs a harness
     // for these, and the drain passes over them rather than stopping.

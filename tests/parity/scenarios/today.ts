@@ -69,12 +69,13 @@ export const today: ParityScenario = {
       expect(plans.status).toBe(200);
       expect(Array.isArray(plans.body.plans)).toBe(true);
 
-      const work = await read(member, `/api/work?project=${target.projectId}&since=${at - 1000}&until=${at + 120_000}`);
+      const utcDay = Math.floor(at / 86_400_000) * 86_400_000;
+      const work = await read(member, `/api/work?project=${target.projectId}&since=${utcDay}&until=${utcDay + 86_400_000}`);
       expect(work.status).toBe(200);
-      expect(work.body.outcomes).toEqual([expect.objectContaining({
+      expect(work.body.summary).toEqual([expect.objectContaining({
         projectId: target.projectId, kind: 'learn', runs: { completed: 1 }, outcome: { spores: 1, sessions: 0, maps: 0 }, tokens: 1200, costUsd: 0.42,
       })]);
-      expect(work.body.runs.map((r: any) => [r.id, r.result])).toEqual([[runId, 'produced']]);
+      expect(work.body.timeline.map((r: any) => [r.id, r.result])).toEqual([[runId, 'produced']]);
       expect(work.body.upkeep).toMatchObject({ task: 'embedding-reconcile' });
 
       const status = await read(member, '/api/status');
@@ -131,20 +132,22 @@ async function dashboardHonesty(target: ParityTarget, member: Record<string, str
       SELECT ${lit(b)},'run_honesty_' || ${at} || '_' || i,'agent_parity_today','canopy-map','completed',${at}+i,${at}+i FROM n`);
     await target.sql(`INSERT INTO agent_run_events (project_id,run_id,event_type,tool_name,outcome,payload,recorded_at)
       SELECT project_id,id,'run_write','myco_run_map','written','{}',completed_at FROM agent_runs WHERE project_id=${lit(b)}`);
-    const query = `/api/work?project=${a}&project=${b}&since=${at-1}&until=${at+1000}`;
-    interface Work { runs: Array<{ id: string }>; cursor: string | null; outcomes: Array<{ projectId: string; kind: string; runs: Record<string, number>; outcome: { spores: number }; failure: { runs: number; latestRunId: string; producedSince: number } | null }> }
+    const utcDay = Math.floor(at / 86_400_000) * 86_400_000;
+    const query = `/api/work?project=${a}&project=${b}&since=${utcDay}&until=${utcDay + 86_400_000}`;
+    interface Work { timeline: Array<{ id: string }>; cursor: string | null; summary: Array<{ projectId: string; kind: string; runs: Record<string, number>; outcome: { spores: number }; failure: { runs: number; latestRunId: string; unresolved: boolean } | null }> }
     const first = await read<Work>(query);
-    expect(first.runs).toHaveLength(200);
+    expect(first.timeline).toHaveLength(200);
     expect(first.cursor).not.toBeNull();
-    expect(first.runs.some((run) => run.id === failed)).toBe(false);
-    expect(first.outcomes.find((outcome) => outcome.projectId === a)?.failure).toMatchObject({ runs: 1, latestRunId: failed, producedSince: 0 });
+    expect(first.timeline.some((run) => run.id === failed)).toBe(false);
+    expect(first.summary.find((outcome) => outcome.projectId === a)?.failure).toMatchObject({ runs: 1, latestRunId: failed, unresolved: true });
     const next = await read<Work>(`${query}&cursor=${encodeURIComponent(first.cursor!)}`);
-    expect(next.runs.map((run) => run.id)).toEqual([failed]);
+    expect(next.timeline.map((run) => run.id)).toEqual([failed]);
     expect(next.cursor).toBeNull();
-    expect(next.outcomes).toEqual(first.outcomes);
+    expect(next.summary).toBeNull();
     await target.sql(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at)
       VALUES (${lit(a)},'run_honesty_queued','agent_parity_today','vault-seed','queued',${at})`);
-    const queued = (await read<Work>(query)).outcomes.find((outcome) => outcome.kind === 'seed');
+    const liveNow = (await read<Work>(`/api/work?project=${a}&project=${b}`)).summary;
+    const queued = liveNow.find((outcome) => outcome.kind === 'seed');
     expect(queued).toMatchObject({ runs: { queued: 1 }, outcome: { spores: 0 }, failure: null });
     await target.sql(`UPDATE projects SET archived_at=${at+1000} WHERE project_id=${lit(a)}`);
     await tasks();

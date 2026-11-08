@@ -147,10 +147,11 @@ describe('read layer', () => {
     // Every mention of the column in the modules that read it sits inside that reader, so nothing selects it whole;
     // these are the keys they take.
     const keys: string[] = [];
-    for (const module of ['runs.ts', 'run-reads.ts']) {
-      const source = readFileSync(join(READ_DIR, module), 'utf8');
+    expect(readFileSync(join(READ_DIR, 'runs.ts'), 'utf8').match(/run_context/g) ?? []).toEqual([]);
+    for (const [dir, module] of [[READ_DIR, 'run-reads.ts'], [join(READ_DIR, '..', 'db', 'runs'), 'history.ts']] as const) {
+      const source = readFileSync(join(dir, module), 'utf8');
       expect({ module, column: source.match(/run_context/g) ?? [] }).toEqual({ module, column: [] });
-      expect({ module, reader: /from '\.\.\/db\/run-context\.js'/.test(source) }).toEqual({ module, reader: true });
+      expect({ module, reader: /from '(\.\.\/db\/|\.\.\/)run-context\.js'/.test(source) }).toEqual({ module, reader: true });
       keys.push(...[...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]!));
     }
     expect([...new Set(keys)].sort()).toEqual(['reason', 'replaced', 'replaces', 'session_id']);

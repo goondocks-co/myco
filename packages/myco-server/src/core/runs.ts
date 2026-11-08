@@ -721,11 +721,11 @@ export async function recordRunEvents(db: RelationalStore, scope: ReadScope, eve
   const statements = events.map((event) => db
     .prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`)
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?) RETURNING 1 AS landed`)
     .bind(scope.projectId, event.runId, event.phaseName, event.eventType, event.toolName, event.outcome, event.durationMs, event.payload, event.recordedAt,
           scope.projectId, event.runId));
   const results = await db.batch(statements);
-  return results.reduce((landed, result) => landed + result.meta.changes, 0);
+  return results.reduce((landed, result) => landed + result.results.length, 0);
 }
 
 // ---------------------------------------------------------------------------

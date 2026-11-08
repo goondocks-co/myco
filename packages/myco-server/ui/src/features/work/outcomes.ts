@@ -2,7 +2,7 @@
  * Myco's work grouped by what came of it: `/api/work`'s outcomes and runs,
  * summed by kind of work across the projects the page covers.
  */
-import type { OutcomeKind, Range, WorkAnswer, WorkOutcome, WorkRun } from '../today/wire';
+import type { OutcomeKind, Range, WorkAnswer, WorkMap, WorkRun } from '../today/wire';
 import { KIND_ORDER, type OutcomeCounts } from './words';
 
 /** One kind of work over the window, across the projects the answer covers. */
@@ -23,7 +23,7 @@ export interface KindSummary extends OutcomeCounts {
   /** What one completed run spent, least to greatest across the projects. */
   spend: { tokens: Range; costUsd: Range; durationMs: Range };
   /** Each project's current map, for the map kind. */
-  currentMaps: Array<NonNullable<WorkOutcome['map']> & { projectId: string }>;
+  currentMaps: WorkMap[];
   /** The listed runs of this kind, newest first. */
   listed: WorkRun[];
   /** Listed runs that failed and kept nothing, newest first. */
@@ -47,13 +47,13 @@ export interface FailureGroup {
   latestAt: number;
   /** Newest first. */
   failures: WorkRun[];
-  /** Runs in this project that produced something after its latest failure. */
-  producedSince: number;
+  /** Whether no later run of this kind in this project has completed. */
+  unresolved: boolean;
 }
 
 /** Whether every project's failures of a kind have been answered by later output there. */
 export function recovered(groups: readonly FailureGroup[]): boolean {
-  return groups.length > 0 && groups.every((group) => group.producedSince > 0);
+  return groups.length > 0 && groups.every((group) => !group.unresolved);
 }
 
 const merge = (a: Range, b: Range): Range => (a === null ? b : b === null ? a : [Math.min(a[0], b[0]), Math.max(a[1], b[1])]);
@@ -64,7 +64,7 @@ const sum = (record: Record<string, number>, keys: readonly string[]) => keys.re
 export function summarize(answer: WorkAnswer): KindSummary[] {
   const byKind = new Map<OutcomeKind, KindSummary>();
   const failureFacts = new Map<OutcomeKind, FailureGroup[]>();
-  for (const outcome of answer.outcomes) {
+  for (const outcome of answer.summary ?? []) {
     let entry = byKind.get(outcome.kind);
     if (entry === undefined) {
       entry = {
@@ -88,7 +88,7 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
         count: outcome.failure.runs,
         latestRunId: outcome.failure.latestRunId,
         latestAt: outcome.failure.latestAt,
-        producedSince: outcome.failure.producedSince,
+        unresolved: outcome.failure.unresolved,
         failures: [],
       });
       failureFacts.set(outcome.kind, groups);
@@ -102,13 +102,13 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
       costUsd: merge(entry.spend.costUsd, outcome.spend.costUsd),
       durationMs: merge(entry.spend.durationMs, outcome.spend.durationMs),
     };
-    if (outcome.map !== null) entry.currentMaps.push({ ...outcome.map, projectId: outcome.projectId });
   }
   for (const entry of byKind.values()) {
     entry.finished = sum(entry.runs, ['completed', 'failed']);
     entry.started = sum(entry.runs, ['completed', 'failed', 'running', 'claimed']);
     entry.produced = entry.finished - entry.failed;
-    entry.listed = answer.runs.filter((run) => run.kind === entry.kind);
+    entry.listed = answer.timeline.filter((run) => run.kind === entry.kind);
+    if (entry.kind === 'map') entry.currentMaps = answer.maps.filter((map) => entry.projects.includes(map.projectId));
     entry.failures = entry.listed.filter((run) => run.result === 'failed');
     entry.kept = entry.listed.filter((run) => run.result === 'failed_with_output');
     entry.failureGroups = (failureFacts.get(entry.kind) ?? []).map((group) => ({

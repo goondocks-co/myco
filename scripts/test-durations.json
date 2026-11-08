@@ -673,6 +673,7 @@
     "tests/myco-server/uncaptured.test.ts": 367,
     "tests/myco-server/wake-loop.test.ts": 2000,
     "tests/myco-server/work-wire.test.ts": 7,
+    "tests/myco-server/work-history.test.ts": 3500,
     "tests/myco-server/work.test.ts": 587,
     "tests/myco-server/worker-accounting-pricing.test.ts": 11,
     "tests/myco-server/worker-credentials.test.ts": 219,

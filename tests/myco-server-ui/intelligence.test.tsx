@@ -3,6 +3,7 @@ import { DISPATCH_REFUSAL_MESSAGE, type DispatchRefusal } from '@myco-server-wor
 import { DISPATCH_REFUSAL_WORDS, refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
 import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
 import { dashboardMe } from '../helpers/dashboard-permissions';
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * One run of Myco's work in its panel, and starting a task by hand.
@@ -226,7 +227,7 @@ describe('a run’s panel', () => {
   it('says a held-off run was held off, in words, and a waiting run where it stands, reading it again only while it waits', async () => {
     server(routes({ detail: {
       [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {})),
-      [`/api/projects/${P}/runs/run_q0000000001`]: () => Response.json(runDetail({ ...learning[2]!, id: 'run_q0000000001', status: 'queued', queuedAt: NOW - MINUTE, position: 2, heldBy: 'concurrent_runs', startedAt: null, completedAt: null, worker: null, startedBy: MEMBER.member.id }, {})),
+      [`/api/projects/${P}/runs/run_q0000000001`]: () => Response.json(runDetail({ ...learning[2]!, id: 'run_q0000000001', status: 'queued', queuedAt: NOW - MINUTE, waitReason: 'concurrent_runs', waitingSince: NOW - MINUTE, taskQueued: 3, heldBy: 'concurrent_runs', startedAt: null, completedAt: null, worker: null, startedBy: MEMBER.member.id }, {})),
     } }));
     mount(`/p/${P}/work/runs/run_d4e5f6a7b8`);
     let open = await panel();
@@ -245,8 +246,28 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_q0000000001`);
     open = await panel();
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Waiting to start');
-    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^2 ahead of it\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since \d+m ago\.$/);
+    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^3 of this task waiting\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since \d+m ago\.$/);
     expect(interval('run_q0000000001')).toEqual({ interval: MOVING_MS, background: false });
+  });
+
+  it('keeps a queued run’s hold apart from what the machines report, and invents no count while the queue builds', async () => {
+    const waiting = { ...learning[2]!, status: 'queued', queuedAt: NOW - HOUR, startedAt: null, completedAt: null };
+    server(routes({ detail: {
+      [`/api/projects/${P}/runs/run_held000001`]: () => Response.json(runDetail({ ...waiting, id: 'run_held000001', waitReason: 'budget', waitingSince: NOW - MINUTE, taskQueued: 1, heldBy: 'budget', fleetWait: { reason: 'no_runner', observedAt: NOW } }, {})),
+      [`/api/projects/${P}/runs/run_build00001`]: () => Response.json(runDetail({ ...waiting, id: 'run_build00001', waitReason: 'queue_building', waitingSince: null, taskQueued: null, heldBy: null, fleetWait: { reason: 'queue_building', observedAt: NOW } }, {})),
+    } }));
+    mount(`/p/${P}/work/runs/run_held000001`);
+    let open = await panel();
+    await waitFor(() => expect(open.querySelector('[data-queued]')).not.toBeNull());
+    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^Next in this task’s queue\. Waiting until the daily budget has room for this run\. Waiting since \d+m ago\.$/);
+    expect(open.querySelector('[data-fleet-wait]')!.textContent).toBe(QUEUE_REASON_WORDS.no_runner);
+    cleanup();
+    client.clear();
+    mount(`/p/${P}/work/runs/run_build00001`);
+    open = await panel();
+    await waitFor(() => expect(open.querySelector('[data-queued]')).not.toBeNull());
+    expect(open.querySelector('[data-queued]')!.textContent).toBe(QUEUE_REASON_WORDS.queue_building);
+    expect(open.querySelector('[data-fleet-wait]')).toBeNull();
   });
 
   it('closes back to Myco’s work with its filters, and says a run the project doesn’t hold isn’t there', async () => {

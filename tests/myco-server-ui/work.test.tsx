@@ -1,4 +1,6 @@
 import { dashboardMe } from '../helpers/dashboard-permissions';
+import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * Myco's work: what Myco's own runs came to, grouped by outcome, each failure
@@ -125,13 +127,13 @@ describe('what Myco’s work came to', () => {
   it('sums each kind of work across projects: outcomes, failures, recoveries, spend and cost', () => {
     const answer: WorkAnswer = {
       ...WEEK_WORK,
-      outcomes: [
-        ...WEEK_WORK.outcomes.map((entry) => entry.kind === 'map'
-          ? { ...entry, failure: { ...entry.failure!, producedSince: 1 } }
+      summary: [
+        ...WEEK_WORK.summary!.map((entry) => entry.kind === 'map'
+          ? { ...entry, failure: { ...entry.failure!, unresolved: false } }
           : entry),
         outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', runs: { completed: 1, queued: 1 }, outcome: { spores: 3, sessions: 2, maps: 0 }, latestAt: NOW - MINUTE, tokens: 10_000, costUsd: 0.25, runsWithoutCost: 1, spend: { tokens: [10_000, 12_000], costUsd: [0.2, 1.4], durationMs: [MINUTE, 20 * MINUTE] } }),
       ],
-      runs: [...WEEK_WORK.runs, workRun({ id: 'run_map0000new', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      timeline: [...WEEK_WORK.timeline, workRun({ id: 'run_map0000new', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
     };
     const [learn, title, map] = summarize(answer);
     expect([learn!.kind, title!.kind, map!.kind]).toEqual(['learn', 'title', 'map']);
@@ -142,7 +144,7 @@ describe('what Myco’s work came to', () => {
     expect(learn!.failures).toEqual([]);
     // A map update that failed and was followed by one that worked has recovered.
     expect(map!.failures.map((run) => run.id)).toEqual(['run_5e0b1c2d3f']);
-    expect(map!.failureGroups).toMatchObject([{ projectId: P, count: 1, failures: [map!.failures[0]!], producedSince: 1 }]);
+    expect(map!.failureGroups).toMatchObject([{ projectId: P, count: 1, failures: [map!.failures[0]!], unresolved: false }]);
     expect(costOf([learn!, title!, map!])).toEqual({ costUsd: 1.75 + 0 + 2.1, tokens: 70_000 + 4_000 + 1_600_000, runs: 4 + 2 + 2, runsWithoutCost: 3 });
     // The headline is the outcome, never the status: a failed run that kept spores still learned them.
     expect(outcomeHeadline('learn', learn!)).toBe('Learned 9 spores from 6 sessions');
@@ -170,8 +172,8 @@ describe('Myco’s work', () => {
   it('keeps a queued code-learning card in waiting language', async () => {
     server(week({ work: {
       ...WEEK_WORK,
-      outcomes: [outcome({ kind: 'seed', task: 'vault-seed', runs: { queued: 1 }, latestAt: NOW - HOUR })],
-      runs: [],
+      summary: [outcome({ kind: 'seed', task: 'vault-seed', runs: { queued: 1 }, latestAt: NOW - HOUR })],
+      timeline: [],
     } }));
     mount(`/p/${P}/work`);
     const seed = await findCard('seed');
@@ -197,16 +199,16 @@ describe('Myco’s work', () => {
       });
       const first: WorkAnswer = {
         ...WEEK_WORK,
-        outcomes: [outcome({
+        summary: [outcome({
           kind, task, runs: { completed: 200, failed: 1 }, failedWithOutput: 1,
           outcome: { spores: 201 * output.spores, sessions: 201 * output.sessions, maps: 201 * output.maps },
         })],
-        runs, truncated: true, cursor,
+        timeline: runs, hasMore: true, cursor,
       };
       server({
         ...week({ work: first }),
         '/api/work': (url) => Response.json(url.searchParams.get('cursor') === cursor
-          ? { ...first, runs: [older], truncated: false, cursor: null }
+          ? { ...first, timeline: [older], hasMore: false, cursor: null }
           : first),
       });
       mount('/work');
@@ -341,11 +343,11 @@ describe('Myco’s work', () => {
   it('keeps a map failure in one project open when the map worked in another', async () => {
     const answer: WorkAnswer = {
       ...WEEK_WORK,
-      outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
-      runs: [...WEEK_WORK.runs, workRun({ id: 'run_atlasmap01', projectId: P2, kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      summary: [...WEEK_WORK.summary!, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      timeline: [...WEEK_WORK.timeline, workRun({ id: 'run_atlasmap01', projectId: P2, kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
     };
     const [, , map] = summarize(answer);
-    expect(map!.failureGroups.map((group) => [group.projectId, group.failures.length, group.producedSince])).toEqual([[P, 1, 0]]);
+    expect(map!.failureGroups.map((group) => [group.projectId, group.failures.length, group.unresolved])).toEqual([[P, 1, true]]);
     server(week({ work: answer }));
     mount('/work');
     await waitFor(() => expect(card('map')).not.toBeNull());
@@ -360,9 +362,9 @@ describe('Myco’s work', () => {
       projectId: P2, kind: 'map', task: 'canopy-map',
       runs: { completed: 1, failed: 1 }, failed: 1,
       outcome: { spores: 0, sessions: 0, maps: 1 },
-      failure: { runs: 1, since: NOW - 4 * HOUR, latestAt: NOW - 4 * HOUR, latestRunId: 'run_atlasfailed', producedSince: 1 },
+      failure: { runs: 1, latestAt: NOW - 4 * HOUR, latestRunId: 'run_atlasfailed', unresolved: false },
     });
-    server(week({ work: { ...WEEK_WORK, outcomes: [...WEEK_WORK.outcomes, second] } }));
+    server(week({ work: { ...WEEK_WORK, summary: [...WEEK_WORK.summary!, second] } }));
     mount('/work');
     await waitFor(() => expect(document.querySelector('[data-lede]')).not.toBeNull());
     expect(document.querySelector('[data-lede]')!.textContent).toContain('2 code map updates failed; some projects have worked since, while others are still waiting for a successful run.');
@@ -373,16 +375,16 @@ describe('Myco’s work', () => {
     const latest = workRun({ id: 'run_atlasmap01', projectId: P2, kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } });
     const first: WorkAnswer = {
       ...WEEK_WORK,
-      outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
-      runs: [latest],
-      truncated: true,
+      summary: [...WEEK_WORK.summary!, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      timeline: [latest],
+      hasMore: true,
       cursor,
     };
     let current = first;
     const asked = server({
       ...week({ work: first }),
       '/api/work': (url) => Response.json(url.searchParams.get('cursor') === cursor
-        ? { ...first, runs: [WEEK_WORK.runs.find((run) => run.id === 'run_5e0b1c2d3f')], truncated: false, cursor: null }
+        ? { ...first, timeline: [WEEK_WORK.timeline.find((run) => run.id === 'run_5e0b1c2d3f')!], hasMore: false, cursor: null }
         : current),
     });
     mount('/work');
@@ -397,11 +399,11 @@ describe('Myco’s work', () => {
     const updated = { ...latest, status: 'failed', result: 'failed' as const, outcome: { spores: 0, sessions: 0, maps: 0 }, failure: { cause: 'The new attempt failed', source: 'error' as const } };
     current = {
       ...first,
-      outcomes: first.outcomes.map((entry) => entry.projectId === P2 && entry.kind === 'map'
+      summary: first.summary!.map((entry) => entry.projectId === P2 && entry.kind === 'map'
         ? { ...entry, runs: { failed: 1 }, failed: 1, outcome: { spores: 0, sessions: 0, maps: 0 },
-          failure: { runs: 1, since: latest.at!, latestAt: latest.at!, latestRunId: latest.id, producedSince: 0 } }
+          failure: { runs: 1, latestAt: latest.at!, latestRunId: latest.id, unresolved: true } }
         : entry),
-      runs: [updated],
+      timeline: [updated],
     };
     await act(async () => { await client.invalidateQueries({ queryKey: ['work', 'all', WEEK.since, WEEK.until] }); });
     await waitFor(() => expect(within(map).getByRole('list', { name: 'Latest code map updates' }).querySelectorAll('[data-run-line="bad"]')).toHaveLength(2));
@@ -434,6 +436,21 @@ describe('Myco’s work', () => {
     expect(within(links).getByRole('link', { name: 'All runs in Myco · all time →' }).getAttribute('href')).toBe(`/p/${P}/work?outcome=learn&runs=all`);
   });
 
+  it('says why a queued run waits from its own queue fields, never the fleet’s reason, and invents no count while the queue builds', async () => {
+    const queued = { task: 'extract-curate', status: 'queued', startedAt: null, completedAt: null, queuedAt: NOW - 3 * HOUR };
+    const held = runRow({ ...queued, id: 'run_held000001', waitReason: 'budget', waitingSince: NOW - 2 * HOUR, taskQueued: 4, fleetWait: { reason: 'no_runner', observedAt: NOW } });
+    const building = runRow({ ...queued, id: 'run_build00001', waitReason: 'queue_building', waitingSince: null, taskQueued: null, fleetWait: { reason: 'queue_building', observedAt: NOW } });
+    server(week({ taskRuns: { 'extract-curate': [held, building], 'title-summary': [], 'canopy-map': [], 'vault-seed': [] } }));
+    mount(`/p/${P}/work`);
+    const runs = await within(await findCard('learn')).findByRole('list', { name: 'Latest learning runs' });
+    await waitFor(() => expect(runs.querySelectorAll('li')).toHaveLength(2));
+    const [budget, waitingOnQueue] = [...runs.querySelectorAll('li')].map((line) => line.textContent ?? '');
+    expect(budget).toContain(`4 of this task waiting. ${HELD_BY_WORDS.budget} Waiting since`);
+    expect(budget).not.toContain(QUEUE_REASON_WORDS.no_runner);
+    expect(waitingOnQueue).toContain(HELD_BY_WORDS.queue_building);
+    expect(waitingOnQueue).not.toMatch(/of this task waiting|Next in this task|Waiting since/);
+  });
+
   it('links a learning card and a titles card to the window’s sessions', async () => {
     server(week());
     mount(`/p/${P}/work`);
@@ -445,7 +462,7 @@ describe('Myco’s work', () => {
     const reason = 'The requested tool was unavailable.';
     const failed = workRun({ id: 'run_search', projectId: P, kind: 'map', task: 'canopy-map', result: 'failed', at: NOW - HOUR,
       failure: { source: 'report', code: 'machine_did_not_start', cause: 'The machine recorded a missing tool.', error: reason } });
-    server(week({ work: { ...WEEK_WORK, runs: [...WEEK_WORK.runs.filter((run) => run.kind !== 'map'), failed] } }));
+    server(week({ work: { ...WEEK_WORK, timeline: [...WEEK_WORK.timeline.filter((run) => run.kind !== 'map'), failed] } }));
     mount(`/p/${P}/work`);
     await findCard('map');
     const search = screen.getByRole('searchbox', { name: 'Search what Myco did' });
@@ -478,12 +495,12 @@ describe('Myco’s work', () => {
     const windows = later.filter((url) => url.pathname === '/api/work').map((url) => [Number(url.searchParams.get('since')), Number(url.searchParams.get('until'))]);
     expect(windows).toContainEqual([TODAY.since, TODAY.until]);
     expect(windows).toContainEqual([WEEK.since, WEEK.until]);
-    expect(screen.getByRole('combobox', { name: /^When(?::|$)/ }).textContent).toBe('Today');
+    expect(screen.getByRole('combobox', { name: /^When(?::|$)/ }).textContent).toBe('Today (UTC)');
     expect(screen.getByRole('combobox', { name: /^Outcome(?::|$)/ }).textContent).toBe('Code map');
   });
 
   it('reads again whenever runs move, never by the clock', async () => {
-    const live: WorkAnswer = { ...WEEK_WORK, outcomes: WEEK_WORK.outcomes.map((o) => (o.kind === 'learn' ? { ...o, runs: { ...o.runs, queued: 1 } } : o)) };
+    const live: WorkAnswer = { ...WEEK_WORK, summary: WEEK_WORK.summary!.map((o) => (o.kind === 'learn' ? { ...o, runs: { ...o.runs, queued: 1 } } : o)) };
     type Polled = { refetchInterval?: number | false | ((q: unknown) => number | false); refetchIntervalInBackground?: boolean };
     const intervals = (key: string) => client.getQueryCache().findAll({ queryKey: key === 'runs' ? ['runs', P, 'task'] : [key] }).flatMap((query) => query.observers.map((observer) => {
       const { refetchInterval } = observer.options as Polled;
@@ -520,7 +537,7 @@ describe('Myco’s work', () => {
 
   it('spans every project at /work: each run names its project, no project’s run list is read, and Run a task is offered here too', async () => {
     const asked = server(week({
-      work: { ...WEEK_WORK, outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', outcome: { spores: 1, sessions: 1, maps: 0 } })] },
+      work: { ...WEEK_WORK, summary: [...WEEK_WORK.summary!, outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', outcome: { spores: 1, sessions: 1, maps: 0 } })] },
     }));
     mount('/work');
     await waitFor(() => expect(card('learn')).not.toBeNull());
@@ -540,7 +557,7 @@ describe('Myco’s work', () => {
   });
 
   it('says a quiet window in one line, and offers the week from a quiet day', async () => {
-    const quiet: WorkAnswer = { ...WEEK_WORK, outcomes: [], runs: [] };
+    const quiet: WorkAnswer = { ...WEEK_WORK, summary: [], timeline: [] };
     server(week({ work: quiet }));
     mount(`/p/${P}/work?window=today`);
     expect(await screen.findByText('Nothing ran today')).toBeTruthy();
@@ -589,7 +606,7 @@ for (const across of [false, true]) {
       harness: 'claude-code',
       identity: { status: 'reported' as const, source: 'result', primary: { model: 'claude-sonnet-4-6' }, models: [{ model: 'claude-sonnet-4-6', source: 'result', usage: null }] },
     };
-    const answer = { ...WEEK_WORK, runs: WEEK_WORK.runs.map((run) => run.kind === 'map' ? { ...run, ...evidence } : run) };
+    const answer = { ...WEEK_WORK, timeline: WEEK_WORK.timeline.map((run) => run.kind === 'map' ? { ...run, ...evidence } : run) };
     server(week({ work: answer, taskRuns: { ...TASK_RUNS, 'canopy-map': TASK_RUNS['canopy-map']!.map((run) => ({ ...run, ...evidence })) } }));
     mount(across ? '/work?outcome=map' : `/p/${P}/work?outcome=map`);
     const runs = await screen.findByRole('list', { name: 'Latest code map updates' });
@@ -599,7 +616,7 @@ for (const across of [false, true]) {
 }
 
 it('opens all-time history on a quiet day and requests no window bounds', async () => {
-  const asked = server(week({ work: { ...WEEK_WORK, outcomes: [], runs: [] } }));
+  const asked = server(week({ work: { ...WEEK_WORK, summary: [], timeline: [] } }));
   mount(`/p/${P}/work?window=today&outcome=map&runs=all`);
   const history = await screen.findByRole('list', { name: 'All-time code map updates' });
   expect(within(history).getAllByRole('link')).toHaveLength(2);
@@ -609,7 +626,7 @@ it('opens all-time history on a quiet day and requests no window bounds', async 
 });
 
 it('offers clearly labelled all-time history from an empty selected window', async () => {
-  server(week({ work: { ...WEEK_WORK, outcomes: [], runs: [] } }));
+  server(week({ work: { ...WEEK_WORK, summary: [], timeline: [] } }));
   mount(`/p/${P}/work?window=today&outcome=map`);
   fireEvent.click(await screen.findByRole('button', { name: 'Show all · all time' }));
   const history = await screen.findByRole('list', { name: 'All-time code map updates' });

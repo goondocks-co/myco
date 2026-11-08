@@ -1,19 +1,9 @@
 import type { WorkWindow } from './words';
 
-function startOfDay(at: number): number {
-  const date = new Date(at);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
+const DAY = 86_400_000;
 
-function addDays(at: number, days: number): number {
-  const date = new Date(at);
-  date.setDate(date.getDate() + days);
-  return date.getTime();
-}
-
-/** A window's bounds on day boundaries, so they hold still while the day lasts: today, or the past seven days with today. */
+/** A window's bounds on UTC days, so they hold still while the day lasts: today, or the last seven UTC days through today. */
 export function workBounds(window: WorkWindow, now: number): { since: number; until: number } {
-  const today = startOfDay(now);
-  return { since: window === 'today' ? today : addDays(today, -6), until: addDays(today, 1) };
+  const today = Math.floor(now / DAY) * DAY;
+  return { since: window === 'today' ? today : today - 6 * DAY, until: today + DAY };
 }

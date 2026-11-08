@@ -6,11 +6,13 @@ import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
  * schedule". Nothing here names a mechanism or shows an id.
  */
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
+import { formatRelative } from '../../lib/format';
 import { memberLabel } from '../../lib/member-name';
 import type { CapabilityOffRefusal, DailyLimitRefusal, FreshNeedsAdminRefusal, RunFields, RunOutcomeCounts, RunWorker } from './wire';
 
@@ -308,12 +310,18 @@ export function spendWords(spend: { tokens: Range; costUsd: Range; durationMs: R
   };
 }
 
-/** A queued run's line, without its last stop: its place in the queue, then what holds it, in the holder's own sentence. */
-export function queuedWords(run: { position: number | null; heldBy: string | null }): string {
-  const ahead = run.position ?? 0;
-  const turn = ahead === 0 ? 'next in line' : `${ahead} ahead of it`;
-  const held = run.heldBy === null ? 'A limit on runs is holding it.' : holdSentence(run.heldBy) ?? 'A limit on runs is holding it.';
-  return `${turn}. ${held.replace(/\.$/, '')}`;
+/** A queued run's wait, as its line and its panel both say it: how long the task's queue is, what holds it in the holder's own sentence, and for how long. */
+export function queuedWords(run: Pick<RunFields, 'waitReason' | 'waitingSince' | 'taskQueued'>, now: number): string {
+  const queue = run.taskQueued === null ? null : run.taskQueued <= 1 ? 'Next in this task’s queue.' : `${run.taskQueued.toLocaleString()} of this task waiting.`;
+  const held = holdSentence(run.waitReason) ?? 'A limit on runs is holding it.';
+  const age = run.waitingSince === null ? null : `Waiting since ${formatRelative(run.waitingSince, now)}.`;
+  return [queue, held, age].filter((part): part is string => part !== null).join(' ');
+}
+
+/** What the machines report about a queued run, when that adds to the run's own hold. */
+export function fleetWaitWords(run: Pick<RunFields, 'fleetWait' | 'waitReason'>): string | null {
+  const reason = run.fleetWait?.reason;
+  return reason === undefined || reason === 'ready' || reason === run.waitReason ? null : QUEUE_REASON_WORDS[reason];
 }
 
 /** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */

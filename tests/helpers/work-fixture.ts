@@ -12,8 +12,8 @@ export const HOUR = 60 * MINUTE;
 /** Tuesday, September 29 2026, 16:00 local. */
 export const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
 /** The week the page opens on: the six days before today, and today. */
-export const WEEK = { since: new Date(2026, 8, 23).getTime(), until: new Date(2026, 8, 30).getTime() };
-export const TODAY = { since: new Date(2026, 8, 29).getTime(), until: new Date(2026, 8, 30).getTime() };
+export const WEEK = { since: Date.UTC(2026, 8, 23), until: Date.UTC(2026, 8, 30) };
+export const TODAY = { since: Date.UTC(2026, 8, 29), until: Date.UTC(2026, 8, 30) };
 
 export const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 export const MEMBER = { sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } };
@@ -34,7 +34,7 @@ const RANGE_NONE = { tokens: null, costUsd: null, durationMs: null };
 
 export const outcome = (over: Partial<WorkOutcome> & Pick<WorkOutcome, 'kind' | 'task'>): WorkOutcome => ({
   projectId: P, runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 0 }, failedWithOutput: 0, failed: 0, failure: null, latestAt: NOW - HOUR,
-  tokens: 0, costUsd: 0, runsWithoutCost: 0, spend: RANGE_NONE, map: null, ...over,
+  tokens: 0, costUsd: 0, runsWithoutCost: 0, spend: RANGE_NONE, ...over,
 });
 
 export const workRun = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
@@ -47,7 +47,8 @@ export const workRun = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | '
 
 export const WEEK_WORK: WorkAnswer = {
   window: WEEK,
-  outcomes: [
+  state: 'ready',
+  summary: [
     outcome({
       kind: 'learn', task: 'extract-curate', runs: { completed: 2, failed: 1, skipped: 1 }, outcome: { spores: 6, sessions: 4, maps: 0 }, failedWithOutput: 1,
       latestAt: NOW - 2 * HOUR, tokens: 60_000, costUsd: 1.5, spend: { tokens: [18_000, 30_000], costUsd: [0.5, 0.96], durationMs: [5 * MINUTE, 8 * MINUTE] },
@@ -58,13 +59,12 @@ export const WEEK_WORK: WorkAnswer = {
     }),
     outcome({
       kind: 'map', task: 'canopy-map', runs: { completed: 1, failed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 }, failed: 1,
-      failure: { runs: 1, since: NOW - 3.5 * HOUR, latestAt: NOW - 3.5 * HOUR, latestRunId: 'run_5e0b1c2d3f', producedSince: 0 },
+      failure: { runs: 1, latestAt: NOW - 3.5 * HOUR, latestRunId: 'run_5e0b1c2d3f', unresolved: true },
       latestAt: NOW - 3.5 * HOUR, tokens: 1_600_000, costUsd: 2.1,
       spend: { tokens: [500_000, 2_000_000], costUsd: [1, 2.3], durationMs: [4 * MINUTE, 10 * MINUTE] },
-      map: { branch: 'main', commit: '8194811abcdef0123', generatedAt: NOW - 20 * HOUR, sourceRunId: 'run_c19f7a0e55' },
     }),
   ],
-  runs: [
+  timeline: [
     workRun({ id: 'run_4f1c9a2e7b', kind: 'learn', task: 'extract-curate', status: 'failed', result: 'failed_with_output', at: NOW - 2 * HOUR, outcome: { spores: 2, sessions: 3, maps: 0 }, failure: { cause: 'Saved 2 spores from 3 sessions before the turn budget ran out.', source: 'report' } }),
     workRun({ id: 'run_7d1e2f3a40', kind: 'title', task: 'title-summary', at: NOW - 3 * HOUR, sessionId: S1, outcome: { spores: 0, sessions: 1, maps: 0 } }),
     workRun({ id: 'run_7d1e2f3b51', kind: 'title', task: 'title-summary', at: NOW - 3 * HOUR - 4 * MINUTE, sessionId: S2, outcome: { spores: 0, sessions: 1, maps: 0 } }),
@@ -72,8 +72,9 @@ export const WEEK_WORK: WorkAnswer = {
     workRun({ id: 'run_a2c4e6f801', kind: 'learn', task: 'extract-curate', at: NOW - 5 * HOUR, outcome: { spores: 4, sessions: 1, maps: 0 } }),
     workRun({ id: 'run_c19f7a0e55', kind: 'map', task: 'canopy-map', at: NOW - 20 * HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } }),
   ],
-  truncated: false,
+  hasMore: false,
   cursor: null,
+  maps: [{ projectId: P, branch: 'main', commit: '8194811abcdef0123', generatedAt: NOW - 20 * HOUR, sourceRunId: 'run_c19f7a0e55' }],
   upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 80 * MINUTE, failedInWindow: 1, unrecovered: null },
 };
 
@@ -95,7 +96,7 @@ export const runRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task
   identity: { status: 'not_recorded' }, costProvenance: null,
   result: over.status === 'failed' ? ((over.outcome?.spores ?? 0) > 0 ? 'failed_with_output' : 'failed') : over.status === 'skipped' || over.status === 'queued' ? null : 'produced',
   agentId: 'myco-agent', status: 'completed', model: null, startedAt: (over.completedAt ?? NOW - HOUR) - 5 * MINUTE, completedAt: NOW - HOUR, tokensUsed: 20_000, costUsd: 0.5,
-  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
+  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, waitReason: null, waitingSince: null, taskQueued: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
   startedBy: 'clock', targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false },
   provider: null, resumedAt: null, dryRun: false, resumable: false, resumeStatus: null, leasedBy: null, leaseExpiresAt: null, ...over,
 });

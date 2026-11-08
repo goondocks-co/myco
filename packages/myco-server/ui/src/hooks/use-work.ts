@@ -142,7 +142,7 @@ export function useLiveWork(query: Omit<WorkQuery, 'live'>, options: { enabled?:
 export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswer | undefined) {
   const path = workPath(query);
   const result = useInfiniteQuery({
-    queryKey: ['work-evidence', query.projectId ?? 'all', query.since, query.until, first?.cursor, first?.runs[0]?.id],
+    queryKey: ['work-evidence', query.projectId ?? 'all', query.since, query.until, first?.cursor, first?.timeline[0]?.id],
     initialPageParam: null as string | null,
     initialData: first === undefined ? undefined : { pages: [first], pageParams: [null] },
     enabled: false,
@@ -153,7 +153,7 @@ export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswe
     ...live('still'),
   });
   return {
-    rows: first === undefined ? [] : [first.runs, ...(result.data?.pages.slice(1).map((page) => page.runs) ?? [])].flat(),
+    rows: first === undefined ? [] : [first.timeline, ...(result.data?.pages.slice(1).map((page) => page.timeline) ?? [])].flat(),
     hasMore: result.hasNextPage,
     isFetchingMore: result.isFetchingNextPage,
     error: result.error,
@@ -164,7 +164,7 @@ export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswe
 
 /** Whether any run the window counts is still to finish: queued or running. */
 export function workHasLiveRun(answer: WorkAnswer | undefined): boolean {
-  return (answer?.outcomes ?? []).some((outcome) => ['queued', 'running', 'claimed'].some((status) => (outcome.runs[status] ?? 0) > 0));
+  return (answer?.summary ?? []).some((outcome) => ['queued', 'running', 'claimed'].some((status) => (outcome.runs[status] ?? 0) > 0));
 }
 
 /** How many of a task's runs one page of "Show all" reads. */

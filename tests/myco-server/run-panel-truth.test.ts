@@ -75,16 +75,16 @@ describe('run panel recorded evidence', () => {
       f.event('kept', 'run_write', 'myco_run_map', 'written', {});
       f.event('dry', 'run_write', 'myco_run_map', 'written', {});
       const listed = await f.get('/api/projects/proj_1/runs');
-      const work = await f.get(`/api/work?since=${NOW - DAY}&until=${NOW}`);
+      const work = await f.get(`/api/work?since=${Math.floor(NOW / DAY) * DAY}&until=${Math.floor(NOW / DAY) * DAY + DAY}`);
       for (const [id, result] of [['unchanged', 'unchanged'], ['titling_skip', 'unchanged'], ['kept', 'failed_with_output'], ['dry', 'unchanged']]) {
         expect((await f.get(`/api/projects/proj_1/runs/${id}`)).run.result).toBe(result);
         expect(listed.rows.find((row: Answer) => row.id === id).result).toBe(result);
-        const timeline = work.runs.find((row: Answer) => row.id === id);
+        const timeline = work.timeline.find((row: Answer) => row.id === id);
         if (result === 'unchanged') expect(timeline).toBeUndefined();
         else expect(timeline.result).toBe(result);
       }
-      expect(work.outcomes.find((outcome: Answer) => outcome.task === 'canopy-map').runs).toEqual({ completed: 2, failed: 1 });
-      expect(work.outcomes.find((outcome: Answer) => outcome.task === 'title-summary').runs).toEqual({ completed: 1 });
+      expect(work.summary.find((outcome: Answer) => outcome.task === 'canopy-map').runs).toEqual({ completed: 2, failed: 1 });
+      expect(work.summary.find((outcome: Answer) => outcome.task === 'title-summary').runs).toEqual({ completed: 1 });
     } finally { f.sqlite.close(); }
   });
 
@@ -94,8 +94,8 @@ describe('run panel recorded evidence', () => {
       f.run('failed', 'canopy-map', 'failed');
       f.sqlite.run(`UPDATE agent_runs SET error = 'the runtime went away', error_code = 'machine_unresponsive' WHERE id = 'failed'`);
       f.sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at) VALUES ('proj_1', 'failed', 'audit_agent', 'map', 'Saved the map successfully', 'Detailed account of the pass.', ?)`, [NOW]);
-      const work = await f.get(`/api/work?since=${NOW - DAY}&until=${NOW}`);
-      expect(work.runs[0].failure).toEqual({ cause: 'the runtime went away', code: 'machine_unresponsive', error: 'the runtime went away', source: 'error' });
+      const work = await f.get(`/api/work?since=${Math.floor(NOW / DAY) * DAY}&until=${Math.floor(NOW / DAY) * DAY + DAY}`);
+      expect(work.timeline[0].failure).toEqual({ cause: 'the runtime went away', code: 'machine_unresponsive', error: 'the runtime went away', source: 'error' });
     } finally { f.sqlite.close(); }
   });
 
@@ -114,9 +114,9 @@ describe('run panel recorded evidence', () => {
       expect(detail.map).toMatchObject({ replaced: true, sourceRunId: 'later_run', commit: 'b'.repeat(40) });
       expect(detail.run.requested).toEqual(REQUESTED);
       expect(detail.run.identity).toEqual(IDENTITY);
-      const work = await f.get(`/api/work?since=${NOW - DAY}&until=${NOW}`);
-      expect(work.runs[0].requested).toEqual(REQUESTED);
-      expect(work.runs[0].identity).toEqual(IDENTITY);
+      const work = await f.get(`/api/work?since=${Math.floor(NOW / DAY) * DAY}&until=${Math.floor(NOW / DAY) * DAY + DAY}`);
+      expect(work.timeline[0].requested).toEqual(REQUESTED);
+      expect(work.timeline[0].identity).toEqual(IDENTITY);
     } finally { f.sqlite.close(); }
   });
 

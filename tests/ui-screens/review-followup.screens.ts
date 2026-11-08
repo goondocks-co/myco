@@ -38,13 +38,14 @@ for (const finding of [1, '1-plans', 3, 4]) {
       });
     } else await page.route('**/api/work?*', (route) => route.fulfill({ json: {
       window: { since: now - 86400000, until: now },
-      outcomes: (['learn', 'seed', 'title', 'map'] as const).map((kind) => ({
+      state: 'ready',
+      summary: (['learn', 'seed', 'title', 'map'] as const).map((kind) => ({
         projectId, kind, task: { learn: 'extract-curate', seed: 'vault-seed', title: 'title-summary', map: 'canopy-map' }[kind],
         runs: { failed: 1, completed: 200 }, outcome: { spores: kind === 'learn' || kind === 'seed' ? 201 : 0, sessions: kind === 'title' ? 201 : 0, maps: kind === 'map' ? 201 : 0 },
         failedWithOutput: 1, failed: 0, failure: null, latestAt: now, tokens: 0, costUsd: 0, runsWithoutCost: 0,
-        spend: { tokens: null, costUsd: null, durationMs: null }, map: null,
+        spend: { tokens: null, costUsd: null, durationMs: null },
       })),
-      runs: Array.from({ length: 200 }, (_, i) => {
+      timeline: Array.from({ length: 200 }, (_, i) => {
         const kind = (['learn', 'seed', 'title', 'map'] as const)[i % 4]!;
         return {
           id: `newer-output-${i}`, projectId, kind, task: { learn: 'extract-curate', seed: 'vault-seed', title: 'title-summary', map: 'canopy-map' }[kind],
@@ -53,7 +54,7 @@ for (const finding of [1, '1-plans', 3, 4]) {
           outcome: { spores: kind === 'learn' || kind === 'seed' ? 1 : 0, sessions: kind === 'title' ? 1 : 0, maps: kind === 'map' ? 1 : 0 },
           sessionId: null, failure: null, tokens: 0, costUsd: 0,
         };
-      }), truncated: true, cursor: 'older-output', upkeep: { task: 'embedding-reconcile', lastSuccessAt: null, failedInWindow: 0, unrecovered: null },
+      }), hasMore: true, cursor: 'older-output', maps: [], upkeep: { task: 'embedding-reconcile', lastSuccessAt: null, failedInWindow: 0, unrecovered: null },
     } }));
     await page.goto(new URL(finding === 3 ? '/work' : `/p/${projectId}/sessions/${session.sessionId}`, baseUrl()).href);
     if (finding !== 3) await page.getByRole('tab', { name: /^Conversation/ }).click();
