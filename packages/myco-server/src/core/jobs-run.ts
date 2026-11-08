@@ -1,4 +1,5 @@
 import { catchUpProjections } from '../db/projections/catchup.js';
+import { expireSpend } from '../db/runs/admission.js';
 import { discoverSporeClusters } from './spore-curation.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
@@ -199,7 +200,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     const budgetHeld=queued.heldBy==='budget';
     const quote=queued.budgetQuoteUsd;
     const tooSmall=budgetHeld&&typeof quote==='number'&&quote>budget;
-    const maximumAge=budgetHeld?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
+    const maximumAge=budgetHeld||queued.heldBy==='admission_building'?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
     const ageFrom = automatic ? Math.max(queued.queuedAt, openedAt) : queued.queuedAt;
     if (!tooSmall && now - ageFrom < maximumAge) continue;
     const guard={sql:`held_by IS ? AND queued_at IS ?${automatic ? ` AND EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${BUDGET_QUEUE_OPENED_SQL} IS ?` : ''}${tooSmall?` AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}`:''}`,params:[queued.heldBy,queued.queuedAt,...(automatic?[opened]:[]),...(tooSmall?[quote]:[])]};
@@ -244,6 +245,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'projection-catch-up': (env) => catchUpProjections(env.db),
+  'spend-expiry': (env, now) => expireSpend(env.db, now),
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'learning-source-repair': (env) => repairLearningSources(env.db),
   'spore-curation': (env, now) => discoverSporeClusters(env, now),

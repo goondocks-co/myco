@@ -3,6 +3,12 @@ import type { UpsertDeclaration } from './server-upsert-inventory.js';
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
   'db/schema-v712.ts#<module>': Array.from({ length: 7 }, () => ({ tables: ['embedding_passed_over'], order: 'unverified' as const })),
+  'db/runs/admission.ts#reconcileSpend': [{ tables: ['attempt_spend'], order: 'unverified' }],
+  'db/runs/admission.ts#rollup': [{ tables: ['budget_totals'], order: 'unverified' }],
+  'db/schema-v714.ts#<module>': [
+    ...Array.from({ length: 5 }, () => ({ tables: ['budget_totals'], order: 'unverified' as const })),
+    ...Array.from({ length: 4 }, () => ({ tables: ['attempt_spend'], order: 'unverified' as const })),
+  ],
   'db/insights/kpi-reconcile.ts#upsertKpi': [{ tables: ['kpi_fact'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#lineageUpsert': [{ tables: ['kpi_lineage'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#roll': [{ tables: ['kpi_daily'], order: 'unverified' }],

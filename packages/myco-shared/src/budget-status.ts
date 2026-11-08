@@ -4,11 +4,14 @@ export interface BudgetStatus {
   unconfirmed: {count:number;estimatedUsd:number;manual:{count:number;estimatedUsd:number};automatic:{count:number;estimatedUsd:number}} | null;
   heldHeads: {projectId:string;runId:string;task:string;reason:'budget'|'budget_too_small';requiredUsd:number|null;quotedAt:number|null}[] | null;
   pricedExposure: {usd:number|null;sampleSize:number;missingSamples:number;provenance:'empirical-p95'} | null;
+  /** `building` while rolling spend accounting catches up with attempt history: totals are unknown, not zero, and automatic work waits. */
+  state?: 'ready' | 'building';
 }
 
 /** Estimates for unpriced and lost attempts do not establish an actual-spend bound. */
 export function budgetStatusLine(status: BudgetStatus): string {
   if (!status.active) return `Daily work budget inactive: ${status.reason}`;
+  if (status.state === 'building') return 'Daily work budget: measuring recent spend; automatic work waits until it is measured.';
   const dollars=(value:number|null)=>value===null?'unavailable':`$${value.toFixed(2)}`;
   const unknown=status.unconfirmed;
   const exposure=status.pricedExposure;

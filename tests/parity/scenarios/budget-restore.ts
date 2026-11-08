@@ -37,16 +37,18 @@ export const budgetRestore:ParityScenario={
     expect(await target.sql("SELECT attempt_id,cost_usd FROM agent_run_attempts ORDER BY attempt_id")).toEqual([
       {attempt_id:'budget-A',cost_usd:0.70},{attempt_id:'budget-B',cost_usd:0.10},{attempt_id:'budget-M',cost_usd:0.20},
     ]);
-    const status=await fetch(`${target.url}/api/status`,{headers});
-    expect(await status.json()).toMatchObject({budget:{active:true,automaticUsd:expect.closeTo(0.80),manualUsd:0.20,unconfirmed:{count:0,estimatedUsd:0}}});
-    const restored=await target.sql(`SELECT value FROM agent_state WHERE project_id=${project} AND agent_id='myco-agent' AND key=${lit(sampleKey)}`);
-    const restoredSample=JSON.parse(String(restored[0]!.value));
-    expect(restoredSample.estimate).toBe(2);
-    expect(restoredSample.points.map((point:{seq:number})=>point.seq)).toEqual(Array(50).fill(0));
     const wake=async()=>{
       const response=await fetch(`${target.url}/api/wake`,{method:'POST',headers,body:'{}'});
       expect(response.status).toBe(200);await response.body?.cancel();
     };
+    // Restore rebuilds derived spend accounting; the catch-up job runs on the next wake.
+    await wake();
+    const status=await fetch(`${target.url}/api/status`,{headers});
+    expect(await status.json()).toMatchObject({budget:{active:true,state:'ready',automaticUsd:expect.closeTo(0.80),manualUsd:0.20,unconfirmed:{count:0,estimatedUsd:0}}});
+    const restored=await target.sql(`SELECT value FROM agent_state WHERE project_id=${project} AND agent_id='myco-agent' AND key=${lit(sampleKey)}`);
+    const restoredSample=JSON.parse(String(restored[0]!.value));
+    expect(restoredSample.estimate).toBe(2);
+    expect(restoredSample.points.map((point:{seq:number})=>point.seq)).toEqual(Array(50).fill(0));
     await wake();
     expect(await target.sql("SELECT value FROM schema_meta WHERE key='budget.estimate_watermark'")).toEqual([{value:'0'}]);
     await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,origin)

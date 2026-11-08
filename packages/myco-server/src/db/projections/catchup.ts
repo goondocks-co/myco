@@ -1,6 +1,8 @@
 import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
 import type { JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
+import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
+import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { KPI_DOCUMENT_RECONCILE, KPI_JSON_KEYS, KPI_LINEAGE_RECONCILE, KPI_RECONCILE, reconcileKpi } from '../insights/kpi-reconcile.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
@@ -37,9 +39,10 @@ const advance = write<[string, number, string, string, string]>({ name: 'project
 
 const tuple = (columns: readonly string[]) => columns.length === 1 ? columns[0]! : `(${columns.join(',')})`;
 const jsonTuple = (columns: readonly string[], json: string) => tuple(columns.map((_, i) => `json_extract(${json},'$[${i}]')`));
-const PHASE_SOURCES = { ...KPI_PHASE_SOURCES, failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] } } satisfies Record<string, Source>;
+const PHASE_SOURCES = { ...KPI_PHASE_SOURCES, failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
+  attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] } } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
-const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : 'kpi';
+const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : phase === 'attempts' ? BUDGET_PROJECTION : 'kpi';
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec]) => {
   const source: Source = spec;
@@ -76,20 +79,21 @@ const reconciles = {
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
 
-/** Replaying keys reads current source values inside the caller's commit. */
-export function kpiPageStatements(phase: ProjectionPhase, keys: string): Bound[] {
-  return reconciles[phase].map(statement => statement.bind(keys));
+/** Replaying keys reads current source values inside the caller's commit; spend facts settle against the page's own window floor. */
+export function kpiPageStatements(phase: ProjectionPhase, keys: string, now = Date.now()): Bound[] {
+  return phase === 'attempts' ? SPEND_CATCHUP.map(statement => statement.bind(keys, now - BUDGET_WINDOW_MS))
+    : reconciles[phase].map(statement => statement.bind(keys));
 }
 
 /** A page's contributions and cursor share one atomic commit. */
-export async function catchUpKpiPhase(db: RelationalStore, phase: ProjectionPhase): Promise<number> {
+export async function catchUpKpiPhase(db: RelationalStore, phase: ProjectionPhase, now = Date.now()): Promise<number> {
   const page = pages[phase];
   const [, state, selected] = await commit(db, page.frontier.bind(), page.state.bind(), page.keys.bind());
   const held = state.results[0];
   if (!held) throw new Error(`Missing kpi projection phase: ${phase}`);
   if (held.done === 1) return 0;
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
-  await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys)),
+  await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys), now),
     advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key));
   return keys.length;
 }
@@ -104,10 +108,11 @@ export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
   return { state, progress } as const;
 }
 
-export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'passed_over'): Promise<'ready' | 'building'> {
+export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'passed_over' | typeof BUDGET_PROJECTION): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
+  const only = projection === 'passed_over' ? 'failures' : 'attempts';
   return projection === 'kpi' ? kpiReadiness(rows).state
-    : rows.length === 1 && rows[0]!.phase === 'failures' && rows[0]!.done === 1 ? 'ready' : 'building';
+    : rows.length === 1 && rows[0]!.phase === only && rows[0]!.done === 1 ? 'ready' : 'building';
 }
 
 export async function resetProjectionCatchup(db: RelationalStore): Promise<void> {
@@ -129,10 +134,10 @@ export async function catchUpProjections(
     if (!Object.hasOwn(PHASE_SOURCES, row.phase) || row.projection !== projectionOf(row.phase as ProjectionPhase)) throw new Error(`Unknown projection phase: ${row.projection}/${row.phase}`);
     const phase = row.phase as ProjectionPhase;
     // Three frontier/key statements, reconciliation, the cursor write and one fresh pending read.
-    const pageCalls = 3 + reconciles[phase].length + 2;
+    const pageCalls = 3 + (phase === 'attempts' ? SPEND_CATCHUP.length : reconciles[phase].length) + 2;
     const start = clock();
     if (calls + pageCalls > budget.calls || start + longestPageMs >= deadline) break;
-    changed += await catchUpKpiPhase(db, phase);
+    changed += await catchUpKpiPhase(db, phase, start);
     [rows] = await readSet(db, pending.bind());
     calls += pageCalls;
     longestPageMs = Math.max(longestPageMs, clock() - start);
