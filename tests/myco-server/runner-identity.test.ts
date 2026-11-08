@@ -579,17 +579,20 @@ describe('the guards that decide a runner\'s authority', () => {
     } finally { r.e.sqlite.close(); }
   });
 
-  it('lands nothing of a claim whose credential is revoked, expired or of an older epoch, or whose runner is paused or already busy, after admission and before the commit', async () => {
-    for (const late of ['revoked', 'expired', 'epoch', 'paused', 'busy'] as const) {
+  for (const surface of ['http', 'core'] as const) it(`lands nothing of a ${surface} claim when runner authority changes after admission and before commit`, async () => {
+    for (const late of ['removed', 'revoked', 'expired', 'epoch', 'paused', 'busy'] as const) {
       const r = rig();
       try {
         const { token, runnerId } = await r.register();
         await r.queueTitling();
         if (late === 'busy') await r.queueTitling();
+        const inputs = r.e.sqlite.query('SELECT id, instruction, run_context FROM agent_runs ORDER BY id').all();
+        const contacts = r.e.sqlite.query('SELECT * FROM runner_contacts ORDER BY runner_id').all();
         let busyRun: string | null = null;
         r.arm((sql) => {
           if (!/SET status = 'running', started_at = \?, dispatched_by = \?, leased_by = \?, leased_runner_id/.test(sql)) return;
           r.arm(undefined);
+          if (late === 'removed') r.e.sqlite.run(`UPDATE runners SET state = 'removed', removed_at = ?, credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [r.now(), runnerId]);
           if (late === 'revoked') r.e.sqlite.run(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'test' WHERE runner_id = ?`, [r.now(), runnerId]);
           if (late === 'expired') r.e.sqlite.run(`UPDATE runner_credentials SET expires_at = 1 WHERE runner_id = ?`, [runnerId]);
           if (late === 'epoch') r.e.sqlite.run(`UPDATE runners SET credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [runnerId]);
@@ -601,11 +604,20 @@ describe('the guards that decide a runner\'s authority', () => {
               [runnerId, credential, r.now() + WORKER_LEASE_MS, r.now(), busyRun]);
           }
         });
-        const answered = await r.json(r.asRunner(token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }));
+        const answered = surface === 'http'
+          ? await r.json(r.asRunner(token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }))
+          : await claimNextRun(r.e.serverEnv, {
+            principal: { kind: 'runner', runnerId, credentialId: String(r.row('SELECT id FROM runner_credentials WHERE runner_id = ?', runnerId)!.id), machineId: null },
+            harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: r.now(),
+          }).catch(error => { if (error instanceof RunnerWriteRefused) return { claimed: false }; throw error; });
         expect({ late, claimed: answered.claimed ?? false }).toEqual({ late, claimed: false });
         expect({ late, minted: r.row('SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?', HARNESS_MEMBER_ID) }).toEqual({ late, minted: { n: 0 } });
         expect({ late, attempts: r.row('SELECT COUNT(*) AS n FROM agent_run_attempts') }).toEqual({ late, attempts: { n: 0 } });
         expect({ late, running: r.row(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running' AND id IS NOT ?`, busyRun) }).toEqual({ late, running: { n: 0 } });
+        expect(r.e.sqlite.query('SELECT id, instruction, run_context FROM agent_runs ORDER BY id').all()).toEqual(inputs);
+        if (surface === 'core') expect(r.e.sqlite.query('SELECT * FROM runner_contacts ORDER BY runner_id').all()).toEqual(contacts);
+        expect(r.row("SELECT COUNT(*) AS n FROM runner_contacts WHERE last_reason = 'claimed'")).toEqual({ n: 0 });
+        expect(r.row('SELECT last_assigned_at FROM runners WHERE id = ?', runnerId)).toEqual({ last_assigned_at: null });
       } finally { r.e.sqlite.close(); }
     }
   });

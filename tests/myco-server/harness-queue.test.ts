@@ -59,12 +59,12 @@ describe('what holds a dispatch', () => {
     expect(f.launches).toEqual([]);
     f.sqlite.close();
   });
-  it('is null with no limit set, and names the first limit the load is at, the fleet first', () => {
+  it('is null with no limit set, and names the input that sets the resolved concurrency limit', () => {
     const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
     expect(heldBy({ liveRuns: 100, liveTaskRuns: 100, taskRunsLastHour: 100 }, none)).toBeNull();
     expect(heldBy({ liveRuns: 2, liveTaskRuns: 0, taskRunsLastHour: 0 }, { ...none, concurrent_runs: 2 })).toBe('concurrent_runs');
     expect(heldBy({ liveRuns: 1, liveTaskRuns: 0, taskRunsLastHour: 0 }, { ...none, concurrent_runs: 2 })).toBeNull();
-    expect(heldBy({ liveRuns: 3, liveTaskRuns: 1, taskRunsLastHour: 0 }, { ...none, concurrent_runs: 2, fleet: 3 })).toBe('fleet');
+    expect(heldBy({ liveRuns: 3, liveTaskRuns: 1, taskRunsLastHour: 0 }, { ...none, concurrent_runs: 2, fleet: 3 })).toBe('concurrent_runs');
     expect(heldBy({ liveRuns: 0, liveTaskRuns: 1, taskRunsLastHour: 0 }, { ...none, task_concurrent_runs: 1 })).toBe('task_concurrent_runs');
     expect(heldBy({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 5 }, { ...none, task_runs_per_hour: 5 })).toBe('task_runs_per_hour');
   });

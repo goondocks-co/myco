@@ -1108,7 +1108,7 @@ describe('gates', () => {
     // The schema's backfill is the one other writer. It is bounded here rather than
     // waved through: every row it lands carries a revoked_at, so the exemption cannot
     // become a path that mints a live credential outside the live-token predicate.
-    expect([...inserting].sort()).toEqual([join(SRC, 'auth', 'tokens.ts'), join(SRC, 'db', 'schema.ts')].sort());
+    expect([...inserting].sort()).toEqual([join(SRC, 'db', 'runs', 'claim-companions.ts'), join(SRC, 'db', 'schema.ts')].sort());
     const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
     const schemaInserts = [...schema.matchAll(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/g)].map((m) => m[0]);
     expect(schemaInserts).toHaveLength(2);
@@ -1122,10 +1122,11 @@ describe('gates', () => {
     expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
     expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);
     const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
-    expect(tokens.match(/INTO member_credentials\b/g)).toHaveLength(1);
+    const issuing = readFileSync(join(SRC, 'db', 'runs', 'claim-companions.ts'), 'utf8');
+    expect(issuing.match(/INTO member_credentials\b/g)).toHaveLength(1);
     // The parenthesized predecessor predicate — live, and minted to rotate — is conjoined with the admission gate.
-    expect(tokens).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?, \?\s+WHERE \(\? IS NULL OR \(\$\{TOKEN_LIVE\} AND \$\{ROTATING_PREDECESSOR\}\)\)\$\{gate === undefined \? '' : ` AND \(\$\{gate\.sql\}\)`\} RETURNING id`/);
-    expect(tokens).toMatch(/const ROTATING_PREDECESSOR = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND rotates = 1\)';/);
+    expect(issuing).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?, \?\s+WHERE \(\? IS NULL OR \(\$\{TOKEN_LIVE\} AND \$\{ROTATING_PREDECESSOR\}\)\)`/);
+    expect(issuing).toMatch(/const ROTATING_PREDECESSOR = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND rotates = 1\)';/);
     expect(tokens).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
     expect(readFileSync(join(SRC, 'ingest', 'live-credential.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
   });

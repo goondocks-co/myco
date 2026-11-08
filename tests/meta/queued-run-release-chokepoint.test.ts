@@ -21,8 +21,8 @@ const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta
 
 /** Where each may be named: its own definition, and the chokepoint that pairs it with the release. */
 const ALLOWED: Readonly<Record<string, readonly string[]>> = {
-  'failQueuedRun': ['core/runs.ts', 'core/harness.ts'],
-  'skipQueued': ['core/runs.ts', 'core/harness.ts'],
+  'failQueuedRun': ['db/runs/queue.ts', 'core/harness.ts'],
+  'skipQueued': ['db/runs/claim.ts', 'core/harness.ts'],
 };
 
 function files(dir: string): string[] {

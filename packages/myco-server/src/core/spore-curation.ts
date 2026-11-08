@@ -1,3 +1,6 @@
+import { curationPolicy, curationAdmissionSql, curationDueWorkSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
+export { curationAdmissionSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
+import { curationClaimWrite, curationDirtyWrite, curationCandidateWrite } from '../db/runs/claim-companions.js';
 import { runRefusal, REPORT_NEXT, type RunRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
 import { droppedFeatureFacts } from './dropped-features.js';
@@ -6,14 +9,11 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.j
 import type { PulledStage } from './pulled-stages.js';
 import type { TaskInput } from './task-inputs.js';
 import { CURATION_TASK } from './task-catalogue.js';
-import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabledSql, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from './settings.js';
+import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabledSql } from './settings.js';
 import { resolveSemanticSearch, searchDeployment } from './search.js';
 import { semanticHits, type SemanticHit } from '../read/embedding.js';
 import { sha256Hex } from '../hash.js';
 import { getSpore } from './spores.js';
-import { reserveForStage, BUDGET_WINDOW_MS } from './budget-policy.js';
-import { estimatedClaimPriceSql } from './budget-estimates.js';
-import { spendRowsSql, effectiveBudgetSql } from './run-budget.js';
 import { LEARNING_BACKOFF_MS } from './learning-sessions.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 import { writeGuardStore, writeGuardBatch } from './write-guard-store.js';
@@ -31,7 +31,6 @@ export const CURATION_SEED_CAP = 8;
 export const CURATION_SEEDS_PER_TICK = 8;
 export const CURATION_GATE_NEIGHBORS = 16;
 export const CURATION_NEIGHBORS = 48;
-export const CURATION_MAX_FAILURES = 3;
 
 const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
@@ -211,22 +210,6 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
   return found ? 1 : 0;
 }
 
-/** A cluster's first attempt spends one daily slot; its bounded retries retain that slot. */
-function curationDueWorkSql(project: string, now: number): string {
-  return `w.project_id=${project} AND w.due_at IS NOT NULL AND w.due_at<=${Math.floor(now)} AND w.failures<${CURATION_MAX_FAILURES}
-    AND (w.failures>0 OR (SELECT COUNT(*) FROM (SELECT 1 FROM spore_curation_work INDEXED BY idx_curation_first_started
-      WHERE project_id=${project} AND first_started_at IS NOT NULL AND first_started_at>${Math.floor(now-BUDGET_WINDOW_MS)}
-      LIMIT ${CURATION_DAILY_LIMIT_MAX})) < ${curationDailyLimitSql(project)})`;
-}
-
-/** Indexed due work precedes the live-run and rolling-budget checks. */
-export function curationAdmissionSql(project: string, now: number, estimateKey?: string): string {
-  const price = estimatedClaimPriceSql(project, CURATION_TASK, estimateKey);
-  return `EXISTS (SELECT 1 FROM spore_curation_work w INDEXED BY idx_curation_due WHERE ${curationDueWorkSql(project,now)}) AND ${on(project)}
-    AND NOT EXISTS (SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live WHERE r.task='${CURATION_TASK}' AND r.project_id=${project} AND r.${IN_FLIGHT_RUN_STATUSES})
-    AND (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql(String(Math.floor(now-BUDGET_WINDOW_MS)))})) + ${price} + ${reserveForStage(CURATION_TASK)} <= ${effectiveBudgetSql()}`;
-}
-
 /** A run receives every assigned spore whole, inside the shared input bound. */
 export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: string, key: string): Promise<TaskInput | null> {
   const row = await work(env.db, projectId, key);
@@ -279,26 +262,17 @@ export function curationPrompt(material: string, droppedFeatures = ''): string {
 
 function curationStage(estimateKey?: string): PulledStage {
   return {
-    level: 5, task: CURATION_TASK, switchedOn: curationAnyEnabledSql(), withEstimate: curationStage,
+    level: 5, task: CURATION_TASK, policy:curationPolicy, estimateKey, switchedOn: curationAnyEnabledSql(), withEstimate: curationStage,
     due: (project, now) => ({ sql: curationAdmissionSql(project, now, estimateKey), params: [] }),
     head: async (db, projectId, now) => {
       const row = await db.prepare(`SELECT cluster_key,due_at FROM spore_curation_work w INDEXED BY idx_curation_due
         WHERE ${curationDueWorkSql(literal(projectId),now)} ORDER BY due_at,cluster_key LIMIT 1`).first<Cluster>();
       return row === null ? null : { projectId, subject: curationSubject(projectId, row.cluster_key), key: row.cluster_key, observed: row.due_at };
     },
-    stillHead: (item, now) => ({ sql: `${curationAdmissionSql(literal(item.projectId), now, estimateKey)} AND EXISTS (SELECT 1 FROM spore_curation_work w
-      WHERE ${curationDueWorkSql(literal(item.projectId),now)} AND cluster_key=? AND due_at=? AND decision IS NULL)`, params: [item.key, item.observed] }),
     build: (env, item) => buildCurationInput(env, item.projectId, item.key),
-    claimed: (db, item, input, run, now) => [db.prepare(`UPDATE spore_curation_work SET first_started_at=CASE WHEN failures=0 THEN ? ELSE first_started_at END,failures=failures+1,searches=0,write_refusal=NULL,read_bytes=?,
-      due_at=? + CASE WHEN failures=0 THEN ? WHEN failures=1 THEN ? ELSE ? END,run_id=?
-      WHERE project_id=? AND cluster_key=? AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND dispatched_by=?)`)
-      .bind(now, input.counts!.material_bytes!, now, ...LEARNING_BACKOFF_MS, run.runId, item.projectId, item.key, item.projectId, run.runId, run.dispatchedBy),
-      db.prepare(`UPDATE spore_curation_changes SET dirty=1 WHERE project_id=? AND dirty=0
-        AND EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=?)`)
-        .bind(item.projectId,item.projectId,item.key,run.runId),
-      ...curationAssignment(JSON.stringify(input.context))!.members.map(member => db.prepare(`INSERT OR IGNORE INTO spore_curation_candidates(project_id,run_id,spore_id,revision,read)
-        SELECT ?,?,?,?,1 WHERE EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=?)`)
-        .bind(item.projectId,run.runId,member.id,member.revision,item.projectId,item.key,run.runId)),
+    claimed: (db, item, input, run, now) => [curationClaimWrite.bind(now, input.counts!.material_bytes!, now, ...LEARNING_BACKOFF_MS, run.runId, item.projectId, item.key, item.projectId, run.runId, run.dispatchedBy),
+      curationDirtyWrite.bind(item.projectId, item.projectId, item.key, run.runId),
+      ...curationAssignment(JSON.stringify(input.context))!.members.map(member => curationCandidateWrite.bind(item.projectId, run.runId, member.id, member.revision, item.projectId, item.key, run.runId)),
     ],
   };
 }

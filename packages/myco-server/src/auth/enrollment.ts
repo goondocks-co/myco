@@ -1,3 +1,7 @@
+import { allOf, enrollmentAdmission, type Fragment } from '../db/identity/enrollment-policy.js';
+export { allOf, authorityAdmitted, enrollmentAdmission, machineClaimable, type Fragment } from '../db/identity/enrollment-policy.js';
+import type { Bound } from '../db/index.js';
+import { memberIdentityInsert, enrollmentMemberStatement, type MemberIdentityGate } from '../db/identity/enrollment.js';
 /**
  * Enrollment authorities — evidence exchanged for a member credential by the
  * shared enrollment operation, never credentials used for ordinary requests.
@@ -14,7 +18,7 @@ import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
-import { asMemberRole, MEMBER_ROLES_SQL, type MemberRole } from './roles.js';
+import { asMemberRole, type MemberRole } from './roles.js';
 import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject, memberWritePredicate } from './authorization.js';
 
 export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
@@ -117,51 +121,6 @@ export async function issueEnrollmentAuthority(
 /** Why a presented key cannot be spent. */
 export type EnrollmentRefusal = 'unknown' | 'already_used' | 'expired' | 'revoked' | 'no_project';
 
-/** A SQL condition and the values it binds, conjoined into a statement's WHERE. */
-export interface Fragment {
-  sql: string;
-  params: unknown[];
-}
-
-/** Admission predicates for spending an invitation, optionally bound to its resolved member. */
-export function enrollmentAdmission(
-  keyHash: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
-): Fragment {
-  const target = opts.memberId === undefined ? null : opts.memberId;
-  return {
-    sql: `key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-            AND role IN (${MEMBER_ROLES_SQL})
-            ${opts.forProject === true ? 'AND project_id IS NOT NULL' : ''}
-            ${target === null ? '' : 'AND COALESCE(member_id, ?) = ?'}
-            AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
-            AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})
-            AND ${enrollmentAuthorityPredicate('enrollment_authorities')}`,
-    params: target === null ? [keyHash, nowMs] : [keyHash, nowMs, target, target],
-  };
-}
-
-/** True while `machineId` is unheld or held by `memberId`. Holds across an insert of that member's own claim. */
-export function machineClaimable(machineId: string, memberId: string): Fragment {
-  return {
-    sql: `NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id <> ?)`,
-    params: [machineId, memberId],
-  };
-}
-
-/** True while the authority this key names meets every admission. */
-export function authorityAdmitted(admission: Fragment): Fragment {
-  return {
-    sql: `EXISTS (SELECT 1 FROM enrollment_authorities WHERE ${admission.sql})`,
-    params: [...admission.params],
-  };
-}
-
-/** Conjoin fragments into one WHERE body. */
-export const allOf = (...fragments: readonly Fragment[]): Fragment => ({
-  sql: fragments.map((f) => `(${f.sql})`).join(' AND '),
-  params: fragments.flatMap((f) => f.params),
-});
-
 /** The one statement that spends a key: a conditional update carrying its whole admission. */
 export function spendStatement(db: RelationalStore, admission: Fragment, nowMs: number, runtime: string, gate?: Fragment): PreparedStatement {
   const where = gate === undefined ? admission : allOf(admission, gate);
@@ -170,13 +129,9 @@ export function spendStatement(db: RelationalStore, admission: Fragment, nowMs: 
     .bind(nowMs, runtime, ...where.params);
 }
 
-/** The member row a join records, gated. An existing member keeps its role. */
-export function ensureMemberStatement(db: RelationalStore, id: string, nowMs: number, role: MemberRole, gate?: Fragment, label = id): PreparedStatement {
-  return db
-    .prepare(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at, role)
-                SELECT ?, ?, ?, NULL, ?
-                 ${gate === undefined ? '' : `WHERE ${gate.sql}`}`)
-    .bind(id, label, nowMs, role, ...(gate?.params ?? []));
+/** An existing runtime member keeps its role. */
+export function ensureMemberWrite(db: RelationalStore, id: string, nowMs: number, role: MemberRole, label = id): Bound {
+  return memberIdentityInsert.bind(id, label, nowMs, role);
 }
 
 /**
@@ -395,4 +350,8 @@ export async function renameMachine(db: RelationalStore, actor: { memberId: stri
   const result = await db.prepare(`UPDATE machine_claims SET label = ? WHERE machine_id = ? AND ${memberWritePredicate('?', 'machine_claims.member_id')}`)
     .bind(name, machineId, actor.memberId).run();
   return result.meta.changes === 1;
+}
+
+export function ensureMemberStatement(db: RelationalStore, id:string, nowMs:number, role:MemberRole, gate?:MemberIdentityGate, label=id): PreparedStatement {
+  return enrollmentMemberStatement(db,[id,label,nowMs,role],gate);
 }

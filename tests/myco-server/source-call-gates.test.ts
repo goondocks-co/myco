@@ -15,5 +15,5 @@ it('finds every members mutation case-insensitively, including replacement and c
     'insert or replace into members (id) values (?)', 'RePlAcE INTO members (id) values (?)',
     'update members set role = ?', 'delete FROM members where id = ?',
     'INSERT INTO members (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET role = ?',
-  ]) expect(memberWrites(`const sql = \`${sql}\`;`)).toEqual([sql]);
+  ]) expect(memberWrites(`const sql = \`${sql}\`;`)).toEqual([{ sql }]);
 });

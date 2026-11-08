@@ -1,3 +1,6 @@
+import type { Bound } from '../db/index.js';
+import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
+import { cardBackoffWrite, cardDueWrite } from '../db/runs/claim-companions.js';
 import { encodeCard, cardFieldsError, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
 export { renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
@@ -15,9 +18,9 @@ import { answerRoom, materialPages, type PagedEntry } from './material-pages.js'
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
-import { claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
+import { claimLearningRetryWrite, claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
 export { CARD_TASK } from './task-catalogue.js';
-import { learningRecencySql, learningRangeSql } from './learning-recency.js';
+import { FRESH_LEARNING_MS, learningRangeSql } from './learning-recency.js';
 import { learningHistoryEnabledSql } from './settings.js';
 import { writeGuardBatch } from './write-guard-store.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
@@ -28,18 +31,10 @@ export const CARD_CLAIM_TURNS = 64;
 export const CARD_RETRY_MS = 3_600_000;
 
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
-export function claimCardsStatements(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
-  run: { runId: string; dispatchedBy: string }): PreparedStatement[] {
-  return [claimLearningRetryStatement(db, projectId, sessionId, run), db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
-      card_failures = card_failures + 1,
-      card_retry_at = ? + CASE WHEN card_failures = 0 THEN ? WHEN card_failures = 1 THEN ? ELSE ? END
-    WHERE project_id = ? AND session_id = ?
-      AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
-    .bind(now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
-    db.prepare(`UPDATE turn_cards SET due_at = ? WHERE project_id = ? AND session_id = ? AND state = 'pending'
-      AND turn_key IN (SELECT value FROM json_each(?))
-      AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = turn_cards.project_id AND r.id = ? AND r.dispatched_by = ?)`)
-    .bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy)];
+export function claimCardsWrites(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
+  run: { runId: string; dispatchedBy: string }): Bound[] {
+  return [claimLearningRetryWrite(db, projectId, sessionId, run), cardBackoffWrite.bind(now - FRESH_LEARNING_MS, now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
+    cardDueWrite.bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy)];
 }
 
 /** The input hash the publisher stored for a card's turn in its session's live document. */
@@ -268,3 +263,5 @@ export async function runCardsRemaining(db: RelationalStore, projectId: string, 
     .bind(JSON.stringify(turns),projectId,sessionId,runId).all<{turnKey:string}>();
   return rows.results.map(row => row.turnKey);
 }
+
+export function claimCardsStatements(...args: Parameters<typeof claimCardsWrites>): PreparedStatement[] { return claimCardsWrites(...args).map(bound => prepareClaimCompanion(args[0], bound)); }

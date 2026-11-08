@@ -37,7 +37,8 @@ const rel = (file: string): string => path.relative(SRC, file).split(path.sep).j
 /** Every file under the server source that names the counter, and what each may do with it. */
 const COUNTER_READERS: Record<string, string> = {
   'db/schema.ts': 'the column and its historical DDL',
-  'auth/tokens.ts': 'a new credential starts at 0; a successor takes over the carried count',
+  'auth/tokens.ts': 'a successor takes over the carried count',
+  'db/runs/claim-companions.ts': 'a new credential starts at 0',
   'ingest/live-credential.ts': 'the stored-bytes read for reporting, and the carry at rotation',
   'ingest/events.ts': 'the charge for a stored event body',
   'ingest/blobs.ts': 'the charge for a stored blob',
@@ -61,6 +62,7 @@ const COMPARES = [
  */
 const LIVE_CREDENTIAL_IMPORTS: Record<string, readonly string[]> = {
   'api/status.ts': ['storedBytes'],            // reported to the member as information
+  'db/runs/claim-companions.ts': ['TOKEN_LIVE'],
   'auth/tokens.ts': ['TOKEN_LIVE', 'carriedBytes'], // the successor insert's liveness, and the carry at rotation
   'db/storage/blob-admission.ts': ['TOKEN_LIVE'],       // the upload's admission
   'ingest/events.ts': ['ALWAYS', 'credentialLive'], // the event's admission

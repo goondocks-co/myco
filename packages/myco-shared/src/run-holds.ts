@@ -17,7 +17,7 @@
 import { harnessName, PROFILE_HARNESSES } from './execution-profile.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from './repository.js';
 
-export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | CapabilityHold;
+export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold;
 
 /** A run held for a worker capability is held by the capability's own name. */
 export type CapabilityHold = typeof REPOSITORY_CHECKOUT_CAPABILITY | typeof REPOSITORY_DIGESTS_CAPABILITY;
@@ -38,6 +38,7 @@ export const HELD_BY_WORDS: Readonly<Record<HeldBy, string>> = {
   fleet: 'Waiting for a free machine: every machine that runs tasks is busy.',
   runtime: 'This server isn’t taking runs right now.',
   budget: 'Waiting until the daily budget has room for this run.',
+  queue_building: 'Waiting for the work queue to be ready.',
   admission_building: 'Measuring recent spend: automatic work waits until the server has counted the last day’s runs.',
   worker: 'Waiting for a machine to pick it up.',
   [REPOSITORY_CHECKOUT_CAPABILITY]: 'Waiting for a machine that can read the repository. None that checked in lately can.',

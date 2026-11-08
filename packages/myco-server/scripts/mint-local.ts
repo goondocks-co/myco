@@ -2,6 +2,7 @@
 import { ensureMember } from '../src/auth/enrollment.ts';
 import { issueExternalGrant } from '../src/auth/grants.ts';
 import { mintInsert, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
+import { nonAdminCredential } from '../src/db/runs/enrollment.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const USAGE = [
@@ -64,7 +65,7 @@ if (args.includes('--grant')) {
   // a member that already administers the Deployment is never downgraded, and never handed one.
   await ensureMember(db, memberId, now, nonRotating ? 'member' : 'admin');
   const { statement, issued } = await mintInsert(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, nonRotating
-    ? { rotates: false, gate: { sql: `EXISTS (SELECT 1 FROM members WHERE id = ? AND role = 'member')`, params: [memberId] } }
+    ? { rotates: false, claim: { write: nonAdminCredential, values: [memberId] } }
     : {});
   await statement.run();
   if (nonRotating) statements.push(...NON_ADMIN_GUARD(issued.tokenId));

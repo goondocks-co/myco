@@ -1,10 +1,11 @@
+import { joinAdmission } from '../db/runs/enrollment.js';
 import { toBase64Url } from '../base64.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, StorageContractError, type Classifier } from '../telemetry.js';
 import {
-  allOf, authorityAdmitted, claimMachineIdentityStatement, enrollmentAdmission, ensureMemberStatement, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN,
-  enrollmentTarget, explainEnrollment, machineClaimable, spendStatement,
+  claimMachineIdentityStatement, enrollmentAdmission, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN,
+  enrollmentTarget, explainEnrollment, spendStatement,
   type EnrollmentRefusal, type Fragment,
 } from './enrollment.js';
 import { identityBehindCredentialStatement } from './members-admin.js';
@@ -73,21 +74,18 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
   const memberId = invitation?.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
 
   const admission = enrollmentAdmission(keyHash, now, { forProject: forProjectAsked, memberId });
-  const deviceMachine: Fragment = {
-    sql: `NOT EXISTS (SELECT 1 FROM device_requests WHERE device_hash = ? AND
-      (machine_id <> ? OR decision IS NOT 'approved'))`, params: [keyHash, machineId],
-  };
-  const admitted: Fragment = allOf(authorityAdmitted(admission), machineClaimable(machineId, memberId), deviceMachine);
+  const namedAdmission=joinAdmission(keyHash,now,memberId,machineId,forProjectAsked);
+  const admitted=namedAdmission.predicate;
   const runtime = {
     runtimeLabel: typeof runtimeLabel === 'string' ? runtimeLabel : null,
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
   };
-  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, { gate: admitted });
+  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, { claim: namedAdmission.credential });
   const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
   const identityRead = identityBehindCredentialStatement(env.db, issued.tokenId);
 
   const statements = [
-    ensureMemberStatement(env.db, memberId, now, invitation?.role ?? 'member', admitted),
+    namedAdmission.member(env.db,invitation?.role ?? 'member'),
     claimMachineIdentityStatement(env.db, machineId, memberId, now, admitted, runtime.runtimeLabel),
     credential,
     spendStatement(env.db, admission, now, machineId, minted),

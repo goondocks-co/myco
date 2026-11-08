@@ -169,9 +169,9 @@ describe('default-on task enforcement', () => {
     try {
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
-      for (const projectId of ['proj_1', 'proj_2']) {
+      for (const [index, projectId] of ['proj_1', 'proj_2'].entries()) {
         sqlite.run("INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'm1', ?, ?, ?)", [projectId, 's_' + projectId, credential.tokenId, NOW, NOW]);
-        expect(await dispatchTask(serverEnv, TITLING_TASK, projectId, { serverUrl: 'https://s', actor: 'test', params: { session_id: 's_' + projectId, mode: 'claim' } }, NOW))
+        expect(await dispatchTask(serverEnv, TITLING_TASK, projectId, { serverUrl: 'https://s', actor: 'test', params: { session_id: 's_' + projectId, mode: 'claim' } }, NOW + index))
           .toMatchObject({ dispatched: true, queued: true });
       }
       sqlite.run("UPDATE projects SET archived_at=? WHERE project_id='proj_1'", [NOW]);

@@ -1,3 +1,5 @@
+import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
+import { RUN_ADMISSION_PROJECTION, LIVE_CATCHUP } from '../runs/live.js';
 import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
 import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
 import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
@@ -37,7 +39,7 @@ export const KPI_PHASE_SOURCES = {
 export type KpiPhase = keyof typeof KPI_PHASE_SOURCES;
 
 export const projectionPhases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
-const pending = read<[], Phase>({ name: 'projection.pending', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY projection,phase' });
+const pending = read<[], Phase>({ name: 'projection.pending', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY CASE WHEN projection=\'run_admission\' THEN 0 ELSE 1 END,projection,phase' });
 /**
  * Restart every phase. Only a phase that has progressed takes a new generation: a page sets its frontier in the same
  * commit as its state read, so a phase still at its start has no page in flight, and restarting it twice is a no-op.
@@ -53,13 +55,14 @@ const PHASE_SOURCES = {
   ...KPI_PHASE_SOURCES,
   publicationInputs: { table: 'transcripts', columns: ['project_id', 'transcript_id'] },
   publicationSessions: { table: 'session_documents', columns: ['project_id', 'session_id'] },
+  runs: { table: 'agent_runs INDEXED BY idx_agent_runs_admission_catchup', columns: ['project_id', 'id'], where: IN_FLIGHT_RUN_STATUSES },
   failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
   versions: { table: 'embedding_versions', columns: ['project_id', 'type', 'record_id'] },
   attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
   ...RESET_PHASE_SOURCES,
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
-const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
+const projectionOf = (phase: ProjectionPhase) => phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
   : phase === 'attempts' ? BUDGET_PROJECTION : phase.startsWith('publication') ? 'publication'
   : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
 const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : [];
@@ -96,6 +99,7 @@ const transcriptReconcile = [
 
 const reconciles = {
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
+  runs: LIVE_CATCHUP,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
@@ -133,7 +137,7 @@ export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
 export const publicationReady = (phases: readonly Pick<Phase, 'phase' | 'done'>[]) =>
   ['publicationInputs','publicationSessions'].every(phase => phases.some(row => row.phase === phase && row.done === 1));
 
-const SINGLE_PHASE = { passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts' } as const;
+const SINGLE_PHASE = { [RUN_ADMISSION_PROJECTION]: 'runs', passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts' } as const;
 export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'publication' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
   if (projection === 'kpi') return kpiReadiness(rows).state;

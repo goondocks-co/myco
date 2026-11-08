@@ -1,3 +1,5 @@
+import { queuedPriority } from '../db/runs/pull-policy.js';
+import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHold } from './run-budget.js';
@@ -36,8 +38,8 @@ import { repositoryIdentity } from './repositories.js';
  */
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, LIMIT_LEAVES, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
-import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
-import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
+import { ensureMember, ensureMemberWrite as ensureMemberStatement } from '../auth/enrollment.js';
+import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
 import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
 export { HARNESS_MEMBER_ID };
@@ -48,9 +50,9 @@ import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { workerClaimAdmission, claimQueuedRun, claimPulledRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, settleLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, claimPulledRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, settleLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
-import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential } from './provider-credentials.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
@@ -398,7 +400,7 @@ export async function endQueuedRun(
   scope: { projectId: string },
   run: { id: string },
   now: number,
-  outcome: { failed: string; errorCode: RunErrorCode; guard?:{sql:string;params:unknown[]} } | { skipped: string },
+  outcome: { failed: string; errorCode: RunErrorCode; guard?:import('../db/runs/queue.js').QueueFailureGuard } | { skipped: string },
 ): Promise<boolean> {
   // Retiring the right credential requires the write's own answer: a drain that
   // relaunched and re-queued this row between the caller's read and this write
@@ -558,10 +560,10 @@ async function ceilingHolds(db: ServerEnv['db'], ceiling: ActorCeiling | undefin
 export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<Launched> {
   if (!hasTaskRuntime(env, prepared.task) || env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const mint = await mintWrite(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now, null, NO_RUNTIME_CLAIMS, { rotates: false });
   const minted = mint.issued;
   const setup = [
-    ensureMemberStatement(env.db, HARNESS_MEMBER_ID, now, 'member', undefined, 'harness runtime'),
+    ensureMemberStatement(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime'),
     ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now),
     mint.statement,
   ];
@@ -1054,7 +1056,7 @@ export async function claimNextRun(
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
     worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now, capabilities:worker.capabilities,
-    settingsGuard:{sql:policy.sql,params:policy.params},
+    settingsGuard:policy.revisions,
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   });
   const row=claimed?.row ?? null;
@@ -1144,10 +1146,10 @@ async function pullAtClaim(
     if (input === null) return null;
     const runId = `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
-      reassertion: { sql: `${selection.reassertion.sql} AND NOT ${queued}`, params: selection.reassertion.params },
+      assertions: [...selection.assertions,queuedPriority(queues,limits,worker.now)],
       ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now, capabilities:worker.capabilities,
-      settingsGuard: { sql: policy.sql, params: policy.params },
+      settingsGuard:policy.revisions,
     });
     if (claimed === null) {
       if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
