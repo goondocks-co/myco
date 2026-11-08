@@ -1,14 +1,14 @@
 import type { RelationalStore } from './adapters.js';
 import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../db/budget-activation.js';
 import { BUDGET_WINDOW_MS } from './budget-policy.js';
-import { spendRowsSql, spentMicrosSql, SPEND_READY_SQL, spendReady } from '../db/runs/admission.js';
+import { spendRowsSql, spentUsdSql as spentSql, spendReadySql, spendReady } from '../db/runs/admission.js';
 
 export { effectiveBudgetSql } from './settings.js';
 import { effectiveBudgetSql } from './settings.js';
 export { spendRowsSql } from '../db/runs/admission.js';
 
 /** Rolling spend in dollars at the floor slot, from the maintained totals: what every budget comparison reads. */
-export const spentUsdSql = (floor: string, filter?: { origin?: string; project?: string }): string => `(${spentMicrosSql(floor, filter)}/1000000.0)`;
+export const spentUsdSql = (floor: string): string => spentSql(floor);
 
 export interface SpendRow {
   value: number; estimate: number; costSource: string | null; profileJson: string | null;
@@ -22,13 +22,13 @@ export async function readSpendRows(db: RelationalStore, now: number): Promise<S
 export interface ClaimBudget { active: boolean; estimate: number; profileJson: string; reserveUsd?: number; stateKey?: string; observedEstimate?: string | null }
 /**
  * Automatic work is admitted only against caught-up accounting with room in the rolling window. The comparison reads
- * the Project/origin rollup rows and the due expiry rows, never attempt history.
+ * the Project/origin rollup rows and at most one page of due expiry rows, never attempt history.
  */
 export function budgetClaimPredicate(budget: ClaimBudget, now: number): { sql: string; params: unknown[] } {
   if (!budget.active) return { sql: `(origin='manual')`, params: [] };
   return {
-    sql: `(origin='manual' OR (EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${SPEND_READY_SQL} AND ${budget.stateKey===undefined?'1':`(SELECT value FROM agent_state WHERE project_id=agent_runs.project_id AND agent_id='myco-agent' AND key=?) IS ?`} AND ${spentUsdSql('?')} + ? <= ${effectiveBudgetSql()}))`,
-    params: [...(budget.stateKey===undefined?[]:[budget.stateKey,budget.observedEstimate ?? null]),now-BUDGET_WINDOW_MS,budget.estimate + (budget.reserveUsd ?? 0)],
+    sql: `(origin='manual' OR (EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${spendReadySql('?')} AND ${budget.stateKey===undefined?'1':`(SELECT value FROM agent_state WHERE project_id=agent_runs.project_id AND agent_id='myco-agent' AND key=?) IS ?`} AND ${spentUsdSql('?')} + ? <= ${effectiveBudgetSql()}))`,
+    params: [now-BUDGET_WINDOW_MS,...(budget.stateKey===undefined?[]:[budget.stateKey,budget.observedEstimate ?? null]),now-BUDGET_WINDOW_MS,budget.estimate + (budget.reserveUsd ?? 0)],
   };
 }
 
@@ -47,7 +47,7 @@ export async function budgetHold(db: RelationalStore, projectId: string, runId: 
   const held = (await db.prepare(`SELECT 1 AS held FROM agent_runs WHERE project_id=? AND id=? AND status='queued' AND NOT (${predicate.sql})`)
     .bind(projectId,runId,...predicate.params).first()) !== null;
   if (!held) return null;
-  return active.active && !(await spendReady(db)) ? 'admission_building' : 'budget';
+  return active.active && !(await spendReady(db, now)) ? 'admission_building' : 'budget';
 }
 
 export async function budgetHeld(db: RelationalStore, projectId: string, runId: string, estimate: number, now: number): Promise<boolean> {

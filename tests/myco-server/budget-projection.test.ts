@@ -4,7 +4,7 @@ import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
 import { automaticFits, budgetHold, readSpendRows } from '@myco-server-worker/core/run-budget.js';
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
-import { SPEND_EXPIRY_PAGE, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
+import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
 import { VNEXT_S1A_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s1a.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
@@ -71,7 +71,7 @@ describe('rolling spend accounting', () => {
   });
 
   it('catches up history to the same totals the triggers keep, through interleaved writes and replay', async () => {
-    const totals = (f: Fixture) => f.sqlite.query('SELECT project_id,origin,micros,live_micros,unconfirmed,unconfirmed_estimate_micros FROM budget_totals ORDER BY 1,2').all();
+    const totals = (f: Fixture) => f.sqlite.query('SELECT project_id,origin,usd+usd_carry AS usd,live_usd+live_usd_carry AS live,unconfirmed,unconfirmed_estimate_usd+unconfirmed_estimate_usd_carry AS estimate FROM budget_totals ORDER BY 1,2').all();
     const scenario = async (rebuildMidway: boolean) => {
       const f = await budgetFixture();
       for (let i = 0; i < 70; i++) f.history(`h${i}`, i % 3 === 0 ? null : 0.01 * (i % 7), i % 2 === 0 ? 'automatic' : 'manual', f.now - i * 60_000);
@@ -115,13 +115,57 @@ describe('rolling spend accounting', () => {
       // A restored settlement for an attempt still in the window moves the totals to its priced cost.
       f.history('restored', null, 'automatic', f.now + 3 * SPEND_EXPIRY_PAGE, 0.10);
       f.sqlite.run("UPDATE agent_run_attempts SET cost_usd=NULL,cost_source=NULL WHERE attempt_id='restored'");
-      expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.12);
+      expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.02 + 0.10);
       const restoredRow = f.sqlite.query("SELECT * FROM agent_run_attempts WHERE attempt_id='restored'").get() as Record<string, unknown>;
       await restoreAttemptStatement(f.db, { ...restoredRow, cost_usd: 0.04, cost_source: 'actual' }).run();
       expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.06);
       // Deleting a run removes its attempts' contribution with it.
       f.sqlite.run("DELETE FROM agent_runs WHERE id='restored'");
       expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.02);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('compares source precision exactly at the budget boundary, as a recount of the attempts does', async () => {
+    for (const [spentUsd, estimate, admitted] of [[0.9000004, 0.10, false], [0.8999996, 0.1000002, true]] as const) {
+      const f = await budgetFixture();
+      try {
+        await f.setting(1);
+        f.history('settled', spentUsd);
+        const candidate = f.queue('candidate');
+        expect(await automaticFits(f.db, estimate, f.now)).toBe(admitted);
+        expect(await budgetHold(f.db, candidate.projectId, candidate.id, estimate, f.now)).toBe(admitted ? null : 'budget');
+        expect((await spent(f)).automatic).toBe(spentUsd);
+      } finally { f.sqlite.close(); }
+    }
+  });
+
+  it('keeps the rollup equal to a fresh sum of its facts through many additions and removals', async () => {
+    const f = await budgetFixture();
+    try {
+      for (let i = 0; i < 300; i++) f.history(`churn${i}`, [0.1, 0.2, 0.3, 0.7][i % 4]!, 'automatic', f.now - i);
+      for (let i = 0; i < 300; i += 2) f.sqlite.run('DELETE FROM agent_runs WHERE id=?', [`churn${i}`]);
+      const recount = (f.sqlite.query("SELECT SUM(value) AS usd FROM attempt_spend WHERE counted=1 AND origin='automatic'").get() as { usd: number }).usd;
+      expect((await spent(f)).automatic).toBe(recount);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('waits for the expiry job after an idle day instead of summing the overdue backlog, then admits on exact totals', async () => {
+    const f = await budgetFixture();
+    try {
+      await f.setting(1000);
+      const busy = 3 * SPEND_DUE_READ_LIMIT;
+      for (let i = 0; i < busy; i++) f.history(`busy${i}`, 0.5, 'automatic', f.now + i);
+      f.history('recent', 0.25, 'automatic', f.now + 2 * BUDGET_WINDOW_MS - 10);
+      const later = f.now + 2 * BUDGET_WINDOW_MS;
+      const candidate = f.queue('candidate', 'automatic', 'proj_1', 'title-summary', later);
+      expect(await automaticFits(f.db, 0.1, later)).toBe(false);
+      expect(await budgetHold(f.db, candidate.projectId, candidate.id, 0.1, later)).toBe('admission_building');
+      expect((await readBudgetStatus(f.db, later)).state).toBe('building');
+      const retired = await expireSpend(f.db, later);
+      expect(retired.more).toBe(false);
+      expect(retired.changed).toBeGreaterThan(SPEND_DUE_READ_LIMIT);
+      expect(await spent(f, later)).toEqual({ state: 'ready', automatic: 0.25, manual: 0, live: 0, unconfirmed: 0 });
+      expect(await automaticFits(f.db, 0.1, later)).toBe(true);
     } finally { f.sqlite.close(); }
   });
 

@@ -47,10 +47,9 @@ export async function readBudgetStatus(db: RelationalStore, now: number): Promis
   if (!holds.active) return inactive;
   const snapshot=await readSpendSnapshot(db,now);
   if (!snapshot.ready) return {...inactive,heldHeads:holds.heldHeads,state:'building'};
-  const usd=(micros:number)=>micros/1_000_000;
-  const of=(origin:'manual'|'automatic')=>snapshot.totals.find(row=>row.origin===origin);
+    const of=(origin:'manual'|'automatic')=>snapshot.totals.find(row=>row.origin===origin);
   const total=(pick:(row:SpendTotals)=>number,origin?:'manual'|'automatic')=>snapshot.totals.filter(row=>origin===undefined||row.origin===origin).reduce((sum,row)=>sum+pick(row),0);
-  const detail=(origin:'manual'|'automatic')=>({count:of(origin)?.unconfirmed ?? 0,estimatedUsd:usd(of(origin)?.unconfirmedEstimateMicros ?? 0)});
+  const detail=(origin:'manual'|'automatic')=>({count:of(origin)?.unconfirmed ?? 0,estimatedUsd:of(origin)?.unconfirmedEstimateUsd ?? 0});
   let exposure=0,sampleSize=0,missingSamples=0;
   const samples=new Map<string,EstimateSample|null>();
   for (const row of snapshot.live) {
@@ -68,7 +67,7 @@ export async function readBudgetStatus(db: RelationalStore, now: number): Promis
     exposure+=row.estimate*(sample.ratioP95-1);
     if(first)sampleSize+=sample.ratioN;
   }
-  return {active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:usd(total(row=>row.micros,'automatic')),manualUsd:usd(total(row=>row.micros,'manual')),
-    liveUsd:usd(total(row=>row.liveMicros)),unconfirmed:{count:total(row=>row.unconfirmed),estimatedUsd:usd(total(row=>row.unconfirmedEstimateMicros)),manual:detail('manual'),automatic:detail('automatic')},heldHeads:holds.heldHeads,
+  return {active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:total(row=>row.usd,'automatic'),manualUsd:total(row=>row.usd,'manual'),
+    liveUsd:total(row=>row.liveUsd),unconfirmed:{count:total(row=>row.unconfirmed),estimatedUsd:total(row=>row.unconfirmedEstimateUsd),manual:detail('manual'),automatic:detail('automatic')},heldHeads:holds.heldHeads,
     pricedExposure:{usd:missingSamples>0?null:exposure,sampleSize,missingSamples,provenance:'empirical-p95'},state:'ready'};
 }

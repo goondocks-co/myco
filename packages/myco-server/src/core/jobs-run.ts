@@ -1,4 +1,5 @@
 import { catchUpProjections } from '../db/projections/catchup.js';
+import { expireSpend } from '../db/runs/admission.js';
 import { discoverSporeClusters } from './spore-curation.js';
 import { refreshEstimates } from './budget-estimates.js';
 import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
@@ -244,6 +245,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'projection-catch-up': (env) => catchUpProjections(env.db),
+  'spend-expiry': (env, now) => expireSpend(env.db, now),
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'learning-source-repair': (env) => repairLearningSources(env.db),
   'spore-curation': (env, now) => discoverSporeClusters(env, now),
