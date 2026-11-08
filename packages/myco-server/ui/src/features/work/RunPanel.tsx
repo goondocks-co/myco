@@ -1,6 +1,4 @@
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
-import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
-import { formatRelative } from '../../lib/format';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
 import { useTaskNames } from '../../hooks/use-tasks';
@@ -17,7 +15,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -83,6 +81,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const latest = useAttemptEvidence(projectId, answer, calls, answer.attempts.length - 1);
   const summary = summaryOf(latest, answer.attemptCount);
   const ran = finished || live;
+  const fleetWait = run.status === 'queued' ? fleetWaitWords(run) : null;
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
       <header className="flex flex-col gap-s2">
@@ -98,7 +97,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
-        {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{(run.fleetWait === undefined ? capitalize(queuedWords(run)) : QUEUE_REASON_WORDS[run.fleetWait.reason]).replace(/\.$/, '')}. Waiting since {run.queuedAt === null ? 'an unavailable time' : formatRelative(run.queuedAt)}.</p>}
+        {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{queuedWords(run, now)}</p>}
+        {fleetWait !== null && <p className="t-small text-muted" data-fleet-wait={run.fleetWait?.reason}>{fleetWait}</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
         {live && (canCancel
           ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>

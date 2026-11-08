@@ -1,6 +1,5 @@
 import { BudgetLine } from './BudgetLine';
 import { RepositoryNotice } from '../today/RepositoryNotice';
-import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -30,7 +29,7 @@ import { PageScope } from '../../routes/scope';
 import { LiveMark, WorkNow } from '../now/WorkNow';
 import { useWorkNow } from '../../hooks/use-live';
 import {
-  atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
+  atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, queuedWords, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
 } from './words';
 
@@ -38,8 +37,8 @@ const WINDOW_FILTER: FilterDefinition = {
   key: 'window',
   label: 'When',
   options: [
-    { value: 'week', label: 'This week' },
-    { value: 'today', label: 'Today' },
+    { value: 'week', label: 'Last 7 days (UTC)' },
+    { value: 'today', label: 'Today (UTC)' },
   ],
 };
 
@@ -90,7 +89,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const name = projectId === null ? null : projectName(projectId) ?? 'this project';
   const q = filters.query.trim().toLowerCase();
   const matches = (text: string) => q === '' || text.toLowerCase().includes(q);
-  const answer = work.data === undefined ? undefined : { ...work.data, runs: evidence.rows };
+  const answer = work.data === undefined ? undefined : { ...work.data, timeline: evidence.rows };
   const kinds = answer === undefined ? [] : summarize(answer);
   const shown = picked === null ? kinds : kinds.filter((kind) => kind.kind === picked);
   const closeRun = () => {
@@ -111,7 +110,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
         </div>
         <div className="flex flex-wrap items-center gap-s3">
           <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>Tasks</OnwardLink>
-          <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
+          <RunTaskMenu projectId={projectId} week={week.data?.summary ?? undefined} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
         </div>
       </header>
       <WorkNow answer={workNow.data} pending={workNow.isPending} error={workNow.error} onRetry={() => { void workNow.refetch(); }} now={now} projectName={projectName} />
@@ -134,12 +133,13 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           {KIND_ORDER.map((kind) => <TaskHistory key={kind} kind={kind} projectId={projectId} now={now} defaultOpen={historyParams.get('runs') === 'all' && picked === kind} />)}
         </div>
       </Disclosure>}
+      {work.data?.state === 'building' && <p className="t-small text-muted" data-work-building="">Myco is still measuring its past work. The totals appear when that finishes; new runs show as they end.</p>}
       {work.data !== undefined && kinds.length > 0 && <WorkLede kinds={kinds} window={window} name={name} projectCount={new Set(kinds.flatMap((kind) => kind.projects)).size} />}
       <div className="grid items-start gap-s6 lg:grid-rail">
         <section aria-label="What Myco did" className="flex min-w-0 flex-col gap-s4">
           {work.data === undefined ? null : shown.length === 0 ? (
             <EmptyState
-              title={picked === null ? `Nothing ran ${WINDOW_WORDS[window].noun}` : `No ${KIND_WORDS[picked].toLowerCase()} ${WINDOW_WORDS[window].noun}`}
+              title={work.data.state === 'building' ? 'Measuring past work' : picked === null ? `Nothing ran ${WINDOW_WORDS[window].noun}` : `No ${KIND_WORDS[picked].toLowerCase()} ${WINDOW_WORDS[window].noun}`}
               action={<>
                 {window === 'today' && <Button variant="ghost" size="sm" onClick={() => filters.setFilter('window', 'week')}>Show this week</Button>}
                 {projectId !== null && <Button variant="secondary" size="sm" onClick={() => setHistoryParams((previous) => { const next = new URLSearchParams(previous); next.set('runs', 'all'); return next; })}>Show all · all time</Button>}
@@ -165,7 +165,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           )}
           {work.data !== undefined && (evidence.hasMore || evidence.error !== null) && (
             <div data-work-evidence="" className="flex flex-col gap-s2">
-              <p className="t-small text-muted">Showing {evidence.rows.length.toLocaleString()} run records. Outcome counts and failure status cover the whole window.</p>
+              <p className="t-small text-muted">Showing {evidence.rows.length.toLocaleString()} run records. Outcome counts and failure status cover the whole window (UTC days).</p>
               {evidence.error !== null && <ErrorState error={evidence.error} onRetry={evidence.more} />}
               {evidence.hasMore && <ShowMore shown={evidence.rows.length} noun="run records" hasMore onMore={evidence.more} pending={evidence.isFetchingMore} />}
             </div>
@@ -202,7 +202,7 @@ function WorkLede({ kinds, window, name, projectCount }: { kinds: readonly KindS
   const failures = kinds.filter((kind) => kind.failed > 0).map((kind) => {
     const n = count(kind.failed, runNoun(kind.kind), runNoun(kind.kind, 2));
     if (recovered(kind.failureGroups)) return `${capitalize(n)} failed; the ones since have worked.`;
-    if (kind.failureGroups.some((group) => group.producedSince > 0)) return `${capitalize(n)} failed; some projects have worked since, while others are still waiting for a successful run.`;
+    if (kind.failureGroups.some((group) => !group.unresolved)) return `${capitalize(n)} failed; some projects have worked since, while others are still waiting for a successful run.`;
     return `${capitalize(n)} failed, and none has worked since.`;
   });
   return (
@@ -368,7 +368,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     key: row.id,
     time: shortTime(at, now),
     at,
-    words: row.status === 'queued' && row.fleetWait !== undefined ? `${QUEUE_REASON_WORDS[row.fleetWait.reason]} ${row.queuedAt === null ? 'Queue age unavailable.' : `Waiting since ${atWords(row.queuedAt, now)}.`}` : runLineWords(kind, row, row.outcome),
+    words: row.status === 'queued' ? queuedWords(row, now) : runLineWords(kind, row, row.outcome),
     model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),
@@ -398,7 +398,7 @@ function Evidence(props: EvidenceProps) {
 
 function SporeEvidence({ summary, answer, projectId, bounds, window, matches }: EvidenceProps) {
   const spores = useWindowSpores(projectId, bounds.since, bounds.until);
-  const runIds = new Set(answer.runs.filter((run) => run.kind === summary.kind).map((run) => run.id));
+  const runIds = new Set(answer.timeline.filter((run) => run.kind === summary.kind).map((run) => run.id));
   const written: TodaySpore[] = (spores.data?.spores ?? []).filter((spore) => spore.author !== null && runIds.has(spore.author));
   const byType = new Map<string, number>();
   for (const spore of written) byType.set(spore.observationType, (byType.get(spore.observationType) ?? 0) + 1);

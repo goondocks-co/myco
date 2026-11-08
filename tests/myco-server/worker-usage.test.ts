@@ -162,7 +162,7 @@ describe('model-specific execution accounting', () => {
         if (legacy) r.e.sqlite.run('UPDATE agent_runs SET usage_data=?,cost_data=NULL WHERE id=?', [JSON.stringify({ ...JSON.parse(row.usage_data), costProvenance: 'harness_estimate' }), 'run_usage']);
         expect((await r.detail())?.run.costProvenance).toBe('harness_estimate');
         expect((await listRuns(r.e.db, scope, NOW, 'mem_viewer')).rows[0]?.costProvenance).toBe('harness_estimate');
-        expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]?.costProvenance).toBe('harness_estimate');
+        expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).timeline[0]?.costProvenance).toBe('harness_estimate');
       }
     } finally { r.e.sqlite.close(); }
   });
@@ -170,7 +170,7 @@ describe('model-specific execution accounting', () => {
     const opencode = harnessById('opencode')!;
     const NEW_DEPLOYMENT = SERVER_FEATURES.join(',');
     const OLD_DEPLOYMENT = SERVER_FEATURES.filter((feature) => feature !== PROFILE_OUTCOME_FEATURE).join(',');
-    const work = async (r: Awaited<ReturnType<typeof rig>>) => (await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0];
+    const work = async (r: Awaited<ReturnType<typeof rig>>) => (await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).timeline[0];
     it('stores the refusal\'s code and reason on a Deployment that advertises them, and serves the reason as its own field', async () => {
       expect(SERVER_FEATURES).toContain(PROFILE_OUTCOME_FEATURE);
       const r = await rig('opencode');
@@ -241,7 +241,7 @@ describe('model-specific execution accounting', () => {
       expect(stored).toMatchObject({ model: 'gpt-5.4-mini', provider: 'openai', cost_usd: 0.000138, error_code: 'run_failed' });
       expect(JSON.parse(stored.usage_data)).toHaveProperty('identity.primary.model', 'gpt-5.4-mini');
       expect((await r.detail())?.run).toMatchObject({ identity: { primary: { model: 'gpt-5.4-mini' } }, errorCode: 'run_failed', costProvenance: 'model_pricing' });
-      expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]).toMatchObject({ model: 'gpt-5.4-mini', failure: { code: 'run_failed' }, identity: { primary: { model: 'gpt-5.4-mini' } }, costProvenance: 'model_pricing' });
+      expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).timeline[0]).toMatchObject({ model: 'gpt-5.4-mini', failure: { code: 'run_failed' }, identity: { primary: { model: 'gpt-5.4-mini' } }, costProvenance: 'model_pricing' });
     } finally { r.e.sqlite.close(); }
   });
   for (const [label, model, reported, expected] of [
@@ -286,7 +286,7 @@ describe('model-specific execution accounting', () => {
         const expected = versioned ? identity('gpt-5.4-mini') : { status: 'not_recorded' };
         expect((await r.detail())?.run).toHaveProperty('identity', expected);
         expect((await listRuns(r.e.db, scope, NOW, 'mem_viewer')).rows[0]).toHaveProperty('identity', expected);
-        expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]).toHaveProperty('identity', expected);
+        expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).timeline[0]).toHaveProperty('identity', expected);
       } finally { r.e.sqlite.close(); }
     });
   }

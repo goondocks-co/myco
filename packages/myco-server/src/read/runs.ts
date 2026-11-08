@@ -2,21 +2,20 @@ import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { parseRepositoryFailure, parseHarnessStop, LATE_HARNESS_ERROR_NOTE, type HarnessStop } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
-import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
-import { keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
-import { DISPATCH_ACTOR_SQL, getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../core/runs.js';
+import { clampLimit, decodeCursor, keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
+import { runDetailRow, runListRows } from '../db/runs/history.js';
+import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
+import { getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../core/runs.js';
 import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
-import { contextValue, FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY, HARNESS_STOP_KEY, ENDED_NOTE_KEY } from '../db/run-context.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { requestedProfileValue } from '../db/run-profile.js';
-import { runResultSql, type RunResult } from './run-outcome.js';
+import { type RunResult } from './run-outcome.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
@@ -50,8 +49,11 @@ export interface RunListRow {
   queuedAt: number | null;
   /** What holds a queued run, by name — a limit, the fleet, or the runtime itself; null once it launches. */
   heldBy: string | null;
-  /** How many queued runs are ahead of a queued run; null for any other. */
-  position: number | null;
+  /** Why a queued run waits, its holder's code, and the instant it began waiting; null for any other run. */
+  waitReason: string | null;
+  waitingSince: number | null;
+  /** How many runs of this task wait in this Project, this one included; null for any other run, and while the queue is measured. */
+  taskQueued: number | null;
   /** Whether a deployment ended this run rather than its own work. */
   replaced: boolean;
   /** The run this one stands in for: the deployment that ended that run put this one in its place. */
@@ -211,36 +213,6 @@ export interface RunFilters {
   until?: number;
 }
 
-/** A queued run's place in the Deployment's queue: how many queued runs are ahead of it, oldest first. */
-const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queued'
-  AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
-
-
-const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
-  ${runResultSql('agent_runs')} AS result,
-  ${requestedProfileValue()} AS requested_profile,
-  ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
-  tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
-  queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
-  ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
-  harness, leased_by, lease_expires_at, leased_runner_id, leased_runner_credential_id,
-  (SELECT r.name FROM runners r WHERE r.id = agent_runs.leased_runner_id) AS leased_runner_name,
-  (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine,
-  (SELECT c.member_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_member,
-  (SELECT m.label FROM member_credentials c CROSS JOIN members m ON m.id = c.member_id WHERE c.id = agent_runs.leased_by) AS leased_member_label,
-  ${DISPATCH_ACTOR_SQL} AS started_by, ${contextValue('session_id')} AS target_session_id,
-  CASE WHEN status = 'skipped' THEN ${contextValue('reason')} END AS skip_reason`;
-
-const DETAIL_COLUMNS = `${LIST_COLUMNS},
-  ${contextValue('repository.branch')} AS source_branch, ${contextValue('repository.commit')} AS source_commit,
-  instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
-  resume_mode, resume_attempts, error, error_code, CASE WHEN status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
-  CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
-  CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary,
-  CASE WHEN json_valid(${contextValue(HARNESS_STOP_KEY)}) THEN ${contextValue(HARNESS_STOP_KEY)} END AS harness_stop,
-  ${contextValue(ENDED_NOTE_KEY)} AS ended_note,
-  dispatched_by, actions_taken, checkpoints`;
-
 const text = (value: unknown): string | null => (value as string | null) ?? null;
 const num = (value: unknown): number | null => (value as number | null) ?? null;
 const flag = (value: unknown): boolean => Number(value) === 1;
@@ -262,6 +234,9 @@ function workerOf(row: Record<string, unknown>, ownNames: ReadonlyMap<string, st
     runner: null,
   };
 }
+
+/** A queued run's wait, read beside its row and merged in; every other run has none. */
+const waitFields = (wait: QueuedWait | undefined) => ({ wait_reason: wait?.reason ?? null, waiting_since: wait?.since ?? null, task_queued: wait?.taskQueued ?? null });
 
 function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>, includeSignIn = false): RunListRow {
   // Terminal runs have no current worker lease.
@@ -288,7 +263,9 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     failed: flag(row.failed),
     queuedAt: num(row.queued_at),
     heldBy: visibleRunHolder(text(row.held_by), includeSignIn),
-    position: num(row.position),
+    waitReason: visibleRunHolder(text(row.wait_reason), includeSignIn),
+    waitingSince: num(row.waiting_since),
+    taskQueued: num(row.task_queued),
     replaced: flag(row.replaced),
     replaces: text(row.replaces),
     harness: text(row.harness),
@@ -374,28 +351,21 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
  */
 export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, viewerId: string, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
   const windowed = opts.since !== undefined || opts.until !== undefined;
-  const order = windowed ? 'COALESCE(completed_at, queued_at, started_at)' : 'COALESCE(queued_at, started_at)';
-  const k = keyset(opts, { order, id: 'id', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const conditions = ['project_id = ?'];
-  const params: (string | number)[] = [scope.projectId];
-  if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
-  if (opts.task !== undefined) { conditions.push('task = ?'); params.push(opts.task); }
-  if (opts.agentId !== undefined) { conditions.push('agent_id = ?'); params.push(opts.agentId); }
-  if (opts.since !== undefined) { conditions.push('COALESCE(completed_at, queued_at, started_at) >= ?'); params.push(opts.since); }
-  if (opts.until !== undefined) { conditions.push('COALESCE(completed_at, queued_at, started_at) < ?'); params.push(opts.until); }
-  if (k.where !== '') conditions.push(k.where);
-  const { results } = await db
-    .prepare(`SELECT ${LIST_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')} ORDER BY ${order} DESC, id DESC LIMIT ?`)
-    .bind(...params, ...k.params, k.limit + 1)
-    .all<Record<string, unknown>>();
-  const listed = page(results, k.limit, (r) => ({ createdAt: (windowed ? num(r.completed_at) : null) ?? num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
-  const outcome = runOutcomeCounts(db, scope, listed.rows.map((r) => r.id as string));
+  const limit = clampLimit(opts.limit);
+  const cursor = opts.cursor === undefined ? undefined : decodeCursor(opts.cursor);
+  if (cursor === null) return { rows: [], cursor: null };
+  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until }, limit + 1,
+    cursor === undefined ? undefined : { at: cursor.createdAt, id: cursor.id });
+  const listed = page(results, limit, (r) => ({ createdAt: (windowed ? num(r.completed_at) : null) ?? num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
+  const ids = listed.rows.map((r) => r.id as string);
+  const queued = listed.rows.filter((r) => r.status === 'queued').map((r) => r.id as string);
+  const waits = queued.length === 0 ? new Map<string, QueuedWait>() : await queuedWaits(db, scope, queued);
+  const outcome = runOutcomeCounts(db, scope, ids);
   const [counts, ownNames] = await Promise.all([db.batch(outcome.statements), ownMachineNames(db, viewerId, nowMs)]);
   const outcomes = outcome.read(counts);
   return {
     cursor: listed.cursor,
-    rows: listed.rows.map((r) => ({ ...toListRow(r, ownNames, opts.includeSignIn), outcome: outcomes.get(r.id as string)! })),
+    rows: listed.rows.map((r) => ({ ...toListRow({ ...r, ...waitFields(waits.get(r.id as string)) }, ownNames, opts.includeSignIn), outcome: outcomes.get(r.id as string)! })),
   };
 }
 
@@ -538,11 +508,9 @@ export async function getRunSteps(db: RelationalStore, scope: ReadScope, runId: 
 
 /** One run inside the scope with its phases and the calls it made, its machine named as of `nowMs`, or null — including when the run exists under another project. */
 export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number, viewerId: string, calls: { limit?: number; cursor?: string; includeSignIn?: boolean } = {}): Promise<RunDetail | null> {
-  const [[found], ownNames] = await Promise.all([db.batch([
-    db.prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`).bind(scope.projectId, runId),
-  ]), ownMachineNames(db, viewerId, nowMs)]);
-  const row = (found!.results[0] ?? null) as Record<string, unknown> | null;
+  const [row, ownNames] = await Promise.all([runDetailRow(db, scope, runId), ownMachineNames(db, viewerId, nowMs)]);
   if (row === null) return null;
+  const waits = row.status === 'queued' ? await queuedWaits(db, scope, [runId]) : null;
   const run = await getRun(db, scope, runId);
   const [callPage, currentMap, attempts] = await Promise.all([
     runToolCallPage(db, scope, runId, calls),
@@ -555,7 +523,7 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   ]);
   const latest = attempts.rows.at(-1);
   return {
-    run: toDetailRow(row, ownNames, calls.includeSignIn === true), phases: phasesOf(text(row.checkpoints)), toolCalls: callPage.rows,
+    run: toDetailRow({ ...row, ...waitFields(waits?.get(runId)) }, ownNames, calls.includeSignIn === true), phases: phasesOf(text(row.checkpoints)), toolCalls: callPage.rows,
     toolCallCoverage: { total: callPage.total, failed: callPage.failed, cursor: callPage.cursor },
     source: typeof row.source_branch === 'string' && typeof row.source_commit === 'string' ? { branch: row.source_branch, commit: row.source_commit } : null,
     map: currentMap === null ? null : {

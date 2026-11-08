@@ -141,7 +141,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/repository-requirements.ts', 2],
   ['read/run-outcome.ts', 2],
   ['read/run-reads.ts', 26],
-  ['read/runs.ts', 27],
+  ['read/runs.ts', 20],
   ['read/scope.ts', 2],
   ['read/session-artifacts.ts', 2],
   ['read/session-commits.ts', 2],
@@ -149,7 +149,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/task-descriptions.ts', 1],
   ['read/transcript.ts', 10],
   ['read/uncaptured.ts', 5],
-  ['read/work.ts', 25],
   ['routes.ts', 4],
 ]);
 

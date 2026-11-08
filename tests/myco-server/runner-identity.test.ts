@@ -1348,6 +1348,17 @@ describe('runner agent sign-in choice', () => {
         const admin = await r.json(r.asSession(route, {}, OWNER_SUB, 'GET'));
         expect(JSON.stringify(admin)).toContain(held);
       }
+      const queuedRows = async (sub: string) => {
+        const listed = await r.json(r.asSession('/api/projects/proj_1/runs?status=queued', {}, sub, 'GET'));
+        const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${id}`, {}, sub, 'GET'));
+        return [listed.rows.find((row: Json) => row.id === id), detail.run];
+      };
+      for (const row of await queuedRows(MEMBER_SUB)) {
+        expect({ heldBy: row.heldBy, waitReason: row.waitReason }).toEqual({ heldBy: 'worker', waitReason: 'worker' });
+        expect(row.taskQueued).toBe(1);
+        expect(row).toHaveProperty('waitingSince');
+      }
+      for (const row of await queuedRows(OWNER_SUB)) expect({ heldBy: row.heldBy, waitReason: row.waitReason }).toEqual({ heldBy: held, waitReason: held });
       expect((await r.asSession('/api/diagnostics', {}, MEMBER_SUB, 'GET')).status).toBe(403);
       const pending = await r.start('approval-mini', undefined, false, { 'claude-code': 'stored' });
       const preview = { user_code: pending.user_code };

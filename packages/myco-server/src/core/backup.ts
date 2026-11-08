@@ -119,7 +119,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_failure_contributions', 'document_failure_totals', 'document_failure_head',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
-  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
+  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),

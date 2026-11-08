@@ -42,7 +42,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
     if ((init?.method ?? 'GET') !== 'GET') options.sent?.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (url.pathname === '/api/tasks/start') { await options.preview; return Response.json({ ...PREVIEW(url), ...(options.fleetWait === undefined ? {} : { fleetWait: options.fleetWait }) }); }
     if (url.pathname === '/api/harness/dispatch') return Response.json({ runId: 'run_hand0000001', projectId: JSON.parse(String(init!.body)).projectId, queued: true });
-    if (url.pathname === '/api/work') { await options.week; } if (url.pathname === '/api/work') return Response.json({ outcomes: [], runs: [], upkeep: { lastSuccessAt: null, unrecovered: null }, totals: null });
+    if (url.pathname === '/api/work') { await options.week; } if (url.pathname === '/api/work') return Response.json({ state: 'ready', summary: [], timeline: [], hasMore: false, cursor: null, maps: [], upkeep: { lastSuccessAt: null, unrecovered: null }, totals: null });
     if (url.pathname.endsWith('/capabilities')) return Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } });
     if (url.pathname === '/auth/me') return Response.json(dashboardMe(options.member ? MEMBER : ADMIN));
     if (url.pathname === '/api/projects') return options.failProjects ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(options.projects ?? PROJECTS);

@@ -75,7 +75,7 @@ export const canopy: ParityScenario = {
       expect(detail.run).toMatchObject({ status: 'completed', error: null, endedNote: LATE_HARNESS_ERROR_NOTE, harnessStop: { code: 'harness_error', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use' } } });
       for (const privateText of ['hunter22', '/Users/chris', 'private']) expect(JSON.stringify(detail.run.harnessStop)).not.toContain(privateText);
       const work = await owner(`/api/work?project=${target.projectId}&since=${now - 1000}&until=${Date.now() + 10_000}`);
-      expect(work.runs.find((run: { id: string }) => run.id === first.runId)).toMatchObject({ status: 'completed', failure: null });
+      expect(work.timeline.find((run: { id: string }) => run.id === first.runId)).toMatchObject({ status: 'completed', failure: null });
       expect(await end(first.runId, lateError)).toMatchObject({ ended: false });
       const attention = await owner('/api/attention');
       expect(attention.items.filter((item: { kind: string; runId?: string }) => item.kind === 'outcome_failed' && item.runId === first.runId)).toEqual([]);

@@ -53,7 +53,7 @@ export const repositoryFailure: ParityScenario = {
       const detail = await read(`/api/projects/${target.projectId}/runs/${runId}`);
       expect(detail.run.errorCode).toBe('repository_unprepared');
       const work = await read(`/api/work?project=${target.projectId}&since=${now - 1000}&until=${Date.now() + 10_000}`);
-      const failure = work.runs.find((run: { id: string }) => run.id === runId)?.failure;
+      const failure = work.timeline.find((run: { id: string }) => run.id === runId)?.failure;
       expect(failure?.code).toBe('repository_unprepared');
       if (entry.reason?.code === 'fetch_failed') expect(failure?.repositoryFailure).toEqual(detail.run.repositoryFailure);
       else expect(failure?.repositoryFailure).toBeUndefined();
