@@ -187,10 +187,16 @@ export const guardedSpores: ParityScenario = {
 
       const ids = [await save(), await save(), await save()];
       await target.sql(`UPDATE spores SET content='edited', revision=revision+1 WHERE ${scope} AND id=${lit(ids[1]!)}`);
-      const consolidated = await member({ op: 'consolidate', source_spore_ids: ids.map(id => ({ id, revision: 0 })), consolidated_content: 'combined', observation_type: 'wisdom' });
-      expect(consolidated.sources_consolidated).toBe(2);
-      expect((await member({ op: 'get', id: ids[1] })).status).toBe('active');
-      expect(await target.sql(`SELECT COUNT(*) AS n FROM resolution_events WHERE ${scope} AND new_spore_id=${lit(String(consolidated.new_spore_id))}`)).toEqual([{ n: 2 }]);
+      // A source edited after the caller read it refuses the whole consolidation by name: no wisdom spore, no source moved.
+      const staleSource = await member({ op: 'consolidate', source_spore_ids: ids.map(id => ({ id, revision: 0 })), consolidated_content: 'combined', observation_type: 'wisdom' });
+      expect(staleSource).toMatchObject({ ok: false, error: 'stale', spore_id: ids[1], status: 'active', revision: 1, repairCall: { tool: 'myco_spores', op: 'get', id: ids[1] } });
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM spores WHERE ${scope} AND content='combined'`)).toEqual([{ n: 0 }]);
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM resolution_events WHERE ${scope} AND spore_id IN (${ids.map(id => lit(id)).join(',')})`)).toEqual([{ n: 0 }]);
+      // Reread at their current revisions, all three move together.
+      const consolidated = await member({ op: 'consolidate', source_spore_ids: ids.map((id, i) => ({ id, revision: i === 1 ? 1 : 0 })), consolidated_content: 'combined', observation_type: 'wisdom' });
+      expect(consolidated.sources_consolidated).toBe(3);
+      expect((await member({ op: 'get', id: ids[1] })).status).toBe('consolidated');
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM resolution_events WHERE ${scope} AND new_spore_id=${lit(String(consolidated.new_spore_id))}`)).toEqual([{ n: 3 }]);
       expectRunRefusal(await runs[0]!.resolve({ op: 'consolidate', source_spore_ids: ids, consolidated_content: 'no expectations', observation_type: 'wisdom' }),
         ['source_spore_ids[0]', 'is missing revision'], { tool: 'myco_spores', op: 'consolidate' });
     } finally {

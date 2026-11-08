@@ -516,7 +516,7 @@ const definitions: readonly ServedToolDefinition[] = [
             "required": ["id"],
             "additionalProperties": false
           },
-          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources, each with a nonempty string id and its exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}); each active source moves independently.`
+          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources, each with a nonempty string id and its exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}). Every source moves together or none does: a source no longer active, or past the revision given, refuses the call with error stale, names the source in spore_id, and saves nothing; reread it with op \"get\" and consolidate again.`
         },
         "consolidated_content": {
           "type": "string",

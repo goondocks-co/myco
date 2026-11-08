@@ -46,7 +46,7 @@ function recordingStore(): { db: RelationalStore; statements: Array<{ sql: strin
       };
       return statement;
     },
-    batch: async () => [],
+    batch: async (batched) => batched.map(() => ({ results: [], meta: { changes: 0 } })) as never,
   };
   return { db, statements };
 }

@@ -1,5 +1,6 @@
 import { saveReleaseSettings } from '../db/settings/release-connection.js';
-import { prepareReleasePaths, prepareReleaseCandidates, prepareReleaseClassification, prepareReleasePropagation } from '../read/catalog/release-provenance.js';
+import { prepareReleasePaths, prepareReleaseCandidates, prepareReleasePropagation } from '../read/catalog/release-provenance.js';
+import { writeReleaseClassification, type ClassificationColumns } from '../db/release/classification.js';
 /**
  * Release provenance for one Project: its configuration, its credential, and
  * the scheduled check that answers whether captured work shipped.
@@ -362,18 +363,11 @@ async function writeClassification(
   db: RelationalStore, claim: Claim, c: Candidate, classification: Classification, fingerprint: string | null, now: number,
 ): Promise<boolean | null> {
   const { projectId } = claim;
-  const identity = identityOf(projectId, 'sessions', c.sessionId);
-  const previous = await db.prepare('SELECT state FROM knowledge_release_state WHERE project_id = ? AND identity_key = ?')
-    .bind(projectId, identity).first<{ state: string }>();
   const k = classification;
   const evidence = JSON.stringify({ ...k.evidence, source: sourceOf(c), refs_fingerprint: fingerprint, paths_mark: c.pathsMark });
-  const columns = [k.state, k.confidence, k.basisKind, k.basisRef, k.basisSha, k.releasePrNumber, k.reason, evidence, now];
-  await db.batch(prepareReleaseClassification(db, projectId, c.sessionId, identity, columns, now, fenceParams(claim)));
-  // The row is read back rather than counted: a store may report no changes for an INSERT ... SELECT.
-  const written = await db.prepare(`SELECT 1 AS written FROM knowledge_release_state WHERE project_id = ? AND identity_key = ?
-    AND checked_at = ? AND json_extract(evidence_json, '$.source') = ?`).bind(projectId, identity, now, sourceOf(c)).first();
-  if (written === null) return (await holds(db, claim)) ? false : null;
-  return previous?.state !== k.state;
+  const columns: ClassificationColumns = [k.state, k.confidence, k.basisKind, k.basisRef, k.basisSha, k.releasePrNumber, k.reason, evidence, now];
+  return writeReleaseClassification(db, { projectId, sessionId: c.sessionId, key: identityOf(projectId, 'sessions', c.sessionId) },
+    columns, now, [claim.projectId, claim.runId, claim.revision]);
 }
 
 /**
@@ -387,9 +381,6 @@ async function propagateDerived(db: RelationalStore, claim: Claim, now: number):
   const sessionPrefix = identityOf(projectId, 'sessions', '');
   await db.batch(prepareReleasePropagation(db, projectId, sessionPrefix, now, fenceParams(claim), SESSIONS_PER_CHECK));
 }
-
-const holds = async (db: RelationalStore, claim: Claim) => (await db.prepare(`SELECT 1 AS held FROM project_release_provenance
-  WHERE project_id = ? AND check_run_id = ? AND revision = ?`).bind(...fenceParams(claim)).first()) !== null;
 
 /**
  * Check one Project. Answers how many release states changed.

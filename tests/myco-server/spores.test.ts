@@ -213,20 +213,20 @@ describe('resolution', () => {
     } finally { sqlite.close(); }
   });
 
-  it('per-source consolidation moves only current sources and emits nothing for an earlier same-time move', async () => {
+  it('consolidation moves every source or none, and names the first source that changed since it was read', async () => {
     const { db, sqlite } = store();
     try {
-      for (const id of ['a', 'b', 'c', 'd']) await insertSpore(db, SCOPE, spore(id));
+      for (const id of ['a', 'b', 'c']) await insertSpore(db, SCOPE, spore(id));
       await updateSporeContent(db, SCOPE, 'b', 'edited', NOW);
-      await resolveSpore(db, SCOPE, 'consolidated', { ...event('prior', 'd'), action: 'consolidate' }, NOW);
-      const result = await consolidateSpores(db, SCOPE, spore('wisdom'), [
-        { id: 'a', revision: 0 }, { id: 'b', revision: 0 }, { id: 'c', revision: 0 }, { id: 'd', revision: 1 },
-      ], { agentId: AGENT, reason: null, sessionId: null, author: null, createdAt: NOW }, NOW);
-      expect(result.consolidated).toBe(2);
-      expect(sqlite.query("SELECT spore_id FROM resolution_events WHERE new_spore_id = 'wisdom' ORDER BY spore_id").all())
-        .toEqual([{ spore_id: 'a' }, { spore_id: 'c' }]);
-      expect((await getSpore(db, SCOPE, 'b'))).toMatchObject({ status: 'active', revision: 1 });
-      expect((await getSpore(db, SCOPE, 'd'))).toMatchObject({ status: 'consolidated', revision: 1 });
+      const sources = [{ id: 'a', revision: 0 }, { id: 'b', revision: 0 }, { id: 'c', revision: 0 }];
+      const event = { agentId: AGENT, reason: null, sessionId: null, author: null, createdAt: NOW };
+      expect(await consolidateSpores(db, SCOPE, spore('wisdom'), sources, event, NOW))
+        .toEqual({ wisdom: null, consolidated: 0, stale: { id: 'b', status: 'active', revision: 1, expected: 0 } });
+      expect({ wisdom: await getSpore(db, SCOPE, 'wisdom'), events: sqlite.query('SELECT id FROM resolution_events').all(),
+        statuses: ['a', 'b', 'c'].map(id => sqlite.query('SELECT status, revision FROM spores WHERE id = ?').get(id)) })
+        .toEqual({ wisdom: null, events: [], statuses: [{ status: 'active', revision: 0 }, { status: 'active', revision: 1 }, { status: 'active', revision: 0 }] });
+      const merged = await consolidateSpores(db, SCOPE, spore('wisdom'), [{ id: 'a', revision: 0 }, { id: 'b', revision: 1 }, { id: 'c', revision: 0 }], event, NOW);
+      expect({ id: merged.wisdom?.id, consolidated: merged.consolidated }).toEqual({ id: 'wisdom', consolidated: 3 });
     } finally { sqlite.close(); }
   });
 
