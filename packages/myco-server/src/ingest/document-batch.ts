@@ -1,3 +1,5 @@
+import { publishedDocument } from '../db/documents/publication.js';
+import { PublicationDirectory } from '../db/documents/directory.js';
 import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
 /**
  * One write to a session document: records placed by owner in memory, the turns they changed settled from their
@@ -14,7 +16,7 @@ import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
-import { chunkRowsSql, directoryOf, pageRowsSql, readPageChunk, type ChunkRow, type PageRow } from '../content/document-reader.js';
+import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { PARSER_VERSION, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { resolvePresentedDates } from './projections.js';
@@ -100,17 +102,11 @@ const planKeyOf = (record: DocRecord): string => (typeof record.plan_key === 'st
 /** Parent links `resolve` follows from a prompt to its turn. */
 const ANCESTRY_DEPTH = 8;
 
-/** The generation a batch writes: the live one, or generation 1 while the session waits for conversion. */
-const BATCH_GENERATION = '(SELECT COALESCE(generation, 1) FROM session_documents WHERE project_id=?1 AND session_id=?2)';
-
-/** The directory of the generation a batch writes, read in one round trip with whatever else the caller reads. */
-export function directoryStatements(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement[] {
-  return [db.prepare(chunkRowsSql(BATCH_GENERATION)).bind(projectId, sessionId), db.prepare(pageRowsSql(BATCH_GENERATION)).bind(projectId, sessionId)];
-}
-
 /** A plan a transcript holds, as placed, with the digest of its whole body and whether the body moved to a body chunk. */
 interface TranscriptPlan { record: DocRecord; hash: string; spilled: boolean }
 const PLAN_STATEMENTS_PER_PAGE = 2;
+/** Fixed guard, frontier and session-control statements reserved for a commit. */
+const DOCUMENT_COMMIT_FIXED_STATEMENTS = 6;
 
 const transcriptPlanRows = (plans: ReadonlyMap<string, TranscriptPlan>) => [...plans].map(([key, { record, hash, spilled }]) => ({
   key, id: record.id, title: record.title ?? null, content: spilled ? null : record.content, blob: spilled ? hash : null, hash,
@@ -209,13 +205,14 @@ export class DocumentBatch {
     private readonly projectId: string,
     private readonly sessionId: string,
     readonly doc: BatchDocument,
-    chunks: readonly ChunkRow[],
-    pages: readonly PageRow[],
   ) {
     this.db = env.db;
     this.openTurn = doc.open_turn_key;
     this.firstPrompt = doc.first_prompt;
-    this.writer = new DocumentWriter(directoryOf(doc.generation, chunks, pages), doc.next_chunk, async (row) => {
+    this.writer = new DocumentWriter(new PublicationDirectory(this.db, projectId, sessionId, doc.generation, (statements) => {
+      if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.versions), this.commitStatements + statements)) throw new DocumentPassFull();
+      this.calls += statements;
+    }), doc.next_chunk, async (row) => {
       if (this.admitted && !commitAdmitted(this.db, Math.max(this.floor, this.writer.versions), this.commitStatements, 1)) throw new DocumentPassFull();
       return readPageChunk(env, row);
     });
@@ -330,7 +327,7 @@ export class DocumentBatch {
     const bytes = this.toolChanges.reduce((sum, change) => sum + 500 + new TextEncoder().encode(JSON.stringify({
       name: change.record.tool_name, myco: change.record.myco_tool, op: change.record.myco_op, files: change.record.files_affected,
     })).length * 8, 0) + this.writer.touched.size * 1_000;
-    return 4 + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
+    return DOCUMENT_COMMIT_FIXED_STATEMENTS + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
   }
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
@@ -366,11 +363,12 @@ export class DocumentBatch {
 
   /** Reads the sealed pages the catalog names for these records, for the owners that have any. */
   private async locateSealed(records: readonly DocRecord[]): Promise<void> {
+    await this.writer.prepareOwners([SESSION_OWNER, ...records.map(record => this.ownerOf(record))]);
     const wanted: SealedRecord[] = [];
     for (const record of records) {
       const owner = this.ownerOf(record);
       for (const candidate of record.k === 'tool' && owner !== SESSION_OWNER ? [owner, SESSION_OWNER] : [owner]) {
-        if (!this.writer.hasSealed(candidate)) continue;
+        if (!await this.writer.hasSealed(candidate)) continue;
         wanted.push({ o: candidate, k: record.k, i: record.id });
         if (record.k === 'plan') wanted.push({ o: candidate, k: record.k, i: planKeyOf(record) });
       }
@@ -802,7 +800,8 @@ export class DocumentBatch {
         this.calls += 4;
       }
       const own = await statements(versions);
-      const transaction = [...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after];
+      const transaction = [...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after,
+        ...(layout !== null && chunkState === 'live' ? [publishedDocument(this.db, this.projectId, this.sessionId, this.doc.generation)] : [])];
       if (this.admitted && reserveReached(this.db, transaction.length, 0)) throw new DocumentPassFull();
       await this.db.batch(transaction);
     } catch (error) {

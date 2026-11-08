@@ -1,4 +1,5 @@
 import { sessionDocumentUnreadSql } from '../../db/document-tables.js';
+import { readSessionDetail } from '../../db/sessions/publication.js';
 import type { PreparedStatement as sessions_import_PreparedStatement } from "../../core/adapters.js";
 import type { RelationalStore as sessions_import_RelationalStore } from "../../core/adapters.js";
 import type { RunResult as sessions_import_RunResult } from "../../core/adapters.js";
@@ -7,8 +8,8 @@ import { page as sessions_import_page, clampLimit as sessions_import_clampLimit,
 import { decodeProjectCursor as sessions_import_decodeProjectCursor, projectPage as sessions_import_projectPage } from "../project-cursor.js";
 import {
   firstPromptSql as sessions_import_firstPromptSql, PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT, PRESENTED_STARTED_AT as sessions_import_PRESENTED_STARTED_AT,
-  readSessionPage as sessions_import_readSessionPage, SESSION_COLUMNS as sessions_import_SESSION_COLUMNS, SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
-  sessionFrom as sessions_import_sessionFrom, SESSIONS_ACROSS_INDEX as sessions_import_SESSIONS_ACROSS_INDEX, SESSIONS_ACTIVE_INDEX as sessions_import_SESSIONS_ACTIVE_INDEX,
+  readSessionPage as sessions_import_readSessionPage, SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
+  SESSIONS_ACROSS_INDEX as sessions_import_SESSIONS_ACROSS_INDEX, SESSIONS_ACTIVE_INDEX as sessions_import_SESSIONS_ACTIVE_INDEX,
   SESSIONS_WORKING_INDEX as sessions_import_SESSIONS_WORKING_INDEX, WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
 } from "../../db/sessions/browse.js";
 import type { Page as sessions_import_Page } from "../scope.js";
@@ -141,8 +142,6 @@ function sessions_relatedSessionLabel(title: string | null, firstPrompt: string 
 
 const sessions_PRESENTED_STARTED_AT = sessions_import_PRESENTED_STARTED_AT;
 const sessions_PRESENTED_ENDED_AT = sessions_import_PRESENTED_ENDED_AT;
-const sessions_SESSION_COLUMNS = sessions_import_SESSION_COLUMNS;
-const sessions_SESSION_FROM = sessions_import_sessionFrom('');
 const sessions_SESSIONS_ACROSS_INDEX = sessions_import_SESSIONS_ACROSS_INDEX;
 const sessions_SESSIONS_ACTIVE_INDEX = sessions_import_SESSIONS_ACTIVE_INDEX;
 const sessions_SESSIONS_WORKING_INDEX = sessions_import_SESSIONS_WORKING_INDEX;
@@ -579,9 +578,9 @@ async function sessions_sessionsWithImportedPrompts(db: sessions_import_Relation
 
 /** One session inside the scope, or null — including when the session exists under another project. */
 /** One session; given `nowMs`, marked working or not. */
- async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number): Promise<sessions_SessionRow | null> {
-  const row = (await queryRows<Record<string, unknown>>(db,`SELECT ${sessions_SESSION_COLUMNS} ${sessions_SESSION_FROM} WHERE s.project_id = ? AND s.session_id = ? AND ${sessions_LIVE_SESSION}`,[scope.projectId, sessionId],'first'))[0] ?? null;
-  return row === null ? null : sessions_toSession(row, nowMs);
+ async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number): Promise<(sessions_SessionRow & { publishedRevision: number }) | null> {
+  const row = await readSessionDetail(db, scope.projectId, sessionId);
+  return row === null ? null : { ...sessions_toSession(row, nowMs), publishedRevision: row.published_revision };
 }
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */

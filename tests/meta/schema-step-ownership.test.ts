@@ -1,3 +1,5 @@
+import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
+import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
@@ -35,6 +37,14 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...[
+    ['idx_publication_owner_pages', 'session_pages'], ['idx_publication_transcripts', 'transcripts'],
+    ['idx_publication_reopen', 'transcript_publication'], ['idx_publish_ready', 'publish_queue'], ['idx_publish_sleeping', 'publish_queue'],
+    ...['insert','update','delete'].map(action => [`publication_directory_transcripts_${action}`, 'transcripts']),
+    ['publication_directory_generation', 'session_documents'], ['publication_directory_lifecycle', 'sessions'],
+    ['publication_directory_frontier_rewind', 'transcript_publication'],
+  ].map(([object, table]) => ({ step: V718, object: object!, table: table!, reason: 'Publication seeks bounded directories and due arms; keyed input changes restart their cursors.' })),
+
   ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
   { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
@@ -247,6 +257,10 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V718_STATEMENTS.filter(sql => /^ALTER TABLE/.test(sql)).map(sql => ({
+    step: V718, sql, reason: 'Publication records its directory cursor and committed revision without backfilling history.'
+  })),
+
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'
@@ -734,4 +748,8 @@ it('schema steps are contiguous from one through the server version and migratio
       .filter((name) => name.endsWith('.sql'))
       .sort(),
   ).toEqual(SCHEMA_STEPS.map(migrationFileName));
+});
+
+it('pins the frozen publication directory step to its generator', () => {
+  expect(V718_STATEMENTS).toEqual(publicationDirectorySchema());
 });

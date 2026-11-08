@@ -9,6 +9,15 @@ import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 
 import type { DerivedEvent } from './parsers/index.js';
 
+export type PublicationRefusal = 'kind_unsupported' | 'inline_body_required' | 'unpaired_surrogate' | 'payload_invalid';
+
+/** Admission failures carry a content-free code independently of their diagnostic message. */
+export class RecordRefused extends Error {
+  constructor(readonly subreason: PublicationRefusal, message: string) {
+    super(message);
+    this.name = 'RecordRefused';
+  }
+}
 
 
 
@@ -58,10 +67,10 @@ export async function sourceReceipts(
 /** Document bodies use verified blob admission; all other fields retain catalogue bounds. */
 export function admittedDocumentEvent(event: DerivedEvent, now: number): DerivedEvent {
   const spec = kindSpec(event.kind), fields = DOCUMENT_TEXT_FIELDS[event.kind];
-  if (!spec || fields === undefined) throw new Error('view_record_kind_unsupported');
+  if (!spec || fields === undefined) throw new RecordRefused('kind_unsupported', 'view_record_kind_unsupported');
   const bodies = Object.values(fields);
   if (event.payload.blob !== undefined || event.payload.outputBlob !== undefined)
-    throw new Error('view_record_refused: parser bodies require inline source content');
+    throw new RecordRefused('inline_body_required', 'view_record_refused: parser bodies require inline source content');
   const placeholder = { ...event.payload };
   for (const field of bodies)
     if (placeholder[field] !== undefined) placeholder[field] = typeof placeholder[field] === 'string' ? '' : {};
@@ -69,7 +78,7 @@ export function admittedDocumentEvent(event: DerivedEvent, now: number): Derived
   const payload = { ...bounded.payload };
   for (const field of bodies) if (event.payload[field] !== undefined) payload[field] = event.payload[field];
   if (Object.values(payload).some((value) => typeof value === 'string' && /[\uD800-\uDFFF]/u.test(value)))
-    throw new Error('view_record_refused: string contains an unpaired surrogate');
+    throw new RecordRefused('unpaired_surrogate', 'view_record_refused: string contains an unpaired surrogate');
   const bound = (field: string, value: Bound): Bound =>
     !bodies.includes(field)
       ? value
@@ -85,6 +94,6 @@ export function admittedDocumentEvent(event: DerivedEvent, now: number): Derived
     ),
   };
   const admitted = parsePayload(viewSpec, payload, now);
-  if (!admitted.ok) throw new Error('view_record_refused: ' + admitted.reason);
+  if (!admitted.ok) throw new RecordRefused('payload_invalid', 'view_record_refused: ' + admitted.reason);
   return { ...event, payload: admitted.value };
 }

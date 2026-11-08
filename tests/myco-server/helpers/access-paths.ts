@@ -40,6 +40,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_search_blob_pending', 'pending search work is ordered across the Deployment by its last attempt'],
   ['idx_transcripts_backlog', 'the transcript parse backlog is ordered across the Deployment, live before imported'],
   ['idx_transcripts_parser_version', 'the bounded parser upgrade sweep walks older versions across the Deployment'],
+  ['idx_publication_reopen', 'stopped publication candidates are ordered by parser version across the Deployment'],
   ['idx_transcripts_terminal', 'terminal transcript outcomes are ordered across the Deployment by lane and receipt'],
   ['idx_fleet_queue', 'fleet readiness aggregates the Deployment queue by task and hold over a covering index'],
   ['idx_fleet_legacy_leases', 'legacy fleet inventory starts from currently running member-held leases across the Deployment'],

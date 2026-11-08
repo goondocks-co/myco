@@ -7,7 +7,7 @@ import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { CARD_CLAIM_TURNS } from '@myco-server-worker/core/turn-cards.js';
 import { captureDocumentSession, captureDocumentTranscript } from './helpers/document-stores.js';
-import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS, directoryStatements } from '@myco-server-worker/ingest/document-batch.js';
+import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS } from '@myco-server-worker/ingest/document-batch.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -79,10 +79,9 @@ it('a refused placement leaves no transcript plan and no reopened session in the
     await publishDocuments({ db, blobs }, t0, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
     await db.prepare(`UPDATE sessions SET ended_at = ? WHERE project_id = 'project' AND session_id = 'undone'`).bind(t0 + 1).run();
     const measured = measuredContentEnv({ db, blobs }, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: CONTENT_BLOB_LIMIT });
-    const [docs, chunks, pages] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
-        s.created_by_token_id AS token_id FROM session_documents d JOIN sessions s USING (project_id, session_id) WHERE d.session_id = 'undone'`),
-      ...directoryStatements(db, 'project', 'undone')]);
-    const batch = new DocumentBatch(measured.env, 'project', 'undone', docs!.results[0] as never, chunks!.results as never, pages!.results as never);
+    const [docs] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
+        s.created_by_token_id AS token_id FROM session_documents d JOIN sessions s USING (project_id, session_id) WHERE d.session_id = 'undone'`),]);
+    const batch = new DocumentBatch(measured.env, 'project', 'undone', docs!.results[0] as never);
     await batch.open();
     batch.admitted = true;
     // A transcript's plan and a user prompt after the end, placed when the pass can pay its closing but no chunk version.
@@ -163,10 +162,10 @@ it('a turn past the page budget is never carded by rule, and falls due with its 
 /** Places records into a live session's document through the shared batch, as the publisher commits them. */
 async function placeRecords(env: { db: RelationalStore; blobs: ReturnType<typeof memoryBlobStore> }, sessionId: string, records: DocRecord[]): Promise<void> {
   const { db } = env;
-  const [docs, chunks, pages] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
+  const [docs] = await db.batch([db.prepare(`SELECT d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key,
       s.created_by_token_id AS token_id FROM session_documents d JOIN sessions s USING (project_id, session_id) WHERE d.project_id = 'project' AND d.session_id = ?`)
-    .bind(sessionId), ...directoryStatements(db, 'project', sessionId)]);
-  const batch = new DocumentBatch(env, 'project', sessionId, docs!.results[0] as never, chunks!.results as never, pages!.results as never);
+    .bind(sessionId),]);
+  const batch = new DocumentBatch(env, 'project', sessionId, docs!.results[0] as never);
   await batch.open();
   await batch.place(records, null);
   await batch.commit(batch.writer.changed, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {

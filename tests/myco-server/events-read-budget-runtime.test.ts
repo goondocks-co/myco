@@ -54,11 +54,18 @@ const LEARNING_SLICE_COMPLETION_WRITES = 20;
 const PUBLICATION_CONTRIBUTION_WRITES = 3;
 /** Growth past a complete frontier changes its pending contribution and generation total too. */
 const PUBLICATION_FRONTIER_REOPEN_WRITES = 2;
+/** The publication directory orders transcripts by role, receipt and canonical id. */
+const PUBLICATION_DIRECTORY_INDEX_WRITES = 1;
+/** New source input resets an in-progress session directory cursor by key. */
+const PUBLICATION_DIRECTORY_RESTART_WRITES = 1;
+/** Turn lifecycle changes fence in-flight publication and restart its directory. */
+const PUBLICATION_LIFECYCLE_REVISION_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
   'transcript grows after full publish': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES,
-  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  'transcript grows during directory pass': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES + PUBLICATION_DIRECTORY_RESTART_WRITES,
+  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26 + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -342,6 +349,9 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
         await capture('transcript grows after full publish', () => measured.db.prepare('UPDATE transcripts SET size=? WHERE project_id=? AND transcript_id=?')
           .bind(100+i*10,PROJECT,sessionId).run());
       }
+      await db.prepare('UPDATE transcript_publication SET published_offset=150 WHERE project_id=? AND transcript_id=?').bind(PROJECT,sessionId).run();
+      await db.prepare("UPDATE session_documents SET publication_after='[]' WHERE project_id=? AND session_id=?").bind(PROJECT,sessionId).run();
+      await capture('transcript grows during directory pass', () => measured.db.prepare('UPDATE transcripts SET size=160 WHERE project_id=? AND transcript_id=?').bind(PROJECT,sessionId).run());
       await event('session.end', { endedAt: now });
       const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:memoryBlobStore(),SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
       await publishDocuments({...configured,blobs:memoryBlobStore()},now,{calls:500,deadline:Infinity,clock:()=>now});
