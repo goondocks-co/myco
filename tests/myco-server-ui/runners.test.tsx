@@ -244,6 +244,13 @@ describe('Runners page', () => {
     }
   });
 
+  it('shows a waiting message without a count while queue heads build', async () => {
+    mount('admin', RUNNER, { queue: { state: 'building', observedAt: NOW, count: null, oldestAt: null,
+      reasons: [{ reason: 'queue_building', count: null }], nativeNeedsRunner: false } });
+    await screen.findByText(QUEUE_REASON_WORDS.queue_building);
+    expect(screen.queryByText(/runs waiting; oldest/)).toBeNull();
+  });
+
   it('escalates an older blocked queue and uses scoped legacy empty wording for members', async () => {
     mount('member', RUNNER, { queue: { observedAt: NOW, count: 1, oldestAt: NOW - 70 * 60000, reasons: [{ reason: 'no_runner', count: 1 }], nativeNeedsRunner: false } });
     await screen.findByText('None of your machines run a legacy worker.');

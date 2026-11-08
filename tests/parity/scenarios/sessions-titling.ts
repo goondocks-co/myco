@@ -1,15 +1,9 @@
 import { expect } from 'bun:test';
-import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+import { memberHeadersFor, documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
-/**
- * The proof scenario for #1042: capture through /events, the settled end
- * request's titling dispatch, the dashboard label, the MCP read, and an owner's ask —
- * identical on both targets. Both parity targets bind the recording runtime,
- * which takes a dispatch and starts nothing: the claim is stamped and a run
- * row waits, no title is ever written, and the session is labelled from its
- * first prompt. A title landing is proven by the live smoke.
- */
+/** Capture, queue admission, owner preview and title writes share the same contract on both stores. */
 export const sessionsTitling: ParityScenario = {
   name: 'sessions and titling: capture, the unbound-runtime fallback, label, MCP, an owner\'s ask',
   async run(target: ParityTarget) {
@@ -86,5 +80,39 @@ export const sessionsTitling: ParityScenario = {
     expect(await runFor(s2)).toEqual([{ status: 'queued', harness: null, heldBy: 'worker', credentialed: 0 }]);
     expect(await sessionRow(s2)).toEqual({ title: null, summary: null, titled_at: expect.any(Number) });
     expect((await ownerRows()).find((row) => row.sessionId === s2)?.label).toBe('Rename the project from the card');
+
+    const at = Date.now(), token = ('title-parity-' + crypto.randomUUID().replaceAll('-', '')).slice(0, 43);
+    const tokenId = 'mt_title_attribution', runId = 'run_title_attribution';
+    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES('mem_harness','harness',${at})`);
+    await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
+      VALUES(${lit(tokenId)},'mem_harness','harness',${lit(await sha256Hex(token))},${at},${at + 600000},${lit(tokenId)},${at})`);
+    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,run_context)
+      VALUES(${lit(target.projectId)},${lit(runId)},'myco-agent','title-summary','running',${at},${lit(tokenId)},
+      ${lit(JSON.stringify({session_id:s1,mode:'claim',timeoutSeconds:300}))})`);
+    const writeTitle = async () => {
+      const response = await fetch(`${target.url}/mcp`, {method:'POST',
+        headers:memberHeadersFor(token,target.projectId,{'content-type':'application/json'}),
+        body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'myco_run_sessions',
+          arguments:{op:'title',title:'Runner retry',summary:'Added a retry to the runner.'}}}),
+      });
+      expect(response.status).toBe(200);
+      const answer = await response.json() as {result:{structuredContent:{result:{written:boolean}}}};
+      return answer.result.structuredContent.result.written;
+    };
+    await target.sql(`CREATE TRIGGER refuse_title_mutation BEFORE UPDATE OF title ON sessions
+      WHEN OLD.project_id=${lit(target.projectId)} AND OLD.session_id=${lit(s1)} BEGIN SELECT RAISE(IGNORE); END`);
+    try {
+      expect(await writeTitle()).toBe(false);
+      expect(await target.sql(`SELECT title FROM sessions WHERE project_id=${lit(target.projectId)} AND session_id=${lit(s1)}`))
+        .toEqual([{title:null}]);
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_run_events WHERE project_id=${lit(target.projectId)}
+        AND run_id=${lit(runId)} AND event_type='run_write'`)).toEqual([{n:0}]);
+    } finally { await target.sql('DROP TRIGGER refuse_title_mutation'); }
+    expect((await Promise.all([writeTitle(),writeTitle()])).sort()).toEqual([false,true]);
+    expect(await target.sql(`SELECT title,summary FROM sessions WHERE project_id=${lit(target.projectId)} AND session_id=${lit(s1)}`))
+      .toEqual([{title:'Runner retry',summary:'Added a retry to the runner.'}]);
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_run_events WHERE project_id=${lit(target.projectId)}
+      AND run_id=${lit(runId)} AND event_type='run_write'`)).toEqual([{n:1}]);
+    await target.sql(`UPDATE agent_runs SET status='completed',completed_at=${at + 1} WHERE project_id=${lit(target.projectId)} AND id=${lit(runId)}`);
   },
 };

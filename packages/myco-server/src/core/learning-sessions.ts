@@ -1,3 +1,4 @@
+import { learningCompleted } from '../db/runs/attributed-writes.js';
 import type { Bound } from '../db/index.js';
 import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { learningRetryWrite, learningBackoffWrite } from '../db/runs/claim-companions.js';
@@ -217,14 +218,7 @@ export async function completeLearning(
   const landedParams = [projectId, sessionId, assignment.expectedRevision + 1, runId];
   const guard = { sql: `${landed} AND NOT (${coversNothing})`, params: [...landedParams, ...survivingParams] };
   const result = await commitAttributedWrite(db, { projectId },
-    db.prepare(`UPDATE learning_sessions SET revision = revision + 1, handoff = CASE WHEN ${coversNothing} THEN handoff ELSE ? END,
-        last_completed_at = ?, last_completed_run = ?, last_completed_reason = 'completed',
-        failures = CASE WHEN ${coversNothing} THEN failures ELSE 0 END,
-        eligible_at = CASE WHEN ${coversNothing} THEN eligible_at ELSE NULL END,
-        learned_seq = MAX(learned_seq, COALESCE((SELECT MAX(c.last_seq) ${surviving}), learned_seq))
-      WHERE project_id = ? AND session_id = ? AND revision = ?
-      RETURNING (SELECT COUNT(*) ${surviving}) AS covered`)
-      .bind(...survivingParams, handoff, now, runId, ...survivingParams, ...survivingParams, ...survivingParams, projectId, sessionId, assignment.expectedRevision, ...survivingParams),
+    learningCompleted.bind(assigned,projectId,sessionId,handoff,now,runId,assignment.expectedRevision),
     { runId, toolName: LEARNING_TOOL, op: 'complete', recordedAt: now, detail: { session_id: sessionId, cards: cards.length } },
     [
       db.prepare(`UPDATE turn_cards SET covered = 1 WHERE state = 'carded' AND project_id = ? AND session_id = ? AND turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(?))

@@ -257,7 +257,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/backup.ts#restoreArtifact': [
     { tables: ['backup_restore_progress'], order: 'unverified' },
   ],
-  'core/canopy.ts#writeCanopyMap': [
+  'db/runs/attributed-writes.ts#<module>': [
     { tables: ['canopy_maps'], order: 'unverified' },
   ],
   'core/harness-health.ts#recordProvisionedHarnessReport': [

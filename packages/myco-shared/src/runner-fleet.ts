@@ -78,8 +78,9 @@ export interface RunnerFleetRecord {
 
 export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
 export interface FleetQueue {
-  observedAt: number; count: number; oldestAt: number | null;
-  reasons: Array<{ reason: QueueReason; count: number }>;
+  state?: 'building';
+  observedAt: number; count: number | null; oldestAt: number | null;
+  reasons: Array<{ reason: QueueReason; count: number | null }>;
   nativeNeedsRunner: boolean;
 }
 

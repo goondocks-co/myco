@@ -1,7 +1,8 @@
+import { readAttemptSpendOracle as readSpendRows } from './helpers/attempt-spend-oracle.js';
 import { queuedWaits } from '@myco-server-worker/db/runs/queue.js';
 import { expect,it } from 'bun:test';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
-import { readSpendRows,budgetHeld,automaticFits } from '@myco-server-worker/core/run-budget.js';
+import { budgetHeld,automaticFits } from '@myco-server-worker/core/run-budget.js';
 import { queueHeads } from '@myco-server-worker/core/queue-heads.js';
 import { settleLapsedLease,guardedStateStatement,claimQueuedRun } from '@myco-server-worker/core/runs.js';
 import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
@@ -18,7 +19,7 @@ import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-ru
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
-import { installPulledStages, queuedAdmissibleSql, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
+import { installPulledStages, queuedAdmissible, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
@@ -535,12 +536,12 @@ it('reasserts level and capacity inside the write when they change during input 
     await completeBudgetMigration(db,Date.now());
     await db.prepare(`INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('project','myco-agent','canopy-map','{"estimate":1000000}',1)`).run();
     const measured=measuredStore(db as Parameters<typeof measuredStore>[0]);
-    const admissible=`SELECT ${queuedAdmissibleSql(BUDGET_WORKER_TASKS.map(task=>({task,estimateKey:task})),NO_LIMITS,Date.now())} AS admissible`;
+    const queues=BUDGET_WORKER_TASKS.map(task=>({task,estimateKey:task}));
     const reads=async(backlog:number)=>{
       await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,origin) SELECT 'project','held-${backlog}-'||key,'myco-agent','canopy-map','queued',key,'automatic' FROM json_each(?)`)
         .bind(JSON.stringify(Array(backlog).fill(0))).run();
       measured.reset();
-      expect(await measured.db.prepare(admissible).first()).toEqual({admissible:0});
+      expect(await queuedAdmissible(measured.db,queues,NO_LIMITS,Date.now())).toBe(false);
       return measured.reads();
     };
     // A held queued backlog costs the head seeks alone, whatever its length.

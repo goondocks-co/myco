@@ -476,6 +476,14 @@ describe('running a task by hand', () => {
     expect(again.querySelector('[data-readiness]')!.textContent).toBe('New sessions have arrived since the code map was last updated.');
   });
 
+  it('shows that existing runs are still being checked while the preview is building', async () => {
+    server(routes({ start: { live: null, fleetWait: { reason: 'queue_building', observedAt: NOW } } }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Update the code map now/);
+    await waitFor(() => expect(within(dialog).getByText('Checking for runs already waiting or running in this project.')).toBeTruthy());
+    expect(dialog.querySelector('[data-already-live]')).toBeNull();
+  });
+
   it('lists exactly the tasks the server says a person may start, in the server\'s words', async () => {
     server({ ...routes(), '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => (task.task === 'canopy-map' ? task : { ...task, startable: false })) }) });
     mount(`/p/${P}/work`);

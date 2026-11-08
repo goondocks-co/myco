@@ -1,6 +1,7 @@
-import { assertion, type Bound } from '../index.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { assertion, read, readSet, type Bound } from '../index.js';
 import { liveCountSql, RUN_ADMISSION_READY_SQL } from './live.js';
-import { spendRowsSql } from './admission.js';
+import { spentUsdSql, projectSpendSql, spendReadySql } from './admission.js';
 import { queueHeadSeek } from './queue.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { capabilityOnSql, projectAcceptsWorkSql, effectiveBudgetSql, learningEnabledSql, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from '../../core/settings.js';
@@ -55,7 +56,7 @@ export function curationAdmissionSql(project:string,now:number|string,estimateKe
   return `EXISTS(SELECT 1 FROM spore_curation_work w INDEXED BY idx_curation_due WHERE ${curationDueWorkSql(project,now)})
     AND ${capabilityOnSql(project,"'spore_curation'")}
     AND NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live WHERE r.task='${CURATION_TASK}' AND r.project_id=${project} AND r.${IN_FLIGHT_RUN_STATUSES})
-    AND (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql(before(now,BUDGET_WINDOW_MS))})) + ${price} + ${reserveForStage(CURATION_TASK)}<=${effectiveBudgetSql()}`;
+    AND ${spendReadySql(before(now,BUDGET_WINDOW_MS))} AND ${spentUsdSql(before(now,BUDGET_WINDOW_MS))} + ${price} + ${reserveForStage(CURATION_TASK)}<=${effectiveBudgetSql()}`;
 }
 const limitSql = (task:string) => `${RUN_ADMISSION_READY_SQL}
   AND (i.fleet IS NULL OR ${liveCountSql('fleet',task,'NULL','NULL')}<i.fleet)
@@ -80,8 +81,8 @@ export function definePullPolicy(name:string,task:string,due:string,head:string)
     head:assertion<[string]>({name:`pull.${name}Head`,sql:assertSql(head)}),
     higher:assertion<[string]>({name:`pull.${name}Priority`,sql:assertSql(`NOT EXISTS(SELECT 1 FROM projects p WHERE ${valid})`)}),
     fair:assertion<[string]>({name:`pull.${name}Fair`,sql:assertSql(`NOT EXISTS(SELECT 1 FROM projects p
-      CROSS JOIN (SELECT ROUND(COALESCE(SUM(value),0),6) AS spent FROM (${spendRowsSql(`i.now-${BUDGET_WINDOW_MS}`)}) WHERE origin='automatic' AND projectId=i.projectId) mine
-      LEFT JOIN (SELECT projectId,ROUND(SUM(value),6) AS spent FROM (${spendRowsSql(`i.now-${BUDGET_WINDOW_MS}`)}) WHERE origin='automatic' GROUP BY projectId) other ON other.projectId=p.project_id
+      CROSS JOIN (SELECT ROUND(COALESCE((SELECT spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)}) WHERE projectId=i.projectId),0),6) AS spent) mine
+      LEFT JOIN (SELECT projectId,ROUND(spent,6) AS spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)})) other ON other.projectId=p.project_id
       WHERE p.project_id!=i.projectId AND ${valid}
         AND (COALESCE(other.spent,0)<mine.spent OR (COALESCE(other.spent,0)=mine.spent AND p.project_id<i.projectId)))`)}),
   };
@@ -95,14 +96,24 @@ export const curationPolicy=definePullPolicy('curation',CURATION_TASK,curationAd
   `${curationAdmissionSql('i.projectId','i.now',undefined,'i.estimateKey')} AND EXISTS(SELECT 1 FROM spore_curation_work w
     WHERE ${curationDueWorkSql('i.projectId','i.now')} AND cluster_key=i.key AND due_at=i.observed AND decision IS NULL)`);
 const qTask="json_extract(q.value,'$.task')",qCapability="json_extract(q.value,'$.capability')";
-const queuedClear=assertion<[string]>({name:'pull.queuedPriority',sql:assertSql(`NOT EXISTS(SELECT 1 FROM json_each(?1,'$.queues') q
+const queuedClearSql = `NOT EXISTS(SELECT 1 FROM json_each(?1,'$.queues') q
   CROSS JOIN json_each('["manual","automatic"]') origins WHERE ${limitSql(qTask)} AND EXISTS(
     SELECT 1 FROM (${queueHeadSeek('project_id, task',qTask,'origins.value')}) head
       WHERE ${projectAcceptsWorkSql('head.project_id')} AND (${qCapability} IS NULL OR ${capabilityOnSql('head.project_id',qCapability)})
-      AND (origins.value='manual' OR (SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql(`i.now-${BUDGET_WINDOW_MS}`)}))
+      AND (origins.value='manual' OR ${spendReadySql(`i.now-${BUDGET_WINDOW_MS}`)} AND ${spentUsdSql(`i.now-${BUDGET_WINDOW_MS}`)}
         + COALESCE((SELECT json_extract(s.value,'$.estimate') FROM agent_state s WHERE s.project_id=head.project_id
-          AND s.agent_id='myco-agent' AND s.key=json_extract(q.value,'$.estimateKey')),json_extract(q.value,'$.seed'))<=${effectiveBudgetSql()})))`)});
+          AND s.agent_id='myco-agent' AND s.key=json_extract(q.value,'$.estimateKey')),json_extract(q.value,'$.seed'))<=${effectiveBudgetSql()})))`;
+const queuedClear=assertion<[string]>({name:'pull.queuedPriority',sql:assertSql(queuedClearSql)});
+const queuedRead=read<[string], { admissible: number }>({name:'pull.queuedAdmissible',sql:`${inputs} SELECT NOT (${queuedClearSql}) AS admissible FROM i`});
+const queueValues = (queues:readonly ServedQueue[],limits:DispatchLimits,now:number) => JSON.stringify({
+  now,fleet:resolvedConcurrency(limits).value,concurrent:limits.task_concurrent_runs,hourly:limits.task_runs_per_hour,
+  queues:queues.map(q=>{const gate=admissionForTask(q.task);return {...q,capability:gate?.kind==='capability'?gate.capability:null,seed:seedForStage(q.task)};}),
+});
+export async function queuedAdmissible(db: RelationalStore, queues:readonly ServedQueue[],limits:DispatchLimits,now:number):Promise<boolean> {
+  const [[row]] = await readSet(db, queuedRead.bind(queueValues(queues,limits,now)));
+  return row?.admissible === 1;
+}
+
 export function queuedPriority(queues:readonly ServedQueue[],limits:DispatchLimits,now:number):Bound {
-  return queuedClear.bind(JSON.stringify({now,fleet:resolvedConcurrency(limits).value,concurrent:limits.task_concurrent_runs,hourly:limits.task_runs_per_hour,
-    queues:queues.map(q=>{const gate=admissionForTask(q.task);return {...q,capability:gate?.kind==='capability'?gate.capability:null,seed:seedForStage(q.task)};})}));
+  return queuedClear.bind(queueValues(queues,limits,now));
 }

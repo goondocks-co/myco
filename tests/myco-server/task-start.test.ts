@@ -183,3 +183,70 @@ describe('previewing a task started by hand', () => {
     for (const task of tasks) expect(task.triggers.includes('When a person chooses Run a task.')).toBe(task.startable);
   });
 });
+
+it('preview agrees with fleet admission at the hourly ceiling and ignores old entries when it expires', async () => {
+  const { budgetFixture } = await import('./helpers/budget-fixture.js');
+  const { readTaskStartPreview } = await import('@myco-server-worker/read/task-start.js');
+  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const f = await budgetFixture();
+  try {
+    f.queue('waiting');
+    for (let i = 0; i < 12; i++) f.history('recent-' + i, 0);
+    f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.limits.task_runs_per_hour','2',0,'fixture')");
+    const preview = (at: number) => readTaskStartPreview(f.serverEnv, 'proj_1', 'title-summary', 'mem_worker', at);
+    expect((await preview(f.now)).fleetWait.reason).toBe('dispatch_ceiling');
+    expect((await readFleetProjection(f.serverEnv, f.now)).queue.reasons).toEqual([{ reason: 'dispatch_ceiling', count: 1 }]);
+    expect((await preview(f.now + 3_600_001)).fleetWait.reason).toBe('no_runner');
+    expect((await readFleetProjection(f.serverEnv, f.now + 3_600_001)).queue).toMatchObject({
+      count: 1, reasons: [{ reason: 'no_runner', count: 1 }],
+    });
+    f.sqlite.run("UPDATE projection_catchup SET done=0 WHERE projection='run_admission'");
+    expect(await preview(f.now)).toMatchObject({ live: null, fleetWait: { reason: 'queue_building' } });
+    expect((await readFleetProjection(f.serverEnv, f.now)).queue).toMatchObject({
+      state: 'building', count: null, reasons: [{ reason: 'queue_building', count: null }],
+    });
+    f.sqlite.run("UPDATE agent_runs SET status='skipped' WHERE id='waiting'");
+    expect((await readFleetProjection(f.serverEnv, f.now)).queue).toMatchObject({ count: 0, reasons: [] });
+  } finally { f.sqlite.close(); }
+});
+
+
+it('fleet capacity excludes only the queued head in its own Project', async () => {
+  const { budgetFixture } = await import('./helpers/budget-fixture.js');
+  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const f = await budgetFixture();
+  try {
+    f.queue('shared-id', 'manual', 'proj_1');
+    f.queue('shared-id', 'manual', 'proj_2');
+    f.sqlite.run("UPDATE agent_runs SET status='running',started_at=? WHERE project_id='proj_2' AND id='shared-id'", [f.now]);
+    expect((await readFleetProjection({ ...f.serverEnv, fleet: 1 }, f.now)).queue).toMatchObject({
+      count: 1, reasons: [{ reason: 'dispatch_ceiling', count: 1 }],
+    });
+  } finally { f.sqlite.close(); }
+});
+
+
+it('serves a many-Project fleet queue within one request query allowance', async () => {
+  const { budgetFixture } = await import('./helpers/budget-fixture.js');
+  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const f = await budgetFixture();
+  try {
+    for (let i = 0; i < 60; i++) {
+      const project = 'proj_queue_' + i;
+      f.sqlite.run('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)', [project, project, f.now]);
+      for (const task of ['title-summary', 'vault-seed']) for (const origin of ['manual', 'automatic'])
+        f.queue(`${task}-${origin}`, origin, project, task);
+    }
+    let queries = 0;
+    const charge = () => { if (++queries > 50) throw new Error('Request query allowance exhausted'); };
+    const { statementRecorder } = await import('../helpers/statement-recorder.js');
+    const recorder = statementRecorder(f.db, { accounting: 'native', before: statement => { if (statement.method !== 'batch') charge(); } });
+    const db = { ...recorder.db, batch: (statements: Parameters<typeof f.db.batch>[0]) => {
+      charge();
+      return recorder.db.batch(statements);
+    } };
+    expect((await readFleetProjection({ ...f.serverEnv, db }, f.now)).queue).toMatchObject({
+      count: 240, oldestAt: f.now, reasons: [{ reason: 'no_runner', count: 240 }],
+    });
+  } finally { f.sqlite.close(); }
+});
