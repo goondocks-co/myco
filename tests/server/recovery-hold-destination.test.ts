@@ -6,6 +6,7 @@
  * A hold is never reopened over a saved snapshot, because deletions may have run while it was not held.
  */
 import { expect, it } from 'bun:test';
+import { releaseNow } from '../myco-server/helpers/release-now.js';
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -19,7 +20,7 @@ import {
 } from '@myco/server/recovery-bundle.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
-import { releaseBlobs, drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
@@ -96,7 +97,7 @@ it('keeps a deletion decided during the copy from removing an object the snapsho
       },
       blob: async (object) => {
         // Between the snapshot and this copy, the Deployment deletes the blob and drains: the hold defers both.
-        const outcome = await source.live((db) => releaseBlobs(db, [{ projectId: 'proj_1', key: source.key }], Date.now()));
+        const outcome = await source.live((db) => releaseNow(db, [{ projectId: 'proj_1', key: source.key }], Date.now()));
         expect(outcome).toEqual({ released: 0, deferred: 1 });
         await source.live(async (db) => { await drainObjectReleases({ db, blobs: diskBlobStore(source.paths.blobDir) }, Date.now()); });
         deleted += 1;

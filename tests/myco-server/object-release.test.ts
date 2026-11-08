@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'bun:test';
+import { releaseNow } from './helpers/release-now.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobObjectKey, blobObjectKeySql, registeredObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import {
-  acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, releaseBlobs, releaseRecoveryHold, resetRecoveryLedger,
+  acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, releaseRecoveryHold, resetRecoveryLedger,
 } from '@myco-server-worker/core/object-release.js';
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
@@ -73,7 +74,7 @@ function unnamed(e: Env): string[] {
   return [...e.bucket.objects.keys()].filter((key) => !named.has(key) && !key.startsWith('backups/'));
 }
 
-const release = async (e: Env, key: string) => releaseBlobs(e.db, [{ projectId: P, key }], Date.now());
+const release = async (e: Env, key: string) => releaseNow(e.db, [{ projectId: P, key }], Date.now());
 
 describe('the object lifecycle under late store operations', () => {
   it('remaps restored content proofs and hot transcript source evidence with their blob', async () => {
@@ -376,7 +377,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     orphan(e, 1);
     const key = String(1).padStart(64, '0');
     await acquireRecoveryHold(e.db, 'hold-1', 1);
-    expect(await releaseBlobs(e.db, [{ projectId: P, key }], 2)).toEqual({ released: 0, deferred: 1 });
+    expect(await releaseNow(e.db, [{ projectId: P, key }], 2)).toEqual({ released: 0, deferred: 1 });
     e.sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
                   VALUES (?, 'att', 's', 'e', ?, 'text/plain', 1, 1, 't', 1)`, [P, key]);
     // A second hold opening before the first is released is refused; the candidate survives every hold.
@@ -453,7 +454,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     const e = sqliteEnv();
     orphan(e, 9);
     await acquireRecoveryHold(e.db, 'source-hold', 1);
-    await releaseBlobs(e.db, [{ projectId: P, key: String(9).padStart(64, '0') }], 2);
+    await releaseNow(e.db, [{ projectId: P, key: String(9).padStart(64, '0') }], 2);
     e.sqlite.run(`INSERT INTO backup_release_candidates (id, created_at) VALUES ('bk_source', 1)`);
     e.sqlite.run(`INSERT INTO object_releases (physical, kind, created_at) VALUES ('proj_1/source', 'upload', 1)`);
     e.sqlite.run(`INSERT INTO blob_reservations (reservation_id, project_id, key, token_id, size, expires_at) VALUES (?, ?, ?, 't', 1, 9)`, [crypto.randomUUID(), P, 'a'.repeat(64)]);

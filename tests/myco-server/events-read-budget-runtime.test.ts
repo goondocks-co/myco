@@ -17,7 +17,6 @@ import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { measuredStore } from './helpers/read-budget.js';
-import { blobDecisionStatements } from '@myco-server-worker/core/object-release.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 
@@ -96,8 +95,6 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
     const reads: number[] = [];
     const captureReads: number[] = [];
     const media: { before: number[]; after: number[] } = { before: [], after: [] };
-    const retention: { before: number[]; after: number[] } = { before: [], after: [] };
-    const retentionLive: { before: number[]; after: number[] } = { before: [], after: [] };
     const measured = measuredStore(db);
     for (const size of CORPUS_SIZES) {
       const sequence = `WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i<${size})`;
@@ -107,24 +104,6 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
         SELECT ?,'seed-'||i,'session','credential','notification','cli','{}','hash',1,1,1 FROM seq`).bind(PROJECT).run();
       await db.prepare(`${sequence} INSERT OR IGNORE INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
         SELECT ?,printf('%064d',i),1,'text/plain','credential',1,'00000000-0000-4000-8000-000000000001' FROM seq`).bind(PROJECT).run();
-      await db.prepare(`${sequence} INSERT OR IGNORE INTO blob_release_candidates(project_id,key,created_at)
-        SELECT ?,printf('%064d',i),1 FROM seq`).bind(PROJECT).run();
-      await db.prepare('INSERT OR IGNORE INTO blob_release_candidates(project_id,key,created_at) VALUES(?,?,1)').bind(PROJECT, BLOB).run();
-      await db.prepare("INSERT OR IGNORE INTO recovery_holds(token,holder,acquired_at) VALUES(?,'operator',1)").bind('hold-' + size).run();
-      const pageSql = `(SELECT json_extract(j.value, '$.p') AS p, json_extract(j.value, '$.k') AS k FROM json_each(?) j)`;
-      const page = JSON.stringify([{ p: PROJECT, k: BLOB }]);
-      const oldDecisions: RelationalStore = { ...measured.db, prepare: sql => measured.db.prepare(sql
-        .replace(`(project_id, key) IN (SELECT c.p, c.k FROM ${pageSql} c)`,
-          `EXISTS (SELECT 1 FROM ${pageSql} c WHERE c.p = ${sql.startsWith('DELETE FROM blobs') ? 'blobs' : 'blob_release_candidates'}.project_id AND c.k = ${sql.startsWith('DELETE FROM blobs') ? 'blobs' : 'blob_release_candidates'}.key)`)
-        .replace(`(rc.project_id, rc.key) IN (SELECT c.p, c.k FROM ${pageSql} c)`,
-          `EXISTS (SELECT 1 FROM ${pageSql} c WHERE c.p = rc.project_id AND c.k = rc.key)`)) };
-      measured.reset();
-      await oldDecisions.batch(blobDecisionStatements(oldDecisions, page, 2));
-      retention.before.push(measured.reads());
-      measured.reset();
-      await measured.db.batch(blobDecisionStatements(measured.db, page, 2));
-      retention.after.push(measured.reads());
-      await db.prepare("UPDATE recovery_holds SET released_at=2,release_reason='complete',released_by='operator' WHERE released_at IS NULL").run();
       const sessionId = `capture-${size}`;
       await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
         VALUES(?,?,'machine','credential',1,1)`).bind(PROJECT, sessionId).run();
@@ -162,13 +141,6 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       expect((await db.prepare('SELECT raw_revision FROM events WHERE project_id=? AND event_id=?').bind(PROJECT, eventId).first<{ raw_revision: number }>())!.raw_revision).toBeGreaterThan(0);
       expect(await db.prepare('SELECT session_id FROM storage_cleanup_queue WHERE project_id=? AND resource_kind=? AND resource_id=?').bind(PROJECT, 'event', eventId).first<{ session_id: string }>())
         .toEqual({ session_id: sessionId });
-      measured.reset();
-      await oldDecisions.batch(blobDecisionStatements(oldDecisions, page, 2));
-      retentionLive.before.push(measured.reads());
-      await db.prepare('INSERT INTO blob_release_candidates(project_id,key,created_at) VALUES(?,?,1)').bind(PROJECT, BLOB).run();
-      measured.reset();
-      await measured.db.batch(blobDecisionStatements(measured.db, page, 2));
-      retentionLive.after.push(measured.reads());
     }
     console.info('EVENT_ADMISSION_READ_BUDGET ' + JSON.stringify({ sizes: CORPUS_SIZES, rowsRead: reads, captureRowsRead: captureReads }));
     expect(blobs.gets).toHaveLength(CORPUS_SIZES.length);
@@ -177,7 +149,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       expect(captureReads[index]!, `complete capture at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
     }
     expect(reads[1]).toBe(reads[0]);
-    for (const [name, rows] of [['blob-retention-held-page', retention], ['blob-retention-live-page', retentionLive], ['blob-media-type', media]] as const) {
+    for (const [name, rows] of [['blob-media-type', media]] as const) {
       console.info('HISTORY_READ_BUDGET ' + JSON.stringify({ name, sizes: CORPUS_SIZES, ...rows }));
       for (const after of rows.after) expect(after).toBeLessThanOrEqual(ROW_READ_LIMIT);
       expect(rows.after[1]).toBe(rows.after[0]);

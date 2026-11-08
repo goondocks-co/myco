@@ -7,7 +7,7 @@
  */
 import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { recordBlobCandidates, releaseBlobs } from './object-release.js';
+import { recordObservedCandidates, releaseBlobs } from './object-release.js';
 import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, type BlobReference } from './blob-references.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
@@ -77,12 +77,15 @@ export async function sessionPresent(db: RelationalStore, projectId: string, ses
   return row !== null;
 }
 
-/** Every blob key the session's rows name, before any of them are removed: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
-async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: string): Promise<string[]> {
-  const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => db
-    .prepare(`SELECT DISTINCT ${blobReferenceColumn(ref)} AS k FROM ${ref.table} WHERE project_id = ? AND ${route.where} AND ${blobReferenceColumn(ref)} IS NOT NULL${kindFilter(ref)}`)
-    .bind(...route.params(projectId, sessionId))));
-  return [...new Set(rows.flatMap((r) => (r.results as { k: string }[]).map((row) => row.k)))];
+/** Every blob the session's rows name, before any of them are removed, with the generation registered in that same read: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
+async function blobsOf(db: RelationalStore, projectId: string, sessionId: string): Promise<Array<{ key: string; generation: string | null }>> {
+  const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => {
+    const column = blobReferenceColumn(ref, 'r');
+    return db.prepare(`SELECT DISTINCT ${column} AS k, (SELECT b.generation FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${column}) AS g
+      FROM ${ref.table} r WHERE project_id = ? AND ${route.where} AND ${column} IS NOT NULL${kindFilter(ref)}`).bind(...route.params(projectId, sessionId));
+  }));
+  const found = new Map(rows.flatMap((r) => (r.results as Array<{ k: string; g: string | null }>).map((row) => [row.k, row.g] as const)));
+  return [...found].map(([key, generation]) => ({ key, generation }));
 }
 
 
@@ -134,7 +137,7 @@ export async function tombstoneSession(
   const { projectId } = scope;
   if (!(await sessionPresent(env.db, projectId, sessionId))) return { applied: false, removed: 0, blobsFreed: 0, blobsLeft: 0 };
 
-  const keys = await blobKeysOf(env.db, projectId, sessionId);
+  const held = await blobsOf(env.db, projectId, sessionId);
 
   const metadata = [
     ...tombstoneMarkStatements(env.db, projectId, sessionId, by, nowMs, reason),
@@ -167,11 +170,11 @@ export async function tombstoneSession(
     env.db.prepare(`DELETE FROM run_served_material WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?) RETURNING 1 AS removed`).bind(projectId, projectId),
   ];
-  // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows,
-  // so an interruption before the decision below leaves the candidates for the drain rather than for no one.
-  const pairs = keys.map((key) => ({ projectId, key }));
-  const candidates = recordBlobCandidates(env.db, pairs, nowMs);
-  const results = await env.db.batch([...statements, ...candidates]);
+  // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows, while
+  // the generation those rows held is still registered, so an interruption before the decision below leaves the candidates
+  // for the drain and a pass that lost to another records nothing.
+  const pairs = held.map(({ key }) => ({ projectId, key }));
+  const results = await env.db.batch([...statements, ...recordObservedCandidates(env.db, held.map(({ key, generation }) => ({ projectId, key, generation })), nowMs)]);
   const removed = results.slice(metadata.length, statements.length).reduce((n, r) => n + r.results.length, 0);
 
   const released = await releaseBlobs(env.db, pairs, nowMs);

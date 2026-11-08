@@ -7,10 +7,9 @@
  * the raw retention window expires.
  *
  * Read by the orphan sweep, transcript retention, session deletion and the
- * recovery snapshot check.
+ * recovery snapshot check; the held check itself is `db/storage/blob-held.ts`.
  */
 import { KINDS, blobFields } from '../ingest/kinds.js';
-import type { RelationalStore } from './adapters.js';
 
 export interface BlobReference {
   table: string;
@@ -76,40 +75,4 @@ const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 export const kindFilter = (ref: ReferenceColumns): string =>
   ref.kinds ? ` AND kind IN (${ref.kinds.map(literal).join(', ')})` : '';
 
-/** SQL true when a row of `ref` names blob `key` in Project `project`; both are SQL expressions in the enclosing statement. */
-export function referenceHolds(ref: ReferenceColumns, project: string, key: string): string {
-  return `EXISTS (SELECT 1 FROM ${ref.table} WHERE project_id = ${project} AND ${blobReferenceColumn(ref)} = ${key}${kindFilter(ref)})`;
-}
-
-/** SQL true when any row in the catalogue names blob `key` in Project `project`. Each check is scoped to `project`; a row in another Project does not hold the key. */
-export const blobHeld = (project: string, key: string): string =>
-  BLOB_REFERENCES.map((ref) => referenceHolds(ref, project, key)).join(' OR ');
-
-/** SQL true when a retained event names the bundle in its Project. */
-export function bundleHeld(project: string, id: string): string {
-  return BUNDLE_REFERENCES.map(ref => referenceHolds(ref, project, id)).join(' OR ');
-}
-
 export interface BlobRef { projectId: string; key: string }
-
-/**
- * Pairs one statement checks. A page travels as one JSON parameter read
- * through `json_each`: the statement binds one value and contains no compound
- * select. The hosted store caps a compound select at five terms and bounds the
- * parameters a statement binds.
- */
-const PAIRS_PER_STATEMENT = 256;
-
-/** Of `pairs`, those no surviving row references, each judged in its own Project, checked one page per statement in order. */
-export async function unreferencedAmong(db: RelationalStore, pairs: readonly BlobRef[]): Promise<BlobRef[]> {
-  const out: BlobRef[] = [];
-  for (let at = 0; at < pairs.length; at += PAIRS_PER_STATEMENT) {
-    const page = pairs.slice(at, at + PAIRS_PER_STATEMENT).map((b) => ({ p: b.projectId, k: b.key }));
-    const { results } = await db
-      .prepare(`SELECT b.p, b.k FROM (SELECT json_extract(j.value, '$.p') AS p, json_extract(j.value, '$.k') AS k FROM json_each(?) j) b WHERE NOT (${blobHeld('b.p', 'b.k')})`)
-      .bind(JSON.stringify(page))
-      .all<{ p: string; k: string }>();
-    out.push(...results.map((r) => ({ projectId: r.p, key: r.k })));
-  }
-  return out;
-}

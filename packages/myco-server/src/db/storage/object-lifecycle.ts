@@ -1,4 +1,5 @@
 import { objectJournalSql as journalSql } from './object-journal.js';
+import { clearStorageUsage, restartStorageUsage } from './usage.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
@@ -24,14 +25,16 @@ const settleJournal = write<[physical: string, at: number]>({ name: 'storage.jou
   journalSql(`SELECT physical,kind,?2 FROM object_settlement_intents i WHERE physical=?1 AND NOT (${registered('i')})`) });
 const clearSettled = write<[physical: string]>({ name: 'storage.clearSettledIntent', sql:
   'DELETE FROM object_settlement_intents WHERE physical=?' });
+/** When a journal row is due: its rescheduled attempt, or its creation while no delete has failed. The queue index is over exactly this expression. */
+const EFFECTIVE_DUE = 'CASE WHEN retry_at=0 THEN created_at ELSE retry_at END';
 const due = read<[now: number, limit: number], { physical: string; attempts: number }>({ name: 'storage.dueObjectReleases', sql:
-  'SELECT physical,attempts FROM object_releases WHERE retry_at<=? ORDER BY retry_at,created_at,physical LIMIT ?' });
+  `SELECT physical,attempts FROM object_releases WHERE ${EFFECTIVE_DUE}<=? ORDER BY ${EFFECTIVE_DUE},physical LIMIT ?` });
 const acknowledge = write<[physical: string], { physical: string }>({ name: 'storage.acknowledgeObjectRelease', sql:
   'DELETE FROM object_releases WHERE physical=? RETURNING physical' });
 const retireAcknowledged = write<[physical: string, issued: number, grace: number]>({ name: 'storage.retireAcknowledgedIntent', sql:
   `DELETE FROM object_settlement_intents AS i WHERE physical=?1 AND expires_at+?3<=?2 AND EXISTS(SELECT 1 FROM object_releases r WHERE r.physical=i.physical) AND ${unowned('i')}` });
-const retry = write<[physical: string, at: number, attempts: number]>({ name: 'storage.retryObjectRelease', sql:
-  'UPDATE object_releases SET retry_at=MAX(retry_at,?2),attempts=MAX(attempts,?3) WHERE physical=?1' });
+const retry = write<[physical: string, at: number, attempts: number, failure: string]>({ name: 'storage.retryObjectRelease', sql:
+  'UPDATE object_releases SET retry_at=MAX(retry_at,?2),attempts=MAX(attempts,?3),last_failure=?4 WHERE physical=?1' });
 
 const expiredUploads = `SELECT reservation_id FROM blob_reservations WHERE expires_at<=?1 ORDER BY expires_at,reservation_id LIMIT ?2`;
 const expiredBackups = `SELECT key FROM backup_publications WHERE expires_at<=?1 ORDER BY expires_at,key LIMIT ?2`;
@@ -85,9 +88,10 @@ export async function acknowledgeRelease(db: RelationalStore, physical: string, 
   const [,removed]=await commit(db,retireAcknowledged.bind(physical,issuedAt,OBJECT_PUT_IN_FLIGHT_MS),acknowledge.bind(physical));
   return removed.results.length;
 }
-export async function retryRelease(db: RelationalStore, physical: string, now: number, attempts: number) {
+/** Reschedules only this key; `failure` classifies its unacknowledged delete. */
+export async function retryRelease(db: RelationalStore, physical: string, now: number, attempts: number, failure: string) {
   const delay = Math.min(RELEASE_RETRY_MAX_MS,RELEASE_RETRY_BASE_MS*2**Math.min(attempts,MAX_RETRY_EXPONENT));
-  await commit(db,retry.bind(physical,now+delay,attempts+1));
+  await commit(db,retry.bind(physical,now+delay,attempts+1,failure));
 }
 
 const resetHolds = write<[]>({ name: 'storage.resetRecoveryHolds', sql: 'DELETE FROM recovery_holds' });
@@ -98,7 +102,7 @@ const resetCandidates = write<[]>({ name: 'storage.resetBackupCandidates', sql: 
 const resetIntents = write<[]>({ name: 'storage.resetObjectIntents', sql: 'DELETE FROM object_settlement_intents' });
 export async function resetObjectLifecycle(db: RelationalStore) {
   await commit(db,resetHolds.bind(),resetJournal.bind(),resetUploads.bind(),resetBackups.bind(),
-    resetCandidates.bind(),resetIntents.bind(),advance.bind(''));
+    resetCandidates.bind(),resetIntents.bind(),advance.bind(''),clearStorageUsage.bind(),restartStorageUsage.bind());
 }
 
 const retainedAuthority = write<[reservation: string, now: number]>({ name: 'storage.retainConsumedUploadIntent', sql:

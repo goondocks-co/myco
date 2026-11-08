@@ -18,6 +18,7 @@ import { WORK_CATCHUP, WORK_HISTORY_PROJECTION, WORK_RUN_ELIGIBLE } from '../run
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { SPORE_COUNT_PROJECTION, SPORE_COUNT_RECONCILE } from '../spores/counts.js';
 import { PLAN_COUNT_PROJECTION, PLAN_COUNT_RECONCILE } from '../plans/counts.js';
+import { STORAGE_USAGE_PHASE, STORAGE_USAGE_PROJECTION, STORAGE_USAGE_RECONCILE, STORAGE_USAGE_SOURCE, clearStorageUsage, storageUsageCursorHeld } from '../storage/usage.js';
 import { KPI_DOCUMENT_RECONCILE, KPI_JSON_KEYS, KPI_LINEAGE_RECONCILE, KPI_RECONCILE, reconcileKpi } from '../insights/kpi-reconcile.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
@@ -81,9 +82,10 @@ const PHASE_SOURCES = {
   workRuns: { table: 'agent_runs', columns: ['project_id', 'id'], where: WORK_RUN_ELIGIBLE },
   ...RESET_PHASE_SOURCES,
   ...CALIBRATION_PHASE_SOURCES,
+  [STORAGE_USAGE_PHASE]: STORAGE_USAGE_SOURCE,
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
-const projectionOf = (phase: ProjectionPhase) => phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
+const projectionOf = (phase: ProjectionPhase) => phase === STORAGE_USAGE_PHASE ? STORAGE_USAGE_PROJECTION : phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
   : phase in VERSION_PHASE_SOURCES ? 'publication_version'
   : (phase === 'publicationPinGroups' || phase === 'publicationPinsReady') ? 'publication_pins'
   : (phase === 'publicationMetadata' || phase === 'publicationOwnershipReady') ? 'publication_ownership'
@@ -131,6 +133,7 @@ const reconciles = {
   runs: LIVE_CATCHUP, workRuns: WORK_CATCHUP,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
+  [STORAGE_USAGE_PHASE]: STORAGE_USAGE_RECONCILE,
 };
 
 /** Replaying keys reads current source values inside the caller's commit; spend facts settle against the page's own window floor. */
@@ -151,7 +154,8 @@ export async function catchUpPhase(db: RelationalStore, phase: ProjectionPhase, 
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
   if (phase === 'publicationMetadata' && keys.length > 0 && blobs === undefined) throw new Error('publication_metadata_blob_store_required');
   const metadata = phase === 'publicationMetadata' ? await metadataPage(db, blobs!, keys, charge,held.generation,now) : {statements:[],guards:[],complete:true};
-  const guards = phase === 'publicationMetadata' ? [metadataCursorHeld.bind(held.after_key,held.generation)] : [];
+  const guards = phase === 'publicationMetadata' ? [metadataCursorHeld.bind(held.after_key,held.generation)]
+    : phase === STORAGE_USAGE_PHASE ? [storageUsageCursorHeld.bind(held.after_key,held.generation)] : [];
   const statements = [...guards, ...metadata.statements, ...kpiPageStatements(phase, JSON.stringify(keys), now)];
   charge(statements.length + 1);
   try {
@@ -180,7 +184,7 @@ export const publicationReady = (phases: readonly Pick<Phase, 'phase' | 'done'>[
   ['publicationInputs','publicationSessions'].every(phase => phases.some(row => row.phase === phase && row.done === 1));
 
 const SINGLE_PHASE = { [RUN_ADMISSION_PROJECTION]: 'runs', passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts',
-  [SPORE_COUNT_PROJECTION]: 'spores', [PLAN_COUNT_PROJECTION]: 'plans', [WORK_HISTORY_PROJECTION]: 'workRuns' } as const;
+  [SPORE_COUNT_PROJECTION]: 'spores', [PLAN_COUNT_PROJECTION]: 'plans', [WORK_HISTORY_PROJECTION]: 'workRuns', [STORAGE_USAGE_PROJECTION]: STORAGE_USAGE_PHASE } as const;
 export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'publication' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
   if (projection === 'kpi') return kpiReadiness(rows).state;
@@ -190,7 +194,7 @@ export async function projectionReadiness(db: RelationalStore, projection: 'kpi'
 }
 
 export async function resetProjectionCatchup(db: RelationalStore): Promise<void> {
-  await commit(db, reset.bind());
+  await commit(db, reset.bind(), clearStorageUsage.bind());
 }
 
 /** Drains atomic pages within a statement and elapsed-time allowance; unfinished phases request another wake. */
