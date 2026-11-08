@@ -2,17 +2,17 @@
 
 ALTER TABLE session_documents ADD COLUMN publication_input_revision INTEGER NOT NULL DEFAULT 0;
 
-CREATE TABLE document_publication_ready(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,PRIMARY KEY(project_id,session_id)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS document_publication_ready(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,PRIMARY KEY(project_id,session_id)) WITHOUT ROWID;
 
-CREATE TABLE document_publication_contributions(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),transcript_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS document_publication_contributions(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),transcript_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('source','frontier')),generation INTEGER NOT NULL,session_id TEXT NOT NULL,
       bytes INTEGER NOT NULL,pending INTEGER NOT NULL,sources INTEGER NOT NULL,imported INTEGER NOT NULL,PRIMARY KEY(project_id,transcript_id,kind,generation)) WITHOUT ROWID;
 
-CREATE TABLE document_publication_totals(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS document_publication_totals(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('source','frontier')),generation INTEGER NOT NULL,
       bytes INTEGER NOT NULL,pending INTEGER NOT NULL,sources INTEGER NOT NULL,imported INTEGER NOT NULL,PRIMARY KEY(project_id,session_id,kind,generation)) WITHOUT ROWID;
 
-CREATE TRIGGER publication_contribution_insert AFTER INSERT ON document_publication_contributions BEGIN
+CREATE TRIGGER IF NOT EXISTS publication_contribution_insert AFTER INSERT ON document_publication_contributions BEGIN
 
       INSERT INTO document_publication_totals(project_id,session_id,kind,generation,bytes,pending,sources,imported)
     SELECT NEW.project_id,NEW.session_id,NEW.kind,NEW.generation,1*NEW.bytes,1*NEW.pending,1*NEW.sources,1*NEW.imported WHERE (1) AND (NEW.bytes<>0 OR NEW.pending<>0 OR NEW.sources<>0 OR NEW.imported<>0)
@@ -25,7 +25,7 @@ CREATE TRIGGER publication_contribution_insert AFTER INSERT ON document_publicat
 
 DROP TRIGGER IF EXISTS transcripts_facts_insert;
 
-CREATE TRIGGER transcripts_facts_insert AFTER INSERT ON transcripts
+CREATE TRIGGER IF NOT EXISTS transcripts_facts_insert AFTER INSERT ON transcripts
          BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT NEW.project_id AS project_id,NEW.transcript_id AS transcript_id)
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -71,7 +71,7 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS transcript_publication_facts_insert;
 
-CREATE TRIGGER transcript_publication_facts_insert AFTER INSERT ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS transcript_publication_facts_insert AFTER INSERT ON transcript_publication
          BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT NEW.project_id AS project_id,NEW.transcript_id AS transcript_id)
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -121,7 +121,7 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS session_documents_facts_insert;
 
-CREATE TRIGGER publication_ready_insert AFTER INSERT ON session_documents
+CREATE TRIGGER IF NOT EXISTS publication_ready_insert AFTER INSERT ON session_documents
       WHEN NOT EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication' AND phase='publicationInputs' AND done=0)
       BEGIN INSERT INTO document_publication_ready(project_id,session_id) VALUES(NEW.project_id,NEW.session_id) ON CONFLICT DO NOTHING;
       DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id)
@@ -142,7 +142,7 @@ state=excluded.state,due_at=excluded.due_at,transcripts=excluded.transcripts,byt
 WHERE (document_publication_facts.state,document_publication_facts.due_at,document_publication_facts.transcripts,document_publication_facts.bytes,document_publication_facts.imported,document_publication_facts.classes)
 IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,excluded.imported,excluded.classes); END;
 
-CREATE TRIGGER session_documents_facts_insert AFTER INSERT ON session_documents
+CREATE TRIGGER IF NOT EXISTS session_documents_facts_insert AFTER INSERT ON session_documents
        BEGIN DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id)
 AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id));INSERT INTO document_publication_facts(project_id,session_id,state,due_at,transcripts,bytes,imported,classes)
 SELECT d.project_id,d.session_id,d.state,d.due_at,
@@ -161,7 +161,7 @@ state=excluded.state,due_at=excluded.due_at,transcripts=excluded.transcripts,byt
 WHERE (document_publication_facts.state,document_publication_facts.due_at,document_publication_facts.transcripts,document_publication_facts.bytes,document_publication_facts.imported,document_publication_facts.classes)
 IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,excluded.imported,excluded.classes); END;
 
-CREATE TRIGGER publication_contribution_update AFTER UPDATE ON document_publication_contributions BEGIN
+CREATE TRIGGER IF NOT EXISTS publication_contribution_update AFTER UPDATE ON document_publication_contributions BEGIN
       INSERT INTO document_publication_totals(project_id,session_id,kind,generation,bytes,pending,sources,imported)
         SELECT NEW.project_id,NEW.session_id,NEW.kind,NEW.generation,NEW.bytes-OLD.bytes,NEW.pending-OLD.pending,NEW.sources-OLD.sources,NEW.imported-OLD.imported WHERE (OLD.project_id,OLD.session_id,OLD.kind,OLD.generation) IS (NEW.project_id,NEW.session_id,NEW.kind,NEW.generation) AND (NEW.bytes<>OLD.bytes OR NEW.pending<>OLD.pending OR NEW.sources<>OLD.sources OR NEW.imported<>OLD.imported)
           AND (NEW.kind='source' OR NEW.generation>=COALESCE((SELECT generation FROM session_documents WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id)),0))
@@ -183,7 +183,7 @@ CREATE TRIGGER publication_contribution_update AFTER UPDATE ON document_publicat
 
 DROP TRIGGER IF EXISTS transcripts_facts_update;
 
-CREATE TRIGGER transcripts_facts_update AFTER UPDATE OF project_id,session_id,transcript_id,size,imported_at ON transcripts
+CREATE TRIGGER IF NOT EXISTS transcripts_facts_update AFTER UPDATE OF project_id,session_id,transcript_id,size,imported_at ON transcripts
         WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.transcript_id IS NOT NEW.transcript_id OR OLD.size IS NOT NEW.size OR OLD.imported_at IS NOT NEW.imported_at BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT OLD.project_id AS project_id,OLD.transcript_id AS transcript_id WHERE (OLD.project_id,OLD.transcript_id) IS NOT (NEW.project_id,NEW.transcript_id))
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -252,7 +252,7 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS transcript_publication_facts_update;
 
-CREATE TRIGGER transcript_publication_facts_update AFTER UPDATE OF project_id,session_id,transcript_id,generation,published_offset ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS transcript_publication_facts_update AFTER UPDATE OF project_id,session_id,transcript_id,generation,published_offset ON transcript_publication
         WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.transcript_id IS NOT NEW.transcript_id OR OLD.generation IS NOT NEW.generation OR OLD.published_offset IS NOT NEW.published_offset BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT OLD.project_id AS project_id,OLD.transcript_id AS transcript_id WHERE (OLD.project_id,OLD.transcript_id) IS NOT (NEW.project_id,NEW.transcript_id))
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -325,7 +325,7 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS session_documents_facts_update;
 
-CREATE TRIGGER publication_ready_update AFTER UPDATE OF project_id,session_id ON session_documents
+CREATE TRIGGER IF NOT EXISTS publication_ready_update AFTER UPDATE OF project_id,session_id ON session_documents
       WHEN (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id) BEGIN
       INSERT INTO document_publication_ready(project_id,session_id) SELECT NEW.project_id,NEW.session_id
         WHERE EXISTS(SELECT 1 FROM document_publication_ready WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id))
@@ -350,7 +350,7 @@ state=excluded.state,due_at=excluded.due_at,transcripts=excluded.transcripts,byt
 WHERE (document_publication_facts.state,document_publication_facts.due_at,document_publication_facts.transcripts,document_publication_facts.bytes,document_publication_facts.imported,document_publication_facts.classes)
 IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,excluded.imported,excluded.classes); END;
 
-CREATE TRIGGER session_documents_facts_update AFTER UPDATE OF project_id,session_id,generation,state,due_at,build ON session_documents
+CREATE TRIGGER IF NOT EXISTS session_documents_facts_update AFTER UPDATE OF project_id,session_id,generation,state,due_at,build ON session_documents
       WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.generation IS NOT NEW.generation OR OLD.state IS NOT NEW.state OR OLD.due_at IS NOT NEW.due_at OR OLD.build IS NOT NEW.build BEGIN DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (SELECT OLD.project_id AS project_id,OLD.session_id AS session_id WHERE (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id))
 AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id));INSERT INTO document_publication_facts(project_id,session_id,state,due_at,transcripts,bytes,imported,classes)
 SELECT d.project_id,d.session_id,d.state,d.due_at,
@@ -385,7 +385,7 @@ state=excluded.state,due_at=excluded.due_at,transcripts=excluded.transcripts,byt
 WHERE (document_publication_facts.state,document_publication_facts.due_at,document_publication_facts.transcripts,document_publication_facts.bytes,document_publication_facts.imported,document_publication_facts.classes)
 IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,excluded.imported,excluded.classes); END;
 
-CREATE TRIGGER publication_contribution_delete AFTER DELETE ON document_publication_contributions BEGIN
+CREATE TRIGGER IF NOT EXISTS publication_contribution_delete AFTER DELETE ON document_publication_contributions BEGIN
 
       INSERT INTO document_publication_totals(project_id,session_id,kind,generation,bytes,pending,sources,imported)
     SELECT OLD.project_id,OLD.session_id,OLD.kind,OLD.generation,-1*OLD.bytes,-1*OLD.pending,-1*OLD.sources,-1*OLD.imported WHERE (1) AND (OLD.bytes<>0 OR OLD.pending<>0 OR OLD.sources<>0 OR OLD.imported<>0)
@@ -398,7 +398,7 @@ CREATE TRIGGER publication_contribution_delete AFTER DELETE ON document_publicat
 
 DROP TRIGGER IF EXISTS transcripts_facts_delete;
 
-CREATE TRIGGER transcripts_facts_delete AFTER DELETE ON transcripts
+CREATE TRIGGER IF NOT EXISTS transcripts_facts_delete AFTER DELETE ON transcripts
          BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT OLD.project_id AS project_id,OLD.transcript_id AS transcript_id)
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -444,7 +444,7 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS transcript_publication_facts_delete;
 
-CREATE TRIGGER transcript_publication_facts_delete AFTER DELETE ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS transcript_publication_facts_delete AFTER DELETE ON transcript_publication
          BEGIN
         DELETE FROM document_publication_contributions WHERE (project_id,transcript_id) IN (SELECT OLD.project_id AS project_id,OLD.transcript_id AS transcript_id)
 AND NOT EXISTS (SELECT 1 FROM (SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
@@ -494,10 +494,10 @@ IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,exclu
 
 DROP TRIGGER IF EXISTS session_documents_facts_delete;
 
-CREATE TRIGGER publication_ready_delete AFTER DELETE ON session_documents BEGIN
+CREATE TRIGGER IF NOT EXISTS publication_ready_delete AFTER DELETE ON session_documents BEGIN
       DELETE FROM document_publication_ready WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id); END;
 
-CREATE TRIGGER session_documents_facts_delete AFTER DELETE ON session_documents
+CREATE TRIGGER IF NOT EXISTS session_documents_facts_delete AFTER DELETE ON session_documents
        BEGIN DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (SELECT OLD.project_id AS project_id,OLD.session_id AS session_id)
 AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id));INSERT INTO document_publication_facts(project_id,session_id,state,due_at,transcripts,bytes,imported,classes)
 SELECT d.project_id,d.session_id,d.state,d.due_at,
@@ -516,83 +516,83 @@ state=excluded.state,due_at=excluded.due_at,transcripts=excluded.transcripts,byt
 WHERE (document_publication_facts.state,document_publication_facts.due_at,document_publication_facts.transcripts,document_publication_facts.bytes,document_publication_facts.imported,document_publication_facts.classes)
 IS NOT (excluded.state,excluded.due_at,excluded.transcripts,excluded.bytes,excluded.imported,excluded.classes); END;
 
-CREATE TRIGGER publication_input_transcripts_insert AFTER INSERT ON transcripts
+CREATE TRIGGER IF NOT EXISTS publication_input_transcripts_insert AFTER INSERT ON transcripts
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
        END;
 
-CREATE TRIGGER publication_input_transcripts_update AFTER UPDATE OF project_id,session_id,transcript_id,size,imported_at,last_received_at,agent,role,prompt_identity_scheme,record_identity_scheme ON transcripts
+CREATE TRIGGER IF NOT EXISTS publication_input_transcripts_update AFTER UPDATE OF project_id,session_id,transcript_id,size,imported_at,last_received_at,agent,role,prompt_identity_scheme,record_identity_scheme ON transcripts
       WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.transcript_id IS NOT NEW.transcript_id OR OLD.size IS NOT NEW.size OR OLD.imported_at IS NOT NEW.imported_at OR OLD.last_received_at IS NOT NEW.last_received_at OR OLD.agent IS NOT NEW.agent OR OLD.role IS NOT NEW.role OR OLD.prompt_identity_scheme IS NOT NEW.prompt_identity_scheme OR OLD.record_identity_scheme IS NOT NEW.record_identity_scheme BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
         WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id) AND (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id); END;
 
-CREATE TRIGGER publication_input_transcripts_delete AFTER DELETE ON transcripts
+CREATE TRIGGER IF NOT EXISTS publication_input_transcripts_delete AFTER DELETE ON transcripts
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id);
        END;
 
-CREATE TRIGGER publication_input_transcript_publication_insert AFTER INSERT ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS publication_input_transcript_publication_insert AFTER INSERT ON transcript_publication
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
        END;
 
-CREATE TRIGGER publication_input_transcript_publication_update AFTER UPDATE OF project_id,session_id,transcript_id,generation,published_offset,segment_lines,parser_version,open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,state,failure,awaited_size,placed_records,placed_digest ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS publication_input_transcript_publication_update AFTER UPDATE OF project_id,session_id,transcript_id,generation,published_offset,segment_lines,parser_version,open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,state,failure,awaited_size,placed_records,placed_digest ON transcript_publication
       WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.transcript_id IS NOT NEW.transcript_id OR OLD.generation IS NOT NEW.generation OR OLD.published_offset IS NOT NEW.published_offset OR OLD.segment_lines IS NOT NEW.segment_lines OR OLD.parser_version IS NOT NEW.parser_version OR OLD.open_prompt_id IS NOT NEW.open_prompt_id OR OLD.unfinished IS NOT NEW.unfinished OR OLD.reply_unfinished IS NOT NEW.reply_unfinished OR OLD.reply_latest_at IS NOT NEW.reply_latest_at OR OLD.prompt_scheme IS NOT NEW.prompt_scheme OR OLD.record_scheme IS NOT NEW.record_scheme OR OLD.state IS NOT NEW.state OR OLD.failure IS NOT NEW.failure OR OLD.awaited_size IS NOT NEW.awaited_size OR OLD.placed_records IS NOT NEW.placed_records OR OLD.placed_digest IS NOT NEW.placed_digest BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
         WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id) AND (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id); END;
 
-CREATE TRIGGER publication_input_transcript_publication_delete AFTER DELETE ON transcript_publication
+CREATE TRIGGER IF NOT EXISTS publication_input_transcript_publication_delete AFTER DELETE ON transcript_publication
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id);
        END;
 
-CREATE TRIGGER publication_input_publish_queue_insert AFTER INSERT ON publish_queue
+CREATE TRIGGER IF NOT EXISTS publication_input_publish_queue_insert AFTER INSERT ON publish_queue
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
        END;
 
-CREATE TRIGGER publication_input_publish_queue_update AFTER UPDATE OF project_id,session_id,rank,created_at,event_id,retry_at,retry_cause,failure ON publish_queue
+CREATE TRIGGER IF NOT EXISTS publication_input_publish_queue_update AFTER UPDATE OF project_id,session_id,rank,created_at,event_id,retry_at,retry_cause,failure ON publish_queue
       WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.rank IS NOT NEW.rank OR OLD.created_at IS NOT NEW.created_at OR OLD.event_id IS NOT NEW.event_id OR OLD.retry_at IS NOT NEW.retry_at OR OLD.retry_cause IS NOT NEW.retry_cause OR OLD.failure IS NOT NEW.failure BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
         WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id) AND (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id); END;
 
-CREATE TRIGGER publication_input_publish_queue_delete AFTER DELETE ON publish_queue
+CREATE TRIGGER IF NOT EXISTS publication_input_publish_queue_delete AFTER DELETE ON publish_queue
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id);
        END;
 
-CREATE TRIGGER publication_input_session_tombstones_insert AFTER INSERT ON session_tombstones
+CREATE TRIGGER IF NOT EXISTS publication_input_session_tombstones_insert AFTER INSERT ON session_tombstones
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
        END;
 
-CREATE TRIGGER publication_input_session_tombstones_update AFTER UPDATE OF project_id,session_id,created_at ON session_tombstones
+CREATE TRIGGER IF NOT EXISTS publication_input_session_tombstones_update AFTER UPDATE OF project_id,session_id,created_at ON session_tombstones
       WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.created_at IS NOT NEW.created_at BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id);
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
         WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id) AND (OLD.project_id,OLD.session_id) IS NOT (NEW.project_id,NEW.session_id); END;
 
-CREATE TRIGGER publication_input_session_tombstones_delete AFTER DELETE ON session_tombstones
+CREATE TRIGGER IF NOT EXISTS publication_input_session_tombstones_delete AFTER DELETE ON session_tombstones
        BEGIN
       UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(OLD.project_id,OLD.session_id);
        END;
 
-CREATE TRIGGER publication_input_document_update AFTER UPDATE OF project_id,session_id,state,generation ON session_documents
+CREATE TRIGGER IF NOT EXISTS publication_input_document_update AFTER UPDATE OF project_id,session_id,state,generation ON session_documents
     WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR OLD.state IS NOT NEW.state OR OLD.generation IS NOT NEW.generation BEGIN UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(NEW.project_id,NEW.session_id); END;
 
