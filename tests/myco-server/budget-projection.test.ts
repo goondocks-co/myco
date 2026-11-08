@@ -5,7 +5,7 @@ import { automaticFits, budgetHold, readSpendRows } from '@myco-server-worker/co
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
-import { VNEXT_S1A_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s1a.js';
+import { V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 
@@ -170,7 +170,7 @@ describe('rolling spend accounting', () => {
   });
 
   it('installs exactly the generator output in its schema step', () => {
-    expect([...VNEXT_S1A_STATEMENTS]).toEqual(spendSchemaStatements());
-    expect(spendTriggers().every(trigger => VNEXT_S1A_STATEMENTS.includes(trigger.sql))).toBe(true);
+    expect([...V714_STATEMENTS]).toEqual(spendSchemaStatements());
+    expect(spendTriggers().every(trigger => V714_STATEMENTS.includes(trigger.sql))).toBe(true);
   });
 });

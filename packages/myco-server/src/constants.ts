@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { NEXT_S1A } from './db/schema-vNEXT-s1a.js';
-export const SERVER_SCHEMA_VERSION = NEXT_S1A;
+import { V714 } from './db/schema-v714.js';
+export const SERVER_SCHEMA_VERSION = V714;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** State keys owned by the Deployment and read-only to run tools. */

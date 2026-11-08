@@ -5,7 +5,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema-v712.ts#<module>': Array.from({ length: 7 }, () => ({ tables: ['embedding_passed_over'], order: 'unverified' as const })),
   'db/runs/admission.ts#reconcileSpend': [{ tables: ['attempt_spend'], order: 'unverified' }],
   'db/runs/admission.ts#rollup': [{ tables: ['budget_totals'], order: 'unverified' }],
-  'db/schema-vNEXT-s1a.ts#<module>': [
+  'db/schema-v714.ts#<module>': [
     ...Array.from({ length: 5 }, () => ({ tables: ['budget_totals'], order: 'unverified' as const })),
     ...Array.from({ length: 4 }, () => ({ tables: ['attempt_spend'], order: 'unverified' as const })),
   ],
