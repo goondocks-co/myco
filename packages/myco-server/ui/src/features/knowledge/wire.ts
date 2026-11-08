@@ -43,10 +43,16 @@ export interface SporeFacets {
   project: Record<string, number>;
 }
 
-/** A page of `GET /api/spores`. The first page (offset 0) carries the facets. */
+/**
+ * A page of `GET /api/spores`, continued by `cursor` while `hasMore`. `total` and, on the first page, the facets are the
+ * counts Myco keeps; while it is still counting older spores the page says `counting: 'building'` and carries neither.
+ */
 export interface SporeStreamPage {
   readonly spores: readonly SporeStreamRow[];
-  readonly total: number;
+  readonly cursor: string | null;
+  readonly hasMore: boolean;
+  readonly total?: number;
+  readonly counting?: 'building';
   readonly maxPage: number;
   readonly facets?: SporeFacets;
 }
@@ -84,11 +90,13 @@ export interface PlanBoardRow extends PlanFields {
   projectId: string;
 }
 
-/** A page of `GET /api/plans`. The first page (no cursor) counts the plans of each status the other filters admit. */
+/** A page of `GET /api/plans`. The first page (no cursor) carries how many plans of each status there are, or `counting` while Myco still counts them. */
 export interface PlanBoardPage {
   readonly plans: readonly PlanBoardRow[];
   readonly cursor: string | null;
+  readonly hasMore: boolean;
   readonly totals?: Readonly<Record<string, number>>;
+  readonly counting?: 'building';
 }
 
 /** `GET /api/projects/{p}/plans/{planKey}`: one plan with its tags. */

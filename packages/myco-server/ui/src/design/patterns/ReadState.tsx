@@ -28,7 +28,7 @@ export function ReadState<T>({ data, pending, error, onRetry, label, children }:
   return <>
     {Boolean(error) && <div role="alert" className="flex flex-wrap items-center gap-s2 t-small text-muted" data-read-stale="">
       <span>Showing the last successful {label} read. Couldn’t refresh it.</span>
-      {errorWords(error).retry && <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button>}
+      {errorWords(error).retry && <Button size="sm" variant="ghost" onClick={onRetry}>{errorWords(error).retryLabel ?? 'Retry'}</Button>}
     </div>}
     {children(data)}
   </>;

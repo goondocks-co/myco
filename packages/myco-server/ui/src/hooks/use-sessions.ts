@@ -335,8 +335,7 @@ export interface SessionListFilters {
   projectId: string | null;
   /** `open` is a session with no end recorded; `ended` one with an end. */
   state?: 'open' | 'ended';
-  /** Matched by the server over the title, the first prompt, the agent, the branch and the id. */
-  q?: string;
+  /** One agent, exactly as the session records it. */
   agent?: string;
   /** A member's label, as the server matches it. */
   member?: string;
@@ -353,7 +352,6 @@ export function sessionListPath(filters: SessionListFilters): string {
   const params = new URLSearchParams({ limit: String(SESSION_PAGE) });
   if (filters.projectId !== null) params.set('project', filters.projectId);
   if (filters.state !== undefined) params.set('state', filters.state);
-  if (filters.q !== undefined && filters.q.trim() !== '') params.set('q', filters.q.trim());
   if (filters.agent !== undefined && filters.agent !== '') params.set('agent', filters.agent);
   if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
   if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
@@ -571,7 +569,7 @@ export function useSession(projectId: string, sessionId: string) {
   });
 }
 
-/** A session's records of one kind, a page at a time; `filters` narrows the read where the server takes them, as `status` and `q` on plans. */
+/** A session's records of one kind, a page at a time; `filters` narrows the read where the server takes them, as `status` on plans. */
 export function useSessionChildren<T>(projectId: string, sessionId: string, child: SessionChild, filters: Readonly<Record<string, string>> = {}) {
   const params = new URLSearchParams({ limit: '100' });
   for (const [key, value] of Object.entries(filters)) if (value !== '') params.set(key, value);

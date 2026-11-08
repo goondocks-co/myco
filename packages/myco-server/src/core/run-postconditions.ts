@@ -47,7 +47,8 @@ import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, 
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
-import { countSpores, sporeAuthoredBy } from './spores.js';
+import { sporeAuthoredBy } from './spores.js';
+import { activeSporesAtLeast } from '../db/spores/counts.js';
 import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { CURATION_TASK, CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
@@ -136,7 +137,7 @@ export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run
 
 /** A seeding skip holds when the Project already holds enough active spores to count as seeded. */
 export async function alreadySeeded(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  return (await countSpores(db, scope, { status: 'active' })) >= SEEDED_SPORE_FLOOR;
+  return activeSporesAtLeast(db, scope.projectId, SEEDED_SPORE_FLOOR);
 }
 
 /** A titling skip holds when the session its dispatch named carries a title; a refresh exists to replace that title, so none holds for it. */

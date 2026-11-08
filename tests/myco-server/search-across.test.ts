@@ -181,19 +181,18 @@ describe('search across Projects', () => {
     expect({ first: /alphatext/.test(previews.sp_first), second: /betatext/.test(previews.sp_second) }).toEqual({ first: true, second: true });
   });
 
-  it('keeps each type\'s page in its statement, so snippets are read for that page alone', async () => {
+  it('answers a page of the limit, says more follow, and continues to every match across Projects', async () => {
     const h = harness();
     for (let i = 0; i < 30; i += 1) h.spore(i % 2 === 0 ? 'proj_1' : 'proj_2', `sp_${i}`, `cobalt ${i}`);
-    const returned: number[] = [];
-    const db = { ...h.fixture.db, prepare: (sql: string) => {
-      const statement = h.fixture.db.prepare(sql);
-      if (!/WITH candidates/.test(sql)) return statement;
-      const wrap = (st: typeof statement): typeof statement => ({ ...st, bind: (...v: unknown[]) => wrap(st.bind(...v)), all: async <T,>() => { const r = await st.all<T>(); returned.push(r.results.length); return r; } });
-      return wrap(statement);
-    } };
-    expect((await searchAcross(db, { all: true }, { query: 'cobalt', limit: 5 })).results).toHaveLength(5);
-    expect(returned.length).toBeGreaterThan(0);
-    expect(Math.max(...returned)).toBe(5);
+    const first = await searchAcross(h.fixture.db, { all: true }, { query: 'cobalt', type: 'spore', limit: 5 });
+    expect({ n: first.results.length, hasMore: first.hasMore }).toEqual({ n: 5, hasMore: true });
+    const seen = first.results.map((r) => `${r.projectId}/${r.id}`);
+    for (let cursor = first.cursor; cursor !== null;) {
+      const next = await searchAcross(h.fixture.db, { all: true }, { query: 'cobalt', type: 'spore', limit: 5, cursor });
+      seen.push(...next.results.map((r) => `${r.projectId}/${r.id}`));
+      cursor = next.cursor;
+    }
+    expect({ n: seen.length, unique: new Set(seen).size }).toEqual({ n: 30, unique: 30 });
   });
 
   it('breaks a tie of rank by Project: in the statement that keeps the page, and in the merge', async () => {

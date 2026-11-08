@@ -1,4 +1,4 @@
-import { RUN_SPORE_ID_MAX_CHARS as MAX_ID_CHARS, RUN_SEARCH_MAX_CHARS as MAX_SEARCH_CHARS } from '../../core/run-tool-contract.js';
+import { RUN_SPORE_ID_MAX_CHARS as MAX_ID_CHARS, RUN_SPORE_CURSOR_MAX_CHARS as MAX_CURSOR_CHARS } from '../../core/run-tool-contract.js';
 import { runRefusal } from '../../core/run-tool-contract.js';
 import { SPORE_READ_STATE_PREFIX } from '../../constants.js';
 /**
@@ -16,9 +16,8 @@ import { SPORE_READ_STATE_PREFIX } from '../../constants.js';
  * row is fetched — a read of an id the Project does not hold still costs a unit.
  */
 import {
-  countSpores,
   getSpore,
-  listSpores,
+  listSporePage,
   listSupersededSporeIds,
   listSupersedingSporeIds,
   DEFAULT_SPORE_LIMIT,
@@ -137,10 +136,22 @@ export async function handleRunSpores(input: ToolInput, ctx: ToolContext): Promi
   const options = {
     status: asked === 'all' ? undefined : (asked as string),
     observationType: str(input.observation_type, MAX_ID_CHARS),
-    search: str(input.search, MAX_SEARCH_CHARS),
     limit: Math.min(int(input.limit) ?? DEFAULT_SPORE_LIMIT, window.sporePage),
-    offset: int(input.offset),
+    cursor: str(input.cursor, MAX_CURSOR_CHARS),
   };
-  const [spores, total] = await Promise.all([listSpores(db, scope, options), countSpores(db, scope, options)]);
-  return { spores: spores.map((row) => preview(row, window)), total };
+  const listed = await listSporePage(db, scope, options);
+  if (listed === null)
+    return runRefusal({
+      read: true,
+      what: 'spore inventory',
+      actual: `the page key ${JSON.stringify(input.cursor)} is not one this inventory answered`,
+      next: { tool: 'myco_run_spores', op: 'list', status: asked },
+    });
+  return {
+    spores: listed.rows.map((row) => preview(row, window)),
+    has_more: listed.hasMore,
+    cursor: listed.cursor,
+    ...(listed.total === undefined ? {} : { total: listed.total }),
+    ...(listed.counting === undefined ? {} : { counting: listed.counting }),
+  };
 }

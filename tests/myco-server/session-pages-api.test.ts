@@ -124,7 +124,7 @@ describe('a session\'s plans', () => {
   }
   const keys = (body: Record<string, unknown>) => (body.rows as { planKey: string }[]).map((r) => r.planKey);
 
-  it('narrows to one status and a text in the title, inside the session only', async () => {
+  it('narrows to one status inside the session only, and refuses a text filter for search', async () => {
     const { get, plan } = await plans();
     plan('s1', 'k_done_match', 'Ship the search box', 'completed', NOW + 1);
     plan('s1', 'k_open_match', 'Search the plans', 'active', NOW + 2);
@@ -134,25 +134,21 @@ describe('a session\'s plans', () => {
     const base = '/api/projects/proj_1/sessions/s1/plans';
     expect(keys((await get(base)).body)).toEqual(['k_done_match', 'k_open_match', 'k_done_other']);
     expect(keys((await get(`${base}?status=completed`)).body)).toEqual(['k_done_match', 'k_done_other']);
-    expect(keys((await get(`${base}?q=SEARCH`)).body)).toEqual(['k_done_match', 'k_open_match']);
-    expect(keys((await get(`${base}?status=completed&q=search`)).body)).toEqual(['k_done_match']);
-    // The body is not searched here, and `%` is matched as text.
-    expect(keys((await get(`${base}?q=body`)).body)).toEqual([]);
-    expect(keys((await get(`${base}?q=${encodeURIComponent('%')}`)).body)).toEqual([]);
+    const refused = await get(`${base}?q=SEARCH`);
+    expect({ status: refused.status, reason: refused.body.reason }).toEqual({ status: 400, reason: expect.stringContaining('Next call: myco_search {"query":"SEARCH","type":"plan","mode":"fts","project":"proj_1","session_id":"s1"}') });
   });
 
-  it('finds a match beyond the first page, and pages the filtered set by its cursor', async () => {
+  it('pages the filtered set by its cursor', async () => {
     const { get, plan } = await plans();
     for (let i = 0; i < 5; i += 1) plan('s1', `k_noise_${i}`, `Noise ${i}`, 'active', NOW + i);
     plan('s1', 'k_late_a', 'Late match one', 'abandoned', NOW + 10);
     plan('s1', 'k_late_b', 'Late match two', 'abandoned', NOW + 11);
     const base = '/api/projects/proj_1/sessions/s1/plans';
     expect(keys((await get(`${base}?limit=2`)).body)).toEqual(['k_noise_0', 'k_noise_1']);
-    const first = (await get(`${base}?limit=1&q=late`)).body;
+    const first = (await get(`${base}?limit=1&status=abandoned`)).body;
     expect(keys(first)).toEqual(['k_late_a']);
-    const second = (await get(`${base}?limit=1&q=late&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
+    const second = (await get(`${base}?limit=1&status=abandoned&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
     expect([keys(second), second.cursor]).toEqual([['k_late_b'], null]);
-    expect(keys((await get(`${base}?limit=1&status=abandoned`)).body)).toEqual(['k_late_a']);
   });
 
   it('refuses a status the catalogue does not hold, and the other children ignore the plan filters', async () => {
@@ -161,7 +157,7 @@ describe('a session\'s plans', () => {
     for (const status of ['all', 'done', '']) {
       expect((await get(`/api/projects/proj_1/sessions/s1/plans?status=${status}`)).status).toBe(400);
     }
-    expect((await get('/api/projects/proj_1/sessions/s1/attachments?status=bogus&q=x')).status).toBe(200);
+    expect((await get('/api/projects/proj_1/sessions/s1/attachments?status=bogus')).status).toBe(200);
   });
 });
 

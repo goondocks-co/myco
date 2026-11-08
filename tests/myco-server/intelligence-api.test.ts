@@ -90,8 +90,9 @@ describe('spores through the product surface', () => {
     }
     const filtered = await get('/api/projects/proj_1/spores?session=sess_a');
     expect({ ids: (filtered.body.spores as { id: string }[]).map((s) => s.id), total: filtered.body.total }).toEqual({ ids: ['s2', 's1'], total: 2 });
-    const paged = await get('/api/projects/proj_1/spores?session=sess_a&offset=1');
-    expect({ ids: (paged.body.spores as { id: string }[]).map((s) => s.id), total: paged.body.total }).toEqual({ ids: ['s1'], total: 2 });
+    const first = await get('/api/projects/proj_1/spores?session=sess_a&limit=1');
+    const paged = await get(`/api/projects/proj_1/spores?session=sess_a&limit=1&cursor=${encodeURIComponent(String(first.body.cursor))}`);
+    expect({ ids: (paged.body.spores as { id: string }[]).map((s) => s.id), total: paged.body.total, hasMore: paged.body.hasMore }).toEqual({ ids: ['s1'], total: 2, hasMore: false });
   });
 
   it('continues a session\'s spores after the last row shown by cursor, so a spore written between pages is neither repeated nor ends the walk early', async () => {

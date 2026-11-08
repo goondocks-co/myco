@@ -39,7 +39,7 @@ const plan = (over: Record<string, unknown> = {}) => ({
   content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line', blobKey: null, objectKey: null, originPath: 'docs/plans/work-outcomes.md',
   progress: '1/2', updatedBy: null, createdAt: NOW - 3 * HOUR, updatedAt: NOW - HOUR, tags: ['ui'], ...over,
 });
-const board = (plans: unknown[], cursor: string | null = null, totals?: Record<string, number>) => Response.json({ plans, cursor, maxPage: 200, ...(totals === undefined ? {} : { totals }) });
+const board = (plans: unknown[], cursor: string | null = null, totals?: Record<string, number>) => Response.json({ plans, cursor, hasMore: cursor !== null, maxPage: 200, ...(totals === undefined ? {} : { totals }) });
 const EMPTY = () => board([]);
 
 const originalFetch = globalThis.fetch;
@@ -137,21 +137,19 @@ describe('the plans board', () => {
     expect(within(column('in_progress')).queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
-  it('searches every column through the plans list, keeping the board and each column’s count, and keeps the search in the URL', async () => {
-    const totals = { in_progress: 1 };
+  it('searches what the plans say and lists the best matches in place of the board, keeping the search in the URL', async () => {
+    const hit = { id: KEY, type: 'plan', title: 'Myco’s work as outcomes', preview: 'Group runs by task', score: 1, created_at: NOW - HOUR, projectId: MYCO };
     const { requested } = server(base({
       ...columns(),
-      ...columns('', { in_progress: () => board([plan()], null, totals), active: () => board([], null, totals) }, '&q=runs'),
+      '/api/search?q=runs&type=plan&limit=20': () => Response.json({ results: [hit], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
     }));
     mount('/knowledge/plans');
     fireEvent.change(await screen.findByRole('searchbox', { name: 'Search plans' }), { target: { value: 'runs' } });
-    for (const status of ['in_progress', 'active', 'completed', 'abandoned']) await asked(requested, `/api/plans?status=${status}&limit=8&q=runs`);
-    expect(requested.some((path) => path.startsWith('/api/search'))).toBe(false);
-    const found = await within(column('in_progress')).findByRole('link', { name: 'Myco’s work as outcomes' });
+    await asked(requested, '/api/search?q=runs&type=plan&limit=20');
+    const found = await screen.findByRole('link', { name: /Myco’s work as outcomes/ });
     expect(found.getAttribute('href')).toBe(`/p/${MYCO}/plans/${KEY}`);
-    await waitFor(() => expect(column('active').textContent).toContain('None match.'));
-    expect(column('in_progress').querySelector('[data-plan-total]')!.textContent).toBe('1 plan');
-    expect(column('active').querySelector('[data-plan-total]')!.textContent).toBe('0 plans');
+    expect(document.querySelector('[data-board]')).toBeNull();
+    expect(requested.some((path) => path.includes('q=runs') && path.startsWith('/api/plans'))).toBe(false);
     expect(location()).toBe('/knowledge/plans?q=runs');
   });
 
@@ -170,16 +168,17 @@ describe('the plans board', () => {
   });
 });
 
-it('pages a column’s matches on its cursor, the search kept', async () => {
+it('pages a column on its cursor, keeping the column’s count', async () => {
   const first = Array.from({ length: 8 }, (_, i) => plan({ planKey: `${String(i).padStart(8, '0')}-2222-4333-8444-555555555555`, title: `Plan ${i}` }));
   const { requested } = server(base({
-    ...columns('', { in_progress: () => board(first, 'c1', { in_progress: 9 }) }, '&q=runs'),
-    '/api/plans?status=in_progress&limit=8&q=runs&cursor=c1': () => board([plan({ title: 'Plan nine' })]),
+    ...columns('', { in_progress: () => board(first, 'c1', { in_progress: 9 }) }),
+    '/api/plans?status=in_progress&limit=8&cursor=c1': () => board([plan({ title: 'Plan nine' })]),
   }));
-  mount('/knowledge/plans?q=runs');
+  mount('/knowledge/plans');
   await waitFor(() => expect(column('in_progress').querySelectorAll('[data-plan]')).toHaveLength(8));
+  expect(column('in_progress').querySelector('[data-plan-total]')!.textContent).toBe('9 plans');
   fireEvent.click(within(column('in_progress')).getByRole('button', { name: 'Show more' }));
-  await asked(requested, '/api/plans?status=in_progress&limit=8&q=runs&cursor=c1');
+  await asked(requested, '/api/plans?status=in_progress&limit=8&cursor=c1');
   await waitFor(() => expect(column('in_progress').querySelectorAll('[data-plan]')).toHaveLength(9));
   expect(rawIdsInPage()).toEqual([]);
 });

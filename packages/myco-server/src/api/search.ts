@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { InvalidSearch, searchAcross, type SearchOptions } from '../read/search.js';
+import { InvalidSearch, StaleSearch, searchAcross, type SearchOptions } from '../read/search.js';
 import { searchDeployment } from '../core/search.js';
 import { badRequest, notFound, ok, projectSetParam, resolveProjectScope, resolveProjectSet } from './scope.js';
 
@@ -8,7 +8,7 @@ import { badRequest, notFound, ok, projectSetParam, resolveProjectScope, resolve
 function searchOptions(searchParams: URLSearchParams): SearchOptions | Response {
   if (searchParams.has('language')) return badRequest('language filtering belongs to retired Canopy entries');
   const options: SearchOptions = { query: searchParams.get('q') ?? '' };
-  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence', 'order'] as const) {
+  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence', 'order', 'agent', 'branch'] as const) {
     if (searchParams.has(key)) options[key] = searchParams.get(key)!;
   }
   if (searchParams.has('cursor')) options.cursor = searchParams.get('cursor')!;
@@ -20,6 +20,7 @@ function searchOptions(searchParams: URLSearchParams): SearchOptions | Response 
 async function answer(search: () => Promise<unknown>): Promise<Response> {
   try { return ok(await search()); }
   catch (error) {
+    if (error instanceof StaleSearch) return Response.json({ error: 'stale_cursor', reason: error.message }, { status: 409 });
     if (error instanceof InvalidSearch) return badRequest(error.message);
     throw error;
   }

@@ -169,7 +169,20 @@ describe('POST /mcp', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events WHERE spore_id = ?`).get(saved.id) as any).c).toBe(1);
 
     const listed = (await call(t1.token, 'myco_spores', { op: 'list', status: 'active' })).result;
-    expect({ total: listed.total, ids: listed.spores.map((s: any) => s.id) }).toEqual({ total: 1, ids: [second.id] });
+    expect({ total: listed.total, ids: listed.spores.map((s: any) => s.id), hasMore: listed.has_more, cursor: listed.cursor })
+      .toEqual({ total: 1, ids: [second.id], hasMore: false, cursor: null });
+    const firstPage = (await call(t1.token, 'myco_spores', { op: 'list', limit: 1 })).result;
+    const nextPage = (await call(t1.token, 'myco_spores', { op: 'list', limit: 1, cursor: firstPage.cursor })).result;
+    expect({ first: firstPage.spores.map((s: any) => s.id), next: nextPage.spores.map((s: any) => s.id), more: [firstPage.has_more, nextPage.has_more] })
+      .toEqual({ first: [second.id], next: [saved.id], more: [true, false] });
+    // A text match is a search, and offsets are retired: each is refused with the call to make instead.
+    const searched = await call(t1.token, 'myco_spores', { op: 'list', search: 'second' });
+    expect({ code: searched.error?.data?.code, message: searched.error?.message })
+      .toEqual({ code: 'invalid_input', message: expect.stringMatching(/^Not read: myco_spores list; search is not a list filter.*Next call: myco_search \{"query":"second","type":"spore","mode":"fts"\}\.$/) });
+    expect((await call(t1.token, 'myco_spores', { op: 'list', search: 'second', status: 'active', observation_type: 'decision' })).error?.message)
+      .toMatch(/Next call: myco_search \{"query":"second","type":"spore","mode":"fts","status":"active","observation_type":"decision"\}\.$/);
+    expect((await call(t1.token, 'myco_spores', { op: 'list', offset: 1 })).error?.message).toMatch(/Next call: myco_spores \{"op":"list","cursor":/);
+    expect((await call(t1.token, 'myco_spores', { op: 'list', cursor: 'nope' })).result.error).toMatch(/^Not read: cursor "nope".*Next call: myco_spores/);
 
     const consolidated = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [second.id], consolidated_content: 'wisdom', observation_type: 'wisdom' })).result;
     expect({ sources: consolidated.sources_consolidated, status: consolidated.status }).toEqual({ sources: 1, status: 'consolidated' });

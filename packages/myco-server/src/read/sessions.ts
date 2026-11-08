@@ -55,10 +55,10 @@ export { containsPattern } from './scope.js';
 /** Archive a project: capture is refused from here on, listings hide it by default, and everything captured stays. One statement moves it; a read tells an absent project from one already archived. */
 export async function archiveProject(db: RelationalStore, projectId: string, by: string, nowMs: number): Promise<ArchiveOutcome> {
   const result = await db
-    .prepare(`UPDATE projects SET archived_at = ?, archived_by = ? WHERE project_id = ? AND archived_at IS NULL`)
+    .prepare(`UPDATE projects SET archived_at = ?, archived_by = ? WHERE project_id = ? AND archived_at IS NULL RETURNING project_id`)
     .bind(nowMs, by, projectId)
-    .run();
-  if (result.meta.changes === 1) return 'archived';
+    .all();
+  if (result.results.length === 1) return 'archived';
   return (await projectExists(db, projectId)) ? 'already_archived' : 'absent';
 }
 
@@ -69,8 +69,8 @@ export { claimTitling, claimRefreshTitling, claimOwnerTitling, restoreTitlingSta
 
 /** Give a project a new display name; `absent` when no row carries the id. Archived projects rename too: the name is display, not capture. */
 export async function renameProject(db: RelationalStore, projectId: string, name: string): Promise<'renamed' | 'absent'> {
-  const result = await db.prepare(`UPDATE projects SET name = ? WHERE project_id = ?`).bind(name, projectId).run();
-  return result.meta.changes === 1 ? 'renamed' : 'absent';
+  const result = await db.prepare(`UPDATE projects SET name = ? WHERE project_id = ? RETURNING project_id`).bind(name, projectId).all();
+  return result.results.length === 1 ? 'renamed' : 'absent';
 }
 
 

@@ -1,5 +1,6 @@
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '../core/spore-input-contract.js';
-import { MAX_SPORE_CONTENT_BYTES } from '../core/spores.js';
+import { DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT } from '../core/spores.js';
+import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core/search-repair.js';
 /**
  * The MCP tool definitions this Deployment serves.
  *
@@ -59,6 +60,8 @@ export interface ToolDefinition {
   inputRepair?: string;
   /** Fields whose domain validator must consult persisted state before judging their shape. */
   handlerValidated?: readonly string[];
+  /** Arguments the tool no longer takes, each refused by name with why and the call that replaces it, both built from the refused call's own input; never declared in the schema. */
+  retiredArguments?: Readonly<Record<string, (input: Readonly<Record<string, unknown>>) => { actual: string; next: { tool: string } & Record<string, unknown> }>>;
   name: string;
   description: string;
   inputSchema: ToolInputSchema;
@@ -68,6 +71,23 @@ export interface ToolDefinition {
 
 /** A definition of one of the catalogued tools; the run-only surface declares its own beside these. */
 export type ServedToolDefinition = ToolDefinition & { name: ServedTool };
+
+/**
+ * A retired spore-list text filter's refusal: the same text as a spore search through the one list-to-search translation,
+ * narrowed as the list is (its status, `defaultStatus` where the list has one, its type and Project), naming `agent_id`,
+ * which search cannot apply.
+ */
+export const searchInstead = (defaultStatus?: string) => (input: Readonly<Record<string, unknown>>) => {
+  const text = (value: unknown) => typeof value === 'string' && value !== '' ? value : undefined;
+  const status = input.status === undefined ? defaultStatus : text(input.status) === 'all' ? undefined : text(input.status);
+  const project = text(input.project);
+  const narrowing: ListNarrowing = { type: 'spore', text: String(input.search), ...(project === undefined ? {} : { projects: [project] }),
+    status, observationType: text(input.observation_type) ?? text(input.type), unsupported: text(input.agent_id) === undefined ? [] : ['agent_id'] };
+  return { actual: searchRepairCause('search', narrowing), next: searchRepairCall(narrowing) };
+};
+
+const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEntries(['status', 'observation_type', 'agent_id', 'limit', 'project']
+  .filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 
 const definitions: readonly ServedToolDefinition[] = [
   {
@@ -148,14 +168,22 @@ const definitions: readonly ServedToolDefinition[] = [
           "type": "number",
           "description": "Optional created_at upper bound in epoch seconds"
         },
+        "agent": {
+          "type": "string",
+          "description": "Filter by the agent of the session a result belongs to, exactly (for example codex)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Filter by the git branch of the session a result belongs to, exactly."
+        },
         "order": {
           "type": "string",
           "enum": ["relevance", "time"],
-          "description": "relevance (default) returns the best matches in one page. time lists the matches of one type oldest first, in pages that continue by cursor."
+          "description": "relevance (default) lists the best matches first. time lists the matches of one type oldest first. Both continue by cursor while has_more; a semantic answer is the nearest matches alone, so pass mode fts to page through every match."
         },
         "cursor": {
           "type": "string",
-          "description": "The cursor an earlier answer to a search with order time returned; the answer then lists the matches after it."
+          "description": "The cursor an earlier answer to the same search returned; the answer then lists the matches after it. Example: {\"query\":\"cobalt\",\"type\":\"spore\",\"mode\":\"fts\",\"cursor\":\"eyJraW5kIjoi...\"}"
         },
         [PROJECT_PIVOT]: {
           "type": "string",
@@ -418,9 +446,13 @@ const definitions: readonly ServedToolDefinition[] = [
     }
   },
   {
+    retiredArguments: {
+      search: searchInstead(),
+      offset: (input) => ({ actual: 'offset paging is retired: a list continues by the cursor its last page answered', next: { tool: 'myco_spores', ...listFilters(input), op: 'list', cursor: '<cursor from the last page>' } }),
+    },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns spores by status/type/search. op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -479,17 +511,13 @@ const definitions: readonly ServedToolDefinition[] = [
           "type": "string",
           "description": "Filter op: \"list\" by agent id"
         },
-        "search": {
-          "type": "string",
-          "description": "Text filter for op: \"list\""
-        },
         "limit": {
           "type": "number",
-          "description": "Max results for op: \"list\""
+          "description": `Max results for op: \"list\" (default ${DEFAULT_SPORE_LIMIT}, at most ${MAX_SPORE_LIMIT})`
         },
-        "offset": {
-          "type": "number",
-          "description": "Offset for op: \"list\""
+        "cursor": {
+          "type": "string",
+          "description": "For op: \"list\": the cursor an earlier list answered; the list continues after it. Example: {\"op\":\"list\",\"status\":\"active\",\"cursor\":\"1762300000000:3f0c\"}"
         },
         "old_spore_id": {
           "type": "string",

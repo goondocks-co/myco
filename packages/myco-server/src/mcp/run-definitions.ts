@@ -17,7 +17,7 @@ import {
   RUN_KEY_MAX_CHARS,
   RUN_VERSION_CHARS,
   RUN_SPORE_ID_MAX_CHARS,
-  RUN_SEARCH_MAX_CHARS,
+  RUN_SPORE_CURSOR_MAX_CHARS,
 } from '../core/run-tool-contract.js';
 import { CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from '../core/spore-curation-contract.js';
 import { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE } from '../core/spore-curation-contract.js';
@@ -39,7 +39,7 @@ import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
  */
 import { MAP_WRITE_BOUNDS, MAP_LIMITS } from '@goondocks/myco-shared/canopy';
 import { PROJECT_PIVOT, RUN_TOOLS, type RunTool } from '../core/tool-catalogue.js';
-import type { ToolDefinition, JsonSchemaProperty } from './definitions.js';
+import { searchInstead, type ToolDefinition, type JsonSchemaProperty } from './definitions.js';
 
 /** A run-only definition, named from the catalogue so the two cannot drift. */
 export type RunToolDefinition = ToolDefinition & { name: RunTool };
@@ -261,8 +261,12 @@ const definitions: readonly RunToolDefinition[] = [
     },
   },
   {
+    retiredArguments: {
+      search: searchInstead('active'),
+      offset: (input) => ({ actual: 'offset paging is retired: the inventory continues by the cursor its last page answered', next: { tool: 'myco_run_spores', op: 'list', ...(input.status === undefined ? {} : { status: input.status }), cursor: '<cursor from the last page>' } }),
+    },
     name: 'myco_run_spores',
-    description: `Read limits: ${window.sporeFullReads} full reads; ${window.sporePage} previews per page; ${window.sporeBodyChars} characters per long body field; ids and observation types ${RUN_SPORE_ID_MAX_CHARS} characters; search ${RUN_SEARCH_MAX_CHARS} characters. This Project's spores as an inventory of bounded previews, and one body in full. Full reads are counted against this run\'s budget, so survey by previews and read in full only what you mean to act on.`,
+    description: `Read limits: ${window.sporeFullReads} full reads; ${window.sporePage} previews per page; ${window.sporeBodyChars} characters per long body field; ids and observation types ${RUN_SPORE_ID_MAX_CHARS} characters; page cursors ${RUN_SPORE_CURSOR_MAX_CHARS} characters. This Project's spores as an inventory of bounded previews, newest first, a page at a time by cursor, and one body in full; to find spores by what they say, use myco_search with type spore where this run has it. Full reads are counted against this run\'s budget, so survey by previews and read in full only what you mean to act on.`,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
@@ -270,7 +274,7 @@ const definitions: readonly RunToolDefinition[] = [
         op: {
           type: 'string',
           enum: ['list', 'get'],
-          description: 'list: one preview line per spore, with the total behind the page. get: one spore in full.',
+          description: 'list: one preview line per spore, with has_more, the next page\'s cursor, and the total by status and type. get: one spore in full.',
         },
         id: { type: 'string', minLength: 1, maxLength: RUN_SPORE_ID_MAX_CHARS, description: 'For get: the spore to read.' },
         max_chars: {
@@ -286,19 +290,13 @@ const definitions: readonly RunToolDefinition[] = [
           maxLength: RUN_SPORE_ID_MAX_CHARS,
           description: 'For list: filter by observation type.',
         },
-        search: {
-          type: 'string',
-          minLength: 1,
-          maxLength: RUN_SEARCH_MAX_CHARS,
-          description: 'For list: keep only spores whose content or type contains this text.',
-        },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: window.sporePage,
           description: `For list: at most ${window.sporePage} spores per page; larger requests are clamped.`,
         },
-        offset: { type: 'integer', minimum: 0, description: 'For list: how many to skip, for paging through the total.' },
+        cursor: { type: 'string', minLength: 1, maxLength: RUN_SPORE_CURSOR_MAX_CHARS, description: 'For list: the cursor the previous page answered; the inventory continues after it. Example: {"op":"list","status":"active","cursor":"1762300000000:3f0c"}' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

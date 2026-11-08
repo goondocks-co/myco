@@ -17,7 +17,7 @@ import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts'
 import type { ConnectAnswer, ConnectRefusal, ConnectRefusalCode, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';
 import type { HeldState, UncapturedReason } from '../../packages/myco-shared/src/member-protocol.ts';
 import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
-import type { SporeAcrossRow, countSporesAcross, listSporesAcross } from '../../packages/myco-server/src/core/spores.ts';
+import type { SporeAcrossRow, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -47,11 +47,9 @@ const SAME: [
 
 /** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
 type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;
-/**
- * `GET /api/spores`: the handler (`api/lists-all.ts`) sends `{ spores, total, maxPage, facets? }` from these two reads;
- * the envelope's keys are written there, and its values are typed by the reads.
- */
-type SporesAnswer = { spores: Awaited<ReturnType<typeof listSporesAcross>>; total: Awaited<ReturnType<typeof countSporesAcross>> };
+/** `GET /api/spores`: the handler (`api/lists-all.ts`) sends the page with its `rows` renamed `spores`. */
+type SporePage = NonNullable<Awaited<ReturnType<typeof listSporePageAcross>>>;
+type SporesAnswer = Omit<SporePage, 'rows'> & { spores: SporePage['rows'] };
 
 const READS: [
   Reads<SessionAcrossRow, Ui.TodaySession>,

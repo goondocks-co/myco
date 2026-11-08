@@ -44,7 +44,8 @@ const spore = (over: Record<string, unknown> = {}) => ({
   agentLine: 'The cache lies after a rebase; clear it on checkout.', createdAt: NOW - HOUR, updatedAt: null, embedded: 0, ...over,
 });
 const FACETS = { type: { gotcha: 3, decision: 2, bug_fix: 1 }, project: { [MYCO]: 4, [ATLAS]: 2 } };
-const stream = (spores: unknown[], total = spores.length, facets: unknown = FACETS) => Response.json({ spores, total, maxPage: 200, ...(facets === null ? {} : { facets }) });
+const stream = (spores: unknown[], total = spores.length, facets: unknown = FACETS, cursor: string | null = null) => Response.json({ spores, cursor, hasMore: cursor !== null, total, maxPage: 200, ...(facets === null ? {} : { facets }) });
+const noMatches = () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null });
 
 const ROWS = [
   spore(),
@@ -140,13 +141,13 @@ describe('the spore stream', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('marks a spore no longer current, and filters by status, period and words on the server, all in the URL', async () => {
+  it('marks a spore no longer current, filters by status and period on the server, and searches what the spores say, all in the URL', async () => {
     const since = windowSince('week', NOW);
     const { requested } = server(base({
       '/api/spores?status=active&limit=25': () => stream(ROWS),
       '/api/spores?status=superseded&limit=25': () => stream([spore({ id: 'gotcha-9a8b7c6d', status: 'superseded', agentLine: 'The old port rule.' })]),
       [`/api/spores?status=superseded&since=${since}&limit=25`]: () => stream([spore({ id: 'gotcha-9a8b7c6d', status: 'superseded', agentLine: 'The old port rule.' })]),
-      [`/api/spores?status=superseded&q=port&since=${since}&limit=25`]: () => stream([]),
+      [`/api/search?q=port&type=spore&limit=20&since=${Math.floor(since! / 1000)}&status=superseded`]: () => noMatches(),
     }));
     mount('/knowledge');
     await waitFor(() => expect(cards()).toHaveLength(3));
@@ -158,8 +159,8 @@ describe('the spore stream', () => {
     await pick('Saved', 'Saved in the past 7 days');
     await asked(requested, `/api/spores?status=superseded&since=${since}&limit=25`);
     fireEvent.change(screen.getByRole('searchbox', { name: 'Filter spores' }), { target: { value: 'port' } });
-    await asked(requested, `/api/spores?status=superseded&q=port&since=${since}&limit=25`);
-    expect(await screen.findByText('No spores match.')).toBeTruthy();
+    await asked(requested, `/api/search?q=port&type=spore&limit=20&since=${Math.floor(since! / 1000)}&status=superseded`);
+    expect(await screen.findByText('No spores match “port”.')).toBeTruthy();
     expect(location()).toBe('/knowledge?status=superseded&window=week&q=port');
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
     await waitFor(() => expect(location()).toBe('/knowledge'));
@@ -212,21 +213,58 @@ describe('the spore stream', () => {
     await asked(requested, '/api/spores?type=gotcha&status=active&limit=25');
   });
 
-  it('reads the next page from where the loaded spores end, listing a repeated spore once', async () => {
+  it('reads the next page by the cursor the last page answered, listing a repeated spore once', async () => {
     const page = Array.from({ length: 25 }, (_, i) => spore({ id: `a${i}`, agentLine: `Spore number ${i}`, createdAt: NOW - (i + 1) * MINUTE }));
     const { requested } = server(base({
-      '/api/spores?status=active&limit=25': () => stream(page, 27),
-      '/api/spores?status=active&limit=25&offset=25': () => stream([page[24], spore({ id: 'b1', agentLine: 'Spore after the page' })], 27, null),
+      '/api/spores?status=active&limit=25': () => stream(page, 27, FACETS, 'c1'),
+      '/api/spores?status=active&limit=25&cursor=c1': () => stream([page[24], spore({ id: 'b1', agentLine: 'Spore after the page' })], 27, null),
     }));
     mount('/knowledge');
     await waitFor(() => expect(cards()).toHaveLength(25));
     expect(screen.getByText('Showing 25 of 27 spores')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    await asked(requested, '/api/spores?status=active&limit=25&offset=25');
+    await asked(requested, '/api/spores?status=active&limit=25&cursor=c1');
     await waitFor(() => expect(cards()).toHaveLength(26));
     expect(screen.getByText('Spore after the page')).toBeTruthy();
     // The facets came with the first page and still count the whole match.
     expect(within(screen.getByRole('region', { name: 'Type' })).getAllByRole('button')[0]!.textContent).toBe('Everything6');
+  });
+
+  it('lists a search’s best matches under the filters picked, and reads the next ones by cursor until none follow', async () => {
+    const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const { requested } = server(base({
+      '/api/spores?type=decision&status=active&limit=25': () => stream(ROWS),
+      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active': () => answer([hit('gotcha-1', 'Ports collide in parallel tests')], 'c1'),
+      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active&cursor=c1': () => answer([hit('gotcha-2', 'The second port match')], null),
+    }));
+    mount('/knowledge?type=decision&q=port');
+    expect(await screen.findByText('Ports collide in parallel tests')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('The second port match')).toBeTruthy();
+    expect(requested).toContain('/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active&cursor=c1');
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+  });
+
+  it('reads a search again from its first page when the matches changed under it, discarding the pages read', async () => {
+    const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const FIRST = '/api/search?q=port&type=spore&limit=20&status=active';
+    let firstReads = 0;
+    const { requested } = server(base({
+      '/api/spores?status=active&limit=25': () => stream(ROWS),
+      [FIRST]: () => (++firstReads === 1 ? answer([hit('gotcha-1', 'The first reading')], 'c1') : answer([hit('gotcha-9', 'Read again after the change')], null)),
+      [`${FIRST}&cursor=c1`]: () => Response.json({ error: 'stale_cursor', reason: 'the matches changed since the first page of this search' }, { status: 409 }),
+    }));
+    mount('/knowledge?q=port');
+    expect(await screen.findByText('The first reading')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('The list changed while you were reading it.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Read it again from the top' }));
+    expect(await screen.findByText('Read again after the change')).toBeTruthy();
+    expect(screen.queryByText('The first reading')).toBeNull();
+    expect(requested.filter((path) => path === FIRST)).toHaveLength(2);
+    expect(requested.filter((path) => path.includes('cursor=c1'))).toHaveLength(1);
   });
 
   it('says there are none yet on a quiet deployment, and none match when filtered', async () => {

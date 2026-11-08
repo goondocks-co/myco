@@ -76,11 +76,12 @@ export const SPORE_WINDOW_FILTER: FilterDefinition = {
 export function windowSince(window: string, now: number): number | null {
   const days = window === 'week' ? 6 : window === 'month' ? 29 : null;
   if (days === null) return null;
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - days);
-  return start.getTime();
+  // Whole UTC days, so the stream's count is the one Myco keeps by day.
+  const today = Math.floor(now / DAY_MS) * DAY_MS;
+  return today - days * DAY_MS;
 }
+
+const DAY_MS = 86_400_000;
 
 /** The type filter, for a screen too narrow for the facet list: each type the match holds, with its count, and the one picked. */
 export function typeFilter(facets: Readonly<Record<string, number>> | undefined, picked: string): FilterDefinition {

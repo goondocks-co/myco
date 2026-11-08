@@ -119,7 +119,8 @@ export const sessionTurns: ParityScenario = {
     const mine = (await list('')).find((r) => r.sessionId === session);
     expect(mine).toBeDefined();
     expect([mine!.promptCount, mine!.toolCallCount]).toEqual([3, 3]);
-    expect((await list(`?q=${encodeURIComponent(`card ${stamp}`)}`)).map((r) => r.sessionId)).toEqual([session]);
+    // Words are a search of the Project: the list refuses them.
+    expect((await owner<unknown>(`/api/projects/${target.projectId}/sessions?q=${encodeURIComponent(`card ${stamp}`)}`)).status).toBe(400);
     expect((await list('?state=open&branch=turns')).some((r) => r.sessionId === session)).toBe(true);
     await post(session, 'session.end', { endedAt: Date.now() });
     expect((await list('?state=open&branch=turns')).some((r) => r.sessionId === session)).toBe(false);

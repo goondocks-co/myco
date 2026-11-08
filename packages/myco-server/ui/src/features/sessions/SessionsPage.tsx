@@ -12,6 +12,7 @@ import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { sessionAt } from '../today/timeline';
 import type { SessionListRow } from './wire';
+import { SearchMatches } from '../search/SearchMatches';
 import { agentFilter, agentName, count, memberFilter, SESSION_FILTER_KEYS, startedWords, STATE_FILTER, WINDOW_FILTER, windowBounds } from './words';
 
 /** How long the search box waits after the last keystroke before the list is read again. */
@@ -35,7 +36,8 @@ const rowKey = (row: SessionListRow) => `${row.projectId}/${row.sessionId}`;
  * top, read on their own so a live session older than the first page still
  * shows; the rest follow under the day each started, newest first. The search
  * and the filters live in the query string, the server does the filtering, and
- * "Show more" reads the next page. While a session is live the live group reads
+ * "Show more" reads the next page. Text in the search box searches the sessions
+ * and lists the best matches in place of the table. While a session is live the live group reads
  * itself again every 30 s; the pages below are read again on focus.
  */
 export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
@@ -47,9 +49,9 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
   const members = useMembers();
   const bounds = windowBounds(values.window ?? 'all', now);
   const branch = params.get('branch') ?? undefined;
+  const searching = filterParams.query.trim() !== '';
   const shared = {
     projectId,
-    q: filterParams.query,
     agent: values.agent === 'all' ? undefined : values.agent,
     member: values.member === 'all' ? undefined : values.member,
     branch,
@@ -62,6 +64,16 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
   // An ended session is never live, so a list narrowed to ended sessions has no live group.
   const live = useLiveSessions(shared, values.state !== 'ended');
   const liveRows = values.state === 'ended' ? [] : live.data?.rows ?? [];
+  // Search narrows by agent, branch and state; a member or an active period it cannot apply is named, never dropped.
+  const unsearchable = [
+    ...(shared.member === undefined ? [] : [{ key: 'member', words: 'member', noun: 'member' }]),
+    ...(bounds === null ? [] : [{ key: 'window', words: 'when they were active', noun: 'active period' }]),
+  ];
+  const dropUnsearchable = () => setParams((current) => {
+    const next = new URLSearchParams(current);
+    for (const { key } of unsearchable) next.delete(key);
+    return next;
+  }, { replace: true });
   const filtered = filterParams.query !== '' || branch !== undefined || SESSION_FILTER_KEYS.some((key) => values[key] !== 'all');
   // One write to the URL: the search, every filter and the branch go together.
   const clear = () => {
@@ -94,7 +106,7 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
       </div>
       <FilterBar
         searchLabel="Filter sessions"
-        placeholder="Search by title, first prompt, agent or branch"
+        placeholder="Search what the sessions say"
         query={draft.text}
         onQueryChange={draft.setText}
         filters={filters}
@@ -110,6 +122,26 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
           </Button>
         </p>
       )}
+      {searching ? (unsearchable.length > 0 ? (
+        <EmptyState
+          title={`Search can’t narrow sessions by ${unsearchable.map((f) => f.words).join(' or ')}.`}
+          action={<Button variant="ghost" size="sm" onClick={dropUnsearchable}>{`Clear the ${unsearchable.map((f) => f.noun).join(' and the ')} and search`}</Button>}
+        />
+      ) : (
+        <SearchMatches
+          scope={projectId === null ? 'all' : { projectId }}
+          filters={{
+            query: filterParams.query, type: 'session', since: '', observationType: '',
+            ...(shared.agent === undefined ? {} : { agent: shared.agent }),
+            ...(branch === undefined ? {} : { branch }),
+            ...(values.state === 'open' ? { status: 'active' } : values.state === 'ended' ? { status: 'completed' } : {}),
+          }}
+          noun="sessions"
+          projectName={projectName}
+          emptyAction={<Button variant="ghost" size="sm" onClick={clear}>Clear the search and filters</Button>}
+          now={now}
+        />
+      )) : <>
       {values.state !== 'ended' && <ReadState data={live.data} pending={live.isPending} error={live.error} onRetry={() => void live.refetch()} label="live sessions">{() => null}</ReadState>}
       {list.rows.length > 0 && list.error && <ReadState data={list.rows} pending={false} error={list.error} onRetry={list.retry} label="sessions">{() => null}</ReadState>}
       <Table
@@ -128,6 +160,7 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
           : <EmptyState title="No sessions yet. Sessions appear here as your agents capture them." />}
       />
       {shown > 0 && <ShowMore shown={shown} noun={shown === 1 ? 'session' : 'sessions'} onMore={list.more} pending={list.isFetchingMore} hasMore={list.hasMore} />}
+      </>}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { type UseQueryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { live } from '../lib/live';
 
@@ -28,8 +28,10 @@ export interface SporesResponse {
   spores: SporeRow[];
   /** Continues after this page's last spore; null when none follows. */
   cursor: string | null;
-  /** How many spores the filters matched as the page was read: a figure to show, never where paging ends. */
-  total: number;
+  hasMore: boolean;
+  /** How many spores the filters match, from the counts Myco keeps; absent while it is still counting older spores. */
+  total?: number;
+  counting?: 'building';
   maxPage: number;
 }
 
@@ -44,13 +46,10 @@ export interface SporeFilters {
   status?: string;
   /** One observation type; every type when absent. */
   type?: string;
-  /** Matches the content or the type. */
-  q?: string;
   /** Narrows to the spores one session produced. */
   session?: string;
   limit?: number;
-  offset?: number;
-  /** Continues after the spore a previous page's `cursor` names; never beside `offset`. */
+  /** Continues after the spore a previous page's `cursor` names. */
   cursor?: string;
 }
 
@@ -59,36 +58,23 @@ function sporeQuery(filters: SporeFilters): string {
   params.set('limit', String(filters.limit ?? SPORE_PAGE_SIZE));
   if (filters.status !== undefined && filters.status !== '') params.set('status', filters.status);
   if (filters.type !== undefined && filters.type !== '') params.set('type', filters.type);
-  if (filters.q !== undefined && filters.q !== '') params.set('q', filters.q);
   if (filters.session !== undefined && filters.session !== '') params.set('session', filters.session);
-  if (filters.offset !== undefined && filters.offset > 0) params.set('offset', String(filters.offset));
   if (filters.cursor !== undefined) params.set('cursor', filters.cursor);
   return params.toString();
 }
 
-/** A project's spores, newest first, with the count the filters match. A read with `enabled: false` waits, pending, until it is wanted. */
-export function useSpores(projectId: string, filters: SporeFilters = {}, options: Pick<UseQueryOptions<SporesResponse>, 'enabled'> = {}) {
-  const query = sporeQuery(filters);
-  return useQuery({
-    queryKey: ['spores', projectId, query],
-    queryFn: ({ signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${query}`, signal),
-    ...options,
-    ...live({ follows: ['knowledge'] }),
-  });
-}
-
 /**
- * The same read as `useSpores`, a page at a time: `more()` continues after the last spore shown, by the cursor the
- * page answered, and the read ends when a page answers none. A spore written meanwhile neither repeats a row nor ends
- * the walk early; `total` is the latest page's count, to show.
+ * A project's spores, newest first, a page at a time: `more()` continues after the last spore shown, by the cursor the
+ * page answered, and the read ends when a page says no more follow. A spore written meanwhile neither repeats a row nor
+ * ends the walk early; `total` is the latest page's count, to show.
  */
-export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'offset' | 'cursor'> = {}) {
+export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'cursor'> = {}) {
   const limit = filters.limit ?? SPORE_PAGE_SIZE;
   const query = useInfiniteQuery({
     queryKey: ['spores', projectId, 'pages', sporeQuery({ ...filters, limit })],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${sporeQuery({ ...filters, limit, ...(pageParam === null ? {} : { cursor: pageParam }) })}`, signal),
-    getNextPageParam: (last) => last.cursor ?? undefined,
+    getNextPageParam: (last) => (last.hasMore && last.cursor !== null ? last.cursor : undefined),
     ...live({ follows: ['knowledge'] }),
   });
   const rows = useMemo(() => query.data?.pages.flatMap((page) => page.spores) ?? [], [query.data]);
