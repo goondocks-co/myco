@@ -2,14 +2,14 @@
 
 DROP INDEX IF EXISTS idx_sessions_occurred_deployment;
 
-CREATE INDEX IF NOT EXISTS idx_sessions_occurred_deployment ON sessions (COALESCE(occurred_started_at, started_at, first_received_at), project_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_occurred_deployment ON sessions (COALESCE(occurred_started_at, started_at, first_received_at), session_id, project_id);
 
 DROP INDEX IF EXISTS idx_plans_updated_deployment;
 
-CREATE INDEX IF NOT EXISTS idx_plans_updated_deployment ON plans (updated_at, project_id, plan_key);
+CREATE INDEX IF NOT EXISTS idx_plans_updated_deployment ON plans (updated_at, plan_key, project_id);
 
 DROP INDEX IF EXISTS idx_events_token_only;
 
-CREATE INDEX IF NOT EXISTS idx_events_token_only ON events (token_id, created_at, project_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_events_token_only ON events (token_id, created_at, event_id, project_id);
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '713');

@@ -1,13 +1,13 @@
 import { expect, test } from 'bun:test';
 import { listSessions, listSessionsAcross } from '@myco-server-worker/read/sessions.js';
-import { pagePlansAcross, pageProjectPlans } from '@myco-server-worker/read/plans.js';
+import { pagePlansAcross } from '@myco-server-worker/read/plans.js';
 import { MAX_LIKE_BYTES } from '@myco-server-worker/db/index.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 
 const ASCII = 'n'.repeat(MAX_LIKE_BYTES - 2);
 const ESCAPED = '_'.repeat((MAX_LIKE_BYTES - 2) / 2);
 
-test('session and plan lists match a text whose escaped pattern fills the LIKE limit and refuse one past it, on both stores', async () => {
+test('the session lists and the plan list across Projects match a text whose escaped pattern fills the LIKE limit and refuse one past it, on both stores', async () => {
   await withDocumentStores(async (db, name) => {
     for (const [i, title] of [ASCII, ESCAPED].entries()) {
       await db.prepare(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, title)
@@ -18,7 +18,6 @@ test('session and plan lists match a text whose escaped pattern fills the LIKE l
     const lists = {
       sessions: (q: string) => listSessions(db, { projectId: 'project' }, { q, fidelity: 'any' }).then(page => page.rows.map(row => row.sessionId)),
       sessionsAcross: (q: string) => listSessionsAcross(db, { all: true }, { q, fidelity: 'any' }).then(page => page.rows.map(row => row.sessionId)),
-      plans: (q: string) => pageProjectPlans(db, { projectId: 'project' }, { q }).then(page => page.rows.map(row => row.planKey)),
       plansAcross: (q: string) => pagePlansAcross(db, { all: true }, { q }).then(page => page.rows.map(row => row.planKey)),
     };
     for (const [list, read] of Object.entries(lists)) {

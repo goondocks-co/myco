@@ -30,7 +30,7 @@ export function sessionFrom(indexedBy: string): string {
      LEFT JOIN members e ON e.id = s.ended_by`;
 }
 
-/** The Deployment-wide order every read of sessions across Projects walks: the instant, the Project, the id. */
+/** The Deployment-wide order every read of sessions across Projects walks: the instant, the id, then the Project. */
 export const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
 
 /**
@@ -135,11 +135,11 @@ function variantSql(shape: Shape): string {
   if (text) conditions.push(`(s.title LIKE {pattern} ESCAPE '\\' OR s.agent LIKE {pattern} ESCAPE '\\' OR s.branch LIKE {pattern} ESCAPE '\\'
     OR s.session_id LIKE {pattern} ESCAPE '\\' OR ${firstPromptSql('s')} LIKE {pattern} ESCAPE '\\')`);
   if (after) conditions.push(across
-    ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.project_id < {afterProject} OR (s.project_id = {afterProject} AND s.session_id < {afterId}))))`
+    ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.session_id < {afterId} OR (s.session_id = {afterId} AND s.project_id < {afterProject}))))`
     : `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND s.session_id < {afterId}))`);
   const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : '';
   return `SELECT s.project_id, ${SESSION_COLUMNS} ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
-    ORDER BY ${O} DESC,${across ? ' s.project_id DESC,' : ''} s.session_id DESC LIMIT {limit}`;
+    ORDER BY ${O} DESC, s.session_id DESC${across ? ', s.project_id DESC' : ''} LIMIT {limit}`;
 }
 
 const keyOf = (shape: Shape) => `${shape.scope}${shape.window[0]!.toUpperCase()}${shape.window.slice(1)}${cap('Since', shape.since)}${cap('Until', shape.until)}`
@@ -161,7 +161,7 @@ for (const scope of ['project', 'all', 'named'] as const) for (const window of [
 
 /**
  * One session page as stored rows, at most `limit` + 1 of them, newest occurrence first: the Project admits the rows,
- * the filters narrow them, and the order and the key are the occurred instant and the id, with the Project between them
+ * the filters narrow them, and the order and the key are the occurred instant and the id, with the Project after them
  * across Projects. A read across Projects walks the Deployment-wide index; an activity window reads the sessions
  * received from its start on and, judged at an instant, also the sessions working now, read apart as `working`. A
  * text whose escaped pattern exceeds the store's LIKE limit is refused before any read.
@@ -183,8 +183,10 @@ export async function readSessionPage(db: RelationalStore, request: SessionPageR
     at: after?.createdAt ?? null, afterProject: after?.projectId ?? null, afterId: after?.id ?? null, limit: limit + 1,
   };
   const page = async (window: Window) => {
-    const variant = VARIANTS.get(keyOf({ scope: kind, window, since: window === 'start' && filters.since !== undefined,
-      until: filters.until !== undefined, session: kind === 'project' && filters.sessionId !== undefined, text, after: after !== null }))!;
+    const key = keyOf({ scope: kind, window, since: window === 'start' && filters.since !== undefined,
+      until: filters.until !== undefined, session: kind === 'project' && filters.sessionId !== undefined, text, after: after !== null });
+    const variant = VARIANTS.get(key);
+    if (variant === undefined) throw new Error(`no session page variant ${key}`);
     const [rows] = await readSet(db, variant.statement.bind(...variant.slots.map(slot => values[slot]!)));
     return rows;
   };

@@ -10,7 +10,7 @@ export const PLAN_COLUMNS = `plan_key, session_id, prompt_id, title, status, con
     THEN ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
   origin_path, updated_by, created_at, updated_at`;
 
-/** The Deployment-wide order every read of plans across Projects walks: the update, the Project, the key. */
+/** The Deployment-wide order every read of plans across Projects walks: the update, the key, then the Project. */
 const PLANS_ACROSS_INDEX = 'idx_plans_updated_deployment';
 
 /**
@@ -53,35 +53,36 @@ function variantSql({ scope, status, session, since, text, after }: Shape): stri
       : scope === 'all' ? 'EXISTS (SELECT 1 FROM projects p WHERE p.project_id = plans.project_id AND p.archived_at IS NULL)'
       : "instr({projects}, ',' || plans.project_id || ',') > 0",
     status ? 'status = {status}' : across ? '({status} IS NULL OR status = {status})' : '1',
-    session ? 'session_id = {session}' : across ? '({session} IS NULL OR session_id = {session})' : '1',
+    session ? 'session_id = {session}' : '1',
   ];
   if (since) conditions.push('updated_at >= {since}');
   if (text) conditions.push(`(title LIKE {pattern} ESCAPE '\\' OR content LIKE {pattern} ESCAPE '\\')`);
   if (after) conditions.push(across
-    ? 'updated_at <= {at} AND (updated_at < {at} OR (updated_at = {at} AND (project_id < {afterProject} OR (project_id = {afterProject} AND plan_key < {afterId}))))'
+    ? 'updated_at <= {at} AND (updated_at < {at} OR (updated_at = {at} AND (plan_key < {afterId} OR (plan_key = {afterId} AND project_id < {afterProject}))))'
     : 'updated_at <= {at} AND (updated_at < {at} OR (updated_at = {at} AND plan_key < {afterId}))');
   return `SELECT project_id, ${PLAN_COLUMNS} FROM plans${across ? ` INDEXED BY ${PLANS_ACROSS_INDEX}` : ''} WHERE ${conditions.join(' AND ')}
-    ORDER BY updated_at DESC,${across ? ' project_id DESC,' : ''} plan_key DESC LIMIT {limit}`;
+    ORDER BY updated_at DESC, plan_key DESC${across ? ', project_id DESC' : ''} LIMIT {limit}`;
 }
 
 const keyOf = (shape: Shape) => `${shape.scope}${cap('Status', shape.status)}${cap('Session', shape.session)}${cap('Since', shape.since)}`
   + `${cap('Text', shape.text)}${cap('After', shape.after)}`;
 
 /**
- * Every plan page variant, defined once. A one-Project page seeks its status or session on their own indexes; a page
- * across Projects walks the Deployment-wide index and checks them per row.
+ * Every plan page variant the plan lists use, defined once. A one-Project page takes a status and a session, each sought
+ * on its own index; a page across Projects takes a status checked per row as it walks the Deployment-wide index, a
+ * start instant and a text.
  */
 const VARIANTS = new Map<string, Variant>();
 for (const scope of ['project', 'all', 'named'] as const) for (const status of flags) for (const session of flags)
   for (const since of flags) for (const text of flags) for (const after of flags) {
-    if ((status || session) && scope !== 'project') continue;
+    if (scope === 'project' ? since || text : status || session) continue;
     const shape: Shape = { scope, status, session, since, text, after };
     VARIANTS.set(keyOf(shape), define(`planBrowse.${keyOf(shape)}`, variantSql(shape), text ? ['pattern'] : []));
   }
 
 /**
  * One plan page as stored rows with their Project, at most `limit` + 1 of them, most recently updated first. A read
- * across Projects walks the Deployment-wide index and orders by the update, the Project and the key. A text whose
+ * across Projects walks the Deployment-wide index and orders by the update, the key and the Project. A text whose
  * escaped pattern exceeds the store's LIKE limit is refused before any read.
  */
 export async function readPlanPage(db: RelationalStore, request: {
@@ -97,8 +98,10 @@ export async function readPlanPage(db: RelationalStore, request: {
     pattern: text ? containsPattern(filters.q!.trim()) : null,
     at: after?.createdAt ?? null, afterProject: after?.projectId ?? null, afterId: after?.id ?? null, limit: limit + 1,
   };
-  const variant = VARIANTS.get(keyOf({ scope: kind, status: kind === 'project' && filters.status !== undefined,
-    session: kind === 'project' && filters.sessionId !== undefined, since: filters.since !== undefined, text, after: after !== null }))!;
+  const key = keyOf({ scope: kind, status: kind === 'project' && filters.status !== undefined,
+    session: filters.sessionId !== undefined, since: filters.since !== undefined, text, after: after !== null });
+  const variant = VARIANTS.get(key);
+  if (variant === undefined) throw new Error(`no plan page variant ${key}: a plan list takes only the filters its operation declares`);
   const [rows] = await readSet(db, variant.statement.bind(...variant.slots.map(slot => values[slot]!)));
   return rows;
 }

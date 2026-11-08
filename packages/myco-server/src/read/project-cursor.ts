@@ -1,6 +1,6 @@
 /**
  * Cursors of lists that span Projects. A row of such a list is keyed by its Project and its id, so the cursor carries
- * `p1:<instant>:<projectId>:<id>` and the list orders by the instant, then the Project, then the id, all descending: two
+ * `p1:<instant>:<projectId>:<id>` and the list orders by the instant, then the id, then the Project, all descending: two
  * rows of different Projects sharing an instant and an id each keep their own place across a page boundary. The `p1:`
  * prefix names the encoding, so a cursor without it, whatever its id holds, is never read as one of these.
  */

@@ -136,7 +136,7 @@ type plans_PlanAcrossRow = plans_ProjectPlanRow & { projectId: string };
 
 /**
  * One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a
- * start instant. A plan is keyed by its Project and its key, so the page orders by the update, the Project and the key,
+ * start instant. A plan is keyed by its Project and its key, so the page orders by the update, the key and the Project,
  * and its cursor carries all three.
  */
 async function plans_pagePlansAcross(

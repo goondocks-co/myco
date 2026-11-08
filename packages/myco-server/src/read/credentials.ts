@@ -97,7 +97,7 @@ export async function credentialMember(db: RelationalStore, tokenId: string): Pr
 
 /**
  * What one credential wrote across every Project, newest first, over `idx_events_token_only (token_id, created_at,
- * project_id, event_id)`. An event is keyed by its Project and its id, so the cursor carries both; a cursor this list
+ * event_id, project_id)`. An event is keyed by its Project and its id, so the cursor carries both; a cursor this list
  * did not issue reads nothing, and the route refuses it first.
  */
 export async function credentialActivity(db: RelationalStore, tokenId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<ActivityRow>> {

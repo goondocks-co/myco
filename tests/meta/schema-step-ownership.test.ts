@@ -54,7 +54,7 @@ const LISTED: readonly Exception[] = [
     { table: 'member_credentials', actions: ['delete'], reason: 'Credential removal retracts its lineage sample evidence.' },
   ].flatMap(({ table, actions, reason }) => actions.map(action => ({ step: V711, object: `kpi_${table}_${action}`, table, reason }))),
   ...[['idx_sessions_occurred_deployment', 'sessions'], ['idx_plans_updated_deployment', 'plans'], ['idx_events_token_only', 'events']].map(([object, table]) => ({
-    step: CURSOR_INDEX_STEP, object: object!, table: table!, reason: 'Lists across Projects order by the instant, the Project and the id, and walk this index with no sort.',
+    step: CURSOR_INDEX_STEP, object: object!, table: table!, reason: 'Lists across Projects order by the instant, the id and the Project, and walk this index with no sort.',
   })),
   { step: 702, object: 'idx_sessions_credential', table: 'sessions', reason: 'First-context measurements seek the sessions attributed to each credential.' },
   { step: 703, object: 'idx_sessions_received', table: 'sessions', reason: 'KPI denominators seek session receipts in the selected time window.' },
@@ -293,7 +293,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     step:255,sql,reason:'Existing documents retain their catalog and catch up summary fields within the publisher budget.',
   })),
   ...CURSOR_INDEX_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
-    step: CURSOR_INDEX_STEP, sql, reason: 'Each Deployment-wide list index is replaced under its own name with the Project before the id.',
+    step: CURSOR_INDEX_STEP, sql, reason: 'Each Deployment-wide list index is replaced under its own name with the Project after the id.',
   })),
   ...UX_SCHEMA_STEPS.flatMap(step => step.statements.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({
     step: step.version, sql, reason: 'The ordered turn index is replaced in its own transaction.',
