@@ -2,6 +2,7 @@ import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
 import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
+import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
@@ -45,6 +46,9 @@ const LISTED: readonly Exception[] = [
     ['publication_directory_frontier_rewind', 'transcript_publication'],
   ].map(([object, table]) => ({ step: V718, object: object!, table: table!, reason: 'Publication seeks bounded directories and due arms; keyed input changes restart their cursors.' })),
 
+  { step: V719, object: 'idx_agent_runs_admission_catchup', table: 'agent_runs', reason: 'Admission catch-up seeks only in-flight source rows in Project/run order.' },
+  { step: V719, object: 'run_admission_ready_mark', table: 'projection_catchup', reason: 'Admission readiness changes refresh the runs section.' },
+  ...['insert', 'update', 'delete'].map(action => ({ step: V719, object: `run_live_${action}`, table: 'agent_runs', reason: 'Named run identities maintain admission contributions and queue heads.' })),
   ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
   { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
@@ -272,6 +276,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V717_STATEMENTS.filter(sql => /^(ALTER TABLE|DROP TRIGGER|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
     step: V717, sql, reason: 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'
   })),
+  ...V719_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V719, sql, reason: 'Run admission counts remain building until the bounded run catch-up completes.' })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),

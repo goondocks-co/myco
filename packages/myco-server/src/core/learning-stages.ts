@@ -1,3 +1,4 @@
+import { learningEligible, learningDue, learningPolicies } from '../db/runs/pull-policy.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
 /**
  * The two learning stages as work a claim takes: turn cards on the cheap tier, and session learning on the default
@@ -17,10 +18,9 @@ import { EXTRACTION_TASK } from './task-catalogue.js';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
-import { CARD_TASK, claimCardsStatements, dueCardTurns } from './turn-cards.js';
+import { CARD_TASK, claimCardsWrites as claimCardsStatements, dueCardTurns } from './turn-cards.js';
 import { TURN_CARD_PROMPT } from './turn-card-prompt.js';
-import { buildLearningAssignment, claimLearningStatements, learningHead, learningHeadFrom, learningWorkFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
-import { learningRangeSql } from './learning-recency.js';
+import { buildLearningAssignment, claimLearningWrites as claimLearningStatements, learningHead, learningHeadFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
 /** A card run's assignment: the turns it cards, each with the change count its write is guarded by. */
 export interface CardAssignment { kind: 'cards'; turns: { turnKey: string; changes: number }[] }
 
@@ -97,50 +97,32 @@ export async function buildCardInput(env: Pick<ServerEnv, 'db'>, projectId: stri
  * adds no parameters to the pulled write's level and fairness probes.
  */
 function learningStage(level: number, fresh: boolean): PulledStage {
-  const eligible = (now: number) => `eligible_at IS NOT NULL AND learning_ready_at <= ${Math.floor(now)} AND ${learningRangeSql('learning', fresh, now)} AND ${learningEnabledSql(!fresh)}`;
+  const eligible = (now: number) => learningEligible('learning',fresh,now);
   return {
-    level, task: EXTRACTION_TASK, switchedOn: learningEnabledSql(!fresh),
-    due: (project, now) => ({
-      sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'learning', fresh)} WHERE l.project_id = ${project}
-        AND ${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')})`,
-      params: [],
-    }),
+    level, task: EXTRACTION_TASK, policy:learningPolicies[1]![Number(fresh)]!, switchedOn: learningEnabledSql(!fresh),
+    due: (project, now) => ({sql:learningDue('learning',fresh,project,now),params:[]}),
     head: async (db, projectId, now) => {
       const row = await db.prepare(`SELECT session_id AS sessionId, eligible_at AS observed FROM ${learningHeadFrom('learning')}
         WHERE project_id = ? AND ${eligible(now)} AND ${notInFlight(EXTRACTION_TASK, learningSubject, 'l.session_id')}
         ORDER BY source_activity_at DESC, session_id LIMIT 1`).bind(projectId).first<{ sessionId: string; observed: number }>();
       return row === null ? null : { projectId, subject: learningSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
-    stillHead: (item, now) => ({
-      sql: `EXISTS (SELECT 1 FROM learning_sessions WHERE project_id = ? AND session_id = ? AND eligible_at = ? AND ${eligible(now)})`,
-      params: [item.projectId, item.key, item.observed],
-    }),
     build: (env, item, now) => buildLearningInput(env.db, item.projectId, item.key, now),
     claimed: (db, item, _input, run, now) => claimLearningStatements(db, item.projectId, item.key, now, run),
   };
 }
 
 function cardStage(level: number, fresh: boolean): PulledStage {
-  const pending = (now: number) => `pending_cards > 0 AND card_ready_at <= ${Math.floor(now)} AND ${learningRangeSql('cards', fresh, now)} AND ${learningEnabledSql(!fresh)}
-    AND EXISTS (SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
-      WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending' AND c.due_at <= ${Math.floor(now)})`;
+  const pending = (now: number) => learningEligible('cards',fresh,now);
   return {
-    level, task: CARD_TASK, switchedOn: learningEnabledSql(!fresh),
-    due: (project, now) => ({
-      sql: `EXISTS (SELECT 1 FROM ${learningWorkFrom(project, now, 'cards', fresh)} WHERE l.project_id = ${project}
-        AND ${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')})`,
-      params: [],
-    }),
+    level, task: CARD_TASK, policy:learningPolicies[0]![Number(fresh)]!, switchedOn: learningEnabledSql(!fresh),
+    due: (project, now) => ({sql:learningDue('cards',fresh,project,now),params:[]}),
     head: async (db, projectId, now) => {
       const row = await db.prepare(`SELECT session_id AS sessionId, source_activity_at AS observed FROM ${learningHeadFrom('cards')}
         WHERE project_id = ? AND ${pending(now)} AND ${notInFlight(CARD_TASK, cardSubject, 'l.session_id')}
         ORDER BY source_activity_at DESC, session_id LIMIT 1`).bind(projectId).first<{ sessionId: string; observed: number }>();
       return row === null ? null : { projectId, subject: cardSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
-    stillHead: (item, now) => ({
-      sql: `EXISTS (SELECT 1 FROM learning_sessions l WHERE project_id = ? AND session_id = ? AND source_activity_at = ? AND ${pending(now)})`,
-      params: [item.projectId, item.key, item.observed],
-    }),
     build: (env, item, now) => buildCardInput(env, item.projectId, item.key, now),
     claimed: (db, item, input, run, now) => claimCardsStatements(db, item.projectId, item.key,
       ((input.context?.assignment as CardAssignment | undefined)?.turns ?? []).map((turn) => turn.turnKey), now, run),

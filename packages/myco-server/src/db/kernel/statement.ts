@@ -20,7 +20,7 @@ export interface StatementOptions {
   readonly like?: readonly number[];
 }
 
-export interface Statement<Params extends readonly BindValue[], Row, Kind extends StatementKind> {
+export interface Statement<Params extends readonly unknown[], Row, Kind extends StatementKind> {
   readonly name: string;
   readonly kind: Kind;
   bind(...values: Params): Bound<Row, Kind>;
@@ -29,16 +29,21 @@ export interface Statement<Params extends readonly BindValue[], Row, Kind extend
 const names = new Set<string>();
 const bindings = new WeakMap<Bound, { sql: string; values: readonly BindValue[] }>();
 
-function define<Params extends readonly BindValue[], Row, Kind extends StatementKind>(
+function define<Params extends readonly unknown[], Row, Kind extends StatementKind>(
   kind: Kind, options: StatementOptions,
 ): Statement<Params, Row, Kind> {
   const { name, sql } = options;
   if (!/^[a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+$/.test(name)) throw new Error('statement name must be a fixed family.operation identifier');
   if (names.has(name)) throw new Error(`duplicate statement name: ${name}`);
-  const slots = checkStatement(sql);
-  if (kind !== 'assertion' && isSelectStatement(sql) !== (kind === 'read')) throw new Error(`${name}: SQL does not match ${kind} kind`);
   const like = [...(options.like ?? [])];
-  if (like.some(slot => !Number.isSafeInteger(slot) || slot < 1 || slot > slots)) throw new Error(`${name}: LIKE slot is outside the statement's bind slots`);
+  const validate = (text: string) => {
+    const slots = checkStatement(text);
+    if (kind !== 'assertion' && isSelectStatement(text) !== (kind === 'read')) throw new Error(`${name}: SQL does not match ${kind} kind`);
+    if (like.some(slot => !Number.isSafeInteger(slot) || slot < 1 || slot > slots)) throw new Error(`${name}: LIKE slot is outside the statement's bind slots`);
+    return slots;
+  };
+  if (typeof sql !== 'string') throw new Error(`${name}: statement SQL must be fixed at definition`);
+  const slots = validate(sql);
   names.add(name);
   return Object.freeze({
     name, kind,
@@ -57,11 +62,11 @@ function define<Params extends readonly BindValue[], Row, Kind extends Statement
   });
 }
 
-export const read = <Params extends readonly BindValue[], Row>(options: StatementOptions): Statement<Params, Row, 'read'> => define('read', options);
-export const write = <Params extends readonly BindValue[], Row = never>(options: StatementOptions): Statement<Params, Row, 'write'> => define('write', options);
+export const read = <Params extends readonly unknown[], Row>(options: StatementOptions): Statement<Params, Row, 'read'> => define('read', options);
+export const write = <Params extends readonly unknown[], Row = never>(options: StatementOptions): Statement<Params, Row, 'write'> => define('write', options);
 
 /** Families define aborting SQL once; callers compose only its validated Bound values. */
-export const assertion = <Params extends readonly BindValue[]>(options: StatementOptions): Statement<Params, unknown, 'assertion'> => define('assertion', options);
+export const assertion = <Params extends readonly unknown[]>(options: StatementOptions): Statement<Params, unknown, 'assertion'> => define('assertion', options);
 
 /** Internal compilation keeps prepared-statement identity within the supplied store's decorators. */
 export function prepareBound(db: RelationalStore, bound: Bound): PreparedStatement {

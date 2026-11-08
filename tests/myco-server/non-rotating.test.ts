@@ -185,7 +185,17 @@ describe('every route that mints an authority able to outlive the credential (#1
     const writesAuthority = (target: ts.Declaration): boolean => {
       if (authorityWrites.has(target)) return authorityWrites.get(target)!;
       let found = false;
+      const visited = new Set<ts.Node>();
       const visit = (node: ts.Node): void => {
+        if (visited.has(node)) return;
+        visited.add(node);
+        if (ts.isIdentifier(node)) {
+          const declared = graph.declaration(node);
+          if (declared && ts.isVariableDeclaration(declared) && declared.initializer) {
+            const value = declared.initializer;
+            if (ts.isStringLiteralLike(value) || ts.isTemplateExpression(value) || ts.isBinaryExpression(value) || ts.isIdentifier(value)) visit(value);
+          }
+        }
         const text = ts.isStringLiteralLike(node) ? node.text : ts.isTemplateExpression(node)
           ? node.head.text + node.templateSpans.map(span => span.literal.text).join('') : '';
         if (/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO)\s+(?:member_credentials|enrollment_authorities|identity_link_authorities|external_grants)\b|\bUPDATE\s+(?:deployment_ownership\s+SET\s+member_id|members\s+SET\s+role)\b/i.test(text)) found = true;

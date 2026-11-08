@@ -1,3 +1,4 @@
+export { observedRevisionPredicate } from '../db/settings/leaves.js';
 import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
 import type { Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';

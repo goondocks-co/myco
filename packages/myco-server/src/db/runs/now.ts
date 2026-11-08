@@ -1,3 +1,4 @@
+import { taskHoldSql } from './queue.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { NOW_WATCHED_TASKS, unresolvedFailureRows } from './outcomes.js';
@@ -59,11 +60,9 @@ export async function todayRunning(db: RelationalStore, scope: TodayScope) {
   const index = (entries: Row[]) => new Map(entries.map(row => [`${String(row.project_id)}\0${String(row.id)}`, row]));
   return { rows, total: total[0]!.n, hasMore: total[0]!.n > rows.length, profiles: index(profiles), steps: index(latestSteps), calls: index(latestCalls) };
 }
-const queued = read<[string | null], Row>({ name: 'runs.todayQueued', sql: `SELECT r.project_id,r.task,r.held_by,COUNT(*) AS count,MIN(r.queued_at) AS since,
-  (SELECT q.id FROM agent_runs q INDEXED BY idx_fleet_queue WHERE q.status='queued' AND q.task IS r.task AND q.held_by IS r.held_by
-    AND q.project_id=r.project_id ORDER BY q.queued_at,q.id LIMIT 1) AS oldest_id
-  FROM agent_runs r INDEXED BY idx_fleet_queue WHERE r.status='queued' AND ${scopeSql}
-  GROUP BY r.project_id,r.task,r.held_by` });
+const queued = read<[string | null], Row>({ name: 'runs.todayQueued', sql: `SELECT r.project_id,NULLIF(r.task,'') AS task,${taskHoldSql('r.hold_reason', 'r.origin')} AS held_by,r.queued_count AS count,
+  r.oldest_queued_at AS since,r.oldest_run_id AS oldest_id
+  FROM task_runtime r WHERE r.queued_count>0 AND ${scopeSql}` });
 export async function todayQueued(db: RelationalStore, scope: TodayScope): Promise<Row[]> {
   const [rows] = await readSet(db, queued.bind('projectId' in scope ? scope.projectId : null));
   return rows;

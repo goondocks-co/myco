@@ -1,3 +1,4 @@
+import { write } from '@myco-server-worker/db/index.js';
 import { expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
@@ -8,23 +9,23 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['api/runs.ts', 4],
   ['auth/authorization.ts', 13],
   ['auth/device.ts', 28],
-  ['auth/enrollment.ts', 34],
+  ['auth/enrollment.ts', 30],
   ['auth/grants.ts', 24],
   ['auth/http-authorization.ts', 14],
   ['auth/identity-link.ts', 21],
-  ['auth/join.ts', 3],
+  ['auth/join.ts', 2],
   ['auth/mcp-authorization.ts', 6],
   ['auth/member-write-store.ts', 2],
   ['auth/members-admin.ts', 21],
   ['auth/runners.ts', 85],
-  ['auth/tokens.ts', 33],
+  ['auth/tokens.ts', 30],
   ['content/document-reader.ts', 9],
   ['content/session-pages.ts', 12],
   ['content/session-turns.ts', 14],
   ['content/tool-statistics.ts', 15],
   ['core/activity.ts', 4],
   ['core/archive-bundle.ts', 44],
-  ['core/attempt-accounting.ts', 8],
+  ['core/attempt-accounting.ts', 6],
   ['core/attention-state.ts', 4],
   ['core/backup.ts', 63],
   ['core/blob-objects.ts', 1],
@@ -41,14 +42,13 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/event-content-restore.ts', 6],
   ['core/event-content.ts', 15],
   ['core/extraction-acks.ts', 2],
-  ['core/first-owner.ts', 9],
+  ['core/first-owner.ts', 8],
   ['core/harness-health.ts', 2],
   ['core/harness.ts', 2],
   ['core/injection.ts', 2],
-  ['core/jobs-run.ts', 1],
   ['core/learning-hold.ts', 3],
-  ['core/learning-sessions.ts', 57],
-  ['core/learning-stages.ts', 12],
+  ['core/learning-sessions.ts', 51],
+  ['core/learning-stages.ts', 7],
   ['core/legacy-workers.ts', 6],
   ['core/machine-settings.ts', 39],
   ['core/model-catalogs.ts', 13],
@@ -56,8 +56,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/ownership.ts', 46],
   ['core/processed-resources.ts', 2],
   ['core/provenance.ts', 11],
-  ['core/pulled-stages.ts', 9],
-  ['core/queue-heads.ts', 4],
+  ['core/pulled-stages.ts', 7],
   ['core/raw-archive.ts', 32],
   ['core/raw-backfill.ts', 19],
   ['core/raw-claims.ts', 23],
@@ -78,13 +77,13 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/run-steps.ts', 9],
   ['core/run-write-store.ts', 2],
   ['core/runner-updates.ts', 22],
-  ['core/runs.ts', 171],
+  ['core/runs.ts', 88],
   ['core/scheduled-tasks.ts', 1],
   ['core/secrets.ts', 6],
   ['core/served-material.ts', 11],
   ['core/session-artifacts.ts', 8],
   ['core/settings.ts', 31],
-  ['core/spore-curation.ts', 127],
+  ['core/spore-curation.ts', 118],
   ['core/spores.ts', 48],
   ['core/sql-statements.ts', 2],
   ['core/storage-cleanup.ts', 26],
@@ -93,9 +92,8 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/tombstones.ts', 35],
   ['core/transcript-ranges.ts', 5],
   ['core/turn-card-prompt.ts', 1],
-  ['core/turn-cards.ts', 25],
-  ['core/worker-claim.ts', 7],
-  ['core/worker-contacts.ts', 33],
+  ['core/turn-cards.ts', 21],
+  ['core/worker-contacts.ts', 27],
   ['core/worker-lease.ts', 2],
   ['core/write-guard-store.ts', 3],
   ['ingest/artifact-record.ts', 2],
@@ -220,4 +218,13 @@ it('recognizes store aliases by their type and permits unrelated batch and exec 
   host.getSourceFile = name => name === file.fileName ? file : undefined;
   const program = ts.createProgram([file.fileName], { noLib: true }, host);
   expect(boundarySites(file, program.getTypeChecker()).map(site => site.kind)).toEqual(['batch']);
+});
+
+it('refuses SQL supplied by a bind-time composition callback', () => {
+  expect(()=>Reflect.apply(write,undefined,[{name:'boundary.dynamicSql',sql:(condition:string)=>({sql:condition,values:[]})}]))
+    .toThrow('statement SQL must be fixed at definition');
+  if(false) {
+    // @ts-expect-error Statement text is fixed in the definition, never supplied at bind.
+    write({name:'boundary.typedDynamicSql',sql:(condition:string)=>({sql:condition,values:[]})});
+  }
 });

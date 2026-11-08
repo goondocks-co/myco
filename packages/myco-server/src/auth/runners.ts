@@ -145,7 +145,7 @@ export async function runnerSubject(db: RelationalStore, auth: Pick<RunnerAuth, 
   return { kind: 'runner', deploymentId: await deploymentIdentity(db), transport: 'http', live: row !== null, runnerId: auth.runnerId, tokenId: auth.credentialId };
 }
 
-const RUNNER_WRITE_REFUSED = '$[myco_runner_write_refused]';
+export const RUNNER_WRITE_REFUSED = '$[myco_runner_write_refused]';
 
 export class RunnerWriteRefused extends Error {
   constructor() { super('runner credential holds no authority'); }

@@ -1,3 +1,5 @@
+import { queuedWorkExists } from '../db/runs/queue.js';
+import { admissionReady } from '../db/runs/live.js';
 import { todayProjects, todayRunning, todayQueued, NOW_PROJECTS_MAX, NOW_RUNNING_MAX, type ProjectCursor } from '../db/runs/now.js';
 import { failureReasons, unresolvedFailures, FAILURE_STREAK_SHOWN, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
 import { todaySchedules, curationDispositions, NOW_FAILING_GROUPS } from '../db/learning/curation-now.js';
@@ -13,10 +15,10 @@ import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 import type { Marks } from '@goondocks/myco-shared/live-marks';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { CURATION_TASK, EXTRACTION_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
-import { readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
-import { applyFleetSignInAvailability, fleetSelectionContext, fleetWaits } from './fleet.js';
+import type { WorkerFleetRow } from '../core/worker-contacts.js';
+import { fleetAvailability, applyFleetSignInAvailability, fleetSelectionContext, fleetWaits } from './fleet.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
-import { readBudgetHolds } from './budget.js';
+import { readTaskBudgetHolds as readBudgetHolds } from '../db/runs/queue.js';
 import { BUDGET_WINDOW_MS } from '../core/budget-policy.js';
 import { enabledCapabilities, type ProjectCapability } from '../core/settings.js';
 import { capabilityOf } from '../core/worker-selection.js';
@@ -150,6 +152,8 @@ async function readRunning(db: RelationalStore, scope: WorkNowScope) {
 
 /** Queued runs grouped by Project and task, each with its stored holder's sentence or the fleet's current wait. */
 async function readQueued(env: ServerEnv, scope: WorkNowScope, fleet: readonly WorkerFleetRow[], now: number, includeSignIn: boolean): Promise<NowWaiting[]> {
+  if (!(await admissionReady(env.db))) return (await queuedWorkExists(env.db, scope)) ? [{ key: 'queued:building', projectId: 'projectId' in scope ? scope.projectId : null,
+    what: 'Queued work', count: null, why: QUEUE_REASON_WORDS.queue_building, since: null, nextAt: null }] : [];
   const results = await todayQueued(env.db, scope);
   const groups = new Map<string, { projectId: string; task: string | null; held: string | null; count: number; since: number | null }>();
   for (const row of results) {
@@ -304,7 +308,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
   const producer = env.recovery;
   const [fleet, marks, runningPage, recovery] = await Promise.all([
     settle('waiting', async () => {
-      const rows = await readWorkerFleet(env.db, now, includeSignIn);
+      const rows = await fleetAvailability(env, now, includeSignIn);
       if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true).available);
       return rows;
     }, [] as WorkerFleetRow[]),

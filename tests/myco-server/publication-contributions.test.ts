@@ -143,6 +143,7 @@ it('keeps due sessions and both power assertions live while publication measures
     r.sqlite.query("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_pub',?,'m','t',1,1)").run(session);
     r.sqlite.query("INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,token_id,size,first_received_at,last_received_at,imported_at) VALUES('proj_pub',?,?,'m','t',100,1,1,?)").run(session, session, imported);
   }
+  for (const step of SCHEMA_STEPS.filter(step => step.version > V717)) for (const sql of step.statements) r.sqlite.exec(sql);
   const env = serverEnvFromBindings({ MYCO_DB: sqliteD1(r.sqlite), BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
   expect(await pendingPublication(r.db, 100)).toEqual({ state: 'building', sessions: 2, transcripts: null, bytes: null,
     imported: { sessions: null, transcripts: null, bytes: null } });

@@ -733,6 +733,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0716_v716.sql': '5ad5637c11454247176aa4adf258921ca92bd0d7877b6b54222b309686305d65',
   '0717_v717.sql': 'e5275151d6651579a13d034f8ff139d3b6812c6d19b99c14395062e7b6a693a0',
   '0718_v718.sql': '373c210b675c2014779a67cd17543f528b6c774d658d2ae1a68edbb4c7789f3b',
+  '0719_v719.sql': 'a0ac5d2ce881b26e33b0de2efa865761c9acb1a6eb92635090e5332baf4dee3c',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1365,6 +1366,9 @@ describe('versioned schema steps', () => {
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
+    writerRows.set('task_runtime', { task: 'title-summary', origin: 'manual' });
+    writerRows.set('task_due', { run_id: 'grammar-run', task: 'title-summary', origin: 'manual', claimable: 1 });
+    writerRows.set('run_live', { run_id: 'grammar-run', task: 'title-summary', status: 'pending', origin: 'manual', claimable: 1 });
     writerRows.set('spore_curation_work', { cluster_key: 'grammar-fixture', members: '[]' });
     try {
       expect(await ingestEvent(source.db, { projectId: 'proj_1', machineId: 'machine', tokenId: 'capture', now: 1, bodyBytes: 0, writeOrigin: 'server' }, {
@@ -1442,7 +1446,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'document_publication_contributions','document_publication_totals','document_publication_ready',
-      'object_settlement_intents', 'attempt_spend', 'budget_totals',
+      'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'task_runtime', 'task_due',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',

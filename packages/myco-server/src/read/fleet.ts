@@ -26,7 +26,8 @@ export async function fleetTaskReason(env: ServerEnv, task: string, fleet: reado
   settings: ReadonlyMap<string, string>, limits: DispatchLimits, exclude?: string, selection = fleetSelectionContext(env)): Promise<QueueReason> {
   const ceiling = heldBy(await dispatchLoad(env.db, task, now, exclude), limits);
   let reason: QueueReason;
-  if (ceiling !== null) reason = 'dispatch_ceiling';
+  if (ceiling === 'queue_building') reason = 'queue_building';
+  else if (ceiling !== null) reason = 'dispatch_ceiling';
   else if ((await previewFleet(env, task, fleet, settings, false, selection)).executions.length > 0) reason = 'ready';
   else if ((await previewFleet(env, task, fleet, settings, true, selection)).executions.length > 0) reason = 'capacity';
   else if (selection.includeSignIn && (await previewFleet(env, task, fleet, settings, false, selection)).heldBy?.startsWith('credential_unavailable:')) reason = 'credential_unavailable';
@@ -66,7 +67,7 @@ export async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)
   if (tasks.length === 0) return waits;
   try {
     const selection = fleetSelectionContext(env, includeSignIn);
-    const [rows, settings, limits] = await Promise.all([fleet ?? readWorkerFleet(env.db, now, includeSignIn), claimSettings(env), readDispatchLimits(env)]);
+    const [rows, settings, limits] = await Promise.all([fleet ?? fleetAvailability(env, now, includeSignIn), claimSettings(env), readDispatchLimits(env)]);
     for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, rows, now, settings, limits, undefined, selection), observedAt: now });
   } catch (error) {
     emit({ kind: 'fleet_read_failed', errorClass: classify(error) });
@@ -115,7 +116,7 @@ export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRo
 /** One fleet read supplies every registered runner, the compatibility inventory and queue readiness. */
 export async function readFleetProjection(env: ServerEnv, now: number, includeStoredCredentials = false) {
   const selection = fleetSelectionContext(env, includeStoredCredentials);
-  const fleet = await readWorkerFleet(env.db, now, selection.includeSignIn);
+  const fleet = await fleetAvailability(env, now, selection.includeSignIn);
   const storedCredentials = includeStoredCredentials ? Object.fromEntries(await Promise.all(Object.keys(HARNESS_CREDENTIALS)
     .map(async agent => [agent, await selection.available(agent)] as const))) : undefined;
   if (includeStoredCredentials) await applyFleetSignInAvailability(fleet, now, selection.available);
@@ -123,4 +124,9 @@ export async function readFleetProjection(env: ServerEnv, now: number, includeSt
   return { observedAt: now, fleet, queue, ...(includeStoredCredentials ? { storedCredentials } : {}),
     runners: fleet.flatMap(row => row.runnerDetails === undefined ? [] : [row.runnerDetails]),
     legacyWorkers: fleet.filter(row => row.runner === null) };
+}
+
+/** Runner availability owner seam shared by the fleet and task waiting readers. */
+export function fleetAvailability(env: ServerEnv, now: number, includeSignIn: boolean): Promise<WorkerFleetRow[]> {
+  return readWorkerFleet(env.db, now, includeSignIn);
 }

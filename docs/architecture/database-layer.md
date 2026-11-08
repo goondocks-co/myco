@@ -9,8 +9,12 @@ replace them. Existing callers migrate by family.
 `assertion<Params>`, `Bound`, `commit`, `readSet`, their definition/result types,
 and the three limits (`MAX_BIND_SLOTS`, `MAX_SQL_BYTES`, `MAX_LIKE_BYTES`).
 
-A definition has a unique `family.operation` name, fixed SQL, and optional `like`
-slots. Its kind is explicit in its constructor and Bound. `bind` validates positional
+A definition has a unique `family.operation` name, SQL, and optional `like` slots.
+SQL is either fixed text or a family-owned composition function returning SQL and
+bindings from typed inputs. Composition runs at `bind`, captures the resulting values,
+and applies the same arity, kind and portability checks as fixed text. The definition
+and telemetry name stay fixed across all bindings; no definition or prepared-handle
+cache grows with guard values. Its kind is explicit in its constructor and Bound. `bind` validates positional
 arity and values (string, finite number, null, Uint8Array). Byte arrays are captured
 by value. Numbered parameters use SQLite slot allocation: repeated `?1` needs one
 binding, `?100` needs 100 bindings, and an anonymous `?` follows the highest slot.
