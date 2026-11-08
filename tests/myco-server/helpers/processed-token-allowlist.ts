@@ -37,7 +37,8 @@ export const UNRELATED_PROCESSED_LINES = {
     ],
     "core/embedding/step.ts": [
       "step = providers.building === undefined ? { phase: 'switch', processed: 0 } : await reconcileEmbedding(context, projectId, now);",
-      "const built = step.processed > 0 && (step.phase === 'switch' || (providers.building === undefined && providers.provider.modelKey === providers.switching && (step.phase === 'missing' || step.phase === 'stale')));"
+      "const built = step.processed > 0 && (step.phase === 'switch' || (providers.building === undefined && providers.provider.modelKey === providers.switching && (step.phase === 'missing' || step.phase === 'stale')));",
+      "return step.processed === 0 || REPORTS_MISSING.has(step.phase)"
     ],
     "api/embedding-task.ts": [
       "if (run.dryRun === 1) return Response.json({ persisted: true, held: true, phase: 'settled', processed: 0 });"

@@ -1,6 +1,8 @@
 import { readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { afterEach, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
+import { listProjects } from '@myco-server-worker/read/sessions.js';
 import { settingsWriter, settingsRevisions, observedSettingsGuard, writeSwitchedEmbedding, CURATION_DAILY_LIMIT_LEAF } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -158,6 +160,8 @@ it('resets only configured embedding parts during selection writes and switch co
       r.sqlite.run(`INSERT INTO embedding_switches(slot,id,provider,model,endpoint,model_key,from_model_key,estimated_tokens,estimated_sources,progressed_at,state,started_at,started_by,updated_at)
         VALUES('deployment','switch','workers-ai','@cf/baai/bge-m3',NULL,'new','old',0,0,1,'building',1,'owner',1)`);
       const sw = await readSwitch(r.db);
+      // Completion takes its calibration authority from a check of every Project, as the switch's completion runs it.
+      for (const { projectId } of await listProjects(r.db)) expect(await calibrationPending(r.db, projectId, sw!.modelKey, now)).toBe(false);
       return writeSwitchedEmbedding(r.db, { 'embedding.provider': 'workers-ai', 'embedding.model': sw!.model }, 'owner', now, sw!);
     };
     expect(await write(1)).toBe(true);

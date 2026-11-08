@@ -40,4 +40,20 @@ export function passedOverTriggers(): Array<{ name: string; table: string; sql: 
     trigger('passed_over_version_delete', 'embedding_versions', 'DELETE', 'DELETE FROM embedding_passed_over WHERE (project_id,type,record_id)=(OLD.project_id,OLD.type,OLD.record_id)'),
   ];
 }
+/**
+ * Current passed-over membership under the model keys `models` (a JSON array SQL expression) at the instant `now`:
+ * every row no model can read, and each model's rows whose refusal has not expired, sought by model and deadline so
+ * an expired refusal is never read. `project` narrows both seeks to one Project.
+ */
+export function currentPassedOver(models: string, now: string, project?: string): string {
+  if (project !== undefined) {
+    return `SELECT * FROM embedding_passed_over INDEXED BY idx_embedding_passed_over_current WHERE project_id=${project} AND model_key=''
+      UNION ALL SELECT * FROM embedding_passed_over INDEXED BY idx_embedding_passed_over_current
+        WHERE project_id=${project} AND model_key IN (SELECT value FROM json_each(${models}) WHERE value<>'') AND expires_at>${now}`;
+  }
+  return `SELECT * FROM embedding_passed_over INDEXED BY idx_embedding_passed_over_model WHERE model_key=''
+    UNION ALL SELECT * FROM embedding_passed_over INDEXED BY idx_embedding_passed_over_model
+      WHERE model_key IN (SELECT value FROM json_each(${models}) WHERE value<>'') AND recorded_at>${now}-${INPUT_REFUSAL_RETRY_MS}`;
+}
+
 export const PASSED_OVER_RECONCILE = reconcilePassedOver(PASSED_OVER_KEYS).map((sql, i) => write<[string]>({ name: `embedding.passedOverPage${i}`, sql }));

@@ -9,4 +9,7 @@ const core_embedding_source_state_currentHubnessMember = (row: string): string =
   WHERE r.project_id = ${row}.project_id AND r.model_key = ${row}.model_key AND r.id = ${row}.id
     AND r.type = 'spore' AND r.ready = ${core_embedding_source_state_import_RECEIPT.ready} AND r.rewrites = 0 AND ${core_embedding_source_state_currentSource('r')})`;
 
-export { core_embedding_source_state_currentSource, core_embedding_source_state_currentHubnessMember };
+/** One calibration probe: a statement and its binds, run by the calibration module that owns it. */
+interface core_embedding_selection_EmbeddingQuery { sql: string; binds: unknown[] }
+
+export { core_embedding_source_state_currentSource, core_embedding_source_state_currentHubnessMember, type core_embedding_selection_EmbeddingQuery };

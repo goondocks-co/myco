@@ -29,7 +29,16 @@ export const passedOverWords = (source: PassedOverSourceView): string =>
  * The sources a list names, each on its own line, and how many more there are. Shown wherever search by meaning leaves
  * sources out: the switch's confirmation and progress, and Health.
  */
-export function PassedOverSources({ list, lede }: { list: PassedOverList; lede: string }) {
+export function PassedOverSources({ list, lede, counting = false }: { list: PassedOverList; lede: string; counting?: boolean }) {
+  if (counting) {
+    return (
+      <div className="flex flex-col gap-s1" data-passed-over="counting">
+        <p className="t-small text-muted">{list.count === 0
+          ? 'Still counting the sources search by meaning will pass over.'
+          : `Still counting the sources search by meaning will pass over: ${formatCount(list.count, 'source')} so far.`}</p>
+      </div>
+    );
+  }
   if (list.count === 0) return null;
   const more = list.count - list.sources.length;
   return (
@@ -60,7 +69,10 @@ export interface SwitchLine { text: string; tone: 'bad' | 'warn' | 'muted' }
 export function switchWords(sw: EmbeddingSwitchStatus, now: number): { chip: string; headline: string; detail: SwitchLine[] } {
   const to = `${shortModel(sw.model)}${sizeWords(sw.dimensions)}`;
   const share = sw.total === 0 ? 100 : Math.floor((sw.done / sw.total) * 100);
-  const count = `${sw.done.toLocaleString()} of ${formatCount(sw.total, 'source')} done (${share}%)`;
+  // While sources are still being counted, the total is partial: say how far it has come, never a final share.
+  const count = sw.progress === 'building'
+    ? `${formatCount(sw.done, 'source')} done so far, still counting the rest`
+    : `${sw.done.toLocaleString()} of ${formatCount(sw.total, 'source')} done (${share}%)`;
   const from = sw.from === null ? null : shortModel(sw.from.model);
   const muted = (text: string): SwitchLine => ({ text, tone: 'muted' });
   const started = muted(`Started ${ago(sw.startedAt, now)}.`);
@@ -104,9 +116,10 @@ export function EmbeddingSwitchPanel({ sw, now }: { sw: EmbeddingSwitchStatus; n
         <StatusChip tone={sw.state === 'paused' ? 'warn' : sw.retryAt === null ? 'ok' : 'warn'}>{words.chip}</StatusChip>
         <span>{words.headline}</span>
       </p>
-      <Progress done={sw.done} total={Math.max(sw.total, 1)} label={`Sources rebuilt with ${shortModel(sw.model)}`} />
+      {/* The meter shows only once every source is counted. */}
+      {sw.progress === 'ready' && <Progress done={sw.done} total={Math.max(sw.total, 1)} label={`Sources rebuilt with ${shortModel(sw.model)}`} />}
       {words.detail.map((line) => <p key={line.text} className={`t-small ${TONE[line.tone]}`}>{line.text}</p>)}
-      <PassedOverSources list={sw.passedOver} lede={`${formatCount(sw.passedOver.count, 'source')} will have no search by meaning once search moves to ${shortModel(sw.model)}:`} />
+      <PassedOverSources list={sw.passedOver} counting={sw.progress === 'building'} lede={`${formatCount(sw.passedOver.count, 'source')} will have no search by meaning once search moves to ${shortModel(sw.model)}:`} />
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
       {admin && (
         <div className="flex flex-wrap gap-s2">

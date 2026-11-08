@@ -1,12 +1,13 @@
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
+import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork, WORK_AUDIT_INTERVAL_MS } from '@myco-server-worker/core/embedding/jobs.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 import { lastTaskEntryAt } from '@myco-server-worker/core/runs.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
+import { prepareHubnessPopulation } from '@myco-server-worker/read/catalog/embedding-hubness.js';
+import { WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
 import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -18,6 +19,8 @@ import type { ServerEnv, RelationalStore } from '@myco-server-worker/core/adapte
 const NOW = 10 ** 12;
 const MODEL = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
 const TICKS = 10;
+/** A wake well after the work rows were last checked. */
+const LATER_MS = 5 * 60_000;
 
 async function seedCaughtUp(d1: RelationalStore, size: number) {
   await d1.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < ?)
@@ -70,11 +73,15 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
       history.push(measured.reads());
       expect(measured.reads()).toBeLessThanOrEqual(8);
       while ((await prepareEmbeddingDue(measured.db, 'p', MODEL)).more);
+      // Settled calibration leaves its population snapshot at the current calibration revision.
+      expect(await prepareHubnessPopulation(measured.db, 'p', MODEL).first()).toMatchObject({ complete: 1, miscounted: 0 });
       expect(await hasEmbeddingWork(measured.db, 'p', MODEL, NOW)).toBe(false);
       measured.reset();
+      // Each size's window opens with an hourly audit of every Project, so both measure the same work.
+      const window = NOW + totals.length * (WORK_AUDIT_INTERVAL_MS + 1);
       for (let tick = 1; tick <= TICKS; tick++) {
-        expect(await embeddingKeepsAwake(env, NOW + tick * 1_000)).toBe(false);
-        expect(await runEmbeddingJob(env, NOW + tick * 1_000)).toEqual({ changed: 0, more: false });
+        expect(await embeddingKeepsAwake(env, window + tick * 1_000)).toBe(false);
+        expect(await runEmbeddingJob(env, window + tick * 1_000)).toEqual({ changed: 0, more: false });
       }
       expect(measured.historyQueries()).toBe(0);
       totals.push(measured.reads() / TICKS);
@@ -104,10 +111,10 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
       expect(checks.every((reads) => reads <= 8)).toBe(true);
       console.info(`embedding unrelated writes: ${size * 2} sources, ${JSON.stringify(checks)} rows/check`);
       const pacer = tickPacer();
-      Object.assign(pacer, { fullAt: NOW + WORK_SWEEP_MIN_MS, state: 'sleep', heldBy: 'embedding:sweep', draining: ['embedding-reconcile'] });
+      Object.assign(pacer, { fullAt: NOW + LATER_MS, state: 'sleep', heldBy: 'embedding:sweep', draining: ['embedding-reconcile'] });
       measured.reset();
       for (let tick = 0; tick < 4; tick++) {
-        const report = await runTick(env, NOW + WORK_SWEEP_MIN_MS + tick * WORK_SWEEP_CONTINUE_MS, { wake: 'clock', pacer });
+        const report = await runTick(env, NOW + LATER_MS + tick * WORK_SWEEP_CONTINUE_MS, { wake: 'clock', pacer });
         expect(report.jobs.filter((job) => job.name === 'embedding-reconcile').every((job) => job.changed === 0 && job.failed === null)).toBe(true);
       }
       expect(measured.historyQueries()).toBe(0);
@@ -118,7 +125,7 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
       expect(await calibrationPending(measured.db, 'p', MODEL, NOW)).toBe(false);
       measured.reset();
       for (let tick = 0; tick < 4; tick++) {
-        expect(await calibrationPending(measured.db, 'p', MODEL, NOW + WORK_SWEEP_MIN_MS + tick * WORK_SWEEP_CONTINUE_MS)).toBe(false);
+        expect(await calibrationPending(measured.db, 'p', MODEL, NOW + LATER_MS + tick * WORK_SWEEP_CONTINUE_MS)).toBe(false);
       }
       stale.push(measured.reads() / 4);
       console.info(`hubness stale-receipt safety budget: ${size} stale receipts, ${stale.at(-1)} rows/safety tick`);

@@ -190,6 +190,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['embedding_source_failures'], order: 'unverified' },
     { tables: ['embedding_receipts'], order: 'unverified' },
     { tables: ['embedding_resets'], order: 'unverified' },
+    { tables: ['embedding_work_audit'], order: 'unverified' },
   ],
   'db/schema-v712.ts#<module>': Array.from({ length: 7 }, () => ({ tables: ['embedding_passed_over'], order: 'unverified' as const })),
   'db/runs/admission.ts#reconcileSpend': [{ tables: ['attempt_spend'], order: 'unverified' }],

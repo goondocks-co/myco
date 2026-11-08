@@ -18,6 +18,7 @@ import {
   type EmbeddingSelection, type EmbeddingSelectionLeaf, type StoredEmbedding,
 } from './embedding/policy.js';
 import { SWITCH_STANDS_SQL, readSwitch } from './embedding/switch-store.js';
+import { heldModels } from '../db/embeddings/switch.js';
 
 /**
  * Deployment Settings: one operation every write goes through.
@@ -654,10 +655,9 @@ export async function storedEmbedding(db: RelationalStore): Promise<StoredEmbedd
   return stored;
 }
 
-/** The models whose vectors the search index holds: every partition with a receipt not yet deleted. */
+/** The models whose vectors the search index holds: every partition with a receipt whose deletion is not yet confirmed. */
 export async function heldPartitions(db: RelationalStore) {
-  const { results } = await db.prepare(`SELECT DISTINCT model_key FROM embedding_receipts WHERE ready >= 0`).all<{ model_key: string }>();
-  return results.map((row) => heldPartition(row.model_key));
+  return (await heldModels(db)).map((model) => heldPartition(model));
 }
 
 /** The stored embedding leaves as one write reads and conditions on them: each parsed, with its persistent revision. */

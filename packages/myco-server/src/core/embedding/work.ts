@@ -1,6 +1,5 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { dueSourceWork, workRow } from '../../db/embeddings/work.js';
-import { readSet } from '../../db/index.js';
+import { calibrationRestsAtRevision, dueSourceWork } from '../../db/embeddings/work.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
@@ -17,6 +16,13 @@ export interface EmbeddingWorkScope {
   switching?: string | null;
   /** An archived Project's only work is retiring vectors. */
   retireOnly?: boolean;
+  /** The models whose provider may be asked now, when the caller read them once for many Projects. */
+  ready?: readonly string[];
+  /**
+   * Probe even rows that rest clean, as an audit does: a stale idle answer is replaced, fenced by the revision probed.
+   * Calibration is probed in full unless its snapshot at the current calibration revision shows it rests.
+   */
+  fresh?: boolean;
 }
 
 /**
@@ -28,20 +34,18 @@ export interface EmbeddingWorkScope {
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number, scope: EmbeddingWorkScope = {}): Promise<boolean> {
   const candidates = scope.retireOnly === true ? [] : [model, ...(scope.building == null ? [] : [scope.building])];
   const writes: string[] = [];
-  for (const key of candidates) if (await embeddingProviderReady(db,key,now)) writes.push(key);
+  if (scope.ready !== undefined) writes.push(...candidates.filter(key => scope.ready!.includes(key)));
+  else for (const key of candidates) if (await embeddingProviderReady(db,key,now)) writes.push(key);
   const retained = [...new Set([model, ...candidates, ...(scope.retain ?? [])])].sort();
   const pending = await recordedWork(db, projectId, model, 'embedding', JSON.stringify({ predicate: WORK_PREDICATE_VERSION, writes, retained }), now, async () => {
     if (await dueSourceWork(db, projectId, writes, now)) return { pending: true };
     if (await retiringReceipt(db, projectId, retained, now) !== null) return { pending: true };
     return { pending: false, wakeAt: await embeddingWakeAt(db, projectId, writes, now) };
-  });
+  }, { fresh: scope.fresh === true });
   if (pending) return true;
-  return scope.retireOnly !== true && calibrationPending(db, projectId, calibrationModel(model, scope.switching ?? null), now);
-}
-
-/** A partial calibration safety cycle continues through the Deployment's chained wake job; embedding work has none. */
-export async function hasEmbeddingSweep(db: RelationalStore, projectId: string, model: string, scope: EmbeddingWorkScope = {}): Promise<boolean> {
   if (scope.retireOnly === true) return false;
-  const [rows] = await readSet(db, workRow.bind(projectId, calibrationModel(model, scope.switching ?? null), 'hubness'));
-  return rows[0]?.sweep_cursor != null;
+  const calibrate = calibrationModel(model, scope.switching ?? null);
+  // A fresh check probes calibration in full only when its snapshot at the current calibration revision does not prove it rests.
+  const fresh = scope.fresh === true && !(await calibrationRestsAtRevision(db, projectId, calibrate));
+  return calibrationPending(db, projectId, calibrate, now, fresh);
 }
