@@ -6,7 +6,7 @@ import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 import { lastTaskEntryAt } from '@myco-server-worker/core/runs.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { prepareHubnessPopulation } from '@myco-server-worker/read/catalog/embedding-hubness.js';
+import { calibrationPopulation } from '@myco-server-worker/db/embeddings/calibration.js';
 import { WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
 import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -73,8 +73,7 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
       history.push(measured.reads());
       expect(measured.reads()).toBeLessThanOrEqual(8);
       while ((await prepareEmbeddingDue(measured.db, 'p', MODEL)).more);
-      // Settled calibration leaves its population snapshot at the current calibration revision.
-      expect(await prepareHubnessPopulation(measured.db, 'p', MODEL).first()).toMatchObject({ complete: 1, miscounted: 0 });
+      expect(await calibrationPopulation(measured.db, 'p', MODEL)).toMatchObject({ state: 'ready', uncovered: 0, stale: 0, miscounted: false });
       expect(await hasEmbeddingWork(measured.db, 'p', MODEL, NOW)).toBe(false);
       measured.reset();
       // Each size's window opens with an hourly audit of every Project, so both measure the same work.

@@ -3,6 +3,7 @@ import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
 import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
 import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
 import { V721, V721_STATEMENTS } from '@myco-server-worker/db/schema-v721.js';
+import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
@@ -52,6 +53,15 @@ const LISTED: readonly Exception[] = [
   { step: V719, object: 'idx_agent_runs_admission_catchup', table: 'agent_runs', reason: 'Admission catch-up seeks only in-flight source rows in Project/run order.' },
   { step: V719, object: 'run_admission_ready_mark', table: 'projection_catchup', reason: 'Admission readiness changes refresh the runs section.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V719, object: `run_live_${action}`, table: 'agent_runs', reason: 'Named run identities maintain admission contributions and queue heads.' })),
+  ...V722_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: V722, object: match[1]!, table: match[2]!, reason: match[1]!.includes('_hubness_source_')
+      ? 'A spore version or receipt change advances the calibration revision every page commit is fenced by.'
+      : match[1] === 'idx_embedding_hubness_members_moments' ? 'Calibration reads the lowest and highest moment count of settled members in two seeks.'
+      : match[1] === 'idx_embedding_source_rewriting' ? 'Spores being written again are counted from current source state, without reading stale receipts.'
+      : match[1] === 'embedding_hubness_members_work_update' ? 'A membership change dirties calibration work; moment updates, which commit with the cursor, do not.'
+      : 'Receipt, source version and membership changes maintain per-vector calibration state and its population.' }];
+  }),
   ...V720_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: V720, object: match[1]!, table: match[2]!, reason: match[1] === 'idx_embedding_passed_over_current'
@@ -289,6 +299,11 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     step: V718, sql, reason: 'Publication records its directory cursor and committed revision without backfilling history.'
   })),
 
+  ...V722_STATEMENTS.filter(sql => sql.startsWith('DROP ') || sql.startsWith('ALTER TABLE') || sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V722, sql,
+    reason: sql.startsWith('ALTER') ? 'The lost-vector probe retains the last write of the vector it stopped at, the order abandoned vectors are walked in.'
+      : sql.startsWith('INSERT') ? 'Calibration state is initialized through the shared projection catch-up.'
+      : sql.includes('embedding_hubness_population') || sql.includes('embedding_hubness_work') || sql.includes('_population_') ? 'The population snapshot and the in-flight work table are retired: nothing reads either.'
+      : 'Each trigger is replaced by a narrower one that still advances the same revision or dirties the same work.' })),
   ...V720_STATEMENTS.filter(sql => sql.startsWith('DROP TRIGGER')).map(sql => ({ step: V720, sql,
     reason: 'Each work trigger is replaced by the same body plus the attention mark.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO search_revisions')).map(sql => ({ step: V721, sql, reason: 'Each searched kind starts at search revision 0.' })),

@@ -1,5 +1,5 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { calibrationRestsAtRevision, dueSourceWork } from '../../db/embeddings/work.js';
+import { dueSourceWork } from '../../db/embeddings/work.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
@@ -20,7 +20,6 @@ export interface EmbeddingWorkScope {
   ready?: readonly string[];
   /**
    * Probe even rows that rest clean, as an audit does: a stale idle answer is replaced, fenced by the revision probed.
-   * Calibration is probed in full unless its snapshot at the current calibration revision shows it rests.
    */
   fresh?: boolean;
 }
@@ -45,7 +44,5 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
   if (pending) return true;
   if (scope.retireOnly === true) return false;
   const calibrate = calibrationModel(model, scope.switching ?? null);
-  // A fresh check probes calibration in full only when its snapshot at the current calibration revision does not prove it rests.
-  const fresh = scope.fresh === true && !(await calibrationRestsAtRevision(db, projectId, calibrate));
-  return calibrationPending(db, projectId, calibrate, now, fresh);
+  return calibrationPending(db, projectId, calibrate, now, scope.fresh === true);
 }
