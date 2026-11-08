@@ -69,6 +69,26 @@ describe('full-text search', () => {
     expect((await f.search('retryneedle')).results.map((r) => r.id)).toEqual(['retry']);
     expect(await pendingSearchBlobs(f.db)).toBe(0);
   });
+  it('indexes a blob from its start when its queue entry is replaced while a pass reads it, leaving no text unsearchable', async () => {
+    const f = fixture();
+    await f.blob('requeued', `startneedle ${'filler '.repeat(SEARCH_CHUNK_CHARS * (SEARCH_CHUNKS_PER_PASS + 2) / 7)} endneedle`);
+    f.plan('requeued', null, 'requeued');
+    await reconcileSearchIndex(f.db, f.bucket, 1000);
+    // The blob's entry is dropped and queued again from the start while the next pass reads the blob's bytes.
+    const get = f.bucket.get.bind(f.bucket);
+    let replaced = false;
+    f.bucket.get = async (...args: Parameters<typeof get>) => {
+      if (!replaced) {
+        replaced = true;
+        f.sqlite.run(`DELETE FROM search_blob_queue WHERE blob_key = 'requeued'`);
+        f.sqlite.run(`INSERT INTO search_blob_queue(project_id, blob_key) VALUES ('search-a', 'requeued')`);
+      }
+      return get(...args);
+    };
+    for (let pass = 0; pass < 6 && await pendingSearchBlobs(f.db) > 0; pass += 1) await reconcileSearchIndex(f.db, f.bucket, 2000 + pass);
+    expect({ replaced, pending: await pendingSearchBlobs(f.db), start: (await f.search('startneedle')).results.map(r => r.id), end: (await f.search('endneedle')).results.map(r => r.id) })
+      .toEqual({ replaced: true, pending: 0, start: ['requeued'], end: ['requeued'] });
+  });
   it('treats reserved query words as text and enforces the query budget before reading', async () => {
     const f = fixture();
     f.prompt('operators', 'AND OR NOT NEAR literal words');

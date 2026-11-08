@@ -13,6 +13,7 @@ import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
 import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
+import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { memberSubject } from '../auth/authorization.js';
 import { credentialListScope } from '../auth/http-authorization.js';
 
@@ -131,7 +132,7 @@ export async function handleRevokeCredential(env: ServerEnv, ctx: OwnerContext):
 
 /** What one credential wrote, across every Project: any credential's to an admin, and only a member's own to a member. */
 export async function handleCredentialActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const page = paging(ctx.url);
+  const page = paging(ctx.url, { decode: decodeProjectCursor, refusal: PROJECT_CURSOR_REFUSAL });
   if (page instanceof Response) return page;
   if (!isAdmin(ctx.member.role) && (await credentialMember(env.db, ctx.params.id)) !== ctx.member.id) return notFound();
   return ok(await credentialActivity(env.db, ctx.params.id, page));

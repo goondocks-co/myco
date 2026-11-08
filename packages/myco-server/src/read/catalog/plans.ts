@@ -1,14 +1,12 @@
-import { registeredObjectKeySql as plans_import_registeredObjectKeySql } from "../../core/blob-objects.js";
-import { processedResourceProofSql as plans_import_processedResourceProofSql } from "../../core/processed-resources.js";
 import type { RelationalStore as plans_import_RelationalStore } from "../../core/adapters.js";
 import { PLAN_STATUSES as plans_import_PLAN_STATUSES } from "../../ingest/kinds.js";
 import { clampLimit as plans_import_clampLimit } from "../scope.js";
-import { containsPattern as plans_import_containsPattern } from "../scope.js";
 import { encodeCursor as plans_import_encodeCursor } from "../scope.js";
 import { inListChunks as plans_import_inListChunks } from "../scope.js";
-import { keyset as plans_import_keyset } from "../scope.js";
+import { decodeProjectCursor as plans_import_decodeProjectCursor, encodeProjectCursor as plans_import_encodeProjectCursor } from "../project-cursor.js";
+import { decodeCursor as plans_import_decodeCursor } from "../scope.js";
+import { PLAN_COLUMNS as plans_import_PLAN_COLUMNS, planText as plans_import_planText, readPlanPage as plans_import_readPlanPage } from "../../db/plans/browse.js";
 import { projectsDriving as plans_import_projectsDriving } from "../scope.js";
-import { projectsFiltering as plans_import_projectsFiltering } from "../scope.js";
 import type { Page as plans_import_Page } from "../scope.js";
 import type { ProjectSet as plans_import_ProjectSet } from "../scope.js";
 import type { ReadScope as plans_import_ReadScope } from "../scope.js";
@@ -55,10 +53,7 @@ function plans_progressOf(content: string | null): string {
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
-const plans_COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key,
-  CASE WHEN ${plans_import_processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')}
-    THEN ${plans_import_registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
-  origin_path, updated_by, created_at, updated_at`;
+const plans_COLUMNS = plans_import_PLAN_COLUMNS;
 
 function plans_toPlan(row: Record<string, unknown>, tags: string[]): plans_ProjectPlanRow {
   return {
@@ -132,32 +127,27 @@ async function plans_pageProjectPlans(
   scope: plans_import_ReadScope,
   opts: { status?: string; sessionId?: string; limit?: number; cursor?: string } = {},
 ): Promise<plans_import_Page<plans_ProjectPlanRow>> {
-  const listed = await plans_selectPlans(db, { sql: 'project_id = ?', params: [scope.projectId] }, opts);
+  const listed = await plans_selectPlans(db, { projectId: scope.projectId }, opts);
   return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
 }
 
 /** A plan of a read across Projects, with the Project it belongs to. */
 type plans_PlanAcrossRow = plans_ProjectPlanRow & { projectId: string };
 
-/** One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a start instant. */
+/**
+ * One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a
+ * start instant. A plan is keyed by its Project and its key, so the page orders by the update, the key and the Project,
+ * and its cursor carries all three.
+ */
 async function plans_pagePlansAcross(
   db: plans_import_RelationalStore,
   set: plans_import_ProjectSet,
   opts: { status?: string; since?: number; q?: string; limit?: number; cursor?: string } = {},
 ): Promise<plans_import_Page<plans_PlanAcrossRow>> {
-  return plans_selectPlans(db, plans_import_projectsFiltering(set, 'plans'), opts, 'idx_plans_updated_deployment');
+  return plans_selectPlans(db, set, opts);
 }
 
-/**
- * The plans a text matches: its title or its body as the Deployment holds it inline, with `%` and `_` read as text.
- * Case is folded for ASCII letters only: `é` does not match `É`. A body spilled to a blob is matched by
- * `/api/search`, not here.
- */
-function plans_planText(q: string | undefined): { sql: string; params: string[] } | null {
-  if (q === undefined || q.trim() === '') return null;
-  const pattern = plans_import_containsPattern(q.trim());
-  return { sql: `(title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`, params: [pattern, pattern] };
-}
+const plans_planText = plans_import_planText;
 
 /**
  * How many plans of each status the set holds under the other filters: a start instant and a text. Read through each
@@ -176,41 +166,28 @@ async function plans_planTotals(db: plans_import_RelationalStore, set: plans_imp
   return Object.fromEntries(results.map((r) => [r.status, Number(r.n)]));
 }
 
-/**
- * One plan page over the rows `projects` admits. A read that walks a Deployment-wide index (`walks`, named in the
- * statement) also takes the cursor's instant as an upper bound beside the keyset predicate, which the predicate
- * already implies, so the walk seeks to the cursor.
- */
+/** One plan page from the stored rows `readPlanPage` answers, with each plan's tags, and the cursor of the next page; a cursor this list did not issue reads nothing. */
 async function plans_selectPlans(
   db: plans_import_RelationalStore,
-  projects: { sql: string; params: readonly unknown[] },
+  scope: { projectId: string } | plans_import_ProjectSet,
   opts: { status?: string; sessionId?: string; since?: number; q?: string; limit?: number; cursor?: string },
-  walks = '',
 ): Promise<plans_import_Page<plans_PlanAcrossRow>> {
-  const k = plans_import_keyset({ limit: plans_import_clampLimit(opts.limit), cursor: opts.cursor }, { order: 'updated_at', id: 'plan_key', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const conditions = [projects.sql];
-  const params: unknown[] = [...projects.params];
-  if (opts.status !== undefined) { conditions.push('status = ?'); params.push(opts.status); }
-  if (opts.sessionId !== undefined) { conditions.push('session_id = ?'); params.push(opts.sessionId); }
-  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
-  const text = plans_planText(opts.q);
-  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
-  if (k.where !== '') {
-    if (walks !== '') { conditions.push('updated_at <= ?'); params.push(k.params[0]); }
-    conditions.push(k.where); params.push(...k.params);
-  }
-  const { results } = await db.prepare(`SELECT project_id, ${plans_COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
-    .bind(...params, k.limit + 1)
-    .all<Record<string, unknown>>();
-  const shown = results.slice(0, k.limit);
+  const across = !('projectId' in scope);
+  const limit = plans_import_clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : across ? plans_import_decodeProjectCursor(opts.cursor) : plans_import_decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const results = await plans_import_readPlanPage(db, { scope, filters: opts, after, limit });
+  const shown = results.slice(0, limit);
   // Tags are keyed by Project first, so they are read per Project over its keys on the page, in one batch.
   const keysByProject = new Map<string, string[]>();
   for (const r of shown) keysByProject.set(r.project_id as string, [...(keysByProject.get(r.project_id as string) ?? []), r.plan_key as string]);
   const tags = await plans_tagsAcross(db, keysByProject);
   const rows = shown.map((r) => ({ ...plans_toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
   const last = rows[rows.length - 1];
-  return { rows, cursor: results.length > k.limit && last !== undefined ? plans_import_encodeCursor(last.updatedAt, last.planKey) : null };
+  const more = results.length > limit && last !== undefined;
+  return { rows, cursor: !more ? null : across
+    ? plans_import_encodeProjectCursor({ createdAt: last.updatedAt, projectId: last.projectId, id: last.planKey })
+    : plans_import_encodeCursor(last.updatedAt, last.planKey) };
 }
 
 /** A plan's bounded metadata, including the content revision and source session. */

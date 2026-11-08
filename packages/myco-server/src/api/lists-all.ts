@@ -13,7 +13,8 @@ import { paging, sessionFilters } from './sessions.js';
 import { listSessionSummariesAcross } from '../read/sessions.js';
 import { countSporesAcross, listSporesAcross, sporeFacets, type ListSporesOptions } from '../core/spores.js';
 import { pagePlansAcross, planTotals, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
-import { decodeCursor, type ProjectSet } from '../read/scope.js';
+import type { ProjectSet } from '../read/scope.js';
+import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE } from './intelligence.js';
 
 const clampLimit = (raw: string | null): number => {
@@ -37,7 +38,7 @@ async function projectSetOf(env: ServerEnv, ctx: OwnerContext): Promise<ProjectS
 export async function handleSessionsAcross(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const set = await projectSetOf(env, ctx);
   if (set instanceof Response) return set;
-  const page = paging(ctx.url);
+  const page = paging(ctx.url, { decode: decodeProjectCursor, refusal: PROJECT_CURSOR_REFUSAL });
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
@@ -88,7 +89,7 @@ export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Prom
   const since = instantParam(ctx.url, 'since');
   if (since instanceof Response) return since;
   const cursor = ctx.url.searchParams.get('cursor');
-  if (cursor !== null && decodeCursor(cursor) === null) return badRequest('malformed cursor');
+  if (cursor !== null && decodeProjectCursor(cursor) === null) return badRequest(PROJECT_CURSOR_REFUSAL);
   const q = ctx.url.searchParams.get('q') ?? undefined;
   const [page, totals] = await Promise.all([
     pagePlansAcross(env.db, set, {

@@ -21,6 +21,7 @@ import { importEnabledChecks } from './import-policy.js';
  * without its event leaves a spore superseded by nothing, which no reader can
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
+import { consolidationSourcesChanged, consolidationSourcesCurrent, staleConsolidationSource, type StaleConsolidationSource } from '../db/spores/consolidation.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { GUARD_ENABLED_AT } from '../db/schema-v101.js';
@@ -509,8 +510,9 @@ export async function listSupersededSporeIds(
 }
 
 /**
- * Record one wisdom spore and independently move each current active source,
- * with an event only for each successful move, in one atomic batch.
+ * Record one wisdom spore and move every source to consolidated, each with its event, in one atomic batch that lands
+ * only while every source is still active at its expected revision. When one changed, nothing is stored and `stale` names the
+ * first source that changed, so the caller rereads it.
  */
 export async function consolidateSpores(
   db: RelationalStore,
@@ -519,8 +521,9 @@ export async function consolidateSpores(
   sources: readonly (string | SporeSource)[],
   event: Omit<ResolutionEventInsert, 'id' | 'sporeId' | 'action' | 'newSporeId'>,
   now: number, authority?: SporeAuthority,
-): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
+): Promise<{ wisdom: SporeRow | null; consolidated: number; stale?: StaleConsolidationSource }> {
   const owned = grantSources(scope, authority, sources.map(source => typeof source === 'string' ? source : source.id));
+  const expected = sources.map(source => typeof source === 'string' ? { id: source } : source);
   const insert = sporeInsert(db, scope, wisdom, false, owned);
   const moves = sources.flatMap(source => {
     const { id, revision } = typeof source === 'string' ? { id: source, revision: undefined } : source;
@@ -528,7 +531,15 @@ export async function consolidateSpores(
       ...event, id: crypto.randomUUID(), sporeId: id, action: 'consolidate', newSporeId: wisdom.id,
     }, now, { revision }, authority);
   });
-  const results = await db.batch([insert, ...moves]);
-  const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].results.length === 1).length;
-  return { wisdom: (results[0].results[0] as SporeRow | undefined) ?? null, consolidated };
+  let results: Awaited<ReturnType<RelationalStore['batch']>>;
+  try {
+    results = await db.batch([consolidationSourcesCurrent(db, scope.projectId, expected), insert, ...moves]);
+  } catch (error) {
+    if (!consolidationSourcesChanged(error)) throw error;
+    const stale = await staleConsolidationSource(db, scope.projectId, expected)
+      ?? { id: expected[0]!.id, status: null, revision: null, expected: expected[0]!.revision ?? null };
+    return { wisdom: null, consolidated: 0, stale };
+  }
+  const consolidated = moves.filter((_, i) => i % 2 === 0 && results[2 + i]!.results.length === 1).length;
+  return { wisdom: (results[1]!.results[0] as SporeRow | undefined) ?? null, consolidated };
 }
