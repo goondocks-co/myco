@@ -10,12 +10,9 @@ import type { Bound } from '../db/index.js';
  */
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import type { DispatchLimits } from './limits.js';
-import { limitPassesSql, type ClaimedInput } from './runs.js';
-import { readSpendRows, spendRowsSql } from './run-budget.js';
-import { BUDGET_WINDOW_MS, seedForStage } from './budget-policy.js';
-import { ESTIMATE_AGENT } from './budget-estimates.js';
-import { queueHeadSeek } from './queue-heads.js';
-import { capabilityOnSql, effectiveBudgetSql, projectAcceptsWorkSql } from './settings.js';
+import type { ClaimedInput } from './runs.js';
+import { readProjectSpend } from '../db/runs/admission.js';
+import { capabilityOnSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
@@ -87,28 +84,7 @@ export function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:re
 /** A queue the worker can execute: its task and the estimate key its execution prices an automatic row by. */
 export interface ServedQueue { task: string; estimateKey: string }
 
-/**
- * Whether queued work the worker can execute is admissible now, as the claim's queue selection admits it: each task's
- * manual and automatic heads, found by the same indexed seek, with the task passing its limits, the head's Project
- * accepting the work, outside the learning fence, and an automatic head fitting the budget at its Project's estimate.
- * A pulled write refuses while this holds. It reads at most two queue rows per task, whatever the backlog.
- */
-export function queuedAdmissibleSql(queues: readonly ServedQueue[], limits: DispatchLimits, now: number): string {
-  const literal = (text: string) => `'${text.replaceAll("'", "''")}'`;
-  const spent = `(SELECT COALESCE(SUM(value),0) FROM (${spendRowsSql(String(Math.floor(now - BUDGET_WINDOW_MS)))}))`;
-  const heads = queues.flatMap(({ task, estimateKey }) => (['manual', 'automatic'] as const).map((origin) => {
-    const fits = origin === 'manual' ? '' : ` AND ${spent} + COALESCE((SELECT json_extract(s.value, '$.estimate') FROM agent_state s
-          WHERE s.project_id = q.project_id AND s.agent_id = ${literal(ESTIMATE_AGENT)} AND s.key = ${literal(estimateKey)}), ${seedForStage(task)}) <= ${effectiveBudgetSql()}`;
-    return `EXISTS (SELECT 1 FROM (${queueHeadSeek('project_id, task', literal(task), literal(origin))}) q
-      WHERE ${limitPassesSql(task, limits, now)} AND ${acceptsSql('q.project_id', task)}${fits})`;
-  }));
-  return heads.length === 0 ? '0' : `(${heads.join(' OR ')})`;
-}
-
-/** Whether the queued work `queuedAdmissibleSql` describes is admissible now. */
-export async function queuedAdmissible(db: RelationalStore, admissible: string): Promise<boolean> {
-  return (await db.prepare(`SELECT ${admissible} AS admissible`).first<{ admissible: number }>())?.admissible === 1;
-}
+export { queuedAdmissible } from '../db/runs/pull-policy.js';
 
 export interface PulledSelection { stage: PulledStage; item: PulledItem; assertions: Bound[] }
 
@@ -129,8 +105,7 @@ export async function selectPulled(db: RelationalStore, eligible: readonly Pulle
     if (byProject.size === 0) continue;
     const projects = [...byProject.keys()];
     if (projects.length > 1) {
-      const spent = new Map<string, number>();
-      for (const row of await readSpendRows(db, now)) if (row.origin === 'automatic') spent.set(row.projectId, (spent.get(row.projectId) ?? 0) + row.value);
+      const spent = await readProjectSpend(db, now);
       const rounded = (projectId: string) => Math.round((spent.get(projectId) ?? 0) * 1e6) / 1e6;
       projects.sort((a, b) => rounded(a) - rounded(b) || (a < b ? -1 : a > b ? 1 : 0));
     }

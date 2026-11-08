@@ -14,6 +14,7 @@
  * sentence. A message is a place a path, a key or a captured body can appear.
  */
 import type { ServerEnv } from './adapters.js';
+import type { WorkerLiveness } from '../db/runs/status.js';
 import { isKnownWorkerCapability } from '@goondocks/myco-shared/repository';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
@@ -139,12 +140,7 @@ export interface DeploymentDiagnostics {
   capabilities: CapabilityFacts[];
   absentCapabilities: string[];
   /** Null when the store could not be questioned: zero workers would read as none attached. */
-  workers: {
-    workersBusy: number;
-    runsQueued: number;
-    recentWithinMs: number;
-    fleet: WorkerFacts[];
-  } | null;
+  workers: (WorkerLiveness & { recentWithinMs: number; fleet: WorkerFacts[] }) | null;
   /** Null when the store could not be questioned. */
   queuedRuns: QueuedRunFacts[] | null;
   /** Null when the store could not be questioned. */
@@ -253,7 +249,7 @@ export async function deploymentDiagnostics(env: ServerEnv, now: number): Promis
       ...base,
       store: 'readable',
       schema: { expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION },
-      workers: { workersBusy: counts.workersBusy, runsQueued: counts.runsQueued, recentWithinMs: CONTACT_RECENT_MS, fleet: fleet.map(workerFacts) },
+      workers: { ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: fleet.map(workerFacts) },
       queuedRuns: queued.map(queuedFacts),
       projects: projects.map(projectFacts),
       ingestBacklog: await (async () => {

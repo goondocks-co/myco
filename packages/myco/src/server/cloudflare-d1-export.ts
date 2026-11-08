@@ -32,6 +32,7 @@
  * What an answer says is read once for every caller of this API
  * (`readD1ExportAnswer`): only `complete` or `error` for the export ends it.
  */
+import { newStatementScan, feedStatements, endStatements, isSelectStatement } from '@myco-server-worker/core/sql-statements.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -817,6 +818,26 @@ export interface D1Answer { results: unknown[]; changes: number }
 
 /** One statement over the D1 API with its bound parameters (`queryD1`'s path, login and bounded retry), with its changed-row count. */
 export async function queryD1Answer(context: D1QueryContext, sql: string, params: readonly unknown[] = []): Promise<D1Answer> {
+  return (await queryD1Answers(context, params.length === 0 ? { sql } : { sql, params }, 1))[0]!;
+}
+
+export interface D1ReadQuery { sql: string; params: readonly unknown[] }
+
+/** A read set is sent as one D1 request; writes are refused before any statement executes. */
+export async function queryD1ReadBatch(context: D1QueryContext, batch: readonly D1ReadQuery[]): Promise<D1Answer[]> {
+  const queries = batch.map(({ sql, params }) => ({ sql, params: [...params] }));
+  for (const query of queries) {
+    const scan = newStatementScan();
+    const statements: string[] = [];
+    feedStatements(scan, query.sql + '\n', 'all', statement => statements.push(statement));
+    endStatements(scan, 'all', statement => statements.push(statement));
+    if (statements.length !== 1 || !isSelectStatement(statements[0]!)) throw new Error('the operator store accepts only single SELECT statements in a read batch; writes require individually guarded statements');
+  }
+  if (queries.length === 0) return [];
+  return queryD1Answers(context, { batch: queries }, queries.length);
+}
+
+async function queryD1Answers(context: D1QueryContext, request: { sql: string; params?: readonly unknown[] } | { batch: readonly D1ReadQuery[] }, count: number): Promise<D1Answer[]> {
   const fetchApi = context.fetch ?? globalThis.fetch;
   const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/query`;
@@ -827,15 +848,15 @@ export async function queryD1Answer(context: D1QueryContext, sql: string, params
     headers.set('content-type', 'application/json');
     let failure: ObjectReadError;
     try {
-      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify(params.length === 0 ? { sql } : { sql, params }) });
+      const response = await fetchApi(endpoint, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_QUERY_TIMEOUT_MS), body: JSON.stringify(request) });
       const text = await response.text();
       type Answer = { success?: unknown; errors?: unknown; result?: unknown };
       const body = ((): Answer | null => { try { return JSON.parse(text) as Answer; } catch { return null; } })();
       const codes = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { code?: unknown }).code ?? '')).filter((c) => c !== '') : [];
       const said = Array.isArray(body?.errors) ? body.errors.map((e) => String((e as { message?: unknown }).message ?? '')).filter((m) => m !== '').join('; ') : '';
-      const first = Array.isArray(body?.result) ? body.result[0] as { success?: unknown; results?: unknown; meta?: { changes?: unknown } } | undefined : undefined;
-      if (response.ok && body?.success === true && first?.success === true && Array.isArray(first.results)) {
-        return { results: first.results, changes: typeof first.meta?.changes === 'number' ? first.meta.changes : 0 };
+      const answers = Array.isArray(body?.result) ? body.result as Array<{ success?: unknown; results?: unknown; meta?: { changes?: unknown } }> : [];
+      if (response.ok && body?.success === true && answers.length === count && answers.every(answer => answer?.success === true && Array.isArray(answer.results))) {
+        return answers.map(answer => ({ results: answer.results as unknown[], changes: typeof answer.meta?.changes === 'number' ? answer.meta.changes : 0 }));
       }
       const refusedLogin = response.status === 401 || codes.includes('10000');
       if (refusedLogin && !refreshed) {

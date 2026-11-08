@@ -55,7 +55,7 @@ export interface TaskStartPreview {
   /** The task's own condition for running and whether it holds in the project now; null for a task that names none. */
   readiness: { condition: string; met: boolean } | null;
   /** A run of the task is already waiting or running in the project. */
-  live: boolean;
+  live: boolean | null;
   /** The capability the task needs and whether the project has it on; null for a task no capability gates. */
   capability: { name: string; on: boolean } | null;
   /** The caller's own day of runs of the task; null for an admin, who starts runs uncapped. */

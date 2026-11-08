@@ -1,7 +1,8 @@
+import { readAttemptSpendOracle as readSpendRows } from './helpers/attempt-spend-oracle.js';
 import { describe, expect, it } from 'bun:test';
 import { budgetFixture } from './helpers/budget-fixture.js';
 import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
-import { automaticFits, budgetHold, readSpendRows } from '@myco-server-worker/core/run-budget.js';
+import { automaticFits, budgetHold } from '@myco-server-worker/core/run-budget.js';
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
@@ -173,4 +174,35 @@ describe('rolling spend accounting', () => {
     expect([...V714_STATEMENTS]).toEqual(spendSchemaStatements());
     expect(spendTriggers().every(trigger => V714_STATEMENTS.includes(trigger.sql))).toBe(true);
   });
+});
+
+it('budget status names every held Project head and keeps each run quote with its own origin', async () => {
+  const f = await budgetFixture();
+  try {
+    await f.setting(1);
+    f.queue('first', 'automatic', 'proj_1');
+    f.queue('next', 'automatic', 'proj_1', 'title-summary', f.now + 1);
+    f.queue('other-project', 'automatic', 'proj_2');
+    f.queue('manual', 'manual', 'proj_1');
+    const { recordQueueHolder } = await import('@myco-server-worker/core/runs.js');
+    await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'first', 'budget', { usd: 2, at: f.now });
+    await recordQueueHolder(f.db, { projectId: 'proj_2' }, 'other-project', 'budget', { usd: 0.5, at: f.now });
+    await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'manual', 'budget', { usd: 3, at: f.now });
+    const status = await readBudgetStatus(f.db, f.now);
+    expect(status.heldHeads?.map(head => [head.runId, head.reason, head.requiredUsd]).sort()).toEqual([
+      ['first', 'budget_too_small', 2], ['other-project', 'budget', 0.5],
+    ]);
+    expect(await budgetHold(f.db, 'proj_1', 'manual', 3, f.now)).toBeNull();
+    f.sqlite.run("UPDATE agent_runs SET status='skipped',completed_at=? WHERE id='first'", [f.now + 2]);
+    expect((await readBudgetStatus(f.db, f.now + 2)).heldHeads?.map(head => head.runId)).toEqual(['other-project']);
+  } finally { f.sqlite.close(); }
+});
+
+it('budget status reports building while queue heads are incomplete', async () => {
+  const f = await budgetFixture();
+  try {
+    f.queue('waiting');
+    f.sqlite.run("UPDATE projection_catchup SET done=0 WHERE projection='run_admission'");
+    expect(await readBudgetStatus(f.db, f.now)).toMatchObject({ state: 'building', automaticUsd: null });
+  } finally { f.sqlite.close(); }
 });

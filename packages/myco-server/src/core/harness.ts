@@ -4,7 +4,7 @@ import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
 import { automaticFits, budgetHold } from './run-budget.js';
 import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
-import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
+import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
 import { queueHeads, unclaimedQueued } from './queue-heads.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
@@ -1130,7 +1130,6 @@ async function pullAtClaim(
       if (selected !== null) queues.push({ task, estimateKey: estimateKey(task, selected.harness, selected.profile) });
     }
     const limits = attempt === 0 ? read.limits : await readDispatchLimits(env);
-    const queued = queuedAdmissibleSql(queues, limits, worker.now);
     const eligible: PulledStage[] = [];
     for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);
     const selection = await selectPulled(env.db, eligible, compatible, limits, worker.now);
@@ -1153,7 +1152,7 @@ async function pullAtClaim(
     });
     if (claimed === null) {
       if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
-      if (await queuedAdmissible(env.db, queued)) return 'queued';
+      if (await queuedAdmissible(env.db, queues, limits, worker.now)) return 'queued';
       continue;
     }
     emit({ kind: 'worker_claimed', runId: claimed.row.id, task: claimed.row.task, projectId: claimed.row.projectId, harness: chosen.harness, ...workerTelemetry(worker.principal) });

@@ -34,6 +34,14 @@ export const budgetGovernor:ParityScenario={
     expect(await target.sql(`SELECT estimate_usd,cost_usd,cost_source,profile_json IS NOT NULL AS profiled FROM agent_run_attempts WHERE attempt_id=${lit(answer.run.attemptId)}`))
       .toEqual([{estimate_usd:0.10,cost_usd:0.30,cost_source:'actual',profiled:1}]);
     const status=await fetch(`${target.url}/api/status`,{headers:target.ownerHeaders()});
-    expect((await status.json()) as unknown).toMatchObject({budget:{active:true,dailyUsd:1,manualUsd:1.30,automaticUsd:0}});
+    expect((await status.json()) as unknown).toMatchObject({budget:{active:true,dailyUsd:1,manualUsd:1.30,automaticUsd:0,
+      heldHeads:[{projectId:target.projectId,runId:'budget-held-0',reason:'budget',requiredUsd:expect.any(Number),quotedAt:expect.any(Number)}]}});
+    const fleet=await fetch(`${target.url}/api/runners`,{headers:target.ownerHeaders()});
+    expect(fleet.status).toBe(200);
+    expect(await fleet.json()).toMatchObject({queue:{count:25,oldestAt:now}});
+    const preview=await fetch(`${target.url}/api/tasks/start?project=${target.projectId}&task=vault-seed`,{headers:target.ownerHeaders()});
+    expect(preview.status).toBe(200);
+    expect(await preview.json()).toMatchObject({task:'vault-seed',projectId:target.projectId,live:false});
+
   },
 };
