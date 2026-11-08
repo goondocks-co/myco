@@ -352,7 +352,8 @@ async function releaseArchivePreparation(db:RelationalStore,preparationId:string
         WHERE project_id=? AND receipt_key=? AND preparation_id<>?) AND ${current.sql}`)
       .bind(row.project_id,'bundle:'+row.archive_key,row.receipt_key,row.project_id,row.receipt_key,
         row.project_id,row.receipt_key,row.preparation_id,...current.params)]),
-    ...recordBlobCandidates(db,pairs,now,current),
+    ...recordBlobCandidates(db,pairs,now,{preparationId:row.preparation_id,projectId:row.project_id,archiveKey:row.archive_key,
+      receiptKey:row.receipt_key,expiresAt:row.expires_at,agedAt:agedOnly?now:null}),
     db.prepare(`DELETE FROM prepared_archive_bundles WHERE preparation_id=? AND project_id=?
       AND archive_key=? AND receipt_key IS ? AND expires_at=? ${agedOnly?'AND expires_at<=?':''}`)
       .bind(...current.params),

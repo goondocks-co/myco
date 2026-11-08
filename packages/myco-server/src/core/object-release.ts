@@ -20,21 +20,18 @@ import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
  * candidates stay recorded, and a decision after the hold judges them against the rows as they stand then. Unregistered upload bytes are never in a snapshot, so their
  * journal is not held.
  */
-import type { BlobStore, PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { BLOB_REFERENCES, referencedBlobValue, blobHeld, type BlobRef } from './blob-references.js';
-import { blobObjectKeySql } from './blob-objects.js';
+import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
+import { BLOB_REFERENCES, referencedBlobValue, type BlobRef } from './blob-references.js';
 import { within } from './recovery-inventory.js';
 import { retentionDecision } from './backup-retention.js';
 import { commitBackupRelease, type RetentionObservation } from '../db/storage/backup-retention.js';
 import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents,
   resetObjectLifecycle, settleObjectIntent } from '../db/storage/object-lifecycle.js';
+import { RELEASE_PAGE, decideRecordedBlobs, releaseCandidatesDue, type ReleaseOutcome } from '../db/storage/release-queue.js';
 import { classify, emit } from '../telemetry.js';
 
-/** SQL true while a recovery hold is open. */
-export const HOLD_OPEN = 'EXISTS (SELECT 1 FROM recovery_holds WHERE released_at IS NULL)';
+export { HOLD_OPEN, RELEASE_PAGE, assignRestoreGeneration, recordBlobCandidates, recordHolderCandidates, recordObservedCandidates, releaseAgedOrphans, registeredBlobsGuard, unregisteredAmong, type ReleaseOutcome } from '../db/storage/release-queue.js';
 
-/** Candidates one release statement judges, bound as one JSON parameter. */
-export const RELEASE_PAGE = 64;
 /** Journal rows, expired authorities and deferred candidates one drain pass takes, each. */
 export const DRAIN_PAGE = 16;
 /** How long one store delete may take before the drain leaves its journal row for the next pass. */
@@ -72,78 +69,21 @@ export async function publishBackupObject(db: RelationalStore, blobs: BlobStore,
   }
 }
 
-const blobPage = `(SELECT json_extract(j.value, '$.p') AS p, json_extract(j.value, '$.k') AS k FROM json_each(?) j)`;
-const registeredPhysical = (alias: string) => blobObjectKeySql(`${alias}.project_id`, `${alias}.key`, `${alias}.generation`);
-
 export { consumeUploadAuthority } from '../db/storage/object-lifecycle.js';
 
-export interface ReleaseOutcome {
-  /** Registered objects journaled for deletion, their rows removed. */
-  released: number;
-  /** Candidates an open hold keeps, recorded for a decision after it. */
-  deferred: number;
-}
-
-/** A page of blob pairs as the one JSON parameter the release statements bind. */
-const blobPageOf = (pairs: readonly BlobRef[]): string => JSON.stringify(pairs.map((b) => ({ p: b.projectId, k: b.key })));
-
 /**
- * Statements that record `pairs` as blob release candidates, one per page, for the batch that removes the rows naming
- * them. Recorded in that same transaction, a candidate outlives any interruption before it is decided: the drain
- * decides what a caller did not.
- */
-export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number,
-  guard?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
-  const statements: PreparedStatement[] = [];
-  for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
-    statements.push(db.prepare(`INSERT INTO blob_release_candidates (project_id, key, created_at)
-                                  SELECT c.p, c.k, ? FROM ${blobPage} c WHERE c.k IS NOT NULL
-                                    ${guard===undefined?'':`AND (${guard.sql})`}
-                                  ON CONFLICT (project_id, key) DO NOTHING`)
-      .bind(now, blobPageOf(pairs.slice(at, at + RELEASE_PAGE)), ...(guard?.params??[])));
-  }
-  return statements;
-}
-
-/**
- * Records `pairs` as candidates and decides them, one transaction per page:
- * - with no hold open, journal the exact object each registered, unreferenced candidate registered, remove exactly the
- *   rows whose own object is journaled — the match is on the physical key, so a journal row can never remove a row of
- *   another generation — and remove every candidate of the page, released or still referenced;
- * - with a hold open, the candidates stay recorded, and nothing else changes.
- *
- * A reference committed first holds its blob here; a reference arriving after is refused by the admission every
- * reference writer carries: the row is gone.
+ * Decides the candidates `pairs` name, one transaction per page. A caller records them first, in the batch that removes
+ * the rows naming them; this call never observes a registration itself, so a key released and registered again after
+ * that batch is out of its reach.
  */
 export async function releaseBlobs(db: RelationalStore, pairs: readonly BlobRef[], now: number): Promise<ReleaseOutcome> {
   const outcome: ReleaseOutcome = { released: 0, deferred: 0 };
   for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
-    const page = blobPageOf(pairs.slice(at, at + RELEASE_PAGE));
-    const results = await db.batch([...recordBlobCandidates(db, pairs.slice(at, at + RELEASE_PAGE), now), ...blobDecisionStatements(db, page, now)]);
-    outcome.released += results[1]!.meta.changes;
-    outcome.deferred += (results[results.length - 1]!.results[0] as { held: number }).held;
+    const page = await decideRecordedBlobs(db, pairs.slice(at, at + RELEASE_PAGE), now);
+    outcome.released += page.released;
+    outcome.deferred += page.deferred;
   }
   return outcome;
-}
-
-/** The statements that decide a page of recorded blob candidates, ending with the count of the page's candidates still held. */
-export function blobDecisionStatements(db: RelationalStore, page: string, now: number): PreparedStatement[] {
-  const candidate = (alias: string) => `EXISTS (SELECT 1 FROM blob_release_candidates rc WHERE rc.project_id = ${alias}.project_id AND rc.key = ${alias}.key)`;
-  return [
-    db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
-                  SELECT ${registeredPhysical('b')}, 'blob', ? FROM ${blobPage} c
-                    JOIN blobs b ON b.project_id = c.p AND b.key = c.k
-                   WHERE NOT ${HOLD_OPEN} AND ${candidate('b')} AND NOT (${blobHeld('c.p', 'c.k')})
-                  ON CONFLICT (physical) DO NOTHING`).bind(now, page),
-    db.prepare(`DELETE FROM blobs
-                 WHERE (project_id, key) IN (SELECT c.p, c.k FROM ${blobPage} c)
-                   AND EXISTS (SELECT 1 FROM object_releases r WHERE r.physical = ${registeredPhysical('blobs')})`).bind(page),
-    db.prepare(`DELETE FROM blob_release_candidates
-                 WHERE NOT ${HOLD_OPEN}
-                   AND (project_id, key) IN (SELECT c.p, c.k FROM ${blobPage} c)`).bind(page),
-    db.prepare(`SELECT COUNT(*) AS held FROM blob_release_candidates rc
-                 WHERE (rc.project_id, rc.key) IN (SELECT c.p, c.k FROM ${blobPage} c)`).bind(page),
-  ];
 }
 
 /**
@@ -156,19 +96,6 @@ export async function releaseBackups(db: RelationalStore, ids: readonly string[]
   return commitBackupRelease(db,ids,victims,observed,now);
 }
 
-/** The pairs among `pairs` no `blobs` row registers, each judged in its own Project. */
-export async function unregisteredAmong(db: RelationalStore, pairs: readonly BlobRef[]): Promise<BlobRef[]> {
-  const out: BlobRef[] = [];
-  for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
-    const page = JSON.stringify(pairs.slice(at, at + RELEASE_PAGE).map((b) => ({ p: b.projectId, k: b.key })));
-    const { results } = await db
-      .prepare(`SELECT c.p, c.k FROM ${blobPage} c WHERE NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = c.p AND b.key = c.k)`)
-      .bind(page).all<{ p: string; k: string }>();
-    out.push(...results.map((row) => ({ projectId: row.p, key: row.k })));
-  }
-  return out;
-}
-
 /** The blobs a row of `table` names through the reference catalogue, as the rows it carries state them. */
 export function referencedBlobsOf(table: string, row: Readonly<Record<string, unknown>>, presence: 'all' | 'required' | 'report' = 'all'): BlobRef[] {
   const projectId = row.project_id;
@@ -178,18 +105,6 @@ export function referencedBlobsOf(table: string, row: Readonly<Record<string, un
     && typeof referencedBlobValue(ref,row) === 'string'
     && (ref.kinds === undefined || ref.kinds.includes(row.kind as string)))
     .map((ref) => ({ projectId, key: referencedBlobValue(ref,row) as string }));
-}
-
-/**
- * A statement that aborts its transaction when any pair names a blob no row registers. Placed first in the batch that
- * writes the rows naming them, it makes the registration check and those writes one transaction: a release that
- * commits first fails the batch, and one that commits after sees the new references and keeps the blob.
- */
-export function registeredBlobsGuard(db: RelationalStore, pairs: readonly BlobRef[]): PreparedStatement {
-  return db.prepare(`INSERT INTO restore_reference_guard (missing)
-                       SELECT c.k FROM ${blobPage} c
-                        WHERE NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = c.p AND b.key = c.k)`)
-    .bind(JSON.stringify(pairs.map((b) => ({ p: b.projectId, k: b.key }))));
 }
 
 /** Who took a hold: this Deployment's own export producer, or an operator's full backup. */
@@ -382,7 +297,8 @@ export interface DrainReport {
 /**
  * One bounded pass of the only store deleter:
  * 1. consume a page of expired upload authorities, journaling their bytes;
- * 2. delete a page of journaled objects, removing each journal row only after the store acknowledged its delete;
+ * 2. delete a page of journaled objects due now, removing each journal row only after the store acknowledged its delete;
+ *    a failed delete moves only its own key to a later attempt, so the key behind it is reached;
  * 3. with no hold open, decide a page of recorded release candidates through the same statements a release runs,
  *    asking the retention owner which backups the policy in force lets go of.
  *
@@ -405,8 +321,8 @@ export async function drainObjectReleases(
       await deleteStoredObject(env.blobs, physical, clock);
     } catch (error) {
       report.unacknowledged += 1;
-      await retryRelease(db,physical,now,attempts);
       const errorClass=classify(error,env.platform?.classifyError);
+      await retryRelease(db,physical,now,attempts,errorClass);
       emit({ kind: 'object_release_unacknowledged', error_class: errorClass });
       consecutiveFailures+=1;
       if (consecutiveFailures>=DRAIN_FAILURE_LIMIT || ['db','rpc','store_quota','configuration'].includes(errorClass)) break;
@@ -416,22 +332,13 @@ export async function drainObjectReleases(
     report.deleted += await acknowledgeRelease(db,physical,issuedAt);
   }
 
-  if (await db.prepare(`SELECT ${HOLD_OPEN} AS held`).first<{ held: number }>().then((row) => row?.held === 1)) return report;
-  const { results: blobCandidates } = await db
-    .prepare(`SELECT project_id, key FROM blob_release_candidates ORDER BY created_at, project_id, key LIMIT ?`).bind(DRAIN_PAGE)
-    .all<{ project_id: string; key: string }>();
-  if (blobCandidates.length > 0) {
-    const page = blobPageOf(blobCandidates.map((row) => ({ projectId: row.project_id, key: row.key })));
-    const results = await db.batch(blobDecisionStatements(db, page, now));
-    report.decided += results[2]!.meta.changes;
-  }
-  const { results: backupCandidates } = await db
-    .prepare(`SELECT id FROM backup_release_candidates ORDER BY created_at, id LIMIT ?`).bind(DRAIN_PAGE)
-    .all<{ id: string }>();
-  if (backupCandidates.length > 0) {
+  const due = await releaseCandidatesDue(db,DRAIN_PAGE);
+  if (due.held) return report;
+  if (due.blobs.length > 0) report.decided += (await decideRecordedBlobs(db,due.blobs,now)).decided;
+  if (due.backups.length > 0) {
     const { victims, observed } = await retentionDecision(db);
-    const outcome = await commitBackupRelease(db,backupCandidates.map(row => row.id),victims,observed,now);
-    report.decided += backupCandidates.length - outcome.deferred;
+    const outcome = await commitBackupRelease(db,due.backups,victims,observed,now);
+    report.decided += due.backups.length - outcome.deferred;
   }
   return report;
 }
@@ -444,29 +351,4 @@ export async function drainObjectReleases(
  */
 export async function resetRecoveryLedger(db: RelationalStore): Promise<void> {
   await resetObjectLifecycle(db);
-}
-
-/**
- * Names every registered blob and its content evidence under one fresh restore generation.
- */
-export async function assignRestoreGeneration(db: RelationalStore, generation: string): Promise<void> {
-  const evidenceClosed = `NOT EXISTS (
-      SELECT 1 FROM registered_content_proofs p LEFT JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key
-      WHERE b.key IS NULL OR p.generation IS NOT b.generation OR p.size IS NOT b.size
-    ) AND NOT EXISTS (
-      SELECT 1 FROM raw_archive_refs r LEFT JOIN blobs b
-        ON b.project_id=r.project_id AND b.key=r.source_blob_key
-      WHERE r.disposition='hot' AND r.source_blob_key IS NOT NULL
-        AND (b.key IS NULL OR r.source_generation IS NOT b.generation)
-    )`;
-  const guard = () => [db.prepare(`INSERT INTO storage_content_guard(ok)
-    SELECT CASE WHEN ${evidenceClosed} THEN 1 ELSE 0 END`),db.prepare(`DELETE FROM storage_content_guard`)];
-  await db.batch([
-    ...guard(),
-    db.prepare(`UPDATE blobs SET generation = ?`).bind(generation),
-    db.prepare(`UPDATE registered_content_proofs SET generation = ?`).bind(generation),
-    db.prepare(`UPDATE raw_archive_refs SET source_generation = ?
-      WHERE disposition = 'hot' AND source_blob_key IS NOT NULL`).bind(generation),
-    ...guard(),
-  ]);
 }

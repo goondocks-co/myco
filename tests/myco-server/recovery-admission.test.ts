@@ -3,10 +3,11 @@
  * status answer may claim. The producer itself is a stand-in here; its own behaviour is proven in its own suites.
  */
 import { registerBlob } from './helpers/d1.js';
+import { releaseNow } from './helpers/release-now.js';
 import { expect, it, spyOn } from 'bun:test';
 import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRecoveryExport } from '@myco-server-worker/api/recovery.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus, type ForgetUnsettledOutcome } from '@myco-server-worker/core/recovery-producer.js';
-import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { SCHEMA_QUERY } from '@myco-server-worker/core/recovery-schema.js';
@@ -185,7 +186,7 @@ it('keeps every release a deletion decides while the hold is open, and releases 
   const key = 'a'.repeat(64);
   registerBlob(env.sqlite, { projectId: 'proj_1', key, size: 1 });
   await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER);
-  expect(await releaseBlobs(env.db, [{ projectId: 'proj_1', key }], 2_000)).toEqual({ released: 0, deferred: 1 });
+  expect(await releaseNow(env.db, [{ projectId: 'proj_1', key }], 2_000)).toEqual({ released: 0, deferred: 1 });
   await drainObjectReleases(env.serverEnv, 3_000);
   expect(env.sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({ n: 1 });
   held.carried.set(holds(env)[0]!.token, { id: 1, stage: 'downloaded' });

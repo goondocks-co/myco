@@ -1,4 +1,4 @@
-import { admitBlobUpload, reconcileBlobUpload } from '../db/storage/blob-admission.js';
+import { admitBlobUpload, journalUnpublishedUpload, reconcileBlobUpload } from '../db/storage/blob-admission.js';
 import { beginUploadIntent, settleObjectIntent, consumeUpload, discardUnissuedUpload } from '../db/storage/object-lifecycle.js';
 import { verifiedBlobReference } from '../core/raw-provenance.js';
 import type { ServerEnv } from '../core/adapters.js';
@@ -119,11 +119,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     const at = ctx.clock();
     const live = `EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND expires_at > ?)`;
     await db.batch([
-      db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
-                    SELECT ?, 'upload', ? WHERE EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ?)
-                      AND (NOT ${live} OR EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ?))
-                    ON CONFLICT (physical) DO NOTHING`)
-        .bind(physical, at, reservationId, reservationId, at, ctx.projectId, key),
+      journalUnpublishedUpload(db,physical,at,reservationId,ctx.projectId,key),
       registerContentStatement(db,{projectId:ctx.projectId,key,size:storedSize,mediaType,tokenId:ctx.tokenId,
         receivedAt:ctx.now,generation:reservationId,authority:{sql:live,params:[reservationId,at]}}),
       db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),

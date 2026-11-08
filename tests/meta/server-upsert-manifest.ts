@@ -413,9 +413,16 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['project_capabilities'], order: 'unverified' },
   ],
   'db/schema-v710.ts#<module>': [{ tables: ['setting_revisions'], order: 'unverified' }],
-  'core/storage-cleanup.ts#omissions': [
+  'db/storage/release-queue.ts#<module>': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
+  'db/storage/cleanup.ts#<module>': [
     { tables: ['storage_cleanup_omissions'], order: 'unverified' },
   ],
+  'db/storage/usage.ts#<module>': [
+    { tables: ['storage_usage'], order: 'unverified' },
+    { tables: ['storage_usage'], order: 'unverified' },
+  ],
+  'db/storage/usage.ts#storageUsageSchemaStatements': [{ tables: ['storage_usage'], order: 'unverified' }],
+  'db/schema-v727.ts#<module>': [{ tables: ['storage_usage'], order: 'unverified' }],
   'core/worker-contacts.ts#runnerObservationStatement': [
     { tables: ['runner_observations'], order: 'unverified' },
   ],

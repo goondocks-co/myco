@@ -8,10 +8,11 @@
  * total: a missing, null or unrecognised reason is refused rather than slipping through an untested predicate.
  */
 import { describe, expect, it } from 'bun:test';
+import { releaseNow } from './helpers/release-now.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { RecoveryProducerPort } from '@myco-server-worker/core/recovery-producer.js';
 import {
-  acquireRecoveryHold, drainObjectReleases, OPERATOR_HOLD_DEFERS_MS, openRecoveryHold, readRecoveryHold, releaseBlobs, releaseOperatorHold, releaseRecoveryHold,
+  acquireRecoveryHold, drainObjectReleases, OPERATOR_HOLD_DEFERS_MS, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold,
 } from '@myco-server-worker/core/object-release.js';
 import {
   acquireOperatorHold, inspectOperatorHold, openOperatorHold, openHoldForAdmission, recoveryHoldRelease, settleOperatorHold, settleOpenHold,
@@ -176,7 +177,7 @@ describe('the operator hold a full backup takes', () => {
     const key = 'a'.repeat(64);
     registerBlob(e.sqlite, { projectId: 'proj_1', key, size: 3 });
     await acquireOperatorHold(e.serverEnv, 'op-1', 10);
-    expect(await releaseBlobs(e.db, [{ projectId: 'proj_1', key }], 11)).toEqual({ released: 0, deferred: 1 });
+    expect(await releaseNow(e.db, [{ projectId: 'proj_1', key }], 11)).toEqual({ released: 0, deferred: 1 });
     await drainObjectReleases(e.serverEnv, 12);
     expect([count(e.sqlite, 'blobs'), count(e.sqlite, 'object_releases'), count(e.sqlite, 'blob_release_candidates')]).toEqual([1, 0, 1]);
     expect(await settleOperatorHold(e.serverEnv, 'op-1', 13, 'complete')).toBe(true);

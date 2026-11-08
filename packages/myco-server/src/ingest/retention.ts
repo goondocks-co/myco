@@ -6,8 +6,8 @@ import { measuredContentEnv, remainingContentBudget } from '../core/content-budg
  * the shared reference catalogue proves that no surviving row names them.
  */
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
-import { unreferencedAmong } from '../core/blob-references.js';
-import { releaseBlobs } from '../core/object-release.js';
+import { unreferencedAmong } from '../db/storage/blob-held.js';
+import { releaseAgedOrphans } from '../core/object-release.js';
 import { storedSettings } from '../core/settings.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
@@ -88,14 +88,16 @@ export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db'>, now: number)
     .first<{ cursor_project: string; cursor_key: string; revision: number }>();
   if (state === null) throw new Error('orphan sweep cursor is missing');
   const { results } = await env.db
-    .prepare(`SELECT project_id, key, received_at FROM blobs
+    .prepare(`SELECT project_id, key, received_at, generation FROM blobs
                WHERE (project_id, key) > (?, ?)
                ORDER BY project_id, key LIMIT ?`)
     .bind(state.cursor_project, state.cursor_key, TRANSCRIPT_RETENTION_BLOBS_PER_PASS)
-    .all<{ project_id: string; key: string; received_at: number }>();
-  const aged = results.filter((row) => row.received_at <= now - BLOB_RESERVATION_TTL_MS);
+    .all<{ project_id: string; key: string; received_at: number; generation: string | null }>();
+  const cutoff = now - BLOB_RESERVATION_TTL_MS;
+  const aged = results.filter((row) => row.received_at <= cutoff);
   const unreferenced = await unreferencedAmong(env.db, aged.map((row) => ({ projectId: row.project_id, key: row.key })));
-  const outcome = await releaseBlobs(env.db, unreferenced, now);
+  const generations = new Map(aged.map((row) => [JSON.stringify([row.project_id, row.key]), row.generation]));
+  const outcome = await releaseAgedOrphans(env.db, unreferenced.map((ref) => ({ ...ref, generation: generations.get(JSON.stringify([ref.projectId, ref.key])) ?? null })), now, cutoff);
   const last = results.at(-1);
   if (last !== undefined || state.cursor_project !== '' || state.cursor_key !== '') {
     const committed = await env.db.prepare(`UPDATE orphan_sweep_state SET cursor_project = ?, cursor_key = ?, revision = revision + 1

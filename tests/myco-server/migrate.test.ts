@@ -743,6 +743,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0724_v724.sql': 'df75761ecfb6d467f8924d1da9620e58b20e9d54006351dc4226b321619bc3f1',
   '0725_v725.sql': '11b23c419844c547632338f930cc6f325b07a84429ab0c73b0a02b843570e960',
   '0726_v726.sql': '0d085d3dda1d1a938ee152419b97e9f33ddedfa8c05c80fee73c1fad929ce4b8',
+  '0727_v727.sql': '3cf17d74ad9bcc8aee63a3e7fd4987c0d76252f27a9d2082458824d486d9bb35',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1231,7 +1232,7 @@ describe('versioned schema steps', () => {
         }
         expect(after.has(table)).toBe(true);
         for (const [col, type] of cols) {
-          if (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) {
+          if ((SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`))) {
             expect(after.get(table)!.has(col)).toBe(false);
           } else expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
         }
@@ -1473,7 +1474,7 @@ describe('versioned schema steps', () => {
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts',
-      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
+      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
     ].sort());
   });

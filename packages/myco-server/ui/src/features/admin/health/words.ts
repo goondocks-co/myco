@@ -261,7 +261,7 @@ export function findingWords(code: string | undefined): string {
 }
 
 const SUPPORT_WORDS: Readonly<Record<string, string>> = { check_unsupported: 'Not available on this server.' };
-const MEASUREMENT_STATE_WORDS: Readonly<Record<string, string>> = { measurement_unavailable: 'This measurement is unavailable.' };
+const MEASUREMENT_STATE_WORDS: Readonly<Record<string, string>> = { measurement_unavailable: 'This measurement is unavailable.', building: 'Stored files are still being counted.' };
 
 export function supportWords(code: string | undefined): string {
   return SUPPORT_WORDS[code ?? ''] ?? SUPPORT_WORDS.check_unsupported!;
