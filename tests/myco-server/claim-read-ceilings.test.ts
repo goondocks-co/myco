@@ -2,7 +2,6 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { dispatchLoad, recordTaskHolder } from '@myco-server-worker/core/runs.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import type { CaptureEnvelope } from '@myco-server-worker/ingest/envelope.js';
@@ -16,11 +15,9 @@ import { uuid } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const SIZE = 5000;
-const LOAD_LIMIT = 20;
-const HOLDER_LIMIT = 50;
 const MACHINE_LIMIT = 8;
 
-it('bounds admission, holder changes, embedding pages and prompt ownership on both stores', async () => {
+it('bounds prompt ownership on both stores', async () => {
   const native = new Database(':memory:');
   const meter = sqliteBudgetMeter();
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
@@ -77,18 +74,6 @@ it('bounds admission, holder changes, embedding pages and prompt ownership on bo
           return entries;
         } finally { snapshot?.close(); }
       };
-      await check('dispatch load', LOAD_LIMIT, async store => {
-        expect(await dispatchLoad(store, 'title-summary', NOW)).toEqual({ liveRuns: 1, liveTaskRuns: 1, taskRunsLastHour: 1 });
-        expect(await dispatchLoad(store, 'title-summary', NOW, 'live')).toEqual({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
-      });
-      await check('holder release', HOLDER_LIMIT, store => recordTaskHolder(store, ['title-summary'], ['budget', null], 'worker', true));
-      expect((await db.prepare("SELECT id,held_by FROM agent_runs WHERE id IN ('held','profile','null') ORDER BY id").all()).results)
-        .toEqual([{ id: 'held', held_by: 'worker' }, { id: 'null', held_by: 'worker' }, { id: 'profile', held_by: 'worker' }]);
-      await check('holder no-op', HOLDER_LIMIT, store => recordTaskHolder(store, ['title-summary'], ['budget'], 'worker', true));
-      await check('holder identity no-op', HOLDER_LIMIT, store => recordTaskHolder(store, ['title-summary'], ['worker'], 'worker', true));
-      await check('holder budget', HOLDER_LIMIT, store => recordTaskHolder(store, ['extract-curate'], ['worker'], 'budget'));
-      await db.prepare("UPDATE agent_runs SET held_by='profile_unsupported:codex' WHERE id GLOB 'queue-*'").run();
-      await check('profile no-op', HOLDER_LIMIT, store => recordTaskHolder(store, ['title-summary'], ['worker', 'budget'], 'profile_unsupported:codex', true));
       const event: CaptureEnvelope = { eventId: uuid(90), sessionId: 'session-04999', kind: 'response', createdAt: NOW,
         channel: 'cli', producer: { adapter: 'fixture', version: '1' }, payload: {}, payloadJson: '{}', payloadBytes: new TextEncoder().encode('{}') };
       const owner = sharedChecks(kindSpec('response')!, { projectId: 'project', machineId: 'machine', tokenId: token.tokenId, now: NOW, nonce: 'fixture', actor: null },

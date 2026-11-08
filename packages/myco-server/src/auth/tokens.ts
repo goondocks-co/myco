@@ -1,3 +1,5 @@
+import type { Bound } from '../db/index.js';
+import { credentialInsert, prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE } from '@goondocks/myco-shared/member-protocol';
 export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE };
 import { personMemberSql } from './member-kind.js';
@@ -108,41 +110,38 @@ export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKin
 export interface MintOptions {
   rotates?: boolean;
   /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's returned row. */
-  gate?: { sql: string; params: unknown[] };
+  claim?: {write:import('../db/index.js').Statement<readonly unknown[],never,'write'>;values:readonly unknown[]};
 }
 
-/** A successor is minted only from a live row whose issuer let it rotate. */
-const ROTATING_PREDECESSOR = 'EXISTS (SELECT 1 FROM member_credentials WHERE id = ? AND rotates = 1)';
 
-/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's returned row says whether it was); a root has no predecessor. Both obey the optional admission gate. */
+/** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's returned row says whether it was); a root has no predecessor. The optional claim definition conjoins its admission. */
 function memberTokenInsert(
   db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
   options: MintOptions,
-): { statement: PreparedStatement; expiresAt: number } {
-  const { gate } = options;
+): { statement: Bound; expiresAt: number } {
+  const { claim } = options;
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
   const lineageStartedAt = lineage === null ? nowMs : lineage.lineageStartedAt;
   const rotates = lineage !== null || options.rotates !== false ? 1 : 0;
   const expiresAt = nowMs + MEMBER_TOKEN_TTL_MS;
-  const statement = db
-    .prepare(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at, runtime_label, runtime_kind, rotates)
-              SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?, ?
-               WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))${gate === undefined ? '' : ` AND (${gate.sql})`} RETURNING id`)
-    .bind(tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, rotates,
-      predecessorId, predecessorId, predecessorId, ...(gate?.params ?? []));
+  const values = [tokenId, member.memberId, member.machineId, digest, nowMs, expiresAt, predecessorId, lineageRoot, lineageStartedAt, runtime.runtimeLabel, runtime.runtimeKind, rotates, predecessorId, predecessorId, predecessorId];
+  const statement = claim === undefined ? credentialInsert.bind(...values) : claim.write.bind(...values,...claim.values);
   return { statement, expiresAt };
 }
 
-/** A fresh raw token and its id, with the insert that stores the digest. `options.gate` conjoins a condition the insert must meet; `options.rotates: false` mints a root that never rotates. */
-export async function mintInsert(
-  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, runtime: RuntimeClaims,
-  options: MintOptions = {},
-): Promise<{ statement: PreparedStatement; issued: IssuedMemberToken }> {
-  const token = mintMemberToken();
-  const tokenId = `${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
-  const { statement, expiresAt } = memberTokenInsert(db, member, nowMs, lineage, tokenId, await sha256Hex(token), runtime, options);
-  return { statement, issued: { token, tokenId, expiresAt } };
+/** A fresh raw token and its id, with the insert that stores the digest. `options.claim` selects a named claim admission; `options.rotates: false` mints a root that never rotates. */
+async function mintMaterial(db: RelationalStore, member: {memberId:string;machineId:string|null}, nowMs:number,
+  lineage:TokenLineage|null, runtime:RuntimeClaims, options:MintOptions) {
+  const token=mintMemberToken();
+  const tokenId=`${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
+  const inserted=memberTokenInsert(db,member,nowMs,lineage,tokenId,await sha256Hex(token),runtime,options);
+  return {...inserted,issued:{token,tokenId,expiresAt:inserted.expiresAt}};
+}
+export async function mintWrite(db: RelationalStore, member: {memberId:string;machineId:string|null}, nowMs:number,
+  lineage:TokenLineage|null, runtime:RuntimeClaims, options:MintOptions = {}): Promise<{statement:Bound;issued:IssuedMemberToken}> {
+  const {statement,issued}=await mintMaterial(db,member,nowMs,lineage,runtime,options);
+  return {statement,issued};
 }
 
 /** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own, rotating unless `options.rotates` is false; with it, the token succeeds `lineage.predecessorId` and rotates. Either way it expires one TTL from `nowMs`. */
@@ -386,4 +385,9 @@ export async function releasedRunCredential(db: RelationalStore, digest: string,
     JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
     WHERE t.token_hash = ? AND t.member_id = ? AND t.revoked_by = ? AND t.revoked_at IS NOT NULL AND t.expires_at > ?`)
     .bind(digest, HARNESS_MEMBER_ID, HARNESS_MEMBER_ID, now).first<{ memberId: string; tokenId: string }>();
+}
+
+export async function mintInsert(...args:Parameters<typeof mintWrite>):Promise<{statement:PreparedStatement;issued:IssuedMemberToken}> {
+  const {statement,issued}=await mintWrite(...args);
+  return {statement:prepareClaimCompanion(args[0],statement),issued};
 }

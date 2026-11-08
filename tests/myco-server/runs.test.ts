@@ -22,7 +22,7 @@ import {
   type RunInsert,
 } from '@myco-server-worker/core/runs.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
@@ -51,18 +51,26 @@ function store(): { db: RelationalStore; sqlite: Database } {
 
 /** A store whose every operation yields, so two callers genuinely interleave. */
 function yielding(db: RelationalStore): RelationalStore {
+  const prepared = new WeakMap<PreparedStatement, PreparedStatement>();
   return {
     prepare: (sql) => {
       const inner = db.prepare(sql);
-      const wrap = (s: typeof inner): typeof inner => ({
+      const wrap = (s: typeof inner): typeof inner => {
+        const wrapped: PreparedStatement = {
         bind: (...v) => wrap(s.bind(...v)),
         run: async () => { await Promise.resolve(); const r = await s.run(); await Promise.resolve(); return r; },
         all: async () => { await Promise.resolve(); return s.all(); },
         first: async <T,>() => { await Promise.resolve(); const r = await s.first<T>(); await Promise.resolve(); return r; },
-      });
+        };
+        prepared.set(wrapped, s);
+        return wrapped;
+      };
       return wrap(inner);
     },
-    batch: (statements) => db.batch(statements),
+    batch: async (statements) => {
+      await Promise.resolve();
+      return db.batch(statements.map(statement => prepared.get(statement)!));
+    },
   };
 }
 
@@ -107,7 +115,7 @@ describe('claimRun', () => {
     } finally { sqlite.close(); }
   });
 
-  it('reports the claim through meta.changes, so the adapter does not read the INSERT ... SELECT as row-producing', async () => {
+  it('reports a successful claim and persists one run', async () => {
     const { db, sqlite } = store();
     expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest', 3600), NOW))
       .toEqual({ claimed: true });

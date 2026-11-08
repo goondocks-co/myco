@@ -55,7 +55,7 @@ export async function setupFirstOwner(db: RelationalStore, nowMs: number, schema
     receipt = claimed;
   }
   const memberId = receipt;
-  await ensureMemberStatement(db, memberId, nowMs, 'admin', { sql: '(SELECT value FROM schema_meta WHERE key = ?) = ?', params: [FIRST_MEMBER_KEY, memberId] }, FIRST_OWNER_MEMBER_LABEL).run();
+  await ensureMemberStatement(db, memberId, nowMs, 'admin', { receiptKey: FIRST_MEMBER_KEY, memberId }, FIRST_OWNER_MEMBER_LABEL).run();
   const issue = await identityLinkStatements(db, memberId, nowMs, { replaceUnspent: true });
   const [insert, ...rest] = issue.statements;
   if ((await insert.run()).meta.changes !== 1) throw new FirstOwnerRefused(FIRST_OWNER_LINKED);

@@ -1,4 +1,5 @@
-import { memberWrites } from './helpers/source-calls.js';
+import { sourceProgram } from '../helpers/source-program.js';
+import { memberWrites, memberSqlReferences } from './helpers/source-calls.js';
 /**
  * Deployment Access: members, invitations, credentials. Membership is flat and
  * every revocation names who; revoking a member is one transaction that ends
@@ -8,7 +9,7 @@ import type { InvitationRow } from '@myco-server-worker/auth/enrollment.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import worker from '@myco-server-worker/index.js';
@@ -283,22 +284,32 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
 
   it('confines membership write operations to their admitted owners', () => {
     const writers: string[] = [];
-    for (const dir of [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')]) {
-      for (const file of files(dir)) {
-        for (const sql of memberWrites(readFileSync(file, 'utf8'))) {
-          const op = /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+members\b/i.exec(sql)![1]!.toUpperCase();
-          const conflict = /\bON\s+CONFLICT[\s\S]*\bDO\s+UPDATE\b/i.test(sql) ? ' ON CONFLICT DO UPDATE' : '';
-          writers.push(`${relative(ROOT, file)}: ${op}${conflict}`);
-        }
+    const outsideIdentity: string[] = [];
+    const roots = [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')].flatMap(dir => [...files(dir)]);
+    const graph = sourceProgram(roots);
+    for (const file of roots) {
+      const source = graph.program.getSourceFile(file)!;
+      if (!file.startsWith(join(ROOT, 'src/db/identity') + sep)) {
+        outsideIdentity.push(...memberSqlReferences(source, graph).map(reference => `${relative(ROOT, file)}: ${reference}`));
+      }
+      for (const { sql, name } of memberWrites(source, graph)) {
+        const op = /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+members\b/i.exec(sql)![1]!.toUpperCase();
+        const conflict = /\bON\s+CONFLICT[\s\S]*\bDO\s+UPDATE\b/i.test(sql) ? ' ON CONFLICT DO UPDATE' : '';
+        writers.push(`${relative(ROOT, file)}: ${name ?? op + conflict}`);
       }
     }
+    expect(outsideIdentity.sort(), 'Members-write SQL constants belong to db/identity').toEqual([]);
     expect(writers.sort()).toEqual([
-      'src/auth/enrollment.ts: INSERT OR IGNORE INTO',
       'src/auth/identity-link.ts: UPDATE',
       'src/auth/members-admin.ts: UPDATE',
       'src/core/ownership.ts: UPDATE',
-      'src/db/identity/link.ts: UPDATE',
-      'src/db/identity/member-naming.ts: UPDATE',
+      'src/db/identity/enrollment.ts: INSERT OR IGNORE INTO',
+      'src/db/identity/enrollment.ts: enrollment.firstOwnerIdentity',
+      'src/db/identity/enrollment.ts: enrollment.joinMemberIdentity',
+      'src/db/identity/enrollment.ts: enrollment.joinProjectIdentity',
+      'src/db/identity/enrollment.ts: enrollment.memberIdentityInsert',
+      'src/db/identity/link.ts: identity.linkBind',
+      'src/db/identity/member-naming.ts: identity.nameFromLogin',
       'src/db/schema.ts: INSERT OR IGNORE INTO',
     ]);
   });

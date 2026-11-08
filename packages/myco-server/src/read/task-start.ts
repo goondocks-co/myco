@@ -1,7 +1,7 @@
 import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
 import { readDispatchLimits } from '../core/limits.js';
-import { fleetSelectionContext, previewFleet, fleetTaskReason } from './fleet.js';
+import { fleetAvailability, fleetSelectionContext, previewFleet, fleetTaskReason } from './fleet.js';
 /**
  * What starting one task by hand in one Project would do right now, read before
  * anything is dispatched: every agent and model the workers heard from lately
@@ -19,7 +19,7 @@ import { declared } from '../core/declared.js';
 import { TASK_SCHEDULE } from '../core/jobs.js';
 import { hasLiveTaskRun } from '../core/runs.js';
 import { PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
-import { fleetReports, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
+import { fleetReports, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { capabilityOf, capabilityOn, claimSettings } from '../core/worker-selection.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { ownMachineNames } from './capture.js';
@@ -81,7 +81,7 @@ export async function readTaskStartPreview(env: ServerEnv, projectId: string, ta
   const capability = capabilityOf(task);
   const [settings, fleet, leaves, live, on] = await Promise.all([
     claimSettings(env),
-    readWorkerFleet(env.db, now, includeSignIn),
+    fleetAvailability(env, now, includeSignIn),
     declaredSchedule === null ? Promise.resolve(null) : scheduleLeaves(env),
     hasLiveTaskRun(env.db, { projectId }, task),
     capability === null ? Promise.resolve(null) : capabilityOn(env.db, projectId, capability),

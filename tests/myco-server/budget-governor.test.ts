@@ -1,3 +1,4 @@
+import { queuedWaits } from '@myco-server-worker/db/runs/queue.js';
 import { expect,it } from 'bun:test';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
 import { readSpendRows,budgetHeld,automaticFits } from '@myco-server-worker/core/run-budget.js';
@@ -37,7 +38,7 @@ it('holds automatic work through activation refusal and resumes under the preser
     expect(await budgetHeld(f.db, automatic.projectId, automatic.id, 0.1, f.now)).toBe(true);
     expect(await f.claim(automatic)).toBeNull();
     expect(await pollBudget(f, f.now)).toMatchObject({ claimed: false });
-    expect(f.sqlite.query("SELECT held_by FROM agent_runs WHERE id='activation-held'").get()).toEqual({ held_by: 'budget' });
+    expect((await queuedWaits(f.db, { projectId: 'proj_1' }, ['activation-held'])).get('activation-held')?.reason).toBe('budget');
     expect(await f.claim(f.queue('activation-manual', 'manual'))).not.toBeNull();
     f.sqlite.exec('DROP TABLE idx_attempts_claimed');
     expect(await completeBudgetMigration(f.db, f.now + 1)).toEqual({ active: true, reason: null });
@@ -172,7 +173,7 @@ for(const active of [true,false])it(`records and reports task limit holds with b
     f.queue('first',origin);expect(await pollBudget(f,f.now)).toMatchObject({claimed:true});
     f.queue('second',origin,'proj_1','title-summary',f.now+1);
     expect(await pollBudget(f,f.now+2)).toEqual({claimed:false,reason:'at_limit'});
-    expect(f.sqlite.query("SELECT held_by FROM agent_runs WHERE id='second'").get()).toEqual({held_by:'task_concurrent_runs'});
+    expect((await queuedWaits(f.db, { projectId: 'proj_1' }, ['second'])).get('second')?.reason).toBe('task_concurrent_runs');
   }finally{f.sqlite.close();}
 });
 
@@ -185,7 +186,7 @@ it('replaces a stale budget mark with its limit and bounds retained fitting budg
     f.queue('busy','manual','proj_1','title-summary',f.now-10);
     expect(await pollBudget(f,f.now+1)).toMatchObject({claimed:true,run:{id:'busy'}});
     expect(await pollBudget(f,f.now+2)).toEqual({claimed:false,reason:'at_limit'});
-    expect(f.sqlite.query("SELECT held_by FROM agent_runs WHERE id='held'").get()).toEqual({held_by:'task_concurrent_runs'});
+    expect((await queuedWaits(f.db, { projectId: 'proj_1' }, ['held'])).get('held')?.reason).toBe('task_concurrent_runs');
     f.queue('retained-budget');
     await recordQueueHolder(f.db,{projectId:'proj_1'},'retained-budget','budget',{usd:0.1,at:f.now});
     await runStaleSweep(f.serverEnv,f.now+3*QUEUE_MAX_AGE_MS);

@@ -22,6 +22,10 @@ const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
       FROM transcripts t JOIN session_documents d ON d.project_id = t.project_id AND d.session_id = t.session_id;`,
 };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
+  run_live: { status: 'queued', origin: 'manual', claimable: 1 },
+  task_due: { origin: 'manual', claimable: 1 },
+  task_runtime: { origin: 'manual' },
+  admission_contribution: { scope: 'fleet' },
   runners: { id: 'rn_upgrade' },
   backups: { key: 'backups/upgrade.jsonl', counts_json: '{}' },
   object_releases: { kind: 'blob' },

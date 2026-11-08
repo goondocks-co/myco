@@ -1,4 +1,6 @@
-import { LEARNING_RETRY_KEY } from '../db/run-context.js';
+import type { Bound } from '../db/index.js';
+import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
+import { learningRetryWrite, learningBackoffWrite } from '../db/runs/claim-companions.js';
 /**
  * Stage two of learning, and the progress both stages share: one `learning_sessions` row per session.
  *
@@ -95,15 +97,6 @@ export function sessionProgressStatements(db: RelationalStore, projectId: string
   ];
 }
 
-/** A card or learning assignment must still name a quiet session when its claim commits. */
-export function quietSessionClaim(projectId: string, context: Readonly<Record<string, unknown>> | undefined, now: number): { sql: string; params: unknown[] } {
-  const assignment = context?.assignment;
-  if (typeof context?.session_id !== 'string' || assignment === null || typeof assignment !== 'object'
-    || !('kind' in assignment) || !['cards', 'learning'].includes(String(assignment.kind))) return { sql: '1', params: [] };
-  return { sql: 'EXISTS (SELECT 1 FROM learning_sessions WHERE project_id = ? AND session_id = ? AND quiet_at <= ?)',
-    params: [projectId, context.session_id, now] };
-}
-
 /** The statement that gives a published session its learning row, ready. */
 export function learningSessionStatement(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
   return db.prepare(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id, init_state, source_activity_at)
@@ -125,24 +118,7 @@ export interface LearningAssignment {
   handoff: string | null;
 }
 
-/** Fresh work seeks its two source-day buckets; later source clocks retain their source-ordered range. */
-export function learningWorkFrom(project: string, now: number, kind: 'cards' | 'learning', fresh: boolean): string {
-  const ready = kind === 'cards' ? 'card_ready_at' : 'learning_ready_at';
-  const pending = kind === 'cards' ? 'pending_cards > 0' : 'eligible_at IS NOT NULL';
-  const dueIndex = kind === 'cards' ? 'idx_learning_cards_ready' : 'idx_learning_ready';
-  if (!fresh) return `learning_sessions l INDEXED BY ${dueIndex}`;
-  const freshIndex = kind === 'cards' ? 'idx_learning_cards_fresh' : 'idx_learning_fresh';
-  const sourceIndex = kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible';
-  const day = Math.floor(now / FRESH_LEARNING_MS);
-  const columns = 'project_id,session_id,source_activity_at,eligible_at,pending_cards,card_ready_at,learning_ready_at,fresh_admitted,card_failures,failures';
-  return `(SELECT ${columns} FROM learning_sessions INDEXED BY ${freshIndex}
-      WHERE project_id = ${project} AND source_day IN (${day - 1},${day}) AND ${pending} AND ${ready} <= ${Math.floor(now)}
-    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${sourceIndex}
-      WHERE project_id = ${project} AND source_activity_at >= ${(day + 1) * FRESH_LEARNING_MS} AND ${pending} AND ${ready} <= ${Math.floor(now)}
-    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${kind === 'cards' ? 'idx_learning_cards_retry' : 'idx_learning_retry'}
-      WHERE project_id = ${project} AND ${pending} AND ${freshRetrySql(kind)} AND ${learningRecencySql(false, now)} AND ${ready} <= ${Math.floor(now)}) l`;
-}
-
+export { learningWorkFrom } from '../db/runs/pull-policy.js';
 /** A head reads source order and stops at its first ready session. */
 export const learningHeadFrom = (kind: 'cards' | 'learning'): string =>
   `learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible'}`;
@@ -175,28 +151,15 @@ export async function buildLearningAssignment(db: RelationalStore, projectId: st
 }
 
 /** Reserve the session and turn retry state under the claim's canonical attempt. */
-export function claimLearningRetryStatement(db: RelationalStore, projectId: string, sessionId: string,
-  run: { runId: string; dispatchedBy: string }): PreparedStatement {
-  return db.prepare(`UPDATE agent_runs SET run_context = json_set(run_context, '$.${LEARNING_RETRY_KEY}',
-      json((SELECT json_object('attemptId', ?, 'failures', failures, 'eligibleAt', eligible_at,
-        'cardFailures', card_failures, 'cardRetryAt', card_retry_at, 'revision', revision,
-        'turns', json((SELECT json_group_array(json_object('turnKey', turn_key, 'changes', changes, 'dueAt', due_at))
-          FROM turn_cards c WHERE c.project_id = l.project_id AND c.session_id = l.session_id AND c.state = 'pending'
-            AND c.turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(agent_runs.run_context, '$.assignment.turns')))))
-        FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ?)))
-    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status = 'running'`)
-    .bind(run.dispatchedBy, projectId, sessionId, projectId, run.runId, run.dispatchedBy);
+export function claimLearningRetryWrite(db: RelationalStore, projectId: string, sessionId: string,
+  run: { runId: string; dispatchedBy: string }): Bound {
+  return learningRetryWrite.bind(run.dispatchedBy, projectId, sessionId, projectId, run.runId, run.dispatchedBy);
 }
 
 /** A slice claim holds its session out of the eligible set until completion or lease loss. */
-export function claimLearningStatements(db: RelationalStore, projectId: string, sessionId: string, now: number,
-  run: { runId: string; dispatchedBy: string }): PreparedStatement[] {
-  return [claimLearningRetryStatement(db, projectId, sessionId, run), db.prepare(`UPDATE learning_sessions SET fresh_admitted = CASE WHEN ${learningRecencySql(true, now)} THEN 1 ELSE fresh_admitted END,
-      failures = failures + 1,
-      eligible_at = ? + CASE WHEN failures = 0 THEN 0 WHEN failures = 1 THEN ? WHEN failures = 2 THEN ? ELSE ? END
-    WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL
-      AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`)
-    .bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
+export function claimLearningWrites(db: RelationalStore, projectId: string, sessionId: string, now: number,
+  run: { runId: string; dispatchedBy: string }): Bound[] {
+  return [claimLearningRetryWrite(db, projectId, sessionId, run), learningBackoffWrite.bind(now - FRESH_LEARNING_MS, now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
 }
 
 export interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }
@@ -352,3 +315,7 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
   ];
   return `${parts.join('; ')}.`;
 }
+
+export function claimLearningRetryStatement(...args: Parameters<typeof claimLearningRetryWrite>): PreparedStatement { return prepareClaimCompanion(args[0], claimLearningRetryWrite(...args)); }
+
+export function claimLearningStatements(...args: Parameters<typeof claimLearningWrites>): PreparedStatement[] { return claimLearningWrites(...args).map(bound => prepareClaimCompanion(args[0], bound)); }

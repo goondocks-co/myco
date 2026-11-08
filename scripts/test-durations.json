@@ -870,7 +870,8 @@
     "tests/myco-server/kpi-projection.test.ts": 2000,
     "tests/myco-server/health-today-projection.test.ts": 2000,
     "tests/myco-server/identity-project-atomic.test.ts": 10000,
-    "tests/myco-server/storage-failures.test.ts": 20000
+    "tests/myco-server/storage-failures.test.ts": 20000,
+    "tests/myco-server/run-heads.test.ts": 15000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -971,7 +972,8 @@
     "two Deployments: every HTTP route and served MCP operation refuses foreign authority before writes": 182000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "worker writes: required state and responses commit together under late authority loss": 232000,
-    "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000
+    "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000,
+    "claim heads: exact queue counts, guarded capacity and head holds": 180000
   },
   "jobs": {
     "hook-startup": {

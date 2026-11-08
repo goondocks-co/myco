@@ -1,3 +1,6 @@
+import { contactAuthorityIndex, workerContactUpsert, runnerContactUpsert } from '../db/runs/contact-writes.js';
+import type { Bound } from '../db/index.js';
+import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { parseHarnessSignInFailure, harnessSignInFailureWords, runnerAgentLoginReady, storedRunnerCredentialChoices, type HarnessSignInFailure, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
  * What each worker last reported about itself, and what the Deployment makes of it.
@@ -183,11 +186,11 @@ export async function readWorkerContact(db: RelationalStore, credentialId: strin
  * inside `CONTACT_THROTTLE_MS` is skipped while the machine's latest offers agree. Explicit offers advance a monotonic
  * revision in `updated_at`; renewals preserve unsupplied fields and advance only liveness. A throttled contact answers null.
  */
-export async function workerContactStatement(
+export async function workerContactWrite(
   db: RelationalStore,
   contact: { credentialId: string; machineId: string | null; offers?: readonly ReportedHarness[]; capabilities?: readonly string[]; reason?: ContactOutcome; now: number },
   lease?: { projectId: string; runId: string; attemptId?: string },
-): Promise<PreparedStatement | null> {
+): Promise<Bound | null> {
   const stored = await readWorkerContact(db, contact.credentialId);
   // Only a claim supplies a report. A renewal refreshes the liveness of the one
   // already held and leaves an absent or unreadable one as it stands: null is
@@ -206,33 +209,7 @@ export async function workerContactStatement(
     if (observation !== undefined && observation.offers !== null && sameOffers(observation.offers, offers)) skipRevision = observation.revision;
   }
   const authority = lease === undefined ? null : renewingLeaseAuthority({ kind: 'member', tokenId: contact.credentialId }, contact.now, lease.attemptId);
-  return db.prepare(
-    `WITH observation AS (
-       SELECT ? AS credential_id, ? AS machine_id, ? AS offers, ? AS capabilities, ? AS reason, ? AS seen_at,
-              ? AS explicit_offers, ? AS explicit_capabilities, ? AS explicit_reason, ? AS skip_revision
-     ), machine_revision AS (
-       SELECT COALESCE(MAX(w.updated_at), 0) AS revision
-         FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id CROSS JOIN observation o
-        WHERE COALESCE(w.machine_id, c.machine_id) IS COALESCE(o.machine_id, (SELECT machine_id FROM member_credentials WHERE id = o.credential_id))
-     )
-     INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at)
-     SELECT credential_id, machine_id, offers, capabilities, reason, seen_at,
-            CASE WHEN explicit_offers = 1 THEN MAX(seen_at, revision + 1) ELSE seen_at END
-       FROM observation CROSS JOIN machine_revision
-      WHERE (skip_revision IS NULL OR revision != skip_revision)${authority === null ? '' : ` AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND ${authority.sql})`}
-     ON CONFLICT (credential_id) DO UPDATE SET
-       machine_id = excluded.machine_id,
-       offers = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.offers ELSE worker_contacts.offers END,
-       capabilities = CASE WHEN (SELECT explicit_capabilities FROM observation) = 1 THEN excluded.capabilities ELSE worker_contacts.capabilities END,
-       last_reason = CASE WHEN (SELECT explicit_reason FROM observation) = 1 THEN excluded.last_reason ELSE worker_contacts.last_reason END,
-       last_seen_at = MAX(worker_contacts.last_seen_at, excluded.last_seen_at),
-       updated_at = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.updated_at ELSE worker_contacts.updated_at END`,
-  ).bind(
-    contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities),
-    reason, contact.now, contact.offers === undefined ? 0 : 1, contact.capabilities === undefined ? 0 : 1,
-    contact.reason === undefined ? 0 : 1, skipRevision,
-    ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]),
-  );
+  return workerContactUpsert[authority === null ? 0 : contactAuthorityIndex('member',lease?.attemptId)]!.bind(contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities), reason, contact.now, contact.offers === undefined ? 0 : 1, contact.capabilities === undefined ? 0 : 1, contact.reason === undefined ? 0 : 1, skipRevision, ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]));
 }
 
 /**
@@ -241,42 +218,19 @@ export async function workerContactStatement(
  * observation inside `CONTACT_THROTTLE_MS` writes nothing. Given a lease, the write lands only while that runner
  * holds it.
  */
-export function runnerContactStatement(
+export function runnerContactWrite(
   db: RelationalStore,
   contact: { runnerId: string; machineId?: string | null; os?: string | null; version?: string | null; offers?: readonly ReportedHarness[]; capabilities?: readonly string[]; reason?: ContactOutcome; now: number },
   lease?: { projectId: string; runId: string; attemptId?: string },
   worker?: LeaseHolder,
-): PreparedStatement {
+): Bound {
   const offers = contact.offers === undefined ? null : JSON.stringify(boundedOffers(contact.offers));
   const capabilities = contact.capabilities === undefined ? null : JSON.stringify(boundedCapabilities(contact.capabilities));
   const explicitOffers = contact.offers === undefined ? 0 : 1;
   const explicitCapabilities = contact.capabilities === undefined ? 0 : 1;
   const authority = lease === undefined || worker === undefined ? null : renewingLeaseAuthority(worker, contact.now, lease.attemptId);
   const text = (value: string | null | undefined, bound: number): string | null => (value == null ? null : value.slice(0, bound));
-  return db.prepare(
-    `INSERT INTO runner_contacts (runner_id, machine_id, os, version, offers, capabilities, last_reason, last_seen_at, updated_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE 1${authority === null ? '' : ` AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND ${authority.sql})`}
-     ON CONFLICT (runner_id) DO UPDATE SET
-       machine_id = COALESCE(excluded.machine_id, runner_contacts.machine_id),
-       os = COALESCE(excluded.os, runner_contacts.os),
-       version = COALESCE(excluded.version, runner_contacts.version),
-       offers = CASE WHEN ${explicitOffers} = 1 THEN excluded.offers ELSE runner_contacts.offers END,
-       capabilities = CASE WHEN ${explicitCapabilities} = 1 THEN excluded.capabilities ELSE runner_contacts.capabilities END,
-       last_reason = COALESCE(excluded.last_reason, runner_contacts.last_reason),
-       last_seen_at = MAX(runner_contacts.last_seen_at, excluded.last_seen_at),
-       updated_at = CASE WHEN ${explicitOffers} = 1 THEN MAX(excluded.updated_at, runner_contacts.updated_at + 1) ELSE runner_contacts.updated_at END
-     WHERE excluded.last_seen_at - runner_contacts.last_seen_at >= ?
-       OR (${explicitOffers} = 1 AND excluded.offers IS NOT runner_contacts.offers)
-       OR (${explicitCapabilities} = 1 AND excluded.capabilities IS NOT runner_contacts.capabilities)
-       OR (excluded.last_reason IS NOT NULL AND excluded.last_reason IS NOT runner_contacts.last_reason)
-       OR (excluded.machine_id IS NOT NULL AND excluded.machine_id IS NOT runner_contacts.machine_id)
-       OR (excluded.version IS NOT NULL AND excluded.version IS NOT runner_contacts.version)`,
-  ).bind(
-    contact.runnerId, text(contact.machineId, MAX_ID), text(contact.os, MAX_METADATA), text(contact.version, MAX_ID), offers, capabilities,
-    contact.reason ?? null, contact.now, contact.now,
-    ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]),
-    CONTACT_THROTTLE_MS,
-  );
+  return runnerContactUpsert[authority === null ? 0 : contactAuthorityIndex(worker!.kind,lease?.attemptId)]!.bind(contact.runnerId, text(contact.machineId, MAX_ID), text(contact.os, MAX_METADATA), text(contact.version, MAX_ID), offers, capabilities, contact.reason ?? null, contact.now, contact.now, ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]), explicitOffers, explicitCapabilities, explicitOffers, CONTACT_THROTTLE_MS, explicitOffers, explicitCapabilities);
 }
 
 /** Record one contact through the same statement used by atomic worker operations. */
@@ -666,3 +620,10 @@ export async function pruneWorkerContacts(db: RelationalStore, now: number, olde
   ).bind(now - olderThanMs, now, batch).run();
   return (result.meta.changes ?? 0) + (runners.meta.changes ?? 0);
 }
+
+export async function workerContactStatement(...args: Parameters<typeof workerContactWrite>): Promise<PreparedStatement | null> {
+ const bound = await workerContactWrite(...args);
+ return bound === null ? null : prepareClaimCompanion(args[0], bound);
+}
+
+export function runnerContactStatement(...args: Parameters<typeof runnerContactWrite>): PreparedStatement { return prepareClaimCompanion(args[0], runnerContactWrite(...args)); }

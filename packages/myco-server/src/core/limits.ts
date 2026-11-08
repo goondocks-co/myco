@@ -21,17 +21,18 @@ import { settingTexts } from './settings.js';
 export const DEPLOYMENT_WIDE_HOLDS: ReadonlySet<HeldBy> = new Set<HeldBy>(['fleet', 'concurrent_runs', 'runtime']);
 
 /** The three limits an owner sets in Settings. The fleet is the size of what the operator deployed; a runtime hold is not a limit at all. */
-export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | CapabilityHold>, string>> = {
+export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold>, string>> = {
   concurrent_runs: 'agent.limits.concurrent_runs',
   task_concurrent_runs: 'agent.limits.task_concurrent_runs',
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
 };
 
 /** Each resolved limit, or null where no bound applies. A runtime hold has no number to compare against and is absent here. */
-export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | 'admission_building' | CapabilityHold>, number | null>>;
+export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold>, number | null>>;
 
 /** What the Deployment is doing when a dispatch asks to run. */
 export interface DispatchLoad {
+  ready?: boolean;
   /** Runs live anywhere on the Deployment — pending or running. */
   liveRuns: number;
   /** Runs of this task live anywhere on the Deployment. */
@@ -58,15 +59,22 @@ export async function readDispatchLimits(env: { db: RelationalStore; fleet?: num
   };
 }
 
+/** The stricter configured concurrency input owns the one Deployment-wide limit; ties belong to the fleet. */
+export function resolvedConcurrency(limits: Pick<DispatchLimits, 'fleet' | 'concurrent_runs'>): { value: number | null; input: 'fleet' | 'concurrent_runs' } {
+  return limits.fleet !== null && (limits.concurrent_runs === null || limits.fleet <= limits.concurrent_runs)
+    ? { value: limits.fleet, input: 'fleet' } : { value: limits.concurrent_runs, input: 'concurrent_runs' };
+}
+
 /**
  * The first limit the load is at, or null when the dispatch may launch now.
  * Pure: the same load and limits always name the same holder, and the order
- * is the order the row names it in — the fleet first, as the hardest bound.
+ * names the input that owns the resolved concurrency limit before task limits.
  * A runtime hold is never decided here; it is what a launch answers.
  */
-export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | 'admission_building' | CapabilityHold> | null {
-  if (limits.fleet !== null && load.liveRuns >= limits.fleet) return 'fleet';
-  if (limits.concurrent_runs !== null && load.liveRuns >= limits.concurrent_runs) return 'concurrent_runs';
+export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | CapabilityHold> | null {
+  if (load.ready === false) return 'queue_building';
+  const concurrency = resolvedConcurrency(limits);
+  if (concurrency.value !== null && load.liveRuns >= concurrency.value) return concurrency.input;
   if (limits.task_concurrent_runs !== null && load.liveTaskRuns >= limits.task_concurrent_runs) return 'task_concurrent_runs';
   if (limits.task_runs_per_hour !== null && load.taskRunsLastHour >= limits.task_runs_per_hour) return 'task_runs_per_hour';
   return null;

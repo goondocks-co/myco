@@ -1,3 +1,5 @@
+import type { PullPolicy } from '../db/runs/pull-policy.js';
+import type { Bound } from '../db/index.js';
 /**
  * Pull at claim: the registry of pulled stages, their strict levels, the eligible set E(worker), least-spend
  * fairness across Projects and the selection each pulled write reasserts.
@@ -27,6 +29,8 @@ export interface PulledStage {
   /** Strict priority: a lower level is pulled before any higher one within E(worker). */
   readonly level: number;
   readonly task: string;
+  readonly policy: PullPolicy;
+  readonly estimateKey?: string;
   withEstimate?(key: string): PulledStage;
   /** A SQL boolean for the stage's switch; a claim reads all distinct switches together before any probe. */
   readonly switchedOn: string;
@@ -34,12 +38,10 @@ export interface PulledStage {
   due(project: string, now: number): SqlTerm;
   /** The Project's head at this stage. */
   head(db: RelationalStore, projectId: string, now: number): Promise<PulledItem | null>;
-  /** The item still exists and is still its Project's head. */
-  stillHead(item: PulledItem, now: number): SqlTerm;
   /** The run's input for the item, or null when it offers nothing to do. */
   build(env: ServerEnv, item: PulledItem, now: number): Promise<ClaimedInput | null>;
   /** What the claim's batch adds for the item; each statement holds its own condition on the run row the batch wrote. */
-  claimed?(db: RelationalStore, item: PulledItem, input: ClaimedInput, run: { runId: string; dispatchedBy: string }, now: number): PreparedStatement[];
+  claimed?(db: RelationalStore, item: PulledItem, input: ClaimedInput, run: { runId: string; dispatchedBy: string }, now: number): Bound[];
 }
 
 /** The production stages in strict claim priority. */
@@ -75,36 +77,11 @@ function acceptsSql(project: string, task: string): string {
   return gate?.kind === 'capability' ? capabilityOnSql(project, `'${gate.capability}'`) : projectAcceptsWorkSql(project);
 }
 
-/** A due item of `stage` in any Project that accepts its work. */
-function dueAnywhere(stage: PulledStage, now: number): SqlTerm {
-  const due = stage.due('p.project_id', now);
-  return { sql: `EXISTS (SELECT 1 FROM projects p WHERE ${acceptsSql('p.project_id', stage.task)} AND ${due.sql})`, params: due.params };
-}
-
-/**
- * What the pulled write reasserts, evaluated inside it: no compatible item at a higher level whose task passes its
- * limits now; the item is still its Project's head; and no other Project with an item at this level in E has less
- * automatic spend in the trailing window, or equal spend and a smaller id. Only the compatibility set (fenced by
- * the settings guard) and the item's identity are parameters.
- */
-export function pulledReassertion(stage: PulledStage, item: PulledItem, compatible: readonly PulledStage[], limits: DispatchLimits, now: number): SqlTerm {
-  const higher = compatible.filter((other) => other.level < stage.level).map((other) => {
-    const due = dueAnywhere(other, now);
-    return { sql: `NOT (${due.sql} AND ${limitPassesSql(other.task, limits, now)})`, params: due.params };
-  });
-  const rivals = compatible.filter((other) => other.level === stage.level).map((other) => {
-    const due = other.due('p.project_id', now);
-    return { sql: `(${acceptsSql('p.project_id', other.task)} AND ${due.sql} AND ${limitPassesSql(other.task, limits, now)})`, params: due.params };
-  });
-  const head = stage.stillHead(item, now);
-  const floor = now - BUDGET_WINDOW_MS;
-  const fair = `NOT EXISTS (SELECT 1 FROM projects p
-      CROSS JOIN (SELECT ROUND(COALESCE(SUM(value),0),6) AS spent FROM (${spendRowsSql('?')}) WHERE origin='automatic' AND projectId=?) mine
-      LEFT JOIN (SELECT projectId, ROUND(SUM(value),6) AS spent FROM (${spendRowsSql('?')}) WHERE origin='automatic' GROUP BY projectId) other ON other.projectId = p.project_id
-      WHERE p.project_id != ? AND (${rivals.map((rival) => rival.sql).join(' OR ')})
-        AND (COALESCE(other.spent,0) < mine.spent OR (COALESCE(other.spent,0) = mine.spent AND p.project_id < ?)))`;
-  const terms = [...higher, head, { sql: fair, params: [floor, item.projectId, floor, item.projectId, ...rivals.flatMap((rival) => rival.params), item.projectId] }];
-  return { sql: terms.map((term) => `(${term.sql})`).join(' AND '), params: terms.flatMap((term) => term.params) };
+/** Named stage assertions share the claim transaction and its observed compatibility set. */
+export function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:readonly PulledStage[],limits:DispatchLimits,now:number):Bound[] {
+  return [stage.policy.head(item,limits,now,stage.estimateKey),
+    ...compatible.filter(other=>other.level<stage.level).map(other=>other.policy.higher(item,limits,now,other.estimateKey)),
+    ...compatible.filter(other=>other.level===stage.level).map(other=>other.policy.fair(item,limits,now,other.estimateKey))];
 }
 
 /** A queue the worker can execute: its task and the estimate key its execution prices an automatic row by. */
@@ -133,7 +110,7 @@ export async function queuedAdmissible(db: RelationalStore, admissible: string):
   return (await db.prepare(`SELECT ${admissible} AS admissible`).first<{ admissible: number }>())?.admissible === 1;
 }
 
-export interface PulledSelection { stage: PulledStage; item: PulledItem; reassertion: SqlTerm }
+export interface PulledSelection { stage: PulledStage; item: PulledItem; assertions: Bound[] }
 
 /**
  * The best due item for a worker: the lowest level with an item in E(worker) (`eligible`: compatible stages whose task
@@ -160,7 +137,7 @@ export async function selectPulled(db: RelationalStore, eligible: readonly Pulle
     const [projectId] = projects;
     for (const stage of byProject.get(projectId!)!) {
       const item = await stage.head(db, projectId!, now);
-      if (item !== null) return { stage, item, reassertion: pulledReassertion(stage, item, compatible, limits, now) };
+      if (item !== null) return { stage, item, assertions: pulledAssertions(stage, item, compatible, limits, now) };
     }
     return null;
   }

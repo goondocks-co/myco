@@ -1,3 +1,5 @@
+import { commit } from '@myco-server-worker/db/index.js';
+import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
 import { expect, it } from 'bun:test';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
@@ -404,8 +406,7 @@ it('learns the newest history session first and keeps retried learning behind th
       .bind(NOW).first()).toEqual({ failures: 1, later: 1, source_activity_at: OLD + DAY });
     await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW + 4);
     expect(await poll(NOW + 2 * HOUR)).toMatchObject({ claimed: false });
-    const guard = LEARNING_STAGES[3]!.stillHead(selected, NOW + 2 * HOUR);
-    expect(await db.prepare(`SELECT ${guard.sql} AS permitted`).bind(...guard.params).first()).toEqual({ permitted: 0 });
+    await expect(commit(db,LEARNING_STAGES[3]!.policy.head(selected,NO_LIMITS,NOW+2*HOUR))).rejects.toThrow('claim_selection_refused');
     expect(await settingsWriter(db).setLeaf(HISTORY, 'true', 'owner', NOW + 4)).toMatchObject({ applied: false });
     await settingsWriter(db).resetLeaf(HISTORY, 'owner', NOW + 5);
     expect(await learningHistoryEnabled(db)).toBe(false);

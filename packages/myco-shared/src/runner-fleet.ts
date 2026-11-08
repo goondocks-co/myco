@@ -76,7 +76,7 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building';
+export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
 export interface FleetQueue {
   observedAt: number; count: number; oldestAt: number | null;
   reasons: Array<{ reason: QueueReason; count: number }>;
@@ -107,4 +107,5 @@ export const QUEUE_REASON_WORDS: Readonly<Record<QueueReason, string>> = {
   ready: 'A machine can take this work on its next check.',
   unavailable: 'Readiness is unavailable; the last report cannot establish which machine can take this work.',
   admission_building: 'Measuring recent spend.',
+  queue_building: 'Waiting for the work queue to be ready.',
 };

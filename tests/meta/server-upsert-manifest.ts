@@ -40,6 +40,141 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   "db/documents/contributions.ts#publicationContributionSchema": [
     { tables: ["document_publication_totals"], order: 'unverified' },
   ],
+  'db/runs/contact-writes.ts#<module>': [
+    { tables: ['worker_contacts'], order: 'unverified' },
+    { tables: ['runner_contacts'], order: 'unverified' },
+  ],
+  "db/runs/live.ts#reconcileLive": [
+    {
+      "tables": [
+        "run_live"
+      ],
+      "order": "unverified"
+    }
+  ],
+  "db/runs/live.ts#counter": [
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    }
+  ],
+  "db/runs/live.ts#due": [
+    {
+      "tables": [
+        "task_due"
+      ],
+      "order": "unverified"
+    }
+  ],
+  "db/runs/live.ts#countHead": [
+    {
+      "tables": [
+        "task_runtime"
+      ],
+      "order": "unverified"
+    }
+  ],
+  "db/schema-v719.ts#<module>": [
+    {
+      "tables": [
+        "run_live"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "run_live"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "admission_contribution"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "task_due"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "task_runtime"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "task_runtime"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "task_runtime"
+      ],
+      "order": "unverified"
+    },
+    {
+      "tables": [
+        "task_runtime"
+      ],
+      "order": "unverified"
+    }
+  ],
+
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
   'db/embeddings/state.ts#reconcileSourceState': [{ tables: ['embedding_source_state'], order: 'unverified' }],
   'db/embeddings/state.ts#total': [{ tables: ['embedding_model_totals'], order: 'unverified' }],
@@ -161,14 +296,8 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/storage-cleanup.ts#omissions': [
     { tables: ['storage_cleanup_omissions'], order: 'unverified' },
   ],
-  'core/worker-contacts.ts#runnerContactStatement': [
-    { tables: ['runner_contacts'], order: 'unverified' },
-  ],
   'core/worker-contacts.ts#runnerObservationStatement': [
     { tables: ['runner_observations'], order: 'unverified' },
-  ],
-  'core/worker-contacts.ts#workerContactStatement': [
-    { tables: ['worker_contacts'], order: 'unverified' },
   ],
   'db/read-budget-session-statements.ts#<module>': [
     { tables: ['session_read_facts'], order: 'unverified' },
