@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
 import { WORK_PREDICATE_VERSION } from '@myco-server-worker/core/embedding/work-state.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
+import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 
 const NOW = 10 ** 12;
 const TABLES = ['embedding_versions', 'embedding_receipts', 'embedding_source_failures', 'processed_resources', 'embedding_hubness_members', 'embedding_cursors'];
@@ -48,6 +49,7 @@ describe.each(['native', 'D1'])('%s embedding invalidation paths', (target) => {
 
   test('predicate upgrades recheck clean markers and session eligibility transitions remain atomic', async () => {
     await withEmbeddingStore(target, async (db) => {
+      while ((await prepareEmbeddingDue(db, 'p', 'm')).more);
       expect(await hasEmbeddingWork(db, 'p', 'm', NOW)).toBe(false);
       const scopes = (await db.prepare("SELECT scope FROM embedding_work_state WHERE project_id='p'").all<{ scope: string }>()).results;
       for (const row of scopes) expect(JSON.parse(row.scope).predicate).toBe(WORK_PREDICATE_VERSION);
@@ -72,6 +74,7 @@ describe.each(['native', 'D1'])('%s embedding invalidation paths', (target) => {
     await withEmbeddingStore(target, async (db) => {
       await db.prepare(`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,blob_key,content_hash,status,created_at,updated_at,token_id,received_at)
         VALUES('p','blobbed','s','e','machine',NULL,'blob','h','active',1,1,'token',1)`).run();
+      while ((await prepareEmbeddingDue(db, 'p', 'm')).more);
       expect(await hasEmbeddingWork(db, 'p', 'm', NOW)).toBe(false);
       const version = () => db.prepare("SELECT revision FROM embedding_versions WHERE project_id='p' AND type='plan' AND record_id='blobbed'").first();
       const before = await version();

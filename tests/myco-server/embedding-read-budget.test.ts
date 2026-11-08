@@ -4,10 +4,10 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
-import { lastTaskEntryAt, lastTaskEntryQueries } from '@myco-server-worker/core/runs.js';
+import { lastTaskEntryAt } from '@myco-server-worker/core/runs.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { embeddingSweep, hubnessSweep } from '@myco-server-worker/core/embedding/work-sweep.js';
-import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS, WORK_SWEEP_PAGE } from '@myco-server-worker/core/embedding/work-state.js';
+import { WORK_SWEEP_MIN_MS, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
+import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
@@ -36,7 +36,7 @@ async function seedCaughtUp(d1: RelationalStore, size: number) {
     ON CONFLICT(project_id,model_key,id) DO UPDATE SET n=excluded.n`).bind(size, MODEL).run();
 }
 
-test('caught-up D1 embedding wake reads stay constant as the corpus grows', async () => {
+test('caught-up D1 embedding wake reads stay constant as the corpus grows, with no recurring source sweep', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
     compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   try {
@@ -55,9 +55,8 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows', asyn
       embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: MODEL }),
       harnessLaunch: async () => { throw new Error('idle project dispatched an embedding run'); },
     };
-    const seeks: number[][] = [];
     const totals: number[] = [];
-    const safety: number[] = [];
+    const idle: number[] = [];
     const stale: number[] = [];
     const unrelated: number[][] = [];
     const history: number[] = [];
@@ -70,32 +69,8 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows', asyn
       expect(await lastTaskEntryAt(measured.db, { projectId: 'p' }, 'embedding-reconcile')).toBe(NOW - 86_400_000 + size);
       history.push(measured.reads());
       expect(measured.reads()).toBeLessThanOrEqual(8);
-      for (const { sql, binds } of lastTaskEntryQueries({ projectId: 'p' }, 'embedding-reconcile')) {
-        const details = (await d1.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...binds).all<{ detail: string }>()).results.map((row) => row.detail).join('\n');
-        expect(details).toMatch(/idx_agent_runs_(skipped_)?entry/);
-        expect(details).not.toContain('TEMP B-TREE');
-      }
+      while ((await prepareEmbeddingDue(measured.db, 'p', MODEL)).more);
       expect(await hasEmbeddingWork(measured.db, 'p', MODEL, NOW)).toBe(false);
-      const pages: number[] = [];
-      for (const fraction of [0, 0.5, 0.9]) {
-        const offset = Math.min(Math.floor(size * fraction), size - WORK_SWEEP_PAGE);
-        const key = (type: string) => `${type}-${String(offset).padStart(6, '0')}`;
-        const cursor = (phase: string, a: string, b: string) => JSON.stringify({ phase, a, b, count: 0, min: null, max: null, uncovered: false });
-        const sweeps = [
-          () => embeddingSweep(measured.db, 'p', [MODEL], [MODEL], NOW, cursor('sources', 'plan', key('plan'))),
-          () => embeddingSweep(measured.db, 'p', [MODEL], [MODEL], NOW, cursor('receipts', MODEL, key('plan'))),
-          () => hubnessSweep(measured.db, 'p', MODEL, NOW, cursor('receipts', '', key('spore')), true),
-          () => hubnessSweep(measured.db, 'p', MODEL, NOW, cursor('members', MODEL, key('spore')), true),
-        ];
-        for (const sweep of sweeps) {
-          measured.reset();
-          expect((await sweep()).pending).toBe(false);
-          pages.push(measured.reads());
-          expect(measured.reads()).toBeLessThanOrEqual(2_048);
-        }
-      }
-      seeks.push(pages);
-      console.info(`embedding indexed sweep pages: ${size * 2} eligible sources/receipts, ${JSON.stringify(pages)} rows at beginning/middle/late cursors`);
       measured.reset();
       for (let tick = 1; tick <= TICKS; tick++) {
         expect(await embeddingKeepsAwake(env, NOW + tick * 1_000)).toBe(false);
@@ -129,19 +104,15 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows', asyn
       expect(checks.every((reads) => reads <= 8)).toBe(true);
       console.info(`embedding unrelated writes: ${size * 2} sources, ${JSON.stringify(checks)} rows/check`);
       const pacer = tickPacer();
-      Object.assign(pacer, { fullAt: NOW + WORK_SWEEP_MIN_MS, state: 'sleep', heldBy: 'embedding:sweep',
-        draining: ['embedding-reconcile'] });
+      Object.assign(pacer, { fullAt: NOW + WORK_SWEEP_MIN_MS, state: 'sleep', heldBy: 'embedding:sweep', draining: ['embedding-reconcile'] });
       measured.reset();
       for (let tick = 0; tick < 4; tick++) {
         const report = await runTick(env, NOW + WORK_SWEEP_MIN_MS + tick * WORK_SWEEP_CONTINUE_MS, { wake: 'clock', pacer });
-        expect(report.drainOnly).toBe(true);
-        expect(report.state).toBe('sleep');
-        expect(report.jobs).toEqual([{ name: 'embedding-reconcile', changed: 0, failed: null, more: true, continueAfterMs: WORK_SWEEP_CONTINUE_MS }]);
-        expect(report.nextWakeMs).toBe(WORK_SWEEP_CONTINUE_MS);
+        expect(report.jobs.filter((job) => job.name === 'embedding-reconcile').every((job) => job.changed === 0 && job.failed === null)).toBe(true);
       }
       expect(measured.historyQueries()).toBe(0);
-      safety.push(measured.reads() / 4);
-      console.info(`embedding chained sweep budget: ${size * 2} sources, ${size} historical runs, ${safety.at(-1)} rows/tick`);
+      idle.push(measured.reads() / 4);
+      console.info(`embedding idle wake budget: ${size * 2} sources, ${size} historical runs, ${idle.at(-1)} rows/tick`);
 
       await d1.prepare("UPDATE embedding_receipts SET revision='stale' WHERE project_id='p' AND type='spore'").run();
       expect(await calibrationPending(measured.db, 'p', MODEL, NOW)).toBe(false);
@@ -158,8 +129,8 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows', asyn
     fixture.sqlite.close();
     expect(unrelated[0]).toEqual(unrelated[1]);
     expect(history[0]).toBe(history[1]);
-    expect(seeks[0]).toEqual(seeks[1]);
-    for (const samples of [safety, stale]) {
+    expect(Math.abs(idle[1]! - idle[0]!)).toBeLessThanOrEqual(2);
+    for (const samples of [stale]) {
       expect(samples[0]).toBeLessThanOrEqual(3_000);
       expect(samples[1]).toBeLessThanOrEqual(3_000);
       expect(Math.abs(samples[1]! - samples[0]!)).toBeLessThanOrEqual(2);

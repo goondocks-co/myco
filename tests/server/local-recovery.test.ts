@@ -21,6 +21,7 @@ import { deploymentSecretStore } from '../../packages/myco-server/src/core/secre
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 import { reconcileEmbedding } from '../../packages/myco-server/src/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { searchProject } from '../../packages/myco-server/src/read/search.js';
 import { createBackup, setBackupPinned } from '../../packages/myco-server/src/core/backup.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
@@ -227,6 +228,8 @@ it('recovers hosted data, independently wrapped credentials and pinned artifacts
         .toEqual(fs.readFileSync(path.join(f.artifact, 'blobs', f.backup.key)));
       // The switch waits for an admin here, and what the rebuilt index passes over is found again.
       expect(db.query('SELECT state, reason, retry_at FROM embedding_switches').all()).toEqual([{ state: 'paused', reason: RECOVERED_SWITCH, retry_at: null }]);
+      expect(db.query('SELECT COUNT(*) AS n FROM embedding_resets').get()).toEqual({ n: (db.query('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n });
+      while ((await catchUpProjections(store, { budget: { calls: 200, wallMs: 10_000 } })).more);
       expect(db.query('SELECT COUNT(*) AS n FROM embedding_source_failures').get()).toEqual({ n: 0 });
       expect(await hasEmbeddingWork(store, 'proj_1', f.provider.modelKey, 2000)).toBe(true);
       const vectors = sqliteVectorStore(db);

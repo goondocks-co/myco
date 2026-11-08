@@ -68,13 +68,6 @@ async function core_embedding_reconcile_passedOverSources(
   return { sources: results, count: total?.n ?? 0 };
 }
 
-/**
- * A source `s` needs no write while its revision's receipt under the model is indexed or claimed for deletion; a claimed
- * receipt is written afresh once it is retired. Binds: the model key.
- */
-const core_embedding_reconcile_SOURCE_HELD = `EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type
-  AND r.record_id = s.record_id AND r.revision = s.revision AND r.model_key = ? AND r.ready <> ${core_embedding_reconcile_import_RECEIPT.journaled})`;
-
 /** The earliest source refusal expiry under a model, read through its retry index. */
 async function core_embedding_reconcile_embeddingFailureWakeAt(db: core_embedding_reconcile_import_RelationalStore, projectId: string, model: string, now: number): Promise<number | null> {
   const row = await db.prepare(`SELECT recorded_at AS at FROM embedding_source_failures
@@ -88,9 +81,4 @@ export function prepareEmbeddingSource(db: sessions_import_RelationalStore, proj
       FROM embedding_sources s WHERE s.project_id = ? AND s.type = ? AND s.record_id = ? AND s.revision = ?`).bind(projectId, type, recordId, revision);
 }
 
-export function prepareEmbeddingReadyReceipt(db: sessions_import_RelationalStore, receipt: readonly [string, string, string], projectId: string, type: string, recordId: string, revision: string) {
-  return db.prepare(`UPDATE embedding_receipts SET ready = ${core_embedding_reconcile_import_RECEIPT.ready} WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${core_embedding_reconcile_import_RECEIPT.journaled}
-        AND EXISTS (SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND s.type = ? AND s.record_id = ? AND s.revision = ?)`).bind(...receipt, projectId, type, recordId, revision);
-}
-
-export { type core_embedding_reconcile_PassedOverSource, core_embedding_reconcile_passedOverSources, core_embedding_reconcile_embeddingFailureWakeAt, core_embedding_reconcile_ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS, core_embedding_reconcile_SOURCE_HELD, core_embedding_reconcile_PASSED_OVER, core_embedding_reconcile_passedOverBinds };
+export { type core_embedding_reconcile_PassedOverSource, core_embedding_reconcile_passedOverSources, core_embedding_reconcile_embeddingFailureWakeAt, core_embedding_reconcile_ANY_MODEL, core_embedding_reconcile_INPUT_REFUSAL_RETRY_MS, core_embedding_reconcile_PASSED_OVER, core_embedding_reconcile_passedOverBinds };
