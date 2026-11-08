@@ -59,10 +59,14 @@ beforeEach(() => {
     const url = String(input);
     if (url.endsWith('/health')) return new Response('ok');
     expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DB}/query`);
-    const { sql, params = [] } = JSON.parse(String(init?.body)) as { sql: string; params?: never[] };
-    reads.push(sql);
+    type Query = { sql: string; params?: never[] };
+    const body = JSON.parse(String(init?.body)) as Query | { batch: Query[] };
+    const queries = 'batch' in body ? body.batch : [body];
+    reads.push(...queries.map(query => query.sql));
     if (failRead) return Response.json({ success: false, errors: [{ code: 7500, message: 'query refused' }] }, { status: 400 });
-    return Response.json({ success: true, result: [{ success: true, results: sqlite.query(sql).all(...params), meta: { changes: 0 } }] });
+    const result = sqlite.transaction(() => queries.map(({ sql, params = [] }) =>
+      ({ success: true, results: sqlite.query(sql).all(...params), meta: { changes: 0 } })))();
+    return Response.json({ success: true, result });
   });
   log = spyOn(console, 'log').mockImplementation(() => {});
   writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', databaseId: DB, bucketName: 'b', versionId: DB, deployedAt: '2026-10-20T00:00:00Z' });
@@ -87,6 +91,7 @@ for (const target of ['local', 'cloudflare']) describe(`hook placement status on
       expect(reads.length).toBeGreaterThan(0);
       expect(loginStartedAfterStatus).toBe(true);
       const lines = log.mock.calls.flat().map(String);
+      expect(lines.join('\n')).not.toContain('Daily work budget unavailable:');
       expect(lines.findIndex(line => line.includes('Context deliveries not placed on a turn'))).toBeGreaterThan(lines.findIndex(line => line.includes('URL (recorded)')));
     }
   });

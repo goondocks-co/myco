@@ -191,11 +191,18 @@ describe('setup-owner --target cloudflare', () => {
     expect(count(sqlite, 'identity_link_authorities')).toBe(1);
   });
 
-  it('runs no batch: the operator store refuses one', async () => {
-    const { api } = hosted();
-    const store = d1OperatorStore({ accountId: ACCOUNT, databaseId: DATABASE, fetch: api.fetch,
-      login: { current: async () => new Headers(), headers: async () => new Headers(), refused: () => {} } });
-    await expect(store.batch([])).rejects.toThrow('runs no batch');
+  it('refuses write batches before any statement reaches the operator database', async () => {
+    const { api, sqlite } = hosted();
+    const store = operatorStore(api);
+    for (const sql of [
+      "INSERT INTO schema_meta(key,value) VALUES('batch-write','no')",
+      "WITH v AS (SELECT 'no') INSERT INTO schema_meta(key,value) SELECT 'batch-write',* FROM v",
+      "SELECT 1; INSERT INTO schema_meta(key,value) VALUES('batch-write','no')",
+    ]) {
+      await expect(store.batch([store.prepare('SELECT 1'),store.prepare(sql)])).rejects.toThrow('only single SELECT');
+    }
+    expect(api.statements).toEqual([]);
+    expect(sqlite.query("SELECT value FROM schema_meta WHERE key='batch-write'").get()).toBeNull();
   });
 
   const operatorStore = (api: ReturnType<typeof d1Api>) => d1OperatorStore({ accountId: ACCOUNT, databaseId: DATABASE, fetch: api.fetch, sleep: async () => {},

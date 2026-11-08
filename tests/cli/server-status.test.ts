@@ -11,6 +11,8 @@ import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
 import { budgetD1Database,budgetD1Reply } from '../server/helpers/budget-d1.js';
 import {sqliteEnv} from '../myco-server/helpers/fixtures.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { significantStatement } from '@myco-server-worker/core/sql-statements.js';
 
 const ACCOUNT = 'a'.repeat(32);
@@ -85,12 +87,17 @@ const runner: CommandRunner = {
 };
 
 const fetchD1:typeof fetch=async(_input,init)=>{
-  const body=JSON.parse(String(init?.body)) as {sql:string;params?:unknown[]};
-  const rows=budgetDb.query(body.sql).all(...(body.params??[]).map(value=>{
-    if(value===null||typeof value==='string'||typeof value==='number')return value;
-    throw new Error('Unexpected fake D1 binding');
-  }));
-  return Response.json({success:true,result:[{success:true,results:rows,meta:{changes:0}}]});
+  type Query = {sql:string;params?:unknown[]};
+  const body=JSON.parse(String(init?.body)) as Query | {batch:Query[]};
+  const queries='batch' in body?body.batch:[body];
+  const result=budgetDb.transaction(()=>queries.map(query=>{
+    const rows=budgetDb.query(query.sql).all(...(query.params??[]).map(value=>{
+      if(value===null||typeof value==='string'||typeof value==='number')return value;
+      throw new Error('Unexpected fake D1 binding');
+    }));
+    return {success:true,results:rows,meta:{changes:0}};
+  }))();
+  return Response.json({success:true,result});
 };
 
 beforeEach(() => {
@@ -169,6 +176,16 @@ describe('Cloudflare status records and live observations', () => {
     expect(printed.join('\n')).toContain('inactive');
     expect(printed.join('\n')).not.toContain('Daily work budget unavailable:');
   });
+  it('prints the active budget totals through the operator read batches',async()=>{
+    await completeBudgetMigration(sqliteRelationalStore(budgetDb),Date.now());
+    budgetDb.run('UPDATE projection_catchup SET done=1');
+    process.env.CLOUDFLARE_API_TOKEN=PRIVATE_TOKEN;
+    const text=await drive('status');
+    expect(text).toContain('automatic $0.00, hand-started $0.00');
+    expect(text).not.toContain('Daily work budget unavailable:');
+    expect(exitCode).toBeUndefined();
+  });
+
   it('shows a live disagreement without attributing the recorded release or URL to the live Worker', async () => {
     worker = LIVE;
     const record = readDeploymentRecord()!;
