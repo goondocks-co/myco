@@ -1,7 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
 import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import { budgetActivation } from '../db/budget-activation.js';
-import { effectiveBudgetSql, readSpendRows } from '../core/run-budget.js';
+import { effectiveBudgetSql } from '../core/run-budget.js';
+import { readSpendSnapshot, type SpendTotals } from '../db/runs/admission.js';
 import { ESTIMATE_AGENT, estimateKey, type EstimateSample } from '../core/budget-estimates.js';
 import { getState } from '../core/runs.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
@@ -39,19 +40,20 @@ export async function readBudgetHolds(db: RelationalStore): Promise<BudgetHolds>
   return {...activation,dailyUsd:leaf.budget,heldHeads};
 }
 
-/** Deployment-wide totals share the exact attempt relation used by claim admission. */
+/** Deployment-wide totals come from the same maintained snapshot claim admission compares against; a projection still catching up reports building, never zero. */
 export async function readBudgetStatus(db: RelationalStore, now: number): Promise<BudgetStatus> {
   const holds=await readBudgetHolds(db);
-  if (!holds.active) return {active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:null,manualUsd:null,liveUsd:null,unconfirmed:null,pricedExposure:null,heldHeads:null};
-  const rows=await readSpendRows(db,now);
-  const sum=(predicate:(row:typeof rows[number])=>boolean)=>rows.filter(predicate).reduce((total,row)=>total+row.value,0);
-  const unconfirmed=rows.filter(row=>!row.live && !['actual','estimated'].includes(row.costSource ?? ''));
-  const detail=(origin:string)=>{const selected=unconfirmed.filter(row=>row.origin===origin);return {count:selected.length,estimatedUsd:selected.reduce((sum,row)=>sum+row.estimate,0)};};
-  const heldHeads=holds.heldHeads!;
-  const leaf={budget:holds.dailyUsd};
+  const inactive={active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:null,manualUsd:null,liveUsd:null,unconfirmed:null,pricedExposure:null,heldHeads:null};
+  if (!holds.active) return inactive;
+  const snapshot=await readSpendSnapshot(db,now);
+  if (!snapshot.ready) return {...inactive,heldHeads:holds.heldHeads,state:'building'};
+  const usd=(micros:number)=>micros/1_000_000;
+  const of=(origin:'manual'|'automatic')=>snapshot.totals.find(row=>row.origin===origin);
+  const total=(pick:(row:SpendTotals)=>number,origin?:'manual'|'automatic')=>snapshot.totals.filter(row=>origin===undefined||row.origin===origin).reduce((sum,row)=>sum+pick(row),0);
+  const detail=(origin:'manual'|'automatic')=>({count:of(origin)?.unconfirmed ?? 0,estimatedUsd:usd(of(origin)?.unconfirmedEstimateMicros ?? 0)});
   let exposure=0,sampleSize=0,missingSamples=0;
   const samples=new Map<string,EstimateSample|null>();
-  for (const row of rows.filter(row=>row.live && row.origin==='automatic')) {
+  for (const row of snapshot.live) {
     if (row.profileJson===null) { missingSamples++;continue; }
     const profile: {harness:string;profile:ExecutionProfile}=JSON.parse(row.profileJson);
     const key=estimateKey(row.task,profile.harness,profile.profile);
@@ -66,7 +68,7 @@ export async function readBudgetStatus(db: RelationalStore, now: number): Promis
     exposure+=row.estimate*(sample.ratioP95-1);
     if(first)sampleSize+=sample.ratioN;
   }
-  return {active:holds.active,reason:holds.reason,dailyUsd:leaf.budget,automaticUsd:sum(row=>row.origin==='automatic'),manualUsd:sum(row=>row.origin==='manual'),
-    liveUsd:sum(row=>!!row.live),unconfirmed:{count:unconfirmed.length,estimatedUsd:unconfirmed.reduce((total,row)=>total+row.estimate,0),manual:detail('manual'),automatic:detail('automatic')},heldHeads,
-    pricedExposure:{usd:missingSamples>0?null:exposure,sampleSize,missingSamples,provenance:'empirical-p95'}};
+  return {active:holds.active,reason:holds.reason,dailyUsd:holds.dailyUsd,automaticUsd:usd(total(row=>row.micros,'automatic')),manualUsd:usd(total(row=>row.micros,'manual')),
+    liveUsd:usd(total(row=>row.liveMicros)),unconfirmed:{count:total(row=>row.unconfirmed),estimatedUsd:usd(total(row=>row.unconfirmedEstimateMicros)),manual:detail('manual'),automatic:detail('automatic')},heldHeads:holds.heldHeads,
+    pricedExposure:{usd:missingSamples>0?null:exposure,sampleSize,missingSamples,provenance:'empirical-p95'},state:'ready'};
 }

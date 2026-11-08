@@ -1511,6 +1511,8 @@ describe('gates', () => {
     for (const file of files(SRC)) {
       const relative = file.slice(SRC.length);
       if (relative.endsWith('db/run-statuses.ts')) continue;
+      // A schema step is a frozen copy of its generator's output; the generator spells the set through the constants.
+      if (/db\/schema-v[^/]*\.ts$/.test(relative)) continue;
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (/status\s+IN\s*\(\s*'(pending|running|queued)'/.test(line)) offenders.push(`${relative}: ${line.trim().slice(0, 80)}`);
       }

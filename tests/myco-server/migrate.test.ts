@@ -1426,6 +1426,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
+      'attempt_spend', 'budget_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',

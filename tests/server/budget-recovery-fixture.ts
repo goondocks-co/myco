@@ -2,6 +2,7 @@ import { expect } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import { readBudgetStatus } from '../../packages/myco-server/src/read/budget.js';
+import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 
 export function seedRecoveryBudget(db: Database, priced: boolean, now: number): void {
   db.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('budget-project','Budget',0)");
@@ -23,7 +24,10 @@ export function seedRecoveryBudget(db: Database, priced: boolean, now: number): 
 }
 
 export async function assertRecoveryBudget(db: Database, priced: boolean, now: number): Promise<void> {
-  const status=await readBudgetStatus(sqliteRelationalStore(db),now);
+  const store=sqliteRelationalStore(db);
+  // A recovered store rebuilds derived accounting through the catch-up job before admission trusts it.
+  while ((await catchUpProjections(store,{budget:{calls:10_000,wallMs:60_000}})).more);
+  const status=await readBudgetStatus(store,now);
   expect(status.active).toBe(true);
   expect(status.automaticUsd).toBeCloseTo(priced?0.8:0.2);
   expect(status.manualUsd).toBeCloseTo(0.2);

@@ -199,7 +199,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     const budgetHeld=queued.heldBy==='budget';
     const quote=queued.budgetQuoteUsd;
     const tooSmall=budgetHeld&&typeof quote==='number'&&quote>budget;
-    const maximumAge=budgetHeld?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
+    const maximumAge=budgetHeld||queued.heldBy==='admission_building'?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
     const ageFrom = automatic ? Math.max(queued.queuedAt, openedAt) : queued.queuedAt;
     if (!tooSmall && now - ageFrom < maximumAge) continue;
     const guard={sql:`held_by IS ? AND queued_at IS ?${automatic ? ` AND EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${BUDGET_QUEUE_OPENED_SQL} IS ?` : ''}${tooSmall?` AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}`:''}`,params:[queued.heldBy,queued.queuedAt,...(automatic?[opened]:[]),...(tooSmall?[quote]:[])]};

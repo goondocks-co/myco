@@ -1,6 +1,6 @@
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/budget-activation.js';
-import { automaticFits, budgetHeld } from './run-budget.js';
+import { automaticFits, budgetHold } from './run-budget.js';
 import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
 import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, queuedAdmissibleSql, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
 import { queueHeads, unclaimedQueued } from './queue-heads.js';
@@ -987,8 +987,9 @@ export async function claimNextRun(
     chosen = selected;
     if (chosen !== null) {
       const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,chosen.harness,chosen.profile);
-      if (await budgetHeld(env.db,candidate.projectId,candidate.id,price.estimate,worker.now)) {
-        await recordQueueHolder(env.db,{projectId:candidate.projectId},candidate.id,'budget',{usd:price.estimate,at:worker.now});
+      const budgetWait = await budgetHold(env.db,candidate.projectId,candidate.id,price.estimate,worker.now);
+      if (budgetWait !== null) {
+        await recordQueueHolder(env.db,{projectId:candidate.projectId},candidate.id,budgetWait,budgetWait==='budget'?{usd:price.estimate,at:worker.now}:undefined);
         refusedHeads.add(headKey(candidate));
         candidate=await next();
         chosen=null;
@@ -1064,8 +1065,8 @@ export async function claimNextRun(
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) {
-      if (await budgetHeld(env.db,candidate.projectId,candidate.id,price.estimate,worker.now)) await recordQueueHolder(env.db,scope,candidate.id,'budget',{usd:price.estimate,at:worker.now});
-      else await recordQueueHolder(env.db,scope,candidate.id,'worker');
+      const budgetWait = await budgetHold(env.db,candidate.projectId,candidate.id,price.estimate,worker.now);
+      await recordQueueHolder(env.db,scope,candidate.id,budgetWait ?? 'worker',budgetWait==='budget'?{usd:price.estimate,at:worker.now}:undefined);
       return activation.active && retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
     }
     await recordQueueHolder(env.db, scope, candidate.id, held);
