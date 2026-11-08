@@ -895,11 +895,20 @@ describe('gates', () => {
   it('keeps db/settings persistence private to the admitted writer', () => {
     const family = `${moduleKey(join(SRC, 'db', 'settings'))}/`;
     const writer = moduleKey(join(SRC, 'core', 'settings.ts'));
+    const owners = new Map([
+      [family + 'leaves.ts', new Set([writer])],
+      [family + 'release-connection.ts', new Set([moduleKey(join(SRC, 'core', 'release-provenance.ts'))])],
+      [family + 'secret-writes.ts', new Set([
+        moduleKey(join(SRC, 'core', 'secrets.ts')),
+        moduleKey(join(SRC, 'db', 'storage', 'repository-connection.ts')),
+        family + 'release-connection.ts',
+      ])],
+    ]);
     const offenders: string[] = [];
     for (const file of files(SRC)) {
       const from = moduleKey(file);
       for (const target of runtimeImportNames(readFileSync(file, 'utf8'), file).keys()) {
-        if (target.startsWith(family) && from !== writer && !from.startsWith(family)) offenders.push(`${from} imports ${target}`);
+        if (target.startsWith(family) && !owners.get(target)?.has(from)) offenders.push(`${from} imports ${target}`);
       }
     }
     expect(offenders).toEqual([]);

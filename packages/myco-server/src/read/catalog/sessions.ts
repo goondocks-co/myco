@@ -249,7 +249,7 @@ async function sessions_listProjects(db: sessions_import_RelationalStore, opts: 
 
 type sessions_ArchiveOutcome = 'archived' | 'absent' | 'already_archived';
 
-type sessions_UnarchiveOutcome = 'restored' | 'absent' | 'not_archived';
+type sessions_UnarchiveOutcome = import('../../db/storage/projects.js').UnarchiveOutcome;
 
 /** Sessions ordered by presented start and session ID. Refinement can move rows between keyset pages. */
 interface sessions_SessionFilters {

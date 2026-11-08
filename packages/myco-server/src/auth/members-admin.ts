@@ -14,12 +14,13 @@ import { isSystemMember, personMemberSql } from './member-kind.js';
  * member row having changed in this very transaction. Machine claims are
  * permanent and untouched: a departed member's history stays theirs.
  */
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
-import { emit } from '../telemetry.js';
+import type { ErrorClassifier, PreparedStatement, RelationalStore } from '../core/adapters.js';
+import { emit, failureTelemetry } from '../telemetry.js';
+import { nameFromLogin, GITHUB_LOGIN_KEY_PREFIX } from '../db/identity/member-naming.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential, MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
-import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL, removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
+import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
@@ -69,7 +70,6 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   }));
 }
 
-const GITHUB_LOGIN_KEY_PREFIX = 'github_login:';
 /** A GitHub login as GitHub grants one: letters, digits and single hyphens, at most 39. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
@@ -79,28 +79,15 @@ const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
  */
 export async function nameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string): Promise<string | null> {
   if (!GITHUB_LOGIN.test(login)) return null;
-  const current = await db.prepare(`SELECT m.label,
-    (SELECT value FROM schema_meta WHERE key = ? || m.github_id) AS login,
-    m.id = (SELECT value FROM schema_meta WHERE key = ?) AS firstOwner
-    FROM members m WHERE m.id = ? AND m.github_id = ? AND m.revoked_at IS NULL`)
-    .bind(GITHUB_LOGIN_KEY_PREFIX, FIRST_MEMBER_KEY, memberId, githubId)
-    .first<{ label: string | null; login: string | null; firstOwner: number }>();
-  if (current === null || (current.login === login && current.label !== null
-    && !(current.label === FIRST_OWNER_MEMBER_LABEL && current.firstOwner === 1))) return null;
-  const [named] = await db.batch([
-    db.prepare(`UPDATE members SET label = ? WHERE id = ? AND github_id = ? AND revoked_at IS NULL AND (label IS NULL OR (label = ? AND id = (SELECT value FROM schema_meta WHERE key = ?))) RETURNING label`).bind(login, memberId, githubId, FIRST_OWNER_MEMBER_LABEL, FIRST_MEMBER_KEY),
-    db.prepare(`INSERT INTO schema_meta (key, value)
-      SELECT ? || github_id, ? FROM members WHERE id = ? AND github_id = ? AND revoked_at IS NULL
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE schema_meta.value <> excluded.value`).bind(GITHUB_LOGIN_KEY_PREFIX, login, memberId, githubId),
-  ]);
-  return (named?.results[0] as { label: string } | undefined)?.label ?? null;
+  return nameFromLogin(db, memberId, githubId, login);
 }
 
 /** Naming is a courtesy of sign-in; a storage failure leaves authentication and approval intact. */
-export async function tryNameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string): Promise<string | null> {
+export async function tryNameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string, classifyError: ErrorClassifier): Promise<string | null> {
   try {
     return await nameMemberFromLogin(db, memberId, githubId, login);
-  } catch {
+  } catch (error) {
+    emit({ kind: 'member_naming_failed', memberId, ...failureTelemetry(error, classifyError) });
     return null;
   }
 }

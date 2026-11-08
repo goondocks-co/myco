@@ -33,6 +33,10 @@ const REFUSALS: Record<string, string> = {
 export function refusalText(err: unknown): string {
   if (err instanceof ApiError) {
     const code = err.code;
+    if (code === 'project_limit' && typeof err.body === 'object' && err.body !== null) {
+      const reason = Reflect.get(err.body, 'reason');
+      if (typeof reason === 'string') return reason;
+    }
     if (code !== undefined && REFUSALS[code]) return REFUSALS[code];
     if (err.status === 404) return 'That is no longer here.';
     return `The server refused (${err.status}).`;

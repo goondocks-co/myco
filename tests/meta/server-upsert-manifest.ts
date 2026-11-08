@@ -52,7 +52,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/runs.ts#guardedStateStatement': [
     { tables: ['agent_state'], order: 'unverified' },
   ],
-  'auth/members-admin.ts#nameMemberFromLogin': [
+  'db/identity/member-naming.ts#<module>': [
     { tables: ['schema_meta'], order: 'unverified' },
   ],
   'core/backup.ts#claimRestoreTable': [
@@ -95,8 +95,11 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/runs.ts#upsertAgent': [
     { tables: ['agents'], order: 'unverified' },
   ],
-  'core/secrets.ts#put': [
+  'db/settings/secret-writes.ts#<module>': [
     { tables: ['deployment_secrets'], order: 'unverified' },
+  ],
+  'db/storage/repository-connection.ts#<module>': [
+    { tables: ['project_repositories'], order: 'unverified' },
   ],
   'db/settings/leaves.ts#<module>': [
     { tables: ['deployment_settings'], order: 'writer-revision' },

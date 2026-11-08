@@ -1,4 +1,3 @@
-import { personMemberSql } from './member-kind.js';
 import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /**
  * Identity link authorities — the proof that binds a GitHub account to a member.
@@ -22,15 +21,13 @@ import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
  * A member's account is fixed once linked. Changing it is break-glass: direct
  * store access, the same authority #907 settled as the recovery path.
  */
-import { completeIdentityLink } from '../core/ownership.js';
+import { spendIdentityLink } from '../db/identity/link.js';
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { emit } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, type MemberRole } from './roles.js';
-
-const ADMIN: MemberRole = 'admin';
 
 /** Bytes of entropy in a link key. 32 = 256 bits. */
 export const IDENTITY_LINK_KEY_BYTES = 32;
@@ -61,30 +58,8 @@ export interface DashboardMember {
   role: MemberRole;
 }
 
-/**
- * A live admin with a GitHub account linked, as a predicate on the members row
- * aliased `alias`: someone who can sign in to the dashboard and administer it.
- * The Deployment keeps one from the first bind on (`revokeMember` refuses to
- * remove the last), so bootstrap ends once.
- */
-export const linkedAdmin = (alias: string): string =>
-  `${alias}.role = '${ADMIN}' AND ${alias}.github_id IS NOT NULL AND ${alias}.revoked_at IS NULL`;
-
-/**
- * Whether a key issued by `issuer` for `member` — SQL expressions; a NULL
- * issuer for a key a member's own credential minted — may be minted or bind
- * now: a self-issued key only for an admin, while no live admin has a GitHub
- * account linked, so the one bind it admits makes the Deployment's admin; an
- * admin-issued key while its issuer is still a live, linked admin. The one
- * statement of the rule; the mint and the bind each compose it into their own
- * write, so no read decides it ahead of the write it guards.
- */
-const linkAdmitted = (issuer: string, member: string): string =>
-  `(${personMemberSql(`(${member})`)}) AND (((${issuer}) IS NULL
-      AND EXISTS (SELECT 1 FROM members lt WHERE lt.id = (${member}) AND lt.role = '${ADMIN}')
-      AND NOT EXISTS (SELECT 1 FROM members la WHERE ${linkedAdmin('la')}))
-    OR EXISTS (SELECT 1 FROM members la WHERE la.id = (${issuer}) AND ${linkedAdmin('la')}))`;
-
+export { linkedAdmin } from '../db/identity/link-policy.js';
+import { linkedAdmin, linkAdmitted } from '../db/identity/link-policy.js';
 /**
  * Sole minter. Stores the digest against the member; returns the raw key once,
  * or null when the rule above refuses the issuer now, in which case nothing is
@@ -142,71 +117,15 @@ export type IdentityLinkResult =
   | { ok: true; member: DashboardMember }
   | { ok: false; reason: IdentityLinkRefusal };
 
-/**
- * Spends a presented key for the signed-in account, once, and binds that account
- * to the member the key names.
- *
- * The spend is one conditional update, decided by its changed-row count, so two
- * spends of one key produce one winner. The account and the member are read
- * before the bind so each refusal is named rather than surfacing as a constraint
- * failure; the bind itself is one conditional update with a changed-row check
- * that carries the issuer rule, so a member revoked or linked, or an admin
- * linked, between the reads and the write is still refused — of two bootstrap
- * keys spent at once for two admins, the first bind ends bootstrap and the
- * second changes nothing.
- */
+/** Spend, bind and initial ownership commit together, including terminal refusals. */
 export async function spendIdentityLinkAuthority(
   db: RelationalStore, presentedKey: string, githubId: string, nowMs: number,
 ): Promise<IdentityLinkResult> {
   if (!IDENTITY_LINK_KEY_PATTERN.test(presentedKey) || !GITHUB_ACCOUNT_ID.test(githubId)) return { ok: false, reason: 'denied' };
   await reclaimIdentityLinkAuthorities(db, nowMs);
-  const keyHash = await sha256Hex(presentedKey);
-
-  const spend = await db
-    .prepare(`UPDATE identity_link_authorities SET used_at = ?, used_by = ?
-               WHERE key_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?`)
-    .bind(nowMs, githubId, keyHash, nowMs)
-    .run();
-  if (spend.meta.changes !== 1) return { ok: false, reason: 'denied' };
-
-  const authority = await db
-    .prepare(`SELECT member_id FROM identity_link_authorities WHERE key_hash = ?`)
-    .bind(keyHash)
-    .first<{ member_id: string }>();
-  const memberId = authority!.member_id;
-
-  const holder = await db
-    .prepare(`SELECT id FROM members WHERE github_id = ?`)
-    .bind(githubId)
-    .first<{ id: string }>();
-  if (holder !== null && holder.id !== memberId) return { ok: false, reason: 'identity_taken' };
-
-  const member = await db
-    .prepare(`SELECT id, label, github_id, revoked_at, role FROM members WHERE id = ?`)
-    .bind(memberId)
-    .first<{ id: string; label: string | null; github_id: string | null; revoked_at: number | null; role: string }>();
-  if (member === null || member.revoked_at !== null) return { ok: false, reason: 'member_revoked' };
-  const memberRole = asMemberRole(member.role);
-  if (memberRole === null) return { ok: false, reason: 'member_revoked' };
-  if (member.github_id !== null && member.github_id !== githubId) return { ok: false, reason: 'member_linked' };
-
-  let changes: number;
-  try {
-    const bind = db
-      .prepare(`UPDATE members SET github_id = ?
-                 WHERE id = ? AND revoked_at IS NULL AND (github_id IS NULL OR github_id = ?)
-                   AND EXISTS (SELECT 1 FROM identity_link_authorities a WHERE a.key_hash = ? AND ${linkAdmitted('a.issued_by', 'a.member_id')})`)
-      .bind(githubId, memberId, githubId, keyHash);
-    changes = await completeIdentityLink(db, bind, memberId, githubId, nowMs);
-  } catch (err) {
-    // A bind racing another for the same account meets the unique index; the account is then another member's.
-    if (/UNIQUE constraint failed: members\.github_id/.test(err instanceof Error ? err.message : String(err))) return { ok: false, reason: 'identity_taken' };
-    throw err;
-  }
-  if (changes !== 1) return { ok: false, reason: await unboundReason(db, memberId, githubId) };
-
-  emit({ kind: 'identity_linked', memberId, sub: githubId });
-  return { ok: true, member: { id: member.id, label: member.label, role: memberRole } };
+  const result = await spendIdentityLink(db, await sha256Hex(presentedKey), githubId, nowMs);
+  if (result.ok) emit({ kind: 'identity_linked', memberId: result.member.id, sub: githubId });
+  return result;
 }
 
 /** Whether a member can be given a link now: absent, removed, already linked, or open to one. */
@@ -220,17 +139,6 @@ export async function memberLinkState(db: RelationalStore, memberId: string): Pr
   if (row === null) return 'absent';
   if (row.revoked_at !== null) return 'revoked';
   return row.github_id === null ? 'unlinked' : 'linked';
-}
-
-/** Why a bind that changed no row changed none, read after it: the member is gone, holds another account, or the key's issuer may no longer link. */
-async function unboundReason(db: RelationalStore, memberId: string, githubId: string): Promise<IdentityLinkRefusal> {
-  const member = await db
-    .prepare(`SELECT github_id, revoked_at FROM members WHERE id = ?`)
-    .bind(memberId)
-    .first<{ github_id: string | null; revoked_at: number | null }>();
-  if (member === null || member.revoked_at !== null) return 'member_revoked';
-  if (member.github_id !== null && member.github_id !== githubId) return 'member_linked';
-  return 'link_requires_admin';
 }
 
 export type IdentityLinkPreview =

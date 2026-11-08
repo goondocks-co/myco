@@ -234,7 +234,7 @@ async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, d
 export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
-  await tryNameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login);
+  await tryNameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login, env.platform.classifyError);
   const pending = pendingDevice(row.id, ctx.now, 'member');
   const roleRow = await env.db.prepare('SELECT role FROM members WHERE id = ?').bind(ctx.member.id).first<{ role: string }>();
   const role = asMemberRole(roleRow?.role);
