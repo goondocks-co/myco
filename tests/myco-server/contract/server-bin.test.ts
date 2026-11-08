@@ -14,9 +14,9 @@
  * (`platform/bun/source.ts:59`), and the core answers 503 to every request
  * while the container reports healthy.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "../../support/fenced-fs.mjs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, bootstrapDatabase, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
@@ -124,18 +124,59 @@ describe('migrateOnly', () => {
   });
 });
 
+const schemaImages = new Map<number, Uint8Array>();
+let bootstrappedTemplate: string | undefined;
+
+beforeAll(() => {
+  imageAt(47);
+  imageAt(102);
+  imageAt(SCHEMA_STEPS.at(-2)!.version);
+  bootstrappedTemplate = join(scratch(), 'bootstrapped-template.sqlite');
+  bootstrapDatabase(bootstrappedTemplate);
+});
+
+/** Cached clean schema images indexed by target version. */
+function imageAt(version: number): Uint8Array {
+  let image = schemaImages.get(version);
+  if (image === undefined) {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    for (const step of SCHEMA_STEPS.filter((s) => s.version <= version)) {
+      sqlite.transaction(() => { for (const sql of step.statements) sqlite.exec(sql); })();
+    }
+    image = sqlite.serialize();
+    sqlite.close();
+    schemaImages.set(version, image);
+  }
+  return image;
+}
+
+/** Copies a bootstrapped database volume to targetPath. */
+function copyBootstrappedDatabase(targetPath: string): void {
+  if (bootstrappedTemplate === undefined) {
+    bootstrappedTemplate = join(scratch(), 'bootstrapped-template.sqlite');
+    bootstrapDatabase(bootstrappedTemplate);
+  }
+  copyFileSync(bootstrappedTemplate, targetPath);
+}
+
 /** Brings a volume to `version` as `migrateOnly` would, one transaction per step, so a test can seed rows a step then migrates. */
 function migrateTo(path: string, version: number): Database {
+  if (!existsSync(path)) {
+    writeFileSync(path, imageAt(version));
+    const sqlite = new Database(path);
+    sqlite.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF; PRAGMA foreign_keys = ON');
+    return sqlite;
+  }
   const sqlite = new Database(path, { create: true });
-  sqlite.exec('PRAGMA foreign_keys = ON');
+  sqlite.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF; PRAGMA foreign_keys = ON');
   const hasMeta = sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_meta'").get();
   const before = hasMeta ? Number((sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get() as {value:string}).value) : 0;
   for (const step of SCHEMA_STEPS.filter((s) => s.version > before && s.version <= version)) sqlite.transaction(() => { for (const sql of step.statements) sqlite.exec(sql); })();
   return sqlite;
 }
 
-/** Existing pre-pause volumes reach the current applier through the schema-103 stepping stone. */
-function migrateViaSteppingStone(path: string): number {
+function openSteppingStone(path: string): { delta: number; stepping: Database } {
   const source = new Database(path);
   const before = (source.query("SELECT value FROM schema_meta WHERE key='version'").get() as {value:string}).value;
   source.close();
@@ -144,8 +185,19 @@ function migrateViaSteppingStone(path: string): number {
   expect(refused.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:before});
   refused.close();
   const stepping = migrateTo(path,103);
-  stepping.close();
-  return 103-Number(before)+migrateOnly(path);
+  stepping.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF');
+  stepping.query("SELECT value FROM schema_meta WHERE key='version'").get();
+  return { delta: 103-Number(before), stepping };
+}
+
+/** Existing pre-pause volumes reach the current applier through the schema-103 stepping stone. */
+function migrateViaSteppingStone(path: string): number {
+  const { delta, stepping } = openSteppingStone(path);
+  try {
+    return delta+migrateOnly(path);
+  } finally {
+    stepping.close();
+  }
 }
 
 /** Credentials at the retired 1 GiB ceiling, a successor lineage, and every table that references a credential holding a row that does. */
@@ -210,6 +262,10 @@ const referencingRows = (sqlite: Database) => ({
 
 /** How many steps a volume at step 47 is behind this build. */
 const STEPS_AFTER_47 = SCHEMA_STEPS.filter(step => step.version > 47).length;
+const STEP_48_STATEMENTS = SCHEMA_STEPS.find((s) => s.version === 48)!.statements;
+const STEP_48_LAST_INDEX = STEP_48_STATEMENTS.findIndex((sql) => sql.startsWith('INSERT INTO member_credentials'));
+// Every prefix that stops before the rows are back: after the copy, after the drop, after the empty table and its indexes.
+const TORN_STEP_48_PREFIXES = Array.from({ length: STEP_48_LAST_INDEX - 2 }, (_, offset) => offset + 3);
 
 describe('migrateOnly across step 48 (#1416)', () => {
   it('migrates a v47 volume whose credentials are referenced: every row, counter and reference kept, the byte CHECK gone, foreign keys still enforced', () => {
@@ -257,17 +313,15 @@ describe('migrateOnly across step 48 (#1416)', () => {
     after.close();
   });
 
-  it('recovers by re-running from any state a run torn outside a transaction leaves: every row comes back, the copy is never dropped first', () => {
-    const step48 = SCHEMA_STEPS.find((s) => s.version === 48)!.statements;
-    const lastIndex = step48.findIndex((sql) => sql.startsWith('INSERT INTO member_credentials'));
-    // Every prefix that stops before the rows are back: after the copy, after the drop, after the empty table and its indexes.
-    for (let torn = 3; torn <= lastIndex; torn += 1) {
-      const path = join(scratch(), 'myco.sqlite');
+  it.each(TORN_STEP_48_PREFIXES)(
+    'recovers by re-running from any state a run torn outside a transaction leaves (prefix %d): every row comes back, the copy is never dropped first',
+    (torn) => {
+      const path = join(scratch(), `myco-${torn}.sqlite`);
       const v47 = migrateTo(path, 47);
       seedCredentials(v47);
       const rows = credentialRows(v47);
       v47.exec('PRAGMA foreign_keys = OFF');
-      for (const sql of step48.slice(0, torn)) v47.exec(sql);
+      for (const sql of STEP_48_STATEMENTS.slice(0, torn)) v47.exec(sql);
       v47.close();
 
       expect({ torn, applied: migrateViaSteppingStone(path) }).toEqual({ torn, applied: STEPS_AFTER_47 });
@@ -275,8 +329,8 @@ describe('migrateOnly across step 48 (#1416)', () => {
       expect({ torn, rows: credentialRows(healed) }).toEqual({ torn, rows });
       expect({ torn, holding: healed.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all() }).toEqual({ torn, holding: [] });
       healed.close();
-    }
-  });
+    },
+  );
 
   it('re-applied by hand over a volume already at 48, changes nothing', () => {
     // The volume is taken to 48 itself: the step rebuilds the table in its own shape, so a column a later step adds is
@@ -382,7 +436,7 @@ describe('secrets arrive as files', () => {
     process.env.MYCO_DATABASE = join(root, 'myco.sqlite');
     process.env.MYCO_BLOB_DIR = join(root, 'blobs');
     process.env.MYCO_PORT = '0';
-    bootstrapDatabase(process.env.MYCO_DATABASE);
+    copyBootstrappedDatabase(process.env.MYCO_DATABASE);
 
     // A clean start proves the file is read and trimmed, not passed through
     // with its surrounding whitespace.
@@ -416,7 +470,7 @@ describe('bind mode', () => {
 it.each(['socket', 'proxy'] as const)('main binds embedding in process with %s source identity', async (sourceFrom) => {
   const root = scratch();
   const databasePath = join(root, 'myco.sqlite');
-  bootstrapDatabase(databasePath);
+  copyBootstrappedDatabase(databasePath);
   const sqlite = new Database(databasePath);
   sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','fixture',1)");
   sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','memory','user','A durable decision','decision',1)");
