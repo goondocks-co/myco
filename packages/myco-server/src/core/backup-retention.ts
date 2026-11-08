@@ -6,8 +6,10 @@
  * changed follows the policy in force.
  */
 import type { RelationalStore } from './adapters.js';
-import { storedSettings } from './settings.js';
+import { observedSettingsGuard, storedSettings } from './settings.js';
+import { readRetentionIndex } from '../db/storage/backup-retention.js';
 
+const RETENTION_LEAVES = ['backup.retention.keep_daily','backup.retention.keep_weekly'] as const;
 export const KEEP_DAILY_DEFAULT = 14;
 export const KEEP_WEEKLY_DEFAULT = 8;
 
@@ -18,15 +20,10 @@ export interface RetainedBackup { id: string; created_at: number; pinned: number
 
 /** The retention policy the settings leaves hold now, with the defaults for a leaf never written. */
 export async function backupRetentionPolicy(db: RelationalStore): Promise<BackupRetentionPolicy> {
-  const leaves = await storedSettings(db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
-  const daily = leaves.get('backup.retention.keep_daily');
-  const weekly = leaves.get('backup.retention.keep_weekly');
-  // Either count breaking its rule turns retention off: nothing is let go of until it is corrected or reset.
-  if (daily?.violation != null || weekly?.violation != null) return { keepDaily: 0, keepWeekly: 0 };
-  return {
-    keepDaily: daily === undefined ? KEEP_DAILY_DEFAULT : daily.value as number,
-    keepWeekly: weekly === undefined ? KEEP_WEEKLY_DEFAULT : weekly.value as number,
-  };
+  const leaves = await storedSettings(db,RETENTION_LEAVES);
+  if ([...leaves.values()].some(leaf=>leaf.violation!==null)) return {keepDaily:0,keepWeekly:0};
+  return {keepDaily:(leaves.get(RETENTION_LEAVES[0])?.value ?? KEEP_DAILY_DEFAULT) as number,
+    keepWeekly:(leaves.get(RETENTION_LEAVES[1])?.value ?? KEEP_WEEKLY_DEFAULT) as number};
 }
 
 /**
@@ -49,12 +46,19 @@ export function retentionVictims<Row extends RetainedBackup>(rows: readonly Row[
   return unpinned.filter((r) => !keep.has(r.id));
 }
 
-/**
- * The ids of every catalogued backup retention lets go of under `policy`, read from the index as it stands. A policy
- * keeping no daily backup is retention turned off: it lets go of nothing.
- */
+/** Both policy revisions and complete keep-set evidence must still hold when release commits. */
+export async function retentionDecision(db: RelationalStore) {
+  const settings = await observedSettingsGuard(db,RETENTION_LEAVES,true);
+  const observed = {rows:await readRetentionIndex(db),policyAssertion:settings.assertion};
+  const policy = await backupRetentionPolicy(settings.view);
+  const victims = policy.keepDaily < 1 ? new Set<string>()
+    : new Set(retentionVictims(observed.rows,policy.keepDaily,policy.keepWeekly).map(row => row.id));
+  return { observed, victims };
+}
+
+/** The current index victims under an explicitly supplied policy, for policy inspection. */
 export async function currentRetentionVictims(db: RelationalStore, policy: BackupRetentionPolicy): Promise<Set<string>> {
-  if (policy.keepDaily < 1) return new Set();
-  const { results } = await db.prepare(`SELECT id, created_at, pinned FROM backups`).all<RetainedBackup>();
-  return new Set(retentionVictims(results, policy.keepDaily, policy.keepWeekly).map((row) => row.id));
+  if (policy.keepDaily<1) return new Set();
+  const rows = await readRetentionIndex(db);
+  return new Set(retentionVictims(rows,policy.keepDaily,policy.keepWeekly).map(row=>row.id));
 }

@@ -62,7 +62,7 @@ const COMPARES = [
 const LIVE_CREDENTIAL_IMPORTS: Record<string, readonly string[]> = {
   'api/status.ts': ['storedBytes'],            // reported to the member as information
   'auth/tokens.ts': ['TOKEN_LIVE', 'carriedBytes'], // the successor insert's liveness, and the carry at rotation
-  'ingest/blobs.ts': ['credentialLive'],       // the upload's admission
+  'db/storage/blob-admission.ts': ['TOKEN_LIVE'],       // the upload's admission
   'ingest/events.ts': ['ALWAYS', 'credentialLive'], // the event's admission
   'core/registered-content.ts': ['credentialLive'], // member-authorized derived publication
 };
@@ -170,9 +170,9 @@ describe('capture is never refused for volume', () => {
   it('admits a member\'s capture on liveness alone: the one admission fragment is the live-credential predicate and nothing else', () => {
     expect(credentialLive('mt_x')).toEqual({ sql: TOKEN_LIVE, params: ['mt_x'] });
     expect(TOKEN_LIVE).toBe('EXISTS (SELECT 1 FROM member_credentials WHERE id = ? AND revoked_at IS NULL)');
-    for (const file of ['ingest/events.ts', 'ingest/blobs.ts']) {
+    for (const [file, predicate] of [['ingest/events.ts', /\bcredentialLive\(/], ['db/storage/blob-admission.ts', /\$\{TOKEN_LIVE\}/]] as const) {
       const text = fs.readFileSync(path.join(SRC, file), 'utf8');
-      expect({ file, admitsOnLiveness: /\bcredentialLive\(/.test(text) }).toEqual({ file, admitsOnLiveness: true });
+      expect({ file, admitsOnLiveness: predicate.test(text) }).toEqual({ file, admitsOnLiveness: true });
     }
   });
 

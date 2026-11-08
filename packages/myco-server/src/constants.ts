@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { V714 } from './db/schema-v714.js';
-export const SERVER_SCHEMA_VERSION = V714;
+import { V715 } from './db/schema-v715.js';
+export const SERVER_SCHEMA_VERSION = V715;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** State keys owned by the Deployment and read-only to run tools. */
@@ -80,6 +80,8 @@ export const MAX_PROJECTS = 1_000;
 export const MAX_BLOB_BYTES = 26_214_400;
 /** How long an in-flight blob reservation holds its upload's authority. A request that dies between reserving and recording its row leaves a row behind; it expires, so an abandoned reservation heals itself. */
 export const BLOB_RESERVATION_TTL_MS = 900_000;
+/** In-flight PUT grace after authority expiry before an acknowledged delete retires its settlement intent. */
+export const OBJECT_PUT_IN_FLIGHT_MS = BLOB_RESERVATION_TTL_MS;
 export const MAX_CLOCK_SKEW_MS = 300_000;
 export const RETRY_AFTER_SECONDS = 60;
 export const MINUTE_MS = 60_000;

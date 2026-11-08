@@ -107,8 +107,18 @@ export interface BackupRow {
   present: boolean;
 }
 
+export type BackupPruneOutcome = (
+  | { state: 'pruned'; pruned: number; deferred: number }
+  | { state: 'changed'; reason: 'retention_changed' }
+  | { state: 'failed'; errorClass: string }
+) & { recordingErrorClass?: string };
+export interface CreateBackupAnswer {
+  backup: Omit<BackupRow, 'present'>;
+  retention: BackupPruneOutcome;
+}
 export interface BackupsAnswer {
   backups: BackupRow[];
+  retention: { at: number; outcome: BackupPruneOutcome } | null;
 }
 
 /** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */
@@ -146,6 +156,7 @@ export type StoreMeasurement =
 
 /** The latest outcome of one check, as recorded. */
 export interface MaintenanceOutcome {
+  progress?: { completedTables: number; totalTables: number };
   runId: string;
   trigger: 'schedule' | 'owner';
   state: 'running' | 'healthy' | 'findings' | 'failed';

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
-import type { BackupRow, BackupsAnswer, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
+import type { BackupsAnswer, CreateBackupAnswer, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
 import { live } from '../lib/live';
 
 export type { BackupRow, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
@@ -11,7 +11,7 @@ export function useBackups() {
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['backups'] }); };
   return {
     list: useQuery({ queryKey: ['backups'], queryFn: ({ signal }) => fetchJson<BackupsAnswer>('/api/backups', signal), ...live({ follows: ['recovery'] }) }),
-    create: useMutation({ mutationFn: () => postJson<{ backup: BackupRow; pruned: number }>('/api/backups', {}), onSuccess: invalidate }),
+    create: useMutation({ mutationFn: () => postJson<CreateBackupAnswer>('/api/backups', {}), onSuccess: invalidate }),
     pin: useMutation({ mutationFn: (v: { id: string; pinned: boolean }) => postJson<{ pinned: boolean }>(`/api/backups/${encodeURIComponent(v.id)}/pin`, { pinned: v.pinned }), onSuccess: invalidate }),
     preview: useMutation({ mutationFn: (id: string) => postJson<RestorePreview>(`/api/backups/${encodeURIComponent(id)}/restore-preview`, {}) }),
     restore: useMutation({

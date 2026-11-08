@@ -12,6 +12,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/insights/kpi-reconcile.ts#upsertKpi': [{ tables: ['kpi_fact'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#lineageUpsert': [{ tables: ['kpi_lineage'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#roll': [{ tables: ['kpi_daily'], order: 'unverified' }],
+  'db/meta/backup-prune.ts#<module>': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/schema-v711.ts#<module>': [
     ...Array.from({ length: 4 }, () => ({ tables: ['kpi_daily'], order: 'unverified' as const })),
     ...Array.from({ length: 63 }, () => ({ tables: ['kpi_fact'], order: 'unverified' as const })),

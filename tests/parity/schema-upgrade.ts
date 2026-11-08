@@ -23,6 +23,10 @@ const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
 };
 const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
   runners: { id: 'rn_upgrade' },
+  backups: { key: 'backups/upgrade.jsonl', counts_json: '{}' },
+  object_releases: { kind: 'blob' },
+  object_settlement_intents: { kind: 'backup', physical: 'backups/upgrade-intent.jsonl', expires_at: 1 },
+  object_reconciliation_cursor: { slot: 1, physical: '' },
   spore_curation_work: { members: '[]' },
   processed_resources: { kind: 'plan' },
   session_chunks: { kind: 'page', encoding: 'gzip-ndjson', state: 'live' },

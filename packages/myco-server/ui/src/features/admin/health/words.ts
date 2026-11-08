@@ -202,7 +202,7 @@ export function outcomeWords(outcome: MaintenanceOutcome, running: boolean): str
   const by = outcome.trigger === 'owner' ? 'run by hand' : 'scheduled';
   if (outcome.state === 'running') {
     return running
-      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).`
+      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).${outcome.progress === undefined ? '' : ` Checked ${outcome.progress.completedTables} of ${outcome.progress.totalTables} tables.`}`
       : `Interrupted: started ${dateLabel(outcome.startedAt)} (${by}) and ended without recording an outcome.`;
   }
   if (outcome.state === 'healthy') return `No problems found ${when} (${by}).`;

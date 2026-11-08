@@ -7,7 +7,6 @@ import {
   acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, releaseBlobs, releaseRecoveryHold, resetRecoveryLedger,
 } from '@myco-server-worker/core/object-release.js';
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
-import { backupRetentionPolicy } from '@myco-server-worker/core/backup-retention.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
@@ -54,7 +53,8 @@ async function capture(e: Env, token: string, body = bytes): Promise<Record<stri
 
 /** Runs the drain until the journal is empty or `passes` run out. */
 async function drain(e: Env, passes = 8) {
-  for (let pass = 0; pass < passes && count(e.sqlite, 'object_releases') > 0; pass += 1) await drainObjectReleases(e.serverEnv, Date.now());
+  for (let pass = 0; pass < passes && count(e.sqlite, 'object_releases') > 0; pass += 1) await drainObjectReleases(e.serverEnv, Math.max(Date.now(),
+    (e.sqlite.query('SELECT COALESCE(MAX(retry_at),0) AS due FROM object_releases').get() as { due: number }).due));
 }
 
 /** Every registered row whose stored object is absent: data loss, which must be empty. */
@@ -409,7 +409,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     retention(e, 2, 0);
     const [oldest] = await backups(e, now);
     await acquireRecoveryHold(e.db, 'hold-1', now);
-    expect(await pruneBackups(e.db, await backupRetentionPolicy(e.db), now)).toEqual({ pruned: 0 });
+    expect(await pruneBackups(e.db, now)).toEqual({ state: 'pruned', pruned: 0, deferred: 1 });
     expect(count(e.sqlite, 'backup_release_candidates')).toBe(1);
     retention(e, 3, 0);
     await releaseRecoveryHold(e.db, 'hold-1', now + 1, 'closed');
@@ -423,7 +423,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     retention(off, 2, 0);
     await backups(off, 100 * DAY);
     await acquireRecoveryHold(off.db, 'hold-1', 100 * DAY);
-    await pruneBackups(off.db, await backupRetentionPolicy(off.db), 100 * DAY);
+    await pruneBackups(off.db, 100 * DAY);
     retention(off, 0, 0);
     await releaseRecoveryHold(off.db, 'hold-1', 100 * DAY, 'closed');
     await drainAll(off, 100 * DAY);
@@ -433,7 +433,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     retention(pinned, 2, 0);
     const [victim] = await backups(pinned, 100 * DAY);
     await acquireRecoveryHold(pinned.db, 'hold-1', 100 * DAY);
-    await pruneBackups(pinned.db, await backupRetentionPolicy(pinned.db), 100 * DAY);
+    await pruneBackups(pinned.db, 100 * DAY);
     pinned.sqlite.run('UPDATE backups SET pinned = 1 WHERE id = ?', [victim!.id]);
     await releaseRecoveryHold(pinned.db, 'hold-1', 100 * DAY, 'closed');
     await drainAll(pinned, 100 * DAY);
@@ -443,7 +443,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     retention(kept, 2, 0);
     const [released] = await backups(kept, 100 * DAY);
     await acquireRecoveryHold(kept.db, 'hold-1', 100 * DAY);
-    await pruneBackups(kept.db, await backupRetentionPolicy(kept.db), 100 * DAY);
+    await pruneBackups(kept.db, 100 * DAY);
     await releaseRecoveryHold(kept.db, 'hold-1', 100 * DAY, 'closed');
     await drainAll(kept, 100 * DAY);
     expect([count(kept.sqlite, 'backups'), kept.bucket.deletes]).toEqual([2, [released!.key]]);

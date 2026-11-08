@@ -32,6 +32,8 @@ export function BackupsSection() {
   const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
 
   const rows = backups.list.data?.backups ?? [];
+  const retention = backups.create.data?.retention.recordingErrorClass !== undefined
+    ? backups.create.data.retention : backups.list.data?.retention?.outcome;
   const openRestore = (row: BackupRow) => {
     setOutcome(null);
     backups.restore.reset();
@@ -52,6 +54,17 @@ export function BackupsSection() {
         For larger backups or a complete replacement, follow the{' '}
         <ExternalLink href={RECOVERY_PROCEDURE}>operator backup and recovery procedure</ExternalLink>.
       </p>
+      {retention?.state === 'failed' && (
+        <Card role="status" className="t-body text-warn" data-backup-retention-failed="">
+          Backup retention failed. Create a backup to retry retention.
+        </Card>
+      )}
+      {retention?.state === 'changed' && <Card role="status" className="t-body text-warn">
+        Retention changed while pruning; the next backup decides again.
+      </Card>}
+      {retention?.recordingErrorClass !== undefined && <Card role="status" className="t-body text-warn">
+        Backup saved; retention status could not be recorded.
+      </Card>}
       {actionError !== null && <p role="alert" className="t-small text-bad">{failure(actionError)}</p>}
       {backups.list.isPending ? <LoadingState label="Reading the backups" count={2} />
         : backups.list.error !== null ? <ErrorState error={backups.list.error} onRetry={() => void backups.list.refetch()} />
