@@ -1,6 +1,7 @@
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { insertSwitch,pauseSwitch,resumeSwitch,deleteSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { recordedWork } from '@myco-server-worker/core/embedding/work-state.js';
+import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { embeddingProviderReady,embeddingProviderRevision,recordEmbeddingProviderFailure } from '@myco-server-worker/core/embedding/provider-state.js';
 import { runEmbeddingJob, embeddingSweepPending } from '@myco-server-worker/core/embedding/jobs.js';
@@ -65,17 +66,19 @@ const context = (db: RelationalStore, embed = async (_text: string) => [1, 0]) =
   db, blobs: memoryBlobStore(), vectors: cloudflareVectorStore(indexFixture()), provider: { modelKey: MODEL, embed },
 });
 
-test('positive work facts survive repeated admission until source invalidation', async () => {
+test('a positive backlog is rechecked from indexed due heads without writes until source invalidation', async () => {
   await world(async (m) => {
     for (const size of [1_000, 4_000]) {
       await plans(m.db, size);
       await m.db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
         SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE record_id < printf('plan-%06d',?)`).bind(size).run();
+      while ((await prepareEmbeddingDue(m.db, 'p', MODEL)).more);
       expect(await hasEmbeddingWork(m.db, 'p', MODEL, NOW)).toBe(true);
       m.reset();
       for (let i = 1; i <= 3; i++) expect(await hasEmbeddingWork(m.db, 'p', MODEL, NOW + i)).toBe(true);
       console.info(`positive admission ${size}: ${m.reads() / 3} rows/check, ${m.writes() / 3} writes/check`);
-      expect(m.reads()).toBeLessThanOrEqual(12);
+      // Per check: the work marker, the provider hold, the model row, the due index's head seeks and the eligible-source seek.
+      expect(m.reads()).toBeLessThanOrEqual(3 * 7);
       expect(m.writes()).toBe(0);
       await m.db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
         SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions`).run();
@@ -284,7 +287,7 @@ test('secret changes fence in-flight failures and invalidate holds on insert, up
       ()=>secrets.put('other.fake','fake-replaced','operator',NOW),
       ()=>secrets.delete('other.fake','operator',NOW),
     ]) {
-      await recordEmbeddingProviderFailure(f.db,MODEL,await embeddingProviderRevision(f.db),new Error('transient'),NOW);
+      await recordEmbeddingProviderFailure(f.db,MODEL,await embeddingProviderRevision(f.db),new Error('transient'),NOW,1);
       expect(await embeddingProviderReady(f.db,MODEL,NOW+1)).toBe(false);
       await mutate();
       expect(await embeddingProviderReady(f.db,MODEL,NOW+1)).toBe(true);
@@ -381,13 +384,13 @@ test('switch lifecycle changes fence failures from a superseded provider call', 
     expect(await insertSwitch(f.db,{id:'switch',provider:'openai-compatible',model:'model',endpoint:'http://model.invalid',
       modelKey:MODEL,fromModelKey:'old',estimatedTokens:0,estimatedSources:0,startedAt:NOW,startedBy:'operator'},NOW)).toBe(true);
     const rejectOld=async(revision:string)=>{
-      await recordEmbeddingProviderFailure(f.db,MODEL,revision,new Error('old call failed'),NOW);
+      await recordEmbeddingProviderFailure(f.db,MODEL,revision,new Error('old call failed'),NOW,1);
       expect(await embeddingProviderReady(f.db,MODEL,NOW+1)).toBe(true);
     };
     await rejectOld(before);
     await pauseSwitch(f.db,'switch','paused',NOW);
     const paused=await embeddingProviderRevision(f.db);
-    await recordEmbeddingProviderFailure(f.db,MODEL,paused,new Error('failed'),NOW);
+    await recordEmbeddingProviderFailure(f.db,MODEL,paused,new Error('failed'),NOW,1);
     expect(await resumeSwitch(f.db,'switch',NOW)).toBe(true);
     await rejectOld(paused);
     const active=await embeddingProviderRevision(f.db);

@@ -16,6 +16,7 @@ import { SCHEMA_STEPS } from '../../packages/myco-server/src/db/schema.js';
 import { migrationFileName } from '../../packages/myco-server/src/db/migrate.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
+import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
@@ -159,6 +160,7 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     assertRestoredObjects(f);
     // The switch waits for an admin on the replacement, and what the rebuilt index passes over is found again.
     expect(f.destination.query('SELECT state, reason, retry_at FROM embedding_switches').all()).toEqual([{ state: 'paused', reason: RECOVERED_SWITCH, retry_at: null }]);
+    while ((await catchUpProjections(sqliteRelationalStore(f.destination), { budget: { calls: 200, wallMs: 10_000 } })).more);
     expect(f.destination.query('SELECT COUNT(*) AS n FROM embedding_source_failures').get()).toEqual({ n: 0 });
     await expect(f.restore()).rejects.toThrow('fresh MYCO_HOME');
   } finally { f.cleanup(); }

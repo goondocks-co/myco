@@ -729,6 +729,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0713_v713.sql': '410694a788f231519efbb1c97092eaf0855801a9aa781414b1ac9887ec46cdc7',
   '0714_v714.sql': '329c71897353497427cde9a9f542b75dd9a47cccb2492a459c1b7ab16c8e6659',
   '0715_v715.sql': 'f22102e6e6b8f4ac05cd46e5602ecabcf94eb2a488715b733f9a1e78ee6eb641',
+  '0716_v716.sql': '5ad5637c11454247176aa4adf258921ca92bd0d7877b6b54222b309686305d65',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1412,6 +1413,7 @@ describe('versioned schema steps', () => {
           : t === 'injection_served_items' && c.name === 'kind' ? "'plan'"
           : t === 'session_artifacts' && c.name === 'kind' ? "'pr'" : t === 'session_artifacts' && c.name === 'url' ? "'https://x'"
           : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
+          : (t === 'embedding_source_state' || t === 'embedding_model_totals') && c.name === 'state' ? "'ready'"
           : t === 'turn_cards' && c.name === 'state' ? "'pending'" : t === 'turn_cards' && c.name === 'signal' ? "'none'"
           : (t === 'session_documents' || t === 'session_chunks') && c.name === 'state' ? "'live'" : t === 'transcript_publication' && c.name === 'state' ? "'active'"
           : t === 'session_chunks' && c.name === 'kind' ? "'page'" : t === 'session_chunks' && c.name === 'encoding' ? "'identity'"
@@ -1431,7 +1433,7 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'object_settlement_intents', 'attempt_spend', 'budget_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',

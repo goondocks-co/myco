@@ -19,11 +19,11 @@ export const UNRELATED_PROCESSED_LINES = {
       "if (!due.ready) return {phase:'scan',processed:1};",
       "return scanning ? { phase: 'scan', processed: 1 } : null;",
       "export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'passed-over' | 'orphans' | 'hubness' | 'visibility' | 'settled' | 'scan'; processed: number }",
-      "if (claimed === null) return { phase: 'orphans', processed: 0 };",
+      "if (claim === null) return { phase: 'orphans', processed: 0 };",
       "return { phase: 'orphans', processed: 1 };",
       "if (context.retireOnly === true) return { phase: 'settled', processed: 0 };",
-      ".bind(projectId, type, source.record_id, modelKey, source.revision, reason, now).run().then((): EmbeddingStep => ({ phase: 'passed-over', processed: 1 }));",
-      "if (rejournaled.results.length !== 1) return { phase, processed: 0 };",
+      "const passOver = (modelKey: string, reason: string) => passOverSource(db, attempt, modelKey, reason).then((): EmbeddingStep => ({ phase: 'passed-over', processed: 1 }));",
+      "if (!(await rejournalSourceAttempt(db, attempt))) return { phase, processed: 0 };",
       "return { phase, processed: 1 };"
     ],
     "core/embedding/run.ts": [

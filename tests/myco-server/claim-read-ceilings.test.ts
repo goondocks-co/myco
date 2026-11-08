@@ -3,7 +3,6 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { dispatchLoad, recordTaskHolder } from '@myco-server-worker/core/runs.js';
-import { embeddingSweep } from '@myco-server-worker/core/embedding/work-sweep.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import type { CaptureEnvelope } from '@myco-server-worker/ingest/envelope.js';
@@ -19,8 +18,6 @@ const NOW = 1_800_000_000_000;
 const SIZE = 5000;
 const LOAD_LIMIT = 20;
 const HOLDER_LIMIT = 50;
-const SOURCE_PAGE_LIMIT = 512;
-const HELD_SOURCE_PAGE_LIMIT = 144;
 const MACHINE_LIMIT = 8;
 
 it('bounds admission, holder changes, embedding pages and prompt ownership on both stores', async () => {
@@ -92,16 +89,6 @@ it('bounds admission, holder changes, embedding pages and prompt ownership on bo
       await check('holder budget', HOLDER_LIMIT, store => recordTaskHolder(store, ['extract-curate'], ['worker'], 'budget'));
       await db.prepare("UPDATE agent_runs SET held_by='profile_unsupported:codex' WHERE id GLOB 'queue-*'").run();
       await check('profile no-op', HOLDER_LIMIT, store => recordTaskHolder(store, ['title-summary'], ['worker', 'budget'], 'profile_unsupported:codex', true));
-      await check('embedding tail page', SOURCE_PAGE_LIMIT, store => embeddingSweep(store, 'project', ['model'], ['model'], NOW,
-        JSON.stringify({ phase: 'sources', a: 'session', b: 'session-04500' })));
-      await db.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
-        SELECT project_id,'model',record_id,type,record_id,revision,1,? FROM embedding_versions WHERE project_id='project'`).bind(NOW).run();
-      for (const model of ['', 'model']) await db.prepare(`INSERT INTO embedding_source_failures(project_id,type,record_id,model_key,revision,reason,recorded_at)
-        SELECT project_id,type,record_id,?,revision,'input_refused',? FROM embedding_versions WHERE project_id='project'`).bind(model, NOW).run();
-      await check('embedding held tail page', HELD_SOURCE_PAGE_LIMIT, async store => {
-        expect(await embeddingSweep(store, 'project', ['model'], ['model'], NOW,
-          JSON.stringify({ phase: 'sources', a: 'session', b: 'session-04500' }))).toMatchObject({ pending: false });
-      });
       const event: CaptureEnvelope = { eventId: uuid(90), sessionId: 'session-04999', kind: 'response', createdAt: NOW,
         channel: 'cli', producer: { adapter: 'fixture', version: '1' }, payload: {}, payloadJson: '{}', payloadBytes: new TextEncoder().encode('{}') };
       const owner = sharedChecks(kindSpec('response')!, { projectId: 'project', machineId: 'machine', tokenId: token.tokenId, now: NOW, nonce: 'fixture', actor: null },

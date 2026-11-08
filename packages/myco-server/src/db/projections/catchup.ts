@@ -1,4 +1,6 @@
 import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
+import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
+import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
 import type { JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
@@ -14,6 +16,7 @@ interface Phase {
   after_key: string;
   frontier: string | null;
   done: number;
+  generation: number;
 }
 interface Source {
   table: string;
@@ -34,15 +37,27 @@ export type KpiPhase = keyof typeof KPI_PHASE_SOURCES;
 
 export const projectionPhases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
 const pending = read<[], Phase>({ name: 'projection.pending', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY projection,phase' });
-const reset = write<[]>({ name: 'projection.reset', sql: "UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL" });
-const advance = write<[string, number, string, string, string]>({ name: 'projection.advance', sql: 'UPDATE projection_catchup SET after_key=?,done=? WHERE projection=? AND phase=? AND after_key=? AND done=0' });
+/**
+ * Restart every phase. Only a phase that has progressed takes a new generation: a page sets its frontier in the same
+ * commit as its state read, so a phase still at its start has no page in flight, and restarting it twice is a no-op.
+ */
+const reset = write<[]>({ name: 'projection.reset', sql: "UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL,generation=generation+CASE WHEN done=0 AND after_key='[]' AND frontier IS NULL THEN 0 ELSE 1 END" });
+/** A page settles only the generation it read: a phase restarted after that read is never advanced or finished by it. */
+const advance = write<[string, number, string, string, string, number]>({ name: 'projection.advance',
+  sql: 'UPDATE projection_catchup SET after_key=?,done=? WHERE projection=? AND phase=? AND after_key=? AND done=0 AND generation=?' });
 
 const tuple = (columns: readonly string[]) => columns.length === 1 ? columns[0]! : `(${columns.join(',')})`;
 const jsonTuple = (columns: readonly string[], json: string) => tuple(columns.map((_, i) => `json_extract(${json},'$[${i}]')`));
-const PHASE_SOURCES = { ...KPI_PHASE_SOURCES, failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
-  attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] } } satisfies Record<string, Source>;
+const PHASE_SOURCES = {
+  ...KPI_PHASE_SOURCES,
+  failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
+  versions: { table: 'embedding_versions', columns: ['project_id', 'type', 'record_id'] },
+  attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
+  ...RESET_PHASE_SOURCES,
+} satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
-const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : phase === 'attempts' ? BUDGET_PROJECTION : 'kpi';
+const projectionOf = (phase: ProjectionPhase) => phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec]) => {
   const source: Source = spec;
@@ -51,7 +66,7 @@ const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec
   const state = `projection='${projectionOf(phase as ProjectionPhase)}' AND phase='${phase}'`;
   return [phase, {
     frontier: write<[]>({ name: `projection.${phase}Frontier`, sql: `UPDATE projection_catchup SET frontier=COALESCE((SELECT ${key} FROM ${source.table} WHERE ${source.where ?? '1'} ORDER BY ${source.columns.map(c => `${c} DESC`).join(',')} LIMIT 1),'[]') WHERE ${state} AND frontier IS NULL AND done=0` }),
-    state: read<[], Phase>({ name: `projection.${phase}State`, sql: `SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE ${state}` }),
+    state: read<[], Phase>({ name: `projection.${phase}State`, sql: `SELECT projection,phase,after_key,frontier,done,generation FROM projection_catchup WHERE ${state}` }),
     keys: read<[], { key: string }>({ name: `projection.${phase}Keys`, sql: `SELECT DISTINCT ${key} AS key FROM ${source.table}
       WHERE ${source.where ?? '1'} AND ${tuple(source.columns)} > ${jsonTuple(source.columns, `COALESCE(NULLIF((SELECT after_key FROM projection_catchup WHERE ${state}),'[]'),'${JSON.stringify(source.columns.map(() => ''))}')`)}
       AND ${tuple(source.columns)} <= ${jsonTuple(source.columns, `(SELECT frontier FROM projection_catchup WHERE ${state})`)}
@@ -75,7 +90,7 @@ const transcriptReconcile = [
 ].map((sql, i) => write<[string]>({ name: `kpi.transcriptPage${i}`, sql }));
 
 const reconciles = {
-  failures: PASSED_OVER_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
+  failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
 
@@ -94,7 +109,7 @@ export async function catchUpKpiPhase(db: RelationalStore, phase: ProjectionPhas
   if (held.done === 1) return 0;
   const keys = selected.results.map(row => JSON.parse(row.key) as string[]);
   await commit(db, ...kpiPageStatements(phase, JSON.stringify(keys), now),
-    advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key));
+    advance.bind(selected.results.at(-1)?.key ?? held.after_key, keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key, held.generation));
   return keys.length;
 }
 
@@ -108,11 +123,12 @@ export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
   return { state, progress } as const;
 }
 
-export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'passed_over' | typeof BUDGET_PROJECTION): Promise<'ready' | 'building'> {
+const SINGLE_PHASE = { passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts' } as const;
+export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
-  const only = projection === 'passed_over' ? 'failures' : 'attempts';
-  return projection === 'kpi' ? kpiReadiness(rows).state
-    : rows.length === 1 && rows[0]!.phase === only && rows[0]!.done === 1 ? 'ready' : 'building';
+  if (projection === 'kpi') return kpiReadiness(rows).state;
+  const phase = SINGLE_PHASE[projection];
+  return rows.length === 1 && rows[0]!.phase === phase && rows[0]!.done === 1 ? 'ready' : 'building';
 }
 
 export async function resetProjectionCatchup(db: RelationalStore): Promise<void> {

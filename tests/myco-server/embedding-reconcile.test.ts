@@ -7,6 +7,8 @@ import { reconcileEmbedding, resetEmbeddingIndex } from '../../packages/myco-ser
 import { EmbeddingUnavailable, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { searchProject } from '../../packages/myco-server/src/read/search.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
+import { modelReadiness } from '../../packages/myco-server/src/db/embeddings/status.js';
 import { tombstoneSession } from '../../packages/myco-server/src/core/tombstones.js';
 import { setPlanStatus } from '../../packages/myco-server/src/read/plans.js';
 
@@ -56,9 +58,14 @@ test('rebuilds a recovered empty index without changing source knowledge or anot
   f.sqlite.run("DELETE FROM local_vectors WHERE project_id = 'p'");
   expect((await f.search('architecture')).results).toEqual([]);
   expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
+  const retire = async () => { while ((await catchUpProjections(f.db, { budget: { calls: 200, wallMs: 10_000 } })).more); };
   await resetEmbeddingIndex(f.db, 'p');
+  expect(await modelReadiness(f.db, 'p', f.provider.modelKey, 2000)).toMatchObject({ state: 'building' });
+  await retire();
+  expect(await modelReadiness(f.db, 'p', f.provider.modelKey, 2000)).toMatchObject({ state: 'ready', ready: 0 });
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 2000)).toBe(true);
   await resetEmbeddingIndex(f.db, 'p');
+  await retire();
   for (let i = 0; i < 6; i++) await f.step(2000);
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 2000)).toBe(false);
   expect((await f.search('architecture')).results.map((row) => row.id)).toEqual(['one']);

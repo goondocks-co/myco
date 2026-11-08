@@ -80,7 +80,19 @@ function fixture(target: Target) {
     BEGIN INSERT INTO dropped_settled VALUES (old.id); END`);
   const repaired = () => (f.sqlite.query('SELECT COUNT(*) AS n FROM dropped_settled').get() as { n: number }).n;
   const commitPause = pausePoint();
-  const db: RelationalStore = { prepare: (sql) => f.db.prepare(sql), batch: async (statements) => { await commitPause.pass(); return f.db.batch(statements); } };
+  // Only calibration commits pause; reads and source-work batches pass straight through.
+  const calibrating = new WeakSet<object>();
+  const db: RelationalStore = {
+    prepare: (sql) => {
+      const statement = f.db.prepare(sql);
+      if (!sql.includes('embedding_hubness')) return statement;
+      calibrating.add(statement);
+      return new Proxy(statement, { get: (target, key) => key === 'bind'
+        ? (...values: unknown[]) => { const bound = target.bind(...values); calibrating.add(bound); return bound; }
+        : Reflect.get(target, key, target) });
+    },
+    batch: async (statements) => { if (statements.some((s) => calibrating.has(s))) await commitPause.pass(); return f.db.batch(statements); },
+  };
   const provider: EmbeddingProvider = { modelKey: MODEL, embed: async (text) => embedding(text) };
   const context: EmbeddingContext = { db, blobs: f.bucket, vectors, provider };
   const step = (now: number) => reconcileEmbedding(context, 'p', now);

@@ -1,11 +1,11 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { prepareEmbeddingUnwritten } from '../../read/catalog/embedding-selection.js';
+import { dueSourceWork, workRow } from '../../db/embeddings/work.js';
+import { readSet } from '../../db/index.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
 import { embeddingWakeAt, retiringReceipt } from './selection.js';
 import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
-import { embeddingSweep } from './work-sweep.js';
 
 /** What a Project's embedding work covers while a switch stands, and whether the Project is archived. */
 export interface EmbeddingWorkScope {
@@ -20,6 +20,7 @@ export interface EmbeddingWorkScope {
 }
 
 /**
+ * Work is found through maintained due rows and retirement heads only; no source or receipt is walked to find it.
  * The backlog includes sources awaiting a write, passed-over sources aside, under `model` or under a switch's `building` model, deletions that are
  * due and pending spore calibration, under a standing switch's model while it stands. An archived Project's backlog is
  * its due deletions alone.
@@ -30,23 +31,17 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
   for (const key of candidates) if (await embeddingProviderReady(db,key,now)) writes.push(key);
   const retained = [...new Set([model, ...candidates, ...(scope.retain ?? [])])].sort();
   const pending = await recordedWork(db, projectId, model, 'embedding', JSON.stringify({ predicate: WORK_PREDICATE_VERSION, writes, retained }), now, async () => {
-    for (const key of writes) {
-      if (await prepareEmbeddingUnwritten(db, projectId, key, now).first() !== null) return { pending: true };
-    }
+    if (await dueSourceWork(db, projectId, writes, now)) return { pending: true };
     if (await retiringReceipt(db, projectId, retained, now) !== null) return { pending: true };
     return { pending: false, wakeAt: await embeddingWakeAt(db, projectId, writes, now) };
-  }, (cursor) => embeddingSweep(db, projectId, writes, retained, now, cursor));
+  });
   if (pending) return true;
   return scope.retireOnly !== true && calibrationPending(db, projectId, calibrationModel(model, scope.switching ?? null), now);
 }
 
-/** A partial safety cycle continues through the Deployment's chained wake job. */
+/** A partial calibration safety cycle continues through the Deployment's chained wake job; embedding work has none. */
 export async function hasEmbeddingSweep(db: RelationalStore, projectId: string, model: string, scope: EmbeddingWorkScope = {}): Promise<boolean> {
-  const identities = [[model, 'embedding'], ...(scope.retireOnly === true ? [] : [[calibrationModel(model, scope.switching ?? null), 'hubness']])];
-  for (const [key, kind] of identities) {
-    const row = await db.prepare(`SELECT sweep_cursor FROM embedding_work_state
-      WHERE project_id=? AND model_key=? AND kind=?`).bind(projectId, key, kind).first<{ sweep_cursor: string | null }>();
-    if (row?.sweep_cursor != null) return true;
-  }
-  return false;
+  if (scope.retireOnly === true) return false;
+  const [rows] = await readSet(db, workRow.bind(projectId, calibrationModel(model, scope.switching ?? null), 'hubness'));
+  return rows[0]?.sweep_cursor != null;
 }
