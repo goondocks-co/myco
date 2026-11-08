@@ -22,13 +22,13 @@ import type { PassLimits } from './parse.js';
 /** Turns one wake settles at most. */
 export const SETTLE_TURNS_PER_WAKE = 50;
 
-interface SettleRow extends DueTurn { projectId: string; sessionId: string }
+interface SettleRow extends DueTurn { projectId: string; sessionId: string; generation: number | null; publication_input_revision: number | null }
 
 /** Settles the turns due for it, newest source activity first, within the wake's remaining budget. */
 export async function settleCards(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ settled: number; more: boolean }> {
-  const { results } = await env.db.prepare(`SELECT project_id AS projectId, session_id AS sessionId, turn_key AS turnKey, changes
-    FROM turn_cards INDEXED BY idx_turn_cards_source_settle WHERE state = 'pending' AND settle_at <= ?
-    ORDER BY source_activity_at DESC, project_id, session_id, turn_key LIMIT ?`).bind(now, SETTLE_TURNS_PER_WAKE + 1).all<SettleRow>();
+  const { results } = await env.db.prepare(`SELECT c.project_id AS projectId, c.session_id AS sessionId, turn_key AS turnKey, changes, d.generation, d.publication_input_revision
+    FROM turn_cards c INDEXED BY idx_turn_cards_source_settle LEFT JOIN session_documents d ON d.project_id=c.project_id AND d.session_id=c.session_id AND d.state='live' WHERE c.state = 'pending' AND settle_at <= ?
+    ORDER BY source_activity_at DESC, c.project_id, c.session_id, turn_key LIMIT ?`).bind(now, SETTLE_TURNS_PER_WAKE + 1).all<SettleRow>();
   const documents = new Map<string, Promise<SessionDocument | null>>();
   let settled = 0;
   for (const row of results.slice(0, SETTLE_TURNS_PER_WAKE)) {
@@ -39,7 +39,7 @@ export async function settleCards(env: Pick<ServerEnv, 'db' | 'blobs'>, now: num
       await settleTurn(env, row, await documents.get(key)!, now);
       settled += 1;
     } catch (error) {
-      await deferDocumentReadFailure(env.db, { project_id: row.projectId, session_id: row.sessionId, turnKey: row.turnKey }, error, now);
+      await deferDocumentReadFailure(env.db, { project_id: row.projectId, session_id: row.sessionId, turnKey: row.turnKey, changes: row.changes, generation: row.generation, publication_input_revision: row.publication_input_revision }, error, now);
     }
   }
   return { settled, more: results.length > SETTLE_TURNS_PER_WAKE };

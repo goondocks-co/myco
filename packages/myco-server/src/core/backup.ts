@@ -114,6 +114,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources',
   'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'attempt_spend', 'budget_totals',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',

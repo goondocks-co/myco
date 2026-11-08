@@ -9,7 +9,7 @@ import { embeddingProviderReady, recordEmbeddingProviderFailure, clearEmbeddingP
 import { prepareEmbeddingDue, retainEmbeddingModels, journalSourceAttempt, resetEmbeddingIndex } from '@myco-server-worker/db/embeddings/work.js';
 import { modelProgress, modelReadiness } from '@myco-server-worker/db/embeddings/status.js';
 import { sourceStateTriggers } from '@myco-server-worker/db/embeddings/state.js';
-import { catchUpKpiPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
+import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
 import { INPUT_REFUSAL_RETRY_MS } from '@myco-server-worker/db/embedding-due.js';
 
@@ -270,7 +270,7 @@ describe('settlement fences', () => {
       SELECT project_id,?,record_id,type,record_id,revision,1,1 FROM embedding_versions WHERE type='plan'`, [MODEL]);
     await resetEmbeddingIndex(f.db, 'p');
     const { db: held, reached, release } = pausedAfterFirstBatch(f.db);
-    const oldPage = catchUpKpiPhase(held, 'resetReceipts');
+    const oldPage = catchUpPhase(held, 'resetReceipts');
     await reached;
     await resetEmbeddingIndex(f.db, 'aaa');
     release();

@@ -17,7 +17,7 @@ const SUMMARY_PAGES = 50;
 interface Build { epoch: number; pages: number; state: ToolState }
 interface PathBuild { path: string; calls: number; edits: number; at: number; turn: string | null }
 interface Pending {
-  project_id: string; session_id: string; generation: number; rollup_after: number; rollup_page: number; rollup_epoch: number;
+  project_id: string; session_id: string; generation: number; publication_input_revision: number; rollup_after: number; rollup_page: number; rollup_epoch: number;
   paths_build: string | null; agent: string | null;
   myco_build: number; rollup_record: number;
 }
@@ -29,7 +29,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
   const now = limits.clock();
   for (let pass = 0, read = 0; pass < chunks && read < chunks; pass += 1) {
     if (limits.clock() >= limits.deadline || reserveReached(db, PASS_CLOSING_STATEMENTS, PASS_CLOSING_BLOB_CALLS)) return { changed, more: true };
-    const doc = await db.prepare(`SELECT d.project_id,d.session_id,d.generation,d.rollup_after,d.rollup_page,d.rollup_epoch,d.paths_build,d.myco_build,d.rollup_record,s.agent
+    const doc = await db.prepare(`SELECT d.project_id,d.session_id,d.generation,d.publication_input_revision,d.rollup_after,d.rollup_page,d.rollup_epoch,d.paths_build,d.myco_build,d.rollup_record,s.agent
       FROM session_documents d INDEXED BY idx_session_documents_rollup
       JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
       WHERE d.rollup_after IS NOT NULL AND d.state='live' AND d.rollup_due<=?

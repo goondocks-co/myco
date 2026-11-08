@@ -40,6 +40,7 @@ import {
   commitAdmitted, DocumentBatch, DocumentPassFull, directoryStatements, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement,
   releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
+import { dueSessions, deferFailedPublication, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS, type DueSession } from '../db/documents/publication.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { settleCards } from './card-settle.js';
 import { locatePrompts } from './document-locators.js';
@@ -67,8 +68,7 @@ const STEP_BLOB_CALLS = TRANSCRIPT_PARSE_SEGMENTS_PER_READ;
 const QUEUED_STATEMENTS = 8;
 const QUEUED_BLOB_CALLS = 4;
 /** How long a failed session pass waits before retrying: the time from its last advance, within bounds. */
-export const PUBLISH_BACKOFF_MIN_MS = 60_000;
-export const PUBLISH_BACKOFF_MAX_MS = 30 * 60_000;
+export { PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS };
 /** A named diagnostic code when an exception carries one. */
 const namedFailure = (error: unknown): string | undefined =>
   error instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(error.message) ? error.message : undefined;
@@ -133,29 +133,6 @@ interface Publication {
   diagnostic?: import('./parse.js').ParseDiagnostic;
 }
 
-/**
- * A session's publication input and progress as a pass finds it. Every write that changes them moves one part on: an
- * enqueue raises the newest queued event's row (the events table keeps the rows of consumed events, so a new one sorts
- * above every earlier one), a consume or terminal hold lowers the active queue count, and a retry advances its deadline.
- * A transcript write raises its transcript count or bytes,
- * and a commit raises the generation's published offsets or the records placed of a line.
- */
-const inputRevision = (table: string) => `(SELECT COUNT(*)||':'||COALESCE(MAX(e.rowid),0)||':'||COALESCE(SUM(q.retry_at),0) FROM publish_queue q
-    JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id WHERE q.project_id=${table}.project_id AND q.session_id=${table}.session_id AND q.failure IS NULL)
-  ||':'||(SELECT COUNT(*)||':'||COALESCE(SUM(t.size),0) FROM transcripts t WHERE t.project_id=${table}.project_id AND t.session_id=${table}.session_id)
-  ||':'||COALESCE(${table}.generation,'')||':'||(SELECT COALESCE(SUM(p.published_offset),0)||':'||COALESCE(SUM(p.placed_records),0) FROM transcript_publication p
-    WHERE p.project_id=${table}.project_id AND p.session_id=${table}.session_id AND p.generation IS ${table}.generation)`;
-
-interface DueSession { project_id: string; session_id: string; revision: string }
-
-/** The sessions due, oldest first, read from the due index, each with the input revision its selection found. */
-async function dueSessions(db: RelationalStore, now: number, limit: number): Promise<DueSession[]> {
-  return (await db.prepare(`SELECT d.project_id,d.session_id,${inputRevision('d')} revision FROM session_documents d WHERE d.due_at<=? AND d.state='live'
-      AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)
-    ORDER BY d.due_at,d.project_id,d.session_id LIMIT ?`)
-    .bind(now, limit).all<DueSession>()).results;
-}
-
 /** Publishes due sessions, locates prompts, settles cards and retires superseded chunks within the wake budget. */
 export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, limits: PassLimits): Promise<{ changed: number; more: boolean }> {
   const due = await dueSessions(env.db, now, PUBLISH_SESSIONS_PER_WAKE);
@@ -201,8 +178,7 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
 async function deferFailedSession(db: RelationalStore, ref: DueSession, failure: string, now: number): Promise<void> {
   const { project_id: projectId, session_id: sessionId } = ref;
   try {
-    await db.prepare(`UPDATE session_documents SET due_at=?3+MIN(MAX(?3-updated_at,${PUBLISH_BACKOFF_MIN_MS}),${PUBLISH_BACKOFF_MAX_MS})
-        WHERE project_id=?1 AND session_id=?2 AND state='live' AND ${inputRevision('session_documents')}=?4`).bind(projectId, sessionId, now, ref.revision).run();
+    await deferFailedPublication(db, ref, now);
     await recordDocumentPublishFailure(db, { projectId, sessionId, failure }, now);
   } catch (error) {
     emit({ kind: 'document_publish_deferral_failed', projectId, sessionId, error: namedFailure(error) ?? 'unknown' });
