@@ -12,6 +12,7 @@ import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
+import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
@@ -71,6 +72,12 @@ const LISTED: readonly Exception[] = [
       : match[1] === 'idx_embedding_source_rewriting' ? 'Spores being written again are counted from current source state, without reading stale receipts.'
       : match[1] === 'embedding_hubness_members_work_update' ? 'A membership change dirties calibration work; moment updates, which commit with the cursor, do not.'
       : 'Receipt, source version and membership changes maintain per-vector calibration state and its population.' }];
+    }),
+  ...V724_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || !['agent_runs', 'spores', 'agent_run_events'].includes(match[2]!) ? [] : [{ step: V724, object: match[1]!, table: match[2]!,
+      reason: sql.startsWith('CREATE INDEX') ? 'The run list seeks a Project\'s runs, newest first, by task or by effective time.'
+        : 'A named run\'s terminal mutation or its output reconciles that run\'s Work history contribution.' }];
   }),
   ...V720_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
@@ -333,6 +340,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V717_STATEMENTS.filter(sql => /^(ALTER TABLE|DROP TRIGGER|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
     step: V717, sql, reason: 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'
   })),
+  ...V724_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V724, sql, reason: 'Work history remains building until the bounded catch-up has read every terminal run.' })),
   ...V719_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V719, sql, reason: 'Run admission counts remain building until the bounded run catch-up completes.' })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',

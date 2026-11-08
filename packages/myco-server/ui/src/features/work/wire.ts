@@ -61,7 +61,11 @@ export interface RunFields {
   failed: boolean;
   queuedAt: number | null;
   heldBy: string | null;
-  position: number | null;
+  /** Why a queued run is waiting, its holder's code, and since when; null for any other run. */
+  waitReason: string | null;
+  waitingSince: number | null;
+  /** How many runs of this task wait in this Project, this one included; null while the queue is measured. */
+  taskQueued: number | null;
   replaced: boolean;
   replaces: string | null;
   harness: string | null;

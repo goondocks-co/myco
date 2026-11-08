@@ -168,7 +168,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
   /** Where a run opens. */
   openTo: (projectId: string, runId: string) => string;
 }) {
-  const { failures, producedSince } = group;
+  const { failures } = group;
   if (group.count === 0) return null;
   // Failures with the same headline, reason and machine share a line with every time they happened.
   const groups = new Map<string, { cause: string; detail: string | null; times: string[] }>();
@@ -181,7 +181,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
     line.times.push(when(run.at));
     groups.set(key, line);
   }
-  const answered = producedSince > 0;
+  const answered = !group.unresolved;
   return (
     <div className={cn('flex flex-col gap-s2 rounded-control border px-s3 py-s3 t-small text-ink-2', answered ? 'border-line bg-surface-2' : 'border-line bg-bad-bg')} data-failure={answered ? 'recovered' : 'open'}>
       <p className={cn('font-medium', answered ? 'text-ink' : 'text-bad')}>
@@ -199,7 +199,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
           </li>
         ))}
       </ul>}
-      <p>{answered ? `The ${count(producedSince, runNoun(kind), runNoun(kind, 2))} since then worked, so there’s nothing to do.` : failureNextStep(kind, false)}</p>
+      <p>{answered ? `The ${runNoun(kind, 2)} since then worked, so there’s nothing to do.` : failureNextStep(kind, false)}</p>
       <OnwardLink to={openTo(group.projectId, group.latestRunId)}>Open the latest attempt</OnwardLink>
     </div>
   );

@@ -145,7 +145,7 @@ describe('a worker reporting repository preparation failure', () => {
     expect(detail.run.repositoryFailure).toMatchObject({ code: 'fetch_failed', summary: expect.stringContaining('fatal:') });
     expect(JSON.stringify(detail)).not.toContain(secret);
     const work = await jsonBody(await worker.fetch(new Request(`https://s/api/work?since=${r.now - 1000}&until=${r.now + 10_000}`, { headers }), env)) as any;
-    expect(work.runs.find((run: any) => run.id === 'run_seed').failure.repositoryFailure).toEqual(detail.run.repositoryFailure);
+    expect(work.timeline.find((run: any) => run.id === 'run_seed').failure.repositoryFailure).toEqual(detail.run.repositoryFailure);
     expect(JSON.stringify(work)).not.toContain(secret);
   });
 
@@ -164,7 +164,7 @@ describe('a worker reporting repository preparation failure', () => {
         expect(detail.run.errorCode).toBe('repository_unprepared');
         expect(detail.run.repositoryFailure).toBeUndefined();
         const work = await jsonBody(await worker.fetch(new Request(`https://s/api/work?since=${r.now - 1000}&until=${r.now + 10_000}`, { headers }), env)) as any;
-        expect(work.runs.find((run: any) => run.id === 'run_seed').failure).toMatchObject({ code: 'repository_unprepared' });
+        expect(work.timeline.find((run: any) => run.id === 'run_seed').failure).toMatchObject({ code: 'repository_unprepared' });
       }
     }
   });

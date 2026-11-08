@@ -158,7 +158,7 @@ function Confirm({ projectId, task, onOpenChange, admin, now, onStarted }: RunTa
     && (capabilities.data?.capabilities[capability] === false || preview.data?.capability?.on === false);
   // Nothing is started on a confirmation still reading what it would say.
   const reading = chosen !== null && (preview.isPending || week.isPending);
-  const outcome = week.data?.outcomes.find((candidate) => candidate.task === task);
+  const outcome = week.data?.summary?.find((candidate) => candidate.task === task);
   const spend = spendWords(outcome?.spend, entry.noun, 'This week');
   const refusal = dispatch.error === null ? null : refusalOf(dispatch.error, now, task);
   const offCapability = refusal?.capability ?? (switchedOff ? capability! : null);

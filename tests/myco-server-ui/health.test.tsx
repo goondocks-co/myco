@@ -69,7 +69,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   ], cursor: null }),
   '/api/backups': () => Response.json({ backups: [BACKUP] }),
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
-  '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
+  '/api/work': () => Response.json({ window: { since: 0, until: 0 }, state: 'ready', summary: [], timeline: [], hasMore: false, cursor: null, maps: [], upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
   '/api/work/now': () => Response.json({ observedAt: NOW, scope: 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1, hasMore: false, cursor: null }, runningTotal: 1, runningHasMore: false,
     running: [{ runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', what: 'Learn from sessions', machine: 'homelab-mini', harness: 'codex', model: null, startedAt: NOW - 60_000, step: { words: 'Read session cards', at: NOW - 5_000 } }],
@@ -291,7 +291,7 @@ describe('Health', () => {
   });
 
   it('names the server refusal in Search and links its latest failed run', async () => {
-    server(routes({ '/api/work': () => Response.json({ window: { since: 0, until: NOW }, outcomes: [], runs: [], truncated: false,
+    server(routes({ '/api/work': () => Response.json({ window: { since: 0, until: NOW }, state: 'ready', summary: [], timeline: [], hasMore: false, cursor: null, maps: [],
       upkeep: { task: 'embedding-reconcile', lastSuccessAt: null, failedInWindow: 3,
         unrecovered: { runs: 3, since: NOW - 3_600_000, latestFailure: { projectId: MYCO, runId: 'failed-search', at: NOW - 1000, code: 'parse' } } } }) }));
     mount();

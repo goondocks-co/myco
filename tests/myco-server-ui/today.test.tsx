@@ -94,10 +94,12 @@ const SPORES = [
 
 const WORK: WorkAnswer = {
   window: { since: DAY_START, until: DAY_START + 24 * HOUR },
-  outcomes: [],
-  runs: RUNS,
-  truncated: false,
+  state: 'ready',
+  summary: [],
+  timeline: RUNS,
+  hasMore: false,
   cursor: null,
+  maps: [],
   upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 80 * MINUTE, failedInWindow: 1, unrecovered: null },
 };
 
@@ -207,7 +209,7 @@ const lede = () => document.querySelector('[data-lede]')!.textContent!;
 
 describe('Today', () => {
   it('keeps a fresh dashboard on Today with Get started first in the rail', async () => {
-    server({ ...day({ sessions: { rows: [], cursor: null }, spores: { spores: [], total: 0 }, work: { ...WORK, runs: [], outcomes: [] } }),
+    server({ ...day({ sessions: { rows: [], cursor: null }, spores: { spores: [], total: 0 }, work: { ...WORK, timeline: [], summary: [] } }),
       '/api/projects': () => Response.json({ projects: [] }),
       '/api/setup': () => Response.json({ ownerLinked: true, viewerIsOwner: true, signInWorking: true,
         machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: 0, workProduced: false,
@@ -379,7 +381,7 @@ describe('Today', () => {
       session({ sessionId: 'a0000000-0000-5000-8000-000000000002', projectId: P_MYCO, ...at(2), title: null, label: 'claude-code', agent: 'claude-code' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000003', projectId: P_MYCO, ...at(3), title: null, agent: 'claude-code', label: '<pasted_content id="a1">Why does the map read differ', summary: 'Compared both targets.' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000004', projectId: P_MYCO, ...at(4), title: 'Named by id', memberId: 'mem_sirkirby_5a2d54af', memberLabel: 'sirkirby_5a2d54af', runtimeLabel: null }),
-    ] }, work: { ...WORK, runs: [] } }));
+    ] }, work: { ...WORK, timeline: [] } }));
     mount('/');
     const list = await timeline();
     await waitFor(() => expect(items(list)).toHaveLength(4));
@@ -533,7 +535,7 @@ describe('Today', () => {
   });
 
   it('says a quiet day in one line and links to yesterday, which reads that day and links back', async () => {
-    const asked = server(day({ sessions: { rows: [], cursor: null }, work: { ...WORK, runs: [] }, spores: { spores: [], total: 0 } }));
+    const asked = server(day({ sessions: { rows: [], cursor: null }, work: { ...WORK, timeline: [] }, spores: { spores: [], total: 0 } }));
     mount('/');
     expect(await screen.findByText('Nothing today')).toBeTruthy();
     const yesterday = screen.getByRole('link', { name: 'Yesterday’s work →' });
@@ -555,7 +557,7 @@ describe('Today', () => {
         session({ sessionId: 'b0000000-0000-5000-8000-000000000001', projectId: P_MYCO, title: 'Yesterday one', ...yesterdayAt(2) }),
         session({ sessionId: 'b0000000-0000-5000-8000-000000000002', projectId: P_ATLAS, title: 'Yesterday two', ...yesterdayAt(5) }),
       ] },
-      work: { ...WORK, runs: [] },
+      work: { ...WORK, timeline: [] },
     }));
     mount(`/?day=${YESTERDAY}`);
     const list = await timeline();
@@ -565,7 +567,7 @@ describe('Today', () => {
 
   it('says the day held more than it read instead of calling it quiet', async () => {
     let pages = 0;
-    server({ ...day({ work: { ...WORK, runs: [] }, spores: { spores: [], total: 0 } }), '/api/sessions': () => { pages += 1; return Response.json({ rows: [], cursor: `c${pages}` }); } });
+    server({ ...day({ work: { ...WORK, timeline: [] }, spores: { spores: [], total: 0 } }), '/api/sessions': () => { pages += 1; return Response.json({ rows: [], cursor: `c${pages}` }); } });
     mount('/');
     expect(await screen.findByText('This day held more than the timeline lists; the newest are shown.')).toBeTruthy();
     expect(screen.queryByText('Nothing today')).toBeNull();
@@ -573,7 +575,7 @@ describe('Today', () => {
   });
 
   it('links a code map update to the project\'s code map', async () => {
-    server(day({ work: { ...WORK, runs: [run({ id: 'run_m0000000ok', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })] } }));
+    server(day({ work: { ...WORK, timeline: [run({ id: 'run_m0000000ok', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })] } }));
     mount('/');
     const list = await timeline();
     expect(within(list).getByRole('link', { name: 'Myco updated the code map' }).getAttribute('href')).toBe(`/p/${P_MYCO}/knowledge/map`);
@@ -586,7 +588,7 @@ describe('Today', () => {
     ];
     const entries = buildTimeline({ sessions: SESSIONS, runs: unchanged, spores: [], window: { start: DAY_START, end: DAY_START + 24 * HOUR }, now: NOW });
     expect(ledeCounts(entries)).toMatchObject({ work: 0, spores: 0, sessions: 4 });
-    server(day({ work: { ...WORK, runs: unchanged }, spores: { spores: [], total: 0 } }));
+    server(day({ work: { ...WORK, timeline: unchanged }, spores: { spores: [], total: 0 } }));
     mount('/');
     const list = await timeline();
     expect(items(list)).toHaveLength(4);
@@ -604,7 +606,7 @@ describe('Today', () => {
     const titled = Array.from({ length: 4 }, (_, i) => run({ id: `titled-${i}`, kind: 'title', task: 'title-summary', at: NOW - HOUR - i * MINUTE, outcome: { spores: 0, sessions: 1, maps: 0 } }));
     const unchanged = Array.from({ length: 4 }, (_, i) => run({ id: `unchanged-${i}`, kind: 'title', task: 'title-summary', result: 'unchanged', at: NOW - HOUR - (i + 4) * MINUTE }));
     expect(workHeadline('title', [...titled, ...unchanged])).toBe('Myco titled 4 sessions');
-    server(day({ work: { ...WORK, runs: [...titled, ...unchanged] }, spores: { spores: [], total: 0 } }));
+    server(day({ work: { ...WORK, timeline: [...titled, ...unchanged] }, spores: { spores: [], total: 0 } }));
     mount('/');
     const list = await timeline();
     const group = within(list).getByText('Myco titled 4 sessions').closest('li')!;
@@ -923,7 +925,7 @@ describe('Today\'s words', () => {
 
 it('describes a coded stored failure on Today without quoting its error', async () => {
   const prose = 'server prose must stay off the page';
-  server(day({ work: { ...WORK, runs: RUNS.map((item) => item.status === 'failed'
+  server(day({ work: { ...WORK, timeline: RUNS.map((item) => item.status === 'failed'
     ? { ...item, failure: { source: 'error', code: 'machine_unresponsive', cause: prose } } : item) } }));
   mount(`/p/${P_MYCO}`);
   await waitFor(() => expect(document.body.textContent).toContain('The machine running it stopped responding.'));
@@ -933,7 +935,7 @@ it('describes a coded stored failure on Today without quoting its error', async 
 
 describe('dashboard honesty gates', () => {
   it('finding 3: Today names a failed supporting spore read rather than a quiet timeline', async () => {
-    server({ ...day({ sessions: { rows: [], cursor: null }, work: { ...WORK, runs: [] } }), '/api/spores': () => Response.json({ error: 'unavailable' }, { status: 503 }) });
+    server({ ...day({ sessions: { rows: [], cursor: null }, work: { ...WORK, timeline: [] } }), '/api/spores': () => Response.json({ error: 'unavailable' }, { status: 503 }) });
     mount('/');
     await screen.findAllByRole('alert');
     expect(document.querySelector('[data-timeline]')?.textContent ?? document.body.textContent).not.toContain('Nothing happened');

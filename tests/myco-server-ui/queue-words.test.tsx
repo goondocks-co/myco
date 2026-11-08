@@ -15,17 +15,24 @@ const EVERY_HOLDER: readonly string[] = [
 /** An agent's id as a reader would meet it: the lowercase id itself, never its name. */
 const RAW_ID = new RegExp(`(?<![\\w’'-])(?:${[...Object.keys(PROFILE_HARNESSES), ...Object.keys(HARNESS_NAMES), 'some-new-agent'].map((id) => id.replace(/[-]/g, '\\-')).join('|')})(?![\\w-])`);
 
+const NOW = 1_800_000_000_000;
+
 describe('a queued run in the reader\'s words', () => {
-  it('names its place and what holds it', () => {
-    expect(queuedWords({ position: 0, heldBy: 'concurrent_runs' })).toBe('next in line. Waiting for a free slot: this server is already running as many tasks at once as it allows');
-    expect(queuedWords({ position: 2, heldBy: 'task_runs_per_hour' })).toBe('2 ahead of it. Waiting until this task’s hourly limit allows another run');
-    expect(queuedWords({ position: 1, heldBy: 'fleet' })).toBe('1 ahead of it. Waiting for a free machine: every machine that runs tasks is busy');
-    expect(queuedWords({ position: null, heldBy: null })).toBe('next in line. A limit on runs is holding it');
+  const quiet = { waitingSince: null };
+  it('names how much of its task waits, what holds it and for how long', () => {
+    expect(queuedWords({ ...quiet, waitReason: 'concurrent_runs', taskQueued: 1 }, NOW)).toBe('Next in this task’s queue. Waiting for a free slot: this server is already running as many tasks at once as it allows.');
+    expect(queuedWords({ ...quiet, waitReason: 'task_runs_per_hour', taskQueued: 3 }, NOW)).toBe('3 of this task waiting. Waiting until this task’s hourly limit allows another run.');
+    expect(queuedWords({ waitReason: 'fleet', taskQueued: 2, waitingSince: NOW - 5 * 60_000 }, NOW)).toMatch(/^2 of this task waiting\. Waiting for a free machine: every machine that runs tasks is busy\. Waiting since \d+m ago\.$/);
+  });
+
+  it('invents no count or age it wasn\'t given', () => {
+    expect(queuedWords({ ...quiet, waitReason: 'queue_building', taskQueued: null }, NOW)).toBe('Waiting for the work queue to be ready.');
+    expect(queuedWords({ ...quiet, waitReason: null, taskQueued: null }, NOW)).toBe('A limit on runs is holding it.');
   });
 
   it('words every holder the server can name, in the server\'s own words', () => {
     for (const [holder, words] of Object.entries(HELD_BY_WORDS)) {
-      expect(queuedWords({ position: 0, heldBy: holder })).toBe(`next in line. ${words.replace(/\.$/, '')}`);
+      expect(queuedWords({ ...quiet, waitReason: holder, taskQueued: 1 }, NOW)).toBe(`Next in this task’s queue. ${words}`);
     }
   });
 

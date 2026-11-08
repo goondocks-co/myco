@@ -251,7 +251,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
   const headline = workHeadline(entry.kind, entry.runs);
   const mapLinked = entry.kind === 'map' && produced.length > 0 && failed.length === 0;
   const map = entry.kind === 'map' && single !== null
-    ? work?.outcomes.find((o) => o.projectId === entry.projectId && o.kind === 'map' && o.map?.sourceRunId === single.id)?.map ?? null
+    ? work?.maps.find((map) => map.projectId === entry.projectId && map.sourceRunId === single.id) ?? null
     : null;
 
   return (

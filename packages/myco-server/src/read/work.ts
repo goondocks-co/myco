@@ -2,18 +2,15 @@ import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { requestedProfileValue } from '../db/run-profile.js';
-import { contextValue, FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';
-import { producedSql, runResultSql, type RunResult } from './run-outcome.js';
-export { producedSql, type RunResult } from './run-outcome.js';
-import { costProvenanceValue } from '../db/run-accounting.js';
+import { type RunResult } from './run-outcome.js';
+export { type RunResult } from './run-outcome.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /**
  * Myco's work: what the Deployment's own runs produced over a window, read across Projects.
  *
- * One read serves the dashboard's Today page and its Myco's work page. Full-window counts and each page of run
- * evidence come from one snapshot: every statement of the read goes in one batch.
+ * A supported UTC window (one UTC day, or seven ending on the last) answers full-window counts from the maintained
+ * rollups beside its first page of run evidence. Any other range has no totals: it answers the paged evidence only.
  *
  * **The outcome, not the status.** A run is counted by what it left in the store: the spores it wrote (`spores.author`
  * names the run), the session title it landed and the map it wrote (each a write the run recorded). A learning run
@@ -25,13 +22,12 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
  * and how many have failed after that success. A failure a later success followed is a retry, not a failure.
  */
 import { runErrorCode, type RunErrorCode } from '../core/reader-codes.js';
+import { auditRows, awaitingRow, currentMaps, failingRows, holdRows, supportedUtcWindow, upkeepRows, workHistoryReady, workSummary, workTimeline, WORK_TIMELINE_PAGE, DAY_MS, type TimelineCursor, type UtcWindow } from '../db/runs/history.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalogue.js';
-import { TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
-import { RUN_WRITE_EVENT } from '../core/runs.js';
 import { EMBEDDING_TASK } from '../core/embedding/task.js';
-import { projectsDriving, projectsFiltering, type ProjectSet } from './scope.js';
+import type { ProjectSet } from './scope.js';
 
 /** What an outcome task produces, in the words the dashboard groups work by. */
 export type OutcomeKind = 'learn' | 'title' | 'map' | 'seed';
@@ -44,15 +40,12 @@ export const OUTCOME_KINDS: Readonly<Record<string, OutcomeKind>> = {
   [SEEDING_TASK]: 'seed',
 };
 
-const OUTCOME_TASK_NAMES = Object.keys(OUTCOME_KINDS);
-const SPORE_TASKS = [EXTRACTION_TASK, SEEDING_TASK];
-
 /** The most runs one answer lists; the counts cover every run in the window whatever this cuts. */
-export const MAX_WORK_RUNS = 200;
+export const MAX_WORK_RUNS = WORK_TIMELINE_PAGE;
 /** The longest window one read covers, a little over the retention a run is kept for by default. */
 export const MAX_WORK_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
-/** The window a read covers when it names none. */
-export const DEFAULT_WORK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** The UTC days a read covers when it names none: the last seven, ending with today. */
+export const DEFAULT_WORK_WINDOW_DAYS = 7;
 
 /** A least and greatest value over the runs that reported one; null where none did. */
 export type Range = readonly [number, number] | null;
@@ -70,8 +63,8 @@ export interface WorkOutcome {
   failedWithOutput: number;
   /** Failed runs that produced nothing. */
   failed: number;
-  /** Failed runs without output in this window, and later successful output in this Project and task. */
-  failure: { runs: number; since: number; latestAt: number; latestRunId: string; producedSince: number } | null;
+  /** Failed runs without output in this window, and whether a later run of this Project and task has resolved them. */
+  failure: { runs: number; latestAt: number; latestRunId: string; unresolved: boolean } | null;
   /** The latest instant a run of this kind is shown at (`at` on a listed run). */
   latestAt: number | null;
   /** Tokens and cost as the runs themselves reported them, and how many runs that started and finished reported no cost. */
@@ -80,9 +73,10 @@ export interface WorkOutcome {
   runsWithoutCost: number;
   /** What one completed run spent: tokens, cost and wall time, least to greatest. */
   spend: { tokens: Range; costUsd: Range; durationMs: Range };
-  /** The Project's current map, for the map kind; null for every other kind and for a Project with none. */
-  map: { branch: string; commit: string; generatedAt: number; sourceRunId: string } | null;
 }
+
+/** A Project's current code map. */
+export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
 
 /** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
@@ -123,55 +117,29 @@ export interface Upkeep {
   unrecovered: { runs: number; since: number; latestFailure?: { projectId: string; runId: string; at: number; code: string | null } } | null;
 }
 
+/** Whether the rollups cover history yet: 'building' while the first catch-up runs, never a partial total. */
+export type WorkState = 'ready' | 'building';
+
 export interface WorkAnswer {
   window: { since: number; until: number };
-  outcomes: WorkOutcome[];
-  runs: WorkRun[];
-  /** Whether another run-evidence page follows this one; `outcomes` covers the whole window. */
-  truncated: boolean;
+  state: WorkState;
+  /** Full-window counts on a supported UTC window; null on any other range, and while the rollups are building. */
+  summary: WorkOutcome[] | null;
+  /** The window's run evidence, newest first, one page at a time. */
+  timeline: WorkRun[];
+  /** Whether another run-evidence page follows this one; `summary` covers the whole window. */
+  hasMore: boolean;
   /** Fetches the next page of run evidence for the same window and Project set. */
   cursor: string | null;
+  /** Each Project's current code map, whatever the window. */
+  maps: WorkMap[];
   upkeep: Upkeep;
 }
-
-const list = (values: readonly unknown[]): string => values.map(() => '?').join(', ');
-
-/**
- * The one instant a run is windowed, shown and counted at: when it ended, or for a run that has not ended, when it
- * entered the queue, else when it started. A run belongs to the window its outcome landed in.
- */
-const RUN_AT = 'COALESCE(r.completed_at, r.queued_at, r.started_at)';
-const runAt = (alias: string): string => `COALESCE(${alias}.completed_at, ${alias}.queued_at, ${alias}.started_at)`;
-/** The index every read of a window's runs goes through: by Project, task and status. */
-const RUNS_BY_TASK = 'agent_runs r INDEXED BY idx_agent_runs_task';
-
-const PRODUCED_SQL = producedSql('r');
-
-/** The session a title run's recorded write names. */
-const TITLED_SESSION = `(SELECT CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.session_id') END FROM agent_run_events e
-  WHERE e.project_id = r.project_id AND e.run_id = r.id AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${TITLE_WRITE_TOOL}'
-  ORDER BY e.id DESC LIMIT 1)`;
 
 const num = (value: unknown): number => Number(value ?? 0);
 const orNull = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
 const range = (low: unknown, high: unknown): Range => (low === null || low === undefined || high === null || high === undefined ? null : [Number(low), Number(high)]);
-
-/** The statements of the upkeep summary over the set's Projects: one row per Project. */
-function upkeepStatement(db: RelationalStore, set: ProjectSet, since: number, until: number) {
-  const projects = projectsDriving(set, 'p.project_id');
-  const failedAfter = (bound: string) => `FROM agent_runs r WHERE r.project_id = u.project_id AND r.task = ? AND r.status = 'failed' AND r.started_at > ${bound}`;
-  return db.prepare(
-    `SELECT u.project_id, u.last_success, u.failed_in_window,
-            (SELECT COUNT(*) ${failedAfter('COALESCE(u.last_success, -1)')}) AS unrecovered,
-            (SELECT MIN(r.started_at) ${failedAfter('COALESCE(u.last_success, -1)')}) AS unrecovered_since,
-            (SELECT json_object('projectId', r.project_id, 'runId', r.id, 'at', COALESCE(r.completed_at, r.started_at), 'code', r.error_code, 'error', r.error) ${failedAfter('COALESCE(u.last_success, -1)')} ORDER BY COALESCE(r.completed_at, r.started_at) DESC, r.id DESC LIMIT 1) AS latest_failure
-       FROM (SELECT p.project_id,
-                    (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.project_id = p.project_id AND r.task = ? AND r.status = 'completed') AS last_success,
-                    (SELECT COUNT(*) FROM agent_runs r WHERE r.project_id = p.project_id AND r.task = ? AND r.status = 'failed'
-                       AND r.started_at >= ? AND r.started_at < ?) AS failed_in_window
-               FROM projects p WHERE ${projects.sql}) u`,
-  ).bind(EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, since, until, ...projects.params);
-}
+const wordsKey = (projectId: unknown, task: unknown): string => `${String(projectId)}\u0000${String(task)}`;
 
 /** The upkeep rows of the upkeep statement, summed over the Projects. */
 function upkeepOf(rows: readonly Record<string, unknown>[]): Upkeep {
@@ -200,186 +168,123 @@ function upkeepOf(rows: readonly Record<string, unknown>[]): Upkeep {
 
 /** The search index's upkeep over the set's Projects and the window. */
 export async function readUpkeep(db: RelationalStore, set: ProjectSet, since: number, until: number): Promise<Upkeep> {
-  const { results } = await upkeepStatement(db, set, since, until).all<Record<string, unknown>>();
-  return upkeepOf(results);
+  return upkeepOf(await upkeepRows(db, set, since, until));
 }
 
-/** What the Deployment's runs produced in the set's Projects over the window, its end excluded. */
-export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number, cursor?: { at: number; projectId: string; id: string }): Promise<WorkAnswer> {
-  const projects = projectsDriving(set, 'r.project_id');
-  const window = `${RUN_AT} >= ? AND ${RUN_AT} < ?`;
-  const scoped = (tasks: readonly string[]) => ({
-    sql: `${projects.sql} AND r.task IN (${list(tasks)}) AND ${window}`,
-    params: [...projects.params, ...tasks, since, until],
-  });
-  const all = scoped(OUTCOME_TASK_NAMES);
-  const spores = scoped(SPORE_TASKS);
-  const titles = scoped([TITLING_TASK]);
-  const maps = projectsDriving(set, 'project_id');
-
-  // `CROSS JOIN` keeps the window's runs as the outer loop, so the rows a run wrote are sought by that run rather than
-  // every row of its Project being read to find them.
-  const [aggregate, sporeOutcome, titleOutcome, mapHeads, listed, failures, upkeep] = await db.batch([
-    db.prepare(
-      `SELECT r.project_id, r.task, r.status, COUNT(*) AS runs, MAX(${RUN_AT}) AS latest_at,
-              SUM(COALESCE(r.tokens_used, 0)) AS tokens, SUM(COALESCE(r.cost_usd, 0)) AS cost,
-              SUM(CASE WHEN r.status IN ('completed', 'failed') AND r.started_at IS NOT NULL AND r.cost_usd IS NULL THEN 1 ELSE 0 END) AS no_cost,
-              SUM(${PRODUCED_SQL}) AS produced,
-              MIN(r.tokens_used) AS tokens_low, MAX(r.tokens_used) AS tokens_high,
-              MIN(r.cost_usd) AS cost_low, MAX(r.cost_usd) AS cost_high,
-              MIN(r.completed_at - r.started_at) AS duration_low, MAX(r.completed_at - r.started_at) AS duration_high
-         FROM ${RUNS_BY_TASK} WHERE ${all.sql}
-        GROUP BY r.project_id, r.task, r.status`,
-    ).bind(...all.params),
-    db.prepare(
-      `SELECT r.project_id, r.task, COUNT(sp.id) AS spores, COUNT(DISTINCT sp.session_id) AS sessions
-         FROM ${RUNS_BY_TASK} CROSS JOIN spores sp ON sp.project_id = r.project_id AND sp.author = r.id
-        WHERE ${spores.sql}
-        GROUP BY r.project_id, r.task`,
-    ).bind(...spores.params),
-    db.prepare(
-      `SELECT r.project_id, COUNT(DISTINCT CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.session_id') END) AS sessions
-         FROM ${RUNS_BY_TASK} CROSS JOIN agent_run_events e ON e.project_id = r.project_id AND e.run_id = r.id
-          AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${TITLE_WRITE_TOOL}'
-        WHERE ${titles.sql}
-        GROUP BY r.project_id`,
-    ).bind(...titles.params),
-    db.prepare(`SELECT project_id, repository_branch, repository_commit, generated_at, source_run_id FROM canopy_maps WHERE ${maps.sql}`)
-      .bind(...maps.params),
-    db.prepare(
-      `SELECT r.project_id, r.id, r.task, r.status, r.queued_at, r.started_at, r.completed_at, ${requestedProfileValue('r.')} AS requested_profile, ${runResultSql('r')} AS result, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, r.harness, r.model, r.provider, r.usage_data, ${costProvenanceValue('r.')} AS cost_provenance, ${PRODUCED_SQL} AS produced,
-              CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(*) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spores,
-              CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
-              CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
-              CASE WHEN r.status = 'failed' THEN r.error END AS error,
-              CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code,
-              CASE WHEN r.status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
-              CASE WHEN r.status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
-              CASE WHEN r.status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary
-         FROM ${RUNS_BY_TASK}
-        WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
-          ${cursor === undefined ? '' : `AND (${RUN_AT} < ? OR (${RUN_AT} = ? AND (r.project_id < ? OR (r.project_id = ? AND r.id < ?))))`}
-        ORDER BY at DESC, r.project_id DESC, r.id DESC LIMIT ?`,
-    ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params,
-      ...(cursor === undefined ? [] : [cursor.at, cursor.at, cursor.projectId, cursor.projectId, cursor.id]), MAX_WORK_RUNS + 1),
-    db.prepare(
-      `WITH failed AS (
-         SELECT r.project_id, r.task, r.id, ${RUN_AT} AS at
-           FROM ${RUNS_BY_TASK}
-          WHERE ${all.sql} AND r.status = 'failed' AND NOT ${PRODUCED_SQL}
-       ), grouped AS (
-         SELECT project_id, task, COUNT(*) AS runs, MIN(at) AS since, MAX(at) AS latest_at
-           FROM failed GROUP BY project_id, task
-       )
-       SELECT g.project_id, g.task, g.runs, g.since, g.latest_at,
-              (SELECT f.id FROM failed f WHERE f.project_id = g.project_id AND f.task = g.task
-                ORDER BY f.at DESC, f.id DESC LIMIT 1) AS latest_run_id,
-              (SELECT COUNT(*) FROM agent_runs s WHERE s.project_id = g.project_id AND s.task = g.task
-                AND s.status = 'completed' AND ${producedSql('s')}
-                AND ${runAt('s')} > g.latest_at AND ${runAt('s')} < ?) AS produced_since
-         FROM grouped g`,
-    ).bind(...all.params, until),
-    upkeepStatement(db, set, since, until),
-  ]);
-
-  const key = (projectId: unknown, task: unknown): string => `${String(projectId)}\u0000${String(task)}`;
-  const sporesBy = new Map((sporeOutcome.results as Record<string, unknown>[]).map((r) => [key(r.project_id, r.task), r]));
-  const titlesBy = new Map((titleOutcome.results as Record<string, unknown>[]).map((r) => [String(r.project_id), num(r.sessions)]));
-  const mapsBy = new Map((mapHeads.results as Record<string, unknown>[]).map((r) => [String(r.project_id), {
-    branch: String(r.repository_branch), commit: String(r.repository_commit), generatedAt: num(r.generated_at), sourceRunId: String(r.source_run_id),
-  }]));
-  const failuresBy = new Map((failures.results as Record<string, unknown>[]).map((r) => [key(r.project_id, r.task), {
-    runs: num(r.runs), since: num(r.since), latestAt: num(r.latest_at),
-    latestRunId: String(r.latest_run_id), producedSince: num(r.produced_since),
-  }]));
-
+/** The rollups' answer for a supported UTC window, or null while they are still building. */
+async function summaryOf(db: RelationalStore, set: ProjectSet, window: UtcWindow, now: number): Promise<WorkOutcome[] | null> {
+  const read = await workSummary(db, set, window, window.until > now);
+  if (!read.ready.history || !read.ready.admission) return null;
+  const sessionsBy = new Map(read.sessions.map(row => [wordsKey(row.project_id, row.task), num(row.sessions)]));
+  const headsBy = new Map(read.heads.map(row => [wordsKey(row.project_id, row.task), row]));
   const outcomes = new Map<string, WorkOutcome>();
-  for (const row of aggregate.results as Record<string, unknown>[]) {
-    const task = String(row.task);
-    const projectId = String(row.project_id);
-    const kind = OUTCOME_KINDS[task]!;
-    let outcome = outcomes.get(key(projectId, task));
+  const outcomeOf = (projectId: string, task: string): WorkOutcome => {
+    const id = wordsKey(projectId, task);
+    let outcome = outcomes.get(id);
     if (outcome === undefined) {
-      const written = sporesBy.get(key(projectId, task));
-      outcome = {
-        projectId, kind, task, runs: {},
-        outcome: {
-          spores: num(written?.spores),
-          sessions: kind === 'title' ? titlesBy.get(projectId) ?? 0 : num(written?.sessions),
-          maps: 0,
-        },
-        failedWithOutput: 0, failed: 0, failure: failuresBy.get(key(projectId, task)) ?? null, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
-        spend: { tokens: null, costUsd: null, durationMs: null },
-        map: kind === 'map' ? mapsBy.get(projectId) ?? null : null,
-      };
-      outcomes.set(key(projectId, task), outcome);
+      const kind = OUTCOME_KINDS[task]!;
+      outcome = { projectId, kind, task, runs: {}, outcome: { spores: 0, sessions: kind === 'map' ? 0 : sessionsBy.get(id) ?? 0, maps: 0 }, failedWithOutput: 0, failed: 0, failure: null,
+        latestAt: orNull(headsBy.get(id)?.latest_at), tokens: 0, costUsd: 0, runsWithoutCost: 0, spend: { tokens: null, costUsd: null, durationMs: null } };
+      outcomes.set(id, outcome);
     }
+    return outcome;
+  };
+  for (const row of read.daily) {
+    const outcome = outcomeOf(String(row.project_id), String(row.task));
     const status = String(row.status);
     const runs = num(row.runs);
     const produced = num(row.produced);
     outcome.runs[status] = runs;
-    if (kind === 'map') outcome.outcome.maps += produced;
+    outcome.outcome.spores += num(row.spores);
+    if (outcome.kind === 'map') outcome.outcome.maps += produced;
     if (status === 'failed') { outcome.failedWithOutput += produced; outcome.failed += runs - produced; }
-    const latest = orNull(row.latest_at);
-    if (latest !== null && (outcome.latestAt === null || latest > outcome.latestAt)) outcome.latestAt = latest;
     outcome.tokens += num(row.tokens);
     outcome.costUsd += num(row.cost);
     outcome.runsWithoutCost += num(row.no_cost);
-    if (status === 'completed') {
-      outcome.spend = {
-        tokens: range(row.tokens_low, row.tokens_high),
-        costUsd: range(row.cost_low, row.cost_high),
-        durationMs: range(row.duration_low, row.duration_high),
-      };
-    }
+    if (status === 'completed') outcome.spend = { tokens: range(row.tokens_low, row.tokens_high), costUsd: range(row.cost_low, row.cost_high), durationMs: range(row.duration_low, row.duration_high) };
   }
+  const later = (outcome: WorkOutcome, at: number | null) => { if (at !== null && (outcome.latestAt === null || at > outcome.latestAt)) outcome.latestAt = at; };
+  for (const row of read.queued) {
+    const outcome = outcomeOf(String(row.project_id), String(row.task));
+    outcome.runs.queued = (outcome.runs.queued ?? 0) + num(row.runs);
+    later(outcome, orNull(row.latest));
+  }
+  for (const row of read.running) {
+    const outcome = outcomeOf(String(row.project_id), String(row.task));
+    outcome.runs[String(row.status)] = num(row.runs);
+    later(outcome, orNull(row.latest));
+  }
+  for (const [id, outcome] of outcomes) {
+    const head = headsBy.get(id);
+    if (head?.failed_run == null || outcome.failed === 0) continue;
+    outcome.failure = { runs: outcome.failed, latestAt: num(head.failed_at), latestRunId: String(head.failed_run), unresolved: num(head.unresolved) === 1 };
+  }
+  return [...outcomes.values()].sort((a, b) => (b.latestAt ?? 0) - (a.latestAt ?? 0) || a.projectId.localeCompare(b.projectId) || a.task.localeCompare(b.task));
+}
 
-  const rows = listed.results as Record<string, unknown>[];
-  const runs: WorkRun[] = rows.slice(0, MAX_WORK_RUNS).map((row) => {
-    const task = String(row.task);
-    const kind = OUTCOME_KINDS[task]!;
-    const produced = num(row.produced) === 1;
-    const failed = String(row.status) === 'failed';
-    const titled = row.titled_session === null || row.titled_session === undefined ? null : String(row.titled_session);
-    const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
-    const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
-    const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
-    return {
-      ...runAccounting(row.usage_data, row.cost_provenance),
-      requested: requestedProfile(row.requested_profile),
-      queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
-      harness: row.harness == null ? null : String(row.harness),
-      model: row.model == null ? null : heldPartition(String(row.model)).label,
-      provider: row.provider == null ? null : String(row.provider),
-      id: String(row.id),
-      projectId: String(row.project_id),
-      task,
-      kind,
-      status: String(row.status),
-      result: row.result as RunResult,
-      at: orNull(row.at),
-      outcome: {
-        spores: num(row.spores),
-        sessions: kind === 'title' ? (produced && titled !== null ? 1 : 0) : num(row.spore_sessions),
-        maps: kind === 'map' && produced ? 1 : 0,
-      },
-      sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : { ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
-      tokens: orNull(row.tokens_used),
-      costUsd: orNull(row.cost_usd),
-    };
-  });
-
-  const hasMore = rows.length > MAX_WORK_RUNS;
-  const last = runs.at(-1);
+/** A row of the timeline as the page lists it. */
+function workRunOf(row: Record<string, unknown>): WorkRun {
+  const task = String(row.task);
+  const kind = OUTCOME_KINDS[task]!;
+  const produced = num(row.produced) === 1;
+  const failed = String(row.status) === 'failed';
+  const titled = row.titled_session == null ? null : String(row.titled_session);
+  const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
+  const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
+  const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   return {
-    window: { since, until },
-    outcomes: [...outcomes.values()].sort((a, b) => (b.latestAt ?? 0) - (a.latestAt ?? 0) || a.projectId.localeCompare(b.projectId) || a.task.localeCompare(b.task)),
-    runs,
-    truncated: hasMore,
-    cursor: hasMore && last !== undefined && last.at !== null ? JSON.stringify([last.at, last.projectId, last.id]) : null,
-    upkeep: upkeepOf(upkeep.results as Record<string, unknown>[]),
+    ...runAccounting(row.usage_data, row.cost_provenance),
+    requested: requestedProfile(row.requested_profile),
+    queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
+    harness: row.harness == null ? null : String(row.harness),
+    model: row.model == null ? null : heldPartition(String(row.model)).label,
+    provider: row.provider == null ? null : String(row.provider),
+    id: String(row.id),
+    projectId: String(row.project_id),
+    task,
+    kind,
+    status: String(row.status),
+    result: (failed ? (produced ? 'failed_with_output' : 'failed') : (produced ? 'produced' : 'unchanged')) as RunResult,
+    at: orNull(row.at),
+    outcome: {
+      spores: num(row.spores),
+      sessions: kind === 'title' ? (produced && titled !== null ? 1 : 0) : num(row.spore_sessions),
+      maps: kind === 'map' && produced ? 1 : 0,
+    },
+    sessionId: kind === 'title' ? titled : null,
+    failure: !failed ? null : { ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
+    tokens: orNull(row.tokens_used),
+    costUsd: orNull(row.cost_usd),
   };
+}
+
+/** What the Deployment's runs produced in the set's Projects over the window, its end excluded. */
+export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number, cursor?: TimelineCursor, now = Date.now()): Promise<WorkAnswer> {
+  const window = supportedUtcWindow(since, until);
+  const [summary, timeline, maps, upkeep, ready] = await Promise.all([
+    window === null || cursor !== undefined ? Promise.resolve(null) : summaryOf(db, set, window, now),
+    workTimeline(db, set, since, until, cursor),
+    currentMaps(db, set),
+    readUpkeep(db, set, since, until),
+    window === null || cursor !== undefined ? workHistoryReady(db) : Promise.resolve(true),
+  ]);
+  const runs = timeline.rows.map(workRunOf);
+  const last = runs.at(-1);
+  const state: WorkState = (window !== null && cursor === undefined && summary === null) || !ready ? 'building' : 'ready';
+  return {
+    window: { since, until }, state, summary,
+    timeline: state === 'building' ? [] : runs,
+    hasMore: state !== 'building' && timeline.hasMore,
+    cursor: state !== 'building' && timeline.hasMore && last !== undefined && last.at !== null ? JSON.stringify([last.at, last.projectId, last.id]) : null,
+    maps: maps.map(row => ({ projectId: String(row.project_id), branch: String(row.repository_branch), commit: String(row.repository_commit), generatedAt: num(row.generated_at), sourceRunId: String(row.source_run_id) })),
+    upkeep,
+  };
+}
+
+/** The last seven UTC days through today, the window a read covers when it names none. */
+export function defaultWorkWindow(now: number): { since: number; until: number } {
+  const until = Math.floor(now / DAY_MS) * DAY_MS + DAY_MS;
+  return { since: until - DEFAULT_WORK_WINDOW_DAYS * DAY_MS, until };
 }
 
 /** An outcome task that is failing in a Project: its runs that failed having produced nothing after the task last completed there. */
@@ -400,21 +305,7 @@ export interface FailingOutcome {
  */
 export async function failingOutcomes(db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<FailingOutcome[]> {
   if (tasks.length === 0) return [];
-  const projects = projectsDriving({ all: true }, 'r.project_id');
-  const failedAt = 'COALESCE(r.started_at, r.queued_at, r.completed_at)';
-  const { results } = await db.prepare(
-    `SELECT r.project_id, r.task, COUNT(*) AS failures, MIN(${failedAt}) AS since, MAX(${failedAt}) AS latest_at,
-            (SELECT l.id FROM agent_runs l WHERE l.project_id = r.project_id AND l.task = r.task AND l.status = 'failed' AND NOT ${producedSql('l')}
-              ORDER BY COALESCE(l.started_at, l.queued_at, l.completed_at) DESC, l.id DESC LIMIT 1) AS latest_run
-       FROM ${RUNS_BY_TASK}
-      WHERE ${projects.sql} AND r.task IN (${list(tasks)}) AND r.status = 'failed' AND ${failedAt} >= ?
-        AND ${failedAt} > COALESCE((SELECT MAX(s.started_at) FROM agent_runs s
-              WHERE s.project_id = r.project_id AND s.task = r.task AND s.status = 'completed'), -1)
-        AND NOT ${PRODUCED_SQL}
-      GROUP BY r.project_id, r.task
-      ORDER BY latest_at DESC`,
-  ).bind(...projects.params, ...tasks, lookbackFrom).all<Record<string, unknown>>();
-  return results.map((row) => ({
+  return (await failingRows(db, tasks, lookbackFrom)).map((row) => ({
     projectId: String(row.project_id),
     task: String(row.task),
     kind: OUTCOME_KINDS[String(row.task)]!,
@@ -441,20 +332,7 @@ export interface AuditFailures {
  */
 export async function auditFailures(db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<AuditFailures[]> {
   if (tasks.length === 0) return [];
-  const projects = projectsDriving({ all: true }, 'r.project_id');
-  const { results } = await db.prepare(
-    `SELECT r.project_id, COUNT(*) AS closed, SUM(r.error_code = ?) AS runs,
-            MIN(CASE WHEN r.error_code = ? THEN r.completed_at END) AS since, MAX(CASE WHEN r.error_code = ? THEN r.completed_at END) AS latest_at,
-            (SELECT l.id FROM agent_runs l WHERE l.project_id = r.project_id AND l.error_code = ? AND l.completed_at >= ?
-              ORDER BY l.completed_at DESC, l.id DESC LIMIT 1) AS latest_run
-       FROM ${RUNS_BY_TASK}
-      WHERE ${projects.sql} AND r.task IN (${list(tasks)}) AND r.status IN ('completed', 'failed') AND r.completed_at >= ?
-        AND EXISTS (SELECT 1 FROM agent_run_attempts a WHERE a.project_id = r.project_id AND a.run_id = r.id)
-      GROUP BY r.project_id
-     HAVING SUM(r.error_code = ?) > 0
-      ORDER BY latest_at DESC`,
-  ).bind(AUDIT_CODE, AUDIT_CODE, AUDIT_CODE, AUDIT_CODE, lookbackFrom, ...projects.params, ...tasks, lookbackFrom, AUDIT_CODE).all<Record<string, unknown>>();
-  return results.map((row) => ({
+  return (await auditRows(db, AUDIT_CODE, tasks, lookbackFrom)).map((row) => ({
     projectId: String(row.project_id), runs: num(row.runs), closed: num(row.closed),
     since: num(row.since), latestAt: num(row.latest_at), latestRunId: String(row.latest_run),
   }));
@@ -465,22 +343,11 @@ const AUDIT_CODE: RunErrorCode = 'report_without_audit';
 /** Queued runs of Projects that accept capture held for a worker capability from before `queuedBefore`, by the capability that holds them. */
 export async function capabilityHolds(db: RelationalStore, capabilities: readonly string[], queuedBefore: number): Promise<{ capability: string; runs: number; since: number }[]> {
   if (capabilities.length === 0) return [];
-  const projects = projectsFiltering({ all: true }, 'agent_runs');
-  const { results } = await db.prepare(
-    `SELECT held_by, COUNT(*) AS runs, MIN(queued_at) AS since FROM agent_runs
-      WHERE status = 'queued' AND queued_at <= ? AND held_by IN (${list(capabilities)}) AND ${projects.sql}
-      GROUP BY held_by ORDER BY held_by`,
-  ).bind(queuedBefore, ...capabilities, ...projects.params).all<Record<string, unknown>>();
-  return results.map((row) => ({ capability: String(row.held_by), runs: num(row.runs), since: num(row.since) }));
+  return (await holdRows(db, capabilities, queuedBefore)).map((row) => ({ capability: String(row.held_by), runs: num(row.runs), since: num(row.since) }));
 }
 
 /** Queued runs of Projects that accept capture that a worker would take, the tasks a runtime serves itself excepted, and the oldest of them. */
 export async function runsAwaitingWorker(db: RelationalStore, runtimeServed: readonly string[]): Promise<{ runs: number; since: number | null }> {
-  const excluded = runtimeServed.length === 0 ? '' : ` AND task NOT IN (${list(runtimeServed)})`;
-  const projects = projectsFiltering({ all: true }, 'agent_runs');
-  const row = await db.prepare(
-    `SELECT COUNT(*) AS runs, MIN(queued_at) AS since FROM agent_runs
-      WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL${excluded} AND ${projects.sql}`,
-  ).bind(...runtimeServed, ...projects.params).first<Record<string, unknown>>();
-  return { runs: num(row?.runs), since: orNull(row?.since) };
+  const row = await awaitingRow(db, runtimeServed);
+  return { runs: num(row.runs), since: orNull(row.since) };
 }
