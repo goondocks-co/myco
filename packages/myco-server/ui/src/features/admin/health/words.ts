@@ -197,18 +197,25 @@ export function checkCadenceWords(cadence: Cadence): string {
   return 'Automatic runs are not set up. Turn them on and choose an interval under Settings · Backups.';
 }
 
+/** How far an unfinished check got, in tables; empty when its target counts none. The rest were not checked. */
+function coverageWords(progress: MaintenanceOutcome['progress'], finished: boolean): string {
+  if (progress === undefined) return '';
+  const checked = ` Checked ${progress.completedTables} of ${progress.totalTables} tables`;
+  return finished ? `${checked}; the rest were not checked.` : `${checked}.`;
+}
+
 /** A `running` record is live only while the server reports the check running; otherwise its run ended without recording an outcome. */
 export function outcomeWords(outcome: MaintenanceOutcome, running: boolean): string {
   const when = dateLabel(outcome.finishedAt ?? outcome.startedAt);
   const by = outcome.trigger === 'owner' ? 'run by hand' : 'scheduled';
   if (outcome.state === 'running') {
     return running
-      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).${outcome.progress === undefined ? '' : ` Checked ${outcome.progress.completedTables} of ${outcome.progress.totalTables} tables.`}`
-      : `Interrupted: started ${dateLabel(outcome.startedAt)} (${by}) and ended without recording an outcome.`;
+      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).${coverageWords(outcome.progress, false)}`
+      : `Interrupted: started ${dateLabel(outcome.startedAt)} (${by}) and ended without recording an outcome.${coverageWords(outcome.progress, true)}`;
   }
   if (outcome.state === 'healthy') return `No problems found ${when} (${by}).`;
   if (outcome.state === 'findings') return `Problems found ${when} (${by}):`;
-  return `Did not finish ${when} (${by}): ${FAILURE_WORDS[outcome.errorClass ?? ''] ?? 'it failed'}.`;
+  return `Did not finish ${when} (${by}): ${FAILURE_WORDS[outcome.errorClass ?? ''] ?? 'it failed'}.${coverageWords(outcome.progress, true)}`;
 }
 
 // ---------- Backups ----------

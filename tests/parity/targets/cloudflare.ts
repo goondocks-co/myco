@@ -1,5 +1,5 @@
-import { budgetMigration } from '@myco-server-worker/db/budget-activation.js';
-import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
+import { budgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
+import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/db/maintenance/store-checks.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

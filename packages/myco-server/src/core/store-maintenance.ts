@@ -1,4 +1,3 @@
-import { completeMaintenance, recordMaintenanceProgress } from '../db/meta/maintenance-progress.js';
 /**
  * Routine store maintenance: optimizing the query planner's statistics and checking the store's integrity.
  *
@@ -22,6 +21,9 @@ import { completeMaintenance, recordMaintenanceProgress } from '../db/meta/maint
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { storedSettings } from './settings.js';
+import { claimMaintenanceOutcome, completeMaintenanceOutcome, maintenanceOutcomeText, recordMaintenanceProgress } from '../db/maintenance/outcomes.js';
+import { boundFindings, type BoundedFindings } from '../db/maintenance/findings.js';
+import { IntegrityWalkInterrupted } from '../db/maintenance/store-checks.js';
 import { recordedBlobBytes } from '../read/blobs.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -48,13 +50,7 @@ export const MAINTENANCE_SETTINGS: Readonly<Record<MaintenanceCheck, { enabled: 
   integrity: { enabled: 'maintenance.auto_integrity_check', interval: 'maintenance.auto_integrity_check_interval_hours', minHours: 1, maxHours: 8760 },
 };
 
-/** At most this many findings are kept per outcome; the count beyond it is recorded, not the text. */
-export const MAX_FINDINGS = 20;
-/** At most this many characters of one finding are kept. */
-export const MAX_FINDING_CHARS = 300;
-
 const HOUR_MS = 3_600_000;
-const META_KEY_PREFIX = 'maintenance.';
 
 /** What a target measured, or why it could not. */
 export type StoreMeasurement =
@@ -68,6 +64,8 @@ export type DatedMeasurement = StoreMeasurement & { measuredAt: number };
 /** What a port reports from one check. `findings` are the store's own words, one per problem. */
 export interface PortResult {
   findings: string[];
+  /** Findings the port found but did not hand over, when it bounds them itself. */
+  findingsOmitted?: number;
   measurements: StoreMeasurement[];
 }
 
@@ -88,8 +86,8 @@ export type Exclusivity =
   | { kind: 'serving-owner'; holder: string }
   | { kind: 'platform-limit'; statementLimitMs: number; statements: Readonly<Record<MaintenanceCheck, number>> };
 
-/** The statements a claim sends before the check's own: the conditional write and its read-back. */
-export const CLAIM_STATEMENTS = 2;
+/** The statements a claim sends before the check's own: one conditional write answering whether it landed. */
+export const CLAIM_STATEMENTS = 1;
 export const MAINTENANCE_PROGRESS_STATEMENTS = 2;
 export const MAINTENANCE_COMPLETION_STATEMENTS = 1;
 
@@ -106,7 +104,7 @@ async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Prom
   }
 }
 
-/** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
+/** How far a check has got, counted in the tables and statements its target actually sends. */
 export interface MaintenanceProgress {
   completedTables: number;
   totalTables: number;
@@ -114,10 +112,13 @@ export interface MaintenanceProgress {
   totalStatements: number;
   remainingBatches: number;
 }
+
+/** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
 export interface StoreMaintenancePort {
   support: Readonly<Record<MaintenanceCheck, CheckSupport>>;
   exclusivity: Exclusivity;
-  run(check: MaintenanceCheck, progress?: (value: MaintenanceProgress) => Promise<void>): Promise<PortResult>;
+  /** `progress` receives the coverage so far and everything found so far, which it records together. */
+  run(check: MaintenanceCheck, progress?: (value: MaintenanceProgress, found: BoundedFindings) => Promise<void>): Promise<PortResult>;
 }
 
 /** How an outcome ended. `failed` carries `errorClass`; `findings` means the store answered with problems. */
@@ -170,8 +171,6 @@ export type Cadence =
   | { state: 'not_configured'; leaf: string }
   | { state: 'invalid'; leaf: string; reason: string };
 
-const metaKey = (check: MaintenanceCheck) => `${META_KEY_PREFIX}${check}`;
-
 /** The owner's cadence for a check, read from the stored leaves alone. */
 export async function cadenceOf(env: Pick<ServerEnv, 'db'>, check: MaintenanceCheck): Promise<Cadence> {
   const spec = MAINTENANCE_SETTINGS[check];
@@ -190,8 +189,8 @@ export async function cadenceOf(env: Pick<ServerEnv, 'db'>, check: MaintenanceCh
 }
 
 /** A recorded outcome. This module is the row's only writer, so an unreadable row is a fault to surface, never a check that never ran. */
-function parseOutcome(raw: string | undefined): MaintenanceOutcome | null {
-  if (raw === undefined) return null;
+function parseOutcome(raw: string | null): MaintenanceOutcome | null {
+  if (raw === null) return null;
   const parsed = JSON.parse(raw) as MaintenanceOutcome;
   if (typeof parsed !== 'object' || parsed === null || typeof parsed.runId !== 'string') throw new Error('the recorded maintenance outcome is unreadable');
   return maintenanceWordsCodes(parsed);
@@ -199,8 +198,7 @@ function parseOutcome(raw: string | undefined): MaintenanceOutcome | null {
 
 /** The latest recorded outcome of a check, or null when it has never run. */
 export async function latestOutcome(env: Pick<ServerEnv, 'db'>, check: MaintenanceCheck): Promise<MaintenanceOutcome | null> {
-  const row = await env.db.prepare('SELECT value FROM schema_meta WHERE key = ?').bind(metaKey(check)).first<{ value: string }>();
-  return parseOutcome(row?.value);
+  return parseOutcome(await maintenanceOutcomeText(env.db, check));
 }
 
 /**
@@ -266,54 +264,15 @@ export async function anyMaintenanceDue(env: ServerEnv, now: number): Promise<bo
 }
 
 /**
- * Records a new run in a single conditional write and answers whether this run holds the record.
- *
- * For a scheduled run the write lands only when the interval has passed after the last run's start; on a
- * `platform-limit` target it also lands only when no running record is inside its bound. Two wakes, or a wake and
- * an owner, racing for the same check therefore start it once: the loser's write matches nothing and it reads
- * back a run id that is not its own.
- */
-async function claim(env: ServerEnv, record: MaintenanceOutcome, notBefore: number | null, claimedAt: number, bounded: boolean): Promise<boolean> {
-  const key = metaKey(record.check);
-  const blockers: string[] = [];
-  const params: unknown[] = [];
-  if (bounded) {
-    blockers.push(`(json_extract(value, '$.state') = 'running' AND CAST(json_extract(value, '$.claimExpiresAt') AS INTEGER) > ?)`);
-    params.push(claimedAt);
-  }
-  if (notBefore !== null) {
-    blockers.push(`CAST(json_extract(value, '$.startedAt') AS INTEGER) > ?`);
-    params.push(notBefore);
-  }
-  const gate = blockers.length === 0 ? '' : ` WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ? AND (${blockers.join(' OR ')}))`;
-  await env.db.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) SELECT ?, ?${gate}`)
-    .bind(key, JSON.stringify(record), ...(gate === '' ? [] : [key, ...params])).run();
-  const held = await latestOutcome(env, record.check);
-  return held?.runId === record.runId;
-}
-
-/** Records a finished run, only over the record that run created. Answers whether it landed. */
-async function complete(env: ServerEnv, record: MaintenanceOutcome): Promise<boolean> {
-  return completeMaintenance(env.db,metaKey(record.check),record);
-}
-
-/** At most `MAX_FINDINGS` findings of at most `MAX_FINDING_CHARS` each; the count beyond is kept as a number. */
-export function boundFindings(findings: readonly string[]): { findings: string[]; findingsOmitted: number } {
-  return {
-    findings: findings.slice(0, MAX_FINDINGS).map((f) => (f.length > MAX_FINDING_CHARS ? `${f.slice(0, MAX_FINDING_CHARS)}…` : f)),
-    findingsOmitted: Math.max(0, findings.length - MAX_FINDINGS),
-  };
-}
-
-/**
  * Asks the port for the check a claimed run holds and records what it answered, over that run's record alone. A
- * port failure is recorded under its named class; nothing is recorded as healthy that the store did not answer.
+ * port failure is recorded under its named class, with its progress and whatever it had already found, so a check that
+ * did not cover every table is never healthy. Nothing is recorded as healthy that the store did not answer.
  * Every finished run is reported as a `store_maintenance` event.
  */
 async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: MaintenanceOutcome, clock: () => number): Promise<{ record: MaintenanceOutcome; recorded: boolean }> {
   let finished: MaintenanceOutcome;
   try {
-    const result = await port.run(record.check,async progress => {
+    const result = await port.run(record.check,async (progress,found) => {
       const now = clock();
       const limit = port.exclusivity;
       const claimExpiresAt = limit.kind === 'platform-limit'
@@ -321,19 +280,24 @@ async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: Mai
           + (progress.remainingBatches+(progress.completedStatements<progress.totalStatements?1:0)+1)*MAINTENANCE_PROGRESS_STATEMENTS
           + MAINTENANCE_COMPLETION_STATEMENTS)*limit.statementLimitMs
         : null;
-      const next = { ...record, progress, claimExpiresAt };
-      await recordMaintenanceProgress(env.db,metaKey(record.check),next,now);
+      const next = { ...record, ...found, progress, claimExpiresAt };
+      await recordMaintenanceProgress(env.db,next,now);
       Object.assign(record,next);
     });
     const measurements = [...result.measurements, ...(await recordMeasurements(env, record.check))];
+    const kept = boundFindings(result.findings);
     finished = {
-      ...record, ...boundFindings(result.findings), measurements, finishedAt: clock(),
+      ...record, ...kept, findingsOmitted: kept.findingsOmitted + (result.findingsOmitted ?? 0), measurements, finishedAt: clock(),
       state: result.findings.length === 0 ? 'healthy' : 'findings',
     };
   } catch (err) {
-    finished = { ...record, state: 'failed', finishedAt: clock(), errorClass: classify(err, env.platform?.classifyError) };
+    const interrupted = err instanceof IntegrityWalkInterrupted ? err : null;
+    finished = {
+      ...record, ...(interrupted?.found ?? { findings: [], findingsOmitted: 0 }), state: 'failed', finishedAt: clock(),
+      errorClass: classify(interrupted?.cause ?? err, env.platform?.classifyError),
+    };
   }
-  const recorded = await complete(env, finished);
+  const recorded = await completeMaintenanceOutcome(env.db, finished);
   emit({ kind: 'store_maintenance', check: finished.check, state: finished.state, error_class: finished.errorClass ?? 'none', recorded });
   return { record: maintenanceWordsCodes(finished), recorded };
 }
@@ -378,7 +342,7 @@ export async function runMaintenance(
       holder: exclusivity.kind === 'serving-owner' ? exclusivity.holder : null,
       finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: options.powerState ?? null,
     };
-    if (!(await claim(env, record, notBefore, claimedAt, exclusivity.kind === 'platform-limit'))) {
+    if (!(await claimMaintenanceOutcome(env.db, record, { bounded: exclusivity.kind === 'platform-limit', claimedAt, notBefore }))) {
       const held = await latestOutcome(env, check);
       return exclusivity.kind === 'platform-limit' && checkRunning(port, held, check, claimedAt)
         ? alreadyRunning(check)

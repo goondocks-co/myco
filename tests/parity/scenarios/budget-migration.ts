@@ -1,5 +1,5 @@
 import {expect} from 'bun:test';
-import {budgetMigration} from '@myco-server-worker/db/budget-activation.js';
+import {budgetMigration} from '@myco-server-worker/db/meta/budget-activation.js';
 import {type ParityScenario} from '../harness.ts';
 
 export const budgetMigrationParity:ParityScenario={

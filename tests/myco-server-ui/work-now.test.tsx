@@ -12,6 +12,8 @@ import { QueryClient, QueryClientProvider, focusManager, useQuery } from '@tanst
 import { WorkNow } from '../../packages/myco-server/ui/src/features/now/WorkNow';
 import type { WorkNowAnswer } from '../../packages/myco-server/ui/src/features/now/wire';
 import { LiveRefresh } from '../../packages/myco-server/ui/src/hooks/use-live';
+import { useAttention } from '../../packages/myco-server/ui/src/hooks/use-attention';
+import { attentionWords } from '../../packages/myco-server/ui/src/features/today/words';
 import { AUTOMATIC_HEADER, live, PRESENCE_MS, PRESENCE_PATH, RUNNING_TICK_MS, TICK_MS, watchPresence } from '../../packages/myco-server/ui/src/lib/live';
 import { liveUntil } from '../../packages/myco-server/ui/src/hooks/use-sessions';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
@@ -129,6 +131,31 @@ describe('the shared live refresh', () => {
     expect(asked['/api/work']).toBe(2);
     expect(asked['/api/sessions']).toBe(1);
     expect(asked['/api/spores']).toBe(2);
+  });
+
+  it('shows and clears a notice on an open page when only the attention mark moves', async () => {
+    globalThis.setInterval = ((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
+      originalSetInterval(handler, ms === TICK_MS || ms === RUNNING_TICK_MS ? 20 : ms, ...args)) as typeof setInterval;
+    let revision = 1;
+    const notice = { kind: 'member_naming_failed', tone: 'warn', members: [{ memberId: 'mem_1', errorClass: 'db', failures: 1, lastFailedAt: NOW }], hasMore: false };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), 'https://s').pathname;
+      if (path === '/api/work/now') return Response.json({ ...ANSWER, marks: { ...ANSWER.marks, attention: `a${revision}` } });
+      if (path === '/api/attention') return Response.json({ items: revision === 2 ? [notice] : [], unavailable: [] });
+      return Response.json({});
+    }) as unknown as typeof fetch;
+    function Notices() {
+      const attention = useAttention({ enabled: true });
+      return <p data-testid="notices">{attention.data?.items.map((item) => attentionWords(item, NOW, () => null).title).join(',')}</p>;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    render(<><LiveRefresh projectId={MYCO} /><Notices /></>, { wrapper: wrap(client) });
+    await waitFor(() => expect(screen.getByTestId('notices').textContent).toBe(''));
+    await Bun.sleep(60);
+    revision = 2;
+    await waitFor(() => expect(screen.getByTestId('notices').textContent).toBe('A member’s name couldn’t be saved'));
+    revision = 3;
+    await waitFor(() => expect(screen.getByTestId('notices').textContent).toBe(''));
   });
 
   it('reads a live group again when its first session falls quiet, though nothing was captured', () => {

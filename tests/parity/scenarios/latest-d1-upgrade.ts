@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
+import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/db/maintenance/store-checks.js';
 import type { ParityScenario } from '../harness.ts';
 
 /**

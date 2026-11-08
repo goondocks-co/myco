@@ -7,7 +7,7 @@ export const RECONCILIATION_MATRICES = {
   embedding: { 'db/settings/leaves.ts#<module>': ['writer-revision'] },
   catalog: { 'core/model-catalogs.ts#recordModelCatalog': ['reporter-stamp'] },
   runner: { 'core/runner-updates.ts#runnerUpdateReportStatements': ['reporter-stamp'] },
-  budget: { 'db/budget-activation.ts#indexWitness': ['catalogue-snapshot'] },
+  budget: { 'db/meta/budget-activation.ts#indexWitness': ['catalogue-snapshot'] },
 } satisfies Record<string, Record<string, UpsertRule[]>>;
 
 export type ReconciliationCase = keyof typeof RECONCILIATION_MATRICES;

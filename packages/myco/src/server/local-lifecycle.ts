@@ -99,10 +99,10 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
       configureSqliteLibrary(deps.native);
       const sqlite = new Database(paths.databasePath, { readonly: true });
       try {
-        const meta = (key: string) => (sqlite.query('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string } | null)?.value;
-        const version = Number(meta('version'));
+        const stamped = new Map((sqlite.query(`SELECT key, value FROM schema_meta WHERE key IN ('version', 'deployment_id')`).all() as { key: string; value: string }[]).map((row) => [row.key, row.value]));
+        const version = Number(stamped.get('version'));
         if (version > SERVER_SCHEMA_VERSION) throw new Error("this Myco is older than the server's data; update Myco");
-        if (!meta('deployment_id') || !Number.isSafeInteger(version) || version < 1) incomplete.push('schema');
+        if (!stamped.get('deployment_id') || !Number.isSafeInteger(version) || version < 1) incomplete.push('schema');
         else if (version < SERVER_SCHEMA_VERSION) behind = true;
         else {
           result.owner = localOwnerState(sqlite);

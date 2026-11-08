@@ -11,7 +11,7 @@ import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
 import { budgetD1Database,budgetD1Reply } from '../server/helpers/budget-d1.js';
 import {sqliteEnv} from '../myco-server/helpers/fixtures.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { significantStatement } from '@myco-server-worker/core/sql-statements.js';
 

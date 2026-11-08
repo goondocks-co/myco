@@ -11,7 +11,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import type { MaintenanceCheck, PortResult, StoreMaintenancePort, StoreMeasurement } from '../../core/store-maintenance.js';
-import { MAX_FINDINGS } from '../../core/store-maintenance.js';
+import { MAX_FINDINGS } from '../../db/maintenance/findings.js';
 
 /** Rows `PRAGMA optimize` may sample per index; SQLite's own recommended bound for a periodic optimize. */
 export const ANALYSIS_LIMIT = 400;

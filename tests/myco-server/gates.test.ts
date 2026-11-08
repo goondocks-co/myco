@@ -583,7 +583,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities|backups)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_naming_failures|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities|backups)\b/;
     // An index read by a Deployment-wide access path leads with what it is read
     // by; the set of those, each with its read, is declared once in
     // `helpers/access-paths.ts` and shared with the v2-table gate.

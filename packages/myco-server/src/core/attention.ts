@@ -26,6 +26,7 @@ import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { statusMetadata, type StatusMetadata } from '../read/meta.js';
+import { memberNamingFailures, type MemberNamingFailure } from '../db/meta/member-naming-failure.js';
 import { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 export { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
@@ -70,6 +71,7 @@ export type AttentionItem =
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
   | { kind: 'access_key_expiring'; tone: 'warn'; grantId: string; projectId: string; label: string | null; expiresAt: number }
+  | { kind: 'member_naming_failed'; tone: 'warn'; members: MemberNamingFailure[]; hasMore: boolean }
   | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null }
   | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }
   | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
@@ -188,6 +190,13 @@ const RULES: readonly Rule[] = [
     read: async (env, now) => (await grantsExpiringBy(env.db, now, now + ACCESS_KEY_NOTICE_MS)).map((g) => ({
       kind: 'access_key_expiring', tone: 'warn', grantId: g.id, projectId: g.projectId, label: g.label, expiresAt: g.expiresAt,
     })),
+  },
+  {
+    kind: 'member_naming_failed',
+    read: async (env) => {
+      const page = await memberNamingFailures(env.db);
+      return page.members.length === 0 ? [] : [{ kind: 'member_naming_failed', tone: 'warn', ...page }];
+    },
   },
 ];
 

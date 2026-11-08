@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { issueIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { tryNameMemberFromLogin } from '@myco-server-worker/auth/members-admin.js';
+import { memberNamingFailures } from '@myco-server-worker/db/meta/member-naming-failure.js';
 import { unarchiveProject } from '@myco-server-worker/read/sessions.js';
 import { createProject } from '@myco-server-worker/core/project-creation.js';
 import { handleUnarchiveProject } from '@myco-server-worker/api/projects.js';
@@ -113,8 +114,10 @@ describe('identity and Project atomic writes', () => {
         expect(events).toEqual([{ kind: 'member_naming_failed', memberId, error_class: 'db', error_reason: 'Unknown:db' }]);
         expect(JSON.stringify(events)).not.toContain('private-storage-detail');
         expect(r.sqlite.query('SELECT label FROM members WHERE id=?').get(memberId)).toEqual({ label: null });
+        expect(await memberNamingFailures(r.db)).toMatchObject({ hasMore: false, members: [{ memberId, errorClass: 'db', failures: 1, lastFailedAt: expect.any(Number) }] });
         r.sqlite.run('DROP TRIGGER fail_login');
         expect(await tryNameMemberFromLogin(r.db, memberId, githubId, 'octocat', env.platform.classifyError)).toBe('octocat');
+        expect(await memberNamingFailures(r.db)).toEqual({ members: [], hasMore: false });
       } finally { log.mockRestore(); r.sqlite.close(); }
     }
   });

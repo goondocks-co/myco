@@ -20,5 +20,5 @@ const capture = read<[], { at: number | null }>({ name: 'meta.captureMark', sql:
 export async function todayMarks(db: RelationalStore): Promise<string[]> {
   const [marks, sessions] = await readSet(db, revisions.bind(), capture.bind());
   const byKind = new Map(marks.map(row => [row.kind, String(row.revision)]));
-  return [byKind.get('runs')!, String(sessions[0]?.at ?? ''), byKind.get('curation')!, byKind.get('plans')!];
+  return [byKind.get('runs')!, String(sessions[0]?.at ?? ''), byKind.get('curation')!, byKind.get('plans')!, byKind.get('attention') ?? ''];
 }

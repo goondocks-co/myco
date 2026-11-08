@@ -1,13 +1,21 @@
-import { IN_FLIGHT_RUN_STATUSES } from './run-statuses.js';
-import type { RelationalStore } from '../core/adapters.js';
+/**
+ * Budget activation: the operator's index preparation and the state it publishes.
+ *
+ * `budgetMigration` yields literal statements for operator paths that execute them out of process, each classified read
+ * or write so those paths send it the right way. Everything that runs inside the Deployment reads through named statements.
+ */
+import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { read, readSet } from '../index.js';
 
 export const BUDGET_ENABLED = 'budget_enabled_at';
 export const BUDGET_QUEUE_OPENED_AT = 'budget_queue_opened_at';
 export const BUDGET_QUEUE_OPENED_SQL = `COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_QUEUE_OPENED_AT}'),(SELECT value FROM schema_meta WHERE key='${BUDGET_ENABLED}'))`;
+const queueOpened = read<[], { at: string | null }>({ name: 'meta.budgetQueueOpenedAt', sql: `SELECT ${BUDGET_QUEUE_OPENED_SQL} AS at` });
 
 /** The queue's activation instant, including the stamp of an already active governor. */
 export async function budgetQueueOpenedAt(db: RelationalStore): Promise<string | null> {
-  const row = await db.prepare(`SELECT ${BUDGET_QUEUE_OPENED_SQL} AS at`).first<{ at: string | null }>();
+  const [[row]] = await readSet(db, queueOpened.bind());
   return row?.at ?? null;
 }
 
@@ -102,19 +110,26 @@ export async function completeBudgetMigration(db: RelationalStore, now: number):
   return next.value;
 }
 
-/** The inactive reason is operator-visible; active state requires every prepared index. */
-export async function budgetActivation(db: RelationalStore): Promise<BudgetActivation> {
-  const row = await db.prepare(`SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AS enabled,
+const activationState = read<[], { enabled: number; reason: string | null; indexes: string }>({
+  name: 'meta.budgetActivationState',
+  sql: `SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AS enabled,
     (SELECT value FROM schema_meta WHERE key='${BUDGET_REFUSAL}') AS reason,
     (SELECT json_group_array(json_object('name',name,'sql',sql)) FROM sqlite_master WHERE rowid IN
-      (SELECT value FROM json_each(COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_INDEX_ROWS}'),'[]')))) AS indexes`)
-    .first<{ enabled: number; reason: string | null; indexes: string }>();
-  if (row === null) throw new Error('Budget activation state is unavailable');
+      (SELECT value FROM json_each(COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_INDEX_ROWS}'),'[]')))) AS indexes`,
+});
+const indexCatalogue = read<[], { name: string; sql: string }>({
+  name: 'meta.budgetIndexCatalogue',
+  sql: `SELECT name,sql FROM sqlite_master WHERE type='index' AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`,
+});
+
+/** The inactive reason is operator-visible; active state requires every prepared index. */
+export async function budgetActivation(db: RelationalStore): Promise<BudgetActivation> {
+  const [[row]] = await readSet(db, activationState.bind());
+  if (row === undefined) throw new Error('Budget activation state is unavailable');
   if (!row.enabled) return { active: false, reason: row.reason ?? 'Budget index preparation has not completed' };
-  let indexes = JSON.parse(row.indexes) as {name:string;sql:string}[];
-  const valid = () => BUDGET_INDEXES.every(index => indexes.some(found => found.name===index.name && normalize(found.sql)===normalize(indexSql(index))));
-  if (!valid()) indexes = (await db.prepare(`SELECT name,sql FROM sqlite_master WHERE type='index'
-    AND name IN (${BUDGET_INDEXES.map(index => literal(index.name)).join(',')})`).all<{name:string;sql:string}>()).results;
+  let indexes = JSON.parse(row.indexes) as { name: string; sql: string }[];
+  const valid = () => BUDGET_INDEXES.every(index => indexes.some(found => found.name === index.name && normalize(found.sql) === normalize(indexSql(index))));
+  if (!valid()) [indexes] = await readSet(db, indexCatalogue.bind());
   if (!valid()) throw new Error('Active budget indexes are missing or inconsistent');
   return { active: true, reason: null };
 }

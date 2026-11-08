@@ -14,7 +14,7 @@ import { isExecutionProfile, type ExecutionProfile } from '@goondocks/myco-share
 import { type ClaimCandidate, type ClaimedRunRow, type ClaimedInput, type PulledCandidate, type WriteAdmission } from './runs.js';
 import { recordPricedAttemptWrite as recordAttemptStatement } from './attempt-accounting.js';
 import { estimateForClaim } from './budget-estimates.js';
-import { budgetActivation } from '../db/budget-activation.js';
+import { budgetActivation } from '../db/meta/budget-activation.js';
 import { capabilityOf } from './worker-selection.js';
 
 /** What a claim takes: a queued row it moves to `running`, or a pulled item it creates the running row for. */

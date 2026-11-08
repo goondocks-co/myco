@@ -1,4 +1,4 @@
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import {PARITY_PULLED_STAGES} from '../../helpers/pulled-test-stage.ts';
 import {installPulledStages} from '@myco-server-worker/core/pulled-stages.js';
 import {primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';

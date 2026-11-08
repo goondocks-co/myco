@@ -17,7 +17,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
-  boundFindings, cadenceOf, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, runMaintenance,
+  cadenceOf, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, runMaintenance,
   type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort, type StoreMeasurement,
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -25,6 +25,11 @@ import { engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
+import { d1StoreMaintenance } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
+import { QUICK_CHECK_BATCH } from '@myco-server-worker/db/maintenance/store-checks.js';
+import { boundFindings, MAX_FINDINGS } from '@myco-server-worker/db/maintenance/findings.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const HOUR = 3_600_000;
 const dirs: string[] = [];
@@ -485,4 +490,104 @@ it('adds codes beside text in stored and freshly run maintenance outcomes', asyn
       ] },
     });
   } finally { failing.mockRestore(); }
+});
+
+/** The D1 port on a seeded store, with `quick_check` batches failing from the given batch number on. */
+function hostedPort(failFromBatch = Number.POSITIVE_INFINITY) {
+  const fixture = sqliteEnv();
+  const store = fixture.serverEnv.db;
+  let batches = 0;
+  const db: RelationalStore = new Proxy(store, { get(target, property, receiver) {
+    if (property !== 'batch') return Reflect.get(target, property, receiver);
+    return async (statements: Parameters<RelationalStore['batch']>[0]) => {
+      if (statements.length === QUICK_CHECK_BATCH && ++batches >= failFromBatch) throw new Error('D1_ERROR: the batch stopped');
+      return store.batch(statements);
+    };
+  } });
+  const port = d1StoreMaintenance(db);
+  return { fixture, port, env: { ...fixture.serverEnv, db, storeMaintenance: port } as ServerEnv };
+}
+
+const tableCount = (sqlite: Database) => (sqlite.query(`SELECT COUNT(*) AS n FROM sqlite_schema WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'`).get() as { n: number }).n;
+
+it('the hosted integrity check reports every table it checked and counts the statements it actually sends', async () => {
+  const { fixture, port } = hostedPort();
+  const seen: Array<{ completedTables: number; totalTables: number; completedStatements: number; totalStatements: number; remainingBatches: number }> = [];
+  const result = await port.run('integrity', async (value) => { seen.push(value); });
+  const tables = tableCount(fixture.sqlite);
+  expect(tables).toBeGreaterThan(QUICK_CHECK_BATCH);
+  expect(result.findings).toEqual([]);
+  expect(seen[0]).toEqual({ completedTables: 0, totalTables: tables, completedStatements: 1, totalStatements: tables + 2, remainingBatches: Math.ceil(tables / QUICK_CHECK_BATCH) });
+  expect(seen.at(-1)).toEqual({ completedTables: tables, totalTables: tables, completedStatements: tables + 2, totalStatements: tables + 2, remainingBatches: 0 });
+  expect(seen.map((value) => value.completedTables)).toEqual([...seen.map((value) => value.completedTables)].sort((a, b) => a - b));
+  fixture.sqlite.close();
+});
+
+/** A file-backed hosted Deployment holding a real CHECK violation in the first table a walk reaches. `step` governs each full quick-check batch. */
+function damagedVolume(step: (batch: number) => 'send' | 'stop' | 'fail') {
+  const { sqlite, file } = volume();
+  sqlite.exec(`CREATE TABLE aaa_damage (n INTEGER CHECK(n > 0)); PRAGMA ignore_check_constraints = ON; INSERT INTO aaa_damage VALUES (-1); PRAGMA ignore_check_constraints = OFF`);
+  const store = sqliteRelationalStore(sqlite);
+  let batches = 0;
+  let reached!: () => void;
+  const stopped = new Promise<void>((resolve) => { reached = resolve; });
+  const db: RelationalStore = { ...store, batch: ((statements: Parameters<RelationalStore['batch']>[0]) => {
+    if (statements.length === QUICK_CHECK_BATCH) {
+      const action = step(++batches);
+      if (action === 'fail') return Promise.reject(new Error('D1_ERROR: the batch stopped'));
+      if (action === 'stop') { reached(); return new Promise(() => {}); }
+    }
+    return store.batch(statements);
+  }) as RelationalStore['batch'] };
+  const env = serverEnvFromBunConfig({ sqlite, blobDir: fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-blobs-')) });
+  const port = d1StoreMaintenance(db);
+  return { file, stopped, env: { ...env, db, storeMaintenance: port } as ServerEnv, port };
+}
+
+it('a hosted check whose process stops at a batch boundary leaves its finding and coverage on the reopened store', async () => {
+  const { file, stopped, env, port } = damagedVolume((batch) => batch === 2 ? 'stop' : 'send');
+  const t0 = Date.now();
+  void runMaintenance(env, 'integrity', 'owner', t0);
+  await stopped;
+  const reopened = new Database(file);
+  const store = sqliteRelationalStore(reopened);
+  const held = await latestOutcome({ db: store }, 'integrity');
+  expect(held).toMatchObject({ state: 'running', findingsOmitted: 0, progress: { completedTables: QUICK_CHECK_BATCH, remainingBatches: expect.any(Number) } });
+  expect(held!.findings).toHaveLength(1);
+  expect(held!.findings[0]).toContain('aaa_damage');
+  const [status] = (await maintenanceStatus({ ...env, db: store, storeMaintenance: port }, held!.claimExpiresAt! + 1)).filter((one) => one.check === 'integrity');
+  expect(status).toMatchObject({ running: false, latest: { state: 'running', findings: [expect.stringContaining('aaa_damage')] } });
+  reopened.close();
+});
+
+it('a hosted check that fails part-way records its real findings and coverage under the named class, and is never healthy', async () => {
+  const { env } = damagedVolume((batch) => batch === 2 ? 'fail' : 'send');
+  const answer = await runMaintenance(env, 'integrity', 'owner', HOUR);
+  expect(answer).toMatchObject({ outcome: 'ran', recorded: true, record: { state: 'failed', errorClass: expect.any(String), findings: [expect.stringContaining('aaa_damage')], progress: { completedTables: QUICK_CHECK_BATCH } } });
+});
+
+it('a walk holds no more findings than an outcome keeps at any checkpoint, and counts the rest', async () => {
+  const { fixture, port } = hostedPort();
+  fixture.sqlite.exec(`CREATE TABLE aaa_damage (n INTEGER CHECK(n > 0)); PRAGMA ignore_check_constraints = ON; WITH RECURSIVE c(x) AS (SELECT -1 UNION ALL SELECT x - 1 FROM c LIMIT 30) INSERT INTO aaa_damage SELECT x FROM c; PRAGMA ignore_check_constraints = OFF`);
+  const sizes: number[] = [];
+  const omitted: number[] = [];
+  const result = await port.run('integrity', async (_coverage, found) => { sizes.push(found.findings.length); omitted.push(found.findingsOmitted); });
+  expect(Math.max(...sizes)).toBe(MAX_FINDINGS);
+  expect(omitted.at(-1)).toBe(10);
+  expect(result).toMatchObject({ findingsOmitted: 10 });
+  expect(result.findings).toHaveLength(MAX_FINDINGS);
+  fixture.sqlite.close();
+});
+
+it('a claim lands once inside its bound and again once the bound has passed', async () => {
+  const { env } = coreEnv(releasedPort(D1_LIKE));
+  const t0 = 1_000 * HOUR;
+  const first = await runMaintenance(env, 'optimize', 'owner', t0, { clock: () => t0 });
+  expect(first).toMatchObject({ outcome: 'ran', recorded: true });
+  const { env: racing, setRecord } = coreEnv(releasedPort(D1_LIKE));
+  setRecord('optimize', { runId: 'held', check: 'optimize', trigger: 'owner', state: 'running', startedAt: t0, claimExpiresAt: t0 + 10, holder: null,
+    finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: null });
+  expect(await runMaintenance(racing, 'optimize', 'owner', t0 + 5, { clock: () => t0 + 5 })).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
+  expect(await latestOutcome(racing, 'optimize')).toMatchObject({ runId: 'held' });
+  expect(await runMaintenance(racing, 'optimize', 'owner', t0 + 10, { clock: () => t0 + 10 })).toMatchObject({ outcome: 'ran', recorded: true });
 });
