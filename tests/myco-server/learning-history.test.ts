@@ -4,7 +4,7 @@ import { expect, it } from 'bun:test';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
 import { effectiveSettings } from '@myco-server-worker/core/settings-policies.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';

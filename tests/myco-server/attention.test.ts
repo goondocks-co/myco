@@ -5,7 +5,10 @@
  * from is never an item: the search index counts only when it is actually behind, a failed outcome only while no later
  * run of its task completed, and a learning run that failed having saved spores is not a failed outcome.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { tryNameMemberFromLogin, revokeMember } from '@myco-server-worker/auth/members-admin.js';
+import { MEMBER_NAMING_PAGE, recordMemberNamingFailure } from '@myco-server-worker/db/meta/member-naming-failure.js';
+import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
@@ -202,6 +205,119 @@ describe('Needs you', () => {
     grant('eg_revoked', NOW + DAY, NOW - DAY);
     grant('eg_gone', NOW - DAY);
     expect((await read()).items).toEqual([{ kind: 'access_key_expiring', tone: 'warn', grantId: 'eg_soon', projectId: 'proj_1', label: 'ci', expiresAt: NOW + 3 * DAY }]);
+  });
+
+  describe('members whose names could not be saved', () => {
+    const accounts = { mem_machine_2: 'account-2', mem_machine_3: 'account-3' } as const;
+    type Member = keyof typeof accounts;
+    function naming() {
+      const h = harness();
+      const refuse = () => h.sqlite.run(`CREATE TRIGGER refuse_names BEFORE UPDATE OF label ON members BEGIN SELECT RAISE(ABORT,'name storage failure'); END`);
+      const allow = () => h.sqlite.run('DROP TRIGGER refuse_names');
+      for (const [id, account] of Object.entries(accounts)) h.sqlite.run(`UPDATE members SET label = NULL, github_id = ?, role = 'member' WHERE id = ?`, [account, id]);
+      const signIn = (id: Member, at = NOW) => withClock(at, () => tryNameMemberFromLogin(h.fixture.db, id, accounts[id], `login-${id.slice(-1)}`, () => 'db'));
+      const listed = async () => (await h.read()).items.flatMap((item) => item.kind === 'member_naming_failed' ? item.members.map((m) => [m.memberId, m.failures]) : []);
+      return { ...h, refuse, allow, signIn, listed };
+    }
+    const withClock = async <T,>(at: number, work: () => Promise<T>): Promise<T> => {
+      const clock = spyOn(Date, 'now').mockReturnValue(at);
+      try { return await work(); } finally { clock.mockRestore(); }
+    };
+    const quietly = async <T,>(work: () => Promise<T>): Promise<T> => {
+      const log = spyOn(console, 'log').mockImplementation(() => {});
+      try { return await work(); } finally { log.mockRestore(); }
+    };
+
+    it('counts repeats per member and keeps each until that member is named', () => quietly(async () => {
+      const { refuse, signIn, listed } = naming();
+      refuse();
+      await signIn('mem_machine_2', NOW - 3);
+      await signIn('mem_machine_2', NOW - 2);
+      await signIn('mem_machine_3', NOW - 1);
+      expect(await listed()).toEqual([['mem_machine_3', 1], ['mem_machine_2', 2]]);
+    }));
+
+    for (const [recovers, remains] of [['mem_machine_3', 'mem_machine_2'], ['mem_machine_2', 'mem_machine_3']] as const) {
+      const order = recovers === 'mem_machine_3' ? 'later' : 'earlier';
+      const failBoth = async (h: ReturnType<typeof naming>) => { h.refuse(); await h.signIn('mem_machine_2', NOW - 2); await h.signIn('mem_machine_3', NOW - 1); h.allow(); };
+
+      it(`keeps the other member when the ${order} one is named`, () => quietly(async () => {
+        const h = naming();
+        await failBoth(h);
+        await h.signIn(recovers);
+        expect(h.sqlite.query('SELECT label FROM members WHERE id = ?').get(remains)).toEqual({ label: null });
+        expect((await h.listed()).map(([id]) => id)).toEqual([remains]);
+        await h.signIn(remains);
+        expect(await h.listed()).toEqual([]);
+        expect(h.sqlite.query('SELECT COUNT(*) AS n FROM member_naming_failures').get()).toEqual({ n: 0 });
+      }));
+
+      it(`keeps the other member when the ${order} one is revoked`, () => quietly(async () => {
+        const h = naming();
+        await failBoth(h);
+        expect(await revokeMember(h.fixture.db, recovers, 'mem_machine_1', NOW)).toEqual({ ok: true });
+        expect((await h.listed()).map(([id]) => id)).toEqual([remains]);
+        expect(h.sqlite.query('SELECT member_id FROM member_naming_failures').all()).toEqual([{ member_id: remains }]);
+      }));
+
+      it(`keeps the other member when the ${order} one is removed`, () => quietly(async () => {
+        const h = naming();
+        await failBoth(h);
+        h.sqlite.run('PRAGMA foreign_keys = OFF');
+        h.sqlite.run('DELETE FROM members WHERE id = ?', [recovers]);
+        expect(h.sqlite.query('SELECT member_id FROM member_naming_failures').all()).toEqual([{ member_id: remains }]);
+      }));
+    }
+
+    it('records nothing for a member who already has a name', () => quietly(async () => {
+      const h = naming();
+      h.sqlite.run(`UPDATE members SET label = 'named' WHERE id = 'mem_machine_2'`);
+      h.refuse();
+      h.sqlite.run(`CREATE TRIGGER refuse_login BEFORE INSERT ON schema_meta WHEN NEW.key LIKE 'github_login:%' BEGIN SELECT RAISE(ABORT,'login storage failure'); END`);
+      await h.signIn('mem_machine_2');
+      expect(await h.listed()).toEqual([]);
+    }));
+
+    it('lists one bounded page and says more stand behind it rather than counting them', () => quietly(async () => {
+      const h = naming();
+      for (let i = 0; i < MEMBER_NAMING_PAGE + 2; i += 1) {
+        h.sqlite.run(`INSERT INTO members (id, label, created_at) VALUES (?, NULL, 0)`, [`mem_page_${i}`]);
+        await recordMemberNamingFailure(h.fixture.db, `mem_page_${i}`, 'db', NOW - i);
+      }
+      const [item] = (await h.read()).items;
+      expect(item).toMatchObject({ kind: 'member_naming_failed', hasMore: true });
+      expect(item!.kind === 'member_naming_failed' && item!.members.map((m) => m.memberId)).toEqual(Array.from({ length: MEMBER_NAMING_PAGE }, (_, i) => `mem_page_${i}`));
+    }));
+
+    it('moves only the attention mark when a notice appears, repeats and clears', () => quietly(async () => {
+      const h = naming();
+      const marks = async () => (await readWorkNow(h.fixture.serverEnv as never, { all: true }, NOW, true)).marks;
+      const noticed = async () => (await h.read()).items.some((item) => item.kind === 'member_naming_failed');
+      h.refuse();
+      const before = await marks();
+      expect(await noticed()).toBe(false);
+      await h.signIn('mem_machine_2');
+      const appeared = await marks();
+      expect(await noticed()).toBe(true);
+      expect(appeared).toEqual({ ...before, attention: appeared.attention });
+      expect(appeared.attention).not.toBe(before.attention);
+      await h.signIn('mem_machine_2');
+      const repeated = await marks();
+      expect(repeated.attention).not.toBe(appeared.attention);
+      h.allow();
+      await h.signIn('mem_machine_2');
+      const cleared = await marks();
+      expect(await noticed()).toBe(false);
+      expect(cleared).toEqual({ ...before, attention: cleared.attention });
+      expect(cleared.attention).not.toBe(repeated.attention);
+      h.refuse();
+      await h.signIn('mem_machine_3');
+      const again = await marks();
+      expect(await noticed()).toBe(true);
+      expect(await revokeMember(h.fixture.db, 'mem_machine_3', 'mem_machine_1', NOW)).toEqual({ ok: true });
+      expect(await noticed()).toBe(false);
+      expect((await marks()).attention).not.toBe(again.attention);
+    }));
   });
 
   it('names a schema that is not the one this server expects', async () => {

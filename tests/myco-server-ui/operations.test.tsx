@@ -11,7 +11,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { availableWords, backlogWords, cadenceWords, latestWords, reportWords } from '../../packages/myco-server/ui/src/features/admin/health/words';
+import { availableWords, backlogWords, cadenceWords, latestWords, outcomeWords, reportWords } from '../../packages/myco-server/ui/src/features/admin/health/words';
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'chris', role: 'admin' as const } };
 const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0, sessionCount: 2, lastActivityAt: null, archivedAt: null, archivedBy: null }] };
@@ -487,4 +487,13 @@ describe('store checks on Health', () => {
     expect(within(integrity).getByText('Not available on this server.')).toBeTruthy();
     expect(within(integrity).queryByRole('button')).toBeNull();
   });
+});
+
+it('says how many tables an unfinished check covered and that the rest were not checked', () => {
+  const stopped = { state: 'failed', trigger: 'owner', startedAt: 1, finishedAt: 2, errorClass: 'db', findings: [], findingsOmitted: 0, measurements: [],
+    progress: { completedTables: 16, totalTables: 400 } } as unknown as Parameters<typeof outcomeWords>[0];
+  expect(outcomeWords(stopped, false)).toContain('Checked 16 of 400 tables; the rest were not checked.');
+  expect(outcomeWords({ ...stopped, state: 'running', finishedAt: null }, false)).toContain('Checked 16 of 400 tables; the rest were not checked.');
+  expect(outcomeWords({ ...stopped, state: 'running', finishedAt: null }, true)).toMatch(/Checked 16 of 400 tables\.$/);
+  expect(outcomeWords({ ...stopped, progress: undefined }, false)).not.toContain('tables');
 });

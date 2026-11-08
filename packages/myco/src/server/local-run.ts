@@ -17,7 +17,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import {
   DEFAULT_PORT,
   migrateOnly,
-  schemaMetaValue,
+  volumeMetaValue,
   stampedSchemaVersion,
   startDeployment,
   type DeploymentOptions,
@@ -95,7 +95,7 @@ export interface LocalStart extends StartedDeployment {
 
 /** What this volume holds, without changing it: the meta values the lease compares a volume by. */
 function identityOf(paths: LocalDeploymentPaths, native: NativeSqlite | undefined): VolumeIdentity {
-  return volumeIdentity(paths.databasePath, (key) => schemaMetaValue(paths.databasePath, key, native));
+  return volumeIdentity(paths.databasePath, (key) => volumeMetaValue(paths.databasePath, key, native));
 }
 
 /**

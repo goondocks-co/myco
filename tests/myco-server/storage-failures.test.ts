@@ -259,10 +259,10 @@ it('B28: hosted integrity reports the tables it checked and keeps a competing ru
     let competed=false;
     const port: StoreMaintenancePort={...actual,run:async(check,report)=>{
       if(report===undefined) throw new Error('progress recorder missing');
-      return actual.run(check,async progress=>{
+      return actual.run(check,async (progress,found)=>{
         now+=(progress.completedTables-lastCompleted)*D1_QUERY_LIMIT_MS;
         lastCompleted=progress.completedTables;
-        await report(progress);
+        await report(progress,found);
         if(progress.completedTables>0 && !competed) {
           competed=true;
           expect(await latestOutcome({...e.serverEnv,db},'integrity')).toMatchObject({

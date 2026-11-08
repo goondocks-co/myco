@@ -51,6 +51,6 @@ export function LiveRefresh({ projectId, enabled = true }: { projectId: string |
     const moved = movedMarks(before.marks, marks);
     if (moved.length === 0) return;
     void client.invalidateQueries({ predicate: (query) => followedMarks(query).some((mark) => moved.includes(mark)) });
-  }, [client, projectId, marks?.runs, marks?.sessions, marks?.knowledge, marks?.recovery, marks?.fleet]);
+  }, [client, projectId, marks?.runs, marks?.sessions, marks?.knowledge, marks?.recovery, marks?.fleet, marks?.attention]);
   return null;
 }

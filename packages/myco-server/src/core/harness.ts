@@ -1,7 +1,7 @@
 import { queuedPriority } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
-import { budgetActivation } from '../db/budget-activation.js';
+import { budgetActivation } from '../db/meta/budget-activation.js';
 import { automaticFits, budgetHold } from './run-budget.js';
 import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
 import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';

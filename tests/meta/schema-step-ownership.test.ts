@@ -14,6 +14,7 @@ import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@my
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
+import { V726, V726_STATEMENTS } from '@myco-server-worker/db/schema-v726.js';
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
@@ -86,6 +87,7 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE INDEX') ? 'The run list seeks a Project\'s runs, newest first, by task or by effective time.'
         : 'A named run\'s terminal mutation or its output reconciles that run\'s Work history contribution.' }];
   }),
+  ...['member_naming_failure_resolved', 'member_naming_failure_removed'].map(object => ({ step: V726, object, table: 'members', reason: 'A naming failure ends in the commit that names, revokes or removes its member.' })),
   ...V720_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: V720, object: match[1]!, table: match[2]!, reason: match[1] === 'idx_embedding_passed_over_current'
@@ -351,6 +353,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
     step: V717, sql, reason: 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'
   })),
   ...V724_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V724, sql, reason: 'Work history remains building until the bounded catch-up has read every terminal run.' })),
+  ...V726_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO change_marks')).map(sql => ({ step: V726, sql, reason: 'The Attention revision exists before its first transition, so an open page has a value to compare.' })),
   ...V719_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V719, sql, reason: 'Run admission counts remain building until the bounded run catch-up completes.' })),
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',

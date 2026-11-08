@@ -15,7 +15,7 @@ import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, measuredContentEnv } from
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { withDocumentStores } from './helpers/document-stores.js';

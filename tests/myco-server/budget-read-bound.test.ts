@@ -6,7 +6,7 @@ import { Miniflare,convertV4MiniflareOptions } from 'miniflare';
 import {budgetFixture,PROFILE} from './helpers/budget-fixture.js';
 import {sqliteBudgetMeter,type MeterStatement} from './helpers/budget-meter.js';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
-import {completeBudgetMigration} from '@myco-server-worker/db/budget-activation.js';
+import {completeBudgetMigration} from '@myco-server-worker/db/meta/budget-activation.js';
 import {readBudgetStatus} from '@myco-server-worker/read/budget.js';
 import {BUDGET_WINDOW_MS} from '@myco-server-worker/core/budget-policy.js';
 import {expireSpend,SPEND_DUE_READ_LIMIT} from '@myco-server-worker/db/runs/admission.js';

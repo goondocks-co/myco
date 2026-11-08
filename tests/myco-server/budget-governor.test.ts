@@ -21,7 +21,7 @@ import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
 import { installPulledStages, queuedAdmissible, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';

@@ -6,7 +6,7 @@ import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import { commit, read, readSet, write } from '../index.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { runOriginSql, contextValue, BUDGET_QUOTE_USD_KEY, BUDGET_QUOTE_AT_KEY } from '../run-context.js';
-import { BUDGET_ENABLED, BUDGET_QUEUE_OPENED_SQL, budgetActivation } from '../budget-activation.js';
+import { BUDGET_ENABLED, BUDGET_QUEUE_OPENED_SQL, budgetActivation } from '../meta/budget-activation.js';
 import { effectiveBudgetSql } from '../../core/settings.js';
 import type { BudgetHolds } from './budget.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';

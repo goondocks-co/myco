@@ -25,7 +25,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { selfExec } from '../runtime/self-exec.js';
 import { CommandCancelled, isCommandFailure, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
 import { resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
-import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
+import { volumeMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import {
   settlementOf, type AttemptStage, type HoldSettlement, type ProducerRefusal, type RecoveryProducerPort, type RecoveryProducerStatus,
@@ -324,7 +324,7 @@ export class LocalArtifacts implements RecoveryProducerPort {
   private deploymentId(): string | null {
     if (this.deployment === null) {
       try {
-        this.deployment = schemaMetaValue(this.paths.databasePath, 'deployment_id', this.options.native);
+        this.deployment = volumeMetaValue(this.paths.databasePath, 'deployment_id', this.options.native);
       } catch { return null; }
     }
     return this.deployment;

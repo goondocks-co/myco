@@ -6,7 +6,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { resolveEmbedding } from '@myco-server-worker/core/embedding/policy.js';
 import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { runnerUpdateReportStatements } from '@myco-server-worker/core/runner-updates.js';
-import { BUDGET_INDEXES, completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { BUDGET_INDEXES, completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import type { CaptureEnvelope } from '@myco-server-worker/ingest/envelope.js';
 import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';

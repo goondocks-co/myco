@@ -292,6 +292,17 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: `${inProject(item.projectId)} Whatever uses it stops working then.`,
         action: { label: 'Open access keys', to: `${projectPath(item.projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
       };
+    case 'member_naming_failed': {
+      const [latest] = item.members;
+      const one = item.members.length === 1 && !item.hasMore;
+      return {
+        title: one ? 'A member’s name couldn’t be saved' : `${item.hasMore ? 'More than ' : ''}${item.members.length} members’ names couldn’t be saved`,
+        detail: one
+          ? `Saving it failed at sign-in ${latest!.failures === 1 ? 'once' : `${latest!.failures} times`}, most recently ${ago(latest!.lastFailedAt, now)}. Their sign-in still worked, and Myco tries again the next time they sign in.`
+          : `Most recently ${ago(latest!.lastFailedAt, now)}. Their sign-ins still worked, and Myco tries again the next time each of them signs in.`,
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+      };
+    }
     case 'schema_mismatch':
       return {
         title: 'The server and its database disagree',
@@ -378,6 +389,7 @@ export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   runs_held_for_capability: 'waiting tasks',
   no_worker: 'machines',
   access_key_expiring: 'access keys',
+  member_naming_failed: 'member names',
   schema_mismatch: 'the database',
   harness_needs_repair: 'installed agents',
   harness_capture_silent: 'agent capture',

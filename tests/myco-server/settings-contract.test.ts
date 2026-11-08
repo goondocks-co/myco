@@ -23,7 +23,7 @@ import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js'
 import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings-policies.js';
 import { DEPLOYMENT_LEAF_SPECS, settingTexts, learningHistoryEnabledSql } from '@myco-server-worker/core/settings.js';
 import { budgetHeld } from '@myco-server-worker/core/run-budget.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { taskFactsKey } from '@myco-server-worker/core/runs.js';

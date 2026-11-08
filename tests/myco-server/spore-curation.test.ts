@@ -556,7 +556,7 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
   const {ensureMember}=await import('@myco-server-worker/auth/enrollment.js');
   const {issueMemberToken}=await import('@myco-server-worker/auth/tokens.js');
   const {legacyWorker}=await import('./helpers/worker-principal.js');
-  const {completeBudgetMigration}=await import('@myco-server-worker/db/budget-activation.js');
+  const {completeBudgetMigration}=await import('@myco-server-worker/db/meta/budget-activation.js');
   const {estimateKey}=await import('@myco-server-worker/core/budget-estimates.js');
   const {mutateState}=await import('@myco-server-worker/core/runs.js');
   const f=await fixture(), attempts=300;

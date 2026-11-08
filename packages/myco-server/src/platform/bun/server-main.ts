@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
-import { budgetMigration,budgetCompletionMessage } from '../../db/budget-activation.js';
+import { budgetMigration,budgetCompletionMessage } from '../../db/meta/budget-activation.js';
 import { thinLearningUpgradeAdmission } from '../../db/thin-learning-admission.js';
 import { assertPrivateRecoveryCopy, recoveryCopyAdmission, type PrivateRecoveryCopy } from './private-recovery-copy.js';
 import { EmbeddingRuntime } from './embedding-runtime.js';
@@ -182,12 +182,14 @@ export function bootstrapDatabase(databasePath: string, native?: NativeSqlite): 
   return migrateOnly(databasePath, native);
 }
 
+export type VolumeMetaKey = 'deployment_id' | 'version';
+
 /**
  * A `schema_meta` value of the volume `databasePath` holds, read without changing it: the ledger a start reads before it
  * decides whether the volume needs migrating, and the values a volume's identity is made of. A volume that does not
  * exist yet, or holds no meta table, answers null rather than being created or migrated by the read.
  */
-export function schemaMetaValue(databasePath: string, key: string, native?: NativeSqlite): string | null {
+export function volumeMetaValue(databasePath: string, key: VolumeMetaKey, native?: NativeSqlite): string | null {
   if (!existsSync(databasePath)) return null;
   configureSqliteLibrary(native);
   const sqlite = new Database(databasePath, { readonly: true });
@@ -205,7 +207,7 @@ export function schemaMetaValue(databasePath: string, key: string, native?: Nati
 
 /** The schema step this volume is stamped at: 0 for a volume with no ledger yet. */
 export function stampedSchemaVersion(databasePath: string, native?: NativeSqlite): number {
-  return Number(schemaMetaValue(databasePath, 'version', native) ?? 0);
+  return Number(volumeMetaValue(databasePath, 'version', native) ?? 0);
 }
 
 /** What a process that died before it served says on its way out: a read command names the read, a start names the start. */

@@ -10,7 +10,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import worker from '@myco-server-worker/index.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
 
 const NOW = 1_800_000_000_000;
