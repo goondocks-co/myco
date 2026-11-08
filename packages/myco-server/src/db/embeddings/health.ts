@@ -1,11 +1,11 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import type { core_embedding_reconcile_PassedOverSource as PassedOverSource } from '../../read/catalog/embedding-reconcile.js';
+import type { PassedOverSource } from './switch.js';
 import { CURRENT_EMBEDDING_SOURCES } from '../embedding-sources.js';
 import { read, readSet } from '../index.js';
+import { currentPassedOver } from './passed-over.js';
 
 export const PASSED_OVER_PAGE_SIZE = 100;
-const membership = `FROM embedding_passed_over INDEXED BY idx_embedding_passed_over_model
-  WHERE model_key IN (SELECT value FROM json_each(?1)) AND (expires_at IS NULL OR expires_at>?2)`;
+const membership = `FROM (${currentPassedOver('?1', '?2')})`;
 const pageSql = `SELECT project_id,type,record_id,model_key,reason,MAX(recorded_at) AS at ${membership}
   GROUP BY project_id,type,record_id ORDER BY at DESC,record_id,project_id,type LIMIT ${PASSED_OVER_PAGE_SIZE}`;
 const readiness = read<[], { done: number }>({ name: 'embedding.healthReadiness', sql: "SELECT done FROM projection_catchup WHERE projection='passed_over' AND phase='failures'" });

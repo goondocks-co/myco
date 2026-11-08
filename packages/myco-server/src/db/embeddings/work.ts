@@ -1,5 +1,11 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { embeddingDueInsert } from '../embedding-due.js';
+import { embeddingDueInsert, INPUT_REFUSAL_RETRY_MS } from '../embedding-due.js';
+import { currentEmbeddingSourceSql } from '../embedding-retirement.js';
+import { DELETION_RETRIES, RECEIPT } from '../../core/embedding/receipt-state.js';
+import type { VectorType } from '../../core/embedding/vectors.js';
+import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import type { EmbeddingSource } from '../../read/embedding.js';
+import { binaryOrder } from '../../read/scope.js';
 import { eligibleEmbeddingSource } from '../embedding-sources.js';
 import { commit, read, readSet, write } from '../index.js';
 import { SOURCE_STATE_RECONCILE } from './state.js';
@@ -95,10 +101,10 @@ export async function dueSourceWork(db: RelationalStore, projectId: string, mode
   return false;
 }
 
-interface WorkRow { revision: number; checked_revision: number; pending: number; wake_at: number | null; sweep_at: number; sweep_cursor: string | null; idle_rounds: number; scope: string }
+interface WorkRow { revision: number; checked_revision: number; pending: number; wake_at: number | null; scope: string }
 
 export const workRow = read<[string, string, string], WorkRow>({ name: 'embedding.workRow',
-  sql: `SELECT revision,checked_revision,pending,wake_at,sweep_at,sweep_cursor,idle_rounds,scope FROM embedding_work_state WHERE project_id=?1 AND model_key=?2 AND kind=?3` });
+  sql: `SELECT revision,checked_revision,pending,wake_at,scope FROM embedding_work_state WHERE project_id=?1 AND model_key=?2 AND kind=?3` });
 export const workScope = write<[string, string, string, string]>({ name: 'embedding.workScope',
   sql: `INSERT INTO embedding_work_state(project_id,model_key,kind,scope) VALUES(?1,?2,?3,?4)
     ON CONFLICT(project_id,model_key,kind) DO UPDATE SET scope=excluded.scope,revision=revision+1,
@@ -309,4 +315,266 @@ export async function nextDueSource(db: RelationalStore, projectId: string, mode
   const [fresh, stale] = await readSet(db, nextDue.bind(projectId, model, type, 0, now), nextDue.bind(projectId, model, type, 1, now));
   const row = fresh[0] ?? stale[0];
   return row === undefined ? null : { ...row, stale: fresh[0] === undefined };
+}
+
+/** The work rows a scheduling check covered for one Project, as `[model_key, kind]` pairs: what a cleared attention row must find clean. */
+export type CheckedWork = ReadonlyArray<readonly [string, 'embedding' | 'hubness']>;
+/** Projects one audit page reads, and the most attention rows one scheduling check reads. */
+export const WORK_AUDIT_PAGE = 50;
+export const WORK_ATTENTION_PAGE = 32;
+
+/**
+ * The scheduling schema: a Project-keyed attention set every work-dirtying trigger adds its Project to (one key seek,
+ * no write when it is already there), the Deployment's audit frontier, a partial index over work rows waiting on a
+ * deadline, and an index that seeks a Project's current passed-over membership by model and expiry.
+ */
+export function workScheduleSchema(projectIdCheck: string): string[] {
+  return [
+    'CREATE INDEX IF NOT EXISTS idx_embedding_passed_over_current ON embedding_passed_over(project_id,model_key,expires_at)',
+    `CREATE TABLE IF NOT EXISTS embedding_work_attention(project_id TEXT PRIMARY KEY CHECK (${projectIdCheck})) WITHOUT ROWID`,
+    `CREATE TABLE IF NOT EXISTS embedding_work_audit(slot INTEGER PRIMARY KEY CHECK (slot=1),scope TEXT NOT NULL,after TEXT NOT NULL,
+      done INTEGER NOT NULL CHECK (done IN (0,1)),audited_at INTEGER NOT NULL,cursor TEXT NOT NULL DEFAULT '')`,
+    'CREATE INDEX IF NOT EXISTS idx_embedding_work_wake ON embedding_work_state(model_key,wake_at) WHERE wake_at IS NOT NULL',
+  ];
+}
+
+/**
+ * The work-dirtying triggers: a source version, receipt, failure, plan proof, calibration member or calibration cursor
+ * mutation dirties its Project's work rows and adds the Project to the attention set in the same statement; a change to
+ * a model's activation, initialization or epoch does the same for that Project's rows.
+ */
+export function workDirtyTriggers(sessionEligibility: string): Array<{ name: string; table: string; sql: string }> {
+  const dirty = (table: string, kinds = "'embedding','hubness'", update = 'UPDATE', when?: (operation: string) => string) =>
+    ['INSERT', update, 'DELETE'].map((operation) => {
+      const rows = operation.startsWith('UPDATE') ? ['OLD', 'NEW'] : [operation === 'DELETE' ? 'OLD' : 'NEW'];
+      const name = `${table}_work_${operation.split(' ')[0]!.toLowerCase()}`;
+      return { name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${operation} ON ${table} ${when === undefined ? '' : `WHEN ${when(operation)}`} BEGIN
+      UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL,sweep_cursor=NULL,idle_rounds=0
+        WHERE project_id IN (${rows.map((row) => `${row}.project_id`).join(',')}) AND kind IN (${kinds});
+      INSERT INTO embedding_work_attention(project_id) VALUES${rows.map((row) => `(${row}.project_id)`).join(',')} ON CONFLICT DO NOTHING; END` };
+    });
+  return [
+    ...dirty('embedding_versions', undefined, 'UPDATE OF project_id,type,record_id,revision', (operation) => {
+      const rows = operation === 'INSERT' ? ['NEW'] : operation === 'DELETE' ? ['OLD'] : ['OLD', 'NEW'];
+      return rows.map((row) => `(${row}.type <> 'session' OR EXISTS (SELECT 1 FROM sessions
+      WHERE project_id=${row}.project_id AND session_id=${row}.record_id AND ${sessionEligibility})
+      OR EXISTS (SELECT 1 FROM embedding_receipts WHERE project_id=${row}.project_id AND type='session' AND record_id=${row}.record_id))`).join(' OR ');
+    }),
+    ...dirty('embedding_receipts', undefined, 'UPDATE OF project_id,model_key,id,type,record_id,revision,ready,updated_at,rewrites'),
+    ...dirty('embedding_source_failures'),
+    ...dirty('processed_resources', undefined, undefined, (operation) => operation === 'INSERT' ? "NEW.kind = 'plan'" : operation === 'DELETE' ? "OLD.kind = 'plan'" : "OLD.kind = 'plan' OR NEW.kind = 'plan'"),
+    ...dirty('embedding_hubness_members', "'hubness'"),
+    ...dirty('embedding_cursors', "'hubness'", 'UPDATE OF hubness_model,hubness_count,hubness_cursor'),
+  ];
+}
+
+/** A model registered for a Project, or one whose activation, initialization or epoch moves, re-arms the Project's work. */
+export function workModelTriggers(): Array<{ name: string; table: string; sql: string }> {
+  const body = (row: string) => `UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL WHERE project_id=${row}.project_id;
+      INSERT INTO embedding_work_attention(project_id) VALUES(${row}.project_id) ON CONFLICT DO NOTHING;`;
+  return [
+    { name: 'embedding_models_work_insert', table: 'embedding_models', sql: `CREATE TRIGGER IF NOT EXISTS embedding_models_work_insert AFTER INSERT ON embedding_models BEGIN
+      ${body('NEW')} END` },
+    { name: 'embedding_models_work_update', table: 'embedding_models', sql: `CREATE TRIGGER IF NOT EXISTS embedding_models_work_update AFTER UPDATE OF active,complete,epoch ON embedding_models
+      WHEN OLD.active IS NOT NEW.active OR OLD.complete IS NOT NEW.complete OR OLD.epoch IS NOT NEW.epoch BEGIN
+      ${body('NEW')} END` },
+  ];
+}
+
+interface AuditRow { scope: string; after: string; done: number; audited_at: number; cursor: string }
+interface CandidateRow { project_id: string; archived: number; gone: number; marked: number }
+const auditRow = read<[], AuditRow>({ name: 'embedding.workAudit', sql: 'SELECT scope,after,done,audited_at,cursor FROM embedding_work_audit WHERE slot=1' });
+const auditRestart = write<[string, number]>({ name: 'embedding.workAuditRestart',
+  sql: `INSERT INTO embedding_work_audit(slot,scope,after,done,audited_at) VALUES(1,?1,'',0,?2)
+    ON CONFLICT(slot) DO UPDATE SET scope=excluded.scope,after='',done=0,audited_at=excluded.audited_at` });
+const auditAdvance = write<[string, number, number, string, string]>({ name: 'embedding.workAuditAdvance',
+  sql: 'UPDATE embedding_work_audit SET after=?1,done=?2,audited_at=CASE WHEN ?2=1 THEN ?3 ELSE audited_at END WHERE slot=1 AND scope=?4 AND after=?5 AND done=0' });
+const auditCursor = write<[string]>({ name: 'embedding.workAttentionCursor', sql: 'UPDATE embedding_work_audit SET cursor=?1 WHERE slot=1' });
+const auditPage = read<[string, number], CandidateRow>({ name: 'embedding.workAuditPage',
+  sql: `SELECT p.project_id,p.archived_at IS NOT NULL AS archived,0 AS gone,EXISTS(SELECT 1 FROM embedding_work_attention a WHERE a.project_id=p.project_id) AS marked
+    FROM projects p WHERE p.project_id>?1 ORDER BY p.project_id LIMIT ?2` });
+const attentionPage = read<[string, number], CandidateRow>({ name: 'embedding.workAttention',
+  sql: `SELECT a.project_id,COALESCE(p.archived_at IS NOT NULL,0) AS archived,p.project_id IS NULL AS gone,1 AS marked FROM embedding_work_attention a
+    LEFT JOIN projects p ON p.project_id=a.project_id WHERE a.project_id>?1 ORDER BY a.project_id LIMIT ?2` });
+const wakingPage = read<[string, number, number], CandidateRow>({ name: 'embedding.workWaking',
+  sql: `SELECT DISTINCT w.project_id,COALESCE(p.archived_at IS NOT NULL,0) AS archived,p.project_id IS NULL AS gone,
+      EXISTS(SELECT 1 FROM embedding_work_attention a WHERE a.project_id=w.project_id) AS marked
+    FROM embedding_work_state w INDEXED BY idx_embedding_work_wake LEFT JOIN projects p ON p.project_id=w.project_id
+    WHERE w.model_key IN (SELECT value FROM json_each(?1)) AND w.wake_at IS NOT NULL AND w.wake_at<=?2 LIMIT ?3` });
+/** Clears a Project's attention only while every row its check covered is still clean. */
+const clearAttention = write<[string, string]>({ name: 'embedding.workAttentionClear',
+  sql: `DELETE FROM embedding_work_attention WHERE project_id=?1 AND (NOT EXISTS (SELECT 1 FROM projects WHERE project_id=?1) OR NOT EXISTS (
+    SELECT 1 FROM json_each(?2) c JOIN embedding_work_state w ON w.project_id=?1 AND w.model_key=json_extract(c.value,'$[0]') AND w.kind=json_extract(c.value,'$[1]')
+    WHERE w.revision<>w.checked_revision OR w.pending=1))` });
+
+/** Where the Deployment's scheduling stands: the audit frontier, and the Projects a check reads now. */
+export interface WorkCandidates {
+  /** Projects to check, each once: attention first, then those whose wake time came, then the audit page. */
+  projects: Array<{ projectId: string; retireOnly: boolean; gone: boolean; marked: boolean; audited: boolean }>;
+  /** The audit page's last Project when an audit is under way, to advance after the page is checked; else null. */
+  audit: { scope: string; after: string; last: string; done: boolean } | null;
+  /** The last attention Project read, which the next dispatch starts after. */
+  cursor: string;
+  /** Whether the attention page is full: more Projects may wait beyond it. */
+  full: boolean;
+}
+
+/**
+ * The Projects a scheduling check reads: those in the attention set, read in a rotating page after `cursor`; those
+ * whose work row's wake time has come; and, while an audit runs, one page of every Project, each probed fresh. An audit
+ * starts when the Deployment's work scope `scope` differs from the one last audited, or `intervalMs` after the last
+ * audit finished: it is the finite pass that finds what no trigger marks (a Project unarchived, a scope change, a work
+ * row resting on a stale answer). Reads a fixed number of rows outside the pages.
+ */
+export async function workCandidates(db: RelationalStore, scope: string, models: readonly string[], now: number, intervalMs: number, rotate: boolean): Promise<WorkCandidates> {
+  let [[audit]] = await readSet(db, auditRow.bind());
+  if (audit === undefined || audit.scope !== scope || (audit.done === 1 && audit.audited_at + intervalMs <= now)) {
+    const [, again] = await commit(db, auditRestart.bind(scope, now), auditRow.bind());
+    audit = again.results[0]!;
+  }
+  const start = rotate ? audit.cursor : '';
+  const auditing = audit.done === 0 && audit.scope === scope;
+  const [held, wrapped, waking, page] = await readSet(db, attentionPage.bind(start, WORK_ATTENTION_PAGE),
+    attentionPage.bind('', start === '' ? 0 : WORK_ATTENTION_PAGE), wakingPage.bind(JSON.stringify([...new Set(models)]), now, WORK_ATTENTION_PAGE),
+    auditPage.bind(auditing ? audit.after : '', auditing ? WORK_AUDIT_PAGE : 0));
+  const seen = new Map<string, { projectId: string; retireOnly: boolean; gone: boolean; marked: boolean; audited: boolean }>();
+  const attention = [...held, ...(held.length < WORK_ATTENTION_PAGE ? wrapped : [])].slice(0, WORK_ATTENTION_PAGE);
+  for (const row of [...attention, ...waking, ...page]) {
+    if (!seen.has(row.project_id)) seen.set(row.project_id, { projectId: row.project_id, retireOnly: row.archived === 1, gone: row.gone === 1, marked: row.marked === 1, audited: false });
+  }
+  for (const row of page) seen.get(row.project_id)!.audited = true;
+  return {
+    projects: [...seen.values()],
+    audit: auditing ? { scope, after: audit.after, last: page.at(-1)?.project_id ?? audit.after, done: page.length < WORK_AUDIT_PAGE } : null,
+    cursor: attention.at(-1)?.project_id ?? '',
+    full: attention.length === WORK_ATTENTION_PAGE,
+  };
+}
+
+/** Record that a check covered the audit page, so the next check reads the page after it. */
+export async function advanceWorkAudit(db: RelationalStore, audit: NonNullable<WorkCandidates['audit']>, now: number): Promise<void> {
+  await commit(db, auditAdvance.bind(audit.last, audit.done ? 1 : 0, now, audit.scope, audit.after));
+}
+
+/** The attention Project the next dispatch reads after, so every Project with work is reached in turn. */
+export async function rotateWorkAttention(db: RelationalStore, cursor: string): Promise<void> {
+  await commit(db, auditCursor.bind(cursor));
+}
+
+const markAttention = write<[string]>({ name: 'embedding.workAttentionMark', sql: 'INSERT INTO embedding_work_attention(project_id) VALUES(?1) ON CONFLICT DO NOTHING' });
+
+/** A check found work for a Project an audit or a wake time reached: it joins the attention set until a check finds it idle. */
+export async function markWorkAttention(db: RelationalStore, projectId: string): Promise<void> {
+  await commit(db, markAttention.bind(projectId));
+}
+
+/** A check found no work for a Project: it leaves the attention set unless a mutation dirtied one of its checked rows after the check. */
+export async function clearWorkAttention(db: RelationalStore, projectId: string, checked: CheckedWork): Promise<void> {
+  await commit(db, clearAttention.bind(projectId, JSON.stringify(checked)));
+}
+
+/** Whether scheduling still owes an audit: none yet run for `scope`, or one under way. One fixed row. */
+export async function workOwed(db: RelationalStore, scope: string): Promise<boolean> {
+  const [[audit]] = await readSet(db, auditRow.bind());
+  return audit === undefined || audit.scope !== scope || audit.done === 0;
+}
+
+const providerRetry = read<[string, number], { retry_at: number }>({ name: 'embedding.providerRetryAt',
+  sql: 'SELECT retry_at FROM embedding_provider_holds WHERE model_key IN (SELECT value FROM json_each(?1)) AND retry_at>?2 ORDER BY retry_at LIMIT 1' });
+const providerHolds = read<[string], { model_key: string; retry_at: number | null }>({ name: 'embedding.providerHolds',
+  sql: 'SELECT model_key,retry_at FROM embedding_provider_holds WHERE model_key IN (SELECT value FROM json_each(?1))' });
+
+/** The earliest instant a held provider of `models` is asked again, or null. */
+export async function providerRetryAt(db: RelationalStore, models: readonly string[], now: number): Promise<number | null> {
+  const [[row]] = await readSet(db, providerRetry.bind(JSON.stringify(models), now));
+  return row?.retry_at ?? null;
+}
+
+/** The models of `models` whose provider may be asked now: no hold, or a hold whose retry time has come. One read. */
+export async function readyProviders(db: RelationalStore, models: readonly string[], now: number): Promise<string[]> {
+  const [rows] = await readSet(db, providerHolds.bind(JSON.stringify([...new Set(models)])));
+  const held = new Map(rows.map(row => [row.model_key, row.retry_at]));
+  return models.filter(model => { const at = held.get(model); return at === undefined || (at !== null && at <= now); });
+}
+
+/** A receipt due for retirement or a deletion retry. */
+export interface RetiringReceipt { id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number; updated_at: number }
+const RECEIPT_COLUMNS = 'r.id,r.model_key,r.type,r.record_id,r.revision,r.ready,r.updated_at';
+const queuedRetirement = read<[string, string], RetiringReceipt>({ name: 'embedding.retirementQueued',
+  sql: `SELECT ${RECEIPT_COLUMNS} FROM embedding_retirement_queue q CROSS JOIN embedding_receipts r ON r.project_id=q.project_id AND r.model_key=q.model_key AND r.id=q.id
+    WHERE q.project_id=?1 AND q.model_key=?2 AND r.ready>=0 AND NOT ${currentEmbeddingSourceSql('r')} ORDER BY q.updated_at,q.id LIMIT 1` });
+/** A receipt under a model outside the retained set: `?2`/`?3` bound the gap between two retained models ('' for none). */
+const unretained = (lower: boolean, upper: boolean) => read<[string, ...string[]], RetiringReceipt>({ name: `embedding.retirementUnretained${lower ? 'L' : ''}${upper ? 'U' : ''}`,
+  sql: `SELECT ${RECEIPT_COLUMNS} FROM embedding_receipts r WHERE r.project_id=?1 AND r.ready>=${RECEIPT.journaled}${lower ? ' AND r.model_key>?2' : ''}${upper ? ` AND r.model_key<?${lower ? 3 : 2}` : ''}
+    ORDER BY r.model_key,r.updated_at,r.id LIMIT 1` });
+const UNRETAINED = { '': unretained(false, false), L: unretained(true, false), U: unretained(false, true), LU: unretained(true, true) };
+const deletionDue = read<[string, number, number], RetiringReceipt>({ name: 'embedding.retirementDeletionDue',
+  sql: `SELECT ${RECEIPT_COLUMNS} FROM embedding_receipts r WHERE r.project_id=?1 AND r.ready<${RECEIPT.journaled} AND r.ready=?2 AND r.updated_at<=?3 ORDER BY r.updated_at,r.id LIMIT 1` });
+
+/**
+ * The receipt a Project retires next, oldest first: a queued stale receipt under a retained model, any receipt under a
+ * model no longer retained, or a deletion claim whose confirmation or retry wait has passed. One batch of indexed seeks.
+ */
+export async function retiringReceipt(db: RelationalStore, projectId: string, retained: readonly string[], now: number): Promise<RetiringReceipt | null> {
+  const models = [...new Set(retained)].sort(binaryOrder);
+  const gaps = Array.from({ length: models.length + 1 }, (_, index) => {
+    const lower = models[index - 1], upper = models[index];
+    const key = `${lower === undefined ? '' : 'L'}${upper === undefined ? '' : 'U'}` as keyof typeof UNRETAINED;
+    return UNRETAINED[key].bind(projectId, ...(lower === undefined ? [] : [lower]), ...(upper === undefined ? [] : [upper]));
+  });
+  const found = await readSet(db, ...models.map(model => queuedRetirement.bind(projectId, model)), ...gaps,
+    ...DELETION_RETRIES.map(({ state, waitMs }) => deletionDue.bind(projectId, state, now - waitMs)));
+  return found.flat().sort((a, b) => a.updated_at - b.updated_at || binaryOrder(a.id, b.id))[0] ?? null;
+}
+
+const failureWake = read<[string, string, number], { at: number }>({ name: 'embedding.failureWakeAt',
+  sql: 'SELECT recorded_at AS at FROM embedding_source_failures WHERE project_id=?1 AND model_key=?2 AND recorded_at>?3 ORDER BY recorded_at LIMIT 1' });
+const deletionWake = read<[string, number, number], { at: number }>({ name: 'embedding.deletionWakeAt',
+  sql: `SELECT updated_at AS at FROM embedding_receipts WHERE project_id=?1 AND ready<${RECEIPT.journaled} AND ready=?2 AND updated_at>?3 ORDER BY updated_at LIMIT 1` });
+
+/** The earliest source refusal expiry under a model, read through its retry index. */
+export async function embeddingFailureWakeAt(db: RelationalStore, projectId: string, model: string, now: number): Promise<number | null> {
+  const [[row]] = await readSet(db, failureWake.bind(projectId, model, now - INPUT_REFUSAL_RETRY_MS));
+  return row === undefined ? null : row.at + INPUT_REFUSAL_RETRY_MS;
+}
+
+/** The earliest timed retry of a Project's work: a refusal expiring under one of `writes`, or a deletion wait ending. */
+export async function embeddingWakeAt(db: RelationalStore, projectId: string, writes: readonly string[], now: number): Promise<number | null> {
+  const rows = await readSet(db, ...writes.map(model => failureWake.bind(projectId, model, now - INPUT_REFUSAL_RETRY_MS)),
+    ...DELETION_RETRIES.map(({ state, waitMs }) => deletionWake.bind(projectId, state, now - waitMs)));
+  const deadlines = [
+    ...rows.slice(0, writes.length).flatMap(found => found.map(row => row.at + INPUT_REFUSAL_RETRY_MS)),
+    ...rows.slice(writes.length).flatMap((found, i) => found.map(row => row.at + DELETION_RETRIES[i]!.waitMs)),
+  ];
+  return deadlines.length === 0 ? null : Math.min(...deadlines);
+}
+
+const sourceRow = read<[string, string, string, string], EmbeddingSource & { object_key: string | null }>({ name: 'embedding.source',
+  sql: `SELECT s.*,${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key FROM embedding_sources s WHERE s.project_id=?1 AND s.type=?2 AND s.record_id=?3 AND s.revision=?4` });
+
+/** One current source's text and metadata at the revision a due row names, or null once that revision is gone. */
+export async function embeddingSource(db: RelationalStore, projectId: string, type: string, recordId: string, revision: string): Promise<(EmbeddingSource & { object_key: string | null }) | null> {
+  const [[row]] = await readSet(db, sourceRow.bind(projectId, type, recordId, revision));
+  return row ?? null;
+}
+
+/**
+ * Calibration under `?2` provably rests in Project `?1`: its population snapshot carries the Project's current
+ * calibration revision, which every spore version and receipt change advances, and records every current spore vector
+ * covered, with no vector being written again, no miscounted moment, no member joining or leaving, no member of any
+ * other model and no statistics still to publish. A handful of key seeks; an audit probes calibration in full only
+ * when this does not hold.
+ */
+const calibrationRests = read<[string, string], { rests: number }>({ name: 'embedding.calibrationRests',
+  sql: `SELECT EXISTS(SELECT 1 FROM embedding_hubness_population p WHERE p.project_id=?1 AND p.model_key=?2
+      AND p.revision=COALESCE((SELECT revision FROM embedding_hubness_revision WHERE project_id=?1),0)
+      AND p.complete=1 AND p.miscounted=0 AND p.total=p.covered AND p.members=p.covered)
+    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key=?2 AND state>0)
+    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key<?2)
+    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key>?2)
+    AND NOT EXISTS(SELECT 1 FROM embedding_cursors WHERE project_id=?1 AND hubness_cursor IS NOT NULL) AS rests` });
+
+export async function calibrationRestsAtRevision(db: RelationalStore, projectId: string, model: string): Promise<boolean> {
+  const [[row]] = await readSet(db, calibrationRests.bind(projectId, model));
+  return row?.rests === 1;
 }

@@ -235,7 +235,7 @@ export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE project_settings(project_id TEXT,leaf TEXT,value TEXT,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(project_id,leaf))',
   'CREATE TABLE project_capabilities(project_id TEXT,capability TEXT,enabled INTEGER,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(project_id,capability))',
   ...V710_STATEMENTS,
-  'CREATE TABLE embedding_receipts(model_key TEXT,ready INTEGER)',
+  'CREATE TABLE embedding_receipts(project_id TEXT,model_key TEXT,id TEXT,ready INTEGER,PRIMARY KEY(project_id,model_key,id))',
   'CREATE TABLE embedding_switches(slot TEXT,id TEXT,provider TEXT,model TEXT,endpoint TEXT,model_key TEXT,from_model_key TEXT,estimated_tokens INTEGER,estimated_sources INTEGER,state TEXT,reason TEXT,retry_at INTEGER,failures INTEGER,progressed_at INTEGER,started_at INTEGER,started_by TEXT)',
   ...['worker_model_catalogs', 'runner_model_catalogs'].map((table, i) => `CREATE TABLE ${table}(${i === 0 ? 'machine_id' : 'runner_id'} TEXT,harness TEXT,catalog TEXT,resolutions TEXT,fetched_at INTEGER,received_at INTEGER,observed_order INTEGER,PRIMARY KEY(${i === 0 ? 'machine_id' : 'runner_id'},harness))`),
   'CREATE TABLE runner_update_reports(runner_id TEXT PRIMARY KEY,channel TEXT,current_version TEXT,latest_version TEXT,last_check_at INTEGER,last_result TEXT,observed_order INTEGER)',

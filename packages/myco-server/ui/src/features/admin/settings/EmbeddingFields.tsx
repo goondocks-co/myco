@@ -226,7 +226,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
                   : actions.estimateSwitch.isError ? 'Myco could not estimate what this switch reads and costs, so it cannot start.' : 'Estimating what this switch reads and costs…'}
               </p>
               {actions.estimateSwitch.data !== undefined && (
-                <PassedOverSources list={actions.estimateSwitch.data.passedOver}
+                <PassedOverSources list={actions.estimateSwitch.data.passedOver} counting={actions.estimateSwitch.data.progress === 'building'}
                   lede={`${actions.estimateSwitch.data.passedOver.count === 1 ? 'This source has' : 'These sources have'} no search by meaning after the switch:`} />
               )}
             </ConfirmDialog>

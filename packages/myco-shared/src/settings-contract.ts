@@ -79,6 +79,12 @@ export interface EmbeddingSwitchStatus {
    */
   done: number;
   total: number;
+  /**
+   * `ready` when `done` and `total` are complete as of `asOf`; `building` while a Project's model is still initializing
+   * or embedding state is catching up, when they are partial and still counting.
+   */
+  progress: 'ready' | 'building';
+  asOf: number;
   /** Sources the new model passes over, which count as done and lose search by meaning once search moves: each named, with why. */
   passedOver: PassedOverList;
   startedAt: number;
@@ -97,6 +103,8 @@ export interface EmbeddingSwitchEstimate {
   estimatedUsd: number | null;
   /** Sources known now to be passed over under the model, which have no search by meaning after the switch. */
   passedOver: PassedOverList;
+  /** `building` while the passed-over sources are still being counted, when `passedOver` is partial. */
+  progress: 'ready' | 'building';
 }
 
 /** One source search by meaning passes over: which Project, what it is, and why, in the reader's words. */

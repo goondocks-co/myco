@@ -80,7 +80,7 @@ const HOSTED_CHOICES = {
 /** A switch to bge-base under way on that server, 120 of 400 sources in. */
 const BUILDING: EmbeddingSwitchStatus = {
   id: '6f1c2a90-3b7d-4e5f-8a1b-2c3d4e5f6a7b', provider: 'workers-ai', providerLabel: 'Cloudflare Workers AI', model: '@cf/baai/bge-base-en-v1.5', dimensions: 768,
-  from: { model: '@cf/baai/bge-m3', dimensions: 1024 }, state: 'building', reason: null, done: 120, total: 400, startedAt: NOW - 5 * 60_000,
+  from: { model: '@cf/baai/bge-m3', dimensions: 1024 }, state: 'building', reason: null, done: 120, total: 400, progress: 'ready', asOf: NOW, startedAt: NOW - 5 * 60_000,
   estimatedTokens: 60_000, estimatedUsd: 0.004, retryAt: null, stalled: null, passedOver: { count: 0, sources: [] },
 };
 /** The same server before search has built anything: every model that fits may be chosen. */
@@ -459,7 +459,7 @@ describe('Settings, in five sections', () => {
       await routed(input, init);
       await new Promise<void>((resolve) => { answerEstimate = resolve; held = true; });
       return Response.json({ applied: true, estimate: { provider: 'openrouter', model: 'baai/bge-m3', sources: 4_812, estimatedTokens: 2_400_000, estimatedUsd: 0.024,
-        passedOver: { count: 1, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] } } });
+        passedOver: { count: 1, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] }, progress: 'ready' } });
     }) as typeof fetch;
     mount('/settings/models');
     await waitFor(() => expect(statusOf('embedding.model')).toContain('Choosing another model offers to switch search to it'));
@@ -541,6 +541,30 @@ describe('Settings, in five sections', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel the switch' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: `/api/embedding/switch/${BUILDING.id}` });
+  });
+
+  it('says a switch is still counting its sources rather than showing a partial total as final', async () => {
+    const counting = { ...BUILDING, progress: 'building' as const, done: 40, total: 40,
+      passedOver: { count: 2, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] } };
+    server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: counting } }) }));
+    mount('/settings/models');
+    const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
+    expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions): 40 sources done so far, still counting the rest.');
+    expect(panel.textContent).not.toContain('of 40');
+    expect(panel.textContent).toContain('Still counting the sources search by meaning will pass over: 2 sources so far.');
+    expect(panel.textContent).not.toContain('will have no search by meaning once search moves');
+    // No meter offers a share of a partial total, visually or to assistive technology.
+    expect(within(panel as HTMLElement).queryByRole('meter')).toBeNull();
+    expect((panel as HTMLElement).querySelector('[aria-valuemax]')).toBeNull();
+  });
+
+  it('shows the exact share on a meter once a switch\'s sources are all counted', async () => {
+    server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: { ...BUILDING, progress: 'ready', done: 40, total: 60 } } }) }));
+    mount('/settings/models');
+    const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
+    const meter = within(panel as HTMLElement).getByRole('meter');
+    expect([meter.getAttribute('aria-valuenow'), meter.getAttribute('aria-valuemax'), meter.getAttribute('aria-valuetext')]).toEqual(['40', '60', '40 of 60']);
+    expect(panel.textContent).toContain('40 of 60 sources done (66%)');
   });
 
   it('shows a paused switch with its reason and resumes it', async () => {
