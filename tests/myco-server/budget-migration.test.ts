@@ -1,3 +1,4 @@
+import { readAttemptSpendOracle as readSpendRows } from './helpers/attempt-spend-oracle.js';
 import {expect,it} from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
@@ -7,7 +8,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { createBackup,backupArtifact,backupSnapshot,restoreArtifact } from '@myco-server-worker/core/backup.js';
-import { readSpendRows } from '@myco-server-worker/core/run-budget.js';
+
 import { refreshEstimates,estimateForClaim,estimateRefreshDue } from '@myco-server-worker/core/budget-estimates.js';
 import { ESTIMATE_PUBLISH_PAGE } from '@myco-server-worker/core/budget-estimates.js';
 import { memoryBlobStore } from './helpers/fixtures.js';

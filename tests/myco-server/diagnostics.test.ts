@@ -91,6 +91,23 @@ describe('the Deployment names what it is configured to do', () => {
     expect(document.missingSporeVectors).toBeNull();
   });
 
+  it('keeps diagnostics readable while run admission is building', async () => {
+    const r = await rig();
+    try {
+      r.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at) VALUES('proj_1','building-run','myco-agent','title-summary','queued',?)", [NOW]);
+      const ready = await deploymentDiagnostics(r.serverEnv, NOW);
+      r.sqlite.run("UPDATE projection_catchup SET done=0 WHERE projection='run_admission'");
+      const building = await deploymentDiagnostics(r.serverEnv, NOW);
+      expect(building.store).toBe('readable');
+      expect(building.workers).toMatchObject({ state: 'building', workersBusy: null, runsQueued: null, fleet: ready.workers!.fleet });
+      expect(building.queuedRuns).toEqual(ready.queuedRuns);
+      expect(building.projects).toEqual(ready.projects);
+      expect(building.projects?.some(project => project.projectId === 'proj_1')).toBe(true);
+      expect(building.ingestBacklog).toEqual(ready.ingestBacklog);
+      expect(building.ingestBacklog).not.toBeNull();
+    } finally { r.sqlite.close(); }
+  });
+
   it('counts the spores left out of relevance calibration under the configured model while the vector store does not return their vectors', async () => {
     const r = await rig();
     const receipt = (record: string, model: string, ready: number, rewrites: number, updatedAt: number) => {

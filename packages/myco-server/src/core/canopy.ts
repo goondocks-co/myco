@@ -1,3 +1,4 @@
+import { canopyMapWrite } from '../db/runs/attributed-writes.js';
 import { commitAttributedWrite, type RunWrite } from './runs.js';
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS, MAP_TASK, parseMapArtifact, type MapSettings, type MapSourcePin, type StoredMap } from '@goondocks/myco-shared/canopy';
 import type { RepositoryPin } from '@goondocks/myco-shared/repository';
@@ -78,21 +79,12 @@ export async function writeCanopyMap(db: RelationalStore, scope: ReadScope, run:
   const artifact = parseMapArtifact(value);
   const prior = await readCanopyMap(db, scope);
   if (prior?.sourceRunId === run.id) return prior.inputHash === source.inputHash && JSON.stringify(prior.artifact) === JSON.stringify(artifact);
-  const statement = db.prepare(`INSERT INTO canopy_maps
-    (project_id, revision, artifact, input_hash, repository_url, repository_branch, repository_commit, source_run_id, generated_at)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-    WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?)
-      AND EXISTS (SELECT 1 FROM project_repositories WHERE project_id = ? AND url = ? AND branch = ?)
-      AND (? IS NULL OR EXISTS (SELECT 1 FROM canopy_maps WHERE project_id = ? AND revision = ?))
-    ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, artifact = excluded.artifact,
-      input_hash = excluded.input_hash, repository_url = excluded.repository_url, repository_branch = excluded.repository_branch,
-      repository_commit = excluded.repository_commit, source_run_id = excluded.source_run_id, generated_at = excluded.generated_at
-    WHERE canopy_maps.revision = ?`)
+  const statement = canopyMapWrite
     .bind(scope.projectId, crypto.randomUUID(), JSON.stringify(artifact), source.inputHash, repository.url, repository.branch, repository.commit, run.id, now,
       scope.projectId, run.id, run.dispatchedBy, scope.projectId, repository.url, repository.branch,
       source.priorRevision, scope.projectId, source.priorRevision, source.priorRevision);
   const result = await commitAttributedWrite(db, scope, statement, attribution);
-  return result.meta.changes === 1;
+  return result.results.length === 1;
 }
 
 /** A run owes a stored map or a verified no-change pass over the same admitted source. */

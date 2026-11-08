@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
-  D1_QUERY_ATTEMPTS, D1ExportStartBudget, exportD1, exportRecordPath, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
+  D1_QUERY_ATTEMPTS, D1ExportStartBudget, exportD1, exportRecordPath, exportResultPath, queryD1, queryD1ReadBatch, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { fetchD1Download } from '@myco/server/d1-download.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
@@ -1019,6 +1019,31 @@ describe('a read of the source database over the operator login', () => {
     expect(await queryD1(context(fetch, { pauses }), 'SELECT name FROM sqlite_master')).toEqual([{ name: 'sessions' }]);
     expect(sent).toEqual(['SELECT name FROM sqlite_master', 'SELECT name FROM sqlite_master']);
     expect(pauses.length).toBe(1);
+  });
+
+  it('returns every bound read result in order after a transient batch refusal', async () => {
+    const batch=[{sql:'SELECT ? AS value',params:['first']},{sql:'SELECT ? AS value',params:['second']}];
+    const sqlite=new Database(':memory:');
+    let transient=true;
+    const fetch:CloudflareFetch=async(_url,init)=>{
+      if(transient){transient=false;return refused(7403);}
+      const request=JSON.parse(String(init.body)) as {batch:typeof batch};
+      return Response.json({success:true,result:sqlite.transaction(()=>request.batch.map(query=>({
+        success:true,results:sqlite.query(query.sql).all(...query.params),meta:{changes:0},
+      })))()});
+    };
+    try {
+      expect(await queryD1ReadBatch(context(fetch),batch)).toEqual([
+        {results:[{value:'first'}],changes:0},{results:[{value:'second'}],changes:0},
+      ]);
+    } finally {sqlite.close();}
+  });
+
+  it('refuses a partial batch answer instead of reporting incomplete status', async () => {
+    const fetch:CloudflareFetch=async()=>rows([{value:'first'}]);
+    await expect(queryD1ReadBatch(context(fetch),[
+      {sql:'SELECT 1',params:[]},{sql:'SELECT 2',params:[]},
+    ])).rejects.toMatchObject({transient:false});
   });
 
   it('stops a 7403 that persists at its bound, naming the code, and never reads again past it', async () => {

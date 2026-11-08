@@ -1,3 +1,5 @@
+import { cardsWritten } from '../db/runs/attributed-writes.js';
+import type { AttributedMutation } from '../db/runs/attribution.js';
 import type { Bound } from '../db/index.js';
 import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { cardBackoffWrite, cardDueWrite } from '../db/runs/claim-companions.js';
@@ -215,10 +217,8 @@ const remainingCardsSql = `FROM json_each(?) j
   WHERE c.changes = json_extract(j.value,'$.changes') AND (c.run_id IS NOT ? OR c.state <> 'carded')`;
 
 /** The run's card completion lands once every assigned turn has a card or newer material. */
-export function cardsWrittenStatement(db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): PreparedStatement {
-  return db.prepare(`UPDATE learning_sessions SET carded_seq = carded_seq
-    WHERE project_id = ? AND session_id = ? AND NOT EXISTS (SELECT 1 ${remainingCardsSql})`)
-    .bind(projectId, sessionId, JSON.stringify(turns), projectId, sessionId, runId);
+export function cardsWrittenStatement(_db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): AttributedMutation {
+  return cardsWritten.bind(projectId,sessionId,JSON.stringify(turns),projectId,sessionId,runId);
 }
 
 /** Write a card run's cards for its served turns; a turn that changed after serving stays due. */

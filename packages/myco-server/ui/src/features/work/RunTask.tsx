@@ -295,7 +295,8 @@ function StartPreview({ preview, pending, failed, took }: { preview: TaskStartPr
         </p>
       )}
       {readiness !== null && <p data-readiness={preview.readiness!.met ? 'met' : 'unmet'}>{readiness}</p>}
-      {preview.live && <p data-already-live="">One is already waiting or running in this project. Starting another queues a second run.</p>}
+      {preview.live === null && <p>Checking for runs already waiting or running in this project.</p>}
+      {preview.live === true && <p data-already-live="">One is already waiting or running in this project. Starting another queues a second run.</p>}
     </div>
   );
 }

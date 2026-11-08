@@ -1,3 +1,4 @@
+import { knowledgeUnavailable } from '../db/runs/attributed-writes.js';
 
 import type { Bound } from '../db/index.js';
 import { ensureAgentStatement, runCallerGuard, lastTaskEntryQueries, taskEntriesSql } from '../db/runs/claim.js';
@@ -666,25 +667,8 @@ export async function recordRunWrite(db: RelationalStore, scope: ReadScope, writ
   }]);
 }
 
-/** A domain mutation and its run attribution commit together; a no-op records nothing. */
-export async function commitAttributedWrite(
-  db: RelationalStore,
-  scope: ReadScope,
-  mutation: PreparedStatement,
-  write?: RunWrite,
-  after:readonly PreparedStatement[]=[],
-  before:readonly PreparedStatement[]=[],
-): Promise<import('./adapters.js').RunResult> {
-  if (write === undefined) return after.length||before.length?(await db.batch([...before,mutation,...after]))[before.length]!:mutation.run();
-  const results = await db.batch([...before,mutation,
-    db.prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
-      SELECT ?, ?, NULL, ?, ?, 'written', NULL, ?, ? WHERE changes() > 0`)
-      .bind(scope.projectId, write.runId, RUN_WRITE_EVENT, write.toolName,
-        JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), write.recordedAt),
-    ...after,
-  ]);
-  return results[before.length]!;
-}
+export { commitAttributedWrite } from '../db/runs/attribution.js';
+import { commitAttributedWrite } from '../db/runs/attribution.js';
 
 /**
  * The most sessions one run's reads are recorded for. A run past it still reads; the sessions after the bound are
@@ -1036,25 +1020,7 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
   return result.changed === 1;
 }
 
-/**
- * How many workers hold a run right now, and how many runs wait for one.
- *
- * A lease is a fact about a BUSY worker, so this counts what is being driven
- * and what is waiting — the pair that tells an operator whether the queue is
- * moving. It cannot see a worker that is attached and idle: nothing a claim
- * writes survives an answer of "no work", so an idle worker and no worker read
- * alike. Telling those apart needs a last-seen the claim poll writes, which is
- * a column this schema does not have.
- */
-export async function workerLiveness(db: RelationalStore, now: number): Promise<{ workersBusy: number; runsQueued: number }> {
-  const row = await db.prepare(
-    `SELECT
-       (SELECT COUNT(DISTINCT CASE WHEN leased_runner_id IS NOT NULL THEN 'runner:' || leased_runner_id ELSE 'member:' || leased_by END)
-          FROM agent_runs WHERE status = 'running' AND lease_expires_at > ? AND (leased_by IS NOT NULL OR leased_runner_id IS NOT NULL)) AS workersBusy,
-       (SELECT COUNT(*) FROM agent_runs WHERE status = 'queued') AS runsQueued`,
-  ).bind(now).first<{ workersBusy: number; runsQueued: number }>();
-  return { workersBusy: Number(row?.workersBusy ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
-}
+export { workerLiveness } from '../db/runs/status.js';
 
 export { hasQueuedRun } from '../db/runs/queue.js';
 
@@ -1240,9 +1206,7 @@ export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, 
   for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
     const prompt=await db.prepare('SELECT instruction FROM agent_runs WHERE project_id=? AND id=?').bind(scope.projectId,run.id).first<{instruction:string|null}>();
     // The rewrite lands only over the instruction it is derived from; a newer instruction is read again and rewritten.
-    const mutation = db.prepare(`UPDATE agent_runs SET instruction=?,run_context=json_remove(run_context,'$.checkout')
-      WHERE project_id=? AND id=? AND instruction IS ? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql} RETURNING id`)
-      .bind(knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,prompt?.instruction ?? null,...authority.params);
+    const mutation = knowledgeUnavailable(lease.worker,knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,prompt?.instruction ?? null,lease.now,run.dispatchedBy);
     const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
       detail:{code:failure.code},recordedAt:lease.now});
     if (result.results.length === 1) return true;

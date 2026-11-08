@@ -17,11 +17,12 @@ import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { declared } from '../core/declared.js';
 import { TASK_SCHEDULE } from '../core/jobs.js';
-import { hasLiveTaskRun } from '../core/runs.js';
+
 import { PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { fleetReports, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { capabilityOf, capabilityOn, claimSettings } from '../core/worker-selection.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
+import { previewOwners, previewLiveTask } from '../db/runs/preview.js';
 import { ownMachineNames } from './capture.js';
 
 /** A machine heard from lately: named only to the member it belongs to, and to anyone else as that member's. */
@@ -46,7 +47,7 @@ export interface TaskStartPreview {
   /** The task's scheduling condition and whether it holds in the Project now; null for a task that names none. */
   readiness: { condition: string; met: boolean } | null;
   /** A run of the task is already waiting or running in the Project. */
-  live: boolean;
+  live: boolean | null;
   /** The capability the task needs and whether the Project has it on; null for a task no capability gates. */
   capability: { name: string; on: boolean } | null;
 }
@@ -56,11 +57,10 @@ async function startWorkers(db: RelationalStore, reports: ReadonlyArray<{ creden
   if (reports.length === 0) return new Map();
   const ids = reports.map((report) => report.credentialId);
   const [owners, ownNames] = await Promise.all([
-    db.prepare(`SELECT c.id AS id, c.member_id AS member_id, m.label AS label FROM member_credentials c LEFT JOIN members m ON m.id = c.member_id WHERE c.id IN (${ids.map(() => '?').join(', ')})`)
-      .bind(...ids).all<{ id: string; member_id: string | null; label: string | null }>(),
+    previewOwners(db, ids),
     ownMachineNames(db, viewerId, now),
   ]);
-  const byId = new Map((owners.results ?? []).map((row) => [row.id, row]));
+  const byId = new Map(owners.map((row) => [row.id, row]));
   const runnerNames = new Map(fleet.flatMap(row => row.runner === null ? [] : [[row.runner.id, row.runner.name] as const]));
   return new Map<string, StartWorker>(reports.map((report): [string, StartWorker] => {
     const runnerName = runnerNames.get(report.credentialId);
@@ -83,7 +83,7 @@ export async function readTaskStartPreview(env: ServerEnv, projectId: string, ta
     claimSettings(env),
     fleetAvailability(env, now, includeSignIn),
     declaredSchedule === null ? Promise.resolve(null) : scheduleLeaves(env),
-    hasLiveTaskRun(env.db, { projectId }, task),
+    previewLiveTask(env.db, projectId, task),
     capability === null ? Promise.resolve(null) : capabilityOn(env.db, projectId, capability),
   ]);
   const reports = fleetReports(fleet);

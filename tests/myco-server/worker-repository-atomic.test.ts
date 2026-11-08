@@ -179,3 +179,31 @@ for (const change of ['demotion', 'revocation'] as const) {
     } finally { r.e.sqlite.close(); }
   });
 }
+
+
+for (const refused of [false, true]) {
+  it(`records knowledge-only preparation only when its admitted mutation lands (refused=${refused})`, async () => {
+    const { budgetFixture } = await import('./helpers/budget-fixture.js');
+    const { getRun, recordKnowledgeRepositoryUnavailable } = await import('@myco-server-worker/core/runs.js');
+    const f = await budgetFixture();
+    try {
+      f.queue('knowledge-settlement', 'manual', 'proj_1', 'extract-curate');
+      f.sqlite.run(`UPDATE agent_runs SET status='running',started_at=?,leased_by=?,dispatched_by=?,lease_expires_at=?,
+        run_context=? WHERE id='knowledge-settlement'`, [f.now, f.workerTokenId, f.workerTokenId, f.now + 60000,
+        JSON.stringify({ checkout: { url: 'https://example.test/repository.git' }, timeoutSeconds: 60 })]);
+      const before = await getRun(f.db, { projectId: 'proj_1' }, 'knowledge-settlement');
+      if (refused) f.sqlite.run(`CREATE TRIGGER refuse_knowledge_mutation BEFORE UPDATE OF instruction ON agent_runs
+        WHEN OLD.id='knowledge-settlement' BEGIN SELECT RAISE(IGNORE); END`);
+      const landed = await recordKnowledgeRepositoryUnavailable(f.db, { projectId: 'proj_1' }, before!,
+        { code: 'fetch_failed', summary: 'Repository unavailable' }, { worker: f.principal, now: f.now });
+      expect(landed).toBe(!refused);
+      const after = await getRun(f.db, { projectId: 'proj_1' }, 'knowledge-settlement');
+      expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_run_events WHERE run_id='knowledge-settlement' AND event_type='run_write'").get())
+        .toEqual({ n: refused ? 0 : 1 });
+      if (refused) {
+        expect(f.sqlite.query("SELECT instruction FROM agent_runs WHERE id='knowledge-settlement'").get()).toEqual({ instruction: 'fixture input' });
+        expect(after!.runContext).toBe(before!.runContext);
+      } else expect(JSON.parse(after!.runContext!).checkout).toBeUndefined();
+    } finally { f.sqlite.close(); }
+  });
+}

@@ -177,9 +177,9 @@ export const spendReadySql = (floor: string): string =>
  * Every read of a rollup amount is one SQL `SUM` over its rollup sums, their carries and the negated due rows. SQLite's
  * `SUM` is compensated on both stores, so the net is rounded once, as a recount of the counted facts would be.
  */
-const parts = (where: '1', floor: string) => `SELECT origin,${MONEY.map(column => `${column} AS ${column}`).join(',')},unconfirmed FROM budget_totals WHERE ${where}
-  UNION ALL SELECT origin,${MONEY.map(column => `${column}_carry`).join(',')},0 FROM budget_totals WHERE ${where}
-  UNION ALL SELECT origin,-value,0,-(CASE WHEN ${unconfirmed('d')} THEN estimate ELSE 0 END),-(CASE WHEN ${unconfirmed('d')} THEN 1 ELSE 0 END) FROM (${duePage(floor)}) d`;
+const parts = (where: '1', floor: string) => `SELECT project_id,origin,${MONEY.map(column => `${column} AS ${column}`).join(',')},unconfirmed FROM budget_totals WHERE ${where}
+  UNION ALL SELECT project_id,origin,${MONEY.map(column => `${column}_carry`).join(',')},0 FROM budget_totals WHERE ${where}
+  UNION ALL SELECT project_id,origin,-value,0,-(CASE WHEN ${unconfirmed('d')} THEN estimate ELSE 0 END),-(CASE WHEN ${unconfirmed('d')} THEN 1 ELSE 0 END) FROM (${duePage(floor)}) d`;
 /**
  * Rolling spend in dollars at the floor slot: the rollup minus the due rows not yet retired.
  * Reads the Project/origin rollup rows and at most one page of due rows; callers pair it with `spendReadySql`.
@@ -188,12 +188,16 @@ export function spentUsdSql(floor: string): string {
   return `(SELECT COALESCE(SUM(usd),0) FROM (${parts('1', floor)}))`;
 }
 
-/** Facts counted at `floor`, one row per attempt: the window's settled facts and every live one. */
-export function spendRowsSql(floor: string): string {
-  const columns = `s.value,s.estimate,s.cost_source AS costSource,a.profile_json AS profileJson,s.project_id AS projectId,s.task,s.origin,s.attempt_id AS attemptId,s.live`;
-  const join = 'JOIN agent_run_attempts a ON a.project_id=s.project_id AND a.run_id=s.run_id AND a.attempt_id=s.attempt_id';
-  return `SELECT ${columns} FROM attempt_spend s INDEXED BY idx_attempt_spend_window ${join} WHERE s.counted=1 AND s.live=0 AND s.claimed_at>${floor}
-    UNION ALL SELECT ${columns} FROM attempt_spend s INDEXED BY idx_attempt_spend_live ${join} WHERE s.live=1`;
+/** Per-Project automatic spend shares the deployment snapshot's bounded expiry subtraction. */
+export function projectSpendSql(floor: string): string {
+  return `SELECT project_id AS projectId,COALESCE(SUM(usd),0) AS spent FROM (${parts('1', floor)}) WHERE origin='automatic' GROUP BY project_id`;
+}
+const projectSpend = read<[number], { projectId: string; spent: number }>({
+  name: 'runs.projectSpend', sql: projectSpendSql('?1'),
+});
+export async function readProjectSpend(db: RelationalStore, now: number): Promise<Map<string, number>> {
+  const [rows] = await readSet(db, projectSpend.bind(now - BUDGET_WINDOW_MS));
+  return new Map(rows.map(row => [row.projectId, row.spent]));
 }
 
 export interface SpendTotals {

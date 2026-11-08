@@ -12,7 +12,8 @@ export function QueueWarning({ queue }: { queue: FleetQueue | undefined }) {
   const age = queue.oldestAt === null ? 0 : Date.now() - queue.oldestAt;
   const tone = blocked && age >= URGENT_AFTER_MS ? 'urgent' : blocked || age >= WARN_AFTER_MS ? 'warn' : 'neutral';
   return <Card className={`flex flex-col gap-s2 ${tone === 'urgent' ? 'bg-bad-bg' : tone === 'warn' ? 'bg-warn-bg' : ''}`} data-queue-warning="" data-tone={tone}>
-    {queue.count > 0 && <>
+    {queue.count === null && <p className="t-body text-ink">{QUEUE_REASON_WORDS.queue_building}</p>}
+    {queue.count !== null && queue.count > 0 && <>
       <p className="t-body text-ink">{queue.count} {queue.count === 1 ? 'run' : 'runs'} waiting; oldest {queue.oldestAt === null ? 'age unavailable' : formatRelative(queue.oldestAt)}.</p>
       {queue.reasons.map(({ reason, count }) => <p key={reason} className="t-small text-ink-2">{queue.reasons.length > 1 ? `${count} ${count === 1 ? 'run' : 'runs'}: ` : ''}{QUEUE_REASON_WORDS[reason]}</p>)}
       <p className="t-meta text-muted">Checked {formatRelative(queue.observedAt)}.</p>
