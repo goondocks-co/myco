@@ -9,7 +9,7 @@ import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { contentAssertion, prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
-import { registeredBlobsGuard, recordBlobCandidates, releaseBlobs } from '../core/object-release.js';
+import { registeredBlobsGuard, recordHolderCandidates, releaseBlobs } from '../core/object-release.js';
 import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
 import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { turnInput } from '../content/turn-material.js';
@@ -71,7 +71,7 @@ export async function releaseHolders(db: RelationalStore, rows: readonly Holder[
         AND r.session_id=json_extract(j.value,'$.s') AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
        WHERE NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=r.project_id AND c.blob_key=r.blob_key AND c.source_id=r.source_id))`)
       .bind(page),
-    ...recordBlobCandidates(db, rows.map(row => ({ projectId: row.p, key: row.k })), now),
+    ...recordHolderCandidates(db, rows, now),
     db.prepare(`DELETE FROM retired_objects WHERE (project_id,session_id,blob_key,source_id) IN
       (SELECT json_extract(value,'$.p'),json_extract(value,'$.s'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(page),
   ]);

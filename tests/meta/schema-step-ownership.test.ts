@@ -1,5 +1,7 @@
 import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
 import { V723, V723_STATEMENTS } from '@myco-server-worker/db/schema-v723.js';
+import { V727, V727_STATEMENTS } from '@myco-server-worker/db/schema-v727.js';
+import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
 import { publicationOwnershipSchema } from '@myco-server-worker/db/documents/ownership.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -50,6 +52,12 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...V727_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: V727, object: match[1]!, table: match[2]!,
+      reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
+        : 'The object-release drain reads its next page of each release queue from this order.' }];
+  }),
   ...V723_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{step:V723,object:match[1]!,table:match[2]!,
@@ -321,6 +329,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...V727_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|UPDATE object_releases|DROP INDEX)/.test(sql)).map(sql => ({
+    step: V727, sql, reason: 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob.'
+  })),
   ...V723_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
     step: V723, sql, reason: 'Document metadata remains in source blobs with a keyed directory and an explicit chunk class.'
   })),
@@ -838,5 +849,6 @@ it('pins the frozen publication directory step to its generator', () => {
 });
 
 it('pins the frozen publication ownership step to its generators', () => {
+  expect(V727_STATEMENTS.slice(0, storageUsageSchemaStatements().length)).toEqual(storageUsageSchemaStatements());
   expect(V723_STATEMENTS).toEqual([...publicationOwnershipSchema(),...publicationPinSchema(),...publicationFailureSchema(),...publicationRebuildSchema()]);
 });

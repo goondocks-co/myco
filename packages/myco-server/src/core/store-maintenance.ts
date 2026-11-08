@@ -24,7 +24,7 @@ import { storedSettings } from './settings.js';
 import { claimMaintenanceOutcome, completeMaintenanceOutcome, maintenanceOutcomeText, recordMaintenanceProgress } from '../db/maintenance/outcomes.js';
 import { boundFindings, type BoundedFindings } from '../db/maintenance/findings.js';
 import { IntegrityWalkInterrupted } from '../db/maintenance/store-checks.js';
-import { recordedBlobBytes } from '../read/blobs.js';
+import { readDeploymentStorageUsage } from '../db/storage/usage.js';
 import { classify, emit } from '../telemetry.js';
 
 export const MAINTENANCE_CHECKS = ['optimize', 'integrity'] as const;
@@ -94,11 +94,14 @@ export const MAINTENANCE_COMPLETION_STATEMENTS = 1;
 /** The statements this module sends inside a check beside the port's own: optimize also measures the bytes recorded blobs hold. */
 export const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 0 };
 
-/** What a check measures on every target beside what the port reports: optimize measures the bytes recorded blobs hold. */
+/** What a check measures on every target beside what the port reports: optimize reads the registered bytes counters hold. */
 async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Promise<StoreMeasurement[]> {
   if (check !== 'optimize') return [];
   try {
-    return [{ name: 'blob_bytes', state: 'measured', value: await recordedBlobBytes(env.db), unit: 'bytes' }];
+    const usage = await readDeploymentStorageUsage(env.db);
+    return usage.state === 'ready'
+      ? [{ name: 'blob_bytes', state: 'measured', value: usage.registeredLogicalBytes, unit: 'bytes' }]
+      : [{ name: 'blob_bytes', state: 'unavailable', reason: 'existing stored files are still being counted', reasonCode: 'building' }];
   } catch (error) {
     return [{ name: 'blob_bytes', state: 'unavailable', reason: classify(error, env.platform?.classifyError) }];
   }
@@ -397,6 +400,6 @@ export function maintenanceWordsCodes(record: MaintenanceOutcome): MaintenanceOu
     ...record,
     findingCodes: record.findings.map(() => 'store_problem'),
     measurements: record.measurements.map((measurement) => measurement.state === 'measured'
-      ? measurement : { ...measurement, reasonCode: 'measurement_unavailable' }),
+      ? measurement : { ...measurement, reasonCode: measurement.reasonCode === 'building' ? 'building' : 'measurement_unavailable' }),
   };
 }

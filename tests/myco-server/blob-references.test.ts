@@ -8,7 +8,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { BLOB_REFERENCES, blobReferenceColumn, blobHeld, referenceLabel, unreferencedAmong } from '@myco-server-worker/core/blob-references.js';
+import { BLOB_REFERENCES, blobReferenceColumn, referenceLabel } from '@myco-server-worker/core/blob-references.js';
+import { blobHeld, unreferencedAmong } from '@myco-server-worker/db/storage/blob-held.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

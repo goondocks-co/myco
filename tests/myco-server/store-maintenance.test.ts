@@ -470,11 +470,11 @@ it('adds codes beside text in stored and freshly run maintenance outcomes', asyn
   } finally { fixture.sqlite.close(); }
 });
 
- it('keeps optimize measurements and outcome when the blob byte SUM is unavailable', async () => {
+ it('keeps optimize measurements and outcome when the registered storage counters are unavailable', async () => {
   const fixture = sqliteEnv();
   const prepare = fixture.serverEnv.db.prepare.bind(fixture.serverEnv.db);
   const failing = spyOn(fixture.serverEnv.db, 'prepare').mockImplementation((sql) => {
-    if (/SUM\(size\)/i.test(sql)) throw new Error('blob sum unavailable');
+    if (/storage_usage/.test(sql)) throw new Error('storage usage unavailable');
     return prepare(sql);
   });
   const port: StoreMaintenancePort = {

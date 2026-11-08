@@ -1,4 +1,5 @@
 import { archivedEventMetadata } from '@myco-server-worker/db/document-tables.js';
+import { releaseNow } from './helpers/release-now.js';
 import { describe,expect,it } from 'bun:test';
 import { storageCleanup, storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
@@ -9,7 +10,6 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { eventOrderingTimeSql,resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 import { measuredContentEnv,remainingContentBudget } from '@myco-server-worker/core/content-budget.js';
-import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv,envelope,uuid } from './helpers/fixtures.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -174,7 +174,7 @@ describe('archive-before-clear storage cleanup',()=>{
         const row=await cleanupCandidate(rig.db,{project_id:'proj_1',resource_kind:'event',resource_id:uuid(101)});
         const archive=await prepareArchive(rig.serverEnv,'event',row!,now);
         rig.sqlite.query('DELETE FROM registered_content_proofs WHERE key=?').run(archive[released].key);
-        await releaseBlobs(rig.db,[{projectId:'proj_1',key:archive[released].key}],now);
+        await releaseNow(rig.db,[{projectId:'proj_1',key:archive[released].key}],now);
         await expect(rig.db.batch(eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
         expect(rig.sqlite.query('SELECT payload_format FROM events').get()).toEqual({payload_format:'inline'});
       }finally{rig.sqlite.close();}

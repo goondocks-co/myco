@@ -37,7 +37,8 @@ import { readStoredObject } from './stored-object.js';
 import { publishBackupObject, referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong,
   recordBlobCandidates, releaseBlobs } from './object-release.js';
 export { retentionVictims } from './backup-retention.js';
-import { BUNDLE_REFERENCES, bundleHeld } from './blob-references.js';
+import { BUNDLE_REFERENCES } from './blob-references.js';
+import { bundleHeld } from '../db/storage/blob-held.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content.js';
@@ -120,7 +121,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_failure_contributions', 'document_failure_totals', 'document_failure_head',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'member_naming_failures', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
-  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
+  'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
@@ -976,15 +977,16 @@ export async function restoreArtifact(
     const unused = `NOT (${bundleHeld('?', '?')})`;
     const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
     const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
+    const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id}});
     const results = await db.batch([
+      ...candidates,
       db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?
         AND ((source_kind='bundle' AND source_id=?) OR (source_kind='receipt' AND source_id=?))
         AND ${unused}`).bind(bundle.projectId,bundle.archiveKey,`bundle:${bundle.archiveKey}`,...guardValues),
       db.prepare(`DELETE FROM archive_bundles WHERE project_id=? AND id=? AND ${unused}`)
         .bind(bundle.projectId,bundle.id,...guardValues),
-      ...recordBlobCandidates(db,pairs,header.createdAt),
     ]);
-    if (results[1]!.meta.changes > 0) {
+    if (results[candidates.length+1]!.meta.changes > 0) {
       await releaseBlobs(db,pairs,header.createdAt);
       if (bundle.inserted && outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
     }

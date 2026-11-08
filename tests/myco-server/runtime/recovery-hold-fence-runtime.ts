@@ -11,6 +11,7 @@
  * Every process it starts is stopped by its exact PID. Usage: bun tests/myco-server/runtime/recovery-hold-fence-runtime.ts
  */
 import fs from 'node:fs';
+import { releaseNow } from '../helpers/release-now.js';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,7 +70,7 @@ import { CLOCK_LOCATION_HINT, CLOCK_NAME } from '${path.join(ROOT, 'packages/myc
 import { RecoveryProducer } from '${src}/platform/cloudflare/recovery-producer-object.ts';
 import { serverEnvFromBindings } from '${src}/platform/cloudflare/env.ts';
 import { openHoldForAdmission } from '${src}/core/recovery-hold.ts';
-import { releaseBlobs, releaseRecoveryHold } from '${src}/core/object-release.ts';
+import { releaseRecoveryHold } from '${src}/core/object-release.ts';
 ${operator ? `import { acquireOperatorHold, settleOperatorHold, openOperatorHold } from '${src}/core/recovery-hold.ts';` : ''}
 export { DeploymentClock, RecoveryProducer };
 const json = (value) => Response.json(value);
@@ -95,7 +96,7 @@ export default {
       await env.MYCO_DB.prepare("INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES (?, ?, 16, 'text/plain', 't', 1, ?)").bind(PROJECT, q('key'), generation).run();
       return json({ physical: PROJECT + '/' + q('key') + '~' + generation });
     }
-    if (url.pathname === '/release') return json(await answered(() => releaseBlobs(server.db, [{ projectId: PROJECT, key: q('key') }], Date.now())));
+    if (url.pathname === '/release') return json(await answered(() => releaseNow(server.db, [{ projectId: PROJECT, key: q('key') }], Date.now())));
     if (url.pathname === '/wake') {
       await env.MYCO_DB.prepare("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_request_at', ?)").bind(String(Date.now())).run();
       const clock = env.CLOCK.get(env.CLOCK.idFromName(CLOCK_NAME), { locationHint: CLOCK_LOCATION_HINT });

@@ -1,11 +1,11 @@
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
+import { releaseNow } from './helpers/release-now.js';
 import { readDocumentStatus as publicationStatus } from '@myco-server-worker/db/documents/status.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
 import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
-import { blobHeld } from '@myco-server-worker/core/blob-references.js';
+import { blobHeld } from '@myco-server-worker/db/storage/blob-held.js';
 import { stoppedTranscripts, rereadTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { expect, test } from 'bun:test';
@@ -559,7 +559,7 @@ test('portable backups restore published document bodies and frontiers into dest
     expect(prompt,name).not.toBeNull();
     const raw=(await db.prepare("SELECT blob_key FROM transcript_segments WHERE transcript_id=?").bind(tx).first<{blob_key:string}>())!;
     await db.prepare('DELETE FROM transcript_segments WHERE transcript_id=?').bind(tx).run();
-    expect(await releaseBlobs(db,[{projectId:'project',key:raw.blob_key}],Date.now()),name).toMatchObject({released:1});
+    expect(await releaseNow(db,[{projectId:'project',key:raw.blob_key}],Date.now()),name).toMatchObject({released:1});
     expect(await one(db,"SELECT COUNT(*) n FROM event_refs WHERE kind='transcript.segment'"),name).toEqual({n:0});
     await db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
       SELECT 'project','portable-output','portable',token_id,'tool.use','cli',json_set(?,'$.outputBlob',(SELECT blob_key FROM session_chunks WHERE kind='page' LIMIT 1)),'hash',1,1 FROM events LIMIT 1`)
@@ -677,10 +677,10 @@ test('admission refuses missing records and preserves archived blob holders in t
     expect(await one(db,"SELECT due_at FROM session_documents WHERE session_id='converted'"),name).toEqual({due_at:0});
     expect(await readPage({db,blobs},'project','converted',SESSION_OWNER,0),name).toMatchObject(records);
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(output).first(),name).toEqual({held:1});
-    expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
+    expect(await releaseNow(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare('SELECT key FROM blobs WHERE key=?').bind(output).first(),name).toEqual({key:output});
     expect(await db.prepare(`SELECT ${blobHeld("'project'",'?1')} held`).bind(input).first(),name).toEqual({held:1});
-    expect(await releaseBlobs(db,[{projectId:'project',key:input}],2),name).toEqual({released:0,deferred:0});
+    expect(await releaseNow(db,[{projectId:'project',key:input}],2),name).toEqual({released:0,deferred:0});
     expect(await db.prepare(`SELECT record_id id FROM event_refs WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
   },116);
@@ -743,7 +743,7 @@ test('ranged event references survive archive, deletion and a failed range trans
     expect(await one(db,"SELECT payload FROM events WHERE event_id='legacy-2'"),name).toEqual({payload:'{}'});
     expect(await one(db,"SELECT blob FROM event_refs WHERE event_id='arrived'"),name).toEqual({blob:'arrived-blob'});
     expect(await one(db,`SELECT ${blobHeld("'project'",'?1')} held`,output),name).toEqual({held:1});
-    expect(await releaseBlobs(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
+    expect(await releaseNow(db,[{projectId:'project',key:output}],2),name).toEqual({released:0,deferred:0});
 
     for(const [sql,indexes] of [
       [`SELECT 1 FROM ${DOCUMENT_IDENTITIES_SQL} WHERE project_id='project' AND record_id='tool-1' AND session_id<>'other'`,['idx_event_refs_identity']],

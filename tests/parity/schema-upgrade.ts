@@ -30,6 +30,7 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   runners: { id: 'rn_upgrade' },
   backups: { key: 'backups/upgrade.jsonl', counts_json: '{}' },
   object_releases: { kind: 'blob' },
+  blobs: { generation: '00000000-0000-4000-8000-000000000001' },
   object_settlement_intents: { kind: 'backup', physical: 'backups/upgrade-intent.jsonl', expires_at: 1 },
   object_reconciliation_cursor: { slot: 1, physical: '' },
   spore_curation_work: { members: '[]' },

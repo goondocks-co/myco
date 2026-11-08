@@ -634,6 +634,7 @@
     "tests/myco-server/source-call-gates.test.ts": 444,
     "tests/myco-server/spore-browse-cost.test.ts": 8000,
     "tests/myco-server/spore-counts.test.ts": 1500,
+    "tests/myco-server/storage-usage.test.ts": 30000,
     "tests/myco-server/spore-curation.test.ts": 7905,
     "tests/myco-server/spore-near-matches.test.ts": 1200,
     "tests/myco-server/spores-api.test.ts": 123,
