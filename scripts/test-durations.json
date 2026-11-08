@@ -421,6 +421,7 @@
     "tests/myco-server/embedding-bounded-cost.test.ts": 6513,
     "tests/myco-server/embedding-claim-contract.test.ts": 2103,
     "tests/myco-server/embedding-deletion.test.ts": 3727,
+    "tests/myco-server/embedding-calibration.test.ts": 22000,
     "tests/myco-server/embedding-hubness.test.ts": 29525,
     "tests/myco-server/embedding-invalidation.test.ts": 12380,
     "tests/myco-server/embedding-jobs.test.ts": 126,

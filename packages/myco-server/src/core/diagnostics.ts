@@ -279,6 +279,7 @@ async function missingAcross(env: ServerEnv, projects: ProjectRow[], now: number
   const found: Array<{ projectId: string } & MissingSporeVectors> = [];
   for (const { projectId } of projects) {
     const missing = await missingSporeVectors(env.db, projectId, semantic.provider.modelKey, now);
+    if (missing === null) return null;
     if (missing.rewriting + missing.waiting + missing.abandoned > 0) found.push({ projectId, ...missing });
   }
   return found;

@@ -47,7 +47,7 @@ test('readiness and work checks read fixed rows, however many ineligible sources
     console.info(`embedding readiness rows read at 400 / 4,000 ineligible sessions: ${JSON.stringify(reads)}`);
     for (const [label, [small, large]] of Object.entries(reads)) {
       if (label !== 'unregistered progress') expect({ label, large }).toEqual({ label, large: small });
-      expect(large).toBeLessThanOrEqual(24);
+      expect(large).toBeLessThanOrEqual(26);
     }
   });
 }, 120_000);

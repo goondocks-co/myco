@@ -14,7 +14,7 @@ import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.j
 import { embeddingSwitchStatus } from '@myco-server-worker/core/embedding/switch.js';
 import { readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
-import { prepareHubnessPopulation } from '@myco-server-worker/read/catalog/embedding-hubness.js';
+import { calibrationPopulation } from '@myco-server-worker/db/embeddings/calibration.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 
 const MODEL = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
@@ -243,7 +243,7 @@ describe.each(['native', 'D1'])('%s embedding scheduling and switch authority', 
         if (standing) await db.prepare(`INSERT INTO embedding_switches(slot,id,provider,model,endpoint,model_key,from_model_key,estimated_tokens,estimated_sources,state,reason,progressed_at,started_at,started_by,updated_at)
           VALUES('deployment','sw','workers-ai','@cf/baai/bge-large-en-v1.5',NULL,?,?,0,0,'building',NULL,1,1,'owner',1)`).bind(SWITCHED, MODEL).run();
         await db.prepare(`INSERT INTO embedding_hubness_members(project_id,model_key,id,n,vector) SELECT project_id,model_key,id,1,'AACAPw==' FROM embedding_receipts WHERE project_id='p' AND model_key=?`).bind(calibrated).run();
-        expect(await prepareHubnessPopulation(db, 'p', calibrated).first()).toMatchObject({ total: 2, covered: 2, members: 2, complete: 1, miscounted: 0 });
+        expect(await calibrationPopulation(db, 'p', calibrated)).toMatchObject({ total: 2, covered: 2, members: 2, uncovered: 0, stale: 0, miscounted: false });
         const env = environment(base(), db);
         expect(await embeddingKeepsAwake(env, NOW)).toBe(false);
         // Another model's member is still joining, and the mark that would have woken the Project is lost.

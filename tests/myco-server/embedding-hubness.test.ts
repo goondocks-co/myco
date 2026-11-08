@@ -1,4 +1,4 @@
-import { currentSporeVectorIds } from '../../packages/myco-server/src/read/catalog/embedding-hubness.js';
+import { currentSporeVectorIds } from '../../packages/myco-server/src/db/embeddings/calibration.js';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -85,7 +85,7 @@ function fixture(target: Target) {
   const db: RelationalStore = {
     prepare: (sql) => {
       const statement = f.db.prepare(sql);
-      if (!sql.includes('embedding_hubness')) return statement;
+      if (!sql.includes('embedding_hubness_commits')) return statement;
       calibrating.add(statement);
       return new Proxy(statement, { get: (target, key) => key === 'bind'
         ? (...values: unknown[]) => { const bound = target.bind(...values); calibrating.add(bound); return bound; }

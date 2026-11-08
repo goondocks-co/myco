@@ -116,6 +116,7 @@ describe('the Deployment names what it is configured to do', () => {
         SELECT project_id, ?, ?, type, record_id, revision, ?, ?, ? FROM embedding_versions WHERE project_id = 'proj_1' AND type = 'spore' AND record_id = ?`,
       [model, `${model}-${record}`, ready, updatedAt, rewrites, record]);
     };
+    r.sqlite.run(`INSERT INTO embedding_models (project_id, model_key, complete) VALUES ('proj_1', 'm', 1)`);
     receipt('calibrated', 'm', 1, 0, NOW);
     receipt('queued-again', 'm', 0, 1, NOW);
     receipt('due-again', 'm', 1, 1, NOW - VECTOR_LOST_MS);
@@ -126,6 +127,8 @@ describe('the Deployment names what it is configured to do', () => {
     const env = { ...r.serverEnv, vectors: {} as never, embeddingProvider: async () => ({ modelKey: 'm', embed: async () => [1] }) };
     const document = await deploymentDiagnostics(env, NOW);
     expect(document.missingSporeVectors).toEqual([{ projectId: 'proj_1', rewriting: 2, waiting: 1, abandoned: 1 }]);
+    r.sqlite.run("UPDATE projection_catchup SET done=0 WHERE projection='embedding_calibration'");
+    expect((await deploymentDiagnostics(env, NOW)).missingSporeVectors).toBeNull();
   });
 
   it('labels a nonempty backlog as a transcript count', async () => {
