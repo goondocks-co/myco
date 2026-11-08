@@ -1,4 +1,5 @@
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { PublicationRefusal } from './document-admission.js';
 
 import { emit, type Classifier } from '../telemetry.js';
 
@@ -188,6 +189,7 @@ function turnOf(event: DerivedEvent): string | null {
 
 /** A content-free description of the record where reading stopped. */
 export interface ParseDiagnostic {
+    subreason?: PublicationRefusal;
     branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict' | 'record_kind_undeclared' | 'record_source_invalid' | 'record_identity_scheme_unsupported';
     offset: number;
     lineKind: string;
@@ -200,6 +202,7 @@ export function parseDiagnostic(value: unknown): ParseDiagnostic | undefined {
   if (!isBlock(value) || !['malformed_lines','event_not_stored','no_progress','event_refused','blob_absent','record_too_large','scheme_unread','scheme_conflict','record_kind_undeclared','record_source_invalid','record_identity_scheme_unsupported'].includes(String(value.branch))
     || !Number.isSafeInteger(value.offset) || Number(value.offset)<0) return undefined;
   return { branch: value.branch as ParseDiagnostic['branch'], offset: Number(value.offset),
+    ...(typeof value.subreason === 'string' && ['kind_unsupported','inline_body_required','unpaired_surrogate','payload_invalid'].includes(value.subreason) ? { subreason: value.subreason as PublicationRefusal } : {}),
     lineKind: typeof value.lineKind==='string' && (LINE_KINDS.has(value.lineKind)||value.lineKind==='tool_result') ? value.lineKind : 'unknown' };
 }
 

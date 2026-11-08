@@ -13,8 +13,8 @@ import type { PreparedStatement, ServerEnv } from '../core/adapters.js';
 import { sha256Hex, sha256HexOf } from '../hash.js';
 import { contentAssertion } from '../core/registered-content.js';
 import { SessionDocument } from '../content/session-pages.js';
-import type { ChunkRow, PageRow } from '../content/document-reader.js';
-import { DocumentBatch, directoryStatements, publicationStatement, type BatchDocument } from './document-batch.js';
+import { generationHasChunks } from '../db/documents/directory.js';
+import { DocumentBatch, publicationStatement, type BatchDocument } from './document-batch.js';
 import { legacyRecord } from './artifact-record.js';
 import type { RestoreDocuments } from '../core/backup.js';
 
@@ -190,12 +190,11 @@ export async function applyDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>,
 async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldRows, now: number, plannedConversion: boolean): Promise<void> {
   const db = env.db;
   const state = `state=? AND restore_hold IS ? AND (restore_hold IS NULL OR due_at<=?)`;
-  const [docs, chunks, pages] = await db.batch([
+  const [docs] = await db.batch([
     db.prepare(`SELECT d.state,d.restore_hold,d.due_at,d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, d.build, s.created_by_token_id token_id,s.agent
       FROM sessions s LEFT JOIN session_documents d ON s.project_id = d.project_id AND s.session_id = d.session_id
       WHERE s.project_id = ?1 AND s.session_id = ?2
         AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)`).bind(session.projectId, session.sessionId),
-    ...directoryStatements(db, session.projectId, session.sessionId),
   ]);
   const held = docs!.results[0] as (Omit<BatchDocument, 'generation'> & { generation: number | null; state: string | null; restore_hold: string | null; due_at: number | null; build: string | null; agent: string | null }) | undefined;
   if (held === undefined || (held.state !== null && !['live','convert'].includes(held.state))) throw new RestorePlanStale();
@@ -203,7 +202,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   if (held.state === 'live' && held.generation === null) throw new RestorePlanStale();
   const absent = held.state === null;
   const converting = held.state !== 'live';
-  if (plannedConversion && !converting && (held.next_chunk !== 0 || chunks!.results.length > 0)) throw new RestorePlanStale();
+  if (plannedConversion && !converting && (held.next_chunk !== 0 || await generationHasChunks(db, session.projectId, session.sessionId, held.generation ?? 1))) throw new RestorePlanStale();
   const generation = held.generation;
   const owner = absent ? [] : [held.state, held.restore_hold, now];
   const selected = absent ? `NOT EXISTS(SELECT 1 FROM session_documents WHERE project_id=? AND session_id=?)`
@@ -211,8 +210,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const selection = [session.projectId,session.sessionId,...owner,...(absent?[]:[generation])];
   const doc = { ...held, generation: converting ? (generation ?? 0) + 1 : generation!,
     ...(converting ? { next_chunk: 0, prompts: 0, first_prompt: null, open_turn_key: null, build: null } : {}) };
-  const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc,
-    converting ? [] : chunks!.results as ChunkRow[], converting ? [] : pages!.results as PageRow[]);
+  const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc);
   await batch.open();
   const frontiers = !plannedConversion&&session.snapshot!==undefined?[]:await artifactFrontiers(batch, session);
   const order = new Map(CONTENT.map(({ kind }, index) => [kind, index]));

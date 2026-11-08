@@ -4,8 +4,7 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { listCatalogTurns } from '@myco-server-worker/read/document-catalog.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords } from '@myco-server-worker/content/session-turns.js';
-import { DocumentBatch, directoryStatements, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
-import type { ChunkRow, PageRow } from '@myco-server-worker/content/document-reader.js';
+import { DocumentBatch, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentSessionActivity } from '@myco-server-worker/content/session-activity.js';
@@ -33,12 +32,11 @@ const attach = (db: RelationalStore, session: string, prompt: string, n: number,
 /** Places records into a session's live document as a publisher pass would. */
 async function place(env: ContentStore, session: string, records: DocRecord[]) {
   const db = env.db;
-  const [docs, chunks, pages] = await db.batch([
+  const [docs] = await db.batch([
     db.prepare(`SELECT d.generation,d.next_chunk,d.prompts,d.first_prompt,d.open_turn_key,s.created_by_token_id token_id FROM session_documents d
       JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id WHERE d.project_id='project' AND d.session_id=?`).bind(session),
-    ...directoryStatements(db, 'project', session),
   ]);
-  const batch = new DocumentBatch(env, 'project', session, docs!.results[0] as BatchDocument, chunks!.results as ChunkRow[], pages!.results as PageRow[]);
+  const batch = new DocumentBatch(env, 'project', session, docs!.results[0] as BatchDocument);
   await batch.open();
   await batch.place(records, null);
   await batch.commit(true, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {

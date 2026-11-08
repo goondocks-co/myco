@@ -941,9 +941,14 @@ describe('vault import fault/resume differential', () => {
       await differentialImport(f);
       const baseline = importSnapshot(f.rig.env.sqlite);
       const db = f.rig.env.sqlite;
+      const publicationRevision = () => db.query<{ publication_input_revision: number }, [string]>(
+        'SELECT publication_input_revision FROM session_documents WHERE session_id = ?',
+      ).get(SESSION_PRUNED)!.publication_input_revision;
+      const revision = publicationRevision();
       expect(db.query("SELECT session_id, prompt_id FROM spores WHERE id = 'gotcha-part'").get()).toEqual({ session_id: CODEX_ROLLOUT, prompt_id: null });
       db.run("DELETE FROM events WHERE session_id = ? AND kind = 'session.end' AND channel = 'import'", [SESSION_PRUNED]);
       db.run('UPDATE sessions SET ended_at = NULL WHERE session_id = ?', [SESSION_PRUNED]);
+      expect(publicationRevision()).toBe(revision + 1);
       const source = db.query("SELECT * FROM spores WHERE id = 'gotcha-new'").get() as Record<string, unknown>;
       db.run("UPDATE spores SET prompt_id = NULL, session_id = NULL WHERE id IN ('gotcha-old','gotcha-new','gotcha-part')");
       const repair = { id: source.id, agentId: source.agent_id, observationType: source.observation_type, content: source.content,
@@ -959,8 +964,18 @@ describe('vault import fault/resume differential', () => {
       fs.writeFileSync(ledger.file, fs.readFileSync(ledger.file, 'utf8').split('\n').filter((line) => !line.includes('"reconciled"')).join('\n'));
       expect(importSnapshot(db)).not.toEqual(baseline);
       expect(legacyImportComplete(await differentialImport(f))).toBe(true);
-      expect(importSnapshot(db)).toEqual(baseline);
+      expect(publicationRevision()).toBe(revision + 2);
+      const repaired = {
+        ...baseline,
+        session_documents: baseline.session_documents.map((json) => {
+          const row = JSON.parse(json);
+          if (row.session_id === SESSION_PRUNED) row.publication_input_revision = revision + 2;
+          return JSON.stringify(row);
+        }).sort(),
+      };
+      expect(importSnapshot(db)).toEqual(repaired);
       expect((await differentialImport(f)).projects[0].sessions.resumed).toBe(3);
+      expect(importSnapshot(db)).toEqual(repaired);
     } finally { f.cleanup(); }
   });
 });
