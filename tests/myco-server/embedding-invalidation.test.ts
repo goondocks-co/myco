@@ -31,7 +31,7 @@ describe.each(['native', 'D1'])('%s embedding invalidation paths', (target) => {
         ['embedding', "INSERT INTO processed_resources(project_id,kind,resource_id,blob_key,source_token_id,event_id) VALUES('p','plan','proof','blob','t','e')"],
         ['embedding', "DELETE FROM processed_resources WHERE project_id='p' AND resource_id='proof'"],
         ['hubness', "INSERT INTO embedding_hubness_members(project_id,model_key,id,n,vector) VALUES('p','m','member',1,'AACAPw==')"],
-        ['hubness', "UPDATE embedding_hubness_members SET n=2 WHERE project_id='p'"],
+        ['hubness', "UPDATE embedding_hubness_members SET state=1 WHERE project_id='p'"],
         ['hubness', "DELETE FROM embedding_hubness_members WHERE project_id='p'"],
         ['hubness', "INSERT INTO embedding_cursors(project_id) VALUES('p')"],
         ['hubness', "UPDATE embedding_cursors SET hubness_count=2 WHERE project_id='p'"],

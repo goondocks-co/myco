@@ -191,6 +191,13 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
   'db/embeddings/state.ts#reconcileSourceState': [{ tables: ['embedding_source_state'], order: 'unverified' }],
   'db/embeddings/state.ts#total': [{ tables: ['embedding_model_totals'], order: 'unverified' }],
+  'db/embeddings/calibration.ts#reconcileCalibrationState': [{ tables: ['embedding_calibration_state'], order: 'unverified' }],
+  'db/embeddings/calibration.ts#populationUpsert': [{ tables: ['embedding_calibration_population'], order: 'unverified' }],
+  'db/schema-v722.ts#<module>': [
+    ...Array.from({ length: 8 }, () => ({ tables: ['embedding_hubness_revision'], order: 'unverified' as const })),
+    ...Array.from({ length: 12 }, () => ({ tables: ['embedding_calibration_state'], order: 'unverified' as const })),
+    ...Array.from({ length: 5 }, () => ({ tables: ['embedding_calibration_population'], order: 'unverified' as const })),
+  ],
   'db/schema-v716.ts#<module>': [
     ...Array.from({ length: 12 }, () => ({ tables: ['embedding_source_state'], order: 'unverified' as const })),
     ...Array.from({ length: 4 }, () => ({ tables: ['embedding_model_totals'], order: 'unverified' as const })),
@@ -229,7 +236,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/store-maintenance.ts#claim': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'core/learning-sessions.ts#repairLearningSources': [{ tables: ['schema_meta'], order: 'arrival-order' }],
-  'read/catalog/embedding-hubness.ts#prepareHubnessPopulation': [{ tables: ['embedding_hubness_population'], order: 'arrival-order' }],
   'db/schema.ts#withStamp': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/embedding-due.ts#embeddingDueInsert': [{ tables: ['embedding_due'], order: 'arrival-order' }],
   'db/budget-activation.ts#budgetMigration': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],

@@ -1,4 +1,5 @@
 import { V720 } from '@myco-server-worker/db/schema-v720.js';
+import { V722 } from '@myco-server-worker/db/schema-v722.js';
 import { V717 } from '@myco-server-worker/db/schema-v717.js';
 import { RETIREMENT_SCHEMA_STEPS } from '@myco-server-worker/db/schema-v117.js';
 import { DROP_CONTENT_SCHEMA_STEPS, DROPPED_CONTENT_TABLES, DROP_RANGES_TABLE } from '@myco-server-worker/db/schema-v265.js';
@@ -737,6 +738,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0719_v719.sql': 'a0ac5d2ce881b26e33b0de2efa865761c9acb1a6eb92635090e5332baf4dee3c',
   '0720_v720.sql': 'aed5578c08344369a27aefe7c505081e21d752c219831471ec528f2fef3b273f',
   '0721_v721.sql': 'fe0cbc931866915c6323fa4488bd27f4af0a60d603be9038e2421c2129b92ff5',
+  '0722_v722.sql': '0514b90cb6f4c38189b29a2bf1cfe72cc89a70bef270da935c13783af308f150',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1199,6 +1201,10 @@ describe('versioned schema steps', () => {
   it('keeps earlier tables and columns except declared retirements', () => {
     const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
     const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
+    const retiredTablesAtS5b = new Set(['embedding_hubness_population', 'embedding_hubness_work']);
+    const retiredTriggersAtS5b = new Set(['embedding_hubness_members_population_insert', 'embedding_hubness_members_population_update', 'embedding_hubness_members_population_delete']);
+    // Each is replaced in this step by a narrower trigger that still advances the same revision or dirties the same work.
+    const narrowedTriggersAtS5b = new Set([...['embedding_versions', 'embedding_receipts'].flatMap(table => ['insert', 'update', 'delete'].map(action => `${table}_hubness_source_${action}`)), 'embedding_hubness_members_work_update']);
     const retiredAt86 = new Set([
       'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
       ...['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `skill_records_fts${suffix}`),
@@ -1215,7 +1221,7 @@ describe('versioned schema steps', () => {
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
         if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range','_learning_quiet_margin_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
-        if ((n === 85 && retiredAt86.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
+        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === V722 && retiredTablesAtS5b.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -1242,7 +1248,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || (retiredTablesAtS5b.has(dropped) && SCHEMA_STEPS[n]!.version === V722) || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
@@ -1274,6 +1280,7 @@ describe('versioned schema steps', () => {
             , SCHEMA_STEPS[n]!.version===V720 && /_work_(insert|update|delete)$/.test(droppedTrigger));
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
             || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
+            || (SCHEMA_STEPS[n]!.version === V722 && (retiredTriggersAtS5b.has(droppedTrigger) || narrowedTriggersAtS5b.has(droppedTrigger)))
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
@@ -1456,7 +1463,7 @@ describe('versioned schema steps', () => {
       'document_publication_contributions','document_publication_totals','document_publication_ready',
       'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'task_runtime', 'task_due',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_population', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts',

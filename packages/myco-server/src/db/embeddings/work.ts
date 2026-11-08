@@ -363,7 +363,7 @@ export function workDirtyTriggers(sessionEligibility: string): Array<{ name: str
     ...dirty('embedding_receipts', undefined, 'UPDATE OF project_id,model_key,id,type,record_id,revision,ready,updated_at,rewrites'),
     ...dirty('embedding_source_failures'),
     ...dirty('processed_resources', undefined, undefined, (operation) => operation === 'INSERT' ? "NEW.kind = 'plan'" : operation === 'DELETE' ? "OLD.kind = 'plan'" : "OLD.kind = 'plan' OR NEW.kind = 'plan'"),
-    ...dirty('embedding_hubness_members', "'hubness'"),
+    ...dirty('embedding_hubness_members', "'hubness'", 'UPDATE OF project_id,model_key,id,state'),
     ...dirty('embedding_cursors', "'hubness'", 'UPDATE OF hubness_model,hubness_count,hubness_cursor'),
   ];
 }
@@ -556,25 +556,4 @@ const sourceRow = read<[string, string, string, string], EmbeddingSource & { obj
 export async function embeddingSource(db: RelationalStore, projectId: string, type: string, recordId: string, revision: string): Promise<(EmbeddingSource & { object_key: string | null }) | null> {
   const [[row]] = await readSet(db, sourceRow.bind(projectId, type, recordId, revision));
   return row ?? null;
-}
-
-/**
- * Calibration under `?2` provably rests in Project `?1`: its population snapshot carries the Project's current
- * calibration revision, which every spore version and receipt change advances, and records every current spore vector
- * covered, with no vector being written again, no miscounted moment, no member joining or leaving, no member of any
- * other model and no statistics still to publish. A handful of key seeks; an audit probes calibration in full only
- * when this does not hold.
- */
-const calibrationRests = read<[string, string], { rests: number }>({ name: 'embedding.calibrationRests',
-  sql: `SELECT EXISTS(SELECT 1 FROM embedding_hubness_population p WHERE p.project_id=?1 AND p.model_key=?2
-      AND p.revision=COALESCE((SELECT revision FROM embedding_hubness_revision WHERE project_id=?1),0)
-      AND p.complete=1 AND p.miscounted=0 AND p.total=p.covered AND p.members=p.covered)
-    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key=?2 AND state>0)
-    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key<?2)
-    AND NOT EXISTS(SELECT 1 FROM embedding_hubness_members WHERE project_id=?1 AND model_key>?2)
-    AND NOT EXISTS(SELECT 1 FROM embedding_cursors WHERE project_id=?1 AND hubness_cursor IS NOT NULL) AS rests` });
-
-export async function calibrationRestsAtRevision(db: RelationalStore, projectId: string, model: string): Promise<boolean> {
-  const [[row]] = await readSet(db, calibrationRests.bind(projectId, model));
-  return row?.rests === 1;
 }

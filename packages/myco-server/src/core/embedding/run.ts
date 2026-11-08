@@ -1,7 +1,7 @@
 import { RunControlError, type RunControl } from '@goondocks/myco-shared/run-control';
 import type { ServerEnv } from '../adapters.js';
 import { HARNESS_AGENT_ID } from '../harness.js';
-import type { MissingSporeVectors } from './hubness.js';
+import { MISSING_REPORT_LIMIT, type MissingSporeVectors } from './hubness.js';
 import { VECTOR_REWRITE_LIMIT } from './provider.js';
 
 export const EMBEDDING_RUN_STEPS = 16;
@@ -14,8 +14,9 @@ export interface EmbeddingRunResult { processed: number; phase: string; missing?
 
 /** The left-out spores in the reader's words; nothing when there are none. */
 function missingWords(missing: MissingSporeVectors | undefined): string[] {
-  const said = (n: number, one: string, many: string) => `${n} spore${n === 1 ? ' is' : 's are'} left out of relevance calibration: ${n === 1 ? one : many}`;
   if (missing === undefined) return [];
+  const atLeast = missing.rewriting + missing.waiting + missing.abandoned >= MISSING_REPORT_LIMIT ? 'At least ' : '';
+  const said = (n: number, one: string, many: string) => `${atLeast}${n} spore${n === 1 ? ' is' : 's are'} left out of relevance calibration: ${n === 1 ? one : many}`;
   return [
     missing.rewriting > 0 ? said(missing.rewriting, 'the vector store has not returned its vector, so it is being written again.',
       'the vector store has not returned their vectors, so they are being written again.') : '',

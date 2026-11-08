@@ -43,5 +43,5 @@ export async function advanceEmbedding(env: ServerEnv, projectId: string, now: n
     await completeEmbeddingSwitch(env, now);
   }
   return step.processed === 0 || REPORTS_MISSING.has(step.phase)
-    ? { ...step, missing: await missingSporeVectors(env.db, projectId, providers.provider.modelKey, now) } : step;
+    ? { ...step, missing: await missingSporeVectors(env.db, projectId, providers.provider.modelKey, now) ?? undefined } : step;
 }

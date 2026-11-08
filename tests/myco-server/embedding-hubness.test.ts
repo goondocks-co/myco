@@ -1,4 +1,4 @@
-import { currentSporeVectorIds } from '../../packages/myco-server/src/read/catalog/embedding-hubness.js';
+import { currentSporeVectorIds } from '../../packages/myco-server/src/db/embeddings/calibration.js';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -85,7 +85,7 @@ function fixture(target: Target) {
   const db: RelationalStore = {
     prepare: (sql) => {
       const statement = f.db.prepare(sql);
-      if (!sql.includes('embedding_hubness')) return statement;
+      if (!sql.includes('embedding_hubness_commits')) return statement;
       calibrating.add(statement);
       return new Proxy(statement, { get: (target, key) => key === 'bind'
         ? (...values: unknown[]) => { const bound = target.bind(...values); calibrating.add(bound); return bound; }
@@ -488,7 +488,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: VECTOR_REWRITE_LIMIT });
     expect(await missing(spent)).toEqual({ rewriting: 0, waiting: 0, abandoned: 1 });
     expect(await missingSporeVectors(f.db, 'p', 'another-model', spent)).toEqual({ rewriting: 0, waiting: 0, abandoned: 0 });
-    expect(embeddingRunReport({ processed: 0, phase: 'settled', missing: await missing(spent) }).summary).toBe(
+    expect(embeddingRunReport({ processed: 0, phase: 'settled', missing: (await missing(spent))! }).summary).toBe(
       `Processed 0 embedding records; settled. 1 spore is left out of relevance calibration: the vector store never returned its vector, even after it was written again ${VECTOR_REWRITE_LIMIT} times.`);
     await f.expectExact();
     expect(f.repaired()).toBe(0);

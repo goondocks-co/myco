@@ -2,15 +2,16 @@
 export const UNRELATED_PROCESSED_LINES = {
   "embeddingWorkCounts": {
     "core/embedding/hubness.ts": [
-      "if (population.total < 2) return { phase: 'settled', processed: 0 };",
-      "return { phase: 'hubness', processed: done ? 1 : 0 };",
-      "return {phase:'hubness',processed:done ? 1 : 0};",
       "if (!started) return { phase: 'hubness', processed: 0 };",
+      "if (view.cursor === null) return { phase: waiting ? 'visibility' : 'settled', processed: 0 };",
       "if (joining.length > 0) return { phase: 'visibility', processed: 0 };",
-      "if (visible.length === 0) return { phase: 'visibility', processed: 1 };",
-      "if (after === null) return { phase: waiting ? 'visibility' : 'settled', processed: 0 };",
+      "if (view.population.state === 'building') return { phase: 'visibility', processed: 0 };",
+      "if (view.population.total < 2) return { phase: 'settled', processed: 0 };",
       "if (subjects.length === 0) return { phase: 'hubness', processed: 1 };",
-      "return { phase: 'hubness', processed: done || started ? 1 : 0 };"
+      "if (visible.length === 0) return { phase: 'visibility', processed: 1 };",
+      "return { phase: 'hubness', processed: done ? 1 : 0 };",
+      "return { phase: 'hubness', processed: done || started ? 1 : 0 };",
+      "return {phase:'hubness',processed:done ? 1 : 0};"
     ],
     "core/embedding/jobs.ts": [
       "changed += 'processed' in step ? step.processed : 0;"

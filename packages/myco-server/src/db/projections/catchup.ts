@@ -1,5 +1,6 @@
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { RUN_ADMISSION_PROJECTION, LIVE_CATCHUP } from '../runs/live.js';
+import { CALIBRATION_PHASE_SOURCES, CALIBRATION_RECONCILE } from '../embeddings/calibration.js';
 import { PASSED_OVER_RECONCILE } from '../embeddings/passed-over.js';
 import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
 import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
@@ -64,12 +65,13 @@ const PHASE_SOURCES = {
   spores: { table: 'spores', columns: ['project_id', 'id'] },
   plans: { table: 'plans', columns: ['project_id', 'plan_key'] },
   ...RESET_PHASE_SOURCES,
+  ...CALIBRATION_PHASE_SOURCES,
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
 const projectionOf = (phase: ProjectionPhase) => phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
   : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION
   : phase.startsWith('publication') ? 'publication'
-  : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
+  : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : phase in CALIBRATION_PHASE_SOURCES ? 'embedding_calibration' : 'kpi';
 const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
 const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec]) => {
@@ -105,7 +107,7 @@ const transcriptReconcile = [
 const reconciles = {
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
   runs: LIVE_CATCHUP,
-  failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
+  failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
 
