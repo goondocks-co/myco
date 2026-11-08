@@ -18,48 +18,44 @@ export interface SporeStreamFilters {
   type?: string;
   /** One status, or undefined for every status. */
   status?: string;
-  /** Matches the body or the type. */
-  q?: string;
   /** Spores saved at or after this instant (ms). */
   since?: number;
 }
 
 /** The query string of one page of the stream; the server filters, and the first page carries the facets. */
-export function sporeStreamPath(filters: SporeStreamFilters, offset = 0): string {
+export function sporeStreamPath(filters: SporeStreamFilters, cursor: string | null = null): string {
   const params = new URLSearchParams();
   if (filters.projectId !== null) params.set('project', filters.projectId);
   if (filters.type) params.set('type', filters.type);
   if (filters.status) params.set('status', filters.status);
-  if (filters.q) params.set('q', filters.q);
   if (filters.since !== undefined) params.set('since', String(filters.since));
   params.set('limit', String(SPORE_STREAM_PAGE));
-  if (offset > 0) params.set('offset', String(offset));
+  if (cursor !== null) params.set('cursor', cursor);
   return `/api/spores?${params}`;
 }
 
 /**
- * The spore stream, newest first, a page at a time by offset. "Show more" reads
- * the next page from where the loaded rows end; the facets and the total come
- * with the first page, so they describe the whole match, not what is loaded.
+ * The spore stream, newest first, a page at a time: "Show more" continues after
+ * the last spore shown, by the cursor the page answered, so a spore saved
+ * meanwhile neither repeats a row nor skips one. The facets and the total come
+ * with the first page, from the counts Myco keeps; `counting` says it is still
+ * counting older spores.
  */
 export function useSporeStream(filters: SporeStreamFilters) {
   const first = sporeStreamPath(filters);
   const query = useInfiniteQuery({
     queryKey: ['spore-stream', first],
-    initialPageParam: 0,
+    initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => fetchJson<SporeStreamPage>(sporeStreamPath(filters, pageParam), signal),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((sum, page) => sum + page.spores.length, 0);
-      return last.spores.length > 0 && loaded < (pages[0]?.total ?? 0) ? loaded : undefined;
-    },
+    getNextPageParam: (last) => (last.hasMore && last.cursor !== null ? last.cursor : undefined),
     ...live({ follows: ['knowledge', 'runs'] }),
   });
-  // A spore saved between two pages shifts the offsets; it is listed once, where it was first read.
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.spores) ?? []).map((row) => [`${row.projectId}/${row.id}`, row])).values()], [query.data]);
   const head = query.data?.pages[0];
   return {
     rows: rows as SporeStreamRow[],
     total: head?.total,
+    counting: head?.counting === 'building',
     facets: head?.facets as SporeFacets | undefined,
     isPending: query.isPending,
     error: query.error,
@@ -95,14 +91,12 @@ export const PLAN_COLUMN_PAGE = 8;
 
 /**
  * One column of the plans board: one status, newest edit first, a page at a
- * time, narrowed to the plans whose title or text match `q` when it is given.
- * The first page counts the plans of every status under the same filters, so
- * the column shows its total whatever is loaded.
+ * time. The first page carries how many plans of every status there are, from
+ * the counts Myco keeps, so the column shows its total whatever is loaded.
  */
-export function usePlanColumn(projectId: string | null, status: string, q: string | null) {
+export function usePlanColumn(projectId: string | null, status: string) {
   const params = new URLSearchParams({ status, limit: String(PLAN_COLUMN_PAGE) });
   if (projectId !== null) params.set('project', projectId);
-  if (q !== null && q !== '') params.set('q', q);
   const path = `/api/plans?${params}`;
   const query = useInfiniteQuery({
     queryKey: ['plans', path],
@@ -114,8 +108,8 @@ export function usePlanColumn(projectId: string | null, status: string, q: strin
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.plans) ?? []).map((row) => [`${row.projectId}/${row.planKey}`, row])).values()], [query.data]);
   return {
     rows: rows as PlanBoardRow[],
-    /** How many plans of this status the filters admit; undefined until the first page is read. */
-    total: query.data?.pages[0]?.totals?.[status] ?? (query.data === undefined ? undefined : 0),
+    /** How many plans hold this status; undefined until the first page is read, and while Myco is still counting. */
+    total: query.data?.pages[0]?.counting === 'building' ? undefined : query.data?.pages[0]?.totals?.[status] ?? (query.data === undefined ? undefined : 0),
     isPending: query.isPending,
     error: query.error,
     hasMore: query.hasNextPage,

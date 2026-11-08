@@ -303,17 +303,22 @@ describe('listing a search of one type by time', () => {
     expect(found).toEqual(Array.from({ length: 12 }, (_, i) => `own${String(i).padStart(2, '0')}`));
   });
 
-  it('keeps relevance order to one bounded page with no cursor, and refuses a cursor on it', async () => {
+  it('pages relevance order by its own cursor through every match, and refuses a cursor of the other order', async () => {
     const f = fixture();
     for (let i = 0; i < 30; i++) f.prompt(`p${i}`, 'cobalt common words');
     const answer = await f.search('cobalt', { type: 'prompt', limit: 10 });
-    expect(answer.results).toHaveLength(10);
-    expect(answer.cursor).toBeNull();
-    expect((await f.search('cobalt', { limit: 10, order: 'relevance' })).cursor).toBeNull();
+    expect({ n: answer.results.length, hasMore: answer.hasMore }).toEqual({ n: 10, hasMore: true });
+    const seen = answer.results.map((r) => r.id);
+    for (let cursor = answer.cursor; cursor !== null;) {
+      const next = await f.search('cobalt', { type: 'prompt', limit: 10, cursor });
+      seen.push(...next.results.map((r) => r.id));
+      cursor = next.cursor;
+    }
+    expect({ n: seen.length, unique: new Set(seen).size }).toEqual({ n: 30, unique: 30 });
     const { cursor } = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 10 });
     expect(cursor).not.toBeNull();
-    await expect(f.search('cobalt', { type: 'prompt', cursor: cursor! })).rejects.toThrow('order=time');
-    await expect(f.search('cobalt', { type: 'prompt', order: 'relevance', cursor: cursor! })).rejects.toThrow('order=time');
+    await expect(f.search('cobalt', { type: 'prompt', cursor: cursor! })).rejects.toThrow('cursor is not one this search returned');
+    await expect(f.search('cobalt', { type: 'prompt', order: 'time', cursor: answer.cursor! })).rejects.toThrow('cursor is not one this search returned');
     await expect(f.search('cobalt', { order: 'newest' })).rejects.toThrow('order must be');
   });
 

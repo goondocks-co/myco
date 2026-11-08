@@ -1,7 +1,7 @@
 /**
- * The Knowledge page's reads (#1535): one plan by its key, the plan board's totals and text filter, who wrote a spore,
- * the spore stream's facets under every filter, the stream's text matching the line a reader sees, and search leading
- * a spore with that same line.
+ * The Knowledge page's reads (#1535): one plan by its key, the plan board's totals, who wrote a spore, the spore
+ * stream's facets under every structured filter, a text filter refused for search, and search leading a spore with
+ * its line.
  */
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -11,6 +11,9 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 
 const NOW = 1_700_000_000_000;
+const DAY = 86_400_000;
+/** The UTC day `NOW` falls in. */
+const TODAY = Math.floor(NOW / DAY) * DAY;
 const key = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 function harness() {
@@ -55,19 +58,21 @@ describe('one plan by its key', () => {
 });
 
 describe('the plan board across Projects', () => {
-  it('counts each status under the other filters on the first page, and not on a later one', async () => {
+  it('counts every status from the counters on the first page, not on a later one, and pages a window with hasMore alone', async () => {
     const h = harness();
     h.plan('proj_1', key(1), NOW + 1, 'active', 'alpha one');
     h.plan('proj_1', key(2), NOW + 2, 'active', 'beta two');
     h.plan('proj_2', key(3), NOW + 3, 'completed', 'alpha three');
     h.plan('proj_2', key(4), NOW - 10, 'abandoned', 'alpha old');
+    h.sqlite.run("UPDATE plans SET status = 'completed' WHERE plan_key = ?", [key(2)]);
     const first = await h.get('/api/plans?status=active&limit=1');
-    expect(first.body.totals).toEqual({ active: 2, completed: 1, abandoned: 1 });
-    expect(first.body.plans).toHaveLength(1);
-    expect((await h.get(`/api/plans?status=active&limit=1&cursor=${encodeURIComponent(first.body.cursor)}`)).body.totals).toBeUndefined();
-    expect((await h.get(`/api/plans?since=${NOW}`)).body.totals).toEqual({ active: 2, completed: 1 });
-    expect((await h.get('/api/plans?q=alpha')).body.totals).toEqual({ active: 1, completed: 1, abandoned: 1 });
-    expect((await h.get('/api/plans?q=alpha&project=proj_1')).body.totals).toEqual({ active: 1 });
+    expect({ totals: first.body.totals, plans: first.body.plans.length, hasMore: first.body.hasMore })
+      .toEqual({ totals: { active: 1, completed: 2, abandoned: 1 }, plans: 1, hasMore: false });
+    const both = await h.get('/api/plans?limit=1');
+    expect({ hasMore: both.body.hasMore, next: (await h.get(`/api/plans?limit=1&cursor=${encodeURIComponent(both.body.cursor)}`)).body.totals }).toEqual({ hasMore: true, next: undefined });
+    const windowed = await h.get(`/api/plans?since=${NOW}&limit=1`);
+    expect({ totals: windowed.body.totals, hasMore: windowed.body.hasMore }).toEqual({ totals: undefined, hasMore: true });
+    expect((await h.get('/api/plans?project=proj_1')).body.totals).toEqual({ active: 1, completed: 1 });
   });
 
   it('leaves an archived Project out of every Project\'s totals, and counts it when named', async () => {
@@ -80,19 +85,11 @@ describe('the plan board across Projects', () => {
     expect((await h.get('/api/plans?project=proj_2')).body.totals).toEqual({ active: 1, completed: 1 });
   });
 
-  it('matches a text in the title or the inline body, pages through the matches, and treats % and _ as text', async () => {
+  it('refuses a text filter, naming the search to make instead, and reads nothing', async () => {
     const h = harness();
     h.plan('proj_1', key(1), NOW + 1, 'active', 'Cobalt migration');
-    h.plan('proj_1', key(2), NOW + 2, 'active', 'Other', '- [ ] move the cobalt index');
-    h.plan('proj_2', key(3), NOW + 3, 'active', 'Unrelated');
-    h.plan('proj_2', key(4), NOW + 4, 'active', 'Spend 100% of it');
-    const ids = async (path: string) => (await h.get(path)).body.plans.map((p: any) => p.planKey);
-    expect(await ids('/api/plans?q=cobalt')).toEqual([key(2), key(1)]);
-    const first = await h.get('/api/plans?q=COBALT&limit=1');
-    expect(first.body.plans.map((p: any) => p.planKey)).toEqual([key(2)]);
-    expect(await ids(`/api/plans?q=COBALT&limit=1&cursor=${encodeURIComponent(first.body.cursor)}`)).toEqual([key(1)]);
-    expect(await ids('/api/plans?q=100%25')).toEqual([key(4)]);
-    expect(await ids('/api/plans?q=_')).toEqual([]);
+    const refused = await h.get('/api/plans?q=cobalt');
+    expect({ status: refused.status, error: refused.body.reason }).toEqual({ status: 400, error: expect.stringContaining('Next call: myco_search {"query":"cobalt","type":"plan","mode":"fts"}; over HTTP, GET /api/search?q=cobalt&type=plan&mode=fts.') });
   });
 });
 
@@ -117,28 +114,39 @@ describe('who wrote a spore', () => {
 });
 
 describe('the spore stream', () => {
-  it('counts its facets under the status, text and window it is asked for', async () => {
+  it('counts its total and facets from the counters under its status and a window of whole UTC days', async () => {
     const h = harness();
-    h.spore('proj_1', 'sp_a', { status: 'active', type: 'gotcha', content: 'cobalt', at: NOW });
-    h.spore('proj_1', 'sp_b', { status: 'superseded', type: 'gotcha', content: 'cobalt', at: NOW });
-    h.spore('proj_2', 'sp_c', { status: 'active', type: 'decision', content: 'cobalt', at: NOW - 1000 });
-    h.spore('proj_2', 'sp_d', { status: 'active', type: 'decision', content: 'other', at: NOW });
-    const facets = async (query: string) => (await h.get(`/api/spores?${query}`)).body.facets;
-    expect(await facets('')).toEqual({ type: { gotcha: 2, decision: 2 }, project: { proj_1: 2, proj_2: 2 } });
-    expect(await facets('status=active')).toEqual({ type: { gotcha: 1, decision: 2 }, project: { proj_1: 1, proj_2: 2 } });
-    expect(await facets('q=cobalt')).toEqual({ type: { gotcha: 2, decision: 1 }, project: { proj_1: 2, proj_2: 1 } });
-    expect(await facets(`since=${NOW}`)).toEqual({ type: { gotcha: 2, decision: 1 }, project: { proj_1: 2, proj_2: 1 } });
-    expect(await facets(`status=active&q=cobalt&since=${NOW}`)).toEqual({ type: { gotcha: 1 }, project: { proj_1: 1 } });
+    h.spore('proj_1', 'sp_a', { status: 'active', type: 'gotcha', at: NOW });
+    h.spore('proj_1', 'sp_b', { status: 'superseded', type: 'gotcha', at: NOW });
+    h.spore('proj_2', 'sp_c', { status: 'active', type: 'decision', at: TODAY - 1 });
+    h.spore('proj_2', 'sp_d', { status: 'active', type: 'decision', at: NOW });
+    const page = async (query: string) => (await h.get(`/api/spores?${query}`)).body;
+    expect(await page('')).toMatchObject({ total: 4, facets: { type: { gotcha: 2, decision: 2 }, project: { proj_1: 2, proj_2: 2 } } });
+    expect(await page('status=active')).toMatchObject({ total: 3, facets: { type: { gotcha: 1, decision: 2 }, project: { proj_1: 1, proj_2: 2 } } });
+    expect(await page('type=decision')).toMatchObject({ total: 2, facets: { type: { gotcha: 2, decision: 2 }, project: { proj_2: 2 } } });
+    expect(await page(`since=${TODAY}`)).toMatchObject({ total: 3, facets: { type: { gotcha: 2, decision: 1 }, project: { proj_1: 2, proj_2: 1 } } });
+    expect(await page(`since=${TODAY - DAY}&until=${TODAY}`)).toMatchObject({ total: 1, facets: { type: { decision: 1 }, project: { proj_2: 1 } } });
+    // A bound inside a day widens to the whole UTC day: the page, the total and the facets read the same days.
+    const inside = await page(`since=${NOW}&until=${NOW + 1}`);
+    expect({ ids: inside.spores.map((s: any) => s.id).sort(), total: inside.total, facets: inside.facets, window: inside.window })
+      .toEqual({ ids: ['sp_a', 'sp_b', 'sp_d'], total: 3, facets: { type: { gotcha: 2, decision: 1 }, project: { proj_1: 2, proj_2: 1 } }, window: { from: TODAY, to: TODAY + DAY } });
+    const yesterday = await page(`since=${TODAY - DAY + 5}&until=${TODAY - 5}`);
+    expect({ ids: yesterday.spores.map((s: any) => s.id), total: yesterday.total, window: yesterday.window })
+      .toEqual({ ids: ['sp_c'], total: 1, window: { from: TODAY - DAY, to: TODAY } });
+    expect((await page(`since=${TODAY - 1}&until=${TODAY + 1}`)).total).toBe(4);
   });
 
-  it('matches its text against the line a reader sees, as well as the body and the type', async () => {
+  it('pages by the cursor its last page answered, and refuses offset paging', async () => {
     const h = harness();
-    h.spore('proj_1', 'sp_line', { content: 'the long body', line: 'Capture drops the last event on restart' });
-    h.spore('proj_1', 'sp_body', { content: 'restart handling in the body' });
-    h.spore('proj_1', 'sp_none', { content: 'nothing relevant', line: 'Unrelated line' });
-    const ids = async (path: string) => (await h.get(path)).body.spores.map((s: any) => s.id).sort();
-    expect(await ids('/api/projects/proj_1/spores?q=restart')).toEqual(['sp_body', 'sp_line']);
-    expect(await ids('/api/spores?q=drops%20the%20last')).toEqual(['sp_line']);
+    for (const id of ['sp_1', 'sp_2', 'sp_3']) h.spore('proj_1', id, { at: NOW });
+    const first = (await h.get('/api/spores?limit=2')).body;
+    const next = (await h.get(`/api/spores?limit=2&cursor=${encodeURIComponent(first.cursor)}`)).body;
+    expect({ ids: [...first.spores, ...next.spores].map((s: any) => s.id), more: [first.hasMore, next.hasMore], facets: next.facets })
+      .toEqual({ ids: ['sp_3', 'sp_2', 'sp_1'], more: [true, false], facets: undefined });
+    for (const path of ['/api/spores?offset=2', '/api/projects/proj_1/spores?offset=2']) {
+      const refused = await h.get(path);
+      expect({ path, status: refused.status, error: refused.body.reason }).toEqual({ path, status: 400, error: expect.stringContaining('cursor') });
+    }
   });
 });
 
@@ -168,16 +176,17 @@ describe('a written spore answers in the shape a write answers', () => {
   });
 });
 
-describe('the text filters read % and _ as text', () => {
-  it('matches a spore\'s text literally, as the plan board does', async () => {
+describe('a text filter on a spore list', () => {
+  it('is refused on every list, naming the search to make instead', async () => {
     const h = harness();
     h.spore('proj_1', 'sp_percent', { content: 'spend 100% of it' });
-    h.spore('proj_1', 'sp_plain', { content: 'spend 1000 of it', line: 'a_b line' });
-    const ids = async (path: string) => (await h.get(path)).body.spores.map((s: any) => s.id).sort();
-    expect(await ids('/api/projects/proj_1/spores?q=100%25')).toEqual(['sp_percent']);
-    expect(await ids('/api/spores?q=100%25')).toEqual(['sp_percent']);
-    expect(await ids('/api/projects/proj_1/spores?q=a_b')).toEqual(['sp_plain']);
-    expect(await ids('/api/projects/proj_1/spores?q=_')).toEqual(['sp_plain']);
-    expect(await ids('/api/projects/proj_1/spores?q=a%25b')).toEqual([]);
+    for (const path of ['/api/projects/proj_1/spores?q=100%25', '/api/spores?q=restart']) {
+      const refused = await h.get(path);
+      expect({ path, status: refused.status, error: refused.body.reason }).toEqual({ path, status: 400, error: expect.stringContaining('search?q=') });
+    }
+    // Each names the search to call with the text it got, narrowed as the list is.
+    expect((await h.get('/api/projects/proj_1/spores?q=100%25')).body.reason)
+      .toContain('Next call: myco_search {"query":"100%","type":"spore","mode":"fts","project":"proj_1"}; over HTTP, GET /api/projects/proj_1/search?q=100%25&type=spore&mode=fts.');
+    expect((await h.get('/api/plans?q=cobalt')).body.reason).toContain('Next call: myco_search {"query":"cobalt","type":"plan","mode":"fts"}');
   });
 });

@@ -9,16 +9,20 @@ export interface ErrorWords {
   title: string;
   /** Whether trying again can help. */
   retry: boolean;
+  /** What trying again does, where it does more than repeat the read. */
+  retryLabel?: string;
 }
 
 /**
  * What a failed read says, worded by its status: a refusal names who the page
  * is for, a missing thing says so, a server fault offers a retry, and only a
- * request that never reached the server says it could not be reached. The
+ * request that never reached the server says it could not be reached, and a
+ * list that changed under its pages offers to read it again from the top. The
  * server's own sentence is never shown: it is written for an operator.
  */
 export function errorWords(error: unknown): ErrorWords {
   if (error instanceof ApiError) {
+    if (error.code === 'stale_cursor') return { title: 'The list changed while you were reading it.', retry: true, retryLabel: 'Read it again from the top' };
     if (error.code === 'owner_pending') return { title: 'This server needs an owner before this action is available.', retry: false };
     if (error.code === 'not_owner') return { title: 'Only this server’s owner can do that.', retry: false };
     if (error.code === 'member_revoked') return { title: 'This membership is no longer active.', retry: false };
@@ -51,7 +55,7 @@ export function ErrorState({ error, onRetry, back, children, className }: ErrorS
       </div>
       {children}
       <div className="flex gap-s2">
-        {words.retry && onRetry && <Button onClick={onRetry}>Retry</Button>}
+        {words.retry && onRetry && <Button onClick={onRetry}>{words.retryLabel ?? 'Retry'}</Button>}
         {back && <ActionLink to={back.to}>{back.label}</ActionLink>}
       </div>
     </div>

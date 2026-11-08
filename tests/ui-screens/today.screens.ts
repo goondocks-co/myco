@@ -323,22 +323,20 @@ test.describe('Today', () => {
       }
       // The spores read is bounded the same, and its rows and total are the day's alone.
       expect(bounds(spores.url())).toEqual(window);
-      const sporeAnswer = await spores.json() as { spores: Array<{ createdAt: number }>; total: number };
+      // The server widens a spore window to whole UTC days, names it, and the page and its total are that window's alone.
+      const sporeAnswer = await spores.json() as { spores: Array<{ createdAt: number; agentLine: string | null }>; total: number; window: { from: number; to: number } };
       expect(sporeAnswer.spores.length).toBeGreaterThan(0);
       expect(sporeAnswer.total).toBe(sporeAnswer.spores.length);
-      for (const spore of sporeAnswer.spores) expect(spore.createdAt >= window.since && spore.createdAt < window.until, `spore at ${spore.createdAt}`).toBe(true);
+      expect(sporeAnswer.window.from).toBeLessThanOrEqual(window.since);
+      expect(sporeAnswer.window.to).toBeGreaterThanOrEqual(window.until);
+      for (const spore of sporeAnswer.spores) expect(spore.createdAt >= sporeAnswer.window.from && spore.createdAt < sporeAnswer.window.to, `spore at ${spore.createdAt}`).toBe(true);
 
-      // The same reads without the bound do reach the later rows: the bound is what keeps them out.
+      // The same read without the bound does reach the later sessions: the bound is what keeps them out.
       const unbounded = await page.evaluate(async (since) => {
-        const read = async (path: string) => (await fetch(path, { credentials: 'same-origin' })).json();
-        return {
-          sessions: await read(`/api/sessions?since=${since}&limit=200`) as { rows: Array<{ startedAt: number | null; firstReceivedAt: number }> },
-          spores: await read(`/api/spores?since=${since}&limit=200`) as { spores: Array<{ createdAt: number }>; total: number },
-        };
+        const response = await fetch(`/api/sessions?since=${since}&limit=200`, { credentials: 'same-origin' });
+        return await response.json() as { rows: Array<{ startedAt: number | null; firstReceivedAt: number }> };
       }, window.since);
-      expect(unbounded.sessions.rows.filter((row) => (row.startedAt ?? row.firstReceivedAt) >= window.until).length).toBeGreaterThan(0);
-      expect(unbounded.spores.spores.filter((spore) => spore.createdAt >= window.until).length).toBeGreaterThan(0);
-      expect(unbounded.spores.total).toBeGreaterThan(sporeAnswer.total);
+      expect(unbounded.rows.filter((row) => (row.startedAt ?? row.firstReceivedAt) >= window.until).length).toBeGreaterThan(0);
 
       await expect(page.getByRole('heading', { level: 1 })).toHaveText(new Intl.DateTimeFormat('en-US', { timeZone: FIXTURE_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(fixtureNow() - 24 * 3_600_000)));
       const list = timeline(page);
@@ -349,6 +347,12 @@ test.describe('Today', () => {
         await expect(list.getByText(title, { exact: true })).toHaveCount(0);
       }
       await expect(list.locator(':scope > li[data-timeline-item="live"]')).toHaveCount(0);
+      // Spores the widened window brought in from after the day stay off its page.
+      const afterTheDay = sporeAnswer.spores.filter((spore) => spore.createdAt >= window.until);
+      expect(afterTheDay.length).toBeGreaterThan(0);
+      for (const spore of afterTheDay) {
+        if (spore.agentLine !== null) await expect(list.getByText(spore.agentLine, { exact: true })).toHaveCount(0);
+      }
       await expect(page.locator('[data-lede]')).toContainText(`Your agents ran ${sessionRows.length} sessions`);
       expectQuiet(watch);
     } finally {

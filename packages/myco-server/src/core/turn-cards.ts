@@ -150,7 +150,7 @@ export function cardStatements(
         headline = ?, marks = ?, card = ?, fields = ?, signal = ?, signal_reason = ?, shared_with = ?,
         covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
         input_hash = ${LIVE_HASH}, run_id = ?, model = ?, carded_at = ?
-      WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND ${LIVE_HASH} IS NOT NULL`)
+      WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND ${LIVE_HASH} IS NOT NULL RETURNING turn_key`)
       .bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
         outline.headline, JSON.stringify(outline.marks), text, fields === null ? null : encodeCard(fields), card.signal, card.reason, card.sharedWith,
         card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0,
@@ -244,7 +244,8 @@ export async function writeRunCards(
         }, now),
         ...sessionProgressStatements(db, projectId, sessionId, now),
       ]);
-      if ((results[0]!.meta.changes ?? 0) > 0) written += 1; else changed.push(turnKey);
+      // The card landed when its guarded update returned its turn; a trigger's own writes never count for it.
+      if (results[0]!.results.length > 0) written += 1; else changed.push(turnKey);
     }
   }
   return { written, changed };

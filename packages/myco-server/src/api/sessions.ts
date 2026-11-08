@@ -7,6 +7,7 @@ import { getSession, listSessionSummaries, projectStats, sessionDurationMs, type
 import { activityFeed } from '../read/activity.js';
 import { SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
+import { searchRepairRefusal } from '../core/search-repair.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, untitledReason } from '../read/children.js';
 import { parseOrigins, sessionTurnContexts } from '../read/turns.js';
@@ -76,6 +77,16 @@ export function paging(url: URL, cursors: { decode: (cursor: string) => unknown;
  * `window=activity` lists the sessions active in the window, and needs the start instant. An unknown state or window, and a
  * bound that is not an instant, are refused.
  */
+/** The Projects and the session a request reads, by its path or its `project` parameters, which a refused text filter's search keeps. */
+function pathScope(url: URL): { projects: string[] | 'all'; sessionId?: string } {
+  const [, projectId, sessionId] = /^\/api\/projects\/([^/]+)(?:\/sessions\/([^/]+))?/.exec(url.pathname) ?? [];
+  const named = url.searchParams.getAll('project');
+  return {
+    projects: projectId !== undefined ? [decodeURIComponent(projectId)] : named.length > 0 ? named : 'all',
+    ...(sessionId === undefined ? {} : { sessionId: decodeURIComponent(sessionId) }),
+  };
+}
+
 export function sessionFilters(url: URL): SessionFilters | Response {
   const state = url.searchParams.get('state');
   if (state !== null && state !== 'open' && state !== 'ended') return badRequest('state must be open or ended');
@@ -90,7 +101,14 @@ export function sessionFilters(url: URL): SessionFilters | Response {
   const window = url.searchParams.get('window');
   if (window !== null && window !== 'start' && window !== 'activity') return badRequest('window must be start or activity');
   if (window === 'activity' && since === undefined) return badRequest('an activity window needs since');
-  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), q: text('q'), since, until, window: window ?? undefined };
+  const q = url.searchParams.get('q');
+  if (q !== null) {
+    const unsupported = [...(text('member') === undefined ? [] : ['member']), ...(window === 'activity' ? ['window=activity'] : [])];
+    return badRequest(searchRepairRefusal('q', { type: 'session', text: q, ...pathScope(url), sessionId: text('session'), agent: text('agent'), branch: text('branch'),
+      ...(state === 'open' ? { status: 'active' } : state === 'ended' ? { status: 'completed' } : {}),
+      ...(window === 'activity' ? {} : { from: since, to: until }), unsupported }));
+  }
+  return { state: state ?? undefined, branch: text('branch'), memberLabel: text('member'), agent: text('agent'), sessionId: text('session'), since, until, window: window ?? undefined };
 }
 
 export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -150,12 +168,13 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   return ok(await (query as typeof listAttachments)(env.db, scope, sessionId, page));
 }
 
-/** A session's plans list narrows by `status`, one the catalogue holds, and by `q`, a text the title contains. */
-function planFilters(url: URL): { status?: string; q?: string } | Response {
+/** A session's plans list narrows by `status`, one the catalogue holds; a text match is a search. */
+function planFilters(url: URL): { status?: string } | Response {
   const status = url.searchParams.get('status');
   if (status !== null && !WRITABLE_PLAN_STATUSES.has(status)) return badRequest(PLAN_STATUS_MESSAGE);
   const q = url.searchParams.get('q');
-  return { ...(status === null ? {} : { status }), ...(q === null ? {} : { q }) };
+  if (q !== null) return badRequest(searchRepairRefusal('q', { type: 'plan', text: q, ...pathScope(url), status: status ?? undefined }));
+  return status === null ? {} : { status };
 }
 
 /** The commits the session's member observed at its start and end, and the release check that classified one of them. */

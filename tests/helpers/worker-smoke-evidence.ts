@@ -56,16 +56,18 @@ export async function verifyWorkerOutcome(client: Client, project: string, runId
 
   const spores: string[] = [];
   if (!skipped && (task === 'extract-curate' || task === 'vault-seed')) {
+    let cursor: unknown = null;
     for (let page = 0; ; page++) {
       assert(page < MAX_SPORE_PAGES, 'Spore evidence exceeds the smoke read bound');
-      const result = await read('myco_spores', { op: 'list', status: 'all', limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+      const result = await read('myco_spores', { op: 'list', status: 'all', limit: PAGE_SIZE, ...(cursor === null ? {} : { cursor }) });
       const found = rows(result.spores);
       for (const spore of found.filter((row) => row.author === runId)) {
         assert(typeof spore.id === 'string');
         assert(typeof spore.content === 'string' && spore.content.trim().length > 0);
         spores.push(spore.id);
       }
-      if (found.length < PAGE_SIZE) break;
+      cursor = result.cursor ?? null;
+      if (cursor === null) break;
     }
     if (task === 'vault-seed') assert(spores.length > 0, 'Seeding left no readable spores attributed to the run');
   }

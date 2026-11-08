@@ -1,10 +1,11 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import { countSpores, getSpore, listSpores, listSupersedingSporeIds, MAX_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS } from '../core/spores.js';
+import { getSpore, listSporePage, listSupersedingSporeIds, sporeListWindow, MAX_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS } from '../core/spores.js';
 import { writeSpore } from '../core/spore-admission.js';
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';
 import { parseJsonObject } from './scope.js';
+import { searchRepairRefusal } from '../core/search-repair.js';
 export { MAX_SPORE_CONTENT_BYTES };
 const parseBody = parseJsonObject;
 const str = (v: unknown, max = 192): string | null => typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
@@ -45,25 +46,37 @@ export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Pro
   return write(env, ctx, body, body.action);
 }
 
+/**
+ * One page of the Project's spores by structured filters, newest first, continued by `cursor`. A text match is a search
+ * (`/api/search`), and offset paging is retired: either is refused with the request to make instead.
+ */
 export async function handleListSpores(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
+  if (body.search !== undefined) {
+    const unsupported = [...(str(body.agentId) === null ? [] : ['agentId']), ...(body.includeActive === false ? ['includeActive'] : [])];
+    return Response.json(refused(ctx, refusal(searchRepairRefusal('search', { type: 'spore', text: String(body.search), projects: [ctx.projectId],
+      status: str(body.status) ?? undefined, observationType: str(body.observationType) ?? undefined, sessionId: str(body.sessionId, 384) ?? undefined,
+      ...sporeListWindow({ since: int(body.since) }), unsupported }), 'invalid_field')));
+  }
+  if (body.offset !== undefined) return Response.json(refused(ctx, refusal('offset paging is retired; nothing was read. Send the cursor the previous page answered as cursor', 'invalid_field')));
   const scope = { projectId: ctx.projectId };
   const options = {
     agentId: str(body.agentId) ?? undefined,
     observationType: str(body.observationType) ?? undefined,
     status: str(body.status) ?? undefined,
     sessionId: str(body.sessionId, 384) ?? undefined,
-    search: str(body.search, 1024) ?? undefined,
     since: int(body.since),
     // Absent means unfiltered, matching the local reader: only an explicit
     // `false` engages the terminal-session gate.
     includeActive: body.includeActive === false ? false : undefined,
     limit: int(body.limit),
-    offset: int(body.offset),
+    cursor: str(body.cursor, 512) ?? undefined,
   };
-  const [spores, total] = await Promise.all([listSpores(env.db, scope, options), countSpores(env.db, scope, options)]);
-  return Response.json({ persisted: true, spores, total, maxLimit: MAX_SPORE_LIMIT });
+  const listed = await listSporePage(env.db, scope, options);
+  if (listed === null) return Response.json(refused(ctx, refusal('cursor is not one this list answered; nothing was read. Request the first page again without a cursor', 'invalid_field')));
+  const { rows, ...page } = listed;
+  return Response.json({ persisted: true, spores: rows, ...page, maxLimit: MAX_SPORE_LIMIT });
 }
 
 export async function handleGetSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {

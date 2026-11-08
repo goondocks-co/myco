@@ -223,11 +223,18 @@ describe('the sessions table', () => {
     await pick('State', 'Open');
     // Active today is the sessions running at some point today, whenever they started: the activity window, to tomorrow.
     await pick('Active', 'Active today');
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter sessions' }), { target: { value: 'parity' } });
-    const everything = listPath({ projectId: 'x', state: 'open', q: 'parity', agent: 'codex', member: 'harness', active: { since: TODAY, until: TODAY + DAY } });
+    const everything = listPath({ projectId: 'x', state: 'open', agent: 'codex', member: 'harness', active: { since: TODAY, until: TODAY + DAY } });
     await waitFor(() => expect(requested).toContain(everything));
     expect(new URL(everything, 'https://s').searchParams.get('window')).toBe('activity');
-    expect(new URLSearchParams(location()!.split('?')[1]).toString()).toBe('agent=codex&member=harness&state=open&window=today&q=parity');
+    // Text in the box searches the sessions under the agent and state picked; the list never carries it. Search cannot
+    // narrow by member or active period, so it says so, and one click clears those two and searches.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter sessions' }), { target: { value: 'parity' } });
+    expect(await screen.findByText('Search can’t narrow sessions by member or when they were active.')).toBeTruthy();
+    expect(requested.some((p) => p.includes('/search?'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear the member and the active period and search' }));
+    await waitFor(() => expect(requested).toContain('/api/projects/x/search?q=parity&type=session&limit=20&status=active&agent=codex&mode=fts'));
+    expect(new URLSearchParams(location()!.split('?')[1]).toString()).toBe('agent=codex&state=open&q=parity');
+    expect(requested.some((p) => p.startsWith('/api/sessions') && p.includes('q=parity'))).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions'));
@@ -250,18 +257,35 @@ describe('the sessions table', () => {
 
   it('reads the filters a link carries, the branch among them, into the bar and the request', async () => {
     const { requested } = server(base({ '/api/sessions': () => page([]) }));
-    mount('/sessions?agent=cursor&state=ended&window=week&q=rounding&branch=main');
+    mount('/sessions?agent=cursor&state=ended&window=week&branch=main');
     await screen.findByText('No sessions match.');
-    expect(requested).toContain(listPath({ projectId: null, state: 'ended', q: 'rounding', agent: 'cursor', branch: 'main', active: { since: TODAY - 6 * DAY, until: TODAY + DAY } }));
+    expect(requested).toContain(listPath({ projectId: null, state: 'ended', agent: 'cursor', branch: 'main', active: { since: TODAY - 6 * DAY, until: TODAY + DAY } }));
     // An ended list has no live group to ask for.
     expect(requested.some((p) => p.includes('state=open'))).toBe(false);
     expect(screen.getByRole('button', { name: 'Agent: Cursor' })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: /^State(?::|$)/ }).textContent).toBe('Ended');
     expect(screen.getByRole('combobox', { name: /^Active(?::|$)/ }).textContent).toBe('Past 7 days');
     expect(document.querySelector('[data-branch-filter]')!.textContent).toContain('main');
-    expect((screen.getByRole('searchbox', { name: 'Filter sessions' }) as HTMLInputElement).value).toBe('rounding');
     fireEvent.click(screen.getByRole('button', { name: 'Clear the search and filters' }));
     await waitFor(() => expect(location()).toBe('/sessions'));
+  });
+
+  it('searches under the agent, branch and state a link carries, and reads the next matches by cursor', async () => {
+    const hit = (id: string, title: string) => ({ id, type: 'session', title, preview: '', score: 1, created_at: NOW - HOUR, session_id: id });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const first = '/api/projects/x/search?q=cobalt&type=session&limit=20&status=completed&agent=codex&branch=fix&mode=fts';
+    const { requested } = server(base({
+      '/api/sessions': () => page([]),
+      [first]: () => answer([hit('s_fix', 'Cobalt fix on codex')], 'c1'),
+      [`${first.replace('&mode=fts', '&cursor=c1&mode=fts')}`]: () => answer([hit('s_fix_2', 'Second cobalt fix')], null),
+    }));
+    mount('/p/x/sessions?agent=codex&branch=fix&state=ended&q=cobalt');
+    expect(await screen.findByText('Cobalt fix on codex')).toBeTruthy();
+    expect(requested).toContain(first);
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('Second cobalt fix')).toBeTruthy();
+    expect(requested).toContain(first.replace('&mode=fts', '&cursor=c1&mode=fts'));
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
   it('says a project with no sessions has none yet', async () => {
@@ -276,19 +300,19 @@ describe('the sessions table', () => {
     expect(await screen.findByText('Not found')).toBeTruthy();
   });
 
-  it('pages with Show more, keeping the search and filters on the next page, and lists a session the order revised onto two pages once', async () => {
+  it('pages with Show more, keeping the filters on the next page, and lists a session the order revised onto two pages once', async () => {
     const first = [session({ sessionId: 'a', title: 'session a', startedAt: NOW - 1000, endedAt: NOW }), session({ sessionId: 'b', title: 'session b', startedAt: NOW - 2000, endedAt: NOW })];
     const second = [session({ sessionId: 'b', title: 'session b refined', startedAt: NOW - 4000, endedAt: NOW }), session({ sessionId: 'c', title: 'session c', startedAt: NOW - 5000, endedAt: NOW })];
-    const path = listPath({ projectId: 'x', q: 'port', agent: 'codex' });
+    const path = listPath({ projectId: 'x', agent: 'codex' });
     const { requested } = server(base({ [path]: () => page(first, 'c1'), [`${path}&cursor=c1`]: () => page(second), '/api/sessions': () => page([]) }));
-    mount('/p/x/sessions?q=port&agent=codex');
+    mount('/p/x/sessions?agent=codex');
     expect(await screen.findByText('session a')).toBeTruthy();
     expect(screen.getByText('Showing 2 sessions')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(screen.getByText('session c')).toBeTruthy());
-    // The next page is the same read with its cursor: the search and the agent ride along.
+    // The next page is the same read with its cursor: the agent rides along.
     const cursorRead = new URL(requested.find((p) => p.includes('cursor=c1'))!, 'https://s').searchParams;
-    expect([cursorRead.get('q'), cursorRead.get('agent'), cursorRead.get('project')]).toEqual(['port', 'codex', 'x']);
+    expect([cursorRead.get('agent'), cursorRead.get('project')]).toEqual(['codex', 'x']);
     expect(screen.queryAllByText('session b')).toHaveLength(0);
     expect(screen.queryAllByText('session b refined')).toHaveLength(1);
     expect(screen.getByText('Showing 3 sessions')).toBeTruthy();
@@ -1302,7 +1326,8 @@ describe('the session reading page', () => {
       const after = rows.filter((r) => r.createdAt < at || (r.createdAt === at && r.id < id));
       const page = after.slice(0, 25);
       const last = page.at(-1);
-      return Response.json({ spores: page, cursor: after.length > 25 && last !== undefined ? `${last.createdAt}:${last.id}` : null, total: total(), maxPage: 200 });
+      const next = after.length > 25 && last !== undefined ? `${last.createdAt}:${last.id}` : null;
+      return Response.json({ spores: page, cursor: next, hasMore: next !== null, total: total(), maxPage: 200 });
     };
   };
   it('lists the session’s spores on their tab as rows, whatever their status, and pages by cursor until none follows', async () => {
@@ -1368,11 +1393,11 @@ describe('the session reading page', () => {
     expect(reads).toBe(2);
   });
 
-  it('filters the session’s spores by type and by search, and says whether none were saved or none match', async () => {
+  it('filters the session’s spores by type, searches them, and says whether none were saved or none match', async () => {
     const { requested } = server(routes({
       [SPORES]: () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
       [`${SPORES.replace('limit=25', 'limit=25&type=decision')}`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
-      [`/api/projects/x/spores?limit=25&type=decision&q=cache&session=s1`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
+      ['/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts']: () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores');
     await screen.findByRole('list', { name: 'Spores' });
@@ -1383,7 +1408,8 @@ describe('the session reading page', () => {
     expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search spores' }), { target: { value: 'cache' } });
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision&q=cache'));
-    await waitFor(() => expect(requested).toContain('/api/projects/x/spores?limit=25&type=decision&q=cache&session=s1'));
+    await waitFor(() => expect(requested).toContain('/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts'));
+    expect(requested.some((p) => p.startsWith('/api/projects/x/spores') && p.includes('q='))).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores'));
     expect(await screen.findByRole('list', { name: 'Spores' })).toBeTruthy();
@@ -1396,13 +1422,13 @@ describe('the session reading page', () => {
   const PLANS = '/api/projects/x/sessions/s1/plans?limit=100';
   const plan = (over: Record<string, unknown> = {}) => ({ planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - HOUR, orderedAt: NOW - HOUR, ...over });
 
-  it('lists the session’s plans on their tab as rows, filters them by status and title, and pages them', async () => {
+  it('lists the session’s plans on their tab as rows, filters them by status, searches them, and pages them', async () => {
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1/plans': () => new Response(null, { status: 404 }),
       [PLANS]: () => page([plan(), plan({ planKey: 'plan-2', title: null, status: 'active', progress: 'N/A', originPath: null, updatedAt: NOW - 2 * HOUR })], 'next'),
       [`${PLANS}&cursor=next`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
       [`${PLANS}&status=completed`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
-      [`${PLANS}&status=completed&q=nothing`]: () => page([]),
+      ['/api/projects/x/search?q=nothing&type=plan&limit=20&status=completed&session_id=s1&mode=fts']: () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
     }));
     mount('/p/x/sessions/s1?tab=plans');
     await screen.findByRole('list', { name: 'Plans' });
@@ -1419,7 +1445,8 @@ describe('the session reading page', () => {
     await waitFor(() => expect(listed('Plans').map((li) => li.textContent)).toEqual(['Sep 2915:00DoneThird plan2 of 2 items done · .claude/plans/ship.md']));
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search plans' }), { target: { value: 'nothing' } });
     expect(await screen.findByText('No plans in this session match this filter.')).toBeTruthy();
-    expect(requested).toContain(`${PLANS}&status=completed&q=nothing`);
+    // The search keeps the status picked: a plan of another status never lands under it.
+    expect(requested).toContain('/api/projects/x/search?q=nothing&type=plan&limit=20&status=completed&session_id=s1&mode=fts');
     expect(rawIdsInPage()).toEqual([]);
     cleanup();
     server(routes({ [PLANS]: () => page([]) }));
@@ -1429,7 +1456,8 @@ describe('the session reading page', () => {
 
   it('drops the search and the filter when another tab opens, so neither lands on a list it was not set on', async () => {
     server(routes({
-      '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ results: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
       [PLANS]: () => page([plan()]),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');
@@ -1906,7 +1934,8 @@ describe('the session reading page', () => {
 
   it('says nothing was recorded in a session without commits or reports, and opens the tab from another with its filter dropped', async () => {
     server(routes({
-      '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ results: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
       [COMMITS]: () => Response.json({ observations: [], release: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');

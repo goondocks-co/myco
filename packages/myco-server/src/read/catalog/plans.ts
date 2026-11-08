@@ -5,8 +5,8 @@ import { encodeCursor as plans_import_encodeCursor } from "../scope.js";
 import { inListChunks as plans_import_inListChunks } from "../scope.js";
 import { decodeProjectCursor as plans_import_decodeProjectCursor, encodeProjectCursor as plans_import_encodeProjectCursor } from "../project-cursor.js";
 import { decodeCursor as plans_import_decodeCursor } from "../scope.js";
-import { PLAN_COLUMNS as plans_import_PLAN_COLUMNS, planText as plans_import_planText, readPlanPage as plans_import_readPlanPage } from "../../db/plans/browse.js";
-import { projectsDriving as plans_import_projectsDriving } from "../scope.js";
+import { PLAN_COLUMNS as plans_import_PLAN_COLUMNS, readPlanPage as plans_import_readPlanPage } from "../../db/plans/browse.js";
+import { planStatusTotals as plans_import_planStatusTotals } from "../../db/plans/counts.js";
 import type { Page as plans_import_Page } from "../scope.js";
 import type { ProjectSet as plans_import_ProjectSet } from "../scope.js";
 import type { ReadScope as plans_import_ReadScope } from "../scope.js";
@@ -142,35 +142,23 @@ type plans_PlanAcrossRow = plans_ProjectPlanRow & { projectId: string };
 async function plans_pagePlansAcross(
   db: plans_import_RelationalStore,
   set: plans_import_ProjectSet,
-  opts: { status?: string; since?: number; q?: string; limit?: number; cursor?: string } = {},
+  opts: { status?: string; since?: number; limit?: number; cursor?: string } = {},
 ): Promise<plans_import_Page<plans_PlanAcrossRow>> {
   return plans_selectPlans(db, set, opts);
 }
 
-const plans_planText = plans_import_planText;
-
 /**
- * How many plans of each status the set holds under the other filters: a start instant and a text. Read through each
- * Project's own plans, one statement. A status no plan holds is absent. The totals and the page are two statements, so
- * a plan written between them can leave a total one off the page it sits beside.
+ * How many plans of each status the Projects hold, read from the maintained counters: a status no plan holds is absent,
+ * and `building` answers until existing plans have been counted. A total under a start instant is not kept: such a
+ * list pages with `hasMore` alone.
  */
-async function plans_planTotals(db: plans_import_RelationalStore, set: plans_import_ProjectSet, opts: { since?: number; q?: string } = {}): Promise<Record<string, number>> {
-  const projects = plans_import_projectsDriving(set, 'project_id');
-  const conditions = [projects.sql];
-  const params: unknown[] = [...projects.params];
-  if (opts.since !== undefined) { conditions.push('updated_at >= ?'); params.push(opts.since); }
-  const text = plans_planText(opts.q);
-  if (text !== null) { conditions.push(text.sql); params.push(...text.params); }
-  const { results } = await db.prepare(`SELECT status, COUNT(*) AS n FROM plans WHERE ${conditions.join(' AND ')} GROUP BY status`)
-    .bind(...params).all<{ status: string; n: number }>();
-  return Object.fromEntries(results.map((r) => [r.status, Number(r.n)]));
-}
+const plans_planTotals = plans_import_planStatusTotals;
 
 /** One plan page from the stored rows `readPlanPage` answers, with each plan's tags, and the cursor of the next page; a cursor this list did not issue reads nothing. */
 async function plans_selectPlans(
   db: plans_import_RelationalStore,
   scope: { projectId: string } | plans_import_ProjectSet,
-  opts: { status?: string; sessionId?: string; since?: number; q?: string; limit?: number; cursor?: string },
+  opts: { status?: string; sessionId?: string; since?: number; limit?: number; cursor?: string },
 ): Promise<plans_import_Page<plans_PlanAcrossRow>> {
   const across = !('projectId' in scope);
   const limit = plans_import_clampLimit(opts.limit);

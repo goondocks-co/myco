@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/knowledge/wire.ts';
-import type { SporeAcrossRow, SporeFacets, SporeRow, getSpore } from '../../packages/myco-server/src/core/spores.ts';
+import type { SporeAcrossRow, SporeFacets, SporeRow, getSpore, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
 import type { PlanAcrossRow, ProjectPlanRow, getPlan, pagePlansAcross, pageProjectPlans, planTotals } from '../../packages/myco-server/src/read/plans.ts';
 
 /** True only when each type is assignable to the other. */
@@ -18,12 +18,15 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 /** True when what the server sends carries every field the dashboard reads, typed as it reads it. */
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
-/** `GET /api/spores`: the answer `handleSporesAcross` sends. */
-type SporesAnswer = { spores: SporeAcrossRow[]; total: number; maxPage: number; facets?: SporeFacets };
+/** `GET /api/spores`: the answer `handleSporesAcross` sends, the page's `rows` renamed `spores`. */
+type SporePage = NonNullable<Awaited<ReturnType<typeof listSporePageAcross>>>;
+type SporesAnswer = Omit<SporePage, 'rows'> & { spores: SporePage['rows']; maxPage: number };
 /** `GET /api/projects/{p}/spores/{id}`: the answer `handleProjectSpore` sends. */
 type SporeAnswer = { spore: NonNullable<Awaited<ReturnType<typeof getSpore>>>; supersededBy: string[]; supersedes: string[] };
 /** `GET /api/plans`: the page `handlePlansAcross` sends, `rows` renamed `plans`, with the totals on its first page. */
-type PlansAnswer = { plans: Awaited<ReturnType<typeof pagePlansAcross>>['rows']; cursor: Awaited<ReturnType<typeof pagePlansAcross>>['cursor']; totals?: Awaited<ReturnType<typeof planTotals>> };
+type PlanTotals = Awaited<ReturnType<typeof planTotals>>;
+type PlansAnswer = { plans: Awaited<ReturnType<typeof pagePlansAcross>>['rows']; cursor: Awaited<ReturnType<typeof pagePlansAcross>>['cursor']; hasMore: boolean;
+  totals?: Extract<PlanTotals, { state: 'ready' }>['value']; counting?: 'building' };
 /** `GET /api/projects/{p}/plans/{planKey}`: the answer `handleProjectPlan` sends. */
 type PlanAnswer = { plan: NonNullable<Awaited<ReturnType<typeof getPlan>>>; projectId: string };
 /** `GET /api/projects/{p}/plans`: the page `handleProjectPlans` sends. */

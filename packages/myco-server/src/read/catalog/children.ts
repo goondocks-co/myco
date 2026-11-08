@@ -4,7 +4,6 @@ import { titlingClaimAvailableSql as children_import_titlingClaimAvailableSql } 
 import { notTombstonedSql as children_import_notTombstonedSql } from "../../db/session-read-model.js";
 import { titleRunInFlightSql as children_import_titleRunInFlightSql } from "../../db/session-read-model.js";
 import { TITLING_MAX_ATTEMPTS as children_import_TITLING_MAX_ATTEMPTS } from "../../constants.js";
-import { containsPattern as children_import_containsPattern } from "../scope.js";
 import { keyset as children_import_keyset } from "../scope.js";
 import { page as children_import_page } from "../scope.js";
 import type { Page as children_import_Page } from "../scope.js";
@@ -105,15 +104,13 @@ type children_PagingOptions = Pick<children_ChildOptions, 'limit' | 'cursor'>;
 
 const children_listContextInjections = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_PagingOptions) => children_listChildren(db, children_CONTEXT_INJECTION_QUERY, scope, sessionId, opts);
 
-/** A session's plans narrowed to one status and to a text its title contains; the terms leave `idx_plans_session` serving the scope and the order. */
-interface children_PlanChildOptions extends children_ChildOptions { status?: string; q?: string }
+/** A session's plans narrowed to one status; the term leaves `idx_plans_session` serving the scope and the order. */
+interface children_PlanChildOptions extends children_ChildOptions { status?: string }
 
 function children_listPlans(db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts: children_PlanChildOptions = {}) {
-  const { status, q, ...paging } = opts;
+  const { status, ...paging } = opts;
   const filters: children_ChildFilter[] = [];
   if (status !== undefined) filters.push({ sql: 'status = ?', params: [status] });
-  const text = q?.trim() ?? '';
-  if (text !== '') filters.push({ sql: `title LIKE ? ESCAPE '\\'`, params: [children_import_containsPattern(text)] });
   return children_listChildren(db, children_PLAN_QUERY, scope, sessionId, paging, filters);
 }
 

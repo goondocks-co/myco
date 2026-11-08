@@ -56,6 +56,11 @@ function invalidInput(definition: ToolDefinition, message: string, op?: unknown)
 
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
   const declared = new Set(Object.keys(definition.inputSchema.properties));
+  const retired = Object.keys(input).find((key) => !declared.has(key) && definition.retiredArguments?.[key] !== undefined);
+  if (retired !== undefined) {
+    const { actual, next: { tool, ...args } } = definition.retiredArguments![retired]!(input);
+    throw new ToolError('invalid_input', `Not read: ${definition.name} ${typeof input.op === 'string' ? input.op : 'call'}; ${actual.replace(/\.+$/, '')}. Next call: ${tool} ${JSON.stringify(args)}.`);
+  }
   const undeclared = Object.keys(input).find((key) => !declared.has(key));
   if (undeclared !== undefined) {
     throw invalidInput(

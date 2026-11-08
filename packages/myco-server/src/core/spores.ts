@@ -23,9 +23,11 @@ import { importEnabledChecks } from './import-policy.js';
  */
 import { consolidationSourcesChanged, consolidationSourcesCurrent, staleConsolidationSource, type StaleConsolidationSource } from '../db/spores/consolidation.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { USER_AGENT_ID } from '../constants.js';
 import { GUARD_ENABLED_AT } from '../db/schema-v101.js';
-import { containsPattern, inListChunks, keyset, page, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { decodeCursor, encodeCursor, inListChunks, MAX_PAGE, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { decodeProjectCursor, encodeProjectCursor } from '../read/project-cursor.js';
+import { readSporePage, SPORE_COLUMNS, SPORE_READ_COLUMNS, type SporeBrowseFilters, type SporePageKey } from '../db/spores/browse.js';
+import { SPORE_DAY_MS, sporeTotal, sporeTotalAndFacets, utcDays, type SporeCountFilters, type SporeFacetCounts } from '../db/spores/counts.js';
 
 export { OBSERVATION_TYPES, type ObservationType } from '@goondocks/myco-shared/member-protocol';
 
@@ -113,44 +115,37 @@ export interface SporeRow {
   embedded: number;
 }
 
-export interface ListSporesOptions {
-  agentId?: string;
-  /** The principal instance that wrote the spores: a run's id, a member's or a grant's. */
-  author?: string;
-  observationType?: string;
-  status?: string;
-  sessionId?: string;
-  search?: string;
+/**
+ * A spore list's structured filters, its page size and the cursor the previous page answered. A time bound is widened to
+ * whole UTC days: a start instant to the first instant of its day, `createdTo` to the end of the day before it, unless it
+ * is a day's first instant. The page and its total read the same widened window.
+ */
+export interface ListSporesOptions extends SporeBrowseFilters {
+  /** Spores written in the UTC day of this instant (ms) and after. */
   since?: number;
-  /** Spores written at or after this instant (ms). */
-  createdFrom?: number;
-  /** Spores written before this instant (ms); a spore written exactly at it is not listed. */
-  createdTo?: number;
-  /** False excludes spores whose session has not ended. A direct `sessionId` lookup is never gated. */
-  includeActive?: boolean;
   limit?: number;
-  offset?: number;
+  cursor?: string;
 }
 
 /**
- * Who a spore's author is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
- * writerOf`). Members and grants are never deleted, and a run is pruned by retention, so an author that names no
- * member and no grant is a run's, whether or not the run is still held. A member writes as the `user` agent; a spore a
- * member's credential carried in under another agent is one the 1.4 import brought over (`/spores/save`, which stamps
- * the importing member as author and keeps 1.4's agent), and reads `imported`.
+ * One page of a spore list. `hasMore` says whether another page follows and `cursor` continues after this page's last
+ * row. `total` is how many spores the filters admit, read from the maintained counters, and is absent with `counting:
+ * 'building'` while existing spores are still being counted. A list narrowed by agent or author, or by
+ * `includeActive: false`, carries no total, whatever else it names. `window` is the widened time range the page and its
+ * total read, when the list names one.
  */
-const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
-  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = spores.author) THEN CASE WHEN spores.agent_id = '${USER_AGENT_ID}' THEN 'member' ELSE 'imported' END
-  WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = spores.author) THEN 'grant'
-  ELSE 'run' END`;
+export interface SporeListPage<T> {
+  rows: T[];
+  cursor: string | null;
+  hasMore: boolean;
+  total?: number;
+  counting?: 'building';
+  window?: { from?: number; to?: number };
+}
 
-const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
-  observation_type AS observationType, status, revision, content, context, importance,
-  file_path AS filePath, tags, content_hash AS contentHash, properties, author,
-  provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
-  created_at AS createdAt, updated_at AS updatedAt, embedded`;
+const COLUMNS = SPORE_COLUMNS;
 /** A read's columns: the row, and who its author is. */
-const READ_COLUMNS = `${COLUMNS}, ${AUTHOR_KIND} AS authorKind`;
+const READ_COLUMNS = SPORE_READ_COLUMNS;
 
 /**
  * Writes one spore and returns it, or null when the Project already holds a
@@ -213,68 +208,6 @@ export async function getSpore(db: RelationalStore, scope: ReadScope, id: string
     .bind(scope.projectId, id).first<SporeRow & { sourceCreatedAt: number | null }>();
 }
 
-function filters(scope: ReadScope, o: ListSporesOptions): { where: string; params: unknown[] } {
-  return filtersOver({ sql: 'project_id = ?', params: [scope.projectId] }, o);
-}
-
-/** The list's conditions over the rows `projects` admits. */
-function filtersOver(projects: { sql: string; params: readonly unknown[] }, o: ListSporesOptions): { where: string; params: unknown[] } {
-  const conditions = [projects.sql];
-  const params: unknown[] = [...projects.params];
-  const add = (sql: string, value: unknown): void => { conditions.push(sql); params.push(value); };
-
-  if (o.agentId !== undefined) add('agent_id = ?', o.agentId);
-  if (o.author !== undefined) add('author = ?', o.author);
-  if (o.observationType !== undefined) add('observation_type = ?', o.observationType);
-  if (o.status !== undefined) add('status = ?', o.status);
-  if (o.sessionId !== undefined) add('session_id = ?', o.sessionId);
-  if (o.since !== undefined) add('created_at > ?', o.since);
-  if (o.createdFrom !== undefined) add('created_at >= ?', o.createdFrom);
-  if (o.createdTo !== undefined) add('created_at < ?', o.createdTo);
-  if (o.search !== undefined && o.search.length > 0) {
-    // The line a reader sees in the stream, the body and the type.
-    const pattern = containsPattern(o.search);
-    conditions.push(`(agent_line LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR observation_type LIKE ? ESCAPE '\\')`);
-    params.push(pattern, pattern, pattern);
-  }
-  // A spore from a session still in flight is not settled. Asked for explicitly
-  // by intelligence tasks; a direct session lookup is never gated.
-  if (o.includeActive === false && o.sessionId === undefined) {
-    conditions.push(`(session_id IS NULL OR EXISTS (
-      SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id
-        AND s.session_id = spores.session_id AND s.ended_at IS NOT NULL))`);
-  }
-  return { where: `WHERE ${conditions.join(' AND ')}`, params };
-}
-
-/** The id breaks a tie on the instant, so two spores written in the same millisecond hold one order across every page of an offset walk. */
-export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<SporeRow[]> {
-  const { where, params } = filters(scope, o);
-  // A limit below one asks for a page, not for everything: clamped at both ends.
-  const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
-  const { results } = await db
-    .prepare(`SELECT ${READ_COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .bind(...params, limit, o.offset ?? 0).all<SporeRow>();
-  return results;
-}
-
-/**
- * One page of spores in `listSpores`' order, newest first with the id breaking a tie, and the cursor that continues
- * after its last row: null when no row follows. A cursor continues from that row whatever is written after it, so a page
- * neither repeats a row nor skips one a newer write pushed down; without one, the page starts at `offset`. Null for a
- * malformed cursor.
- */
-export async function pageSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions & { cursor?: string } = {}): Promise<Page<SporeRow> | null> {
-  const k = keyset({ limit: o.limit ?? DEFAULT_SPORE_LIMIT, cursor: o.cursor }, { order: 'created_at', id: 'id', direction: 'DESC' });
-  if (k === null) return null;
-  const { where, params } = filters(scope, o);
-  const after = k.where === '' ? '' : ` AND ${k.where}`;
-  const { results } = await db
-    .prepare(`SELECT ${READ_COLUMNS} FROM spores ${where}${after} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .bind(...params, ...k.params, k.limit + 1, o.cursor === undefined ? o.offset ?? 0 : 0).all<SporeRow>();
-  return page(results, k.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
-}
-
 /**
  * The named spores of this Project, in the store's own order. Ids the Project
  * does not hold are absent from the answer rather than an error: a reader
@@ -310,58 +243,6 @@ export async function activeSporesMatchingAnyWord(db: RelationalStore, scope: Re
     WHERE score > 0 ORDER BY score DESC, created_at DESC, id LIMIT ?`)
     .bind(...words, WORD_MATCH_BODY_CHARS, scope.projectId, excludingId, WORD_MATCH_WINDOW, limit).all<{ id: string }>();
   return results.map((row) => row.id);
-}
-
-export async function countSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<number> {
-  const { where, params } = filters(scope, o);
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();
-  return row?.c ?? 0;
-}
-
-/** A spore of a read across Projects, with the Project it belongs to. */
-export type SporeAcrossRow = SporeRow & { projectId: string };
-
-/** How the spores a read across Projects admits divide by type and by Project. */
-export interface SporeFacets {
-  type: Record<string, number>;
-  project: Record<string, number>;
-}
-
-/**
- * Spores of every Project in the set, newest first, a page at a time by offset, as the per-Project list pages. The
- * read walks `idx_spores_created_deployment`, named in the statement, which orders every Project's spores as the
- * per-Project list orders one Project's, and stops at its page instead of sorting every spore the set holds.
- */
-export async function listSporesAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<SporeAcrossRow[]> {
-  const { where, params } = filtersOver(projectsFiltering(set, 'spores'), o);
-  const limit = Math.min(Math.max(o.limit ?? DEFAULT_SPORE_LIMIT, 1), MAX_SPORE_LIMIT);
-  const { results } = await db
-    .prepare(`SELECT project_id AS projectId, ${READ_COLUMNS} FROM spores INDEXED BY idx_spores_created_deployment ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .bind(...params, limit, o.offset ?? 0).all<SporeAcrossRow>();
-  return results;
-}
-
-export async function countSporesAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<number> {
-  const { where, params } = filtersOver(projectsDriving(set, 'project_id'), o);
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM spores ${where}`).bind(...params).first<{ c: number }>();
-  return row?.c ?? 0;
-}
-
-/**
- * The facet counts beside a read across Projects. Like the total, they count every spore the filters admit, which
- * each statement reads once through a Project-led index that covers it. Each facet counts under every filter but its own, so a reader sees
- * what choosing another value would show: types over the named Projects whatever type is chosen, and Projects over
- * every Project the caller may see whatever Projects are named.
- */
-export async function sporeFacets(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}): Promise<SporeFacets> {
-  const byType = filtersOver(projectsDriving(set, 'project_id'), { ...o, observationType: undefined });
-  const byProject = filtersOver(projectsDriving({ all: true }, 'project_id'), o);
-  const [types, projects] = await db.batch([
-    db.prepare(`SELECT observation_type AS k, COUNT(*) AS n FROM spores ${byType.where} GROUP BY observation_type`).bind(...byType.params),
-    db.prepare(`SELECT project_id AS k, COUNT(*) AS n FROM spores ${byProject.where} GROUP BY project_id`).bind(...byProject.params),
-  ]);
-  const tally = (rows: unknown[]): Record<string, number> => Object.fromEntries((rows as { k: string; n: number }[]).map((r) => [r.k, Number(r.n)]));
-  return { type: tally(types.results), project: tally(projects.results) };
 }
 
 /** Whether this author — a run id, a member id or a grant id — wrote at least one spore in this Project. */
@@ -459,15 +340,6 @@ export async function resolveSpore(
     reason: `source is ${row.status} at revision ${row.revision}; expected ${expected}${active}${revision}` };
 }
 
-/** Content edits use the spore's revision writer, including edits that leave its status active. */
-export async function updateSporeContent(
-  db: RelationalStore, scope: ReadScope, id: string, content: string, now: number,
-): Promise<boolean> {
-  const result = await db.prepare(`UPDATE spores SET content = ?, revision = revision + 1, updated_at = ?
-    WHERE project_id = ? AND id = ? AND content <> ? RETURNING id`).bind(content, now, scope.projectId, id, content).all();
-  return result.results.length === 1;
-}
-
 /**
  * Every spore recorded as superseding this one, newest first.
  *
@@ -542,4 +414,89 @@ export async function consolidateSpores(
   }
   const consolidated = moves.filter((_, i) => i % 2 === 0 && results[2 + i]!.results.length === 1).length;
   return { wisdom: (results[1]!.results[0] as SporeRow | undefined) ?? null, consolidated };
+}
+
+/** A spore of a read across Projects, with the Project it belongs to. */
+export type SporeAcrossRow = SporeRow & { projectId: string };
+
+/** How the spores a read across Projects admits divide by type and by Project. */
+export type SporeFacets = SporeFacetCounts;
+
+/** The list's time bound widened to whole UTC days, as epoch days and as the instants they start at. */
+function windowOf(o: ListSporesOptions): { days: { fromDay?: number; toDay?: number }; window?: { from?: number; to?: number } } {
+  const from = o.since === undefined ? o.createdFrom : o.createdFrom === undefined ? o.since : Math.max(o.since, o.createdFrom);
+  const days = utcDays(from, o.createdTo);
+  if (days.fromDay === undefined && days.toDay === undefined) return { days };
+  return { days, window: {
+    ...(days.fromDay === undefined ? {} : { from: days.fromDay * SPORE_DAY_MS }),
+    ...(days.toDay === undefined ? {} : { to: days.toDay * SPORE_DAY_MS }),
+  } };
+}
+
+/** The counter filters a list's filters are, or null for a list by agent, author or `includeActive: false`. */
+function counted(o: ListSporesOptions): SporeCountFilters | null {
+  if (o.agentId !== undefined || o.author !== undefined || o.includeActive === false) return null;
+  return { status: o.status, observationType: o.observationType, sessionId: o.sessionId, ...windowOf(o).days };
+}
+
+const limitOf = (limit: number | undefined) => Math.min(Math.max(limit ?? DEFAULT_SPORE_LIMIT, 1), Math.min(MAX_SPORE_LIMIT, MAX_PAGE));
+const filtersOf = (o: ListSporesOptions): SporeBrowseFilters => {
+  const { window } = windowOf(o);
+  return { agentId: o.agentId, author: o.author, observationType: o.observationType, status: o.status, sessionId: o.sessionId,
+    createdFrom: window?.from, createdTo: window?.to, includeActive: o.includeActive };
+};
+const totalOf = (answer: { state: 'ready'; value: number } | { state: 'building' } | null): Pick<SporeListPage<unknown>, 'total' | 'counting'> =>
+  answer === null ? {} : answer.state === 'ready' ? { total: answer.value } : { counting: 'building' };
+const windowField = (o: ListSporesOptions) => { const { window } = windowOf(o); return window === undefined ? {} : { window }; };
+
+/** The window a list's time bounds widen to, in ms (from inclusive, to exclusive), as its page and total read it. */
+export const sporeListWindow = (o: Pick<ListSporesOptions, 'since' | 'createdFrom' | 'createdTo'>): { from?: number; to?: number } => windowOf(o).window ?? {};
+
+/**
+ * One page of a Project's spores, newest first with the id breaking a tie, and the cursor after its last row: a cursor
+ * continues from that row whatever is written after it, so no row repeats and none is skipped. Null for a cursor this
+ * list did not issue.
+ */
+export async function listSporePage(db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}): Promise<SporeListPage<SporeRow> | null> {
+  const after: SporePageKey | null = o.cursor === undefined ? null : decodeCursor(o.cursor);
+  if (o.cursor !== undefined && after === null) return null;
+  const limit = limitOf(o.limit);
+  const count = counted(o);
+  const [rows, total] = await Promise.all([
+    readSporePage(db, { scope, filters: filtersOf(o), after, limit }),
+    count === null ? null : sporeTotal(db, scope, count),
+  ]);
+  const shown = rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => row as unknown as SporeRow);
+  const hasMore = rows.length > limit;
+  const last = shown.at(-1);
+  return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, ...totalOf(total), ...windowField(o) };
+}
+
+/**
+ * One page of the spores of every Project in the set, newest first, then by id and Project, with the cursor after its
+ * last row. The first page also carries `facets` where a counter answers the filters: each type's count over the named
+ * Projects whatever type is chosen, and each visible Project's count whatever Projects are named. Null for a cursor this
+ * list did not issue.
+ */
+export async function listSporePageAcross(db: RelationalStore, set: ProjectSet, o: ListSporesOptions = {}):
+  Promise<(SporeListPage<SporeAcrossRow> & { facets?: SporeFacets }) | null> {
+  const after = o.cursor === undefined ? null : decodeProjectCursor(o.cursor);
+  if (o.cursor !== undefined && after === null) return null;
+  const limit = limitOf(o.limit);
+  const count = counted(o);
+  const [rows, first, later] = await Promise.all([
+    readSporePage(db, { scope: set, filters: filtersOf(o), after, limit }),
+    count === null || after !== null ? null : sporeTotalAndFacets(db, set, count),
+    count === null || after === null ? null : sporeTotal(db, set, count),
+  ]);
+  const shown = rows.slice(0, limit) as unknown as SporeAcrossRow[];
+  const hasMore = rows.length > limit;
+  const last = shown.at(-1);
+  const totals = first === null ? totalOf(later) : first.state === 'building' ? { counting: 'building' as const }
+    : { total: first.value.total, facets: first.value.facets };
+  return {
+    rows: shown, hasMore,
+    cursor: hasMore && last !== undefined ? encodeProjectCursor({ createdAt: last.createdAt, projectId: last.projectId, id: last.id }) : null,
+    ...totals, ...windowField(o),
+  };
 }

@@ -73,11 +73,17 @@ export const plans: ParityScenario = {
     expect([edit.body.plan.status, edit.body.plan.updatedBy, edit.body.plan.progress, edit.body.plan.updatedAt > (changed.updated_at as number)]).toEqual(['completed', MEMBER_ID, '1/2', true]);
     expect((await owner(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'all' }) })).status).toBe(400);
 
-    // The session's plans list narrows by status and by a text in the title, and refuses a status the catalogue does not hold.
+    // The session's plans list narrows by status, refuses a text filter for search, and refuses a status the catalogue does not hold.
     const narrowed = async (query: string) => (await owner<{ rows: { planKey: string }[] }>(`${base}/plans?${query}`)).body.rows.map((p) => p.planKey);
-    expect(await narrowed('status=completed&q=ARIT')).toEqual([key]);
-    expect(await narrowed('status=completed&q=fresh')).toEqual([]);
+    expect(await narrowed('status=completed')).toContain(key);
     expect(await narrowed('status=abandoned')).toEqual([]);
+    expect((await owner(`${base}/plans?q=ARIT`)).status).toBe(400);
+    // The board's status totals are the maintained counts: they equal a fresh count of the Project's plans, the edit included.
+    const counted = Object.fromEntries((await target.sql(`SELECT status, COUNT(*) AS n FROM plans WHERE project_id = ${lit(target.projectId)} GROUP BY status`))
+      .map((r) => [r.status as string, Number(r.n)]));
+    const board = await owner<{ totals?: Record<string, number>; hasMore: boolean }>(`/api/plans?project=${target.projectId}&limit=1`);
+    expect([board.status, board.body.totals]).toEqual([200, counted]);
+    expect((await owner(`/api/plans?project=${target.projectId}&q=ARIT`)).status).toBe(400);
     expect((await owner(`${base}/plans?status=all`)).status).toBe(400);
 
     // The turn body carries the plan under the prompt it came from; the list reads it by session.

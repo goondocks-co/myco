@@ -29,7 +29,7 @@ import {
   RUN_KEY_MAX_CHARS,
   RUN_VERSION_CHARS,
   RUN_SPORE_ID_MAX_CHARS,
-  RUN_SEARCH_MAX_CHARS,
+  RUN_SPORE_CURSOR_MAX_CHARS,
 } from '@myco-server-worker/core/run-tool-contract.js';
 import { MAX_REPORT_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS } from '@myco-server-worker/core/run-postconditions.js';
 import { TITLE_MAX_CHARS, SUMMARY_MAX_CHARS } from '@myco-server-worker/core/titling-params.js';
@@ -303,7 +303,7 @@ const bounds: Bound[] = [
   ['myco_run', 'key', RUN_KEY_MAX_CHARS],
   ['myco_run', 'version', RUN_VERSION_CHARS],
   ['myco_run_spores', 'id', RUN_SPORE_ID_MAX_CHARS],
-  ['myco_run_spores', 'search', RUN_SEARCH_MAX_CHARS],
+  ['myco_run_spores', 'cursor', RUN_SPORE_CURSOR_MAX_CHARS],
   ['myco_run_sessions', 'title', TITLE_MAX_CHARS],
   ['myco_run_sessions', 'summary', SUMMARY_MAX_CHARS],
   ['myco_run_curation', 'reason', CURATION_REASON_CHARS],
@@ -320,7 +320,8 @@ function missingBounds(definitions: readonly ToolDefinition[]): string[] {
 it('publishes the enforced numeric bounds, schemas and a valid example, and catches schema drift', () => {
   const definitions: ToolDefinition[] = [...RUN_DEFINITIONS, definitionOf('myco_spores')!];
   expect(missingBounds(definitions)).toEqual([]);
-  const mutated = structuredClone(definitions);
+  // Retired arguments build their replacement call from the refused input: functions, which do not clone.
+  const mutated = definitions.map(({ retiredArguments: _retired, ...definition }) => structuredClone(definition));
   mutated.find((item) => item.name === 'myco_run_sessions')!.inputSchema.properties.title!.maxLength = TITLE_MAX_CHARS + 1;
   expect(missingBounds(mutated)).toContain('myco_run_sessions.title');
   for (const definition of RUN_DEFINITIONS) {

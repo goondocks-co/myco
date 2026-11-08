@@ -1,4 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { retryCursorRead } from './cursor-retry';
 import type { SearchAcrossAnswer, SearchAcrossResult, SearchAnswer, SearchResult } from '@goondocks/myco-shared/search-types';
 import { SEARCH_API_LIMIT, SEARCH_TYPES } from '@goondocks/myco-shared/search-types';
 import { fetchJson } from '../lib/api';
@@ -24,13 +26,19 @@ export interface SearchFilters {
   since: string;
   /** A spore type, or ''. */
   observationType: string;
+  /** A record's status (a spore's, a plan's, or a session's `active` or `completed`), or every status when absent. */
+  status?: string;
+  /** The agent of the session a match belongs to. */
+  agent?: string;
+  /** The branch of the session a match belongs to. */
+  branch?: string;
   /** Limits a project's search to the records of one session. */
   sessionId?: string;
   /** How a project's search matches: by meaning where it can (`auto`, the default) or by words alone (`fts`). */
   mode?: 'auto' | 'fts';
-  /** How a project's search lists its matches: best first in one page (the default), or oldest first in pages that continue by `cursor`. */
+  /** How a project's search lists its matches: best first (the default), or oldest first; both continue by `cursor`. */
   order?: 'relevance' | 'time';
-  /** The cursor an earlier answer to this search by time returned: the answer then lists the matches after it. */
+  /** The cursor an earlier answer to this search returned: the answer then lists the matches after it. */
   cursor?: string;
 }
 
@@ -40,16 +48,21 @@ export interface ScopedSearchAnswer {
   mode: SearchAnswer['mode'];
   provider_unavailable: boolean;
   coverage: SearchAnswer['coverage'];
+  cursor: string | null;
+  hasMore: boolean;
 }
 
 /** The request a search sends: a project's own search (which may answer by meaning), or the one across every project (words only). */
-export function searchPath(scope: SearchScope, { query, type, since, observationType, sessionId, mode = 'auto', order, cursor }: SearchFilters): string {
+export function searchPath(scope: SearchScope, { query, type, since, observationType, status, agent, branch, sessionId, mode = 'auto', order, cursor }: SearchFilters): string {
   const params = new URLSearchParams({ q: query, type, limit: String(SEARCH_RESULT_CAP) });
   if (since) params.set('since', since);
   if (observationType) params.set('observation_type', observationType);
+  if (status) params.set('status', status);
+  if (agent) params.set('agent', agent);
+  if (branch) params.set('branch', branch);
   if (sessionId && scope !== 'all') params.set('session_id', sessionId);
   if (order && scope !== 'all') params.set('order', order);
-  if (cursor && scope !== 'all') params.set('cursor', cursor);
+  if (cursor) params.set('cursor', cursor);
   if (scope === 'all') return `/api/search?${params}`;
   params.set('mode', mode);
   return `/api/projects/${encodeURIComponent(scope.projectId)}/search?${params}`;
@@ -67,6 +80,41 @@ export function useSearch(scope: SearchScope, filters: SearchFilters, enabled: b
     enabled: enabled && filters.query.length >= SEARCH_MIN_CHARS,
     ...live<ScopedSearchAnswer>({ follows: ['sessions', 'runs'] }),
   });
+}
+
+/**
+ * Every match of a search, a page at a time by word: best first, `more()` continuing after the last match shown by the
+ * cursor the page answered, until no more follow. A search never counts its matches. When the matches change under a
+ * walk, the server refuses the next page as stale and the walk reads again from the first page.
+ */
+export function useSearchPages(scope: SearchScope, filters: Omit<SearchFilters, 'cursor' | 'order' | 'mode'>, enabled: boolean) {
+  const client = useQueryClient();
+  const first = searchPath(scope, { ...filters, mode: 'fts' });
+  const key = ['search', scope === 'all' ? '*' : scope.projectId, 'pages', first] as const;
+  const query = useInfiniteQuery({
+    queryKey: key,
+    initialPageParam: null as string | null,
+    enabled: enabled && filters.query.length >= SEARCH_MIN_CHARS,
+    queryFn: async ({ pageParam, signal }): Promise<ScopedSearchAnswer> => {
+      const path = searchPath(scope, { ...filters, mode: 'fts', ...(pageParam === null ? {} : { cursor: pageParam }) });
+      if (scope === 'all') return fetchJson<SearchAcrossAnswer>(path, signal);
+      const answer = await fetchJson<SearchAnswer>(path, signal);
+      return { ...answer, results: answer.results.map((hit) => ({ ...hit, projectId: scope.projectId })) };
+    },
+    getNextPageParam: (last) => (last.hasMore && last.cursor !== null ? last.cursor : undefined),
+    ...live({ follows: ['sessions', 'runs', 'knowledge'] }),
+  });
+  const hits = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.results) ?? []).map((hit) => [`${hit.projectId}/${hit.type}/${hit.id}`, hit])).values()], [query.data]);
+  return {
+    hits,
+    isPending: query.isPending,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    // A page already on its way is joined, never asked for again.
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void retryCursorRead(client, key, query.error, () => query.refetch()); },
+  };
 }
 
 /** Where a hit opens, or null when this dashboard has no page for it. */
