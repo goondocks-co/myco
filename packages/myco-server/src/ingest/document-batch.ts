@@ -676,19 +676,18 @@ export class DocumentBatch {
     const placed = layout === null ? [] : layout.pageChunks.flatMap((write) => write.chunk.pages.flatMap((page) =>
       page.records.filter((record) => record.k === 'prompt').map((record) => ({ id: record.id, page: page.page }))));
     if (placed.length > 0) {
-      statements.push(db.prepare(`UPDATE session_prompts SET page=(SELECT json_extract(j.value,'$.page') FROM json_each(?1) j
-          WHERE json_extract(j.value,'$.id')=session_prompts.prompt_id)
-        WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
+      statements.push(db.prepare(`WITH j(id,page) AS MATERIALIZED (SELECT json_extract(value,'$.id'),json_extract(value,'$.page') FROM json_each(?1))
+        UPDATE session_prompts SET page=j.page FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id`)
         .bind(JSON.stringify(placed), p, s, g));
     }
     for (const page of jsonPages(settled)) statements.push(...this.cardStatements(page, chunkState === 'building', now));
     for (const page of jsonPages(settled)) {
       const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field}+COALESCE(json_extract(j.value,'$.added.${field}'),0))`;
       const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
-      statements.push(db.prepare(`UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
+      statements.push(db.prepare(`WITH j(id,value) AS MATERIALIZED (SELECT json_extract(value,'$.id'),value FROM json_each(?1))
+        UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
           ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')}
-        FROM json_each(?1) j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=json_extract(j.value,'$.id')
-          AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`)
+        FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id`)
         .bind(JSON.stringify(page), p, s, g));
     }
     statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));
@@ -742,9 +741,9 @@ export class DocumentBatch {
           AND sp.generation=?3 AND sp.prompt_id=json_extract(j.value,'$.id'))
         ON CONFLICT (project_id,session_id,turn_key) DO ${building ? 'NOTHING' : `UPDATE SET state='pending',changes=changes+1,due_at=NULL,settle_at=excluded.settle_at`}`)
         .bind(p, s, this.doc.generation, turns),
-      db.prepare(`UPDATE turn_cards SET source_activity_at=MAX(COALESCE(source_activity_at,0),json_extract(j.value,'$.activity'))
-        FROM json_each(?3) j WHERE project_id=?1 AND session_id=?2 AND turn_key=json_extract(j.value,'$.id')
-          AND turn_key IN (SELECT json_extract(value,'$.id') FROM json_each(?3))
+      db.prepare(`WITH j(id,value) AS MATERIALIZED (SELECT json_extract(value,'$.id'),value FROM json_each(?3))
+        UPDATE turn_cards SET source_activity_at=MAX(COALESCE(source_activity_at,0),json_extract(j.value,'$.activity'))
+        FROM j WHERE project_id=?1 AND session_id=?2 AND turn_key=j.id
           AND (source_activity_at IS NULL OR source_activity_at<json_extract(j.value,'$.activity'))`).bind(p, s, turns),
       ...(this.openTurn === this.doc.open_turn_key ? [] : [db.prepare(`UPDATE turn_cards SET settle_at=MIN(settle_at,?) WHERE project_id=? AND session_id=?
         AND state='pending' AND settle_at IS NOT NULL AND turn_key IS NOT ?`).bind(now, p, s, this.openTurn)]),
