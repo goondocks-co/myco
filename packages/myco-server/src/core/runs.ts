@@ -1421,7 +1421,7 @@ export function runnerClaimGate(worker: WorkerPrincipal, now: number): { sql: st
   };
 }
 
-const holderAdmissionSql=(holder:string):string=>holder==='budget'?`${runOriginSql()}='automatic'`:'1';
+const holderAdmissionSql=(holder:string):string=>holder==='budget'||holder==='admission_building'?`${runOriginSql()}='automatic'`:'1';
 /** Name `holder` on unclaimed queued tasks whose holder belongs to `from`, including selected profile holds. */
 export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly (string|null)[], holder: string, includeProfileHolds = false): Promise<void> {
   if (tasks.length === 0 || from.length === 0) return;
@@ -1967,13 +1967,20 @@ export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, 
   failure: RepositoryFailure, lease: RunLease): Promise<boolean> {
   if (run.dispatchedBy === null || !KNOWLEDGE_REPOSITORY_TASKS.includes(run.task ?? '')) return false;
   const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
-  const prompt=await db.prepare('SELECT instruction FROM agent_runs WHERE project_id=? AND id=?').bind(scope.projectId,run.id).first<{instruction:string|null}>();
-  const mutation = db.prepare(`UPDATE agent_runs SET instruction=?,run_context=json_remove(run_context,'$.checkout')
-    WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql} RETURNING id`)
-    .bind(knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,...authority.params);
-  const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
-    detail:{code:failure.code},recordedAt:lease.now});
-  if (result.results.length === 1) return true;
-  return await db.prepare(`SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND json_type(run_context,'$.checkout') IS NULL AND ${authority.sql}`)
-    .bind(scope.projectId,run.id,...authority.params).first() !== null;
+  for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
+    const prompt=await db.prepare('SELECT instruction FROM agent_runs WHERE project_id=? AND id=?').bind(scope.projectId,run.id).first<{instruction:string|null}>();
+    // The rewrite lands only over the instruction it is derived from; a newer instruction is read again and rewritten.
+    const mutation = db.prepare(`UPDATE agent_runs SET instruction=?,run_context=json_remove(run_context,'$.checkout')
+      WHERE project_id=? AND id=? AND instruction IS ? AND json_type(run_context,'$.checkout')='object' AND ${authority.sql} RETURNING id`)
+      .bind(knowledgeOnlyInstruction(prompt?.instruction ?? ''),scope.projectId,run.id,prompt?.instruction ?? null,...authority.params);
+    const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
+      detail:{code:failure.code},recordedAt:lease.now});
+    if (result.results.length === 1) return true;
+    const held = await db.prepare(`SELECT json_type(run_context,'$.checkout') AS checkout,instruction FROM agent_runs WHERE project_id=? AND id=? AND ${authority.sql}`)
+      .bind(scope.projectId,run.id,...authority.params).first<{checkout:string|null;instruction:string|null}>();
+    if (held === null) return false;
+    if (held.checkout === null) return true;
+    if (held.checkout !== 'object' || held.instruction === (prompt?.instruction ?? null)) return false;
+  }
+  return false;
 }

@@ -1,4 +1,5 @@
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
+import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { V711, V711_STATEMENTS } from '@myco-server-worker/db/schema-v711.js';
 import { V713 as CURSOR_INDEX_STEP, V713_STATEMENTS as CURSOR_INDEX_STATEMENTS } from '@myco-server-worker/db/schema-v713.js';
@@ -31,6 +32,9 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
+  { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
+  { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
   { step: V712, object: 'idx_agent_run_events_setup_output', table: 'agent_run_events', reason: 'Setup seeks recorded title and map output without scanning empty run history.' },
   { step: V712, object: 'idx_curation_failed', table: 'spore_curation_work', reason: 'Today seeks failed curation groups independently of successful groups.' },
   ...['insert', 'update', 'delete'].map(action => ({ step: V712, object: `passed_over_failure_${action}`, table: 'embedding_source_failures', reason: 'Failure mutations maintain current passed-over membership.' })),
@@ -228,6 +232,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V710_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({
     step: 710, sql, reason: 'Existing configured values and reset receipts seed persistent leaf revisions once.',
   })),
+  ...V714_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V714, sql, reason: 'Spend accounting records whether existing attempt history needs catch-up.' })),
   ...V712_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO')).map(sql => ({ step: V712, sql, reason: 'Derived readiness and change revisions initialize without changing sources.' })),
   ...V711_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V711, sql, reason: 'Projection phases record whether existing source history needs catch-up.' })),
   ...V708_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({

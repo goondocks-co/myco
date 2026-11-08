@@ -75,11 +75,13 @@ export async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)
   return waits;
 }
 
-/** The whole queue is aggregated through its status/queue index; one reason is decided per task and stored hold. */
+/** The whole queue is aggregated through its status/queue index; one reason is decided per task and stored hold, for the group's oldest queued run. */
 export async function queueProjection(env: ServerEnv, fleet: readonly WorkerFleetRow[], now: number, selection = fleetSelectionContext(env)): Promise<FleetQueue> {
   const [{ results: groups }, settings, limits] = await Promise.all([
-    env.db.prepare(`SELECT task, held_by AS held, COUNT(*) AS count, MIN(queued_at) AS oldest, MIN(id) AS id
-      FROM agent_runs INDEXED BY idx_fleet_queue WHERE status = 'queued' GROUP BY task, held_by`)
+    env.db.prepare(`SELECT g.task, g.held, g.count, g.oldest, (SELECT q.id FROM agent_runs q INDEXED BY idx_fleet_queue
+        WHERE q.status = 'queued' AND q.task IS g.task AND q.held_by IS g.held ORDER BY q.queued_at IS NULL, q.queued_at, q.id LIMIT 1) AS id
+      FROM (SELECT task, held_by AS held, COUNT(*) AS count, MIN(queued_at) AS oldest
+        FROM agent_runs INDEXED BY idx_fleet_queue WHERE status = 'queued' GROUP BY task, held_by) g`)
       .all<{ task: string; held: string | null; count: number; oldest: number | null; id: string }>(),
     claimSettings(env), readDispatchLimits(env),
   ]);

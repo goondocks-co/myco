@@ -112,7 +112,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'setting_revisions', 'embedding_passed_over', 'change_marks',
-  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup',
+  'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'attempt_spend', 'budget_totals',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
