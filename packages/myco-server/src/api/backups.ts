@@ -11,9 +11,9 @@ import type { OwnerContext } from '../context.js';
 import {
   BackupAdmissionError, BackupApplyError, backupArtifact, BackupIntegrityError, BackupObjectsMissingError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
   assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
-  restoreArtifact, restoreBackup, setBackupPinned,
+  restoreArtifact, restoreBackup, setBackupPinned, type ListedBackup, type BackupIndexRow,
 } from '../core/backup.js';
-import { backupRetentionPolicy } from '../core/backup-retention.js';
+import { backupPruneStatus, type BackupPruneStatus, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
 import { restoreAdmission, RestoreAuthorizationError } from '../core/restore-authorization.js';
 import { RecordSchemeError } from '../ingest/record-scheme.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
@@ -32,20 +32,29 @@ const storedArtifactRefusal = (err: unknown): Response | null => {
 
 /** Create one backup, then prune per the retention leaves — fail-closed, in `core/backup.ts`. */
 export async function handleCreateBackup(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const policy = await backupRetentionPolicy(env.db);
   try {
     const backup = await createBackup(env.db, env.blobs, { producer: ctx.member.id, now: ctx.now });
-    const pruned = await pruneBackups(env.db, policy, ctx.now);
-    return ok({ backup, pruned: pruned.pruned });
+    const pruned = await pruneBackups(env.db, ctx.now);
+    return ok({ backup, retention: pruned } satisfies CreateBackupAnswer);
   } catch (err) {
     if (err instanceof BackupTooLargeError || err instanceof BackupAdmissionError) return badRequest(err.message);
     throw err;
   }
 }
 
+export interface CreateBackupAnswer {
+  backup: BackupIndexRow;
+  retention: BackupPruneOutcome;
+}
+
+export interface BackupsAnswer {
+  backups: ListedBackup[];
+  retention: BackupPruneStatus | null;
+}
+
 /** Every backup the index holds, each verified against the object store. */
 export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ backups: await listBackups(env.db, env.blobs) });
+  return ok({ backups: await listBackups(env.db, env.blobs), retention: await backupPruneStatus(env.db) } satisfies BackupsAnswer);
 }
 
 /** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */

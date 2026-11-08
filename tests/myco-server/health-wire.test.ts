@@ -13,7 +13,7 @@ import type { MachineHarnessHealth } from '../../packages/myco-server/ui/src/fea
 import type { provisionedHarnessHealth } from '../../packages/myco-server/src/core/harness-health.ts';
 import type { KpiReport, KpiAnswer } from '../../packages/myco-server/src/read/kpis.ts';
 import type { ListedBackup, RestoreOutcome } from '../../packages/myco-server/src/core/backup.ts';
-import type { RestorePreviewAnswer } from '../../packages/myco-server/src/api/backups.ts';
+import type { BackupsAnswer, CreateBackupAnswer, RestorePreviewAnswer } from '../../packages/myco-server/src/api/backups.ts';
 import type { MaintenanceCheckStatus, MaintenanceOutcome } from '../../packages/myco-server/src/core/store-maintenance.ts';
 import type { TickReport } from '../../packages/myco-server/src/core/tick.ts';
 import type { RecoverySchedule } from '../../packages/myco-server/src/core/recovery-schedule.ts';
@@ -38,7 +38,8 @@ const SAME: [
 
 const READS: [
   Reads<ListedBackup, Ui.BackupRow>,
-  Reads<{ backups: ListedBackup[] }, Ui.BackupsAnswer>,
+  Reads<BackupsAnswer, Ui.BackupsAnswer>,
+  Reads<CreateBackupAnswer, Ui.CreateBackupAnswer>,
   Reads<RestorePreviewAnswer, Ui.RestorePreview>,
   Reads<RestoreAnswer, Ui.RestoreOutcome>,
   Reads<MaintenanceOutcome, Ui.MaintenanceOutcome>,
@@ -48,7 +49,7 @@ const READS: [
   Reads<RecoverySchedule, Ui.RecoverySchedule>,
   Reads<RecoveryAnswer, Ui.RecoveryStatus>,
   Reads<RecoveryUnsupportedAnswer, Ui.RecoveryUnsupported>,
-] = [true, true, true, true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true, true, true];
 
 describe("Health's wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {

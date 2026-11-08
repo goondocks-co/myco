@@ -1,3 +1,6 @@
+import { MemberWriteRefused } from '../auth/member-write-refusal.js';
+import { beginBackupPublication, publishBackup, abandonBackupPublication, backupObjectRegistered } from '../db/storage/backup-publication.js';
+import type { BackupIndexRow } from './backup.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 /**
  * The one owner of stored-object deletion.
@@ -7,7 +10,7 @@ import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
  * registered it. The release owner is the only code that asks the store to delete, and it removes a journal row only once the
  * store acknowledged that delete.
  *
- * No timing is involved: a physical key is written once. An upload stores under its own generation
+ * Each physical key has one writer. An upload stores under its own generation
  * (`core/blob-objects.ts`), a backup under its own id, a restore under its own generation. A delete that lands late,
  * twice, or from a replaced instance can only remove bytes already released, never bytes a later write
  * stored under the same content.
@@ -21,7 +24,10 @@ import type { BlobStore, PreparedStatement, RelationalStore, ServerEnv } from '.
 import { BLOB_REFERENCES, referencedBlobValue, blobHeld, type BlobRef } from './blob-references.js';
 import { blobObjectKeySql } from './blob-objects.js';
 import { within } from './recovery-inventory.js';
-import { backupRetentionPolicy, currentRetentionVictims } from './backup-retention.js';
+import { retentionDecision } from './backup-retention.js';
+import { commitBackupRelease, type RetentionObservation } from '../db/storage/backup-retention.js';
+import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents,
+  resetObjectLifecycle, settleObjectIntent } from '../db/storage/object-lifecycle.js';
 import { classify, emit } from '../telemetry.js';
 
 /** SQL true while a recovery hold is open. */
@@ -33,45 +39,32 @@ export const RELEASE_PAGE = 64;
 export const DRAIN_PAGE = 16;
 /** How long one store delete may take before the drain leaves its journal row for the next pass. */
 export const DRAIN_DELETE_MS = 15_000;
+export const DRAIN_FAILURE_LIMIT = 2;
 
 const deleteStoredObject = (blobs: BlobStore, key: string, clock: () => number = Date.now) => within(() => blobs.delete(key), DRAIN_DELETE_MS, clock);
 
-/** An expired or failed backup publication transfers its private key to the release journal. */
-function consumeBackupPublications(db: RelationalStore, where: string, params: readonly unknown[], now: number): PreparedStatement[] {
-  const selected = `SELECT key FROM backup_publications WHERE ${where}`;
-  return [
-    db.prepare(`INSERT INTO object_releases(physical,kind,created_at)
-      SELECT key,'backup',? FROM backup_publications WHERE key IN (${selected})
-        AND NOT EXISTS(SELECT 1 FROM backups WHERE backups.key=backup_publications.key)
-      ON CONFLICT(physical) DO NOTHING`).bind(now,...params),
-    db.prepare(`DELETE FROM backup_publications WHERE key IN (${selected})`).bind(...params),
-  ];
-}
-
-/** A private backup key owns durable pending authority before upload; index publication consumes it atomically. */
-export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobStore, key: string, upload: () => Promise<{ size: number }>,
-  commit: (size: number) => { row: T; statement: PreparedStatement }): Promise<T> {
-  const expires = Date.now() + BLOB_RESERVATION_TTL_MS;
-  await db.prepare('INSERT INTO backup_publications(key,expires_at) VALUES(?,?)').bind(key,expires).run();
+/** A private backup key retains an intent until its PUT and index publication settle. */
+export async function publishBackupObject(db: RelationalStore, blobs: BlobStore, key: string, upload: () => Promise<{ size: number }>,
+  index: (size: number) => BackupIndexRow): Promise<BackupIndexRow> {
+  await beginBackupPublication(db,key,Date.now()+BLOB_RESERVATION_TTL_MS);
+  let settled = false;
   try {
     const stored = await upload();
-    const publication = commit(stored.size);
-    await db.batch([
-      db.prepare(`INSERT INTO restore_reference_guard(missing) SELECT 'backup publication expired'
-        WHERE NOT EXISTS(SELECT 1 FROM backup_publications WHERE key=? AND expires_at>?)`).bind(key,Date.now()),
-      publication.statement,
-      db.prepare('DELETE FROM backup_publications WHERE key=?').bind(key),
-    ]);
-    return publication.row;
+    settled = true;
+    const row = index(stored.size);
+    if (row.key !== key) throw new Error('backup publication key does not match its upload authority');
+    await publishBackup(db,row,Date.now());
+    await settleObjectIntent(db,key,Date.now(),true);
+    return row;
   } catch (error) {
     try {
-      if (await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs,key);
-      await db.batch([
-        db.prepare(`INSERT INTO object_releases(physical,kind,created_at)
-          SELECT ?,'backup',? WHERE NOT EXISTS(SELECT 1 FROM backups WHERE key=?)
-          ON CONFLICT(physical) DO NOTHING`).bind(key,Date.now(),key),
-        db.prepare('DELETE FROM backup_publications WHERE key=?').bind(key),
-      ]);
+      if (error instanceof MemberWriteRefused && settled) {
+        // Terminal refusal permits discarding settled private bytes only while no backup registers their key.
+        if (!await backupObjectRegistered(db,key)) await deleteStoredObject(blobs,key);
+      } else {
+        await abandonBackupPublication(db,key,Date.now());
+        await settleObjectIntent(db,key,Date.now(),settled);
+      }
     } catch (cleanupError) {
       emit({ kind: 'backup_publication_cleanup_failed', key, error_class: classify(cleanupError) });
     }
@@ -80,38 +73,9 @@ export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobSto
 }
 
 const blobPage = `(SELECT json_extract(j.value, '$.p') AS p, json_extract(j.value, '$.k') AS k FROM json_each(?) j)`;
-const idPage = `(SELECT j.value AS id FROM json_each(?) j)`;
 const registeredPhysical = (alias: string) => blobObjectKeySql(`${alias}.project_id`, `${alias}.key`, `${alias}.generation`);
 
-/** The physical key of the upload a reservation authorizes, over a `blob_reservations` alias. */
-const reservedPhysical = (alias: string) => blobObjectKeySql(`${alias}.project_id`, `${alias}.key`, `${alias}.reservation_id`);
-
-/**
- * Statements that consume one upload's authority: its bytes are journaled, and the reservation removed, in the batch
- * that carries them. A reservation already consumed journals nothing: whichever consumer committed first owns it.
- */
-export function consumeUploadAuthority(db: RelationalStore, reservationId: string, now: number): PreparedStatement[] {
-  return [
-    db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
-                  SELECT ${reservedPhysical('r')}, 'upload', ? FROM blob_reservations r WHERE r.reservation_id = ?
-                  ON CONFLICT (physical) DO NOTHING`).bind(now, reservationId),
-    db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
-  ];
-}
-
-/**
- * Statements that consume every expired authority a selection names, journaling each one's bytes. `where` is SQL over
- * `blob_reservations` columns and binds `params`; the same selection is read by both statements of one transaction.
- */
-export function consumeExpiredAuthorities(db: RelationalStore, where: string, params: readonly unknown[], now: number): PreparedStatement[] {
-  return [
-    db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
-                  SELECT ${reservedPhysical('r')}, 'upload', ? FROM blob_reservations r
-                   WHERE r.reservation_id IN (SELECT reservation_id FROM blob_reservations WHERE ${where})
-                  ON CONFLICT (physical) DO NOTHING`).bind(now, ...params),
-    db.prepare(`DELETE FROM blob_reservations WHERE reservation_id IN (SELECT reservation_id FROM blob_reservations WHERE ${where})`).bind(...params),
-  ];
-}
+export { consumeUploadAuthority } from '../db/storage/object-lifecycle.js';
 
 export interface ReleaseOutcome {
   /** Registered objects journaled for deletion, their rows removed. */
@@ -183,38 +147,13 @@ export function blobDecisionStatements(db: RelationalStore, page: string, now: n
 }
 
 /**
- * Records catalogued backups as release candidates and decides them, one transaction per page. With no hold open, each
- * candidate among `victims` — the ids the retention owner (`core/backup-retention.ts`) lets go of under the policy in
- * force — that is still unpinned has its object journaled and its row removed, and every candidate of the page is
- * removed. With a hold open the candidates stay recorded for the drain, which asks the retention owner again.
+ * Records and decides one revision-bound backup release batch. With no hold open, each unpinned victim's object
+ * is journaled with its row removed, and the batch's candidates are cleared. With a hold open the candidates remain
+ * for the drain, which asks the retention owner again.
  */
-export async function releaseBackups(db: RelationalStore, ids: readonly string[], victims: ReadonlySet<string>, now: number): Promise<ReleaseOutcome> {
-  const outcome: ReleaseOutcome = { released: 0, deferred: 0 };
-  for (let at = 0; at < ids.length; at += RELEASE_PAGE) {
-    const page = JSON.stringify(ids.slice(at, at + RELEASE_PAGE));
-    const results = await db.batch([
-      db.prepare(`INSERT INTO backup_release_candidates (id, created_at) SELECT p.id, ? FROM ${idPage} p WHERE p.id IS NOT NULL ON CONFLICT (id) DO NOTHING`).bind(now, page),
-      ...backupDecisionStatements(db, page, victims, now),
-    ]);
-    outcome.released += results[1]!.meta.changes;
-    outcome.deferred += (results[results.length - 1]!.results[0] as { held: number }).held;
-  }
-  return outcome;
-}
-
-function backupDecisionStatements(db: RelationalStore, page: string, victims: ReadonlySet<string>, now: number): PreparedStatement[] {
-  const victimPage = JSON.stringify([...victims]);
-  return [
-    db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
-                  SELECT bk.key, 'backup', ? FROM backups bk
-                   WHERE bk.id IN ${idPage} AND bk.id IN (SELECT j.value FROM json_each(?) j) AND bk.pinned = 0 AND NOT ${HOLD_OPEN}
-                     AND EXISTS (SELECT 1 FROM backup_release_candidates rc WHERE rc.id = bk.id)
-                  ON CONFLICT (physical) DO NOTHING`).bind(now, page, victimPage),
-    db.prepare(`DELETE FROM backups
-                 WHERE id IN ${idPage} AND EXISTS (SELECT 1 FROM object_releases r WHERE r.physical = backups.key)`).bind(page),
-    db.prepare(`DELETE FROM backup_release_candidates WHERE NOT ${HOLD_OPEN} AND id IN ${idPage}`).bind(page),
-    db.prepare(`SELECT COUNT(*) AS held FROM backup_release_candidates WHERE id IN ${idPage}`).bind(page),
-  ];
+export async function releaseBackups(db: RelationalStore, ids: readonly string[], victims: ReadonlySet<string>,
+  now: number, observed: RetentionObservation): Promise<ReleaseOutcome> {
+  return commitBackupRelease(db,ids,victims,observed,now);
 }
 
 /** The pairs among `pairs` no `blobs` row registers, each judged in its own Project. */
@@ -451,29 +390,30 @@ export interface DrainReport {
  * write will produce again, and a journal row is removed by its primary key.
  */
 export async function drainObjectReleases(
-  env: Pick<ServerEnv, 'db' | 'blobs'>, now: number, clock: () => number = Date.now,
+  env: Pick<ServerEnv, 'db' | 'blobs'> & Partial<Pick<ServerEnv, 'platform'>>, now: number, clock: () => number = Date.now,
 ): Promise<DrainReport> {
   const { db } = env;
   const report: DrainReport = { expired: 0, deleted: 0, decided: 0, unacknowledged: 0 };
 
-  const expired = `expires_at <= ? ORDER BY expires_at, reservation_id LIMIT ${DRAIN_PAGE}`;
-  const [, consumed] = await db.batch(consumeExpiredAuthorities(db, expired, [now], now));
-  const [, backups] = await db.batch(consumeBackupPublications(db, `expires_at<=? ORDER BY expires_at,key LIMIT ${DRAIN_PAGE}`, [now], now));
-  report.expired = consumed!.meta.changes + backups!.meta.changes;
-
-  const { results: journal } = await db
-    .prepare(`SELECT physical FROM object_releases ORDER BY created_at, physical LIMIT ?`).bind(DRAIN_PAGE)
-    .all<{ physical: string }>();
-  for (const { physical } of journal) {
+  await reconcileObjectIntents(db,now,DRAIN_PAGE);
+  report.expired = await drainAuthorities(db,now,DRAIN_PAGE);
+  const journal = await dueObjectReleases(db,now,DRAIN_PAGE);
+  let consecutiveFailures=0;
+  for (const { physical, attempts } of journal) {
+    const issuedAt=clock();
     try {
       await deleteStoredObject(env.blobs, physical, clock);
     } catch (error) {
       report.unacknowledged += 1;
-      emit({ kind: 'object_release_unacknowledged', error_class: classify(error) });
-      break;
+      await retryRelease(db,physical,now,attempts);
+      const errorClass=classify(error,env.platform?.classifyError);
+      emit({ kind: 'object_release_unacknowledged', error_class: errorClass });
+      consecutiveFailures+=1;
+      if (consecutiveFailures>=DRAIN_FAILURE_LIMIT || ['db','rpc','store_quota','configuration'].includes(errorClass)) break;
+      continue;
     }
-    await db.prepare(`DELETE FROM object_releases WHERE physical = ?`).bind(physical).run();
-    report.deleted += 1;
+    consecutiveFailures=0;
+    report.deleted += await acknowledgeRelease(db,physical,issuedAt);
   }
 
   if (await db.prepare(`SELECT ${HOLD_OPEN} AS held`).first<{ held: number }>().then((row) => row?.held === 1)) return report;
@@ -489,9 +429,9 @@ export async function drainObjectReleases(
     .prepare(`SELECT id FROM backup_release_candidates ORDER BY created_at, id LIMIT ?`).bind(DRAIN_PAGE)
     .all<{ id: string }>();
   if (backupCandidates.length > 0) {
-    const victims = await currentRetentionVictims(db, await backupRetentionPolicy(db));
-    const results = await db.batch(backupDecisionStatements(db, JSON.stringify(backupCandidates.map((row) => row.id)), victims, now));
-    report.decided += results[2]!.meta.changes;
+    const { victims, observed } = await retentionDecision(db);
+    const outcome = await commitBackupRelease(db,backupCandidates.map(row => row.id),victims,observed,now);
+    report.decided += backupCandidates.length - outcome.deferred;
   }
   return report;
 }
@@ -503,13 +443,7 @@ export async function drainObjectReleases(
  * rows before anything is released. Backup candidates are dropped: backup retention decides again at the destination.
  */
 export async function resetRecoveryLedger(db: RelationalStore): Promise<void> {
-  await db.batch([
-    db.prepare(`DELETE FROM recovery_holds`),
-    db.prepare(`DELETE FROM object_releases`),
-    db.prepare(`DELETE FROM blob_reservations`),
-    db.prepare(`DELETE FROM backup_publications`),
-    db.prepare(`DELETE FROM backup_release_candidates`),
-  ]);
+  await resetObjectLifecycle(db);
 }
 
 /**

@@ -1,3 +1,7 @@
+import { classify, emit } from '../telemetry.js';
+import { retentionDecision } from './backup-retention.js';
+import { pinBackup } from '../db/storage/backup-pin.js';
+import { recordBackupPrune, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { clearArchivedTranscriptRanges, restoreTranscriptSegmentStatement } from './transcript-ranges.js';
 import { excludeDeletedRestoreRows, restoreBlobReferences } from './restore-rows.js';
@@ -31,7 +35,6 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { readStoredObject } from './stored-object.js';
 import { publishBackupObject, referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong,
   recordBlobCandidates, releaseBlobs } from './object-release.js';
-import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-retention.js';
 export { retentionVictims } from './backup-retention.js';
 import { BUNDLE_REFERENCES, bundleHeld } from './blob-references.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
@@ -127,7 +130,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'backup_publications', 'recovery_forget_commands',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
-  'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
+  'object_settlement_intents', 'object_reconciliation_cursor', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v68_guard_retired_settings',
@@ -308,10 +311,7 @@ export async function createBackup(db: RelationalStore, blobs: BlobStore, opts: 
         id, key, created_at: opts.now, size_bytes: size,
         counts_json: JSON.stringify(counts), schema_version: stamped, producer: opts.producer, pinned: 0, sha256,
       };
-      const statement = db.prepare(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
-        .bind(row.id, row.key, row.created_at, row.size_bytes, row.counts_json, row.schema_version, row.producer, row.sha256);
-      return { row, statement };
+      return row;
     });
 }
 
@@ -1007,24 +1007,38 @@ export async function backupArtifact(db: RelationalStore, blobs: BlobStore, id: 
   return readArtifact(db, blobs, id);
 }
 
+function retentionConflict(error: unknown): boolean {
+  return error instanceof Error && (/backup_retention_(?:policy_)?conflict|settings_revision_conflict/.test(error.message)
+    || retentionConflict(error.cause));
+}
+
+
 /**
- * Prune per the policy in force, FAIL-CLOSED: any error reading the index or the policy skips the prune whole — a backup
- * that spans a schema gap is worth more than a tidy list. The retention owner names the victims, and the release owner
+ * Prune under one revision-bound policy and catalog observation. A failed decision preserves the index and records
+ * a typed failure for the caller and Health. The retention owner names the victims, and the release owner
  * journals each victim's object and removes its row in one transaction, or keeps it recorded while a recovery hold is
  * open.
  */
-export async function pruneBackups(db: RelationalStore, policy: BackupRetentionPolicy, now: number): Promise<{ pruned: number }> {
+
+export async function pruneBackups(db: RelationalStore, now: number): Promise<BackupPruneOutcome> {
+  let outcome: BackupPruneOutcome;
   try {
-    const victims = await currentRetentionVictims(db, policy);
-    const outcome = await releaseBackups(db, [...victims], victims, now);
-    return { pruned: outcome.released };
-  } catch {
-    return { pruned: 0 };
+    const { victims, observed } = await retentionDecision(db);
+    const released = await releaseBackups(db, [...victims], victims, now, observed);
+    outcome = { state: 'pruned', pruned: released.released, deferred: released.deferred };
+  } catch (error) {
+    outcome = retentionConflict(error) ? { state: 'changed', reason: 'retention_changed' }
+      : { state: 'failed', errorClass: classify(error) };
   }
+  try { await recordBackupPrune(db,now,outcome); }
+  catch (error) {
+    outcome = { ...outcome, recordingErrorClass: classify(error) };
+    emit({ kind: 'backup_prune_record_failed', error_class: outcome.recordingErrorClass });
+  }
+  return outcome;
 }
 
 /** Pin or unpin one index row; a pinned backup is exempt from retention and consumes no slot. */
 export async function setBackupPinned(db: RelationalStore, id: string, pinned: boolean): Promise<boolean> {
-  const result = await db.prepare(`UPDATE backups SET pinned = ? WHERE id = ?`).bind(pinned ? 1 : 0, id).run();
-  return result.meta.changes === 1;
+  return pinBackup(db,id,pinned);
 }

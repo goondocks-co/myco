@@ -1,3 +1,4 @@
+import { completeMaintenance, recordMaintenanceProgress } from '../db/meta/maintenance-progress.js';
 /**
  * Routine store maintenance: optimizing the query planner's statistics and checking the store's integrity.
  *
@@ -79,10 +80,9 @@ export type CheckSupport = { supported: true; label: string } | { supported: fal
  * port's own record of the work it has in flight is the whole truth. A check is running exactly while this
  * process has it in flight, however long that takes, and a running record another holder left behind is dead.
  *
- * `platform-limit`: every statement ends within the platform's own `statementLimitMs`, and a run sends a fixed
- * number in sequence — the check's own `statements`, the ones this module adds to it (`RECORD_STATEMENTS`) and the
- * two its claim writes and reads back — so its work is
- * over by that many limits after the claim is written. A running record is live until then.
+ * `platform-limit`: every statement ends within `statementLimitMs`. The initial claim covers discovery,
+ * its first progress checkpoint and completion; each checkpoint records the remaining statements and metadata
+ * commits before the next bounded batch. A running record is live until that recorded budget expires.
  */
 export type Exclusivity =
   | { kind: 'serving-owner'; holder: string }
@@ -90,6 +90,8 @@ export type Exclusivity =
 
 /** The statements a claim sends before the check's own: the conditional write and its read-back. */
 export const CLAIM_STATEMENTS = 2;
+export const MAINTENANCE_PROGRESS_STATEMENTS = 2;
+export const MAINTENANCE_COMPLETION_STATEMENTS = 1;
 
 /** The statements this module sends inside a check beside the port's own: optimize also measures the bytes recorded blobs hold. */
 export const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 0 };
@@ -105,10 +107,17 @@ async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Prom
 }
 
 /** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
+export interface MaintenanceProgress {
+  completedTables: number;
+  totalTables: number;
+  completedStatements: number;
+  totalStatements: number;
+  remainingBatches: number;
+}
 export interface StoreMaintenancePort {
   support: Readonly<Record<MaintenanceCheck, CheckSupport>>;
   exclusivity: Exclusivity;
-  run(check: MaintenanceCheck): Promise<PortResult>;
+  run(check: MaintenanceCheck, progress?: (value: MaintenanceProgress) => Promise<void>): Promise<PortResult>;
 }
 
 /** How an outcome ended. `failed` carries `errorClass`; `findings` means the store answered with problems. */
@@ -117,6 +126,7 @@ export type MaintenanceTrigger = 'schedule' | 'owner';
 
 /** The latest outcome of one check, as recorded. */
 export interface MaintenanceOutcome {
+  progress?: MaintenanceProgress;
   runId: string;
   check: MaintenanceCheck;
   trigger: MaintenanceTrigger;
@@ -284,10 +294,7 @@ async function claim(env: ServerEnv, record: MaintenanceOutcome, notBefore: numb
 
 /** Records a finished run, only over the record that run created. Answers whether it landed. */
 async function complete(env: ServerEnv, record: MaintenanceOutcome): Promise<boolean> {
-  const result = await env.db.prepare(
-    `UPDATE schema_meta SET value = ? WHERE key = ? AND json_extract(value, '$.runId') = ?`,
-  ).bind(JSON.stringify(record), metaKey(record.check), record.runId).run();
-  return result.meta.changes === 1;
+  return completeMaintenance(env.db,metaKey(record.check),record);
 }
 
 /** At most `MAX_FINDINGS` findings of at most `MAX_FINDING_CHARS` each; the count beyond is kept as a number. */
@@ -306,7 +313,18 @@ export function boundFindings(findings: readonly string[]): { findings: string[]
 async function finishRun(env: ServerEnv, port: StoreMaintenancePort, record: MaintenanceOutcome, clock: () => number): Promise<{ record: MaintenanceOutcome; recorded: boolean }> {
   let finished: MaintenanceOutcome;
   try {
-    const result = await port.run(record.check);
+    const result = await port.run(record.check,async progress => {
+      const now = clock();
+      const limit = port.exclusivity;
+      const claimExpiresAt = limit.kind === 'platform-limit'
+        ? now + (progress.totalStatements-progress.completedStatements
+          + (progress.remainingBatches+(progress.completedStatements<progress.totalStatements?1:0)+1)*MAINTENANCE_PROGRESS_STATEMENTS
+          + MAINTENANCE_COMPLETION_STATEMENTS)*limit.statementLimitMs
+        : null;
+      const next = { ...record, progress, claimExpiresAt };
+      await recordMaintenanceProgress(env.db,metaKey(record.check),next,now);
+      Object.assign(record,next);
+    });
     const measurements = [...result.measurements, ...(await recordMeasurements(env, record.check))];
     finished = {
       ...record, ...boundFindings(result.findings), measurements, finishedAt: clock(),
@@ -355,7 +373,7 @@ export async function runMaintenance(
     const record: MaintenanceOutcome = {
       runId: crypto.randomUUID(), check, trigger, state: 'running', startedAt: now,
       claimExpiresAt: exclusivity.kind === 'platform-limit'
-        ? claimedAt + (exclusivity.statements[check] + RECORD_STATEMENTS[check] + CLAIM_STATEMENTS) * exclusivity.statementLimitMs
+        ? claimedAt + (exclusivity.statements[check] + RECORD_STATEMENTS[check] + CLAIM_STATEMENTS + MAINTENANCE_COMPLETION_STATEMENTS) * exclusivity.statementLimitMs
         : null,
       holder: exclusivity.kind === 'serving-owner' ? exclusivity.holder : null,
       finishedAt: null, errorClass: null, findings: [], findingsOmitted: 0, measurements: [], powerState: options.powerState ?? null,

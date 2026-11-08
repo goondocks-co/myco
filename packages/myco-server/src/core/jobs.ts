@@ -156,7 +156,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     name: 'object-release-drain',
     runsThrough: 'sleep',
     wake: 'clock',
-    converges: 'every aged unadopted archive preparation releases its exact proofs and registered objects; every journaled stored object is deleted by a store delete the store acknowledged, and only then is its journal row removed; no expired upload or backup publication authority survives unjournaled; with no recovery hold open, every candidate a hold deferred is decided again against the rows; a registered object is never journaled',
+    converges: 'every aged unadopted archive preparation releases its exact proofs and registered objects; a durable cursor revisits every unresolved PUT intent and journals any unregistered late object; each journal key retries on its own deadline so a failed delete never starves another key; every journaled stored object is deleted by a store delete the store acknowledged, and only then is its journal row removed; no expired upload or backup publication authority survives unjournaled; with no recovery hold open, every candidate a hold deferred is decided again against the rows; a registered object is never journaled',
   },
   // Store maintenance
   {

@@ -402,3 +402,32 @@ it('keeps required descendants of declared-empty inputs empty and nulls optional
   expect(db.query('PRAGMA foreign_key_check').all()).toEqual([]);
  }finally{db.close()}
 });
+
+it('upgrades the storage step over populated release and backup rows without losing their evidence', async()=>{
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const { V715: NEXT } = await import('@myco-server-worker/db/schema-v715.js');
+  const step=SCHEMA_STEPS.find(step=>step.version===NEXT)!;
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-storage-upgrade-'));
+  const file=path.join(root,'previous.sqlite');
+  try {
+    const previous=new Database(file);
+    try {for(const prior of SCHEMA_STEPS.filter(prior=>prior.version<step.version)) for(const sql of prior.statements) previous.exec(sql);}
+    finally {previous.close();}
+    const touched=seedPreviousSchema(file,step.statements,step.version);
+    expect(touched).toContain('object_releases');
+    const db=new Database(file);
+    try {
+      const released=db.query('SELECT physical,kind,created_at FROM object_releases').all();
+      const backups=db.query('SELECT * FROM backups').all();
+      expect(released).toHaveLength(1);
+      expect(backups).toHaveLength(1);
+      for(const sql of step.statements) db.exec(sql);
+      expect(db.query('SELECT physical,kind,created_at FROM object_releases').all()).toEqual(released);
+      expect(db.query('SELECT retry_at,attempts FROM object_releases').all()).toEqual([{retry_at:0,attempts:0}]);
+      expect(db.query('SELECT * FROM backups').all()).toEqual(backups);
+      seedReferencedTables(db,['SELECT 1 FROM object_settlement_intents']);
+      expect(db.query('SELECT kind,expires_at FROM object_settlement_intents').all()).toEqual([{kind:'backup',expires_at:1}]);
+      expect(db.query('SELECT slot,physical FROM object_reconciliation_cursor').all()).toEqual([{slot:1,physical:''}]);
+    } finally {db.close();}
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
