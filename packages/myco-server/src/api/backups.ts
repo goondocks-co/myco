@@ -1,3 +1,4 @@
+import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
 /**
  * The backup surface: create, list, preview, restore, pin. Owner routes on the
  * dashboard session; every behavior lives in `core/backup.ts` — these handlers
@@ -80,7 +81,7 @@ export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): P
 }
 
 /** Apply one backup. A foreign-lineage artifact is refused unless the body deliberately adopts it. */
-export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleRestoreBackup = retryablePublicationRestore(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   try {
@@ -110,7 +111,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
     throw err;
   }
-}
+});
 
 /** The artifact itself, for an operator taking a copy off the Deployment. */
 export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -132,7 +133,7 @@ export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): P
 }
 
 /** Restore an artifact carried in the request itself — the way a backup taken on one Deployment lands on another. */
-export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleRestoreUpload = retryablePublicationRestore(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.artifact !== 'string' || body.artifact.length === 0) {
     return badRequest('body must carry the artifact text');
@@ -152,6 +153,16 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
   }
+});
+
+function retryablePublicationRestore(handler:(env:ServerEnv,ctx:OwnerContext)=>Promise<Response>) {
+  return async (env:ServerEnv,ctx:OwnerContext):Promise<Response>=>{
+    try { return await handler(env,ctx); }
+    catch(error) {
+      if(!(error instanceof PublicationRestoreBuilding))throw error;
+      return Response.json({complete:false,error:error.code,retryable:error.retryable,message:error.message},{status:409});
+    }
+  };
 }
 
 /** Pin or unpin one backup; a pinned backup is exempt from retention. */

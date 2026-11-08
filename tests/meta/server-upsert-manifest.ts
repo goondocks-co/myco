@@ -1,6 +1,75 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'db/documents/metadata-catchup.ts#<module>': [
+    {tables:['document_metadata_progress'],order:'unverified'},
+    {tables:['document_metadata_ready'],order:'unverified'},
+    {tables:['document_metadata_ready'],order:'unverified'},
+  ],
+  "db/schema-v723.ts#<module>": [
+    { tables: ["document_pin_totals"], order: 'unverified' },
+    { tables: ["document_pin_totals", "document_group_pins"], order: 'unverified' },
+    { tables: ["document_transcript_pins"], order: 'unverified' },
+    { tables: ["document_pin_totals"], order: 'unverified' },
+    { tables: ["document_pin_totals"], order: 'unverified' },
+    { tables: ["document_pin_totals", "document_group_pins"], order: 'unverified' },
+    { tables: ["document_transcript_pins"], order: 'unverified' },
+    { tables: ["document_transcript_pins"], order: 'unverified' },
+    { tables: ["document_pin_totals"], order: 'unverified' },
+    { tables: ["document_transcript_pins"], order: 'unverified' },
+    { tables: ["document_failure_totals"], order: 'unverified' },
+    { tables: ["document_failure_head"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_totals"], order: 'unverified' },
+    { tables: ["document_failure_totals"], order: 'unverified' },
+    { tables: ["document_failure_head"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_totals"], order: 'unverified' },
+    { tables: ["document_failure_head"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+    { tables: ["document_rebuild_totals"], order: 'unverified' },
+  ],
+  'db/documents/rebuild.ts#rebuildStatements': [{tables:['document_rebuild_receipts'],order:'unverified'}],
+  "db/documents/rebuild.ts#publicationRebuildSchema": [
+    { tables: ["document_rebuild_totals"], order: 'unverified' },
+  ],
+  "db/documents/rebuild.ts#rereadOperations": [
+    { tables: ["transcript_publication"], order: 'unverified' },
+  ],
+  "db/documents/pin-schema.ts#reconcilePublicationPins": [
+    { tables: ["document_transcript_pins"], order: 'unverified' },
+  ],
+  "db/documents/pin-schema.ts#pinGroup": [
+    { tables: ["document_group_pins"], order: 'unverified' },
+  ],
+  "db/documents/pin-schema.ts#total": [
+    { tables: ["document_pin_totals"], order: 'unverified' },
+  ],
+  "db/documents/failure-head.ts#reconcilePublicationFailures": [
+    { tables: ["document_failure_contributions"], order: 'unverified' },
+  ],
+  "db/documents/failure-head.ts#delta": [
+    { tables: ["document_failure_totals"], order: 'unverified' },
+  ],
+  "db/documents/failure-head.ts#publicationFailureSchema": [
+    { tables: ["document_failure_head"], order: 'unverified' },
+  ],
+  "db/documents/failure-head.ts#<module>": [
+    { tables: ["document_failure_head"], order: 'unverified' },
+    { tables: ["document_failure_head"], order: 'unverified' },
+  ],
+  "db/documents/ownership.ts#<module>": [
+    { tables: ["document_continuations"], order: 'unverified' },
+    { tables: ["document_metadata_ready"], order: 'unverified' },
+  ],
+
   "db/schema-v717.ts#<module>": [
     { tables: ["document_publication_totals"], order: 'unverified' },
     { tables: ["document_publication_contributions"], order: 'unverified' },
@@ -252,8 +321,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'content/tool-statistics.ts#turnStatisticsStatements': [{ tables: ['session_turn_entries'], order: 'unverified' }],
   'ingest/document-summaries.ts#catchUpSummaries': ['session_path_build', 'session_paths']
     .map(table => ({ tables: [table], order: 'unverified' as const })),
-  'ingest/parse.ts#rereadTranscripts': [{ tables: ['transcript_publication'], order: 'unverified' }],
-  'core/attention-state.ts#recordDocumentPublishFailure': [{ tables: ['schema_meta'], order: 'unverified' }],
   'core/attempt-accounting.ts#restoreAttemptStatement': [
     { tables: ['agent_run_attempts'], order: 'unverified' },
   ],
@@ -344,7 +411,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'ingest/document-batch.ts#statements': ['session_chunks', 'session_pages', 'session_paths', 'myco_tool_calls']
     .map((table) => ({ tables: [table], order: 'unverified' as const })),
   'ingest/document-batch.ts#sealStatements': [{ tables: ['session_sealed_records'], order: 'unverified' }],
-  'ingest/document-batch.ts#publicationStatement': [{ tables: ['transcript_publication'], order: 'unverified' }],
+  'db/documents/frontiers.ts#<module>': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'ingest/document-batch.ts#sessionRowStatements': [{ tables: ['plans'], order: 'unverified' }],
   'ingest/events.ts#planEventWrite': [
     { tables: ['sessions'], order: 'unverified' },

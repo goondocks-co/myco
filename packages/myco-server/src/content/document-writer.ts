@@ -1,11 +1,13 @@
+import { jsonPages } from '../db/json-pages.js';
+import { PublicationOwnershipBuilding, type KeyOwner, type MetadataShard } from '../db/documents/ownership.js';
 /**
  * Changes to one generation of a session document, held in memory until they are written as new chunk versions.
  *
  * Records are placed by owner: a new record goes on its owner's last page while it fits, else on a new page. A record
  * arriving under an id its owner already holds is merged in place, and when the page it sits on no longer fits, that
  * record moves to the owner's last page. Every chunk holding a changed page is rewritten whole; pages that no longer
- * fit their chunk, and new pages, fill the session's last page chunk and then new chunks. The last page chunk written
- * carries the continuation.
+ * fit their chunk, and new pages, fill the session's last page chunk and then new chunks. Continuations and immutable
+ * ownership claims have separate metadata chunks, addressed by their keyed catalog.
  *
  * What a placement reads is bounded by the owner's open pages. A commit seals the older pages of an owner whose open
  * pages span more than `OWNER_OPEN_CHUNKS` chunks: their record ids go to `session_sealed_records`, so a record is
@@ -21,7 +23,7 @@ import type { ChunkRow } from './document-reader.js';
 import type { PublicationDirectory } from '../db/documents/directory.js';
 import { TURN_PAGES } from './session-pages.js';
 
-export interface PageChunkWrite { chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
+export interface PageChunkWrite { metadata?: number; chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
 export interface BodyChunkWrite { chunkNo: number; text: string; ref: BodyRef }
 export interface PageWrite { owner: string; page: number; chunkNo: number; records: number; bytes: number }
 export interface DocumentLayout { pageChunks: PageChunkWrite[]; bodyChunks: BodyChunkWrite[]; pages: PageWrite[] }
@@ -46,13 +48,37 @@ const sealedKey = (owner: string, kind: string, id: string): string => `${owner}
 /** A row of `session_sealed_records`, named by the writer that sealed or moved its record. */
 export interface SealedRecord { o: string; k: string; i: string }
 
+class WriterMap<K,V> extends Map<K,V> {
+  constructor(private readonly changed:()=>void) { super(); }
+  override set(key:K,value:V):this { this.changed();return super.set(key,value); }
+  override delete(key:K):boolean { const deleted=super.delete(key);if(deleted)this.changed();return deleted; }
+  override clear():void { if(this.size)this.changed();super.clear(); }
+}
+class WriterSet<T> extends Set<T> {
+  constructor(private readonly changed:()=>void) { super(); }
+  override add(value:T):this { if(!this.has(value))this.changed();return super.add(value); }
+  override delete(value:T):boolean { const deleted=super.delete(value);if(deleted)this.changed();return deleted; }
+  override clear():void { if(this.size)this.changed();super.clear(); }
+}
+
 export class DocumentWriter {
-  /** Each transcript's parser continuation, written to the last page chunk. */
-  states = new Map<string, Record<string, unknown>>();
-  /** The session's harness key owners, written to the last page chunk. */
-  owners = new Map<string, { thread: string; record: string }>();
-  /** The canonical plan keys the document holds an appearance of, written to the last page chunk. */
-  plans = new Set<string>();
+  private revision = 0;
+  private counted: {revision:number;versions:number}|null = null;
+  private mutate = () => { this.revision += 1; };
+  metadataReady = false;
+  private metadataSeparated = false;
+  private legacyMetadata: { number: number; chunk: DecodedChunk } | null = null;
+  private readonly originalStates = new Map<string, string>();
+  private readonly originalOwners = new Map<string, KeyOwner>();
+  private readonly originalPlans = new Set<string>();
+  private readonly stateChunks = new Map<string, number>();
+  private readonly readStates = new Set<string>();
+  /** Parser continuations loaded for the transcripts this pass visits. */
+  readonly states = new WriterMap<string, Record<string, unknown>>(this.mutate);
+  /** Key owners loaded or claimed by this pass. */
+  readonly owners = new WriterMap<string, KeyOwner>(this.mutate);
+  /** Canonical plan keys loaded or placed by this pass. */
+  readonly plans = new WriterSet<string>(this.mutate);
   /** Owners whose pages changed. */
   readonly touched = new Set<string>();
   /** Blob store reads this writer made. */
@@ -71,9 +97,6 @@ export class DocumentWriter {
   private readonly initialized = new Set<string>();
   private readonly sealedOwners = new Set<string>();
   private marked: WriterMark | null = null;
-  /** Every change to what `layout()` writes, which `versions` is held against. */
-  private revision = 0;
-  private counted: { revision: number; versions: number } | null = null;
   private readonly sizes = new WeakMap<DocRecord, number>();
 
   constructor(
@@ -83,6 +106,7 @@ export class DocumentWriter {
   ) {}
 
   async prepareOwners(owners: readonly string[]): Promise<void> {
+    if (owners.length > 0 && this.lastPageChunk !== null) await this.chunk(this.lastPageChunk);
     const missing = [...new Set(owners)].filter(owner => !this.initialized.has(owner));
     if (missing.length === 0) return;
     const held = await this.directory.owners(missing);
@@ -106,14 +130,69 @@ export class DocumentWriter {
     return row.chunk_no;
   }
 
-  /** Reads the last page chunk and its continuation. */
+  /** Opens the active page tail and admits existing metadata before any new ownership claim. */
   async open(): Promise<void> {
+    const metadata = await this.directory.ownership.ready();
+    this.metadataReady = metadata.ready;
+    this.metadataSeparated = metadata.separated;
+    if (!metadata.ready && this.nextChunk > 0) throw new PublicationOwnershipBuilding(metadata.failure);
     this.lastPageChunk = await this.directory.tail();
-    if (this.lastPageChunk === null) return;
+    if (this.lastPageChunk === null || metadata.separated) return;
     const last = await this.chunk(this.lastPageChunk);
-    this.states = new Map(last.states);
-    this.owners = new Map(last.owners ?? []);
-    this.plans = new Set(last.plans ?? []);
+    if (last.states.size > 0 || last.owners !== null || last.plans !== undefined) {
+      this.legacyMetadata = { number: this.lastPageChunk, chunk: last };
+    }
+  }
+
+  async readState(transcript: string): Promise<void> {
+    if (this.readStates.has(transcript)) return;
+    const number = this.metadataReady ? await this.directory.ownership.state(transcript)
+      : this.legacyMetadata?.chunk.states.has(transcript) ? this.legacyMetadata.number : null;
+    if (number !== null) {
+      const chunk = await this.chunk(number);
+      const held = chunk.states.get(transcript);
+      if (held !== undefined) {
+        this.states.set(transcript, held);
+        this.originalStates.set(transcript, JSON.stringify(held));
+        if (this.directory.chunks.get(number)?.metadata === 1 && chunk.states.size === 1
+          && (chunk.owners?.length ?? 0) === 0 && (chunk.plans?.length ?? 0) === 0) this.stateChunks.set(transcript, number);
+      }
+    }
+    this.readStates.add(transcript);
+  }
+
+  async readOwners(keys: readonly string[]): Promise<void> {
+    const held = this.metadataReady ? await this.directory.ownership.owners(keys.filter(key => !this.owners.has(key)))
+      : new Map((this.legacyMetadata?.chunk.owners ?? []).filter(([key]) => keys.includes(key)));
+    for (const [key, owner] of held) {
+      this.owners.set(key, owner); this.originalOwners.set(key, owner);
+    }
+  }
+
+  async readPlanKeys(keys: readonly string[]): Promise<void> {
+    const held = this.metadataReady ? await this.directory.ownership.plans(keys.filter(key => !this.plans.has(key)))
+      : (this.legacyMetadata?.chunk.plans ?? []).filter(key => keys.includes(key));
+    for (const key of held) {
+      this.plans.add(key); this.originalPlans.add(key);
+    }
+  }
+
+  get metadataSource() { return this.legacyMetadata === null ? [] : [{n:this.legacyMetadata.number,k:this.directory.chunks.get(this.legacyMetadata.number)!.blob_key}]; }
+
+  metadataStatements(layout: DocumentLayout | null) {
+    const shards: MetadataShard[] = (layout?.pageChunks ?? []).filter(write => write.metadata === 1).map(write => ({
+      chunkNo: write.chunkNo, states: [...write.chunk.states.keys()], owners: write.chunk.owners ?? [], plans: write.chunk.plans ?? [],
+    }));
+    return [...this.directory.ownership.statements(shards, !this.metadataSeparated),
+      ...(layout !== null && this.legacyMetadata !== null ? [this.directory.ownership.retain(this.legacyMetadata.number)] : [])];
+  }
+
+  get metadataStatementCount(): number {
+    const states=[...new Set([...this.originalStates.keys(),...this.states.keys()])]
+      .filter(key=>this.originalStates.get(key)!==JSON.stringify(this.states.get(key)??{})).length;
+    const owners=jsonPages([...this.owners].filter(([key])=>!this.originalOwners.has(key))).length;
+    const plans=jsonPages([...this.plans].filter(key=>!this.originalPlans.has(key))).length;
+    return states+owners*2+plans+Number(!this.metadataSeparated)+Number(this.legacyMetadata!==null);
   }
 
   private async chunk(chunkNo: number): Promise<DecodedChunk> {
@@ -214,7 +293,7 @@ export class DocumentWriter {
 
   /** Restores the writer to `mark`; chunks read after it stay loaded. */
   undo(mark: WriterMark): void {
-    this.revision += 1;
+    this.mutate();
     for (const [page, records] of mark.pages) page.records = records;
     for (const page of this.fresh.splice(mark.fresh)) this.located.delete(pageKey(page.owner, page.page));
     this.bodies.splice(mark.bodies);
@@ -233,14 +312,14 @@ export class DocumentWriter {
   }
 
   private markDirty(page: Page): void {
-    this.revision += 1;
+    this.mutate();
     const held = this.located.get(pageKey(page.owner, page.page));
     if (held?.chunk != null) this.dirty.add(held.chunk);
     this.touched.add(page.owner);
   }
 
   private addPage(owner: string, page: number, records: DocRecord[]): Page {
-    this.revision += 1;
+    this.mutate();
     const created: Page = { owner, page, records };
     this.fresh.push(created);
     this.located.set(pageKey(owner, page), { page: created, chunk: null });
@@ -250,7 +329,7 @@ export class DocumentWriter {
 
   private fit(record: DocRecord): DocRecord {
     return fitRecord(record, ({ text }) => {
-      this.revision += 1;
+      this.mutate();
       const ref: BodyRef = { chunk: this.nextChunk++, bytes: new TextEncoder().encode(text).length, digest: '' };
       this.bodies.push({ chunkNo: ref.chunk, text, ref });
       return ref;
@@ -300,7 +379,10 @@ export class DocumentWriter {
 
   /** Whether anything changed that must be written. */
   get changed(): boolean {
-    return this.dirty.size > 0 || this.fresh.length > 0 || this.bodies.length > 0;
+    return this.legacyMetadata !== null || this.dirty.size > 0 || this.fresh.length > 0 || this.bodies.length > 0
+      || [...new Set([...this.originalStates.keys(),...this.states.keys()])].some(key=>this.originalStates.get(key)!==JSON.stringify(this.states.get(key)??{}))
+      || [...this.owners.keys()].some(key=>!this.originalOwners.has(key))
+      || [...this.plans].some(key=>!this.originalPlans.has(key));
   }
 
   /** At least the number of chunk versions `layout()` would write now. */
@@ -311,11 +393,11 @@ export class DocumentWriter {
 
   /** The number of chunk versions `layout()` writes now: the versions a commit registers. */
   get versions(): number {
-    if (this.counted?.revision === this.revision) return this.counted.versions;
+    if(this.counted?.revision===this.revision)return this.counted.versions;
     const nextChunk = this.nextChunk;
     try {
       const layout = this.layout();
-      this.counted = { revision: this.revision, versions: layout.pageChunks.length + layout.bodyChunks.length };
+      this.counted={revision:this.revision,versions:layout.pageChunks.length+layout.bodyChunks.length};
       return this.counted.versions;
     } finally {
       this.nextChunk = nextChunk;
@@ -339,14 +421,18 @@ export class DocumentWriter {
 
   /**
    * The chunk versions to write. Changed chunks keep their numbers; pages that no longer fit one move on, and with new
-   * pages they fill the last page chunk and then new chunks. The last one carries the continuation.
+   * pages they fill the last page chunk and then new chunks. Metadata writes name only changed keys.
    */
   layout(): DocumentLayout {
     const pageChunks: PageChunkWrite[] = [];
     const queue: Page[] = [];
     const empty = new Map<string, Record<string, unknown>>();
     const rewrite = new Set(this.dirty);
-    if (this.lastPageChunk !== null) rewrite.add(this.lastPageChunk);
+    if (this.lastPageChunk !== null && (this.dirty.size > 0 || this.fresh.length > 0 || this.legacyMetadata !== null)) rewrite.add(this.lastPageChunk);
+    if (this.legacyMetadata !== null) {
+      rewrite.delete(this.legacyMetadata.number);
+      queue.push(...this.legacyMetadata.chunk.pages);
+    }
     for (const chunkNo of [...rewrite].sort((a, b) => a - b)) {
       const decoded = this.loaded.get(chunkNo)!;
       const pages = [...decoded.pages];
@@ -363,11 +449,16 @@ export class DocumentWriter {
       }
       target.chunk.pages.push(page);
     }
-    if (target === undefined) {
-      target = { chunkNo: this.nextChunk++, chunk: { pages: [], states: empty, owners: null }, previous: undefined };
-      pageChunks.push(target);
+    for (const transcript of new Set([...this.originalStates.keys(), ...this.states.keys()])) {
+      const state = this.states.get(transcript) ?? {};
+      if (this.originalStates.get(transcript) === JSON.stringify(state)) continue;
+      const number = this.stateChunks.get(transcript) ?? this.nextChunk++;
+      pageChunks.push({chunkNo:number, metadata:1, chunk:{pages:[],states:new Map([[transcript,state]]),owners:null},previous:this.directory.chunks.get(number)});
     }
-    target.chunk = { ...target.chunk, states: this.states, owners: [...this.owners], plans: [...this.plans] };
+    for (const owners of jsonPages([...this.owners].filter(([key]) => !this.originalOwners.has(key))))
+      pageChunks.push({chunkNo:this.nextChunk++,metadata:1,chunk:{pages:[],states:empty,owners},previous:undefined});
+    for (const plans of jsonPages([...this.plans].filter(key => !this.originalPlans.has(key))))
+      pageChunks.push({chunkNo:this.nextChunk++,metadata:1,chunk:{pages:[],states:empty,owners:null,plans},previous:undefined});
     const pages = pageChunks.flatMap((write) => write.chunk.pages.map((page) => ({
       owner: page.owner, page: page.page, chunkNo: write.chunkNo, records: page.records.length, bytes: pageBytes(page),
     })));

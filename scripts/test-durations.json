@@ -614,7 +614,7 @@
     "tests/myco-server/session-documents-read.test.ts": 15050,
     "tests/myco-server/session-end-api.test.ts": 93,
     "tests/myco-server/session-lifecycle.test.ts": 4000,
-    "tests/myco-server/session-long.test.ts": 59000,
+    "tests/myco-server/session-long.test.ts": 144002,
     "tests/myco-server/session-pages-api.test.ts": 1213,
     "tests/myco-server/session-read-projections.test.ts": 5167,
     "tests/myco-server/session-resume.test.ts": 108,
@@ -877,7 +877,11 @@
     "tests/myco-server/health-today-projection.test.ts": 2000,
     "tests/myco-server/identity-project-atomic.test.ts": 10000,
     "tests/myco-server/storage-failures.test.ts": 20000,
-    "tests/myco-server/run-heads.test.ts": 15000
+    "tests/myco-server/run-heads.test.ts": 15000,
+    "tests/myco-server/publication-ownership.test.ts": 46000,
+    "tests/myco-server/publication-rebuild.test.ts": 16000,
+    "tests/myco-server/publication-failures.test.ts": 9300,
+    "tests/myco-server/publication-initialization.test.ts": 65000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

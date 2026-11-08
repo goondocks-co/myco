@@ -45,8 +45,7 @@ import { prepareRestoredSessionUnread } from '../read/catalog/sessions.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
-import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
-import { restoreRecordSchemeDecisions } from '../ingest/record-scheme.js';
+import { restoredPin, restoreSchemeDecisions, restoreRecordSchemeDecisions } from '../db/documents/restore-pins.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
@@ -114,6 +113,10 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  'document_rebuild_receipts', 'document_rebuild_totals',
+  'document_transcript_pins', 'document_group_pins', 'document_pin_totals',
+  'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
+  'document_failure_contributions', 'document_failure_totals', 'document_failure_head',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
   'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',

@@ -243,7 +243,11 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
-  'projection-catch-up': (env) => catchUpProjections(env.db),
+  'projection-catch-up': async (env) => {
+    const result = await catchUpProjections(env.db, { blobs: env.blobs });
+    if (result.failures !== undefined && !result.more) throw new Error('projection_catchup_failed');
+    return result;
+  },
   'spend-expiry': (env, now) => expireSpend(env.db, now),
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'learning-source-repair': (env) => repairLearningSources(env.db),

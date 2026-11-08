@@ -1,10 +1,11 @@
+import { PublicationOwnership } from './ownership.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ChunkRow, PageRow } from '../../content/document-reader.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import { jsonPages } from '../json-pages.js';
 import { read, readSet } from '../index.js';
 
-const chunkColumns = `c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key`;
+const chunkColumns = `c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key`;
 const exists = read<[string, string, number], { present: number }>({ name: 'publication.hasChunks', sql: `SELECT EXISTS(
   SELECT 1 FROM session_chunks WHERE project_id=? AND session_id=? AND generation=?) AS present` });
 
@@ -13,7 +14,7 @@ export async function generationHasChunks(db: RelationalStore, project: string, 
   return rows[0]!.present === 1;
 }
 const tail = read<[string, string, number], ChunkRow>({ name: 'publication.tail', sql: `SELECT ${chunkColumns}
-  FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.kind='page' ORDER BY c.chunk_no DESC LIMIT 1` });
+  FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.kind='page' AND c.metadata=0 ORDER BY c.chunk_no DESC LIMIT 1` });
 const chunk = read<[string, string, number, number], ChunkRow>({ name: 'publication.chunk', sql: `SELECT ${chunkColumns}
   FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=?3 AND c.chunk_no=?4` });
 const pages = read<[string, string, number, string], PageRow>({ name: 'publication.openPages', sql: `SELECT p.owner,p.page,p.chunk_no,p.records,p.bytes,p.sealed
@@ -26,9 +27,10 @@ const sealed = read<[string, string, number, string], { owner: string }>({ name:
 
 /** A generation's catalog, loaded only for the tail and owners the pass visits. */
 export class PublicationDirectory {
+  readonly ownership: PublicationOwnership;
   readonly chunks = new Map<number, ChunkRow>();
   constructor(private readonly db: RelationalStore, private readonly project: string, private readonly session: string,
-    readonly generation: number, private readonly admit: (statements: number) => void) {}
+    readonly generation: number, private readonly admit: (statements: number) => void) { this.ownership = new PublicationOwnership(db,[project,session,generation],admit); }
 
   async tail(): Promise<number | null> {
     this.admit(1);

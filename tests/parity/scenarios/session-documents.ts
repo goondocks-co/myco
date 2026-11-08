@@ -43,10 +43,10 @@ export const sessionDocuments: ParityScenario = {
       AND session_id=${lit(sessionId)} AND turn_key=prompt_id ORDER BY ord`);
     expect(turns.map((row) => row.preview)).toEqual(['first question', 'second question']);
     expect(Number(turns[0]!.replies)).toBe(1);
-    const chunks = await target.sql(`SELECT c.kind, b.key FROM session_chunks c LEFT JOIN blobs b ON b.project_id=c.project_id AND b.key=c.blob_key
+    const chunks = await target.sql(`SELECT c.kind,c.metadata, b.key FROM session_chunks c LEFT JOIN blobs b ON b.project_id=c.project_id AND b.key=c.blob_key
       WHERE c.project_id=${lit(target.projectId)} AND c.session_id=${lit(sessionId)}`);
     expect(chunks.length).toBeGreaterThan(0);
-    expect(chunks.every((row) => row.kind === 'page' && typeof row.key === 'string')).toBe(true);
+    expect(chunks.every((row) => (row.kind === 'page' || row.metadata === 1) && typeof row.key === 'string')).toBe(true);
     const pages = await target.sql(`SELECT owner FROM session_pages WHERE project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`);
     expect(pages.length).toBe(2);
 
