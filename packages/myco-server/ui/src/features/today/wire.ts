@@ -225,7 +225,8 @@ export interface TodaySpore {
 /** A page of `GET /api/spores`. */
 export interface TodaySporePage {
   readonly spores: readonly TodaySpore[];
-  readonly total: number;
+  /** Whether the window holds more spores than this page. */
+  readonly hasMore: boolean;
 }
 
 /** Observed setup facts; a member's runner counts are redacted. */

@@ -1,3 +1,4 @@
+import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
@@ -123,7 +124,10 @@ describe('tool parity', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name))) {
       const frozen = structuredClone(member.get(server.name)!);
-      const current = structuredClone(server);
+      // Retired arguments build their replacement call from the refused input: functions, which do not clone.
+      const { retiredArguments, ...served } = server;
+      const current = structuredClone(served) as typeof served & { retiredArguments?: unknown };
+      if (retiredArguments !== undefined) current.retiredArguments = retiredArguments;
       const wording = RETIRED_INTELLIGENCE_WORDING[server.name];
       if (wording !== undefined) {
         expect(current.description).toBe(wording.description);
@@ -136,13 +140,29 @@ describe('tool parity', () => {
         type.enum = type.enum.filter((value) => value !== 'skill');
         expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual(['session', 'plan', 'spore', 'prompt', 'response', 'all']);
         expect(current.description).not.toContain('skills');
-        // The search's time order and cursor are the properties the frozen contract does not carry.
-        for (const added of ['order', 'cursor']) {
+        // The search's order and cursor, and its session agent and branch filters, are the properties the frozen contract does not carry.
+        for (const added of ['order', 'cursor', 'agent', 'branch']) {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }
       }
       if (server.name === 'myco_spores') {
+        // The list pages by cursor with no text filter (#2101 S4a): `search` and `offset` are retired arguments, refused
+        // with the call that replaces each, and `cursor` is added.
+        const LIST_BEFORE = 'op: \"list\" returns spores by status/type/search.';
+        const LIST_NOW = 'op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\".';
+        expect(frozen.description).toContain(LIST_BEFORE);
+        frozen.description = frozen.description.replace(LIST_BEFORE, LIST_NOW);
+        expect(Object.keys(current.retiredArguments ?? {}).sort()).toEqual(['offset', 'search']);
+        delete current.retiredArguments;
+        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });
+        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
+        for (const retired of ['search', 'offset']) {
+          expect({ retired, held: retired in current.inputSchema.properties }).toEqual({ retired, held: false });
+          delete (frozen.inputSchema.properties as Record<string, unknown>)[retired];
+        }
+        expect(current.inputSchema.properties.limit!.description).toContain(`at most ${MAX_SPORE_LIMIT}`);
+        current.inputSchema.properties.limit!.description = frozen.inputSchema.properties.limit!.description;
         expect(current.description.startsWith(frozen.description)).toBe(true);
         expect(current.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
         expect(current.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);

@@ -381,6 +381,12 @@ describe('the read window binds on the MCP path', () => {
     expect(answered.result.total).toBe(1);
     expect(answered.result.spores[0].preview.length).toBe(SPORE_PREVIEW_CHARS);
     expect(Object.keys(answered.result.spores[0]).sort()).toEqual(['created_at', 'id', 'importance', 'observation_type', 'preview', 'revision']);
+    expect({ hasMore: answered.result.has_more, cursor: answered.result.cursor }).toEqual({ hasMore: false, cursor: null });
+    const searched = await call(harness.token, 'myco_run_spores', { op: 'list', search: 'x' }) as any;
+    expect(searched.error?.message).toMatch(/^Not read: myco_run_spores list; search is not a list filter.*Next call: myco_search \{"query":"x","type":"spore","mode":"fts","status":"active"\}\.$/);
+    // The call it names is one this run may make.
+    const followed = await call(harness.token, 'myco_search', { query: 'x', type: 'spore', mode: 'fts' }) as any;
+    expect({ error: followed.error, hasMore: followed.result?.hasMore }).toEqual({ error: undefined, hasMore: false });
   });
 
   it('spends a full read per get, refuses past the budget, and spends one even for an id the Project does not hold', async () => {

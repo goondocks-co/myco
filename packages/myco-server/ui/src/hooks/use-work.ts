@@ -108,6 +108,8 @@ export function useWindowSpores(projectId: string | null, since: number, until: 
     queryKey: ['work-spores', projectId ?? 'all', since, until],
     enabled,
     queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${params}`, signal),
+    // The server reads whole UTC days; the window shown is exactly the one asked for.
+    select: (page: TodaySporePage) => ({ ...page, spores: page.spores.filter((spore) => spore.createdAt >= since && spore.createdAt < until) }),
     ...live({ follows: ['knowledge', 'runs'] }),
   });
 }

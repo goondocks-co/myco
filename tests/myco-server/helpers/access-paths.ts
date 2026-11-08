@@ -68,6 +68,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_worker_model_catalogs_received', 'Settings reads the model lists machines sent lately, and the lease sweep forgets the rest by age; a machine names no Project'],
   ['idx_sessions_occurred_deployment', 'the sessions list spans every Project, newest first'],
   ['idx_spores_created_deployment', 'the spores list spans every Project, newest first'],
+  ['idx_spores_status_deployment', 'the spores list across every Project narrowed to one status, newest first'],
+  ['idx_spores_type_deployment', 'the spores list across every Project narrowed to one type, newest first'],
   ['idx_plans_updated_deployment', 'the plans list spans every Project, most recently updated first'],
   ['idx_view_plans_updated_deployment', 'the visible parser plans list spans every Project, most recently updated first'],
   ['idx_sessions_unnamed_machine', 'capture-head classification seeks a machine\'s unnamed sessions before assigning the harness'],

@@ -2,7 +2,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 import { tapTarget, EmptyState, ErrorState, FilterBar, focusRing, Progress, ShowMore, Skeleton, useFilterParams, useQueryDraft } from '../../design';
 import { planPagePath, usePlanColumn } from '../../hooks/use-knowledge';
-import { SEARCH_MIN_CHARS } from '../../hooks/use-search';
+import { SearchMatches } from '../search/SearchMatches';
 import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { projectPath } from '../../routes/nav';
@@ -20,33 +20,37 @@ export interface PlansBoardProps {
 /**
  * The plans your agents wrote, as a board by status: in progress, open, done
  * and abandoned, each column newest edit first with "Show more" and its count.
- * Searching keeps the board: each column then holds the plans of its status
- * whose title or inline text match, counted the same way. Every plan opens its own
- * page and links to the session that wrote it.
+ * Text in the search box searches the plans and lists the best matches, with
+ * their status, in place of the board. Every plan opens its own page and links
+ * to the session that wrote it.
  */
 export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
   const filterParams = useFilterParams([]);
   const draft = useQueryDraft(filterParams.query, filterParams.setQuery, FILTER_DEBOUNCE_MS);
-  const q = filterParams.query.trim();
-  const searching = q.length >= SEARCH_MIN_CHARS;
+  const searching = filterParams.query.trim() !== '';
   const now = useNow();
   return (
     <div className="flex flex-col gap-s5" data-plans-board="">
       <FilterBar
         searchLabel="Search plans"
-        placeholder="Search plan titles or inline text"
+        placeholder="Search what the plans say"
         query={draft.text}
         onQueryChange={draft.setText}
         onClear={() => { draft.reset(); filterParams.clear(); }}
       />
-      <p className="t-small text-muted">Large plans match by title only here; use Search to search their full text. Their checklist progress is unavailable on this board.</p>
-      {q.length > 0 && !searching && <p className="t-small text-muted">Type at least two characters to search.</p>}
-      {/* One column under another on a phone, two by two on a tablet, and side by side on a wide screen: nothing scrolls sideways. */}
-      <div className="grid items-start gap-s4 md:grid-cols-2 xl:grid-cols-4" data-board="">
-        {PLAN_COLUMNS.map((status) => (
-          <Column key={status} status={status} projectId={projectId} projectName={projectName} q={searching ? q : null} now={now} />
-        ))}
-      </div>
+      {searching ? (
+        <SearchMatches scope={projectId === null ? 'all' : { projectId }} filters={{ query: filterParams.query, type: 'plan', since: '', observationType: '' }} noun="plans" projectName={projectName} now={now} />
+      ) : (
+        <>
+          <p className="t-small text-muted">Checklist progress is unavailable on this board for large plans.</p>
+          {/* One column under another on a phone, two by two on a tablet, and side by side on a wide screen: nothing scrolls sideways. */}
+          <div className="grid items-start gap-s4 md:grid-cols-2 xl:grid-cols-4" data-board="">
+            {PLAN_COLUMNS.map((status) => (
+              <Column key={status} status={status} projectId={projectId} projectName={projectName} now={now} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -55,15 +59,13 @@ interface ColumnProps {
   status: PlanStatus;
   projectId: string | null;
   projectName: (projectId: string) => string | null;
-  /** The search, or null to list the column's plans. */
-  q: string | null;
   now: number;
 }
 
-function Column({ status, projectId, projectName, q, now }: ColumnProps) {
+function Column({ status, projectId, projectName, now }: ColumnProps) {
   const heading = planStatusWord(status);
   const id = `plans-${status}`;
-  const column = usePlanColumn(projectId, status, q);
+  const column = usePlanColumn(projectId, status);
   return (
     <section aria-labelledby={id} className="flex min-w-0 flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s4" data-plan-column={status}>
       <div className="flex items-center gap-s2">
@@ -79,7 +81,7 @@ function Column({ status, projectId, projectName, q, now }: ColumnProps) {
       </div>
       {column.isPending ? <ColumnLoading />
         : column.error ? <ErrorState error={column.error} onRetry={column.retry} className="p-s4" />
-        : column.rows.length === 0 ? <EmptyState title={q === null ? `No ${heading.toLowerCase()} plans.` : 'None match.'} className="py-s2 t-small" />
+        : column.rows.length === 0 ? <EmptyState title={`No ${heading.toLowerCase()} plans.`} className="py-s2 t-small" />
         : (
           <>
             <ul className="flex flex-col gap-s2">

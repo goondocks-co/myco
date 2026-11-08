@@ -1,6 +1,8 @@
+import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
 import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
 import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
 import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
+import { V721, V721_STATEMENTS } from '@myco-server-worker/db/schema-v721.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
@@ -58,6 +60,19 @@ const LISTED: readonly Exception[] = [
       : match[2] === 'embedding_models' ? 'A model\'s registration, activation, initialization or epoch change re-arms its Project\'s work.'
       : 'A work mutation marks its Project for scheduling attention in the statement that dirties its work rows.' }];
   }),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V721, object: `spore_count_${action}`, table: 'spores', reason: 'Spore mutations re-derive the one count fact of the spore key they name.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V721, object: `spore_count_fact_${action}`, table: 'spore_count_facts', reason: 'Each spore count fact moves the Project, session and UTC-day totals by its old and new dimensions.' })),
+  ...['insert', 'update', 'delete'].map(action => ({ step: V721, object: `plan_count_${action}`, table: 'plans', reason: 'Plan mutations re-derive the one count fact of the plan key they name.' })),
+  { step: V721, object: 'idx_spores_created_deployment', table: 'spores', reason: 'The spore list across Projects orders by the instant, the id and the Project, and walks this index with no sort.' },
+  ...[['idx_spores_session', 'a session\'s spores'], ['idx_spores_status', 'a Project\'s spores of one status'], ['idx_spores_type', 'a Project\'s spores of one type'], ['idx_spores_author', 'one author\'s spores']]
+    .map(([object, list]) => ({ step: V721, object: object!, table: 'spores', reason: `The list of ${list} walks this index newest first by instant and id, with no sort, rebuilt under its own name.` })),
+  ...[['idx_spores_status_deployment', 'status'], ['idx_spores_type_deployment', 'type']].map(([object, by]) => ({ step: V721, object: object!, table: 'spores',
+    reason: `The spore list across Projects narrowed to one ${by} walks this index newest first by instant, id and Project, with no sort.` })),
+  ...Object.entries(REVISION_KINDS).flatMap(([kind, watched]) => watched.flatMap(({ table, rows }) => ['update', ...(rows ? ['insert', 'delete'] : [])].map(event => ({
+    step: V721, object: `search_revision_${kind}_${table}_${event}`, table,
+    reason: 'A change to what ranked search orders, filters or reaches by moves that search revision, which fences search cursors.' })))),
+  { step: V721, object: 'idx_spores_project_created', table: 'spores', reason: 'A Project\'s spore list, unfiltered or over a window of days, walks its spores newest first by instant and id with no sort.' },
+  ...['insert', 'update', 'delete'].map(action => ({ step: V721, object: `plan_count_fact_${action}`, table: 'plan_count_facts', reason: 'Each plan count fact moves its Project status total by its old and new status.' })),
   ...['insert', 'update', 'delete'].map(action => ({ step: V714, object: `attempt_spend_attempt_${action}`, table: 'agent_run_attempts', reason: 'Attempt claims, prices and settlements maintain their rolling spend contribution; a new claim expires due window rows.' })),
   { step: V714, object: 'attempt_spend_run_update', table: 'agent_runs', reason: 'Run status, dispatch and cost changes move the attempt dispatched before and after the change between live reservation and settled spend.' },
   { step: V714, object: 'attempt_spend_run_reclassify', table: 'agent_runs', reason: 'A run whose task or origin changes reclassifies its attempts’ spend.' },
@@ -276,6 +291,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
 
   ...V720_STATEMENTS.filter(sql => sql.startsWith('DROP TRIGGER')).map(sql => ({ step: V720, sql,
     reason: 'Each work trigger is replaced by the same body plus the attention mark.' })),
+  ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO search_revisions')).map(sql => ({ step: V721, sql, reason: 'Each searched kind starts at search revision 0.' })),
+  ...V721_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({ step: V721, sql, reason: 'The Deployment-wide spore index is replaced under its own name with the Project after the id.' })),
+  ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V721, sql, reason: 'Spore and plan totals record whether existing rows need counting by the catch-up.' })),
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'

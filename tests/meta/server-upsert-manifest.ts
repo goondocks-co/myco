@@ -175,6 +175,19 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     }
   ],
 
+  'db/spores/counts.ts#reconcileSporeFacts': [{ tables: ['spore_count_facts'], order: 'unverified' }],
+  'db/spores/counts.ts#bump': [
+    { tables: ['spore_counts'], order: 'unverified' }, { tables: ['spore_daily'], order: 'unverified' }, { tables: ['spore_session_counts'], order: 'unverified' },
+  ],
+  'db/plans/counts.ts#reconcilePlanFacts': [{ tables: ['plan_count_facts'], order: 'unverified' }],
+  'db/plans/counts.ts#bump': [{ tables: ['plan_counts'], order: 'unverified' }],
+  'db/schema-v721.ts#<module>': [
+    ...Array.from({ length: 4 }, () => ({ tables: ['spore_count_facts'], order: 'unverified' as const })),
+    // A trigger body holding several upserts names every table of its earlier statements too.
+    ...Array.from({ length: 4 }, () => [{ tables: ['spore_counts'], order: 'unverified' as const }, { tables: ['spore_daily', 'spore_counts'], order: 'unverified' as const }, { tables: ['spore_session_counts', 'spore_counts'], order: 'unverified' as const }]).flat(),
+    ...Array.from({ length: 4 }, () => ({ tables: ['plan_count_facts'], order: 'unverified' as const })),
+    ...Array.from({ length: 4 }, () => ({ tables: ['plan_counts'], order: 'unverified' as const })),
+  ],
   'db/embeddings/passed-over.ts#reconcilePassedOver': [{ tables: ['embedding_passed_over'], order: 'unverified' }],
   'db/embeddings/state.ts#reconcileSourceState': [{ tables: ['embedding_source_state'], order: 'unverified' }],
   'db/embeddings/state.ts#total': [{ tables: ['embedding_model_totals'], order: 'unverified' }],

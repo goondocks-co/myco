@@ -61,6 +61,20 @@ export const search: ParityScenario = {
     expect((await owner('titleword distantneedle')).results.map((r) => r.id)).toEqual([plan]);
     expect((await owner(word, { observation_type: 'decision' })).results.map((r) => r.id)).toEqual([spore.id]);
     expect(await owner(word, { mode: 'semantic' })).toMatchObject({ results: [], mode: 'semantic', provider_unavailable: true });
+    // Ranked matches page by cursor through every match once, on every store.
+    const paged = `pagedword${stamp}`;
+    for (let i = 0; i < 7; i += 1) {
+      await target.sql(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES (${lit(target.projectId)}, ${lit(`sp-paged-${i}-${stamp}`)}, 'user', 'gotcha', 'active', ${lit(`${`${paged} `.repeat(1 + (i % 3))}body ${i}`)}, ${stamp + (i % 2)})`);
+    }
+    const walked: string[] = [];
+    for (let cursor: string | null = null, page = 0; page < 10; page += 1) {
+      const answer = await owner(paged, { type: 'spore', mode: 'fts', limit: '3', ...(cursor === null ? {} : { cursor }) });
+      walked.push(...answer.results.map((r) => r.id));
+      expect(answer.hasMore).toBe(answer.cursor !== null);
+      cursor = answer.cursor;
+      if (cursor === null) break;
+    }
+    expect({ n: walked.length, unique: new Set(walked).size }).toEqual({ n: 7, unique: 7 });
     const base = `${target.url}/api/projects/${target.projectId}/search`;
     expect((await fetch(`${base}?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
     expect((await fetch(`${base}?q=${word}&type=canopy`, { headers: target.ownerHeaders() })).status).toBe(400);

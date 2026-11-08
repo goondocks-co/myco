@@ -8,6 +8,7 @@ import { invalidateSessionReads } from '../../hooks/session-reads';
 import { planPagePath } from '../../hooks/use-knowledge';
 import { PLAN_COLUMNS, planStatusWord, planTitle, progressWords, SPORE_TYPES, sporeStatusWord, sporeTypePlural } from '../knowledge/words';
 import { useSporePages } from '../../hooks/use-intelligence';
+import { SEARCH_MIN_CHARS, useSearchPages } from '../../hooks/use-search';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { useIsAdmin } from '../../hooks/use-me';
 import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow, type TurnFilter } from '../../hooks/use-sessions';
@@ -223,10 +224,33 @@ function Summary({ session, untitled, live }: { session: SessionRow; untitled: S
   );
 }
 
+/**
+ * What a search box over one of the session's lists finds: the best matches of that kind in this session, narrowed by
+ * the list's own filter (a spore's type, a plan's status), as the list's rows, a page at a time. A search ranks and
+ * never counts, so it has no total.
+ */
+function useSessionSearch(projectId: string, sessionId: string, type: 'spore' | 'plan', q: string, narrowed: { observationType?: string; status?: string }) {
+  const enabled = q.length >= SEARCH_MIN_CHARS;
+  const search = useSearchPages({ projectId }, { query: q, type, sessionId, since: '', observationType: narrowed.observationType ?? '', ...(narrowed.status === undefined ? {} : { status: narrowed.status }) }, enabled);
+  const rows = search.hits.map((hit): SessionEventRow => ({
+    key: hit.id,
+    at: hit.created_at,
+    kind: type === 'spore' ? 'Match' : 'Plan',
+    title: hit.title,
+    detail: hit.preview === '' ? undefined : hit.preview,
+    to: type === 'spore' ? projectPath(projectId, `/spores/${encodeURIComponent(hit.id)}`) : planPagePath(projectId, { planKey: hit.id }),
+  }));
+  return {
+    searching: q !== '',
+    read: { rows: enabled ? rows : [], isPending: enabled && search.isPending, error: search.error, retry: search.retry, hasMore: enabled && search.hasMore, isFetchingMore: search.isFetchingMore, more: search.more },
+  };
+}
+
 /** Every spore this session produced, whatever its status: a spore another has since replaced still came out of this one. */
 function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const filters = useSessionEventFilters();
-  const spores = useSporePages(projectId, { session: sessionId, ...(filters.type === null ? {} : { type: filters.type }), q: filters.q });
+  const spores = useSporePages(projectId, { session: sessionId, ...(filters.type === null ? {} : { type: filters.type }) });
+  const search = useSessionSearch(projectId, sessionId, 'spore', filters.q, filters.type === null ? {} : { observationType: filters.type });
   const rows = spores.rows.map((spore): SessionEventRow => ({
     key: spore.id,
     at: spore.createdAt,
@@ -238,9 +262,10 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
   return (
     <SessionEventList
       filter={{ filters, searchLabel: 'Search spores', placeholder: 'Search what the spores say', typeLabel: 'Type', typeOptions: SPORE_TYPE_OPTIONS }}
-      read={{ ...spores, rows }}
+      read={search.searching ? search.read : { ...spores, rows }}
       noun="spores"
       emptyTitle="No spores were saved from this session yet."
+      emptyFilteredTitle={search.searching && filters.q.length < SEARCH_MIN_CHARS ? `Type at least ${SEARCH_MIN_CHARS} characters to search.` : undefined}
       loadingLabel="Loading the spores"
       now={now}
     />
@@ -250,7 +275,8 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
 /** The session's plans, each leading to its own page. */
 function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const filters = useSessionEventFilters();
-  const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans', { ...(filters.type === null ? {} : { status: filters.type }), q: filters.q });
+  const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans', filters.type === null ? {} : { status: filters.type });
+  const search = useSessionSearch(projectId, sessionId, 'plan', filters.q, filters.type === null ? {} : { status: filters.type });
   const rows = plans.rows.map((plan): SessionEventRow => ({
     key: plan.planKey,
     at: plan.updatedAt,
@@ -261,8 +287,9 @@ function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessio
   }));
   return (
     <SessionEventList
-      filter={{ filters, searchLabel: 'Search plans', placeholder: 'Search plan titles', typeLabel: 'Status', typeOptions: PLAN_STATUS_OPTIONS }}
-      read={{ ...plans, rows }}
+      filter={{ filters, searchLabel: 'Search plans', placeholder: 'Search what the plans say', typeLabel: 'Status', typeOptions: PLAN_STATUS_OPTIONS }}
+      read={search.searching ? search.read : { ...plans, rows }}
+      emptyFilteredTitle={search.searching && filters.q.length < SEARCH_MIN_CHARS ? `Type at least ${SEARCH_MIN_CHARS} characters to search.` : undefined}
       noun="plans"
       emptyTitle="No plans were captured in this session."
       loadingLabel="Loading the plans"

@@ -5,6 +5,7 @@ import {
   useFilterParams, useQueryDraft, type FacetRow,
 } from '../../design';
 import { useSporeStream } from '../../hooks/use-knowledge';
+import { SearchMatches } from '../search/SearchMatches';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
@@ -34,7 +35,8 @@ export interface SporeStreamProps {
  * period; beside the stream the type and project facets say how many each
  * value holds, and on a narrow screen the type moves into the bar. Every value
  * lives in the query string and the server does the filtering; "Show more"
- * reads the next page.
+ * reads the next page. Text in the search box searches what the spores say and
+ * lists the best matches in place of the stream.
  */
 export function SporeStream({ projectId, projectName }: SporeStreamProps) {
   const now = useNow();
@@ -49,9 +51,9 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
     projectId,
     type: type === 'all' ? undefined : type,
     status: status === 'all' ? undefined : status,
-    q: filterParams.query === '' ? undefined : filterParams.query,
     since: since ?? undefined,
   });
+  const searching = filterParams.query.trim() !== '';
   const filtered = filterParams.query !== '' || type !== 'all' || status !== DEFAULT_SPORE_STATUS || (values.window ?? 'all') !== 'all';
   const clear = () => { draft.reset(); filterParams.clear(); };
   const filters = wide ? [SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER] : [typeFilter(stream.facets?.type, type), SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER];
@@ -80,8 +82,20 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
           />
         )}
         <div className="flex min-w-0 flex-col gap-s4">
-          {stream.total !== undefined && stream.rows.length > 0 && (
-            <p className="t-small text-muted" aria-live="polite" data-spore-count="">{count(stream.total, filtered ? 'matching spore' : status === DEFAULT_SPORE_STATUS ? 'current spore' : 'spore')}</p>
+          {searching ? (
+            <SearchMatches
+              scope={projectId === null ? 'all' : { projectId }}
+              filters={{ query: filterParams.query, type: 'spore', observationType: type === 'all' ? '' : type, status: status === 'all' ? undefined : status, since: since === null ? '' : String(Math.floor(since / 1000)) }}
+              noun="spores"
+              projectName={projectName}
+              emptyAction={<Button variant="ghost" size="sm" onClick={clear}>Clear the search and filters</Button>}
+              now={now}
+            />
+          ) : <>
+          {stream.rows.length > 0 && (stream.total !== undefined || stream.counting) && (
+            <p className="t-small text-muted" aria-live="polite" data-spore-count="">{stream.total !== undefined
+              ? count(stream.total, filtered ? 'matching spore' : status === DEFAULT_SPORE_STATUS ? 'current spore' : 'spore')
+              : 'Still counting older spores'}</p>
           )}
           {stream.isPending ? <LoadingState shape="cards" count={4} label="Loading spores" />
             : stream.error ? <ErrorState error={stream.error} onRetry={stream.retry} />
@@ -101,6 +115,7 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
           {stream.rows.length > 0 && (
             <ShowMore shown={stream.rows.length} total={stream.total} noun="spores" onMore={stream.more} pending={stream.isFetchingMore} hasMore={stream.hasMore} />
           )}
+          </>}
         </div>
       </div>
     </div>

@@ -45,6 +45,15 @@ describe('POST /spores', () => {
     expect({ n: (clamped.spores as unknown[]).length, total: clamped.total }).toEqual({ n: 1, total: 2 });
   });
 
+  it('refuses a text filter and offsets, naming the search with the text it was given', async () => {
+    const { post } = await harness();
+    await post('/spores/save', save('sp1'));
+    const searched = await post('/spores/list', { search: 'content of', observationType: 'gotcha' });
+    expect({ persisted: searched.persisted, spores: searched.spores, reason: (searched.refusal as { reason?: string } | undefined)?.reason ?? searched.reason ?? searched.error })
+      .toMatchObject({ spores: undefined, reason: expect.stringContaining('Next call: myco_search {"query":"content of","type":"spore","mode":"fts","project":"proj_1","observation_type":"gotcha"}') });
+    expect(JSON.stringify(await post('/spores/list', { offset: 2 }))).toContain('cursor the previous page answered');
+  });
+
   it('refuses a supersede that names no successor, which would record lineage nothing can read', async () => {
     const { post, sqlite } = await harness();
     await post('/spores/save', save('sp1'));

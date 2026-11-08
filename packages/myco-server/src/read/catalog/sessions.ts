@@ -243,9 +243,8 @@ interface sessions_SessionFilters {
   memberLabel?: string;
   /** The agent that captured the session, as the session records it. */
   agent?: string;
+  /** One session, by its exact id. */
   sessionId?: string;
-  /** A text the session's title, first prompt, agent, branch or id contains, matched case-insensitively. */
-  q?: string;
   /**
    * Which sessions this read admits by the fidelity of the transcripts behind
    * them. `full` admits only sessions every transcript of which the parser

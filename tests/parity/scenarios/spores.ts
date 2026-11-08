@@ -112,6 +112,13 @@ export const spores: ParityScenario = {
     expect(walked).toEqual([...ordered, `backfilled-${stamp}`]);
     expect((await owner(`${list}&cursor=nope`)).status).toBe(400);
     expect((await owner(`${list}&offset=2&cursor=${encodeURIComponent(opening.body.cursor!)}`)).status).toBe(400);
+    // Totals are the maintained counts on every store: a session's, a Project's by type, and across Projects with facets.
+    const fresh = async (where: string) => Number((await target.sql(`SELECT COUNT(*) AS n FROM spores WHERE project_id = ${lit(target.projectId)} AND ${where}`))[0]!.n);
+    expect((await owner<SporePage>(list)).body.total).toBe(await fresh(`session_id = ${lit(session)}`));
+    expect((await owner<SporePage>(`/api/projects/${target.projectId}/spores?type=gotcha&limit=1`)).body.total).toBe(await fresh(`observation_type = 'gotcha'`));
+    const across = await owner<SporePage & { facets?: { project: Record<string, number> } }>(`/api/spores?project=${target.projectId}&limit=1`);
+    expect([across.body.total, across.body.facets?.project[target.projectId]]).toEqual([await fresh('1'), await fresh('1')]);
+    expect((await owner(`/api/projects/${target.projectId}/spores?q=seeded`)).status).toBe(400);
   },
 };
 

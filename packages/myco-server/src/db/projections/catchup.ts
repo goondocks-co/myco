@@ -8,6 +8,8 @@ import type { JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
+import { SPORE_COUNT_PROJECTION, SPORE_COUNT_RECONCILE } from '../spores/counts.js';
+import { PLAN_COUNT_PROJECTION, PLAN_COUNT_RECONCILE } from '../plans/counts.js';
 import { KPI_DOCUMENT_RECONCILE, KPI_JSON_KEYS, KPI_LINEAGE_RECONCILE, KPI_RECONCILE, reconcileKpi } from '../insights/kpi-reconcile.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
@@ -59,11 +61,14 @@ const PHASE_SOURCES = {
   failures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
   versions: { table: 'embedding_versions', columns: ['project_id', 'type', 'record_id'] },
   attempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
+  spores: { table: 'spores', columns: ['project_id', 'id'] },
+  plans: { table: 'plans', columns: ['project_id', 'plan_key'] },
   ...RESET_PHASE_SOURCES,
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
 const projectionOf = (phase: ProjectionPhase) => phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
-  : phase === 'attempts' ? BUDGET_PROJECTION : phase.startsWith('publication') ? 'publication'
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION
+  : phase.startsWith('publication') ? 'publication'
   : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : 'kpi';
 const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
@@ -100,7 +105,7 @@ const transcriptReconcile = [
 const reconciles = {
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
   runs: LIVE_CATCHUP,
-  failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
+  failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
 };
 
@@ -137,7 +142,8 @@ export function kpiReadiness(phases: readonly Pick<Phase, 'phase' | 'done'>[]) {
 export const publicationReady = (phases: readonly Pick<Phase, 'phase' | 'done'>[]) =>
   ['publicationInputs','publicationSessions'].every(phase => phases.some(row => row.phase === phase && row.done === 1));
 
-const SINGLE_PHASE = { [RUN_ADMISSION_PROJECTION]: 'runs', passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts' } as const;
+const SINGLE_PHASE = { [RUN_ADMISSION_PROJECTION]: 'runs', passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts',
+  [SPORE_COUNT_PROJECTION]: 'spores', [PLAN_COUNT_PROJECTION]: 'plans' } as const;
 export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'publication' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
   if (projection === 'kpi') return kpiReadiness(rows).state;

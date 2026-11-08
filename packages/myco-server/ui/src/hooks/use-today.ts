@@ -106,6 +106,8 @@ export function useToday({ projectId, day, now }: TodayQuery) {
   const spores = useQuery({
     queryKey: ['today', 'spores', scope, window.start],
     queryFn: ({ signal }) => fetchJson<TodaySporePage>(`/api/spores?${dayBounds(window)}&limit=${SPORE_PAGE}${projectParam(projectId)}`, signal),
+    // The server reads whole UTC days; the day shown is the viewer's own.
+    select: (page: TodaySporePage) => ({ ...page, spores: page.spores.filter((spore) => spore.createdAt >= window.start && spore.createdAt < window.end) }),
     ...fresh,
   });
   const work = useWork({ projectId, since: window.start, until: window.end, live: window.isToday });

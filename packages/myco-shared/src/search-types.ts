@@ -17,9 +17,13 @@ export interface SearchOptions {
   release_confidence?: string;
   since?: number;
   until?: number;
-  /** `relevance` (the default): the best matches in one bounded page. `time`: one type's matches oldest first, in pages that continue by `cursor`. */
+  /** The agent of the session a match belongs to, exactly. */
+  agent?: string;
+  /** The branch of the session a match belongs to, exactly. */
+  branch?: string;
+  /** `relevance` (the default): the best matches first. `time`: one type's matches oldest first. Both page by `cursor`. */
   order?: string;
-  /** The `cursor` an earlier answer to the same search by time returned: the answer then lists the matches after it. */
+  /** The `cursor` an earlier answer to the same search returned: the answer then lists the matches after it. */
   cursor?: string;
 }
 
@@ -65,8 +69,10 @@ export interface SearchAnswer {
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
   coverage: { pending_blobs: number };
-  /** Passed back as `cursor` for the matches that follow these; null when none follow, and always null unless the search is by time. */
+  /** Passed back as `cursor` for the matches that follow these; null when none follow. */
   cursor: string | null;
+  /** Whether more matches follow these. A search never counts its matches. */
+  hasMore: boolean;
 }
 
 /** A result of a search across Projects: a Project's result, with the Project it belongs to. */
@@ -81,4 +87,5 @@ export interface SearchAcrossAnswer {
   provider_unavailable: false;
   coverage: { pending_blobs: number };
   cursor: string | null;
+  hasMore: boolean;
 }

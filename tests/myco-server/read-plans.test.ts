@@ -24,7 +24,6 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
 import { listPlans } from '@myco-server-worker/read/children.js';
-import { pageSpores } from '@myco-server-worker/core/spores.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 
@@ -140,50 +139,33 @@ describe('the reads a person waits on', () => {
     expect(await heldReads([], ['tx_a'])).toHaveLength(1);
   });
 
-  it('pages a session\'s plans narrowed by status and title over idx_plans_session, with the plan the unfiltered page has', async () => {
-    // Filtered and unfiltered pages use the session index and the same ordering plan.
-    const statementOf = async (opts: Parameters<typeof listPlans>[3]) => {
-      const { db: recorder, statements } = recordingStore();
-      await listPlans(recorder, { projectId: 'proj_1' }, 's1', opts);
-      expect(statements).toHaveLength(1);
-      return statements[0];
-    };
-    const db = migrated();
+  it('pages a session\'s plans narrowed by status through every match once, oldest edit first, and none from elsewhere', async () => {
+    const sqlite = migrated();
     try {
-      for (const cursor of [undefined, encodeCursor(1_700_000_000_000, 'k')]) {
-        const plain = await statementOf({ limit: 50, cursor });
-        const filtered = await statementOf({ limit: 50, cursor, status: 'active', q: 'search' });
-        expect(/status = \?/.test(filtered.sql) && /title LIKE/.test(filtered.sql)).toBe(true);
-        const plan = await planOf(db, filtered.sql, filtered.params);
-        expect({ index: /SEARCH plans USING INDEX idx_plans_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN plans/.test(plan), plan })
-          .toEqual({ index: true, scan: false, plan: await planOf(db, plain.sql, plain.params) });
+      sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 1), ('proj_2', 'q', 1)`);
+      for (const [project, session] of [['proj_1', 's1'], ['proj_1', 's2'], ['proj_2', 's1']]) {
+        sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'm', 't', 1, 1)`, [project, session]);
       }
-    } finally {
-      db.close();
-    }
-  });
-
-  it('pages a session\'s spores by cursor with a range on idx_spores_session, filtered or not', async () => {
-    const statementOf = async (opts: Parameters<typeof pageSpores>[2]) => {
-      const { db: recorder, statements } = recordingStore();
-      await pageSpores(recorder, { projectId: 'proj_1' }, opts);
-      expect(statements).toHaveLength(1);
-      return statements[0];
-    };
-    const db = migrated();
-    try {
-      for (const filters of [{}, { observationType: 'gotcha', search: 'port' }]) {
-        const first = await statementOf({ sessionId: 's1', limit: 25, ...filters });
-        const next = await statementOf({ sessionId: 's1', limit: 25, ...filters, cursor: encodeCursor(1_700_000_000_000, 'sp') });
-        expect(/created_at < \?/.test(next.sql)).toBe(true);
-        const plan = await planOf(db, next.sql, next.params);
-        const firstPlan = await planOf(db, first.sql, first.params);
-        expect(firstPlan).toContain('SEARCH spores USING INDEX idx_spores_session (project_id=? AND session_id=?)');
-        expect(plan).toContain('SEARCH spores USING INDEX idx_spores_session (project_id=? AND session_id=? AND created_at<?)');
-        expect(/SCAN spores/.test(firstPlan) || /SCAN spores/.test(plan)).toBe(false);
+      const plan = (project: string, session: string, key: string, status: string, at: number) => sqlite.run(`INSERT INTO plans
+        (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, title, content, created_at, updated_at, token_id, received_at)
+        VALUES (?, ?, ?, ?, 'm', 'h', ?, ?, '- [ ] a', ?, ?, 't', ?)`, [project, key, session, `e_${project}_${key}`, status, key, at, at, at]);
+      // Pairs of plans share an edit instant, so the key breaks the tie across page boundaries.
+      for (let i = 0; i < 90; i += 1) plan('proj_1', 's1', `k${String(i).padStart(3, '0')}`, ['active', 'completed', 'in_progress'][i % 3]!, 1_000 + Math.floor(i / 2));
+      plan('proj_1', 's2', 'k_elsewhere', 'active', 5_000);
+      plan('proj_2', 's1', 'k_other_project', 'active', 5_000);
+      const db = sqliteRelationalStore(sqlite);
+      const expected = (sqlite.query(`SELECT plan_key FROM plans WHERE project_id = 'proj_1' AND session_id = 's1' AND status = 'active' ORDER BY updated_at, plan_key`).all() as { plan_key: string }[]).map((r) => r.plan_key);
+      const walked: string[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page += 1) {
+        const listed = await listPlans(db, { projectId: 'proj_1' }, 's1', { limit: 7, status: 'active', ...(cursor === undefined ? {} : { cursor }) });
+        walked.push(...listed.rows.map((row) => row.planKey));
+        if (listed.cursor === null) break;
+        cursor = listed.cursor;
       }
+      expect({ n: walked.length, walked }).toEqual({ n: 30, walked: expected });
     } finally {
-      db.close();
+      sqlite.close();
     }
   });
 

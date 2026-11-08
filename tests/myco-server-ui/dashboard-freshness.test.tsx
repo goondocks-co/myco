@@ -156,10 +156,10 @@ it('retries the repository source without asking an ordinary member for admin re
   expect(adminReads).toBe(0);
 });
 
-it('states the plan board body-search and progress limits for large plans', async () => {
-  const { wrapper } = setup(() => Response.json({ plans: [], cursor: null, totals: {} }));
+it('states the plan board progress limit for large plans, whose text the board search reads in full', async () => {
+  const { wrapper } = setup(() => Response.json({ plans: [], cursor: null, hasMore: false, totals: {} }));
   render(<PlansBoard projectId="p" projectName={() => 'Local'} />, { wrapper });
-  expect(screen.getByText(/Large plans.*Search.*checklist progress/i)).toBeTruthy();
+  expect(screen.getByText(/checklist progress is unavailable on this board for large plans/i)).toBeTruthy();
 });
 
 it('returns focus to the connected menu trigger after an autofocused dialog closes', async () => {

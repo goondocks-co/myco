@@ -18,7 +18,7 @@ export const RUN_ACTION_MAX_CHARS = 192;
 export const RUN_KEY_MAX_CHARS = 192;
 export const RUN_VERSION_CHARS = 16;
 export const RUN_SPORE_ID_MAX_CHARS = 192;
-export const RUN_SEARCH_MAX_CHARS = 1024;
+export const RUN_SPORE_CURSOR_MAX_CHARS = 256;
 
 export const REPORT_NEXT = { tool: 'myco_run', op: 'report' } as const;
 

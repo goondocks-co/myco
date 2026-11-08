@@ -16,7 +16,8 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
-import { countSpores, getSpore, listSupersededSporeIds, listSupersedingSporeIds, pageSpores } from '../core/spores.js';
+import { getSpore, listSporePage, listSupersededSporeIds, listSupersedingSporeIds, sporeListWindow } from '../core/spores.js';
+import { searchRepairRefusal } from '../core/search-repair.js';
 import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
 import { decodeCursor } from '../read/scope.js';
 
@@ -28,11 +29,8 @@ const clampLimit = (raw: string | null): number => {
   return Number.isSafeInteger(n) && n > 0 ? Math.min(n, MAX_PAGE) : 50;
 };
 
-/** Where a page starts; anything that is not a whole count of rows starts at the first. */
-const offsetOf = (raw: string | null): number => {
-  const n = raw === null ? NaN : Number(raw);
-  return Number.isSafeInteger(n) && n > 0 ? n : 0;
-};
+/** The refusal of offset paging, retired for keyset cursors. */
+export const OFFSET_REFUSAL = 'offset paging is retired, and nothing was read: send the cursor the previous page answered as cursor.';
 
 /** Resolve the Project or answer 404. A Project the caller does not hold is indistinguishable from one that does not exist. */
 async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
@@ -41,37 +39,41 @@ async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
 }
 
 /**
- * A Project's spores, newest first, paged by offset or by `cursor`, the keyset the previous page answered; the two do not
- * combine. Every page carries `cursor`, null when no spore follows it. A start instant (inclusive) and an end instant
- * (exclusive) bound when they were written, and `author` names who wrote them, as a run's id. `total` counts what the
- * filters match when the page is read.
+ * A Project's spores, newest first, a page at a time by `cursor`, the keyset the previous page answered. A start instant
+ * (inclusive) and an end instant (exclusive) bound when they were written, widened to whole UTC days (the answer's
+ * `window`), and `author` names who wrote them, as a run's id. `hasMore` says whether another page follows. `total` is
+ * read from the maintained counters, replaced by `counting: 'building'` while existing spores are still being counted;
+ * a list by author has no total.
  */
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
+  if (ctx.url.searchParams.has('offset')) return badRequest(OFFSET_REFUSAL);
   const since = instantParam(ctx.url, 'since');
   if (since instanceof Response) return since;
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
+  const q = ctx.url.searchParams.get('q');
+  if (q !== null) {
+    const param = (name: string) => ctx.url.searchParams.get(name) ?? undefined;
+    return badRequest(searchRepairRefusal('q', { type: 'spore', text: q, projects: [scope.projectId], status: param('status'), observationType: param('type'),
+      sessionId: param('session'), ...sporeListWindow({ createdFrom: since, createdTo: until }), unsupported: param('author') === undefined ? [] : ['author'] }));
+  }
   const cursor = ctx.url.searchParams.get('cursor') ?? undefined;
   if (cursor !== undefined && decodeCursor(cursor) === null) return badRequest('malformed cursor');
-  if (cursor !== undefined && ctx.url.searchParams.has('offset')) return badRequest('cursor and offset do not combine');
-  const options = {
+  const listed = await listSporePage(env.db, scope, {
     observationType: ctx.url.searchParams.get('type') ?? undefined,
     status: ctx.url.searchParams.get('status') ?? undefined,
     sessionId: ctx.url.searchParams.get('session') ?? undefined,
     author: ctx.url.searchParams.get('author') ?? undefined,
-    search: ctx.url.searchParams.get('q') ?? undefined,
     createdFrom: since,
     createdTo: until,
     limit: clampLimit(ctx.url.searchParams.get('limit')),
-    offset: offsetOf(ctx.url.searchParams.get('offset')),
-  };
-  const [paged, total] = await Promise.all([
-    pageSpores(env.db, scope, { ...options, cursor }),
-    countSpores(env.db, scope, options),
-  ]);
-  return paged === null ? badRequest('malformed cursor') : ok({ spores: paged.rows, cursor: paged.cursor, total, maxPage: MAX_PAGE });
+    cursor,
+  });
+  if (listed === null) return badRequest('malformed cursor');
+  const { rows, ...page } = listed;
+  return ok({ spores: rows, ...page, maxPage: MAX_PAGE });
 }
 
 /** One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a replacement what it grew out of. */

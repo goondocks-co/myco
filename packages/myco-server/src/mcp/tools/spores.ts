@@ -1,4 +1,4 @@
-import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, type SporeRow } from '../../core/spores.js';
+import { getSpore, listSporePage, listSupersededSporeIds, listSupersedingSporeIds, type SporeRow } from '../../core/spores.js';
 import { writeSpore } from '../../core/spore-admission.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
@@ -36,10 +36,16 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     agentId: str(input.agent_id),
     observationType: str(input.observation_type) ?? str(input.type),
     status: str(input.status) === 'all' ? undefined : str(input.status),
-    search: str(input.search),
     limit: int(input.limit),
-    offset: int(input.offset),
+    cursor: str(input.cursor),
   };
-  const [spores, total] = await Promise.all([listSpores(db, scope, options), countSpores(db, scope, options)]);
-  return { spores: spores.map((s: SporeRow) => visible(s)), total, offset: options.offset ?? 0, limit: options.limit };
+  const listed = await listSporePage(db, scope, options);
+  if (listed === null) return failure(`Not read: cursor ${JSON.stringify(input.cursor)} is not one this list answered. Next call: myco_spores ${JSON.stringify({ op: 'list', ...(options.status === undefined ? {} : { status: options.status }) })} to start from the first page.`);
+  return {
+    spores: listed.rows.map((s: SporeRow) => visible(s)),
+    has_more: listed.hasMore,
+    cursor: listed.cursor,
+    ...(listed.total === undefined ? {} : { total: listed.total }),
+    ...(listed.counting === undefined ? {} : { counting: listed.counting }),
+  };
 }

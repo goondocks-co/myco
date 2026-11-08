@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  consolidateSpores, countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, updateSporeContent,
+  consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, listSporePage, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ListSporesOptions,
   type SporeInsert,
 } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -18,6 +18,11 @@ const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
 const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
+/** The ids one page of the list holds. */
+const listed = async (db: RelationalStore, scope: ReadScope, o: ListSporesOptions = {}) => (await listSporePage(db, scope, o))!.rows.map((s) => s.id);
+/** An edit as a writer of a spore's body makes one: the body changes and the revision moves. */
+const edit = (db: RelationalStore, id: string, content: string) => db.prepare(`UPDATE spores SET content = ?, revision = revision + 1, updated_at = ?
+  WHERE project_id = ? AND id = ? AND content <> ?`).bind(content, NOW, SCOPE.projectId, id, content).run();
 
 function store(): { db: RelationalStore; sqlite: Database } {
   const sqlite = seededSqlite();
@@ -75,9 +80,10 @@ describe('spores', () => {
   it('holds one order over a page boundary when two spores share an instant', async () => {
     const { db } = store();
     for (const id of ['sp_a', 'sp_b', 'sp_c']) await insertSpore(db, SCOPE, spore(id, { createdAt: NOW }));
-    const first = await listSpores(db, SCOPE, { limit: 2 });
-    const second = await listSpores(db, SCOPE, { limit: 2, offset: 2 });
-    expect([...first, ...second].map((s) => s.id)).toEqual(['sp_c', 'sp_b', 'sp_a']);
+    const first = (await listSporePage(db, SCOPE, { limit: 2 }))!;
+    const second = (await listSporePage(db, SCOPE, { limit: 2, cursor: first.cursor! }))!;
+    expect({ ids: [...first.rows, ...second.rows].map((s) => s.id), more: [first.hasMore, second.hasMore], end: second.cursor })
+      .toEqual({ ids: ['sp_c', 'sp_b', 'sp_a'], more: [true, false], end: null });
   });
 
   it('keeps spores within their Project', async () => {
@@ -85,16 +91,23 @@ describe('spores', () => {
     await insertSpore(db, SCOPE, spore('sp1'));
     expect(await getSpore(db, SCOPE, 'sp1')).not.toBeNull();
     expect(await getSpore(db, OTHER, 'sp1')).toBeNull();
-    expect(await listSpores(db, OTHER)).toEqual([]);
+    expect(await listed(db, OTHER)).toEqual([]);
   });
 
-  it('filters by type, status and search, and counts what it lists', async () => {
+  it('filters by type and status, and totals what the filter admits from the counters', async () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('sp1', { observationType: 'gotcha' }));
     await insertSpore(db, SCOPE, spore('sp2', { observationType: 'decision' }));
-    expect((await listSpores(db, SCOPE, { observationType: 'decision' })).map((s) => s.id)).toEqual(['sp2']);
-    expect(await countSpores(db, SCOPE, { observationType: 'decision' })).toBe(1);
-    expect((await listSpores(db, SCOPE, { search: 'of sp1' })).map((s) => s.id)).toEqual(['sp1']);
+    const page = (await listSporePage(db, SCOPE, { observationType: 'decision', limit: 1 }))!;
+    expect({ ids: page.rows.map((s) => s.id), total: page.total, hasMore: page.hasMore }).toEqual({ ids: ['sp2'], total: 1, hasMore: false });
+    expect((await listSporePage(db, SCOPE, { status: 'active', limit: 1 }))).toMatchObject({ total: 2, hasMore: true });
+  });
+
+  it('carries no total for a list by agent or author, and refuses a cursor it did not issue', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('sp1'));
+    expect(await listSporePage(db, SCOPE, { agentId: AGENT })).toEqual({ rows: [expect.objectContaining({ id: 'sp1' })], cursor: null, hasMore: false });
+    expect(await listSporePage(db, SCOPE, { cursor: 'not-a-cursor' })).toBeNull();
   });
 });
 
@@ -107,22 +120,26 @@ describe('the terminal-session gate', () => {
     await insertSpore(db, SCOPE, spore('done', { sessionId: 'sess_done' }));
     await insertSpore(db, SCOPE, spore('loose'));
 
-    expect((await listSpores(db, SCOPE, { includeActive: false })).map((s) => s.id).sort()).toEqual(['done', 'loose']);
-    expect(await countSpores(db, SCOPE, { includeActive: false })).toBe(2);
+    expect((await listed(db, SCOPE, { includeActive: false })).sort()).toEqual(['done', 'loose']);
+    expect((await listSporePage(db, SCOPE, { includeActive: false }))!.total).toBeUndefined();
   });
 
   it('shows everything when the gate is not asked for, which is what the UI and hooks do', async () => {
     const { db, sqlite } = store();
     seedSession(sqlite, 'sess_open', false);
     await insertSpore(db, SCOPE, spore('open', { sessionId: 'sess_open' }));
-    expect((await listSpores(db, SCOPE)).map((s) => s.id)).toEqual(['open']);
+    expect(await listed(db, SCOPE)).toEqual(['open']);
   });
 
   it('never gates a direct session lookup, however open that session is', async () => {
     const { db, sqlite } = store();
     seedSession(sqlite, 'sess_open', false);
     await insertSpore(db, SCOPE, spore('open', { sessionId: 'sess_open' }));
-    expect((await listSpores(db, SCOPE, { includeActive: false, sessionId: 'sess_open' })).map((s) => s.id)).toEqual(['open']);
+    expect(await listed(db, SCOPE, { includeActive: false, sessionId: 'sess_open' })).toEqual(['open']);
+    // The gate's bypass changes which rows a session read lists, not the contract: a list with the gate asked for has no total.
+    expect(await listSporePage(db, SCOPE, { includeActive: false, sessionId: 'sess_open' })).toMatchObject({ hasMore: false });
+    expect((await listSporePage(db, SCOPE, { includeActive: false, sessionId: 'sess_open' }))!.total).toBeUndefined();
+    expect((await listSporePage(db, SCOPE, { sessionId: 'sess_open' }))!.total).toBe(1);
   });
 
   it('reads the session in this Project, not one of the same name elsewhere', async () => {
@@ -132,7 +149,7 @@ describe('the terminal-session gate', () => {
     await insertSpore(db, SCOPE, spore('here', { sessionId: 'sess_x' }));
     // This Project's session is open, so the gate hides it — the other Project's
     // ended session of the same name must not answer for it.
-    expect(await listSpores(db, SCOPE, { includeActive: false })).toEqual([]);
+    expect(await listed(db, SCOPE, { includeActive: false })).toEqual([]);
   });
 });
 
@@ -174,7 +191,7 @@ describe('resolution', () => {
     const { db, sqlite } = store();
     try {
       await insertSpore(db, SCOPE, spore('sp1'));
-      for (const text of ['one', 'two', 'three']) await updateSporeContent(db, SCOPE, 'sp1', text, NOW);
+      for (const text of ['one', 'two', 'three']) await edit(db, 'sp1', text);
       expect((await getSpore(db, SCOPE, 'sp1'))?.revision).toBe(3);
       await resolveSpore(db, SCOPE, 'superseded', event('re1', 'sp1'), NOW, { revision: 3 });
       expect(await resolveSpore(db, SCOPE, 'obsolete', { ...event('re2', 'sp1'), action: 'obsolete' }, NOW, { revision: 4 }))
@@ -187,13 +204,12 @@ describe('resolution', () => {
     const { db, sqlite } = store();
     try {
       await insertSpore(db, SCOPE, spore('sp1'));
-      for (const text of ['one', 'two', 'three']) await updateSporeContent(db, SCOPE, 'sp1', text, NOW);
+      for (const text of ['one', 'two', 'three']) await edit(db, 'sp1', text);
       const read = (await getSpore(db, SCOPE, 'sp1'))!;
-      await updateSporeContent(db, SCOPE, 'sp1', 'four', NOW);
+      await edit(db, 'sp1', 'four');
       expect(await resolveSpore(db, SCOPE, 'superseded', event('stale-revision', 'sp1'), NOW, { revision: read.revision }))
         .toEqual({ error: 'stale', status: 'active', revision: 4, reason: 'source is active at revision 4; expected active at revision 3' });
       expect(sqlite.query('SELECT id FROM resolution_events').all()).toEqual([]);
-      expect(await updateSporeContent(db, SCOPE, 'sp1', 'four', NOW)).toBe(false);
       expect((await getSpore(db, SCOPE, 'sp1'))?.revision).toBe(4);
     } finally { sqlite.close(); }
   });
@@ -217,7 +233,7 @@ describe('resolution', () => {
     const { db, sqlite } = store();
     try {
       for (const id of ['a', 'b', 'c']) await insertSpore(db, SCOPE, spore(id));
-      await updateSporeContent(db, SCOPE, 'b', 'edited', NOW);
+      await edit(db, 'b', 'edited');
       const sources = [{ id: 'a', revision: 0 }, { id: 'b', revision: 0 }, { id: 'c', revision: 0 }];
       const event = { agentId: AGENT, reason: null, sessionId: null, author: null, createdAt: NOW };
       expect(await consolidateSpores(db, SCOPE, spore('wisdom'), sources, event, NOW))
