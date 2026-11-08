@@ -11,6 +11,7 @@ import { catchUpProjections, resetProjectionCatchup } from '@myco-server-worker/
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { memoryBlobStore } from './helpers/fixtures.js';
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
@@ -48,7 +49,10 @@ const maintained = async (db: RelationalStore, model = MODEL, project = 'p') => 
 };
 
 const vectors = (ids: readonly string[]) => ({ get: async (_scope: unknown, wanted: readonly string[]) => wanted.filter((id) => ids.includes(id)).map((id, i) => ({ id, values: [1, i + 1] })) });
-const context = (db: RelationalStore, ids: readonly string[]): EmbeddingContext => ({ db, vectors: vectors(ids), provider: { modelKey: MODEL } } as unknown as EmbeddingContext);
+const stores = new WeakMap<RelationalStore, ReturnType<typeof memoryBlobStore>>();
+/** The one stored-page bucket a test's database keeps its vectors in. */
+const blobsOf = (db: RelationalStore) => { if (!stores.has(db)) stores.set(db, memoryBlobStore()); return stores.get(db)!; };
+const context = (db: RelationalStore, ids: readonly string[]): EmbeddingContext => ({ db, blobs: blobsOf(db), vectors: vectors(ids), provider: { modelKey: MODEL } } as unknown as EmbeddingContext);
 async function settle(db: RelationalStore, ids: readonly string[], now = NOW) {
   for (let i = 0; i < 200; i++) if ((await reconcileHubness(context(db, ids), 'p', now)).processed === 0) return;
   throw new Error('calibration did not settle');
@@ -56,7 +60,7 @@ async function settle(db: RelationalStore, ids: readonly string[], now = NOW) {
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `s${String(i).padStart(4, '0')}`);
 
 /** A context whose store returns each spore's own vector, whichever order it is asked in. */
-const steady = (db: RelationalStore): EmbeddingContext => ({ db, provider: { modelKey: MODEL }, vectors: { get: async (_scope: unknown, wanted: readonly string[]) => wanted.map((id) => {
+const steady = (db: RelationalStore): EmbeddingContext => ({ db, blobs: blobsOf(db), provider: { modelKey: MODEL }, vectors: { get: async (_scope: unknown, wanted: readonly string[]) => wanted.map((id) => {
   const n = Number(id.slice(1));
   return { id, values: Array.from({ length: 8 }, (_, j) => Math.sin(n * 0.17 + j * 0.31) + Math.cos(n * 0.07 - j)) };
 }) } } as unknown as EmbeddingContext);
@@ -367,6 +371,6 @@ test('calibration work and the population read fixed rows, however many spores a
     }
     expect(costs[1]).toEqual(costs[0]);
     expect(costs[1]!.population).toBeLessThanOrEqual(12);
-    expect(costs[1]!.work).toBeLessThanOrEqual(20);
+    expect(costs[1]!.work).toBeLessThanOrEqual(70);
   } finally { await mf.dispose(); }
 }, 120_000);

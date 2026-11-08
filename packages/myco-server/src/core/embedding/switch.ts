@@ -226,7 +226,7 @@ export async function resumeEmbeddingSwitch(env: ServerEnv, id: string, now: num
 export async function completeEmbeddingSwitch(env: ServerEnv, now: number): Promise<boolean> {
   const sw = await readSwitch(env.db);
   if (sw === null || sw.state !== 'building' || !(await switchComplete(env.db, sw, now))) return false;
-  for (const { projectId } of await listProjects(env.db)) if (await calibrationPending(env.db, projectId, sw.modelKey, now)) return false;
+  for (const { projectId } of await listProjects(env.db)) if (await calibrationPending(env.db, projectId, sw.modelKey, now, false, retainedBy(sw))) return false;
   const choice = switchChoice(sw);
   if (resolveEmbedding(choice, env.platform.name).selection?.modelKey !== sw.modelKey) {
     await pauseSwitch(env.db, sw.id, unresolved(sw.model), now);

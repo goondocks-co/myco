@@ -38,6 +38,32 @@ export async function readStoredObject(blobs: BlobStore, key: string, expectedBy
   }
 }
 
+export type StoredRangeRead =
+  | { kind: 'absent' }
+  | { kind: 'size_mismatch' }
+  | { kind: 'read'; bytes: Uint8Array<ArrayBuffer> };
+
+/**
+ * `length` bytes of the object at `key` from `offset`, held to the whole object's `expectedBytes`: the size the store
+ * reports must match before the body is read, and the body must deliver exactly the bytes asked for.
+ */
+export async function readStoredRange(blobs: BlobStore, key: string, expectedBytes: number, offset: number, length: number): Promise<StoredRangeRead> {
+  const held = await blobs.get(key, { range: { offset, length } });
+  if (held === null) return { kind: 'absent' };
+  if (held.size !== expectedBytes) {
+    await held.body.cancel();
+    return { kind: 'size_mismatch' };
+  }
+  const reader = held.body.getReader();
+  try {
+    const read = await collectBounded(reader, length);
+    if (!read.ok || read.bytes.byteLength !== length) return { kind: 'size_mismatch' };
+    return { kind: 'read', bytes: read.bytes };
+  } finally {
+    try { await reader.cancel(); } finally { reader.releaseLock(); }
+  }
+}
+
 /** A stored body refused or abandoned unread, cancelled so it holds nothing open for a consumer that never comes. */
 export async function discardStoredBody(body: ReadableStream<Uint8Array>): Promise<void> {
   await body.cancel().catch(() => undefined);

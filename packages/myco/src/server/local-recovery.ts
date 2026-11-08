@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
+import { discardRecoveredVectorPages, resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
 import { holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
@@ -22,8 +22,8 @@ import {
 } from './local.js';
 
 /**
- * Brings the staged volume to the bundled schema through the one migration applier, clears the source's object
- * lifecycle, and names every registered blob under a fresh restore generation: the staged copy's logical-key objects
+ * Brings the staged volume to the bundled schema through the one migration applier, drops calibration rows naming page
+ * objects a bundle does not carry, clears the source's object lifecycle, and names every registered blob under a fresh restore generation: the staged copy's logical-key objects
  * move to the keys the database now registers, so the volume published is the layout its rows name. Answers the schema
  * version the prepared volume holds.
  */
@@ -33,6 +33,7 @@ async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: Nat
   let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
+    await discardRecoveredVectorPages(store);
     if(rebuildEmbeddings)for(const project of db.query<{project_id:string},[]>('SELECT project_id FROM projects').all())await resetEmbeddingIndex(store,project.project_id);
     await prepareRecoveredTenant(store, tenantMode, Date.now());
     await resetRecoveryLedger(store);

@@ -2,7 +2,7 @@ import type { RelationalStore } from '../adapters.js';
 import { commit, readSet } from '../../db/index.js';
 import { workChecked, workRow, workScope } from '../../db/embeddings/work.js';
 
-export const WORK_PREDICATE_VERSION = 4;
+export const WORK_PREDICATE_VERSION = 5;
 /** How soon a wake chained to finish an audit of every Project follows. */
 export const WORK_SWEEP_CONTINUE_MS = 30_000;
 

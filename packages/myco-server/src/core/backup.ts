@@ -109,7 +109,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * configuration, and current machine and worker reports, which attached machines send again. Settings (the Deployment's and each machine's), capability
  * admissions, repository connections, release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore. Embedding state is rebuilt from the sources an
- * artifact carries; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
+ * artifact carries, calibration members and their stored vector pages among it; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
@@ -125,7 +125,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
   'session_read_facts', 'project_session_counts', 'machine_capture_heads',
-  'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_calibration_state','embedding_calibration_population','embedding_provider_holds',
+  'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_calibration_state','embedding_calibration_population','embedding_vector_pages','embedding_provider_holds',
   'document_due','document_status_totals','document_difference_totals','document_publication_facts','document_due_totals',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
