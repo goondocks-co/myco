@@ -224,7 +224,7 @@ describe.each(['native', 'D1'])('%s calibration on maintained state', (target) =
         ({ processed } = await reconcileHubness(steady(db), 'p', NOW));
       }
       expect(processed).toBe(0);
-      expect(await statistics(db)).toEqual(expected);
+      expect(await statistics(db) as unknown[]).toEqual(expected);
       expect(await calibrationPending(db, 'p', MODEL, NOW, true)).toBe(false);
     });
   }, 120_000);

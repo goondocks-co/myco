@@ -488,7 +488,7 @@ describe.each(TARGETS)('%s: spore calibration', (target) => {
     expect(receiptOf(f, 'lost')).toMatchObject({ ready: 1, rewrites: VECTOR_REWRITE_LIMIT });
     expect(await missing(spent)).toEqual({ rewriting: 0, waiting: 0, abandoned: 1 });
     expect(await missingSporeVectors(f.db, 'p', 'another-model', spent)).toEqual({ rewriting: 0, waiting: 0, abandoned: 0 });
-    expect(embeddingRunReport({ processed: 0, phase: 'settled', missing: await missing(spent) }).summary).toBe(
+    expect(embeddingRunReport({ processed: 0, phase: 'settled', missing: (await missing(spent))! }).summary).toBe(
       `Processed 0 embedding records; settled. 1 spore is left out of relevance calibration: the vector store never returned its vector, even after it was written again ${VECTOR_REWRITE_LIMIT} times.`);
     await f.expectExact();
     expect(f.repaired()).toBe(0);
