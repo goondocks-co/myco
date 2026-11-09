@@ -38,7 +38,7 @@ import {
 import { forbiddenToMember } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
 import { sha256Hex } from './hash.js';
-import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
+import { readBoundedBody, blobCapReason, EVENT_BODY_CAP_NEXT_CALL, MAX_BODY_BYTES } from './ingest/body.js';
 import { PROJECT_ARCHIVED, resolveProject } from './ingest/projects.js';
 import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } from './telemetry.js';
 import { ownerConfig } from './auth/owner/config.js';
@@ -673,7 +673,7 @@ export function createServer(deps: ServerDeps) {
       const declared = request.headers.get('content-length');
       if (declared === null || !PROTOCOL_VALUE.test(declared)) return refuse(auth, shapeOf(route), 'content-length required', 'content_length');
       const contentLength = Number(declared);
-      if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
+      if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), blobCapReason(contentLength, route.maxBodyBytes), 'blob_cap');
       try {
         if (!await authorizeHttp(env, route.authorization, { memberId: auth.memberId }, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, params })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
         const limit = await resolved();
@@ -686,7 +686,7 @@ export function createServer(deps: ServerDeps) {
 
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
-      if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+      if (!body.ok) return refuse(auth, shapeOf(route), route.path === '/events' ? `${body.reason} ${EVENT_BODY_CAP_NEXT_CALL}` : body.reason, 'body_cap');
       if (route.authorization.action === 'bootstrap') {
         const malformed = emptyBodyRefusal(body.text);
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);

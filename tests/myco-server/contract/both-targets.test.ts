@@ -205,7 +205,7 @@ describe('one server product, two deployment targets', () => {
       oversized.headers.set('content-length', String(MAX_BLOB_BYTES + 1));
       return t.fetch(oversized);
     });
-    agreeing(out, { status: 200, body: { stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` } });
+    agreeing(out, { status: 200, body: { stored: false, code: 'blob_cap', reason: expect.stringContaining(`the limit is ${MAX_BLOB_BYTES} bytes`) } });
   });
 
   it('refuses a member outside the protocol window identically on both', async () => {
@@ -231,7 +231,7 @@ describe('one server product, two deployment targets', () => {
   it('refuses an oversized body identically on both, without storing it', async () => {
     const out = await onBoth(async (t) =>
       t.fetch(memberPost(await t.token(), JSON.stringify({ ...envelope(), pad: 'x'.repeat(MAX_BODY_BYTES) }))));
-    agreeing(out, { status: 200, body: { persisted: false, code: 'body_cap', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
+    agreeing(out, { status: 200, body: { persisted: false, code: 'body_cap', reason: expect.stringContaining(`the limit is ${MAX_BODY_BYTES} bytes`) } });
   });
 
   it('resolves a Project neither target has seen, identically on both, and admits the event into it', async () => {
