@@ -10,7 +10,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { runRetentionDays } from '@myco-server-worker/core/jobs-run.js';
 import { scheduleLeaves } from '@myco-server-worker/core/schedule-rules.js';
-import { backupRetentionPolicy, currentRetentionVictims } from '@myco-server-worker/core/backup-retention.js';
+import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
@@ -92,7 +92,7 @@ describe('a stored value the rule refuses', () => {
         e.sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned) VALUES (?, ?, ?, 1, '{}', 1, 'test', 0)`, [`b${i}`, `k${i}`, NOW - i * DAY]);
       }
       store(e, leaf, text);
-      expect({ leaf, text, victims: (await currentRetentionVictims(e.db, await backupRetentionPolicy(e.db))).size }).toEqual({ leaf, text, victims: 0 });
+      expect({ leaf, text, victims: ((await retentionDecision(e.db)) as {victims:string[]}).victims.length }).toEqual({ leaf, text, victims: 0 });
     }
   });
 });

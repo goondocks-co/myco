@@ -53,7 +53,7 @@ const credential = (id: string, machineId: string, runtimeLabel: string | null, 
   id, memberId, machineId, runtimeLabel, expiresAt: NOW + 86_400_000, revokedAt: null, revokedBy: null, bytesWritten: 0,
   lineageRoot: id, lineageStartedAt: NOW - 86_400_000, firstUsedAt: null, live: true, purpose: 'member',
 });
-const BACKUP = { id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: NOW - 28 * 86_400_000, size_bytes: 48_213_504, counts_json: '{}', schema_version: 57, producer: 'mem_q3Vb8xRk2LmT7wYz', pinned: 0, present: true };
+const BACKUP = { id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: NOW - 28 * 86_400_000, size_bytes: 48_213_504, counts_json: '{}', schema_version: 57, producer: 'mem_q3Vb8xRk2LmT7wYz', pinned: 0, verification: { state: 'verified', checkedAt: 0, detail: null } };
 
 type Route = (init?: RequestInit) => Response;
 

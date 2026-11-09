@@ -86,8 +86,10 @@ export const backupRestore: ParityScenario = {
     const id = created.body.backup.id;
 
     const listed = await fetch(`${target.url}/api/backups`, { headers: ownerJson(target) });
-    const list = (await listed.json()) as { backups: Array<{ id: string; present: boolean }> };
-    expect(list.backups.find((b) => b.id === id)?.present).toBe(true);
+    const list = (await listed.json()) as { backups: Array<{ id: string; verification: { state: string } }> };
+    expect(list.backups.find((b) => b.id === id)?.verification.state).toBe('verified');
+    const verified = await ownerPost<{ verification: { state: string } }>(target, `/api/backups/${id}/verify`, {});
+    expect({ status: verified.status, state: verified.body.verification.state }).toEqual({ status: 200, state: 'verified' });
 
     const preview = await ownerPost<{ foreignLineage: boolean; header: { counts: Record<string, number> } }>(target, `/api/backups/${id}/restore-preview`, {});
     expect({ status: preview.status, foreign: preview.body.foreignLineage }).toEqual({ status: 200, foreign: false });

@@ -434,7 +434,8 @@ async function backupVictims(r: Rig): Promise<number> {
   for (let i = 0; i < 20; i++) {
     r.sqlite.run(`INSERT OR REPLACE INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned) VALUES (?, ?, ?, 1, '{}', 1, 'test', 0)`, [`b${i}`, `k${i}`, NOW - i * DAY]);
   }
-  return (await retentionDecision(r.env.db)).victims.size;
+  const decision = await retentionDecision(r.env.db, retentionRows.length);
+  return decision.ready ? decision.victims.length : 0;
 }
 
 async function providerKey(r: Rig): Promise<string | null> {

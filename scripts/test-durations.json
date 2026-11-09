@@ -530,6 +530,7 @@
     "tests/myco-server/model-catalog-availability.test.ts": 800,
     "tests/myco-server/native-blob-durability.test.ts": 1100,
     "tests/myco-server/non-rotating.test.ts": 7400,
+    "tests/myco-server/backup-retention.test.ts": 9000,
     "tests/myco-server/object-release.test.ts": 12000,
     "tests/myco-server/object-store-reconciliation.test.ts": 50000,
     "tests/myco-server/one-scheduler.test.ts": 1200,
