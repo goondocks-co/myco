@@ -83,6 +83,12 @@ export interface BlobPutOptions {
 }
 
 /** Content-addressed objects under project-prefixed keys. */
+/** A page of a store's key space: at most `limit` objects whose keys sort after `startAfter`. */
+export interface BlobListOptions { limit: number; startAfter?: string }
+/** One listed object and when its bytes landed. */
+export interface ListedObject { key: string; uploaded: Date }
+export interface BlobListing { objects: ListedObject[]; truncated: boolean }
+
 export interface BlobStore {
   head(key: string): Promise<StoredObject | null>;
   /** Proves an existing publication is crash-stable; absence answers false and storage errors throw. */
@@ -91,6 +97,8 @@ export interface BlobStore {
   get(key: string, options?: BlobGetOptions): Promise<StoredObjectBody | null>;
   put(key: string, value: ReadableStream | null, options?: BlobPutOptions): Promise<StoredObject>;
   delete(key: string): Promise<void>;
+  /** One page of stored objects in key order after `startAfter`; `truncated` says more objects follow the page. */
+  list(options: BlobListOptions): Promise<BlobListing>;
 }
 
 /** Relational metadata and immutable content storage without request or runtime authority. */

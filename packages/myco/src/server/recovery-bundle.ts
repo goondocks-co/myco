@@ -132,6 +132,7 @@ export async function verifyCopiedBundleEntries(db: Database, store: BlobStore):
     get: (key,options) => physicalToArtifact.has(key) ? store.get(physicalToArtifact.get(key)!,options) : Promise.resolve(null),
     put: () => { throw new Error('recovery verification cannot publish objects'); },
     delete: () => { throw new Error('recovery verification cannot delete objects'); },
+    list: () => { throw new Error('recovery verification cannot list objects'); },
   };
   const relational = sqliteRelationalStore(db);
   const inventory = recoveryBundleInventory(db);

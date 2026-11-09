@@ -16,7 +16,7 @@
  * this project already holds machine secrets under.
  */
 import nodeFs from 'node:fs';
-const { existsSync, mkdirSync, readFileSync, rmSync } = nodeFs;
+const { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } = nodeFs;
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
@@ -183,6 +183,10 @@ export function localSecretNames(paths: Pick<LocalDeploymentPaths, 'secretsFile'
 }
 
 export const LOCAL_STORAGE_KEYS_MISSING = 'storage keys missing for an existing volume; restore secrets.env';
+/** A directory of stored objects with no database beside it: a new database would not know them. */
+export const localBlobsWithoutDatabase = (paths: LocalDeploymentPaths): string =>
+  `${paths.blobDir} holds stored objects, but there is no database at ${paths.databasePath}, so a new one would not know them. Nothing was changed. To bring that Deployment back, move its whole directory aside (mv ${paths.root} ${paths.root}.old), then run: myco server restore --target local --from <backup dir> --secrets-from <file> --source-retired --yes. To start empty, move them aside and create again: mv ${paths.blobDir} ${paths.blobDir}.old && myco server create --target local. If objects ever go back into a store, use mv, not cp: a copy gets a new date and the store treats it as new.`;
+
 export const LOCAL_DATABASE_MISSING = 'database missing for an existing volume; restore myco.sqlite';
 
 /** Storage keys must satisfy the same material requirements as the serving runtime. */
@@ -285,6 +289,7 @@ export function createLocalDeployment(
   return new LocalVolume(paths).exclusive(() => {
     assertRecordServable(record);
     if (existsSync(paths.recordFile) && !existsSync(paths.databasePath)) throw new Error(LOCAL_DATABASE_MISSING);
+    if (!existsSync(paths.databasePath) && existsSync(paths.blobDir) && readdirSync(paths.blobDir).length > 0) throw new Error(localBlobsWithoutDatabase(paths));
     mkdirSync(paths.root, { recursive: true, mode: 0o700 });
     onProgress?.('directory');
     const generated = ensureSecrets(paths);

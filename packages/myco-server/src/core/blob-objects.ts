@@ -28,6 +28,21 @@ export function blobObjectKey(projectId: string, key: string, generation: string
   return generation === null ? blobArtifactKey(projectId, key) : `${blobArtifactKey(projectId, key)}~${generation}`;
 }
 
+/** A blob's stored object named by its key: its Project, content digest and, unless it predates generations, its generation. */
+interface BlobObjectName { projectId: string; key: string; generation: string | null }
+
+/** The stored name of a registered-blob object, or null when `physical` is not one: only names `blobObjectKey` writes are ever read back as blobs. */
+export function blobObjectName(physical: string): BlobObjectName | null {
+  const slash = physical.indexOf('/');
+  if (slash < 1 || physical.indexOf('/', slash + 1) !== -1) return null;
+  const projectId = physical.slice(0, slash);
+  if (!PROJECT_ID.test(projectId) || projectId === '.' || projectId === '..') return null;
+  const [key, generation, ...rest] = physical.slice(slash + 1).split('~');
+  if (key === undefined || !BLOB_KEY_GRAMMAR.test(key) || rest.length > 0) return null;
+  if (generation !== undefined && !GENERATION_GRAMMAR.test(generation)) return null;
+  return { projectId, key, generation: generation ?? null };
+}
+
 /** SQL for the stored object a row registered, from SQL expressions naming its project, key and generation. */
 export function blobObjectKeySql(project: string, key: string, generation: string): string {
   return `(${project} || '/' || ${key} || COALESCE('~' || ${generation}, ''))`;

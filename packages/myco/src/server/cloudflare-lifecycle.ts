@@ -200,15 +200,27 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
 }
 
 /**
+ * A new database over a bucket that already exists would know none of that bucket's objects. Read before anything is
+ * created, so a refusal leaves nothing behind and a re-run of a half-finished create, whose record names its database,
+ * never comes here.
+ */
+async function refuseUnclaimedBucket(options: LifecycleOptions, bare: CloudflareOptions, resources: { databaseName: string; bucketName: string }): Promise<void> {
+  const held = await accountResourceNames(bare);
+  if (held.databases.includes(resources.databaseName) || !held.buckets.includes(resources.bucketName)) return;
+  throw new Error(`R2 bucket ${resources.bucketName} already exists, but no D1 database ${resources.databaseName} does, so a new database would not know the objects in it. Nothing was created. If this Deployment should use that bucket, run: myco server create --target cloudflare --account-id ${options.accountId} --adopt-bucket. If those objects belong to another Deployment, leave them there and give this one its own bucketName in the deployment record.`);
+}
+
+/**
  * Provision and deploy. Idempotent: every resource is ensured, an existing
  * record's ids are kept, and a re-run converges on the same Deployment —
  * which also makes this the adopt path for resources created by hand.
  */
-export const createCloudflareDeployment = lifecycleOperation('create', async (options: LifecycleOptions & { url?: string }, existing): Promise<CreateResult> => {
+export const createCloudflareDeployment = lifecycleOperation('create', async (options: LifecycleOptions & { url?: string; adoptBucket?: boolean }, existing): Promise<CreateResult> => {
   await preflight(options);
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
+  if (existing?.databaseId === undefined && options.adoptBucket !== true) await refuseUnclaimedBucket(options, bare, resources);
   const database = existing?.databaseId !== undefined
     ? { databaseId: existing.databaseId, created: false }
     : await ensureDatabase({ ...bare, databaseName: resources.databaseName });
