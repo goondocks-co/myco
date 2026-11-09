@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { run } from '@myco/cli/setup.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyJourney, LEGACY_URLS } from './fixtures/legacy-journey.js';
@@ -35,7 +35,7 @@ it('resumes across SIGKILL at every observed cutover mutation boundary and prese
   expect(boundaries).toContain('vault:proj_legacy_a');
   expect(boundaries).toContain('transcripts:proj_legacy_b');
   const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
-  const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_journey_interruption_test.ts')];
+  const args = ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_journey_interruption_test.ts')];
   const childRoot = path.join(root, 'interrupted');
   const template = await legacyJourney(childRoot, { multi: true, agents: ['claude-code', 'codex'] });
   await template.close();

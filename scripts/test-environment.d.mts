@@ -1,3 +1,4 @@
+export const NESTED_BUN_TEST_TIMEOUT_ARGS: readonly string[];
 export function sandboxPath(home: string, incomingPath?: string): string;
 export function resolveTestTool(name: string, incomingPath?: string): string | null;
 export function sandboxTestHome(root: string): string;
