@@ -12,7 +12,9 @@ import worker from '@myco-server-worker/index.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { cardStatements, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
+import { cardWriteStatement, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
+import { sessionProgressStatement } from '@myco-server-worker/db/learning/progress.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { asOwner, OWNER_ENV, LINKED_SUB } from './helpers/owner.js';
@@ -83,9 +85,9 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     expect(await get('/activity'), target).toEqual({ rows: [], cursor: null });
     const card = { ...NONE_CARD('mechanical'), done: 'Ran the build.\nOutcome: quoted inside Done', files: ['src/a, b.ts'], outcome: 'Completed the change', decisions: [{ decision: 'ship', reason: 'ready' }] };
     const current = await db.prepare(`SELECT changes FROM turn_cards WHERE turn_key=?`).bind(first).first<{ changes: number }>();
-    await db.batch(cardStatements(db, 'project', 'long', { turnKey: first, changes: current!.changes }, {
+    await commit(db, cardWriteStatement('project', 'long', { turnKey: first, changes: current!.changes }, {
       value: card, signal: 'high', reason: 'model', sharedWith: null, covered: true, runId: null, model: null,
-    }, now));
+    }, now), sessionProgressStatement('project', 'long', now));
     expect((await get<{ rows: CatalogTurnRow[] }>('/turns?filter=key')).rows[0], target).toMatchObject({ headline: 'Completed the change', signal: 'high', marks: { decisions: true, errors: false } });
     expect((await get<DocumentTurnDetail>('/turns/' + first)).card, target).toBe(encodeCard(card));
     expect(await db.prepare('SELECT card,fields FROM turn_cards WHERE project_id=? AND session_id=? AND turn_key=?').bind('project', 'long', first).first(), target).toEqual({ card: renderCard(card), fields: encodeCard(card) });

@@ -21,6 +21,7 @@ import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 
+import { NEXT_S4B2 } from '@myco-server-worker/db/schema-vNEXT-s4b2.js';
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
 /** sha256 of every migration file a deployed database's `d1_migrations` ledger already records. An applied file is frozen: the applier never re-runs it, so a schema change is a new step, never an edit of one of these. Shipping step n+1 adds one line here at delivery. */
@@ -781,6 +782,14 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0761_v761.sql': '44a828c70c37c3cb389dadd30e5e65b32eac9970d37a74254eefa76a670e62c5',
   '0762_v762.sql': 'bfa180f143393bf56523b3f0a133388f246ecb51133f3e0558e14643a0c4b4fb',
   '0763_v763.sql': 'b937ffa355fbe0956c84c8ff676320bfda8bd5c8b82169eede814275fa3517e6',
+  '0764_v764.sql': '68ae447cc17570eaa3da914fb652526ef68c9cc8b48ea75f5632dfeedfb40e21',
+  '0765_v765.sql': '21c85dfba55bcd47811c94dd95e6fd8ca644dbaf3c6bfcb39667acee7f150100',
+  '0766_v766.sql': '11eb329c3d1ee002eb0d463c36f07b6349aa0082a554a72fe41debc542bb29b5',
+  '0767_v767.sql': '27bff4d069ba10fc4b97560019385f7c03d694691125b733d49913ba16d6ebec',
+  '0768_v768.sql': '1248cc36276cd597c9d5925c3932e5b7cba67f64ae1854dd9b0f93bc10ecd046',
+  '0769_v769.sql': '8db2c399f5e92c6bf4534b6b5d1464b4767bd2b55855d7c3111cb8301f777018',
+  '0770_v770.sql': 'b81f470dc2b3314b234f91015df6e95492bac238078527cbde7073569801eea0',
+  '0771_v771.sql': 'bc9286ca4fe608ed843b78b771935d5744d28ba23a92a0d54a215983996cc11a',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1303,7 +1312,7 @@ describe('versioned schema steps', () => {
           const table = indexesBefore().get(droppedIndex) ?? null;
           const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
             new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
-          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || droppedIndex === 'idx_session_tombstones_created' || (dropping && table !== null && DROPPED_CONTENT.has(table));
+          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || droppedIndex === 'idx_session_tombstones_created' || SCHEMA_STEPS[n]!.version === NEXT_S4B2 + 7 || (dropping && table !== null && DROPPED_CONTENT.has(table));
           expect({ step: n + 1, droppedIndex, table, allowed }).toEqual({ step: n + 1, droppedIndex, table, allowed: true });
           continue;
         }
@@ -1326,6 +1335,7 @@ describe('versioned schema steps', () => {
           expect({ step: n + 1, droppedTrigger, allowed: replaced || (n === 85 && retiredTriggersAt86.has(droppedTrigger))
             || (SCHEMA_STEPS[n]!.version === 709 && retiredTriggersAt709.has(droppedTrigger))
             || (SCHEMA_STEPS[n]!.version === V722 && (retiredTriggersAtS5b.has(droppedTrigger) || narrowedTriggersAtS5b.has(droppedTrigger)))
+            || (SCHEMA_STEPS[n]!.version === NEXT_S4B2 + 6 && droppedTrigger === 'turn_cards_pending_count')
             || (n === 114 && V110_LEGACY_TRIGGERS.includes(droppedTrigger)) || ((retirement || dropping) && prior !== null && namesDroppedContent(prior)) })
             .toEqual({ step: n + 1, droppedTrigger, allowed: true });
           continue;
@@ -1518,7 +1528,7 @@ describe('versioned schema steps', () => {
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_vector_pages', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
-      'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'spore_resolution_edges',
+      'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'spore_resolution_edges', 'learning_project_counts', 'learning_ready_projects',
       'session_deletion_jobs', 'transcript_reread_jobs', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
     ].sort());

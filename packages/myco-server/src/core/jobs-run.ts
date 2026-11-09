@@ -9,7 +9,8 @@ import { runPublishWake } from '../ingest/publish.js';
 import { inspectPublicationCycles } from '../db/documents/dependencies.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
-import { repairLearningSources } from './learning-sessions.js';
+import { repairLearningSources } from '../db/learning/source-repair.js';
+import { advanceLearningDeadlines, LEARNING_ADVANCE_PAGE } from '../db/learning/ready.js';
 /**
  * What each scheduled job does when the tick runs it.
  *
@@ -259,6 +260,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'spend-expiry': (env, now) => expireSpend(env.db, now),
   'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'learning-source-repair': (env) => repairLearningSources(env.db),
+  'learning-deadlines': (env, now) => advanceLearningDeadlines(env.db, now, { page: LEARNING_ADVANCE_PAGE, age: true }),
   'spore-curation': (env, now) => discoverSporeClusters(env, now),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);

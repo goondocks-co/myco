@@ -1,7 +1,7 @@
 import { contextAdmission, type ContextAdmission } from '../db/context-records.js';
 import { archivedTranscriptRangeSql } from '../db/documents/ranges.js';
 import { DOCUMENT_ID_FIELDS, DOCUMENT_IDENTITIES_SQL } from '../db/document-tables.js';
-import { processedResourceProofSql } from '../core/processed-resources.js';
+import { processedResourceProofSql } from '../db/processed-resources.js';
 
 import { rawMemberResourceSql } from '../db/raw/resources.js';
 

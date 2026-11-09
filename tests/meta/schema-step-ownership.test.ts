@@ -32,6 +32,7 @@ import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@my
 import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s8a2.js';
 import { NEXT_S4B } from '@myco-server-worker/db/schema-vNEXT-s4b.js';
 import { NEXT_S2D, VNEXT_S2D_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2d.js';
+import { NEXT_S4B2, VNEXT_S4B2_STEPS } from '@myco-server-worker/db/schema-vNEXT-s4b2.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
@@ -73,6 +74,13 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...['idx_learning_card_deadline', 'idx_learning_stage_deadline', 'idx_learning_card_ready', 'idx_learning_stage_ready', 'idx_learning_aging'].map((object, i) => ({
+    step: NEXT_S4B2 + i + 1, object, table: 'learning_sessions', reason: 'Each learning relation is one bounded partial index, built alone in its own step.' })),
+  ...[['turn_cards_learning_insert_pending', 'turn_cards'], ['turn_cards_learning_insert_carded', 'turn_cards'], ['turn_cards_learning_carded', 'turn_cards'], ['turn_cards_learning_reset', 'turn_cards'],
+    ['turn_cards_learning_recarded', 'turn_cards'], ['turn_cards_learning_covered', 'turn_cards'], ['turn_cards_learning_due', 'turn_cards'], ['turn_cards_learning_delete_pending', 'turn_cards'], ['turn_cards_learning_delete_carded', 'turn_cards'],
+    ['learning_session_counted', 'learning_sessions'], ['learning_counts_update', 'learning_sessions'], ['learning_counts_delete', 'learning_sessions'],
+    ['learning_ready_project_update', 'learning_sessions'], ['learning_ready_project_delete', 'learning_sessions'], ['learning_source_refreshed', 'learning_sessions']].map(([object, table]) => ({
+    step: NEXT_S4B2 + 6, object: object!, table: table!, reason: 'Each card write moves its session and Project counts in the same statement; deadlines keep their stage summary current.' })),
   { step: NEXT_S4B, object: 'spore_resolution_edge_insert', table: 'resolution_events', reason: 'Each new resolution event writes the lineage edge browsing reads.' },
   ...VNEXT_S6B_STEPS.flatMap(({ version, statements }) => statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
@@ -404,6 +412,9 @@ interface StatementException {
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S6B_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO|DROP TABLE)/.test(sql)).map(sql => ({
     step, sql, reason: 'Authority retention adds its deadline, registers the catch-up, seeds the active Project count, and retires the last unused authority table.'
+  }))),
+  ...VNEXT_S4B2_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO change_marks|INSERT INTO projection_catchup|DROP TRIGGER|DROP INDEX)/.test(sql)).map(sql => ({
+    step, sql, reason: 'A learning session records its counted contributions and deadlines, the old pending trigger is replaced by the keyed contribution triggers, the counting catch-up is registered, and the scheduling indexes with no reader left go.'
   }))),
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'

@@ -1,5 +1,5 @@
 import { clearArchivedTranscriptRanges } from '../db/documents/ranges.js';
-import { learningHolds, learningHoldsSql } from './learning-hold.js';
+import { learningHolds, learningHoldsSql } from '../db/learning/hold.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from './registered-content.js';

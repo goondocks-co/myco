@@ -16,6 +16,7 @@ import { capabilityOnSql, projectAcceptsWorkSql } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
+import { advanceLearningDeadlines } from '../db/learning/ready.js';
 
 interface SqlTerm { sql: string; params: unknown[] }
 
@@ -33,6 +34,8 @@ export interface PulledStage {
   readonly switchedOn: string;
   /** Whether an item of this stage is due in the Project the SQL expression `project` names. */
   due(project: string, now: number): SqlTerm;
+  /** The FROM clause, binding the Project as `p`, that candidate Projects come from; every Project when omitted. */
+  readonly candidates?: string;
   /** The Project's head at this stage. */
   head(db: RelationalStore, projectId: string, now: number): Promise<PulledItem | null>;
   /** The run's input for the item, or null when it offers nothing to do. */
@@ -92,11 +95,12 @@ interface PulledSelection { stage: PulledStage; item: PulledItem; assertions: Bo
  * then that Project's head. `compatible` is every stage the worker can execute, which the write's reassertion reads.
  */
 export async function selectPulled(db: RelationalStore, eligible: readonly PulledStage[], compatible: readonly PulledStage[], limits: DispatchLimits, now: number): Promise<PulledSelection | null> {
+  await advanceLearningDeadlines(db, now);
   for (const level of [...new Set(eligible.map((stage) => stage.level))].sort((a, b) => a - b)) {
     const byProject = new Map<string, PulledStage[]>();
     for (const stage of eligible.filter((candidate) => candidate.level === level)) {
       const due = stage.due('p.project_id', now);
-      const { results } = await db.prepare(`SELECT p.project_id AS projectId FROM projects p WHERE ${acceptsSql('p.project_id', stage.task)} AND ${due.sql}`)
+      const { results } = await db.prepare(`SELECT p.project_id AS projectId FROM ${stage.candidates ?? 'projects p'} WHERE ${acceptsSql('p.project_id', stage.task)} AND ${due.sql}`)
         .bind(...due.params).all<{ projectId: string }>();
       for (const { projectId } of results) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
     }

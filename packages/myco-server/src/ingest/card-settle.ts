@@ -15,9 +15,11 @@ import type { ServerEnv } from '../core/adapters.js';
 import { trimTurn, triageTurn } from '../core/turn-card-rules.js';
 import { TURN_QUIET_MS } from '../db/schema-v110.js';
 import {
-  cardOutline, cardStatements, forgetTurnStatement, NONE_CARD, reusableCard, turnMaterial, type DueTurn, type CardMarks,
+  cardOutline, cardWriteStatement, NONE_CARD, reusableCard, turnMaterial, type CardMarks,
 } from '../core/turn-cards.js';
-import { pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
+import { forgetTurnStatement, type DueTurn } from '../db/learning/cards.js';
+import { sessionProgressStatement } from '../db/learning/progress.js';
+import { commit } from '../db/index.js';
 import { SessionDocument } from '../content/session-pages.js';
 import { documentTurn } from '../content/turn-material.js';
 import { markCardModelDue, postponeCard, takeDueCards, type ReadyCard } from '../db/documents/card-settlement.js';
@@ -62,8 +64,8 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: ReadyCard, 
   if (document === null) return unmoved();
   const read = await documentTurn(env, p, s, turn.turnKey, document);
   if (read === null) {
-    const [forgotten] = await db.batch([forgetTurnStatement(db, p, s, turn), pendingCardsStatement(db, p, s), ...sessionProgressStatements(db, p, s, now)]);
-    return forgotten!.results.length > 0 ? 'settled' : unmoved();
+    const [forgotten] = await commit(db, forgetTurnStatement(p, s, turn), sessionProgressStatement(p, s, now));
+    return forgotten.results.length > 0 ? 'settled' : unmoved();
   }
   const { input, complete } = read;
   const material = turnMaterial(trimTurn(input));
@@ -74,6 +76,6 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: ReadyCard, 
     ? { value: prior.fields ?? prior.card, outline: prior.headline === null || prior.marks === null ? cardOutline(prior.fields ?? prior.card) : { headline: prior.headline, marks: JSON.parse(prior.marks) as CardMarks },
       signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
     : { value: NONE_CARD(rule!), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
-  const [carded] = await db.batch([...cardStatements(db, p, s, turn, card, now, material), ...sessionProgressStatements(db, p, s, now)]);
-  return carded!.results.length > 0 ? 'settled' : unmoved();
+  const [carded] = await commit(db, cardWriteStatement(p, s, turn, card, now, material), sessionProgressStatement(p, s, now));
+  return carded.results.length > 0 ? 'settled' : unmoved();
 }

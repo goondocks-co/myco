@@ -22,8 +22,8 @@ async function setup() {
   const token = seedCredential(sqlite);
   sqlite.query(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at)
     VALUES('proj_1','session',?,1,1)`).run(token);
-  sqlite.query(`INSERT INTO learning_sessions(project_id,session_id,init_state,max_seq,due_cards,failures)
-    VALUES('proj_1','session','ready',20,2,3)`).run();
+  sqlite.query(`INSERT INTO learning_sessions(project_id,session_id,init_state,max_seq,failures)
+    VALUES('proj_1','session','ready',20,3)`).run();
   for (const [turn, seq] of [['first', 10], ['second', 20]] as const) {
     sqlite.query(`INSERT INTO turn_cards(project_id,session_id,turn_key,state,input_hash,card,signal,records,last_seq,created_at,carded_at)
       VALUES('proj_1','session',?,'carded',?,'card','high',?,?,1,?)`)

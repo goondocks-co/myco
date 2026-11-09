@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
-import { processedResourceProofSql } from '../../core/processed-resources.js';
+import { processedResourceProofSql } from '../processed-resources.js';
 import { assertion, commit, read, readSet, refusalCode, refused, write } from '../index.js';
 
 const CLAIM_LOST = refusalCode('search_index_claim_lost');

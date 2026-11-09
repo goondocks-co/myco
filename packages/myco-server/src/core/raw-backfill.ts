@@ -1,5 +1,5 @@
 import type { JobBudget, RelationalStore } from './adapters.js';
-import { LIVE_PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
+import { LIVE_PROCESSED_FIELDS, processedReferenceSql } from '../db/processed-resources.js';
 import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from './raw-provenance.js';
 
 export const RAW_BACKFILL_BATCH = 500;
