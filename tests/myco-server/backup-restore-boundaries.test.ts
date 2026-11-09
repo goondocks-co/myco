@@ -279,6 +279,9 @@ test('a deletion between restore admission and its raw write refuses the write a
   });
 });
 
+/** Each restored session's trigger re-derives its statistics row and moves the Project's counters. */
+const PROJECT_STATISTICS_READS_PER_SESSION = 5;
+
 test('restore guard reads remain linear across sessions and additive rows', async () => {
   const { observeRestoreStore } = await import('./helpers/restore-observer.js');
   await withDocumentStores(async (db,target) => {
@@ -289,7 +292,7 @@ test('restore guard reads remain linear across sessions and additive rows', asyn
     const text=await artifact(db,rows), observed=observeRestoreStore(db);
     await restoreArtifact(observed.db,{text,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT COUNT(*) n FROM tags').first()).toEqual({n:tagCount});
-    expect(observed.reads()).toBeLessThan(100_000);
+    expect(observed.reads()).toBeLessThan(100_000 + sessionCount * PROJECT_STATISTICS_READS_PER_SESSION);
     console.log(JSON.stringify({kind:'restore_guard_cost',sessions:sessionCount,tags:tagCount,reads:observed.reads()}));
   });
 });

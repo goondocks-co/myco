@@ -28,13 +28,13 @@ export interface StatsProfile {
 }
 
 /** The indexes schema step 57 adds; a store analyzed before it holds no statistics for them. */
-export const STEP_57_INDEXES = ['idx_sessions_occurred_deployment', 'idx_spores_created_deployment', 'idx_plans_updated_deployment', 'idx_spores_author', 'idx_sessions_capture'] as const;
+export const STEP_57_INDEXES = ['idx_sessions_occurred_project', 'idx_spores_created_deployment', 'idx_plans_updated_deployment', 'idx_spores_author', 'idx_sessions_capture'] as const;
 /** The indexes schema step 58 adds, the `run_reads` key among them. */
 export const STEP_58_INDEXES = ['sqlite_autoindex_run_reads_1', 'idx_run_reads_session', 'idx_spores_session', 'idx_agent_runs_session'] as const;
 /** The indexes schema step 60 adds. */
 export const STEP_60_INDEXES = ['idx_sessions_working', 'idx_agent_runs_actor_entry'] as const;
 /** The indexes schema step 61 adds. */
-export const STEP_61_INDEXES = ['sqlite_autoindex_uncaptured_roots_1', 'idx_uncaptured_roots_member', 'idx_uncaptured_roots_seen'] as const;
+export const STEP_61_INDEXES = ['sqlite_autoindex_uncaptured_roots_1', 'idx_uncaptured_roots_member_recent', 'idx_uncaptured_roots_recent'] as const;
 
 export const PROFILES: Readonly<Record<'current' | 'stale', StatsProfile>> = {
   current: { projects: 13, sessions: 4_000, spores: 2_000, plans: 450, runs: 12_000, transcripts: 4_200, unanalyzed: [] },

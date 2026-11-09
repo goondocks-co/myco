@@ -3,17 +3,13 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
-import {
-  hook_placement_countUnplacedContextRecords as countUnplacedContextRecords,
-  hook_placement_HOOK_STATUS_WINDOW_DAYS as HOOK_STATUS_WINDOW_DAYS,
-} from '@myco-server-worker/read/catalog/hook-placement.js';
+import { CONTEXT_PLACEMENT_STATUS_DAYS, deliveriesNotPlaced, type DeliveriesNotPlaced } from '@myco-server-worker/db/sessions/placement.js';
 import { LocalVolume } from './local-volume.js';
 import type { LocalDeploymentPaths } from './local.js';
 import { operatorLogin, peekCommandDir, readDeploymentRecord, type CloudflareFetch } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { d1OperatorStore } from './d1-operator-store.js';
 
-type Counts = number;
 
 /** Read under shared volume ownership, including while the native Deployment serves. */
 export async function withLocalDiagnosticStore<T>(paths:LocalDeploymentPaths,read:(db:RelationalStore)=>Promise<T>,native?:NativeSqlite):Promise<T>{
@@ -34,16 +30,21 @@ export async function withCloudflareDiagnosticStore<T>(options:LifecycleOptions 
   return read(db);
 }
 
-export const localUnplacedContextRecords=(paths:LocalDeploymentPaths,native?:NativeSqlite):Promise<Counts>=>
-  withLocalDiagnosticStore(paths,countUnplacedContextRecords,native);
-export const cloudflareUnplacedContextRecords=(options:LifecycleOptions&{fetch?:CloudflareFetch}):Promise<Counts>=>
-  withCloudflareDiagnosticStore(options,countUnplacedContextRecords);
+export const localUnplacedContextRecords=(paths:LocalDeploymentPaths,native?:NativeSqlite):Promise<DeliveriesNotPlaced>=>
+  withLocalDiagnosticStore(paths,db=>deliveriesNotPlaced(db,Date.now()),native);
+export const cloudflareUnplacedContextRecords=(options:LifecycleOptions&{fetch?:CloudflareFetch}):Promise<DeliveriesNotPlaced>=>
+  withCloudflareDiagnosticStore(options,db=>deliveriesNotPlaced(db,Date.now()));
 
-/** A failed read remains unavailable. */
-export async function hookPlacementStatusLine(read: () => Promise<Counts>): Promise<string> {
+const STATUS_LABEL = `  Context deliveries not placed on a turn (${CONTEXT_PLACEMENT_STATUS_DAYS} UTC days)`;
+
+/** The status line: a failed read remains unavailable, deliveries not yet walked read as building, and a total names which kind each one is. */
+export async function hookPlacementStatusLine(read: () => Promise<DeliveriesNotPlaced>): Promise<string> {
   try {
-    return `  Context deliveries not placed on a turn (${HOOK_STATUS_WINDOW_DAYS} days): ${await read()}`;
+    const counted = await read();
+    if (counted.state === 'building') return `${STATUS_LABEL}: building`;
+    const total = counted.unnamed + counted.unavailable;
+    return total === 0 ? `${STATUS_LABEL}: 0` : `${STATUS_LABEL}: ${total} (${counted.unnamed} named no prompt, ${counted.unavailable} named a prompt not held)`;
   } catch (error) {
-    return `  Context deliveries not placed on a turn (${HOOK_STATUS_WINDOW_DAYS} days): unavailable — ${error instanceof Error ? error.message : String(error)}`;
+    return `${STATUS_LABEL}: unavailable — ${error instanceof Error ? error.message : String(error)}`;
   }
 }

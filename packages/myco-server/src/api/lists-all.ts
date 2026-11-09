@@ -21,7 +21,7 @@ import {
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
 } from '../read/catalog/plans.js';
 import type { ProjectSet } from '../read/scope.js';
-import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cursor.js';
+import { decodeProjectCursor, decodeSessionsAcrossCursor, PROJECT_CURSOR_REFUSAL, SESSIONS_ACROSS_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE, OFFSET_REFUSAL } from './intelligence.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 
@@ -41,7 +41,7 @@ async function projectSetOf(env: ServerEnv, ctx: OwnerContext): Promise<ProjectS
 export async function handleSessionsAcross(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const set = await projectSetOf(env, ctx);
   if (set instanceof Response) return set;
-  const page = paging(ctx.url, { decode: decodeProjectCursor, refusal: PROJECT_CURSOR_REFUSAL });
+  const page = paging(ctx.url, { decode: decodeSessionsAcrossCursor, refusal: SESSIONS_ACROSS_CURSOR_REFUSAL });
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;

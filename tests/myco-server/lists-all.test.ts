@@ -110,7 +110,7 @@ describe('the session list across Projects', () => {
     session('proj_1', 's_c', NOW);
     session('proj_2', 's_old', NOW - 1);
     const first = await get('/api/sessions?limit=2');
-    expect(first.body.rows.map((r: any) => r.sessionId)).toEqual(['s_c', 's_b']);
+    expect(first.body.rows.map((r: any) => r.sessionId)).toEqual(['s_b', 's_c']);
     const second = await get(`/api/sessions?limit=2&cursor=${encodeURIComponent(first.body.cursor)}`);
     expect(second.body.rows.map((r: any) => r.sessionId)).toEqual(['s_a', 's_old']);
   });

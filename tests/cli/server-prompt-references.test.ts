@@ -86,7 +86,7 @@ for (const target of ['local', 'cloudflare']) describe(`hook placement status on
     return log.mock.calls.flat().map(String).find(line => line.includes('Context deliveries not placed on a turn'));
   }
   it('prints zero through the target’s real read path', async () => {
-    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 0');
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 UTC days): 0');
     if (target === 'cloudflare') {
       expect(reads.length).toBeGreaterThan(0);
       expect(loginStartedAfterStatus).toBe(true);
@@ -102,7 +102,7 @@ for (const target of ['local', 'cloudflare']) describe(`hook placement status on
       VALUES ('p','tx','s','m','codex',100,100,1,1,'t','primary',?)`, [now]);
     sqlite.run(`INSERT INTO spore_injections(project_id,id,session_id,prompt_id,prompt_hash,spore_ids,ask_protocol,asked_at,created_at,delivered_prompt_id,delivered_at)
       VALUES ('p','r','s','missing','h','[]','v1',?,?,'missing-delivery',?)`, [now - 10, now - 5, now - 8]);
-    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 1');
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 UTC days): 1 (0 named no prompt, 1 named a prompt not held)');
   });
   it('excludes records created before the seven-day status window', async () => {
     const now = Date.now();
@@ -111,13 +111,13 @@ for (const target of ['local', 'cloudflare']) describe(`hook placement status on
       sqlite.run(`INSERT INTO spore_injections(project_id,id,session_id,prompt_id,prompt_hash,spore_ids,ask_protocol,asked_at,created_at,delivered_prompt_id,delivered_at)
         VALUES ('p',?,'s',?,?,'[]','v1',?,?,'missing-delivery',?)`, [id, 'missing-' + id, id, at, at, at]);
     }
-    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 1');
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 UTC days): 1 (0 named no prompt, 1 named a prompt not held)');
   });
   it('names an unavailable read rather than claiming zero', async () => {
     if (target === 'cloudflare') failRead = true;
-    else sqlite.run('ALTER TABLE spore_injections RENAME TO unreadable_references');
+    else sqlite.run('ALTER TABLE context_placement_days RENAME TO unreadable_references');
     const line = await status();
-    expect(line).toContain('  Context deliveries not placed on a turn (7 days): unavailable — ');
+    expect(line).toContain('  Context deliveries not placed on a turn (7 UTC days): unavailable — ');
     expect(line).toContain(target === 'cloudflare' ? 'query refused' : 'no such table');
   });
 });

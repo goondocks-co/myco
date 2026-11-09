@@ -100,6 +100,10 @@ const SPECS: ReadonlyArray<readonly [table: string, spec: PhaseSpec]> = [
   ['document_transcript_pins', { key: ['project_id', 'transcript_id'] }],
   ['event_refs', { key: ['project_id', 'event_id'], before: eventRefPromptsLeaveSpores }],
   ['events', { key: ['project_id', 'event_id'], before: eventOmissions }],
+  // Statistics and placements are re-derived by triggers on the rows above, so they follow them.
+  ['session_statistics', { key: ['project_id', 'session_id'] }],
+  ['session_attachment_counts', { key: ['project_id', 'session_id'] }],
+  ['context_placements', { key: ['project_id', 'session_id', 'kind', 'record_id'] }],
   // Pin totals follow the pins their triggers maintain, so the totals are the last of the session's derived rows.
   ['document_pin_totals', { key: ['project_id', 'session_id', 'role', 'prompt_identity_scheme'] }],
 ];

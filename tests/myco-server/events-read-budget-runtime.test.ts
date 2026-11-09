@@ -78,13 +78,35 @@ const PUBLICATION_PIN_WRITES = 3;
 /** A session's title work row, written or moved when its state changes. */
 /** A transcript's pin row gains an entry in the session-keyed index the deletion job pages. */
 const DELETION_PIN_INDEX_WRITES = 1;
+/** A tombstone moves the plan and turn search revisions, each one row. */
+const TOMBSTONE_SEARCH_REVISION_WRITES = 2;
 const TITLE_WORK_WRITES = 1;
+/** A session's own statistics row, written when it first appears or what it counts changes. */
+const SESSION_STATISTICS_ROW_WRITES = 1;
+/** One move of its Project's counters row. */
+const PROJECT_COUNTER_WRITES = 1;
+/** One UTC day's session count for the Project. */
+const PROJECT_DAY_ROW_WRITES = 1;
+/** A delivery's placement row. */
+const PLACEMENT_ROW_WRITES = 1;
+/** One UTC day's placement count for one state. */
+const PLACEMENT_DAY_WRITES = 1;
+/** A session's attachment count row. */
+const SESSION_ATTACHMENT_COUNT_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_FACT_INSERT_WRITES + 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_PROMPT_WRITES + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
+  'session.start': SESSION_STATISTICS_ROW_WRITES + PROJECT_COUNTER_WRITES + PROJECT_DAY_ROW_WRITES + TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_FACT_INSERT_WRITES + 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_PROMPT_WRITES + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
   notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': DELETION_PIN_INDEX_WRITES + LIFECYCLE_TRANSCRIPT_WRITES + PUBLICATION_PIN_WRITES + PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
   'transcript grows after full publish': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES,
   'transcript grows during directory pass': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES + PUBLICATION_DIRECTORY_RESTART_WRITES,
-  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26 + TITLE_WORK_WRITES + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES + LIFECYCLE_END_WRITES + LIFECYCLE_EVENT_INDEX_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': SESSION_STATISTICS_ROW_WRITES + PROJECT_COUNTER_WRITES + 26 + TITLE_WORK_WRITES + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES + LIFECYCLE_END_WRITES + LIFECYCLE_EVENT_INDEX_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  'document counters move': 1 + SESSION_STATISTICS_ROW_WRITES + PROJECT_COUNTER_WRITES,
+  'receipt selected': 8 + PLACEMENT_ROW_WRITES + PLACEMENT_DAY_WRITES,
+  'receipt delivered': 6 + PLACEMENT_ROW_WRITES + 2 * PLACEMENT_DAY_WRITES,
+  'served answer': 6 + PLACEMENT_ROW_WRITES + PLACEMENT_DAY_WRITES,
+  'prompt lands on a delivery': 16 + PLACEMENT_ROW_WRITES + 2 * PLACEMENT_DAY_WRITES,
+  'first attachment': 6 + SESSION_ATTACHMENT_COUNT_WRITES + PROJECT_COUNTER_WRITES,
+  'further attachment': 6 + SESSION_ATTACHMENT_COUNT_WRITES + PROJECT_COUNTER_WRITES,
+  tombstone: 8 + TOMBSTONE_SEARCH_REVISION_WRITES + SESSION_STATISTICS_ROW_WRITES + PROJECT_DAY_ROW_WRITES + 2 * PROJECT_COUNTER_WRITES + SESSION_ATTACHMENT_COUNT_WRITES + 2 * (PLACEMENT_ROW_WRITES + PLACEMENT_DAY_WRITES),
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -347,6 +369,19 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       await db.prepare("UPDATE session_documents SET publication_after='[]' WHERE project_id=? AND session_id=?").bind(PROJECT,sessionId).run();
       await capture('transcript grows during directory pass', () => measured.db.prepare('UPDATE transcripts SET size=160 WHERE project_id=? AND transcript_id=?').bind(PROJECT,sessionId).run());
       await event('session.end', { endedAt: now });
+      const deliverySession = `${sessionId}-delivery`;
+      await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES(?,?,'machine','credential',1,1)`).bind(PROJECT, deliverySession).run();
+      await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES(?,?,'live',1,1)`).bind(PROJECT, deliverySession).run();
+      await capture('document counters move', () => measured.db.prepare('UPDATE session_documents SET prompts=prompts+1,tool_calls=tool_calls+1 WHERE project_id=? AND session_id=?').bind(PROJECT, deliverySession).run());
+      const receipt = (id: string) => measured.db.prepare(`INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,created_at) VALUES(?,?,?,?,?,'[]',1)`).bind(PROJECT, deliverySession, id, `selected-${id}`, id).run();
+      await capture('receipt selected', () => receipt('selected'));
+      await capture('receipt delivered', () => measured.db.prepare(`UPDATE spore_injections SET delivered_at=2,delivered_prompt_id='late-prompt' WHERE project_id=? AND session_id=? AND id='selected'`).bind(PROJECT, deliverySession).run());
+      await capture('served answer', () => measured.db.prepare(`INSERT INTO prompt_context_answers(project_id,session_id,id,prompt_id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES(?,?,'answer','answered','served',0,'[]','[]','[]','{}',1)`).bind(PROJECT, deliverySession).run());
+      await capture('prompt lands on a delivery', () => measured.db.prepare(`INSERT INTO session_prompts(project_id,prompt_id,session_id,generation,turn_key,created_at,ord,origin) VALUES(?,'late-prompt',?,1,'late-prompt',1,1,'user')`).bind(PROJECT, deliverySession).run());
+      const attachment = (id: string) => measured.db.prepare(`INSERT INTO attachments(project_id,attachment_id,session_id,event_id,blob_key,media_type,byte_size,created_at,token_id,received_at) VALUES(?,?,?,?,'b','image/png',1,1,'t',1)`).bind(PROJECT, id, deliverySession, id).run();
+      await capture('first attachment', () => attachment('first'));
+      await capture('further attachment', () => attachment('further'));
+      await capture('tombstone', () => measured.db.prepare(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by) VALUES(?,?,NULL,1,'member')`).bind(PROJECT, deliverySession).run());
       const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:memoryBlobStore(),SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
       await publishDocuments({...configured,blobs:memoryBlobStore()},now,{calls:500,deadline:Infinity,clock:()=>now});
       const acknowledge = await preparePromptAcknowledgement(measured.db, { projectId: PROJECT }, promptIds[0]!);

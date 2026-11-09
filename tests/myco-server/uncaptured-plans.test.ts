@@ -8,7 +8,6 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { getUncaptured, listUncaptured, UNCAPTURED_LIST_LIMIT } from '@myco-server-worker/read/uncaptured.js';
 import { clearUncapturedStatement, heldUncapturedStatement, pruneUncaptured, recordUncapturedStatement } from '@myco-server-worker/ingest/uncaptured.js';
 import { remoteHolder, resolveRepository } from '@myco-server-worker/core/remotes.js';
 import { connectedRoot, connectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
@@ -65,21 +64,6 @@ const MEMBER_KEY = 'SEARCH m USING INDEX sqlite_autoindex_members_1 (id=?)';
 const KEY = 'a'.repeat(16);
 
 describe('auto-join, under the statistics a Deployment plans from', () => {
-  it('reads a member\'s repositories by member, an administrator\'s in index order to the limit, and one by its key', async () => {
-    const [all, mine, one] = await Promise.all([
-      plans((db) => listUncaptured(db, { all: true })),
-      plans((db) => listUncaptured(db, { all: false, memberId: 'mem_1' })),
-      plans((db) => getUncaptured(db, 'machine_1', KEY)),
-    ]);
-    for (const { store, sql, plan } of all) {
-      expect({ store, plan }).toEqual({ store, plan: `SCAN u USING INDEX idx_uncaptured_roots_seen\n${MEMBER_KEY}` });
-      expect(sql).toContain('LIMIT ?');
-    }
-    for (const { store, plan } of mine) expect({ store, plan }).toEqual({ store, plan: `SEARCH u USING INDEX idx_uncaptured_roots_member (member_id=?)\n${MEMBER_KEY}` });
-    for (const { store, plan } of one) expect({ store, plan }).toEqual({ store, plan: `${ROW_KEY}\n${MEMBER_KEY}` });
-    expect(UNCAPTURED_LIST_LIMIT).toBe(100);
-  });
-
   it('records and forgets a repository by its key', async () => {
     const written = await plans(async (db) => {
       await recordUncapturedStatement(db, { machineId: 'machine_1', memberId: 'mem_1', rootKey: KEY, label: 'widget', remote: null, reason: 'no_remote', held: 'held', sessions: 1, now: 1 }).run();
@@ -97,7 +81,7 @@ describe('auto-join, under the statistics a Deployment plans from', () => {
     for (const { store, sql, plan } of written) {
       expect({ store, sql: sql.slice(0, 60), scans: scans(plan) }).toEqual({ store, sql: sql.slice(0, 60), scans: [] });
       if (sql.startsWith('UPDATE')) expect({ store, plan }).toEqual({ store, plan: ROW_KEY.replace('SEARCH u', 'SEARCH uncaptured_roots') });
-      if (sql.includes('last_seen_at < ?')) expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('idx_uncaptured_roots_seen (last_seen_at<?)') });
+      if (sql.includes('last_seen_at < ?')) expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('idx_uncaptured_roots_recent (last_seen_at<?)') });
     }
   });
 

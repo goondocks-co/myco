@@ -11,6 +11,7 @@ import { CARD_SETTLE_AND_LOCATOR_STEPS } from '@myco-server-worker/db/schema-vNE
 import { VNEXT_S2C_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c.js';
 import { NEXT_S6B, VNEXT_S6B_STEPS } from '@myco-server-worker/db/schema-vNEXT-s6b.js';
 import { authorityRetentionSchemaStatements } from '@myco-server-worker/db/identity/authority-retention.js';
+import { VNEXT_S2C2_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c2.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -121,6 +122,14 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
         : 'The object-release drain reads its next page of each release queue from this order.' }];
   }),
+  ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || match[2] === 'session_statistics' || match[2] === 'session_attachment_counts' || match[2] === 'context_placements' ? [] : [{ step, object: match[1]!, table: match[2]!,
+      reason: match[1] === 'idx_prompt_context_answers_delivered' ? 'A prompt reaches the answers delivered to it by key, so a late prompt or a restore reads only the deliveries that name it.'
+        : match[1]!.startsWith('idx_') ? 'A page across Projects and a page of uncaptured repositories walk a complete order with no sort, so a tie never moves across a boundary.'
+        : match[1]!.startsWith('context_placement') ? 'A delivery and the prompts it names re-derive its placement row in the same commit, so the placement status reads day counters and never collapses unnamed and unavailable.'
+        : 'The sources of a Project\'s statistics re-derive that session\'s row in the same commit, so the Project page reads counters instead of recounting history.' }];
+  })),
   ...VNEXT_S2C_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
     const match = /^CREATE TRIGGER(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null || match[2] === 'session_title_work' ? [] : [{ step, object: match[1]!, table: match[2]!,
@@ -430,6 +439,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
+  ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
+    step, sql, reason: 'The session and uncaptured indexes go once a complete order replaces them, and Project statistics add counter columns and are seeded through the shared catch-up.'
+  }))),
   ...VNEXT_S2C_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
     step, sql, reason: 'Title work is seeded through the shared catch-up, and the four titling scan indexes go once their readers read title work.'
   }))),

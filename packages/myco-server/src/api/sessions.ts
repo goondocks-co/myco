@@ -9,7 +9,6 @@ import { sessionLifecycleState } from '../db/documents/lifecycle.js';
 import {
   sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
-  sessions_projectStats as projectStats,
   sessions_sessionDurationMs as sessionDurationMs,
   type sessions_SessionFilters as SessionFilters,
 } from '../read/catalog/sessions.js';
@@ -48,6 +47,7 @@ import { tombstoneSession } from '../core/tombstones.js';
 import { deletionProgress } from '../db/sessions/deletion.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../db/runs/reads.js';
+import { projectStatistics } from '../db/sessions/statistics.js';
 import { sessionCommits } from '../read/session-commits.js';
 import { lineage_sessionLineage as sessionLineage } from '../read/catalog/lineage.js';
 import { listSessionArtifacts } from '../read/session-artifacts.js';
@@ -364,7 +364,7 @@ export async function handleProjectActivity(env: ServerEnv, ctx: OwnerContext): 
   if (rawLimit !== null && !/^[0-9]+$/.test(rawLimit)) return badRequest('limit must be a positive integer');
   const [items, stats] = await Promise.all([
     activityFeed(env.db, scope, rawLimit === null ? undefined : Number(rawLimit)),
-    projectStats(env.db, scope, ctx.now),
+    projectStatistics(env.db, scope.projectId, ctx.now),
   ]);
   return ok({ items, stats });
 }
