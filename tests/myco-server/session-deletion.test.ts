@@ -20,7 +20,8 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { plans_listProjectPlans as listProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
 import { plans_getPlan as getPlan } from '@myco-server-worker/read/catalog/plans.js';
-import { sessions_getSession as getSession, sessions_projectStats as projectStats } from '@myco-server-worker/read/catalog/sessions.js';
+import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
+import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { memberAdmitted, membersAdmittedAmong } from '@myco-server-worker/db/raw/resources.js';
 import worker from '@myco-server-worker/index.js';
@@ -67,7 +68,7 @@ describe('accepting a deletion', () => {
     expect(count(e.sqlite, 'events')).toBeGreaterThan(0);
     expect(await getSession(e.db, SCOPE, S)).toBeNull();
     expect(await listProjectPlans(e.db, SCOPE)).toEqual([]);
-    expect((await projectStats(e.db, SCOPE, NOW)).prompts).toBe(0);
+    expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0 });
   });
 
   it('refuses every new event for the session as a tombstoned session does, even while the job is still working', async () => {

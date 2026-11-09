@@ -26,7 +26,6 @@ import {
   sessions_listSessions as listSessions,
   sessions_listSessionSummaries as listSessionSummaries,
   sessions_projectHoldsSession as projectHoldsSession,
-  sessions_projectStats as projectStats,
   sessions_sessionCounts as sessionCounts,
   sessions_sessionHeldByMachine as sessionHeldByMachine,
   sessions_sessionInScope as sessionInScope,
@@ -35,6 +34,7 @@ import {
   activity_activityFeed as activityFeed,
 } from '@myco-server-worker/read/catalog/activity.js';
 import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import {
   plans_listProjectPlans as listProjectPlans,
 } from '@myco-server-worker/read/catalog/plans.js';
@@ -207,8 +207,7 @@ describe('a deleted session is absent from every read', () => {
     const { env, send } = await rig();
     await populate(send);
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
-    const stats = await projectStats(env.db, SCOPE, NOW);
-    expect({ sessions: stats.sessions, prompts: stats.prompts, plans: stats.plans }).toEqual({ sessions: 0, prompts: 0, plans: 0 });
+    expect(await projectStatistics(env.db, SCOPE.projectId, NOW)).toMatchObject({ state: 'ready', sessions: 0, prompts: 0, plans: 0 });
     expect(await listProjectPlans(env.db, SCOPE)).toEqual([]);
   });
 

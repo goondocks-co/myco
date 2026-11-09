@@ -51,7 +51,7 @@ it('pages sessions, plans and credential activity across Projects one row at a t
     events: ['proj_2/shared-event', 'proj_1/shared-event'],
   });
 
-  // Each route pages with the cursor it issued, and refuses any cursor without the p1: encoding, an id holding a colon included.
+  // Each route pages with the cursor it issued, and refuses any cursor without its own encoding, an id holding a colon included.
   await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', Date.now());
   const get = async (path: string) => {
     const res = await worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
@@ -62,8 +62,8 @@ it('pages sessions, plans and credential activity across Projects one row at a t
     const first = await get(path);
     const cursor = String(first.body.cursor);
     const next = await get(`${path}&cursor=${encodeURIComponent(cursor)}`);
-    expect({ name, first: first.status, prefixed: cursor.startsWith('p1:'), next: next.status }).toEqual({ name, first: 200, prefixed: true, next: 200 });
-    for (const old of [encodeCursor(50, 'shared'), encodeCursor(50, 'proj_1:shared')]) {
+    expect({ name, first: first.status, prefixed: cursor.startsWith(name === 'sessions' ? 'p2:' : 'p1:'), next: next.status }).toEqual({ name, first: 200, prefixed: true, next: 200 });
+    for (const old of [encodeCursor(50, 'shared'), encodeCursor(50, 'proj_1:shared'), ...(name === 'sessions' ? ['p1:50:proj_1:shared'] : [])]) {
       const refused = await get(`${path}&cursor=${encodeURIComponent(old)}`);
       expect({ name, old, status: refused.status, reason: refused.body.reason }).toEqual({
         name, old, status: 400, reason: expect.stringContaining('request the first page again without a cursor'),

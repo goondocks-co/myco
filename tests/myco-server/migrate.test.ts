@@ -791,6 +791,12 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0770_v770.sql': 'b81f470dc2b3314b234f91015df6e95492bac238078527cbde7073569801eea0',
   '0771_v771.sql': 'bc9286ca4fe608ed843b78b771935d5744d28ba23a92a0d54a215983996cc11a',
   '0772_v772.sql': 'c55e492ac1fde519f218c3c38612838fb5dfd09924fd2c48d5f344323af902b3',
+  '0773_v773.sql': '218904816624ec4292aa9960d51b795f8bb38ac8cb605c75e978d7189eef602b',
+  '0774_v774.sql': 'ee9e9b762f4e84ab257e309b7703616c2cb28a5c5cf80f2f47992357e3fbd4c5',
+  '0775_v775.sql': 'e3633e395a7a8b486b1b097a7416c16611fbb43c5ba36aa09aef26b8df4119cb',
+  '0776_v776.sql': 'b5081c998e355d05bdf8750caae94027be3562b42b5da52d137663c989cbe35e',
+  '0777_v777.sql': '5b105ec92de98252fa10aa1dc1be3760357f24cac815be6952ca81046c030e67',
+  '0778_v778.sql': '6affa85d81bbbdeee5d921b683b43f8f93dc705749eb0a257f6fadbcac805048',
 };
 import { NEXT_S1C } from '@myco-server-worker/db/schema-vNEXT-s1c.js';
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -1254,6 +1260,8 @@ describe('versioned schema steps', () => {
   it('keeps earlier tables and columns except declared retirements', () => {
     // Title work's own indexes take the place of these four.
     const TITLE_WORK_REPLACED_INDEXES = new Set(['idx_sessions_pending_title', 'idx_sessions_untitled_ended', 'idx_sessions_untitled_open', 'idx_sessions_titled_recent']);
+    // Each is replaced by an index ordering the same rows with a complete tuple.
+    const BROWSE_REPLACED_INDEXES = new Set(['idx_sessions_occurred_deployment', 'idx_uncaptured_roots_seen', 'idx_uncaptured_roots_member']);
     const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
     const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredTablesAtS5b = new Set(['embedding_hubness_population', 'embedding_hubness_work']);
@@ -1314,7 +1322,7 @@ describe('versioned schema steps', () => {
           const table = indexesBefore().get(droppedIndex) ?? null;
           const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
             new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
-          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || droppedIndex === 'idx_session_tombstones_created' || SCHEMA_STEPS[n]!.version === NEXT_S4B2 + 7 || (dropping && table !== null && DROPPED_CONTENT.has(table));
+          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || BROWSE_REPLACED_INDEXES.has(droppedIndex) || droppedIndex === 'idx_session_tombstones_created' || SCHEMA_STEPS[n]!.version === NEXT_S4B2 + 7 || (dropping && table !== null && DROPPED_CONTENT.has(table));
           expect({ step: n + 1, droppedIndex, table, allowed }).toEqual({ step: n + 1, droppedIndex, table, allowed: true });
           continue;
         }
@@ -1440,6 +1448,11 @@ describe('versioned schema steps', () => {
     const writerRows = new Map<string, Record<string, unknown>>();
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
     writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
+    writerRows.set('session_statistics', { session_id: 'grammar-session', open_session: 0, occurred_day: 0, prompts: 0, tool_calls: 0 });
+    writerRows.set('session_attachment_counts', { session_id: 'grammar-session', n: 0 });
+    writerRows.set('project_session_days', { day: 0, n: 0 });
+    writerRows.set('context_placements', { session_id: 'grammar-session', kind: 'receipt', record_id: 'r', created_at: 0, state: 'selected' });
+    writerRows.set('context_placement_days', { day: 0, state: 'selected', n: 0 });
     writerRows.set('task_runtime', { task: 'title-summary', origin: 'manual' });
     writerRows.set('task_due', { run_id: 'grammar-run', task: 'title-summary', origin: 'manual', claimable: 1 });
     writerRows.set('run_live', { run_id: 'grammar-run', task: 'title-summary', status: 'pending', origin: 'manual', claimable: 1 });
@@ -1522,14 +1535,14 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'publication_dependencies','session_lifecycle_facts','session_title_work','session_user_prompt_firsts','document_locator_repair',
+      'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',
       'object_settlement_intents', 'attempt_spend', 'attempt_head', 'budget_totals', 'run_head', 'run_bodies', 'run_body_failures', 'run_retirements', 'run_live', 'run_output_membership', 'task_runtime', 'task_due', 'work_daily', 'work_run_contribution', 'work_window_sessions', 'work_window_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_vector_pages', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
-      'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
+      'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'project_session_days', 'projects', 'context_placements',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'spore_resolution_edges', 'learning_project_counts', 'learning_ready_projects',
       'session_deletion_jobs', 'transcript_reread_jobs', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import {
-  hook_placement_countUnplacedContextRecords as countUnplacedContextRecords,
   hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
 } from '@myco-server-worker/read/catalog/hook-placement.js';
 
@@ -63,10 +62,9 @@ describe('hook placement', () => {
       VALUES ('proj_1',?,'last-lookup','parent','last','[]',3)`, [session]);
     expect(await sessionTurnContexts(f.db, scope, session)).toEqual({});
     expect((await listUnplacedHookRecords(f.db, scope, session)).rows.map(row => row.id)).toEqual(['cortex:agent-one', 'cortex:agent-two']);
-    expect(await countUnplacedContextRecords(f.db, scope, session, 100)).toBe(0);
   });
 
-  it('lists session context and delivered plan reminders while status counts only deliveries', async () => {
+  it('lists session context and delivered plan reminders', async () => {
     const f = fixture();
     const now = 10 * 24 * 60 * 60 * 1000;
     f.sqlite.run(`INSERT INTO session_injections(project_id,session_id,kind,created_at,delivered_at)
@@ -74,22 +72,16 @@ describe('hook placement', () => {
     f.receipt('recent', null);
     f.sqlite.run("UPDATE spore_injections SET created_at = ? WHERE id = 'recent'", [now]);
     expect((await listUnplacedHookRecords(f.db, scope, 's')).rows.map(row => row.id).sort()).toEqual(['cortex:agent', 'plan-nudge', 'recent']);
-    expect(await countUnplacedContextRecords(f.db, scope, 's', now)).toBe(1);
   });
 
-  it('counts a Deployment-wide status window in statements under the hosted 100 KB limit at 1,500 sessions', async () => {
+  it('keeps a record that names no prompt apart from one naming a prompt the session does not hold, and places it when the prompt arrives', async () => {
     const f = fixture();
-    const sessions = Array.from({ length: 1500 }, (_, index) => 'deployment-session-' + String(index).padStart(4, '0'));
-    for (const session of sessions) {
-      f.sqlite.run(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1',?,'t',1,1)`, [session]);
-      f.sqlite.run(`INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,created_at,delivered_at,delivered_prompt_id)
-        VALUES ('proj_1',?,'receipt','absent','hash','[]',1,2,'absent')`, [session]);
-      f.sqlite.run(`INSERT INTO prompt_context_answers(project_id,session_id,id,prompt_id,outcome,context_chars,parts,skipped,failures,selection,created_at,delivered_at,delivered_prompt_id)
-        VALUES ('proj_1',?,'answer','absent','served',0,'[]','[]','[]','{}',1,2,'absent')`, [session]);
-    }
-    let longest = 0;
-    const measured = { prepare: (sql: string) => { longest = Math.max(longest, sql.length); return f.db.prepare(sql); }, batch: f.db.batch.bind(f.db) };
-    expect(await countUnplacedContextRecords(measured, undefined, undefined, 100)).toBe(3000);
-    expect(longest).toBeLessThan(100_000);
-  }, 30_000);
+    f.sqlite.run(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at) VALUES ('proj_1','s','live',1,1)`);
+    f.receipt('no-hint', null);
+    f.receipt('late-prompt', 'arrives-later');
+    const placements = async () => Object.fromEntries((await listUnplacedHookRecords(f.db, scope, 's')).rows.map(row => [row.id, row.placement]));
+    expect(await placements()).toEqual({ 'no-hint': 'unnamed', 'late-prompt': 'unavailable' });
+    f.prompt('arrives-later');
+    expect(await placements()).toEqual({ 'no-hint': 'unnamed' });
+  });
 });
