@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 /** How far other queued runs are moved back while this scenario claims its own, and forward again afterwards. */
 const PARK_MS = 3_600_000;
@@ -25,8 +26,8 @@ export const harnessCredentialSlots: ParityScenario = {
     const leaves = ((await settings.json()) as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> }).leaves;
     const before = [modelLeaf, credentialLeaf].map((leaf) => leaves.find((entry) => entry.leaf === leaf));
     if (before.some((entry) => entry === undefined)) throw new Error(`${target.name}: missing Codex profile settings`);
-    const setting = (method: 'PUT' | 'DELETE', leaf: string, value?: unknown) => fetch(`${target.url}/api/settings/${leaf}`, {
-      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+    const setting = async (method: 'PUT' | 'DELETE', leaf: string, value?: unknown) => fetch(`${target.url}/api/settings/${leaf}`, {
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, `/api/settings/${leaf}`) },
       ...(method === 'PUT' ? { body: JSON.stringify({ value }) } : {}),
     });
     const set = async (leaf: string, value: unknown): Promise<void> => {

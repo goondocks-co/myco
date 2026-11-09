@@ -26,8 +26,10 @@ Every write goes through the settings module, and it does five things in a fixed
 1. **Admit the leaf** — is this a deployment-tier setting at all?
 2. **Authorize the actor.**
 3. **Check the leaf's own rule.**
-4. **Persist it**, recording who changed it and when.
+4. **Persist it**, recording who changed it and when, inside a commit that re-checks the revision the change was made against.
 5. **Re-arm** any schedule the change moved.
+
+Every write carries the revision its caller read: `If-Match` with the leaf's `revision` from `GET /api/settings` (a Project's from `GET /api/projects/{id}/capabilities`). Absent is refused with 428; stale is refused with 409 naming the leaf, the actual and expected revision and the call to make next.
 
 The order is the point. Splitting these across call sites is how three of the four eventually go missing on one path and nobody notices. A gate holds every write to that one module, keyed on the tables themselves, so a second writer fails the build rather than drifting.
 
@@ -63,7 +65,7 @@ One reader is worth knowing by name: the session-start instructions template ans
 
 ## Refusals
 
-Four, and none is retryable — each names a fault in the caller's own request:
+These answer a fault in the caller's own request. A conflict is the one to re-read and repeat: the answer names the revision to send.
 
 | Refusal | Means |
 |---|---|
@@ -71,6 +73,10 @@ Four, and none is retryable — each names a fault in the caller's own request:
 | unauthorized | the actor may not make this change |
 | invalid value | the leaf's own rule rejected it, with a detail naming why |
 | unknown capability | the capability name is not one of the three |
+| conflict (409) | the leaf changed since the caller read it; nothing was saved, and the answer gives the leaf, its actual and expected revision and the next call |
+| revision required (428) | the write sent no `If-Match`; nothing was saved |
+
+A changed idle close does not rewrite sessions in the settings write: the commit records a generation, the catch-up rewrites deadlines in pages and activates it, and Settings shows what is configured, what is pending and what is in effect until then.
 
 ## Project capabilities
 

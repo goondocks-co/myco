@@ -2,7 +2,7 @@ import { MECHANISM_WORDS } from '../helpers/reader-vocabulary';
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/index.js';
-import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
+import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount, settingsRevisionHeaders } from './helpers/owner.js';
 import {
   EXTRACTION_TASK,
   PULLED_ONLY_TASKS,
@@ -105,7 +105,7 @@ describe('task description registry gates', () => {
       const env = { ...f.env, ...OWNER_ENV };
       const headers = { cookie: await ownerCookie(f.db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' };
       const write = async (leaf: string, value: unknown) => {
-        const response = await worker.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'PUT', headers, body: JSON.stringify({ value }) }), env);
+        const response = await worker.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'PUT', headers: { ...headers, ...await settingsRevisionHeaders(f.db, `/api/settings/${leaf}`) }, body: JSON.stringify({ value }) }), env);
         expect(response.status).toBe(200);
         expect((await response.json() as { applied: boolean }).applied).toBe(true);
       };

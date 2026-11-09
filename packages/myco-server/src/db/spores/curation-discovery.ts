@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { capabilityOnSql, curationEnabledAtSql } from '../../core/settings.js';
+import { capabilityOnSql, curationEnabledAtSql } from '../../db/settings/admission.js';
 import { curationChangeSql } from '../curation-changes.js';
 import { commitNamed, first, read, readSet, rows, write } from '../index.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';

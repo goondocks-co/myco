@@ -8,7 +8,7 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { PulledStage } from './pulled-stages.js';
 import type { TaskInput } from './task-inputs.js';
 import { CURATION_TASK } from './task-catalogue.js';
-import { nextCurationProject, curationAnyEnabledSql } from './settings.js';
+import { nextCurationProject, curationAnyEnabledSql } from '../db/settings/admission.js';
 import { resolveSemanticSearch, searchDeployment } from './search.js';
 import {
   embedding_semanticHits as semanticHits,

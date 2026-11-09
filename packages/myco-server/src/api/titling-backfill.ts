@@ -8,8 +8,7 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { settingRevisionRoute } from './settings.js';
-import { settingsWriter } from '../core/settings.js';
+import { settingRevisionRoute, writerFor } from './settings.js';
 import { titlingBackfillProgress } from '../core/titling.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
@@ -24,7 +23,7 @@ export const handleSetTitlingBackfill = settingRevisionRoute('agent.tasks', asyn
   const body = await readJsonObject(ctx.request);
   const enabled = body?.enabled;
   if (typeof enabled !== 'boolean') return badRequest('enabled must be true or false');
-  const result = await settingsWriter(env.db, { target: env.platform.name }).setTaskSwitch(TITLING_TASK, enabled, ctx.member.id, ctx.now, revision);
+  const result = await writerFor(env).setTaskSwitch(TITLING_TASK, enabled, ctx.member.id, ctx.now, revision);
   if (!result.applied) {
     const refusal = result.refusal;
     if (refusal.reason === 'conflict') return Response.json({ applied: false, ...refusal }, { status: 409 });

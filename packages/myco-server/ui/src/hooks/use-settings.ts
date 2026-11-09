@@ -9,8 +9,9 @@ import { live } from '../lib/live';
 export type { LeafRow, SecretRow } from '../features/admin/settings/wire';
 export type { RepositoryRow } from '../features/admin/project/wire';
 
-/** Whether Settings is in motion: an embedding model switch stands, so it is read again until the switch settles. */
-export const settingsMoving = (answer: SettingsAnswer | undefined): boolean => answer?.embedding?.switch != null;
+/** Whether Settings is in motion: an embedding model switch stands or a changed idle close is moving sessions, so it is read again until that settles. */
+export const settingsMoving = (answer: SettingsAnswer | undefined): boolean =>
+  answer?.embedding?.switch != null || answer?.leaves.some(row => row.learningDeadlines?.rebuilding === true) === true;
 
 export function useSettings() {
   return useQuery({
@@ -69,6 +70,8 @@ export function settingsRefusalText(err: unknown): string {
         return 'That setting is retired.';
       case 'conflict':
         return 'This changed since the page read it. Review the current value before saving again.';
+      case 'revision_required':
+        return 'Reload this setting before saving it.';
       case 'invalid_value':
         return typeof body.detail === 'string' && body.detail !== '' ? `The server refused that value: ${body.detail.replace(/\.$/, '')}.` : 'The server refused that value.';
       case 'unknown_capability':

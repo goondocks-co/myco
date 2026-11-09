@@ -13,6 +13,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
+import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
 
 const ANTHROPIC = 'sk-ant-api03-ZmFrZS1rZXktZm9yLXRlc3Rpbmc';
@@ -513,6 +514,18 @@ it('repairs stale task fields through the authenticated Settings operation and p
   const saved = e.sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string; updated_by: string };
   expect(JSON.parse(saved.value)).toEqual({ 'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' } });
   expect(saved.updated_by).toBe('mem_machine_1');
+});
+
+it('shows the configured, pending and effective idle close while a rebuild runs', async () => {
+  const e = env();
+  try {
+    const idleClose = async () => ((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>).find(row => row.leaf === 'agent.titling_idle_close_minutes')!;
+    expect(await idleClose()).toMatchObject({ learningDeadlines: { configured: 120, pending: null, effective: 120, rebuilding: false } });
+    expect(await json(await worker.fetch(await put(e.db, '/api/settings/agent.titling_idle_close_minutes', { value: 30 }), e.all))).toEqual({ applied: true });
+    expect(await idleClose()).toMatchObject({ value: 30, learningDeadlines: { configured: 30, pending: 30, effective: 120, rebuilding: true } });
+    await catchUpProjections(e.db, { budget: { calls: 120, wallMs: 60_000 } });
+    expect(await idleClose()).toMatchObject({ learningDeadlines: { configured: 30, pending: null, effective: 30, rebuilding: false } });
+  } finally { e.sqlite.close(); }
 });
 
 it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its actor is %s at commit and preserves legacy policy',async fault=>{

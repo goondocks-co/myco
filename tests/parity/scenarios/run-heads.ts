@@ -2,6 +2,7 @@ import { HELD_BY_WORDS } from '@goondocks/myco-shared/run-holds';
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario } from '../harness.ts';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
+import { revisionHeaders } from '../settings-revision.ts';
 
 export const runHeads: ParityScenario = {
   name: 'claim heads: exact queue counts, guarded capacity and head holds',
@@ -10,7 +11,7 @@ export const runHeads: ParityScenario = {
     const now = Date.now(), project = lit(target.projectId);
     const headers = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
     for (const [leaf, value] of [['agent.limits.concurrent_runs', 1], ['agent.harnesses.claude-code.credential', 'worker-login']] as const) {
-      expect((await fetch(`${target.url}/api/settings/${leaf}`, { method: 'PUT', headers, body: JSON.stringify({ value }) })).status).toBe(200);
+      expect((await fetch(`${target.url}/api/settings/${leaf}`, { method: 'PUT', headers: { ...headers, ...await revisionHeaders(target, `/api/settings/${leaf}`) }, body: JSON.stringify({ value }) })).status).toBe(200);
     }
     await target.sql("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)");
     const spec = lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, params: { session_id: 'head-session', mode: 'claim' }, timeoutSeconds: 300 }));

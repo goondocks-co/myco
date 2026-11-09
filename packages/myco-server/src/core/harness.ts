@@ -67,7 +67,8 @@ import {
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberWrite as ensureMemberStatement } from '../auth/enrollment.js';
 import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
-import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
+import { type ProjectCapability, observedSettingsGuard } from './settings.js';
+import { projectWorkEnabled } from '../db/settings/admission.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
 import { pruneUncaptured } from '../ingest/uncaptured.js';
 import { runnerContactWrite, workerContactWrite, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';

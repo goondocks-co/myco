@@ -3,6 +3,7 @@ import {lit,type ParityScenario} from '../harness.ts';
 import {offeredHarness} from '../../myco-server/helpers/offered-harness.js';
 import {PULL_FIXTURE_TABLE} from '../../helpers/pulled-test-stage.ts';
 import {capabilitiesRequiredBy} from '@goondocks/myco-shared/repository';
+import { revisionHeaders } from '../settings-revision.ts';
 
 export const pulledClaim:ParityScenario={
   name:'pull at claim: test stages are pulled by level into running rows with subjects, then nothing is left',
@@ -10,7 +11,7 @@ export const pulledClaim:ParityScenario={
   async run(target) {
     const now=Date.now(),project=lit(target.projectId);
     const headers={...target.ownerHeaders(),origin:target.url,'content-type':'application/json'};
-    const response=await fetch(`${target.url}/api/settings/agent.harnesses.claude-code.credential`,{method:'PUT',headers,body:JSON.stringify({value:'worker-login'})});
+    const response=await fetch(`${target.url}/api/settings/agent.harnesses.claude-code.credential`,{method:'PUT',headers:{...headers,...await revisionHeaders(target,'/api/settings/agent.harnesses.claude-code.credential')},body:JSON.stringify({value:'worker-login'})});
     expect(response.status).toBe(200);
     await target.sql("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)");
     await target.sql(PULL_FIXTURE_TABLE);

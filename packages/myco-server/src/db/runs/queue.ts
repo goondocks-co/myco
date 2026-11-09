@@ -7,7 +7,7 @@ import { commit, read, readSet, write } from '../index.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { runOriginSql, contextValue, BUDGET_QUOTE_USD_KEY, BUDGET_QUOTE_AT_KEY } from '../run-context.js';
 import { BUDGET_ENABLED, BUDGET_QUEUE_OPENED_SQL, budgetActivation } from '../meta/budget-activation.js';
-import { effectiveBudgetSql } from '../../core/settings.js';
+import { effectiveBudgetSql } from '../../db/settings/admission.js';
 import type { BudgetHolds } from './budget.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
 import type { BindValue } from '../index.js';

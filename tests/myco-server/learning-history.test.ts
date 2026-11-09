@@ -2,6 +2,7 @@ import { commit } from '@myco-server-worker/db/index.js';
 import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import { expect, it } from 'bun:test';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
+import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
 import { effectiveSettings } from '@myco-server-worker/core/settings-policies.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
@@ -462,15 +463,19 @@ it('backfills quiet deadlines and recomputes them for idle-setting updates, rese
       expect(row.handoff).toBe('preserved handoff');
     }
     const quiet = () => db.prepare("SELECT quiet_at FROM learning_sessions WHERE project_id='project' AND session_id='quiet-1'").first();
+    const rebuilt = async () => { while ((await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } })).more); };
     await settingsWriter(db).setLeaf(leaf, 60, 'owner', NOW + 1);
+    await rebuilt();
     expect(await quiet()).toEqual({ quiet_at: NOW + 60 * MINUTE });
     const same = await db.prepare('UPDATE deployment_settings SET value=value WHERE leaf=?').bind(leaf).run();
     expect(same.meta.changes).toBe(2);
     await settingsWriter(db).resetLeaf(leaf, 'owner', NOW + 2);
+    await rebuilt();
     expect(await quiet()).toEqual({ quiet_at: NOW + 120 * MINUTE });
     await db.prepare("UPDATE learning_sessions SET source_activity_at=? WHERE project_id='project' AND session_id='quiet-1'").bind(NOW - DAY + 10 * MINUTE).run();
     expect(await quiet()).toEqual({ quiet_at: NOW - 50 * MINUTE });
     await settingsWriter(db).setLeaf(leaf, 1440, 'owner', NOW + 3);
+    await rebuilt();
     expect(await quiet()).toEqual({ quiet_at: NOW - 50 * MINUTE });
     expect(await db.prepare("SELECT name FROM sqlite_master WHERE name='_learning_quiet_margin_range'").first()).toBeNull();
   }, 658);

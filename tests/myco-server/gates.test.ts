@@ -900,12 +900,16 @@ describe('gates', () => {
         moduleKey(join(SRC, 'db', 'storage', 'repository-connection.ts')),
         family + 'release-connection.ts',
       ])],
+      [family + 'secret-rows.ts', new Set([moduleKey(join(SRC, 'core', 'secrets.ts'))])],
+      [family + 'machines.ts', new Set([moduleKey(join(SRC, 'core', 'machine-settings.ts'))])],
     ]);
+    // The admission SQL other batches read through is shared on purpose: it holds no write.
+    const shared = family + 'admission.ts';
     const offenders: string[] = [];
     for (const file of files(SRC)) {
       const from = moduleKey(file);
       for (const target of runtimeImportNames(readFileSync(file, 'utf8'), file).keys()) {
-        if (target.startsWith(family) && !owners.get(target)?.has(from)) offenders.push(`${from} imports ${target}`);
+        if (target.startsWith(family) && target !== shared && !owners.get(target)?.has(from)) offenders.push(`${from} imports ${target}`);
       }
     }
     expect(offenders).toEqual([]);

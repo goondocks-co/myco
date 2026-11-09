@@ -3,6 +3,7 @@ import { stepPages } from '@goondocks/myco-shared/worker-steps';
 import { MEMBER_ID, lit, type ParityScenario } from '../harness.ts';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { revisionHeaders } from '../settings-revision.ts';
 
 export const workerWriteCompletion: ParityScenario = {
   name: 'worker writes: required state and responses commit together under late authority loss',
@@ -15,7 +16,7 @@ export const workerWriteCompletion: ParityScenario = {
     const commit = 'a'.repeat(40);
     await target.sql(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,${now})`);
     await target.sql(`INSERT INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by) VALUES (${lit(target.projectId)},'vault_evolution',1,${now},${lit(MEMBER_ID)})`);
-    expect((await fetch(`${target.url}/api/settings/agent.harnesses.claude-code.credential`, { method: 'PUT', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ value: 'worker-login' }) })).status).toBe(200);
+    expect((await fetch(`${target.url}/api/settings/agent.harnesses.claude-code.credential`, { method: 'PUT', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, '/api/settings/agent.harnesses.claude-code.credential') }, body: JSON.stringify({ value: 'worker-login' }) })).status).toBe(200);
     await target.sql(`INSERT INTO project_repositories (project_id,revision,url,branch,username,secret_slot,updated_at,updated_by) VALUES (${lit(target.projectId)},'worker-completion',${lit(repository.url)},'main',NULL,NULL,${now},${lit(MEMBER_ID)})`);
     const operations = [
       { path: 'claim', write: 'INSERT INTO worker_contacts', after: 1 },

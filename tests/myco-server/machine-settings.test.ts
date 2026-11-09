@@ -3,7 +3,10 @@
  * leaf, and the block a machine is answered with.
  */
 import { describe, expect, it } from 'bun:test';
-import { machineAccess, machineBlockFor, readMachineSettings, setMachineLeaf } from '@myco-server-worker/core/machine-settings.js';
+import { machineAccess, machineBlockFor, readMachineSettings, resetMachineLeaf, setMachineLeaf } from '@myco-server-worker/core/machine-settings.js';
+import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import { withDocumentStores } from './helpers/document-stores.js';
+import { beforeWriteBatch } from './helpers/prepared.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
@@ -25,6 +28,56 @@ function rig() {
   e.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('m_a', 'mem_a', ?), ('m_b', 'mem_b', ?)`, [NOW, NOW]);
   return e;
 }
+
+const REPAIR = (sql: string) => sql.includes('settings_revision=settings_revision+CASE');
+const CONNECTS = 'capture.connect_roots';
+
+describe('a stale repair of a machine\'s connections', () => {
+  const seeded = async (db: ServerEnv['db']) => {
+    await db.prepare("INSERT INTO members (id, label, created_at, role) VALUES ('mem_repair', 'r', 1, 'member')").run();
+    await db.prepare("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('m_repair', 'mem_repair', 1)").run();
+    await db.prepare("INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('m_repair', ?, '{bad', 1, 'mem_repair')").bind(CONNECTS).run();
+  };
+
+  it('answers a conflict when another write changed the document, and absent only when the claim is gone, on both stores', async () => {
+    await withDocumentStores(async db => {
+      await seeded(db);
+      const changed = beforeWriteBatch(db, REPAIR, async () => {
+        await db.prepare("UPDATE machine_settings SET value='{worse' WHERE machine_id='m_repair' AND leaf=?").bind(CONNECTS).run();
+      }, true);
+      expect(await resetMachineLeaf(changed, 'm_repair', CONNECTS, 'mem_repair', NOW)).toEqual({ applied: false, reason: 'conflict', detail: expect.stringContaining('GET /api/machines/m_repair/settings') });
+      expect(await db.prepare('SELECT value FROM machine_settings WHERE machine_id=\'m_repair\' AND leaf=?').bind(CONNECTS).first()).toEqual({ value: '{worse' });
+
+      const revoked = beforeWriteBatch(db, REPAIR, async () => { await db.prepare("UPDATE members SET revoked_at=1 WHERE id='mem_repair'").run(); }, true);
+      expect(await resetMachineLeaf(revoked, 'm_repair', CONNECTS, 'mem_repair', NOW)).toEqual({ applied: false, reason: 'absent' });
+    });
+  });
+
+  it('reaches the member who owns the machine as a 409 that names the next read', async () => {
+    let armed = false;
+    const e = sqliteEnv({ onSql(sql, sqlite) {
+      if (!armed || !REPAIR(sql)) return;
+      armed = false;
+      sqlite.run("UPDATE machine_settings SET value='{worse' WHERE machine_id='m_a' AND leaf=?", [CONNECTS]);
+    } });
+    try {
+      e.sqlite.run("INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES ('mem_a', 'mem_a', ?, 'member')", [NOW]);
+      e.sqlite.run("UPDATE members SET github_id = '9101' WHERE id = 'mem_a'");
+      e.sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('m_a', 'mem_a', ?)", [NOW]);
+      e.sqlite.run("INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('m_a', ?, '{bad', 1, 'mem_a')", [CONNECTS]);
+      armed = true;
+      const response = await worker.fetch(new Request(`https://s/api/machines/m_a/settings/${CONNECTS}`, {
+        method: 'PUT',
+        headers: { cookie: await ownerCookie(e.db, Date.now(), '9101'), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+        body: JSON.stringify({ value: null, reset: true }),
+      }), { ...e.env, ...OWNER_ENV });
+      expect(armed).toBe(false);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ applied: false, reason: 'conflict', detail: expect.stringContaining('nothing was saved') });
+      expect(e.sqlite.query('SELECT value FROM machine_settings WHERE machine_id=\'m_a\' AND leaf=?').get(CONNECTS)).toEqual({ value: '{worse' });
+    } finally { e.sqlite.close(); }
+  });
+});
 
 describe('a machine\'s settings', () => {
   it('are reached by the member the machine belongs to, and by no other member, an admin included', async () => {

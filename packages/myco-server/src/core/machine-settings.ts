@@ -11,6 +11,10 @@ import { DEPLOYMENT_TARGETS, type EffectiveSetting, type SettingSource } from '@
 import { sha256Hex } from '../hash.js';
 import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
+import {
+  acknowledgeMachineRevision, clearMachineLeaf, invalidateMachineCache, noteMachineContract, publishMachineSnapshot, putMachineLeaf,
+  readClaimant, readMachineClaimed, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
+} from '../db/settings/machines.js';
 
 /**
  * The repositories a machine is told to connect from "Needs you", by key: each names the project it joins, or `''` for
@@ -46,24 +50,16 @@ export interface MachineLeaf extends EffectiveSetting {
 
 /** Whether the member `actorId` may read and change `machineId`'s settings, which only the member claiming it may: absent when no member claims it. */
 export async function machineAccess(db: RelationalStore, actorId: string, machineId: string): Promise<'absent' | 'forbidden' | 'allowed'> {
-  const claim = await db.prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`).bind(machineId).first<{ member_id: string }>();
+  const claim = await readClaimant(db, machineId);
   if (claim === null) return 'absent';
   return claim.member_id === actorId ? 'allowed' : 'forbidden';
 }
 
-interface MachineSettingRow {
-  leaf: string | null; value: string | null; updated_at: number | null; updated_by: string | null;
-  settings_revision: number; settings_cached_revision: string | null; settings_cached_values: string | null; settings_contract_supported: number;
-}
-
 /** Stored values and the revision their member last confirmed, read in one database snapshot. */
 export async function readMachineSettings(db: RelationalStore, machineId: string): Promise<MachineLeaf[]> {
-  const { results } = await db.prepare(
-    `SELECT s.leaf, s.value, s.updated_at, s.updated_by, c.settings_revision, c.settings_cached_revision, c.settings_cached_values, c.settings_contract_supported
-       FROM machine_claims c LEFT JOIN machine_settings s ON s.machine_id = c.machine_id WHERE c.machine_id = ?`,
-  ).bind(machineId).all<MachineSettingRow>();
-  const stored = new Map((results ?? []).filter((row) => row.leaf !== null).map((row) => [row.leaf, row]));
-  const claim = results?.[0];
+  const results = await readMachineRows(db, machineId);
+  const stored = new Map(results.filter((row) => row.leaf !== null).map((row) => [row.leaf, row]));
+  const claim = results[0];
   const resolvedSettings = MACHINE_LEAVES.map((leaf) => {
     const row = stored.get(leaf);
     const declared = MACHINE_LEAF_SPECS[leaf]!;
@@ -114,12 +110,7 @@ export async function setMachineLeaf(db: RelationalStore, machineId: string, lea
   if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
   if (JSON.stringify(value) === JSON.stringify(declared.default)) return resetMachineLeaf(db, machineId, leaf, actor, now);
 
-  const written = await db.prepare(
-    `INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
-       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)
-       ON CONFLICT (machine_id, leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-  ).bind(machineId, leaf, JSON.stringify(value), now, actor, machineId, actor).run();
-  return written.meta.changes > 0 ? { applied: true } : { applied: false, reason: 'absent' };
+  return await putMachineLeaf(db, { machine: machineId, leaf, value: JSON.stringify(value), actor, now }) ? { applied: true } : { applied: false, reason: 'absent' };
 }
 
 /** Clear a claimant's stored value; a connection repair retains every usable assignment and refuses a valid document. */
@@ -129,7 +120,7 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
   let invalidDocument: string | null = null;
   let repairedConnections: string | null = null;
   if (declaration.serverWritten === true) {
-    const row = await db.prepare(`SELECT value FROM machine_settings WHERE machine_id = ? AND leaf = ?`).bind(machineId, leaf).first<{ value: string }>();
+    const row = await readMachineLeaf(db, machineId, leaf);
     if (row === null) return { applied: false, reason: 'unknown_leaf' };
     let parsed = true;
     let value: unknown;
@@ -141,16 +132,11 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
     const usable = resolveMachineSetting(leaf as MachineSettingLeaf, value).effective as Record<string, string>;
     if (Object.keys(usable).length > 0) repairedConnections = JSON.stringify(usable);
   }
-  const documentGuard = invalidDocument === null ? '' : ' AND EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ? AND value = ?)';
-  const guardedValue = invalidDocument === null ? [] : [machineId, leaf, invalidDocument];
-  const removeOrRepair = repairedConnections === null
-    ? db.prepare(`DELETE FROM machine_settings WHERE machine_id = ? AND leaf = ? AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)${documentGuard}`).bind(machineId, leaf, machineId, actor, ...guardedValue)
-    : db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ? WHERE machine_id = ? AND leaf = ? AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)${documentGuard}`).bind(repairedConnections, now, actor, machineId, leaf, machineId, actor, ...guardedValue);
-  const [claim] = await db.batch([
-    db.prepare(`UPDATE machine_claims SET settings_revision = settings_revision + CASE WHEN EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ?) THEN 0 ELSE 1 END WHERE machine_id = ? AND member_id = ?${documentGuard}`).bind(machineId, leaf, machineId, actor, ...guardedValue),
-    removeOrRepair,
-  ]);
-  return claim!.meta.changes === 1 ? { applied: true } : { applied: false, reason: 'absent' };
+  if (invalidDocument === null) return await clearMachineLeaf(db, { machine: machineId, leaf, actor }) ? { applied: true } : { applied: false, reason: 'absent' };
+  const repaired = await repairMachineLeaf(db, { machine: machineId, leaf, actor, invalid: invalidDocument, repaired: repairedConnections, now });
+  if (repaired === 'landed') return { applied: true };
+  if (repaired === 'absent') return { applied: false, reason: 'absent' };
+  return { applied: false, reason: 'conflict', detail: `This machine's stored connections changed while they were being repaired; nothing was saved. Read them with GET /api/machines/${machineId}/settings, then repeat the reset.` };
 }
 
 /**
@@ -160,54 +146,24 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
 export async function machineBlockFor(
   db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean } = {},
 ): Promise<{ leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string } | null> {
-  const claimed = await db.prepare(`SELECT 1 AS held FROM machine_claims WHERE machine_id = ? AND member_id = ?`).bind(machineId, memberId).first<{ held: number }>();
-  if (claimed === null) return null;
-  if (support.machineSettingsFeature === true) {
-    await db.prepare(`UPDATE machine_claims SET settings_contract_supported = 1 WHERE machine_id = ? AND member_id = ?`)
-      .bind(machineId, memberId).run();
-  }
+  if (!await readMachineClaimed(db, machineId, memberId)) return null;
+  if (support.machineSettingsFeature === true) await noteMachineContract(db, machineId, memberId);
   const reportOrder = support.machineSettingsOrder;
   const ordered = support.machineSettingsFeature === true && reportOrder !== undefined && Number.isSafeInteger(reportOrder) && reportOrder >= 0;
   if (ordered && support.machineSettingsInvalidated === true) {
-    await db.batch([
-      db.prepare(`DELETE FROM machine_settings_snapshots WHERE machine_id = ? AND EXISTS (
-        SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ? AND settings_report_order < ?)
-      `).bind(machineId, machineId, memberId, reportOrder),
-      db.prepare(`UPDATE machine_claims SET settings_cached_revision = NULL, settings_cached_values = NULL, settings_report_order = ?
-        WHERE machine_id = ? AND member_id = ? AND settings_report_order < ?
-      `).bind(reportOrder, machineId, memberId, reportOrder),
-    ]);
+    await invalidateMachineCache(db, { machine: machineId, member: memberId, order: reportOrder });
   } else if (ordered && isMachineSettingsRevision(support.machineSettingsRevision)) {
-    const revision = support.machineSettingsRevision;
-    await db.prepare(
-      `WITH reported AS (
-         SELECT COALESCE((SELECT leaves FROM machine_settings_snapshots WHERE machine_id = ? AND revision = ?),
-           CASE WHEN settings_cached_revision = ? THEN settings_cached_values ELSE NULL END) AS leaves
-           FROM machine_claims WHERE machine_id = ? AND member_id = ?)
-       UPDATE machine_claims SET settings_cached_revision = CASE WHEN (SELECT leaves FROM reported) IS NULL THEN NULL ELSE ? END,
-         settings_cached_values = (SELECT leaves FROM reported), settings_report_order = ?
-        WHERE machine_id = ? AND member_id = ?
-          AND (settings_report_order < ? OR (settings_report_order = ? AND settings_cached_revision = ?))`,
-    ).bind(machineId, revision, revision, machineId, memberId, revision, reportOrder, machineId, memberId, reportOrder, reportOrder, revision).run();
+    await acknowledgeMachineRevision(db, { machine: machineId, member: memberId, revision: support.machineSettingsRevision, order: reportOrder });
   }
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt += 1) {
     const settings = await readMachineSettings(db, machineId);
     const leaves = Object.fromEntries(settings.map((leaf) => [leaf.leaf, leaf.nextEffective]));
     if (support.machineSettingsFeature !== true) return { leaves };
     const revision = settings[0]!.revision;
-    const [sent] = await db.batch([
-      db.prepare(
-        `INSERT INTO machine_settings_snapshots (machine_id, revision, leaves, sent_order)
-           SELECT ?, ?, ?, COALESCE((SELECT MAX(sent_order) FROM machine_settings_snapshots WHERE machine_id = ?), 0) + 1
-             WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ? AND settings_revision = ?)
-           ON CONFLICT (machine_id, revision) DO UPDATE SET leaves = excluded.leaves, sent_order = excluded.sent_order`,
-      ).bind(machineId, revision, JSON.stringify(leaves), machineId, machineId, memberId, parseMachineSettingsRevision(revision)!.counter),
-      db.prepare(`DELETE FROM machine_settings_snapshots WHERE machine_id = ? AND revision NOT IN (
-          SELECT revision FROM machine_settings_snapshots WHERE machine_id = ? ORDER BY sent_order DESC LIMIT ?)
-          AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)`)
-        .bind(machineId, machineId, MACHINE_SETTINGS_SNAPSHOT_LIMIT, machineId, memberId),
-    ]);
-    if (sent!.meta.changes === 1) return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision };
+    const counter = parseMachineSettingsRevision(revision)!.counter;
+    if (await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
+      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision };
+    }
   }
   throw new Error('Machine settings changed while preparing their revision.');
 }
@@ -230,8 +186,7 @@ async function editMachineRoots(
 ): Promise<RootsWrite> {
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt++) {
     if (await machineAccess(db, actor, machineId) !== 'allowed') return { applied: false, reason: 'absent' };
-    const row = await db.prepare('SELECT value FROM machine_settings WHERE machine_id = ? AND leaf = ?')
-      .bind(machineId, CONNECT_ROOTS_LEAF).first<{ value: string }>();
+    const row = await readMachineLeaf(db, machineId, CONNECT_ROOTS_LEAF);
     let current: unknown = {};
     if (row !== null) {
       try { current = JSON.parse(row.value); }
@@ -249,16 +204,9 @@ async function editMachineRoots(
     const value = JSON.stringify(next);
     if (row === null && Object.keys(next).length === 0) return { applied: true, changed: false };
     if (row !== null && value === row.value) return { applied: true, changed: false };
-    const claimed = 'EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)';
-    const written = row === null
-      ? await db.prepare(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
-          SELECT ?, ?, ?, ?, ? WHERE ${claimed}
-            AND NOT EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ?) RETURNING machine_id`)
-        .bind(machineId, CONNECT_ROOTS_LEAF, value, now, actor, machineId, actor, machineId, CONNECT_ROOTS_LEAF).all()
-      : await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ?
-          WHERE machine_id = ? AND leaf = ? AND value IS ? AND ${claimed} RETURNING machine_id`)
-        .bind(value, now, actor, machineId, CONNECT_ROOTS_LEAF, row.value, machineId, actor).all();
-    if (written.results.length === 1) return { applied: true, changed: row === null ? Object.keys(next).length > 0 : value !== row.value };
+    if (await writeMachineRoots(db, { machine: machineId, leaf: CONNECT_ROOTS_LEAF, value, actor, now, previous: row?.value ?? null })) {
+      return { applied: true, changed: true };
+    }
   }
   return { applied: false, reason: 'conflict' };
 }

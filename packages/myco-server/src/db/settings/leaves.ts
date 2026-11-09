@@ -7,8 +7,10 @@ import {
   SWITCH_COMPLETION_SQL,
   switchCompletionParams,
 } from '../embeddings/switch.js';
-import { assertion, commit, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
+import { assertion, commit, read, readSet, refusalCode, refused, rows, write, type Bound } from '../index.js';
 import { SETTINGS_REVISION_CONFLICT } from '../meta/settings-observation.js';
+import { handQuietPolicy } from '../learning/quiet-policy.js';
+import { TITLING_IDLE_CLOSE_MINUTES_DEFAULT } from '../../constants.js';
 
 export interface SettingState {
   leaf: string;
@@ -32,16 +34,23 @@ const states = read<[scope: string, leaves: string], SettingState>({ name: 'sett
   WHERE ?1<>''` });
 const revisions = read<[scope: string], { leaf: string; revision: number }>({ name: 'settings.revisions', sql:
   'SELECT leaf,revision FROM setting_revisions WHERE scope=?' });
+const IDLE_CLOSE_LEAF = 'agent.titling_idle_close_minutes';
 const SETTINGS_PROJECT_INACTIVE = refusalCode('settings_project_inactive');
 const SETTINGS_EMBEDDING_CONFLICT = refusalCode('settings_embedding_conflict');
+const SETTINGS_SWITCH_STARTED = refusalCode('settings_switch_started');
 const unchanged = assertion<[scope: string, expected: string]>({ name: 'settings.unchanged', refusal: SETTINGS_REVISION_CONFLICT, when: `NOT EXISTS (SELECT 1 FROM json_each(?2) expected
     WHERE COALESCE((SELECT revision FROM setting_revisions WHERE scope=?1 AND leaf=expected.key),0)<>expected.value)` });
 const active = assertion<[project: string]>({ name: 'settings.activeProject', refusal: SETTINGS_PROJECT_INACTIVE, when: `EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NULL)` });
-const embedding = assertion<[empty: number]>({ name: 'settings.embeddingUnchanged', refusal: SETTINGS_EMBEDDING_CONFLICT, when: `NOT ${SWITCH_STANDS_SQL} AND (?=0 OR NOT EXISTS(SELECT 1 FROM embedding_receipts WHERE ready>=0))` });
+const noSwitch = assertion<[]>({ name: 'settings.embeddingNoSwitch', refusal: SETTINGS_SWITCH_STARTED, when: `NOT ${SWITCH_STANDS_SQL}` });
+const embedding = assertion<[empty: number]>({ name: 'settings.embeddingUnchanged', refusal: SETTINGS_EMBEDDING_CONFLICT, when: `?1=0 OR NOT EXISTS(SELECT 1 FROM embedding_receipts WHERE ready>=0)` });
 const put = write<[leaf: string, value: string, at: number, actor: string, id: string]>({ name: 'settings.put', sql: `
   INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id) VALUES(?,?,?,?,?)
   ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by,write_id=excluded.write_id` });
 const remove = write<[leaf: string]>({ name: 'settings.remove', sql: 'DELETE FROM deployment_settings WHERE leaf=?' });
+const everyLeaf = read<[], { leaf: string; value: string; updated_at: number; updated_by: string }>({ name: 'settings.everyLeaf', sql:
+  'SELECT leaf,value,updated_at,updated_by FROM deployment_settings' });
+const leafValues = read<[leaves: string], { leaf: string; value: string }>({ name: 'settings.leafValues', sql:
+  'SELECT leaf,value FROM deployment_settings WHERE leaf IN (SELECT value FROM json_each(?1))' });
 const reset = write<[leaf: string, at: number, actor: string]>({ name: 'settings.reset', sql: `
   INSERT INTO deployment_setting_resets(leaf,reset_at,reset_by) VALUES(?,?,?)
   ON CONFLICT(leaf) DO UPDATE SET reset_at=excluded.reset_at,reset_by=excluded.reset_by` });
@@ -66,25 +75,38 @@ export async function settingRevisions(db: RelationalStore, scope = ''): Promise
   return Object.fromEntries(rows.map(row => [row.leaf, row.revision]));
 }
 
-function assertionFailure(error: unknown): 'conflict' | 'inactive' | null {
+/** Every stored Deployment leaf. */
+export const readEveryLeaf = (db: RelationalStore) => rows(db, everyLeaf.bind());
+
+/** The stored text of each named leaf that is written. */
+export const readLeafValues = (db: RelationalStore, leaves: readonly string[]) => rows(db, leafValues.bind(JSON.stringify(leaves)));
+
+function assertionFailure(error: unknown): 'conflict' | 'inactive' | 'switch_started' | null {
+  if (refused(error, SETTINGS_SWITCH_STARTED)) return 'switch_started';
   if (refused(error, SETTINGS_PROJECT_INACTIVE)) return 'inactive';
   return refused(error, SETTINGS_REVISION_CONFLICT) || refused(error, SETTINGS_EMBEDDING_CONFLICT) ? 'conflict' : null;
 }
 
 /** Only the admitted settings capability supplies a change. Assertions precede every mutation. */
 export async function persistSettings(db: RelationalStore, change: AdmittedSettingsChange,
-  switchCompletion?: { sw: EmbeddingSwitch; now: number }): Promise<'applied' | 'conflict' | 'inactive'> {
+  switchCompletion?: { sw: EmbeddingSwitch; now: number }): Promise<'applied' | 'conflict' | 'inactive' | 'switch_started'> {
   const scope = change.capability ? `capability:${change.project!}` : change.project ?? '';
   const statements: Bound[] = [unchanged.bind(scope, JSON.stringify(change.expected))];
   if (change.project !== undefined && !change.capability) statements.push(active.bind(change.project));
-  if (change.embeddingEmpty !== undefined) statements.push(embedding.bind(change.embeddingEmpty ? 1 : 0));
+  if (change.embeddingEmpty !== undefined) statements.push(noSwitch.bind(), embedding.bind(change.embeddingEmpty ? 1 : 0));
   const end = switchCompletion === undefined ? null : switchCompletionParams(switchCompletion.sw, switchCompletion.now);
   if (end !== null) statements.push(completion.bind(...end));
   for (const part of change.parts) {
     if (change.capability) statements.push(capabilityPut.bind(change.project!, part.leaf, part.value === true ? 1 : 0, change.now, change.actor));
     else if (change.project !== undefined) statements.push(projectPut.bind(change.project, part.leaf, JSON.stringify(part.value), change.now, change.actor));
-    else if (part.value === undefined) statements.push(remove.bind(part.leaf), reset.bind(part.leaf, change.now, change.actor));
-    else statements.push(put.bind(part.leaf, JSON.stringify(part.value), change.now, change.actor, crypto.randomUUID()));
+    else {
+      if (part.value === undefined) statements.push(remove.bind(part.leaf), reset.bind(part.leaf, change.now, change.actor));
+      else statements.push(put.bind(part.leaf, JSON.stringify(part.value), change.now, change.actor, crypto.randomUUID()));
+      if (part.leaf === IDLE_CLOSE_LEAF) {
+        // The asserted revision grows by at least one with every admitted change, so one past it names a newer generation each time.
+        statements.push(...handQuietPolicy({ generation: change.expected[IDLE_CLOSE_LEAF]! + 1, minutes: part.value === undefined ? TITLING_IDLE_CLOSE_MINUTES_DEFAULT : part.value as number, now: change.now }));
+      }
+    }
   }
   if (end !== null) statements.push(endSwitch.bind(...end), ended.bind(switchCompletion!.sw.id));
   try { await commit(db, ...statements); return 'applied'; }

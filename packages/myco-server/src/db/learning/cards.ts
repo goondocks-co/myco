@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, read, readSet, refusalCode, write, type Bound } from '../index.js';
-import { learningHistoryEnabledSql } from '../../core/settings.js';
+import { learningHistoryEnabledSql } from '../../db/settings/admission.js';
 
 /**
  * The writes and reads of one turn's card. Per-session contributions move through the triggers on `turn_cards`, so a

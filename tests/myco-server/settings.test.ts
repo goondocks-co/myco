@@ -179,7 +179,7 @@ describe('task document repair', () => {
     };
     const rearmed: string[] = [];
     expect(await settingsWriter(db, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
-      .toMatchObject({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', revision: 2 } });
+      .toMatchObject({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', actual: 2, expected: 1 } });
     expect(raced).toBe(true);
     expect((await r.w.leaves())['agent.tasks']).toEqual({ value: latest, updatedAt: 2, updatedBy: 'mem_sibling' });
     expect(rearmed).toEqual([]);
