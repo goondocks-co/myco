@@ -1,4 +1,4 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import { commit, read, readSet, write } from '../index.js';
 import { ensureAgentStatement } from './claim.js';
@@ -28,13 +28,6 @@ const stateInsert = write<[project: string, agent: string, key: string, value: s
  */
 const stateUpdate = write<[value: string, now: number, project: string, agent: string, key: string, current: string], { landed: number }>({ name: 'runs.stateUpdate', sql:
   `UPDATE agent_state SET value = ?1, updated_at = ?2 WHERE project_id = ?3 AND agent_id = ?4 AND key = ?5 AND value IS ?6 RETURNING 1 AS landed` });
-
-/** An admitted owner publishes state only while its coordinating write still names its revision. */
-export function guardedStateStatement(db:RelationalStore,scope:ReadScope,agentId:string,key:string,value:string,now:number,guard:{sql:string;params:unknown[]}):PreparedStatement {
-  return db.prepare(`INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) SELECT ?,?,?,?,? WHERE ${guard.sql}
-    ON CONFLICT(project_id,agent_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
-    .bind(scope.projectId,agentId,key,value,now,...guard.params);
-}
 
 export async function getState(db: RelationalStore, scope: ReadScope, agentId: string, key: string): Promise<StateRow | null> {
   const [rows] = await readSet(db, stateRead.bind(scope.projectId, agentId, key));

@@ -3,7 +3,7 @@ import { join, relative, sep } from 'node:path';
 import ts from 'typescript-v6';
 
 export interface BoundarySite {
-  kind: 'prepare' | 'batch' | 'exec' | 'sql' | 'changes';
+  kind: 'prepare' | 'batch' | 'exec' | 'sql' | 'changes' | 'compile';
   line: number;
 }
 
@@ -17,6 +17,35 @@ export const INFRASTRUCTURE = new Map<string, string>([
   ['platform/cloudflare/store-maintenance.ts', 'D1 integrity and planner maintenance adapter'],
   ['platform/cloudflare/recovery-producer-object.ts', 'Recovery Durable Object coordination storage: ctx.storage.sql'],
 ]);
+
+/** Inside db/, only these may reach the store directly; everything else is a kernel definition run through commit. */
+export const DB_STORE_ALLOWED = new Map<string, string>([
+  ['db/kernel/statement.ts', 'Kernel: compiles every Bound'],
+  ['db/kernel/commit.ts', 'Kernel: runs and reports every named batch and its guards'],
+  ['db/migrate.ts', 'Migrations: reads the version before any step applies'],
+  ['db/meta/budget-activation.ts', 'Operator path: runs generated activation steps in order'],
+]);
+
+const FROZEN_SCHEMA = /^db\/schema-v\d+\.ts$/;
+const STORE_KINDS: ReadonlySet<BoundarySite['kind']> = new Set(['prepare', 'batch', 'exec']);
+const BOUND_COMPILERS = new Set(['prepareBound', 'prepareClaimCompanion']);
+
+const namesType = (checker: ts.TypeChecker, type: ts.Type, name: string): boolean => {
+  const awaited = checker.getAwaitedType(type) ?? type;
+  if (awaited.isUnion()) return awaited.types.some(member => namesType(checker, member, name));
+  if (checker.isTupleType(awaited)) return checker.getTypeArguments(awaited as ts.TypeReference).some(member => namesType(checker, member, name));
+  return awaited.getSymbol()?.name === name || awaited.aliasSymbol?.name === name;
+};
+
+/** A call that turns a Bound into a PreparedStatement, under its known names or any other by its signature. */
+function compilesBound(call: ts.CallExpression, checker?: ts.TypeChecker): boolean {
+  const callee = ts.isPropertyAccessExpression(call.expression) ? call.expression.name : call.expression;
+  if (!ts.isIdentifier(callee)) return false;
+  if (BOUND_COMPILERS.has(callee.text)) return true;
+  const signature = checker?.getResolvedSignature(call);
+  return signature !== undefined && namesType(checker!, signature.getReturnType(), 'PreparedStatement')
+    && signature.parameters.some(parameter => namesType(checker!, checker!.getTypeOfSymbol(parameter), 'Bound'));
+}
 
 function storeReceiver(node: ts.Expression, checker?: ts.TypeChecker): boolean {
   if (checker !== undefined) {
@@ -35,6 +64,7 @@ export function boundarySites(source: ts.SourceFile, checker?: ts.TypeChecker): 
   const add = (node: ts.Node, kind: BoundarySite['kind']) => sites.push({ kind, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
+      if (compilesBound(node, checker)) add(node, 'compile');
       const callee = node.expression;
       const method = ts.isPropertyAccessExpression(callee) ? callee.name.text
         : ts.isElementAccessExpression(callee) && callee.argumentExpression && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined;
@@ -83,10 +113,24 @@ function sourceProgram(root: string): SourceProgram {
   return built;
 }
 
+/** What the gate counts for one file: inside db/, SQL text is expected and only direct store access counts. */
+export function gatedSites(key: string, sites: readonly BoundarySite[]): BoundarySite[] {
+  if (INFRASTRUCTURE.has(key) || DB_STORE_ALLOWED.has(key) || FROZEN_SCHEMA.test(key)) return [];
+  return key.startsWith('db/') ? sites.filter(site => STORE_KINDS.has(site.kind)) : [...sites];
+}
+
 export function boundaryInventory(root: string): Map<string, BoundarySite[]> {
   const { files, checker } = sourceProgram(root);
-  return new Map([...files].filter(([key]) => !key.startsWith('db/') && !INFRASTRUCTURE.has(key))
-    .map(([key, file]) => [key, boundarySites(file, checker)]));
+  return new Map([...files].map(([key, file]) => [key, gatedSites(key, boundarySites(file, checker))]));
+}
+
+/** An allowed file that no longer reaches the store has outlived its reason. */
+export function staleStoreAllowances(root: string): string[] {
+  const { files, checker } = sourceProgram(root);
+  return [...DB_STORE_ALLOWED.keys()].filter(key => {
+    const file = files.get(key);
+    return file === undefined || !boundarySites(file, checker).some(site => STORE_KINDS.has(site.kind));
+  });
 }
 
 const isMeta = (node: ts.Expression): boolean => ts.isPropertyAccessExpression(node) && node.name.text === 'meta';
@@ -147,8 +191,14 @@ function exceptionViolations(actual: ReadonlyMap<string, readonly BoundarySite[]
   return errors;
 }
 
-export const boundaryViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlyMap<string, number>): string[] =>
-  exceptionViolations(actual, pending, { sites: 'boundary sites', remedy: 'move SQL and store execution into db/' });
+export const boundaryViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlyMap<string, number>): string[] => {
+  const inDb = new Map([...actual].filter(([key]) => key.startsWith('db/')));
+  const outside = new Map([...actual].filter(([key]) => !key.startsWith('db/')));
+  return [
+    ...exceptionViolations(outside, new Map([...pending].filter(([key]) => !key.startsWith('db/'))), { sites: 'boundary sites', remedy: 'move SQL and store execution into db/' }),
+    ...exceptionViolations(inDb, new Map([...pending].filter(([key]) => key.startsWith('db/'))), { sites: 'direct store calls', remedy: 'use a kernel definition and commit' }),
+  ];
+};
 
 export const changeCountViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlyMap<string, number>): string[] =>
   exceptionViolations(actual, pending, { sites: '.meta.changes reads', remedy: 'decide the outcome from a RETURNING row or an in-batch assertion' });

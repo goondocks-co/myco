@@ -371,7 +371,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/document-facts-v467.ts#refreshDocumentFacts': [{tables:['document_publication_facts'],order:'unverified'}],
   'db/document-facts-v467.ts#documentFactDelta': [{tables:['document_difference_totals'],order:'unverified'}],
   'db/document-facts-v467.ts#documentDueDelta': [{tables:['document_due_totals'],order:'unverified'}],
-  'db/event-references.ts#eventReferenceStatement': [{tables:['event_refs'],order:'unverified'}],
+  'db/event-references.ts#restoreReference': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#captureReferences': [{tables:['event_refs'],order:'unverified'}],
   'db/schema-v117.ts#fillReferences': [{tables:['event_refs'],order:'unverified'}],
   'content/tool-statistics.ts#turnStatisticsStatements': [{ tables: ['session_turn_entries'], order: 'unverified' }],
@@ -383,13 +383,12 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/meta/budget-estimates.ts#<module>': [
     { tables: ['schema_meta'], order: 'unverified' },
     { tables: ['schema_meta'], order: 'unverified' },
+    { tables: ['agent_state'], order: 'unverified' },
+    { tables: ['schema_meta'], order: 'arrival-order' },
   ],
   'db/meta/budget-estimates.ts#estimateInvalidationStatements': [
     { tables: ['schema_meta'], order: 'arrival-order' },
     { tables: ['schema_meta'], order: 'unverified' },
-  ],
-  'db/runs/state.ts#guardedStateStatement': [
-    { tables: ['agent_state'], order: 'unverified' },
   ],
   'db/identity/member-naming.ts#<module>': [
     { tables: ['schema_meta'], order: 'unverified' },

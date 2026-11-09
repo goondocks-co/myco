@@ -1,6 +1,6 @@
 /** The estimator's Deployment-wide progress: its epoch, cycle, watermark and refresh stamp. */
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { read, readSet, write } from '../index.js';
+import { commit, read, readSet, write } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import { BUDGET_ENABLED } from './budget-activation.js';
 
@@ -58,10 +58,16 @@ export async function estimateCursor(db: RelationalStore): Promise<EstimateCurso
   return row ?? null;
 }
 
-/** The condition every write of one page shares: the page's progress revision still stands. */
-export const estimateProgressGuard = (revision: string): { sql: string; params: unknown[] } => (
-  { sql: `EXISTS(SELECT 1 FROM schema_meta WHERE key='${PROGRESS_KEY}' AND json_extract(value,'$.revision')=?)`, params: [revision] }
-);
+const sampleWrite = write<[project: string, agent: string, key: string, value: string, now: number, revision: string]>({
+  name: 'meta.publishEstimateSample',
+  sql: `INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM schema_meta WHERE key='${PROGRESS_KEY}' AND json_extract(value,'$.revision')=?)
+    ON CONFLICT(project_id,agent_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+});
+
+/** A page publishes a sample only while its progress revision still stands. */
+export function estimateSampleStatement(db: RelationalStore, projectId: string, agentId: string, key: string, value: string, now: number, revision: string): PreparedStatement {
+  return prepareBound(db, sampleWrite.bind(projectId, agentId, key, value, now, revision));
+}
 
 /** Answers a row when this page took the progress record, and none when another refresh or an invalidation won. */
 export function estimateAdvanceStatement(db: RelationalStore, held: string | null, next: string, epoch: string | null, refreshedBefore: number): PreparedStatement {
@@ -73,8 +79,11 @@ export function estimateCompletionStatements(db: RelationalStore, until: number,
     .map(bound => prepareBound(db, bound));
 }
 
-/** Restarts the estimator's cycle. A restore supplies its own guard, written against the rows it replaces. */
-export function estimateInvalidationStatements(db: RelationalStore, guard: { sql: string; params: unknown[] } = { sql: '1', params: [] }, restoredFloor?: number): PreparedStatement[] {
+const restartEpoch = write<[epoch: string]>({ name: 'meta.restartEstimateEpoch', sql: `INSERT OR REPLACE INTO schema_meta(key,value) SELECT '${EPOCH_KEY}',? WHERE 1` });
+const forgetEstimateCycle = write<[]>({ name: 'meta.forgetEstimateCycle', sql: `DELETE FROM schema_meta WHERE key IN ('${REFRESHED_KEY}','${PROGRESS_KEY}','${WATERMARK_KEY}') AND (1)` });
+
+/** Restarts the estimator's cycle while a restore's own guard, written against the rows it replaces, still holds. */
+export function estimateInvalidationStatements(db: RelationalStore, guard: { sql: string; params: unknown[] }, restoredFloor?: number): PreparedStatement[] {
   return [
     db.prepare(`INSERT OR REPLACE INTO schema_meta(key,value) SELECT '${EPOCH_KEY}',? WHERE ${guard.sql}`).bind(crypto.randomUUID(), ...guard.params),
     db.prepare(`DELETE FROM schema_meta WHERE key IN ('${REFRESHED_KEY}','${PROGRESS_KEY}','${WATERMARK_KEY}') AND (${guard.sql})`).bind(...guard.params),
@@ -85,5 +94,5 @@ export function estimateInvalidationStatements(db: RelationalStore, guard: { sql
 }
 
 export async function invalidateEstimates(db: RelationalStore): Promise<void> {
-  await db.batch(estimateInvalidationStatements(db));
+  await commit(db, restartEpoch.bind(crypto.randomUUID()), forgetEstimateCycle.bind());
 }

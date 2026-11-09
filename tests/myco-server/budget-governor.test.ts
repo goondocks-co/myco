@@ -4,7 +4,6 @@ import { expect,it } from 'bun:test';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
 import { budgetHeld, automaticFits } from '@myco-server-worker/db/runs/budget-policy.js';
 import { settleLapsedLease } from '@myco-server-worker/db/runs/leases.js';
-import { guardedStateStatement } from '@myco-server-worker/db/runs/state.js';
 import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
 import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -150,6 +149,8 @@ it('samples each immutable stage and model separately and bounds the last-fifty 
   }finally{f.sqlite.close();}
 });
 
+const seedAgentEstimate=(db:Awaited<ReturnType<typeof budgetFixture>>['db'],project:string,key:string,value:string,now:number)=>db.prepare(`INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES(?,'myco-agent',?,?,?)
+  ON CONFLICT(project_id,agent_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).bind(project,key,value,now).run();
 const pollBudget=(f:Awaited<ReturnType<typeof budgetFixture>>,now:number)=>claimNextRun(f.serverEnv,{principal:f.principal,harnesses:[offeredHarness('claude-code')],now});
 
 it('ends a never-affordable quoted head with a budget reason and never asserts active for its hold',async()=>{
@@ -158,7 +159,7 @@ it('ends a never-affordable quoted head with a budget reason and never asserts a
     await f.setting(1);
     const {selected}=await selectWorkerExecution(f.serverEnv,'title-summary',[offeredHarness('claude-code')],await claimSettings(f.serverEnv),f.principal);
     if(selected===null)throw new Error('Missing fixture profile');
-    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('title-summary',selected.harness,selected.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    await seedAgentEstimate(f.db,'proj_1',estimateKey('title-summary',selected.harness,selected.profile),JSON.stringify({estimate:2}),f.now);
     f.queue('too-big');await pollBudget(f,f.now);
     expect((await engineAssertions(f.serverEnv,f.now)).some(a=>a.name==='queue:pending'&&a.maxDepth==='active')).toBe(false);
     await runStaleSweep(f.serverEnv,f.now+7*QUEUE_MAX_AGE_MS);
@@ -328,7 +329,7 @@ for(const backwards of [false,true])it(`admits the ${backwards?'backwards-clock'
       f.history('B',0.01,'automatic',backwards?90:100,0.10,'title-summary',true);
       f.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at) VALUES('proj_1','B','A','fixture',100)");
       f.history('manual-baseline',1,'manual',100);
-      await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('title-summary','codex',PROFILE),JSON.stringify({estimate:0.01}),now,{sql:'1',params:[]}).run();
+      await seedAgentEstimate(f.db,'proj_1',estimateKey('title-summary','codex',PROFILE),JSON.stringify({estimate:0.01}),now);
       const values=await readSpendRows(f.db,now);
       expect(values.filter(row=>row.origin==='automatic').reduce((sum,row)=>sum+row.value,0)).toBeCloseTo(backwards?0.10:0.11);
       const candidate=f.queue('candidate');
@@ -386,7 +387,7 @@ it('returns no admitted head for an unaffordable forecast while affordable and m
     const harnesses=[offeredHarness('claude-code')];
     const {selected}=await selectWorkerExecution(f.serverEnv,'canopy-map',harnesses,await claimSettings(f.serverEnv),f.principal);
     if(selected===null)throw new Error('No fixture map profile');
-    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('canopy-map',selected.harness,selected.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    await seedAgentEstimate(f.db,'proj_1',estimateKey('canopy-map',selected.harness,selected.profile),JSON.stringify({estimate:2}),f.now);
     f.queue('unaffordable','automatic','proj_1','canopy-map',f.now);
     const poll=(now:number)=>claimNextRun(f.serverEnv,{principal:f.principal,harnesses,capabilities:[...capabilitiesRequiredBy('canopy-map')],now});
     expect(await poll(f.now)).toEqual({claimed:false,reason:'no_work'});
@@ -473,9 +474,9 @@ it('admits nothing pulled when the top level head does not fit, even with cheape
   try {
     await f.setting(1);
     const {selected}=await selectWorkerExecution(f.serverEnv,'title-summary',[offeredHarness('claude-code')],await claimSettings(f.serverEnv),f.principal);
-    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('title-summary',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    await seedAgentEstimate(f.db,'proj_1',estimateKey('title-summary',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now);
     f.item('proj_1','expensive',1);f.item('proj_2','cheap',2);
-    await guardedStateStatement(f.db,{projectId:'proj_2'},'myco-agent',estimateKey('canopy-map',selected!.harness,{...selected!.profile,tier:'default'}),JSON.stringify({estimate:0.1}),f.now,{sql:'1',params:[]}).run();
+    await seedAgentEstimate(f.db,'proj_2',estimateKey('canopy-map',selected!.harness,{...selected!.profile,tier:'default'}),JSON.stringify({estimate:0.1}),f.now);
     expect(await f.poll()).toEqual({claimed:false,reason:'no_work'});
     expect(f.pulled()).toEqual([]);
     f.nothingStray();
@@ -636,7 +637,7 @@ it('pulls affordable work past a queued head that never fits the budget',async()
   try {
     await f.setting(1);
     const {selected}=await selectWorkerExecution(f.serverEnv,'canopy-map',[offeredHarness('claude-code')],await claimSettings(f.serverEnv),f.principal);
-    await guardedStateStatement(f.db,{projectId:'proj_1'},'myco-agent',estimateKey('canopy-map',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now,{sql:'1',params:[]}).run();
+    await seedAgentEstimate(f.db,'proj_1',estimateKey('canopy-map',selected!.harness,selected!.profile),JSON.stringify({estimate:2}),f.now);
     f.queue('unaffordable','automatic','proj_1','canopy-map',f.now);
     f.item('proj_2','affordable',1);
     expect(await f.poll()).toMatchObject({claimed:true,run:{projectId:'proj_2',task:'title-summary'}});
