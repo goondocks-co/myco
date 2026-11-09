@@ -337,7 +337,10 @@ async function releaseArchivePreparation(db:RelationalStore,preparationId:string
     WHERE p.preparation_id=? AND p.project_id=? AND p.archive_key=? AND p.receipt_key IS ?
       AND p.expires_at=?${agedOnly?' AND p.expires_at<=?':''})`,
     params:[row.preparation_id,row.project_id,row.archive_key,row.receipt_key,row.expires_at,...(agedOnly?[now]:[])]};
+  const candidates=recordBlobCandidates(db,pairs,now,{preparationId:row.preparation_id,projectId:row.project_id,archiveKey:row.archive_key,
+      receiptKey:row.receipt_key,expiresAt:row.expires_at,agedAt:agedOnly?now:null});
   const results=await db.batch([
+    ...candidates,
     db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=? AND source_kind='bundle'
       AND source_id=? AND key=? AND NOT EXISTS
         (SELECT 1 FROM archive_bundles WHERE project_id=? AND archive_key=?)
@@ -352,8 +355,6 @@ async function releaseArchivePreparation(db:RelationalStore,preparationId:string
         WHERE project_id=? AND receipt_key=? AND preparation_id<>?) AND ${current.sql}`)
       .bind(row.project_id,'bundle:'+row.archive_key,row.receipt_key,row.project_id,row.receipt_key,
         row.project_id,row.receipt_key,row.preparation_id,...current.params)]),
-    ...recordBlobCandidates(db,pairs,now,{preparationId:row.preparation_id,projectId:row.project_id,archiveKey:row.archive_key,
-      receiptKey:row.receipt_key,expiresAt:row.expires_at,agedAt:agedOnly?now:null}),
     db.prepare(`DELETE FROM prepared_archive_bundles WHERE preparation_id=? AND project_id=?
       AND archive_key=? AND receipt_key IS ? AND expires_at=? ${agedOnly?'AND expires_at<=?':''}`)
       .bind(...current.params),

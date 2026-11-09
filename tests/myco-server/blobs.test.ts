@@ -57,6 +57,18 @@ describe('blob route', () => {
     }
   });
 
+  it('ages an upload from when it was registered, not from when its request began', async () => {
+    const e = sqliteEnv();
+    let now = 10_000;
+    const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: noOutboundFetch });
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+    const key = await keyOf(bytes);
+    const putReal = e.bucket.put.bind(e.bucket);
+    e.bucket.put = async (k, v, o) => { now += BLOB_RESERVATION_TTL_MS + 5; return putReal(k, v, o); };
+    expect(await json(await server.handleRequest(blobPost(t.token, key, bytes), e.serverEnv))).toMatchObject({ stored: true });
+    expect(e.sqlite.query('SELECT received_at FROM blobs WHERE key = ?').get(key)).toEqual({ received_at: now });
+  });
+
   it('stores bytes under their own generation, records the row with the stored size and that generation, and charges the token', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());

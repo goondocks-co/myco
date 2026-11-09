@@ -977,7 +977,7 @@ export async function restoreArtifact(
     const unused = `NOT (${bundleHeld('?', '?')})`;
     const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
     const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
-    const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id}});
+    const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
     const results = await db.batch([
       ...candidates,
       db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?

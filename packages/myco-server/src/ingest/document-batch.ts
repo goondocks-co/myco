@@ -66,12 +66,12 @@ export interface Holder { p: string; s: string; k: string; i: string }
 export async function releaseHolders(db: RelationalStore, rows: readonly Holder[], now: number): Promise<void> {
   const page = JSON.stringify(rows);
   await db.batch([
+    ...recordHolderCandidates(db, rows, now),
     db.prepare(`DELETE FROM registered_content_proofs WHERE source_kind='document' AND (project_id,key,source_id) IN
       (SELECT r.project_id,r.blob_key,r.source_id FROM json_each(?) j JOIN retired_objects r ON r.project_id=json_extract(j.value,'$.p')
         AND r.session_id=json_extract(j.value,'$.s') AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
        WHERE NOT EXISTS (SELECT 1 FROM session_chunks c WHERE c.project_id=r.project_id AND c.blob_key=r.blob_key AND c.source_id=r.source_id))`)
       .bind(page),
-    ...recordHolderCandidates(db, rows, now),
     db.prepare(`DELETE FROM retired_objects WHERE (project_id,session_id,blob_key,source_id) IN
       (SELECT json_extract(value,'$.p'),json_extract(value,'$.s'),json_extract(value,'$.k'),json_extract(value,'$.i') FROM json_each(?))`).bind(page),
   ]);

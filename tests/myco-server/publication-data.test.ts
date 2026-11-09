@@ -1,3 +1,4 @@
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -81,15 +82,18 @@ test('retiring the last holder journals release work in the holder transaction',
   try {
     const key = await sha256Hex('retired bytes');
     registerBlob(f.sqlite, { projectId: 'proj_1', key, size: 13, tokenId: f.ctx.tokenId, receivedAt: NOW });
+    f.sqlite.run(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+      SELECT project_id,key,generation,'document','holder','event','envelope','session',key,size,1,1 FROM blobs WHERE key=?`, [key]);
     f.sqlite.run(`INSERT INTO retired_objects (project_id,session_id,blob_key,source_id,retired_at) VALUES ('proj_1','session',?,'holder',1)`, [key]);
     const interrupted: RelationalStore = { prepare: sql => f.db.prepare(sql), batch: async statements => {
       await f.db.batch(statements);
       throw new Error('interrupted after commit');
     } };
-    await expect(releaseHolders(interrupted, [{ p: 'proj_1', s: 'session', k: key, i: 'holder' }], NOW)).rejects.toThrow('interrupted after commit');
+    const later = NOW + BLOB_RESERVATION_TTL_MS + 1;
+    await expect(releaseHolders(interrupted, [{ p: 'proj_1', s: 'session', k: key, i: 'holder' }], later)).rejects.toThrow('interrupted after commit');
     expect(f.sqlite.query('SELECT COUNT(*) n FROM retired_objects').get()).toEqual({ n: 0 });
     expect(f.sqlite.query('SELECT key FROM blob_release_candidates').all()).toEqual([{ key }]);
-    await drainObjectReleases(f.serverEnv, NOW);
+    await drainObjectReleases(f.serverEnv, later);
     expect(f.sqlite.query('SELECT key FROM blobs WHERE key=?').get(key)).toBeNull();
   } finally { f.sqlite.close(); }
 });

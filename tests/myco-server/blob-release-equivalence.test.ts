@@ -5,7 +5,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { BLOB_REFERENCES } from '@myco-server-worker/core/blob-references.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { decideRecordedBlobs } from '@myco-server-worker/db/storage/release-queue.js';
-import { recordBlobCandidates } from '@myco-server-worker/core/object-release.js';
+import { recordCurrent } from './helpers/release-now.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 
@@ -81,7 +81,7 @@ async function exercise(db: RelationalStore, extraKeys: string[]) {
     { projectId: OTHER, key: key(holderInserts.length + 0) }, { projectId: P, key: key(holderInserts.length + 0) }, { projectId: P, key: key(100) },
     ...extraKeys.map(key => ({ projectId: P, key }))];
   await db.prepare(`DELETE FROM attachments WHERE project_id=? AND attachment_id='shared'`).bind(P).run();
-  await db.batch(recordBlobCandidates(db, pairs, 2, { callerHoldsReference: true }));
+  await db.batch(await recordCurrent(db, pairs, 2));
   const states = [];
   for (const holder of [null, 'producer', 'operator'] as const) {
     if (holder !== null) await db.prepare(`UPDATE recovery_holds SET released_at=3,release_reason='complete',released_by=? WHERE token=?`).bind(holder, holder).run();

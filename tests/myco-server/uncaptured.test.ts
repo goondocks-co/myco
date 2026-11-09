@@ -176,6 +176,12 @@ describe('the dashboard', () => {
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, undefined)).status).toBe(200);
   });
 
+  it('reports a disconnect that changed the stored connections as changed', async () => {
+    const r = await seeded();
+    expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true });
+    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true, changed: true });
+  });
+
   it('keeps the claimant check at the machine settings writer', async () => {
     const r = await seeded();
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
